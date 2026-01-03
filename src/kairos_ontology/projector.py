@@ -99,12 +99,87 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
 
 
 def _auto_detect_namespace(graph: Graph) -> str:
-    """Auto-detect the ontology's base namespace.
+    """Auto-detect the ontology's base namespace using semantic web best practices.
     
-    Looks for the most common namespace prefix used in owl:Class definitions,
-    excluding standard ontologies (OWL, RDFS, SKOS, etc.).
+    Method 1: Check owl:Ontology declaration (preferred - semantic web standard)
+    Method 2: Exclude owl:imports and count classes in remaining namespaces
+    Method 3: Fallback to URN format
+    
+    This approach scales to any external ontology without hardcoded exclusion lists.
     """
-    query = """
+    
+    # Method 1: Look for owl:Ontology declaration (BEST PRACTICE)
+    # The namespace containing the owl:Ontology instance is the main ontology namespace
+    ontology_query = """
+    PREFIX owl: <http://www.w3.org/2002/07/owl#>
+    
+    SELECT ?ontology
+    WHERE {
+        ?ontology a owl:Ontology .
+    }
+    """
+    
+    # Standard W3C namespaces to always exclude
+    standard_namespaces = {
+        'http://www.w3.org/2002/07/owl#',
+        'http://www.w3.org/2000/01/rdf-schema#',
+        'http://www.w3.org/2004/02/skos/core#',
+        'http://www.w3.org/2001/XMLSchema#',
+        'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
+    }
+    
+    ontology_namespaces = []
+    for row in graph.query(ontology_query):
+        onto_uri = str(row['ontology'])
+        
+        # Extract namespace from ontology URI
+        if '#' in onto_uri:
+            namespace = onto_uri.rsplit('#', 1)[0] + '#'
+        elif '/' in onto_uri:
+            namespace = onto_uri.rsplit('/', 1)[0] + '/'
+        else:
+            namespace = onto_uri + ':'  # URN format
+        
+        # Skip standard W3C ontologies
+        if namespace not in standard_namespaces:
+            ontology_namespaces.append(namespace)
+    
+    # Method 2: Get imported ontology namespaces to exclude
+    imports_query = """
+    PREFIX owl: <http://www.w3.org/2002/07/owl#>
+    
+    SELECT ?imported
+    WHERE {
+        ?ontology owl:imports ?imported .
+    }
+    """
+    
+    imported_namespaces = set()
+    for row in graph.query(imports_query):
+        import_uri = str(row['imported'])
+        
+        # Extract namespace from import URI
+        if '#' in import_uri:
+            namespace = import_uri.rsplit('#', 1)[0] + '#'
+        elif '/' in import_uri:
+            namespace = import_uri.rsplit('/', 1)[0] + '/'
+        else:
+            namespace = import_uri + ':'
+        
+        imported_namespaces.add(namespace)
+    
+    # If we found owl:Ontology declarations, prefer the one that's NOT imported
+    if ontology_namespaces:
+        for onto_ns in ontology_namespaces:
+            # Check if this ontology namespace is NOT in the imports
+            if onto_ns not in imported_namespaces:
+                return onto_ns
+        
+        # If all ontology namespaces are imported (rare), return the first one
+        return ontology_namespaces[0]
+    
+    # Method 3: Fallback - count classes per namespace, excluding imports and standards
+    class_query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
     
     SELECT ?class
@@ -114,39 +189,34 @@ def _auto_detect_namespace(graph: Graph) -> str:
     }
     """
     
-    # Count namespace prefixes
     namespace_counts = {}
-    standard_namespaces = {
-        'http://www.w3.org/2002/07/owl#',
-        'http://www.w3.org/2000/01/rdf-schema#',
-        'http://www.w3.org/2004/02/skos/core#',
-        'http://www.w3.org/2001/XMLSchema#',
-        'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
-    }
-    
-    for row in graph.query(query):
+    for row in graph.query(class_query):
         class_uri = str(row['class'])
         
-        # Extract namespace (everything up to last # or /)
+        # Extract namespace
         if '#' in class_uri:
             namespace = class_uri.rsplit('#', 1)[0] + '#'
         elif '/' in class_uri:
             namespace = class_uri.rsplit('/', 1)[0] + '/'
         else:
+            namespace = class_uri.rsplit(':', 1)[0] + ':'
+        
+        # Skip standard W3C namespaces
+        if namespace in standard_namespaces:
             continue
         
-        # Skip standard ontologies
-        if namespace in standard_namespaces:
+        # Skip imported namespaces
+        if namespace in imported_namespaces:
             continue
         
         namespace_counts[namespace] = namespace_counts.get(namespace, 0) + 1
     
-    if not namespace_counts:
-        # Fallback to URN format if no HTTP namespaces found
-        return "urn:kairos:ont:core:"
+    if namespace_counts:
+        # Return namespace with most classes
+        return max(namespace_counts, key=namespace_counts.get)
     
-    # Return most common namespace
-    return max(namespace_counts, key=namespace_counts.get)
+    # Ultimate fallback
+    return "urn:kairos:ont:core:"
 
 
 def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path, namespace: str) -> dict:

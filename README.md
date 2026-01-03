@@ -57,14 +57,22 @@ my-ontology-hub/
 
 ### Namespace Format
 
-**Best Practice:** The toolkit supports standard HTTP/HTTPS namespaces (recommended) as well as URN format:
+**Best Practice:** Use standard HTTP/HTTPS namespaces with proper `owl:Ontology` declarations:
 
-#### HTTP/HTTPS Namespaces (Recommended - Semantic Web Standard)
+#### Declaring Your Ontology (Recommended)
 
 ```turtle
-# Fragment-based (most common in ontologies like FIBO, Schema.org)
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix ex: <http://example.org/ontology#> .
 
+# Declare your ontology (this defines the main namespace)
+<http://example.org/ontology> a owl:Ontology ;
+    rdfs:label "My Application Ontology" ;
+    owl:versionInfo "1.0.0" ;
+    owl:imports <https://spec.edmcouncil.org/fibo/ontology/FND/Relations/Relations/> .
+
+# Your classes
 ex:Customer a owl:Class ;
     rdfs:label "Customer" ;
     rdfs:comment "A customer entity" .
@@ -74,28 +82,19 @@ ex:customerName a owl:DatatypeProperty ;
     rdfs:range xsd:string .
 ```
 
-OR
-
-```turtle
-# Path-based (slash URIs)
-@prefix ex: <http://example.org/ontology/> .
-
-ex:Product a owl:Class ;
-    rdfs:label "Product" .
-```
-
-#### URN Format (Alternative)
-
-```turtle
-@prefix kairos: <urn:kairos:ont:core:> .
-
-kairos:Customer a owl:Class ;
-    rdfs:label "Customer" .
-```
+**Why this matters:**
+- The `owl:Ontology` declaration tells the toolkit which namespace is yours
+- `owl:imports` declares external ontologies (FIBO, Schema.org, etc.)
+- The toolkit automatically excludes imported namespaces from projection
+- No need for hardcoded exclusion lists - works with ANY external ontology
 
 #### Namespace Auto-Detection
 
-The toolkit automatically detects your ontology's base namespace. You can also specify it explicitly:
+The toolkit uses semantic web best practices to detect your namespace:
+
+1. **Check `owl:Ontology` declaration** (preferred) - Uses the namespace of the declared ontology
+2. **Exclude `owl:imports`** - Automatically filters out imported external ontologies
+3. **Count classes in remaining namespaces** - Fallback if no declaration found
 
 ```bash
 # Auto-detect (default)
@@ -105,9 +104,17 @@ kairos-ontology project --target dbt
 kairos-ontology project --target dbt --namespace "http://example.org/ontology#"
 ```
 
-✅ **Supports:** HTTP, HTTPS, URN namespaces (all major ontology formats)  
-✅ **Auto-detects:** Base namespace from your ontology classes  
-✅ **Filters:** Automatically excludes external ontologies (OWL, RDFS, FIBO, etc.)
+**Auto-detection priorities:**
+1. ✅ Uses `owl:Ontology` declaration namespace
+2. ✅ Excludes `owl:imports` (FIBO, Schema.org, etc. automatically filtered)
+3. ✅ Falls back to most common non-standard namespace
+4. ✅ Works with ANY external ontology - no hardcoded lists needed
+
+**Supported namespace formats:**
+- HTTP fragment: `http://example.org/ont#`
+- HTTP path: `http://example.org/ont/`
+- HTTPS: `https://example.org/ont#`
+- URN: `urn:example:ont:`
 
 ### Validate Ontologies
 

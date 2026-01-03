@@ -341,3 +341,77 @@ class TestProjector:
                 assert 'http' not in name.lower()
                 assert '/' not in name
                 assert name.replace('.', '').replace('_', '').isalnum()
+    
+    def test_auto_detect_prefers_custom_namespace_over_fibo(self, temp_dir, ontology_with_fibo_imports):
+        """Test that auto-detection picks custom namespace even when FIBO has more classes."""
+        from kairos_ontology.projector import run_projections
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        # Create ontology with 5 FIBO classes and 3 custom classes
+        onto_file = ontologies_dir / "mixed.ttl"
+        onto_file.write_text(ontology_with_fibo_imports, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        # Run WITHOUT specifying namespace - should auto-detect custom, not FIBO
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='dbt',
+            namespace=None  # Auto-detect should pick custom namespace
+        )
+        
+        # Check that custom classes were projected, not FIBO
+        dbt_dir = output_dir / 'dbt'
+        assert dbt_dir.exists()
+        
+        sql_files = list(dbt_dir.glob('**/*.sql'))
+        assert len(sql_files) > 0
+        
+        # Check filenames - should have custom classes, not FIBO
+        filenames = [f.stem for f in sql_files]
+        
+        # Should have custom classes
+        custom_classes = ['customer', 'order', 'product']
+        found_custom = [cls for cls in custom_classes if cls in filenames]
+        assert len(found_custom) > 0, f"Should find custom classes, found: {filenames}"
+        
+        # Should NOT have FIBO classes
+        fibo_classes = ['organization', 'person', 'legalentity', 'contract', 'agreement']
+        found_fibo = [cls for cls in fibo_classes if cls in filenames]
+        assert len(found_fibo) == 0, f"Should NOT project FIBO classes, but found: {found_fibo}"
+    
+    def test_owl_ontology_declaration_method(self, temp_dir, ontology_with_declaration):
+        """Test that owl:Ontology declaration is used for namespace detection (semantic web standard)."""
+        from kairos_ontology.projector import run_projections
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "myapp.ttl"
+        onto_file.write_text(ontology_with_declaration, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        # Run WITHOUT specifying namespace - should detect from owl:Ontology
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='dbt',
+            namespace=None
+        )
+        
+        # Should generate files for the custom namespace
+        dbt_dir = output_dir / 'dbt'
+        assert dbt_dir.exists()
+        
+        sql_files = list(dbt_dir.glob('**/*.sql'))
+        assert len(sql_files) > 0
+        
+        # Should have customer.sql
+        filenames = [f.stem for f in sql_files]
+        assert 'customer' in filenames, f"Should find Customer class, found: {filenames}"

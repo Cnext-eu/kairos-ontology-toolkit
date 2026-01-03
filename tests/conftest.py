@@ -134,3 +134,85 @@ fibo:orgName a owl:DatatypeProperty ;
     rdfs:range xsd:string ;
     rdfs:label "Organization Name" .
 """
+
+
+@pytest.fixture
+def ontology_with_fibo_imports():
+    """Sample ontology that imports FIBO classes but defines its own custom classes."""
+    return """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix fibo: <https://spec.edmcouncil.org/fibo/ontology/FND/Relations/Relations#> .
+@prefix custom: <http://mycorp.example.com/ontology#> .
+
+# Declare this as the main ontology (imports FIBO)
+<http://mycorp.example.com/ontology> a owl:Ontology ;
+    rdfs:label "My Corporate Ontology" ;
+    owl:imports <https://spec.edmcouncil.org/fibo/ontology/FND/Relations/Relations/> .
+
+# Imported FIBO classes (many of them)
+fibo:Organization a owl:Class ;
+    rdfs:label "Organization" .
+
+fibo:Person a owl:Class ;
+    rdfs:label "Person" .
+
+fibo:LegalEntity a owl:Class ;
+    rdfs:label "Legal Entity" .
+
+fibo:Contract a owl:Class ;
+    rdfs:label "Contract" .
+
+fibo:Agreement a owl:Class ;
+    rdfs:label "Agreement" .
+
+# Custom classes (fewer, but these are what we want to project)
+custom:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer in our system" .
+
+custom:Order a owl:Class ;
+    rdfs:label "Order" ;
+    rdfs:comment "A customer order" .
+
+custom:Product a owl:Class ;
+    rdfs:label "Product" ;
+    rdfs:comment "A product in our catalog" .
+
+custom:customerName a owl:DatatypeProperty ;
+    rdfs:domain custom:Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "Customer Name" .
+
+custom:orderTotal a owl:DatatypeProperty ;
+    rdfs:domain custom:Order ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "Order Total" .
+"""
+
+
+@pytest.fixture
+def ontology_with_declaration():
+    """Ontology with proper owl:Ontology declaration (semantic web best practice)."""
+    return """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://example.com/myapp/ontology#> .
+
+# Ontology declaration (THIS defines the main namespace)
+<http://example.com/myapp/ontology> a owl:Ontology ;
+    rdfs:label "My Application Ontology" ;
+    owl:versionInfo "1.0.0" ;
+    owl:imports <https://spec.edmcouncil.org/fibo/ontology/FND/Relations/Relations/> .
+
+# Custom classes
+ex:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+
+ex:customerName a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string .
+"""
