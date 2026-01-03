@@ -16,6 +16,11 @@ Validation and projection tools for OWL/Turtle ontologies in the Kairos platform
   - A2UI JSON schemas for UI generation
   - Prompt context for LLM interactions
 
+- **Domain-Specific Outputs**
+  - Each ontology file generates separate output artifacts
+  - Enables independent deployment of data domains
+  - Organized by domain name for better isolation
+
 - **Catalog-Based Import Resolution**
   - Resolve external ontology imports via XML catalogs
   - Support for FIBO and other standard ontologies
@@ -39,21 +44,48 @@ Create your ontology hub with this structure:
 ```
 my-ontology-hub/
 ├── ontologies/                    # Your custom ontologies (default)
-│   ├── my-domain.ttl
-│   └── my-concepts.ttl
+│   ├── customer.ttl              # Customer domain
+│   ├── order.ttl                 # Order domain
+│   └── product.ttl               # Product domain
 ├── shapes/                        # SHACL validation shapes (default)
-│   ├── domain-constraints.ttl
-│   └── validation-rules.ttl
+│   ├── customer.shacl.ttl
+│   └── order.shacl.ttl
 ├── reference-models/              # External ontologies
 │   ├── catalog-v001.xml          # Import resolution catalog (default)
 │   └── fibo/                     # Example: FIBO ontologies
 └── output/                        # Generated projections (default)
     ├── dbt/
+    │   ├── customer/             # Customer domain outputs
+    │   │   └── models/silver/
+    │   │       ├── customer.sql
+    │   │       └── schema_customer.yml
+    │   └── order/                # Order domain outputs
+    │       └── models/silver/
     ├── neo4j/
+    │   ├── customer-schema.cypher
+    │   └── order-schema.cypher
     ├── azure-search/
+    │   ├── customer/
+    │   │   └── indexes/
+    │   └── order/
+    │       └── indexes/
     ├── a2ui/
+    │   ├── customer/
+    │   │   └── schemas/
+    │   └── order/
+    │       └── schemas/
     └── prompt/
+        ├── customer-context.json
+        ├── customer-context-detailed.json
+        ├── order-context.json
+        └── order-context-detailed.json
 ```
+
+**Why this structure?**
+- Each ontology file (e.g., `customer.ttl`) represents a separate data domain
+- Domain-specific outputs enable independent deployment to production
+- Different teams can own and deploy their domains separately
+- Supports multi-domain architectures and microservices
 
 ### Namespace Format
 
@@ -116,6 +148,64 @@ kairos-ontology project --target dbt --namespace "http://example.org/ontology#"
 - HTTPS: `https://example.org/ont#`
 - URN: `urn:example:ont:`
 
+### Multi-Domain Architecture
+
+The toolkit supports multi-domain ontology architectures where each domain is independently deployable:
+
+```turtle
+# customer.ttl - Customer domain
+@prefix cust: <http://example.org/customer#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+<http://example.org/customer> a owl:Ontology ;
+    rdfs:label "Customer Domain Ontology" ;
+    owl:versionInfo "1.0.0" .
+
+cust:Customer a owl:Class ;
+    rdfs:label "Customer" .
+
+cust:customerName a owl:DatatypeProperty ;
+    rdfs:domain cust:Customer ;
+    rdfs:range xsd:string .
+```
+
+```turtle
+# order.ttl - Order domain
+@prefix ord: <http://example.org/order#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+<http://example.org/order> a owl:Ontology ;
+    rdfs:label "Order Domain Ontology" ;
+    owl:versionInfo "1.0.0" .
+
+ord:Order a owl:Class ;
+    rdfs:label "Order" .
+
+ord:orderDate a owl:DatatypeProperty ;
+    rdfs:domain ord:Order ;
+    rdfs:range xsd:dateTime .
+```
+
+**Projection Output:**
+```
+output/
+├── dbt/
+│   ├── customer/models/silver/customer.sql
+│   └── order/models/silver/order.sql
+├── neo4j/
+│   ├── customer-schema.cypher
+│   └── order-schema.cypher
+└── prompt/
+    ├── customer-context.json
+    └── order-context.json
+```
+
+**Deployment:**
+- Deploy customer domain independently: `dbt run --models customer.*`
+- Deploy order domain separately: `dbt run --models order.*`
+- Version and release domains independently
+- Different teams can own different domains
+
 ### Validate Ontologies
 
 ```bash
@@ -134,17 +224,45 @@ kairos-ontology validate --ontologies ./ontologies --shapes ./shapes --catalog .
 ### Generate Projections
 
 ```bash
-# Generate all projections
+# Generate all projections for all ontologies
 kairos-ontology project --target all
 
-# Generate specific projection
+# Generate specific projection type
 kairos-ontology project --target dbt
 kairos-ontology project --target neo4j
 kairos-ontology project --target azure-search
+kairos-ontology project --target a2ui
+kairos-ontology project --target prompt
 
 # Custom paths
 kairos-ontology project --ontologies ./ontologies --output ./output --catalog ./catalog.xml
 ```
+
+**Output Organization:**
+
+Each ontology file generates domain-specific outputs:
+
+```bash
+# Input: ontologies/customer.ttl, ontologies/order.ttl
+
+# DBT outputs:
+output/dbt/customer/models/silver/customer.sql
+output/dbt/order/models/silver/order.sql
+
+# Neo4j outputs:
+output/neo4j/customer-schema.cypher
+output/neo4j/order-schema.cypher
+
+# Prompt outputs:
+output/prompt/customer-context.json
+output/prompt/order-context.json
+```
+
+**Benefits:**
+- Deploy each domain independently to production
+- Different teams can own different domains
+- Selective deployment and versioning per domain
+- Better organization and isolation of artifacts
 
 ### Test Catalog Resolution
 
@@ -214,16 +332,28 @@ kairos-ontology-toolkit/
 
 ## Troubleshooting
 
-### DBT Projection shows "No files generated"
+### No Files Generated for a Domain
 
 This usually means:
-1. No classes found with namespace starting with `urn:kairos:ont:`
+1. No classes found with the auto-detected namespace
 2. Classes exist but have no datatype properties
-3. Check your ontology uses the correct URN namespace format
+3. Check your ontology has proper `owl:Ontology` declaration
+4. Verify namespace matches between ontology declaration and class URIs
+
+### Understanding Domain-Specific Outputs
+
+**Before (v1.1.x and earlier):**
+- All ontologies merged into single output
+- Single set of files per projection type
+
+**After (v1.2.0+):**
+- Each ontology file processed separately
+- Domain-specific outputs per ontology
+- Example: `customer.ttl` → `customer-context.json`
 
 ### Windows Path Errors
 
-If you see errors with `:` in file paths, ensure your ontology namespaces use URN format (`urn:kairos:ont:core:`) instead of HTTP URLs (`http://...`).
+If you see errors with `:` in file paths, ensure your ontology namespaces use proper URL format. The toolkit automatically sanitizes filenames to be Windows-compatible.
 
 ## License
 
