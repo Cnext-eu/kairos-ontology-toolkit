@@ -44,3 +44,14 @@ target-version = ['py312']
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # Ignore deprecation warnings from rdflib's SPARQL parser using old pyparsing API
+    # This is a known issue in rdflib 7.5.0 with pyparsing 3.3.1
+    # See: https://github.com/RDFLib/rdflib/issues/2563
+    "ignore::DeprecationWarning:rdflib.plugins.sparql.parser",
+    "ignore::DeprecationWarning:rdflib.plugins.sparql.parserutils",
+    "ignore::DeprecationWarning:pyparsing.util",
+]
