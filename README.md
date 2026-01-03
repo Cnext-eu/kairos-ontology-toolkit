@@ -131,6 +131,30 @@ poetry run pytest
 poetry build
 ```
 
+### Creating a Release
+
+Use the automated release script:
+
+```powershell
+# Windows (PowerShell)
+.\release.ps1
+```
+
+```bash
+# Linux/Mac
+./release.sh
+```
+
+The script will:
+1. Check for uncommitted changes
+2. Prompt for release type (patch/minor/major)
+3. Update version numbers in `pyproject.toml` and `__init__.py`
+4. Update `poetry.lock`
+5. Build the package
+6. Commit changes
+7. Create and push a git tag
+8. Display installation instructions
+
 ## Architecture
 
 ```
