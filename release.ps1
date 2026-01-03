@@ -124,23 +124,14 @@ Write-Host "  ✓ Package built" -ForegroundColor Green
 
 # Get release notes
 Write-Host ""
-Write-Host "📝 Enter release notes (press Ctrl+Z then Enter when done):" -ForegroundColor Cyan
-$releaseNotes = @()
-while ($true) {
-    try {
-        $line = Read-Host
-        $releaseNotes += $line
-    } catch {
-        break
-    }
-}
+$releaseNotes = Read-Host "📝 Enter release summary (optional, press Enter to skip)"
 
-if ($releaseNotes.Count -eq 0) {
-    $releaseNotes = @("Release v$newVersion")
+if ([string]::IsNullOrWhiteSpace($releaseNotes)) {
+    $releaseNotes = "$releaseType release"
 }
 
 $commitMessage = "Release v$newVersion"
-$tagMessage = "Release v$newVersion - $releaseType release`n`n" + ($releaseNotes -join "`n")
+$tagMessage = "Release v$newVersion - $releaseNotes"
 
 # Commit changes
 Write-Host ""
