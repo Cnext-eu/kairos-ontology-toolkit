@@ -15,18 +15,31 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     
     # Load all ontologies into merged graph
     print("\nLoading ontologies...")
-    from .catalog_utils import load_graph_with_catalog
+    merged_graph = Graph()
     
-    if catalog_path and catalog_path.exists():
-        merged_graph = load_graph_with_catalog(ontologies_path, catalog_path)
-    else:
-        merged_graph = Graph()
-        ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
-        for onto_file in ontology_files:
-            try:
+    # Get all ontology files
+    ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
+    
+    if not ontology_files:
+        print(f"  ⚠️  No ontology files found in {ontologies_path}")
+        return
+    
+    # Load each ontology file
+    for onto_file in ontology_files:
+        try:
+            if catalog_path and catalog_path.exists():
+                # Load with catalog support for imports
+                from .catalog_utils import load_graph_with_catalog
+                file_graph = load_graph_with_catalog(onto_file, catalog_path)
+                # Merge into main graph
+                for s, p, o in file_graph:
+                    merged_graph.add((s, p, o))
+            else:
+                # Load without catalog
                 merged_graph.parse(onto_file, format='turtle' if onto_file.suffix == '.ttl' else 'xml')
-            except Exception as e:
-                print(f"  ⚠️  Could not parse {onto_file.name}: {e}")
+            print(f"  ✓ Loaded {onto_file.name}")
+        except Exception as e:
+            print(f"  ⚠️  Could not parse {onto_file.name}: {e}")
     
     print(f"  Loaded {len(merged_graph)} triples\n")
     
