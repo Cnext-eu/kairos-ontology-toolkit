@@ -1,0 +1,28 @@
+{
+  "ontology": "{{ ontology_name }}",
+  "version": "{{ version }}",
+  "generated": "{{ timestamp }}",
+  "concepts": [
+{%- for concept in concepts %}
+    {
+      "class": "{{ concept.name }}",
+      "label": "{{ concept.label }}",
+      "description": "{{ concept.description }}",
+      "synonyms": [
+{%- for synonym in concept.synonyms %}
+        "{{ synonym }}"{% if not loop.last %},{% endif %}
+{%- endfor %}
+      ],
+      "properties": [
+{%- for prop in concept.properties %}
+        {
+          "name": "{{ prop.name }}",
+          "type": "{{ prop.type }}",
+          "description": "{{ prop.description }}"
+        }{% if not loop.last %},{% endif %}
+{%- endfor %}
+      ]
+    }{% if not loop.last %},{% endif %}
+{%- endfor %}
+  ]
+}

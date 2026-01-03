@@ -1,0 +1,36 @@
+-- DBT Model: {{ class_name }}
+-- Generated from: {{ ontology_uri }}
+-- Description: {{ description }}
+{%- if subclasses %}
+-- Single-Table Inheritance: Includes {{ subclasses|length }} subclass(es)
+{%- for subclass in subclasses %}
+--   - {{ subclass.name }}: {{ subclass.label }}
+{%- endfor %}
+{%- endif %}
+
+{{"{{"}} config(
+    materialized='table',
+    schema='silver'
+) {{"}}"}}
+
+{%- if subclasses %}
+{#- Single-table inheritance with discriminator column -#}
+{%- for subclass in subclasses %}
+SELECT
+{%- for property in properties %}
+    {{ property.sql_cast }} AS {{ property.column_name }},
+{%- endfor %}
+    '{{ subclass.name }}' AS {{ discriminator.column_name }}
+FROM {{"{{"}} source('bronze', '{{ subclass.name.lower() }}_raw') {{"}}"}}
+{%- if not loop.last %}
+UNION ALL
+{%- endif %}
+{%- endfor %}
+{%- else %}
+{#- Standard single class table -#}
+SELECT
+{%- for property in properties %}
+    {{ property.sql_cast }} AS {{ property.column_name }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+FROM {{"{{"}} source('bronze', '{{ class_name.lower() }}_raw') {{"}}"}}
+{%- endif %}

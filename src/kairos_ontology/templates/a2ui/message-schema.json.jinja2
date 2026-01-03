@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "{{ schema_id }}",
+  "title": "{{ title }}",
+  "description": "{{ description }}",
+  "type": "object",
+  "properties": {
+{%- for property in properties %}
+    "{{ property.name }}": {
+      "type": "{{ property.json_type }}"
+{%- if property.description %},
+      "description": "{{ property.description }}"
+{%- endif %}
+{%- if property.format %},
+      "format": "{{ property.format }}"
+{%- endif %}
+{%- if property.pattern %},
+      "pattern": "{{ property.pattern }}"
+{%- endif %}
+    }{% if not loop.last %},{% endif %}
+{%- endfor %}
+  },
+  "required": [
+{%- for req in required %}
+    "{{ req }}"{% if not loop.last %},{% endif %}
+{%- endfor %}
+  ],
+  "additionalProperties": false
+}

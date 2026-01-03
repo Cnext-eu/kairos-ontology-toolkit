@@ -1,0 +1,41 @@
+{
+  "name": "{{ index_name }}",
+  "@odata.context": "https://{{ service_name }}.search.windows.net/$metadata#indexes/$entity",
+  "fields": [
+    {
+      "name": "id",
+      "type": "Edm.String",
+      "searchable": false,
+      "filterable": true,
+      "retrievable": true,
+      "sortable": true,
+      "facetable": false,
+      "key": true
+    }
+{%- for field in fields %},
+    {
+      "name": "{{ field.name }}",
+      "type": "{{ field.edm_type }}",
+      "searchable": {{ field.searchable|lower }},
+      "filterable": {{ field.filterable|lower }},
+      "retrievable": true,
+      "sortable": {{ field.sortable|lower }},
+      "facetable": {{ field.facetable|lower }}
+    }
+{%- endfor %}
+  ],
+  "suggesters": [],
+  "scoringProfiles": [],
+  "analyzers": [],
+  "charFilters": [],
+  "tokenizers": [],
+  "tokenFilters": [],
+  "defaultScoringProfile": null,
+  "corsOptions": null,
+  "synonymMaps": [
+{%- for synonym_map in synonym_maps %}
+    "{{ synonym_map }}"{% if not loop.last %},{% endif %}
+{%- endfor %}
+  ],
+  "encryptionKey": null
+}

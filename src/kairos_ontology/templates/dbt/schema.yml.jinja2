@@ -1,0 +1,17 @@
+version: 2
+
+models:
+  - name: {{ model_name }}
+    description: {{ description }}
+    columns:
+{%- for column in columns %}
+      - name: {{ column.name }}
+        description: {{ column.description }}
+        data_type: {{ column.data_type }}
+{%- if column.tests %}
+        tests:
+{%- for test in column.tests %}
+          - {{ test }}
+{%- endfor %}
+{%- endif %}
+{%- endfor %}

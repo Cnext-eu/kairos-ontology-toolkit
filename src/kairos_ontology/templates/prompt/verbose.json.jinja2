@@ -1,0 +1,35 @@
+{
+  "ontology": "{{ ontology_name }}",
+  "version": "{{ version }}",
+  "generated": "{{ timestamp }}",
+  "description": "{{ description }}",
+  "classes": {
+{%- for concept in concepts %}
+    "{{ concept.name }}": {
+      "label": "{{ concept.label }}",
+      "description": "{{ concept.description }}",
+      "synonyms": {{ concept.synonyms|tojson }},
+      "properties": {
+{%- for prop in concept.properties %}
+        "{{ prop.name }}": {
+          "type": "{{ prop.type }}",
+          "description": "{{ prop.description }}",
+          "range": "{{ prop.range }}"
+        }{% if not loop.last %},{% endif %}
+{%- endfor %}
+      },
+      "examples": {{ concept.examples|tojson if concept.examples else "[]" }}
+    }{% if not loop.last %},{% endif %}
+{%- endfor %}
+  },
+  "relationships": {
+{%- for rel in relationships %}
+    "{{ rel.name }}": {
+      "label": "{{ rel.label }}",
+      "description": "{{ rel.description }}",
+      "domain": "{{ rel.domain }}",
+      "range": "{{ rel.range }}"
+    }{% if not loop.last %},{% endif %}
+{%- endfor %}
+  }
+}

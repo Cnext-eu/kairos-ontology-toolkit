@@ -1,0 +1,23 @@
+// Neo4j Schema for: {{ ontology_uri }}
+// Generated: {{ timestamp }}
+
+// Create Node Label Constraints
+{% for class in classes -%}
+// {{ class.label }}: {{ class.description }}
+CREATE CONSTRAINT {{ class.constraint_name }} IF NOT EXISTS
+FOR (n:{{ class.name }})
+REQUIRE n.{{ class.id_property }} IS UNIQUE;
+
+{% endfor %}
+
+// Create Relationship Types
+{% for relationship in relationships -%}
+// {{ relationship.label }}: {{ relationship.description }}
+// (:{{ relationship.domain }})-[:{{ relationship.name }}]->(:{{ relationship.range }})
+
+{% endfor %}
+
+// Sample Data Model
+{% for class in classes -%}
+// CREATE (n:{{ class.name }} { {{ class.id_property }}: '<value>', name: '<value>' })
+{% endfor %}

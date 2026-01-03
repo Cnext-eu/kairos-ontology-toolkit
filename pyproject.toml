@@ -1,0 +1,46 @@
+[tool.poetry]
+name = "kairos-ontology-toolkit"
+version = "1.0.0"
+description = "Validation and projection tools for OWL/Turtle ontologies in the Kairos platform"
+authors = ["Cnext <info@cnext.eu>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
+repository = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
+keywords = ["ontology", "owl", "turtle", "rdf", "shacl", "validation", "projection"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+packages = [{include = "kairos_ontology", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+rdflib = "^7.4.0"
+pySHACL = "^0.30.1"
+Jinja2 = "^3.1.3"
+click = "^8.1.7"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+pytest-cov = "^4.1.0"
+black = "^24.1.0"
+ruff = "^0.1.11"
+
+[tool.poetry.scripts]
+kairos-ontology = "kairos_ontology.cli.main:cli"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

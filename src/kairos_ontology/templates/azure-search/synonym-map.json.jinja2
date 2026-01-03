@@ -1,0 +1,7 @@
+{
+  "name": "{{ synonym_map_name }}",
+  "@odata.context": "https://{{ service_name }}.search.windows.net/$metadata#synonymmaps/$entity",
+  "format": "solr",
+  "synonyms": "{{ synonyms|join('\\n') }}",
+  "encryptionKey": null
+}
