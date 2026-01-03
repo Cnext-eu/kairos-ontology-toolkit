@@ -255,109 +255,21 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
     
     print(f"  Found {len(classes)} classes")
     
-    # Generate based on target
+    # Generate based on target using full-featured projector classes
     if target == 'dbt':
-        return _generate_dbt(classes, graph, template_base / "dbt")
+        from .projections.dbt_projector import generate_dbt_artifacts
+        return generate_dbt_artifacts(classes, graph, template_base / "dbt", namespace)
     elif target == 'neo4j':
-        return _generate_neo4j(classes, graph, template_base / "neo4j")
+        from .projections.neo4j_projector import generate_neo4j_artifacts
+        return generate_neo4j_artifacts(classes, graph, template_base / "neo4j", namespace)
     elif target == 'azure-search':
-        return _generate_azure_search(classes, graph, template_base / "azure-search")
+        from .projections.azure_search_projector import generate_azure_search_artifacts
+        return generate_azure_search_artifacts(classes, graph, template_base / "azure-search", namespace)
     elif target == 'a2ui':
-        return _generate_a2ui(classes, graph, template_base / "a2ui")
+        from .projections.a2ui_projector import generate_a2ui_artifacts
+        return generate_a2ui_artifacts(classes, graph, template_base / "a2ui", namespace)
     elif target == 'prompt':
-        return _generate_prompt(classes, graph, template_base / "prompt")
+        from .projections.prompt_projector import generate_prompt_artifacts
+        return generate_prompt_artifacts(classes, graph, template_base / "prompt", namespace)
     
     return {}
-
-
-def _generate_dbt(classes, graph, template_dir):
-    """Simple DBT generation."""
-    artifacts = {}
-    env = Environment(loader=FileSystemLoader(template_dir))
-    
-    for class_info in classes:
-        # Extract properties
-        props_query = f"""
-        PREFIX owl: <http://www.w3.org/2002/07/owl#>
-        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-        
-        SELECT ?property ?label ?comment ?range
-        WHERE {{
-            ?property a owl:DatatypeProperty .
-            ?property rdfs:domain <{class_info['uri']}> .
-            OPTIONAL {{ ?property rdfs:label ?label }}
-            OPTIONAL {{ ?property rdfs:comment ?comment }}
-            OPTIONAL {{ ?property rdfs:range ?range }}
-        }}
-        """
-        
-        properties = []
-        for row in graph.query(props_query):
-            prop_name = extract_local_name(str(row.property))
-            column_name = _to_snake_case(prop_name)
-            sql_type = "STRING"  # Default
-            
-            properties.append({
-                'name': prop_name,
-                'column_name': column_name,
-                'sql_type': sql_type,
-                'sql_cast': f"CAST({column_name}_raw AS {sql_type})",
-                'label': str(row.label) if row.label else prop_name,
-                'comment': str(row.comment) if row.comment else ""
-            })
-        
-        if not properties:
-            continue
-        
-        # Generate SQL
-        template = env.get_template('model.sql.jinja2')
-        sql_content = template.render(
-            class_name=class_info['name'],
-            ontology_uri="ontology",
-            description=class_info['comment'],
-            properties=properties
-        )
-        artifacts[f"models/silver/{class_info['name'].lower()}.sql"] = sql_content
-    
-    return artifacts
-
-
-def _generate_neo4j(classes, graph, template_dir):
-    """Simple Neo4j generation."""
-    env = Environment(loader=FileSystemLoader(template_dir))
-    template = env.get_template('schema.cypher.jinja2')
-    
-    for cls in classes:
-        cls['constraint_name'] = f"constraint_{cls['name'].lower()}_id"
-        cls['id_property'] = 'id'
-    
-    content = template.render(
-        ontology_uri="ontology",
-        timestamp=datetime.now().isoformat(),
-        classes=classes,
-        relationships=[]
-    )
-    
-    return {'schema.cypher': content}
-
-
-def _generate_azure_search(classes, graph, template_dir):
-    """Simple Azure Search generation."""
-    return {}  # Simplified for now
-
-
-def _generate_a2ui(classes, graph, template_dir):
-    """Simple A2UI generation."""
-    return {}  # Simplified for now
-
-
-def _generate_prompt(classes, graph, template_dir):
-    """Simple Prompt generation."""
-    return {}  # Simplified for now
-
-
-def _to_snake_case(name: str) -> str:
-    """Convert camelCase to snake_case."""
-    import re
-    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()

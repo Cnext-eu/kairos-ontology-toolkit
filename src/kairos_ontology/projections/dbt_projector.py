@@ -29,6 +29,7 @@ Subclasses are only materialized as separate tables if they have:
   2. Significantly different structure requiring separate schema
 """
 
+import re
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD
@@ -429,3 +430,114 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str) -> dict:
+    """Generate DBT artifacts from pre-extracted classes and graph.
+    
+    This is the entry point called by the main projector orchestrator.
+    
+    Args:
+        classes: List of class dictionaries with 'uri', 'name', 'label', 'comment'
+        graph: RDFLib graph with the ontology
+        template_dir: Path to Jinja2 templates
+        namespace: Base namespace for filtering (already used to extract classes)
+        
+    Returns:
+        Dictionary of {file_path: content} for generated artifacts
+    """
+    from jinja2 import Environment, FileSystemLoader
+    import re
+    
+    artifacts = {}
+    env = Environment(loader=FileSystemLoader(template_dir))
+    skipped_classes = []
+    
+    # XSD to SQL type mapping
+    XSD_TO_SQL_TYPES = {
+        str(XSD.string): "STRING",
+        str(XSD.integer): "INT64",
+        str(XSD.int): "INT64",
+        str(XSD.decimal): "NUMERIC",
+        str(XSD.float): "FLOAT64",
+        str(XSD.double): "FLOAT64",
+        str(XSD.boolean): "BOOL",
+        str(XSD.date): "DATE",
+        str(XSD.dateTime): "TIMESTAMP",
+        str(XSD.time): "TIME",
+    }
+    
+    def to_snake_case(name: str) -> str:
+        """Convert camelCase to snake_case."""
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+    
+    for class_info in classes:
+        # Extract properties
+        props_query = f"""
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?property ?label ?comment ?range
+        WHERE {{
+            ?property a owl:DatatypeProperty .
+            ?property rdfs:domain <{class_info['uri']}> .
+            OPTIONAL {{ ?property rdfs:label ?label }}
+            OPTIONAL {{ ?property rdfs:comment ?comment }}
+            OPTIONAL {{ ?property rdfs:range ?range }}
+        }}
+        """
+        
+        properties = []
+        for row in graph.query(props_query):
+            prop_name = extract_local_name(str(row.property))
+            column_name = to_snake_case(prop_name)
+            
+            # Map XSD type to SQL type
+            sql_type = "STRING"  # Default
+            if row.range:
+                sql_type = XSD_TO_SQL_TYPES.get(str(row.range), "STRING")
+            
+            properties.append({
+                'name': prop_name,
+                'column_name': column_name,
+                'sql_type': sql_type,
+                'sql_cast': f"CAST({column_name}_raw AS {sql_type})",
+                'label': str(row.label) if row.label else prop_name,
+                'comment': str(row.comment) if row.comment else ""
+            })
+        
+        if not properties:
+            print(f"  ⚠️  Skipping {class_info['name']}: No datatype properties defined")
+            print(f"      (DBT requires datatype properties to generate table columns)")
+            print(f"      Tip: Add owl:DatatypeProperty with rdfs:domain <{class_info['uri']}>")
+            skipped_classes.append(class_info['name'])
+            continue
+        
+        # Generate SQL model
+        template = env.get_template('model.sql.jinja2')
+        sql_content = template.render(
+            class_name=class_info['name'],
+            ontology_uri="ontology",
+            description=class_info['comment'],
+            properties=properties
+        )
+        artifacts[f"models/silver/{class_info['name'].lower()}.sql"] = sql_content
+        
+        # Generate schema YAML
+        yaml_template = env.get_template('schema.yml.jinja2')
+        yaml_content = yaml_template.render(
+            class_name=class_info['name'],
+            description=class_info['comment'],
+            properties=properties
+        )
+        artifacts[f"models/silver/schema_{class_info['name'].lower()}.yml"] = yaml_content
+    
+    # Print summary
+    if skipped_classes:
+        print(f"\n  ⚠️  Skipped {len(skipped_classes)} class(es) with no datatype properties:")
+        for class_name in skipped_classes:
+            print(f"      - {class_name}")
+        print(f"      These classes only have object properties or no properties defined.")
+    
+    return artifacts

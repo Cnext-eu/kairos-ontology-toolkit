@@ -216,3 +216,5 @@ ex:customerName a owl:DatatypeProperty ;
     rdfs:domain ex:Customer ;
     rdfs:range xsd:string .
 """
+
+

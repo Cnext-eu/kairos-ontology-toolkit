@@ -1,0 +1,17 @@
+{
+  "syntax": {
+    "passed": 0,
+    "failed": 0,
+    "errors": []
+  },
+  "shacl": {
+    "passed": 0,
+    "failed": 0,
+    "errors": []
+  },
+  "consistency": {
+    "passed": 0,
+    "failed": 0,
+    "errors": []
+  }
+}

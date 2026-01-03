@@ -238,3 +238,20 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def generate_azure_search_artifacts(classes: list, graph, template_dir, namespace: str) -> dict:
+    """Generate Azure Search artifacts from pre-extracted classes and graph.
+    
+    Args:
+        classes: List of class dictionaries
+        graph: RDFLib graph
+        template_dir: Path to Jinja2 templates
+        namespace: Base namespace
+        
+    Returns:
+        Dictionary of {file_path: content}
+    """
+    # TODO: Implement full Azure Search projection
+    # For now, return empty to avoid breaking existing functionality
+    return {}

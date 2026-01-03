@@ -205,3 +205,36 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str) -> dict:
+    """Generate Neo4j artifacts from pre-extracted classes and graph.
+    
+    Args:
+        classes: List of class dictionaries
+        graph: RDFLib graph
+        template_dir: Path to Jinja2 templates
+        namespace: Base namespace
+        
+    Returns:
+        Dictionary of {file_path: content}
+    """
+    from jinja2 import Environment, FileSystemLoader
+    from datetime import datetime
+    
+    env = Environment(loader=FileSystemLoader(template_dir))
+    template = env.get_template('schema.cypher.jinja2')
+    
+    # Add constraint info to classes
+    for cls in classes:
+        cls['constraint_name'] = f"constraint_{cls['name'].lower()}_id"
+        cls['id_property'] = 'id'
+    
+    content = template.render(
+        ontology_uri="ontology",
+        timestamp=datetime.now().isoformat(),
+        classes=classes,
+        relationships=[]
+    )
+    
+    return {'schema.cypher': content}

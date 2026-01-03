@@ -248,3 +248,20 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str) -> dict:
+    """Generate Prompt artifacts from pre-extracted classes and graph.
+    
+    Args:
+        classes: List of class dictionaries
+        graph: RDFLib graph
+        template_dir: Path to Jinja2 templates
+        namespace: Base namespace
+        
+    Returns:
+        Dictionary of {file_path: content}
+    """
+    # TODO: Implement full Prompt projection
+    # For now, return empty to avoid breaking existing functionality
+    return {}
