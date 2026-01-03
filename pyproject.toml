@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "kairos-ontology-toolkit"
-version = "1.0.2"
+version = "1.0.3"
 description = "Validation and projection tools for OWL/Turtle ontologies in the Kairos platform"
 authors = ["Cnext <info@cnext.eu>"]
 license = "MIT"
