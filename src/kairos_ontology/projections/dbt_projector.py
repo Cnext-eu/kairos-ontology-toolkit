@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD
 from jinja2 import Environment, FileSystemLoader
+from .uri_utils import extract_local_name
 
 
 class DBTProjector:
@@ -99,7 +100,7 @@ class DBTProjector:
             if not class_uri.startswith('urn:kairos:ont:'):
                 continue
             
-            class_name = class_uri.split(':')[-1]
+            class_name = extract_local_name(class_uri)
             
             classes.append({
                 'uri': class_uri,
@@ -128,7 +129,7 @@ class DBTProjector:
         subclasses = []
         for row in self.graph.query(query):
             subclass_uri = str(row.subclass)
-            subclass_name = subclass_uri.split(':')[-1]
+            subclass_name = extract_local_name(subclass_uri)
             subclasses.append({
                 'uri': subclass_uri,
                 'name': subclass_name,
@@ -176,7 +177,7 @@ class DBTProjector:
         
         for row in self.graph.query(query):
             prop_uri = str(row.property)
-            prop_name = prop_uri.split(':')[-1]
+            prop_name = extract_local_name(prop_uri)
             
             # Map XSD datatype to SQL type
             range_type = row.range if row.range else XSD.string
@@ -210,7 +211,7 @@ class DBTProjector:
         tests_by_property = {}
         
         # Find shape for this class
-        class_name = class_uri.split(':')[-1]
+        class_name = extract_local_name(class_uri)
         shape_uri = f"http://kairos.ai/ont/core#{class_name}Shape"
         
         # Query for property shapes
@@ -219,7 +220,7 @@ class DBTProjector:
             if not path:
                 continue
             
-            prop_name = str(path).split(':')[-1]
+            prop_name = extract_local_name(str(path))
             column_name = self._to_snake_case(prop_name)
             tests = []
             

@@ -57,22 +57,57 @@ my-ontology-hub/
 
 ### Namespace Format
 
-**Important:** Use URN format for your ontology namespaces to ensure Windows compatibility:
+**Best Practice:** The toolkit supports standard HTTP/HTTPS namespaces (recommended) as well as URN format:
+
+#### HTTP/HTTPS Namespaces (Recommended - Semantic Web Standard)
+
+```turtle
+# Fragment-based (most common in ontologies like FIBO, Schema.org)
+@prefix ex: <http://example.org/ontology#> .
+
+ex:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+
+ex:customerName a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string .
+```
+
+OR
+
+```turtle
+# Path-based (slash URIs)
+@prefix ex: <http://example.org/ontology/> .
+
+ex:Product a owl:Class ;
+    rdfs:label "Product" .
+```
+
+#### URN Format (Alternative)
 
 ```turtle
 @prefix kairos: <urn:kairos:ont:core:> .
 
 kairos:Customer a owl:Class ;
-    rdfs:label "Customer" ;
-    rdfs:comment "A customer entity" .
-
-kairos:customerName a owl:DatatypeProperty ;
-    rdfs:domain kairos:Customer ;
-    rdfs:range xsd:string .
+    rdfs:label "Customer" .
 ```
 
-❌ **Don't use:** `http://kairos.ai/ont/core#` (causes Windows path issues)
-✅ **Use:** `urn:kairos:ont:core:` (Windows-compatible)
+#### Namespace Auto-Detection
+
+The toolkit automatically detects your ontology's base namespace. You can also specify it explicitly:
+
+```bash
+# Auto-detect (default)
+kairos-ontology project --target dbt
+
+# Explicit namespace
+kairos-ontology project --target dbt --namespace "http://example.org/ontology#"
+```
+
+✅ **Supports:** HTTP, HTTPS, URN namespaces (all major ontology formats)  
+✅ **Auto-detects:** Base namespace from your ontology classes  
+✅ **Filters:** Automatically excludes external ontologies (OWL, RDFS, FIBO, etc.)
 
 ### Validate Ontologies
 

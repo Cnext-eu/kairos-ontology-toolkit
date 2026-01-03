@@ -213,3 +213,97 @@ class TestProjector:
         
         assert 'MyClass' in kairos_classes
         assert 'OtherClass' not in kairos_classes
+    
+    def test_http_namespace_slash_based(self, temp_dir, http_ontology):
+        """Test that path-based HTTP namespaces are properly handled."""
+        from kairos_ontology.projector import run_projections
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        # Create ontology with slash-based namespace
+        onto_file = ontologies_dir / "products.ttl"
+        onto_file.write_text(http_ontology, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        # Run projection with explicit namespace
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='dbt',
+            namespace='http://example.org/ontology/'
+        )
+        
+        # Verify DBT files were created
+        dbt_dir = output_dir / 'dbt'
+        assert dbt_dir.exists()
+        
+        # Check that Product class was found (files may be in models/silver subdirectory)
+        sql_files = list(dbt_dir.glob('**/*.sql'))
+        assert len(sql_files) > 0
+        
+        # Verify content mentions Product
+        product_found = any('product' in f.read_text().lower() for f in sql_files)
+        assert product_found, "Product class should be in generated SQL"
+    
+    def test_http_namespace_hash_based(self, temp_dir, hash_ontology):
+        """Test that fragment-based HTTP namespaces (with #) are properly handled."""
+        from kairos_ontology.projector import run_projections
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        # Create ontology with hash-based namespace
+        onto_file = ontologies_dir / "fibo.ttl"
+        onto_file.write_text(hash_ontology, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        # Run projection with explicit namespace
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='neo4j',
+            namespace='https://spec.edmcouncil.org/fibo/ontology/FND/Relations/Relations#'
+        )
+        
+        # Verify Neo4j files were created
+        neo4j_dir = output_dir / 'neo4j'
+        assert neo4j_dir.exists()
+        
+        cypher_files = list(neo4j_dir.glob('*.cypher'))
+        assert len(cypher_files) > 0
+        
+        # Verify content mentions Organization
+        org_found = any('organization' in f.read_text().lower() for f in cypher_files)
+        assert org_found, "Organization class should be in generated Cypher"
+    
+    def test_namespace_auto_detection(self, temp_dir, http_ontology):
+        """Test that namespace is auto-detected when not provided."""
+        from kairos_ontology.projector import run_projections
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "products.ttl"
+        onto_file.write_text(http_ontology, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        # Run WITHOUT specifying namespace - should auto-detect
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='dbt',
+            namespace=None  # Auto-detect
+        )
+        
+        # Should still generate files
+        dbt_dir = output_dir / 'dbt'
+        assert dbt_dir.exists()
+        sql_files = list(dbt_dir.glob('**/*.sql'))
+        assert len(sql_files) > 0

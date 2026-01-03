@@ -5,10 +5,20 @@ from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD, SKOS
 from jinja2 import Environment, FileSystemLoader
 import json
 from datetime import datetime
+from .projections.uri_utils import extract_local_name
 
 
-def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path, target: str):
-    """Run projection generation."""
+def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path, target: str, namespace: str = None):
+    """Run projection generation.
+    
+    Args:
+        ontologies_path: Path to ontology files
+        catalog_path: Path to XML catalog for imports
+        output_path: Where to write generated files
+        target: Projection target (dbt, neo4j, etc.) or 'all'
+        namespace: Base namespace to project (e.g., 'http://example.org/ont/'). 
+                   If None, auto-detects from ontology.
+    """
     
     print("🚀 Kairos Ontology Projections")
     print("=" * 50)
@@ -47,6 +57,13 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         print("  ⚠️  No triples loaded - check ontology files exist")
         return
     
+    # Auto-detect namespace if not provided
+    if namespace is None:
+        namespace = _auto_detect_namespace(merged_graph)
+        print(f"  Auto-detected namespace: {namespace}\n")
+    else:
+        print(f"  Using namespace: {namespace}\n")
+    
     # Create output directories
     output_path.mkdir(parents=True, exist_ok=True)
     
@@ -61,7 +78,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         target_output.mkdir(exist_ok=True)
         
         try:
-            artifacts = _run_projection(target_name, merged_graph, target_output, template_base)
+            artifacts = _run_projection(target_name, merged_graph, target_output, template_base, namespace)
             if artifacts:
                 # Save artifacts
                 for file_path, content in artifacts.items():
@@ -81,11 +98,59 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     print("✅ Projection generation completed!")
 
 
-def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path) -> dict:
-    """Run a specific projection type using simplified logic."""
+def _auto_detect_namespace(graph: Graph) -> str:
+    """Auto-detect the ontology's base namespace.
     
-    # Extract all classes from the graph
-    KAIROS = Namespace("urn:kairos:ont:core:")
+    Looks for the most common namespace prefix used in owl:Class definitions,
+    excluding standard ontologies (OWL, RDFS, SKOS, etc.).
+    """
+    query = """
+    PREFIX owl: <http://www.w3.org/2002/07/owl#>
+    
+    SELECT ?class
+    WHERE {
+        ?class a owl:Class .
+        FILTER(isIRI(?class))
+    }
+    """
+    
+    # Count namespace prefixes
+    namespace_counts = {}
+    standard_namespaces = {
+        'http://www.w3.org/2002/07/owl#',
+        'http://www.w3.org/2000/01/rdf-schema#',
+        'http://www.w3.org/2004/02/skos/core#',
+        'http://www.w3.org/2001/XMLSchema#',
+        'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
+    }
+    
+    for row in graph.query(query):
+        class_uri = str(row['class'])
+        
+        # Extract namespace (everything up to last # or /)
+        if '#' in class_uri:
+            namespace = class_uri.rsplit('#', 1)[0] + '#'
+        elif '/' in class_uri:
+            namespace = class_uri.rsplit('/', 1)[0] + '/'
+        else:
+            continue
+        
+        # Skip standard ontologies
+        if namespace in standard_namespaces:
+            continue
+        
+        namespace_counts[namespace] = namespace_counts.get(namespace, 0) + 1
+    
+    if not namespace_counts:
+        # Fallback to URN format if no HTTP namespaces found
+        return "urn:kairos:ont:core:"
+    
+    # Return most common namespace
+    return max(namespace_counts, key=namespace_counts.get)
+
+
+def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path, namespace: str) -> dict:
+    """Run a specific projection type using simplified logic."""
     
     query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
@@ -103,10 +168,10 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
     classes = []
     for row in graph.query(query):
         class_uri = str(row['class'])
-        if not class_uri.startswith('urn:kairos:ont:'):
+        if not class_uri.startswith(namespace):
             continue
         
-        class_name = class_uri.split(':')[-1]
+        class_name = extract_local_name(class_uri)
         classes.append({
             'uri': class_uri,
             'name': class_name,
@@ -115,7 +180,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         })
     
     if not classes:
-        print(f"  ℹ️  No Kairos classes found (URI must start with urn:kairos:ont:)")
+        print(f"  ℹ️  No classes found with namespace: {namespace}")
         return {}
     
     print(f"  Found {len(classes)} classes")
@@ -158,7 +223,7 @@ def _generate_dbt(classes, graph, template_dir):
         
         properties = []
         for row in graph.query(props_query):
-            prop_name = str(row.property).split(':')[-1]
+            prop_name = extract_local_name(str(row.property))
             column_name = _to_snake_case(prop_name)
             sql_type = "STRING"  # Default
             

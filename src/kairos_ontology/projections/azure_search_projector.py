@@ -13,6 +13,7 @@ from typing import Dict, List
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD
 from jinja2 import Environment, FileSystemLoader
 from .skos_utils import SKOSParser
+from .uri_utils import extract_local_name
 
 
 class AzureSearchProjector:
@@ -69,7 +70,7 @@ class AzureSearchProjector:
         
         for row in self.graph.query(query):
             class_uri = str(row['class'])
-            class_name = class_uri.split(':')[-1]
+            class_name = extract_local_name(class_uri)
             
             classes.append({
                 'uri': class_uri,
@@ -100,7 +101,7 @@ class AzureSearchProjector:
         
         for row in self.graph.query(query):
             prop_uri = str(row.property)
-            prop_name = prop_uri.split(':')[-1]
+            prop_name = extract_local_name(prop_uri)
             
             # Map XSD datatype to Edm type
             range_type = row.range if row.range else XSD.string

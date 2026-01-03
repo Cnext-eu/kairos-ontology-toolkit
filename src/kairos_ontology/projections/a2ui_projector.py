@@ -61,7 +61,7 @@ class A2UIProjector:
         
         for row in self.graph.query(query):
             class_uri = str(row['class'])
-            class_name = class_uri.split(':')[-1]
+            class_name = extract_local_name(class_uri)
             
             classes.append({
                 'uri': class_uri,
@@ -97,12 +97,12 @@ class A2UIProjector:
         """
         
         # Also check SHACL for required fields
-        shapes_path = Path("ontology-hub/shapes") / (class_uri.split(':')[-1].lower() + ".shacl.ttl")
+        shapes_path = Path("ontology-hub/shapes") / (extract_local_name(class_uri).lower() + ".shacl.ttl")
         required_props = self._get_required_properties(class_uri, shapes_path)
         
         for row in self.graph.query(query):
             prop_uri = str(row.property)
-            prop_name = prop_uri.split(':')[-1]
+            prop_name = extract_local_name(prop_uri)
             
             # Map XSD datatype to JSON Schema type
             range_type = row.range if row.range else XSD.string
@@ -151,7 +151,7 @@ class A2UIProjector:
                 min_count = shapes_graph.value(property_shape, SH.minCount)
                 
                 if path and min_count and int(min_count) > 0:
-                    prop_name = str(path).split(':')[-1]
+                    prop_name = extract_local_name(str(path))
                     required_props.append(prop_name)
             
             return required_props

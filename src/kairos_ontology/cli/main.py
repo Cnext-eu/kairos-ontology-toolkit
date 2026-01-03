@@ -55,7 +55,9 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
               help='Output directory for projections')
 @click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt']),
               default='all', help='Projection target')
-def project(ontologies, catalog, output, target):
+@click.option('--namespace', type=str, default=None,
+              help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
+def project(ontologies, catalog, output, target, namespace):
     """Generate projections from ontologies."""
     ontologies_path = Path(ontologies)
     catalog_path = Path(catalog) if catalog else None
@@ -65,7 +67,8 @@ def project(ontologies, catalog, output, target):
         ontologies_path=ontologies_path,
         catalog_path=catalog_path,
         output_path=output_path,
-        target=target
+        target=target,
+        namespace=namespace
     )
 
 

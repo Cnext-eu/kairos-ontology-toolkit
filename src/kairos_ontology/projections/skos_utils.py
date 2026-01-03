@@ -9,6 +9,7 @@ alternative labels (synonyms) for use in projections.
 from pathlib import Path
 from typing import Dict, List
 from rdflib import Graph, Namespace, SKOS
+from .uri_utils import extract_local_name
 
 
 class SKOSParser:
@@ -84,7 +85,7 @@ class SKOSParser:
             concept_uri = str(row.concept)
             # Extract class name from concept URI (e.g., "CustomerConcept" -> "Customer")
             if "Concept" in concept_uri:
-                class_name = concept_uri.split(':')[-1].replace("Concept", "")
+                class_name = extract_local_name(concept_uri).replace("Concept", "")
                 
                 if class_name not in synonyms_map:
                     synonyms_map[class_name] = []
