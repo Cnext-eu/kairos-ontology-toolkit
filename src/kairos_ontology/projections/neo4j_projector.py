@@ -31,7 +31,7 @@ class Neo4jProjector:
         self.jinja_env = Environment(loader=FileSystemLoader(template_dir))
         
         # Namespaces
-        self.KAIROS = Namespace("http://kairos.ai/ont/core#")
+        self.KAIROS = Namespace("urn:kairos:ont:core:")
     
     def extract_classes(self) -> List[Dict]:
         """Extract all OWL classes for Neo4j node labels"""

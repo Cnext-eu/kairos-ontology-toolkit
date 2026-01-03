@@ -49,7 +49,7 @@ class AzureSearchProjector:
         self.skos_graph = self.skos_parser.load_all_mappings()
         
         # Namespaces
-        self.KAIROS = Namespace("http://kairos.ai/ont/core#")
+        self.KAIROS = Namespace("urn:kairos:ont:core:")
     
     def extract_classes(self) -> List[Dict]:
         """Extract all OWL classes for index creation"""

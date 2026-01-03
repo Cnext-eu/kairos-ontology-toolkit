@@ -65,7 +65,7 @@ class DBTProjector:
         self.jinja_env = Environment(loader=FileSystemLoader(template_dir))
         
         # Namespaces
-        self.KAIROS = Namespace("http://kairos.ai/ont/core#")
+        self.KAIROS = Namespace("urn:kairos:ont:core:")
         
     def extract_classes(self) -> List[Dict]:
         """
@@ -96,7 +96,7 @@ class DBTProjector:
             class_uri = str(row['class'])
             
             # Skip classes from external ontologies (FIBO, etc.)
-            if not class_uri.startswith('http://kairos.ai/ont/'):
+            if not class_uri.startswith('urn:kairos:ont:'):
                 continue
             
             class_name = class_uri.split('#')[-1]

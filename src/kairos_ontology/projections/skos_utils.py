@@ -17,7 +17,7 @@ class SKOSParser:
     def __init__(self, mappings_dir: Path = None):
         self.mappings_dir = mappings_dir or Path("ontology-hub/mappings")
         self.SKOS = SKOS
-        self.KAIROS = Namespace("http://kairos.ai/ont/core#")
+        self.KAIROS = Namespace("urn:kairos:ont:core:")
     
     def load_all_mappings(self) -> Graph:
         """Load all SKOS mapping files from mappings directory"""
@@ -49,7 +49,7 @@ class SKOSParser:
             graph = self.load_all_mappings()
         
         # Find SKOS concept for this class
-        concept_uri = f"http://kairos.ai/ont/core#{class_name}Concept"
+        concept_uri = f"urn:kairos:ont:core:{class_name}Concept"
         
         synonyms = []
         for alt_label in graph.objects(subject=self.KAIROS[f"{class_name}Concept"], 
