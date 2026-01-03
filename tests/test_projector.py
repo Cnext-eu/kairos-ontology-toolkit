@@ -415,3 +415,108 @@ class TestProjector:
         # Should have customer.sql
         filenames = [f.stem for f in sql_files]
         assert 'customer' in filenames, f"Should find Customer class, found: {filenames}"
+    
+    def test_dbt_shacl_tests_extraction(self, temp_dir, sample_ontology, sample_shacl_shapes):
+        """Test that SHACL constraints are properly extracted and converted to DBT tests."""
+        import yaml
+        
+        # Setup directories
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+        
+        # Create ontology file
+        onto_file = ontologies_dir / "customer.ttl"
+        onto_file.write_text(sample_ontology, encoding='utf-8')
+        
+        # Create SHACL shapes file
+        shapes_file = shapes_dir / "customer.shacl.ttl"
+        shapes_file.write_text(sample_shacl_shapes, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        # Manually call the DBT projector to avoid emoji encoding issues
+        from kairos_ontology.projections.dbt_projector import generate_dbt_artifacts
+        from rdflib import Graph
+        from pathlib import Path
+        
+        # Load ontology
+        graph = Graph()
+        graph.parse(onto_file, format='turtle')
+        
+        # Extract classes
+        classes = [{
+            'uri': 'urn:kairos:ont:core:Customer',
+            'name': 'Customer',
+            'label': 'Customer',
+            'comment': 'A customer entity'
+        }]
+        
+        # Generate artifacts
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=graph,
+            template_dir=Path(__file__).parent.parent / 'src' / 'kairos_ontology' / 'templates' / 'dbt',
+            namespace='urn:kairos:ont:core:',
+            shapes_dir=shapes_dir
+        )
+        
+        # Write artifacts
+        dbt_dir = output_dir / 'dbt'
+        for file_path, content in artifacts.items():
+            output_file = dbt_dir / file_path
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_file.write_text(content, encoding='utf-8')
+        
+        # Check schema YAML was created
+        schema_file = dbt_dir / 'models' / 'silver' / 'schema_customer.yml'
+        assert schema_file.exists(), "Schema YAML file should be created"
+        
+        # Parse YAML and verify structure
+        schema_content = yaml.safe_load(schema_file.read_text(encoding='utf-8'))
+        
+        # Verify top-level structure
+        assert 'models' in schema_content, "Schema should have 'models' key"
+        assert len(schema_content['models']) == 1, "Should have one model"
+        
+        model = schema_content['models'][0]
+        
+        # Verify model has correct name (lowercase)
+        assert model.get('name') == 'customer', f"Model name should be 'customer', got {model.get('name')}"
+        assert 'description' in model, "Model should have description"
+        assert 'columns' in model, "Model should have columns"
+        
+        # Verify columns structure
+        columns = {col['name']: col for col in model['columns']}
+        
+        # Check customer_name column
+        assert 'customer_name' in columns, "Should have customer_name column"
+        customer_name_col = columns['customer_name']
+        assert 'description' in customer_name_col, "Column should have description"
+        assert 'data_type' in customer_name_col, "Column should have data_type"
+        assert customer_name_col['data_type'] == 'STRING', f"Should be STRING type, got {customer_name_col['data_type']}"
+        
+        # Verify SHACL tests were extracted
+        assert 'tests' in customer_name_col, "Column should have tests"
+        tests = customer_name_col['tests']
+        assert len(tests) > 0, "Should have at least one test from SHACL"
+        
+        # Check for not_null test (from sh:minCount 1)
+        test_str = str(tests)
+        assert 'not_null' in test_str, f"Should have not_null test from minCount, got: {tests}"
+        
+        # Check for length constraints (from sh:minLength/maxLength)
+        assert 'length' in test_str.lower() or 'expression_is_true' in test_str.lower(), \
+            f"Should have length constraint tests, got: {tests}"
+        
+        # Check customer_email column
+        assert 'customer_email' in columns, "Should have customer_email column"
+        customer_email_col = columns['customer_email']
+        assert 'tests' in customer_email_col, "Email column should have tests"
+        
+        # Check for not_null test (from sh:minCount 1)
+        email_tests = customer_email_col['tests']
+        email_test_str = str(email_tests)
+        assert 'not_null' in email_test_str.lower(), "Email should have not_null test"

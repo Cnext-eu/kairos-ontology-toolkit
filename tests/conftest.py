@@ -218,3 +218,28 @@ ex:customerName a owl:DatatypeProperty ;
 """
 
 
+@pytest.fixture
+def sample_shacl_shapes():
+    """Sample SHACL shapes with various constraint types for testing."""
+    return """
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix kairos: <urn:kairos:ont:core:> .
+
+kairos:CustomerShape a sh:NodeShape ;
+    sh:targetClass kairos:Customer ;
+    sh:property [
+        sh:path kairos:customerName ;
+        sh:minCount 1 ;
+        sh:minLength 2 ;
+        sh:maxLength 100 ;
+        sh:datatype xsd:string ;
+    ] ;
+    sh:property [
+        sh:path kairos:customerEmail ;
+        sh:minCount 1 ;
+        sh:datatype xsd:string ;
+    ] .
+"""
+
+

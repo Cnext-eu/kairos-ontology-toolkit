@@ -70,6 +70,11 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     # Determine template directory
     template_base = Path(__file__).parent / "templates"
     
+    # Look for SHACL shapes directory
+    shapes_dir = ontologies_path.parent / "shapes" if ontologies_path.parent else None
+    if shapes_dir and shapes_dir.exists():
+        print(f"  Found SHACL shapes directory: {shapes_dir}\n")
+    
     targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt'] if target == 'all' else [target]
     
     for target_name in targets_to_run:
@@ -78,7 +83,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         target_output.mkdir(exist_ok=True)
         
         try:
-            artifacts = _run_projection(target_name, merged_graph, target_output, template_base, namespace)
+            artifacts = _run_projection(target_name, merged_graph, target_output, template_base, namespace, shapes_dir)
             if artifacts:
                 # Save artifacts
                 for file_path, content in artifacts.items():
@@ -219,7 +224,7 @@ def _auto_detect_namespace(graph: Graph) -> str:
     return "urn:kairos:ont:core:"
 
 
-def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path, namespace: str) -> dict:
+def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path, namespace: str, shapes_dir: Path = None) -> dict:
     """Run a specific projection type using simplified logic."""
     
     query = """
@@ -258,7 +263,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
     # Generate based on target using full-featured projector classes
     if target == 'dbt':
         from .projections.dbt_projector import generate_dbt_artifacts
-        return generate_dbt_artifacts(classes, graph, template_base / "dbt", namespace)
+        return generate_dbt_artifacts(classes, graph, template_base / "dbt", namespace, shapes_dir)
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts
         return generate_neo4j_artifacts(classes, graph, template_base / "neo4j", namespace)
