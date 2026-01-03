@@ -143,7 +143,7 @@ class TestProjector:
             merged_graph.parse(onto_file, format='turtle')
         
         # Check that classes from both files are in the merged graph
-        KAIROS = Namespace("urn:kairos:ont:core:")
+        KAIROS = Namespace("http://kairos.example/ontology/")
         
         customer_exists = (KAIROS.Customer, RDF.type, OWL.Class) in merged_graph
         person_exists = (KAIROS.Person, RDF.type, OWL.Class) in merged_graph
@@ -151,7 +151,7 @@ class TestProjector:
         assert customer_exists or person_exists, "Classes should be loaded from ontology files"
     
     def test_urn_namespace_extraction(self, temp_dir, sample_ontology):
-        """Test that URN namespace classes are correctly identified."""
+        """Test that HTTP namespace classes are correctly identified."""
         from rdflib import Graph, Namespace
         
         graph = Graph()
@@ -170,8 +170,8 @@ class TestProjector:
         classes = []
         for row in graph.query(query):
             class_uri = str(row['class'])
-            if class_uri.startswith('urn:kairos:ont:'):
-                class_name = class_uri.split(':')[-1]
+            if class_uri.startswith('http://kairos.example/ontology/'):
+                class_name = class_uri.split('/')[-1]
                 classes.append(class_name)
         
         assert 'Customer' in classes, "Customer class should be extracted"
@@ -448,7 +448,7 @@ class TestProjector:
         
         # Extract classes
         classes = [{
-            'uri': 'urn:kairos:ont:core:Customer',
+            'uri': 'http://kairos.example/ontology/Customer',
             'name': 'Customer',
             'label': 'Customer',
             'comment': 'A customer entity'
@@ -459,7 +459,7 @@ class TestProjector:
             classes=classes,
             graph=graph,
             template_dir=Path(__file__).parent.parent / 'src' / 'kairos_ontology' / 'templates' / 'dbt',
-            namespace='urn:kairos:ont:core:',
+            namespace='http://kairos.example/ontology/',
             shapes_dir=shapes_dir
         )
         
@@ -519,4 +519,165 @@ class TestProjector:
         # Check for not_null test (from sh:minCount 1)
         email_tests = customer_email_col['tests']
         email_test_str = str(email_tests)
-        assert 'not_null' in email_test_str.lower(), "Email should have not_null test"
+        assert 'not_null' in email_test_str.lower(), "Email should have not_null test"    
+    def test_azure_search_projection_creates_files(self, temp_dir, sample_ontology):
+        """Test that Azure Search projection creates index definition files."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "customer.ttl"
+        onto_file.write_text(sample_ontology, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='azure-search'
+        )
+        
+        # Check that azure-search directory was created
+        azure_dir = output_dir / "azure-search"
+        assert azure_dir.exists(), "Azure Search output directory should exist"
+        
+        # Check for indexes directory
+        indexes_dir = azure_dir / "indexes"
+        assert indexes_dir.exists(), "Indexes directory should exist"
+        
+        # Check for index JSON file
+        index_files = list(indexes_dir.glob("*.json"))
+        assert len(index_files) > 0, "Should have at least one index JSON file"
+        
+        # Verify index file content
+        import json
+        index_file = index_files[0]
+        index_data = json.loads(index_file.read_text(encoding='utf-8'))
+        
+        assert 'name' in index_data, "Index should have name"
+        assert 'fields' in index_data, "Index should have fields"
+        assert len(index_data['fields']) > 0, "Index should have at least one field"
+        
+        # Verify field structure
+        first_field = index_data['fields'][0]
+        assert 'name' in first_field, "Field should have name"
+        assert 'type' in first_field, "Field should have type (Edm type)"
+    
+    def test_a2ui_projection_creates_files(self, temp_dir, sample_ontology):
+        """Test that A2UI projection creates JSON Schema files."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "customer.ttl"
+        onto_file.write_text(sample_ontology, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='a2ui'
+        )
+        
+        # Check that a2ui directory was created
+        a2ui_dir = output_dir / "a2ui"
+        assert a2ui_dir.exists(), "A2UI output directory should exist"
+        
+        # Check for schemas directory
+        schemas_dir = a2ui_dir / "schemas"
+        assert schemas_dir.exists(), "Schemas directory should exist"
+        
+        # Check for schema JSON files
+        schema_files = list(schemas_dir.glob("*.json"))
+        assert len(schema_files) > 0, "Should have at least one schema JSON file"
+        
+        # Verify schema file content
+        import json
+        schema_file = schema_files[0]
+        schema_data = json.loads(schema_file.read_text(encoding='utf-8'))
+        
+        assert '$schema' in schema_data, "Should have $schema declaration"
+        assert 'type' in schema_data, "Schema should have type"
+        assert schema_data['type'] == 'object', "Should be object type"
+        assert 'properties' in schema_data, "Schema should have properties"
+    
+    def test_prompt_projection_creates_files(self, temp_dir, sample_ontology):
+        """Test that Prompt projection creates context JSON files."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "customer.ttl"
+        onto_file.write_text(sample_ontology, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='prompt'
+        )
+        
+        # Check that prompt directory was created
+        prompt_dir = output_dir / "prompt"
+        assert prompt_dir.exists(), "Prompt output directory should exist"
+        
+        # Check for both compact and verbose files
+        compact_file = prompt_dir / "prompt-context-compact.json"
+        verbose_file = prompt_dir / "prompt-context-verbose.json"
+        
+        assert compact_file.exists(), "Compact context file should exist"
+        assert verbose_file.exists(), "Verbose context file should exist"
+        
+        # Verify compact file content
+        import json
+        compact_data = json.loads(compact_file.read_text(encoding='utf-8'))
+        
+        assert 'ontology' in compact_data, "Should have ontology name"
+        assert 'version' in compact_data, "Should have version"
+        assert 'concepts' in compact_data, "Should have concepts array"
+        assert len(compact_data['concepts']) > 0, "Should have at least one concept"
+        
+        # Verify concept structure
+        first_concept = compact_data['concepts'][0]
+        assert 'class' in first_concept, "Concept should have class name"
+        assert 'label' in first_concept, "Concept should have label"
+        assert 'synonyms' in first_concept, "Concept should have synonyms"
+        assert 'properties' in first_concept, "Concept should have properties"
+        
+        # Verify verbose file is different and larger
+        verbose_data = json.loads(verbose_file.read_text(encoding='utf-8'))
+        assert 'classes' in verbose_data, "Verbose format should have classes"
+        
+        # Verify verbose has more detail
+        verbose_size = verbose_file.stat().st_size
+        compact_size = compact_file.stat().st_size
+        assert verbose_size > compact_size, "Verbose format should be larger than compact"
+    
+    def test_all_projections_generate_artifacts(self, temp_dir, sample_ontology):
+        """Test that all projection types generate artifacts."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "customer.ttl"
+        onto_file.write_text(sample_ontology, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        # Test each projection type
+        for target in ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt']:
+            run_projections(
+                ontologies_path=ontologies_dir,
+                catalog_path=None,
+                output_path=output_dir,
+                target=target
+            )
+            
+            target_dir = output_dir / target
+            assert target_dir.exists(), f"{target} output directory should exist"
+            
+            # Count files (recursively)
+            files = list(target_dir.rglob("*"))
+            file_count = sum(1 for f in files if f.is_file())
+            assert file_count > 0, f"{target} should generate at least one file"

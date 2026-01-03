@@ -18,23 +18,29 @@ def temp_dir():
 def sample_ontology():
     """Sample ontology content in Turtle format."""
     return """
+@prefix : <http://kairos.example/ontology/> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-@prefix kairos: <urn:kairos:ont:core:> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 
-kairos:Customer a owl:Class ;
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology"@en ;
+    rdfs:comment "Domain model for customer management"@en ;
+    owl:versionInfo "1.1.3" .
+
+:Customer a owl:Class ;
     rdfs:label "Customer" ;
     rdfs:comment "A customer entity" .
 
-kairos:customerName a owl:DatatypeProperty ;
-    rdfs:domain kairos:Customer ;
+:customerName a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
     rdfs:range xsd:string ;
     rdfs:label "Customer Name" ;
     rdfs:comment "The name of the customer" .
 
-kairos:customerEmail a owl:DatatypeProperty ;
-    rdfs:domain kairos:Customer ;
+:customerEmail a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
     rdfs:range xsd:string ;
     rdfs:label "Customer Email" ;
     rdfs:comment "Email address of the customer" .
@@ -45,27 +51,33 @@ kairos:customerEmail a owl:DatatypeProperty ;
 def sample_ontology_with_subclass():
     """Sample ontology with inheritance."""
     return """
+@prefix : <http://kairos.example/ontology/> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-@prefix kairos: <urn:kairos:ont:core:> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 
-kairos:Person a owl:Class ;
+:PersonOntology a owl:Ontology ;
+    rdfs:label "Person Ontology"@en ;
+    rdfs:comment "Domain model for person management"@en ;
+    owl:versionInfo "1.1.3" .
+
+:Person a owl:Class ;
     rdfs:label "Person" ;
     rdfs:comment "A person entity" .
 
-kairos:Employee a owl:Class ;
+:Employee a owl:Class ;
     rdfs:label "Employee" ;
     rdfs:comment "An employee entity" ;
-    rdfs:subClassOf kairos:Person .
+    rdfs:subClassOf :Person .
 
-kairos:personName a owl:DatatypeProperty ;
-    rdfs:domain kairos:Person ;
+:personName a owl:DatatypeProperty ;
+    rdfs:domain :Person ;
     rdfs:range xsd:string ;
     rdfs:label "Person Name" .
 
-kairos:employeeId a owl:DatatypeProperty ;
-    rdfs:domain kairos:Employee ;
+:employeeId a owl:DatatypeProperty ;
+    rdfs:domain :Employee ;
     rdfs:range xsd:string ;
     rdfs:label "Employee ID" .
 """
@@ -224,19 +236,19 @@ def sample_shacl_shapes():
     return """
 @prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-@prefix kairos: <urn:kairos:ont:core:> .
+@prefix : <http://kairos.example/ontology/> .
 
-kairos:CustomerShape a sh:NodeShape ;
-    sh:targetClass kairos:Customer ;
+:CustomerShape a sh:NodeShape ;
+    sh:targetClass :Customer ;
     sh:property [
-        sh:path kairos:customerName ;
+        sh:path :customerName ;
         sh:minCount 1 ;
         sh:minLength 2 ;
         sh:maxLength 100 ;
         sh:datatype xsd:string ;
     ] ;
     sh:property [
-        sh:path kairos:customerEmail ;
+        sh:path :customerEmail ;
         sh:minCount 1 ;
         sh:datatype xsd:string ;
     ] .

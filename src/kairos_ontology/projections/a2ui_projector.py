@@ -252,6 +252,91 @@ def generate_a2ui_artifacts(classes: list, graph, template_dir, namespace: str) 
     Returns:
         Dictionary of {file_path: content}
     """
-    # TODO: Implement full A2UI projection
-    # For now, return empty to avoid breaking existing functionality
-    return {}
+    from jinja2 import Environment, FileSystemLoader
+    from pathlib import Path
+    from .uri_utils import extract_local_name
+    
+    # Setup Jinja2 environment
+    template_dir_path = Path(template_dir) if not isinstance(template_dir, Path) else template_dir
+    jinja_env = Environment(loader=FileSystemLoader(str(template_dir_path)))
+    
+    # XSD to JSON Schema type mapping
+    XSD_TO_JSON_TYPES = {
+        str(XSD.string): "string",
+        str(XSD.integer): "integer",
+        str(XSD.int): "integer",
+        str(XSD.decimal): "number",
+        str(XSD.float): "number",
+        str(XSD.double): "number",
+        str(XSD.boolean): "boolean",
+        str(XSD.date): "string",
+        str(XSD.dateTime): "string",
+    }
+    
+    def to_camel_case(name: str) -> str:
+        """Convert snake_case or PascalCase to camelCase"""
+        import re
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        snake = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+        parts = snake.split('_')
+        return parts[0] + ''.join(word.capitalize() for word in parts[1:])
+    
+    artifacts = {}
+    
+    for cls in classes:
+        # Extract properties for this class
+        properties = []
+        required = []
+        
+        query = f"""
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?property ?label ?comment ?range
+        WHERE {{
+            ?property a owl:DatatypeProperty .
+            ?property rdfs:domain <{cls['uri']}> .
+            OPTIONAL {{ ?property rdfs:label ?label }}
+            OPTIONAL {{ ?property rdfs:comment ?comment }}
+            OPTIONAL {{ ?property rdfs:range ?range }}
+        }}
+        """
+        
+        for row in graph.query(query):
+            prop_uri = str(row.property)
+            prop_name = extract_local_name(prop_uri)
+            
+            # Map XSD datatype to JSON Schema type
+            range_type = str(row.range) if row.range else str(XSD.string)
+            json_type = XSD_TO_JSON_TYPES.get(range_type, "string")
+            
+            # Determine format for date/time fields
+            json_format = None
+            if range_type == str(XSD.date):
+                json_format = "date"
+            elif range_type == str(XSD.dateTime):
+                json_format = "date-time"
+            
+            properties.append({
+                'name': to_camel_case(prop_name),
+                'json_type': json_type,
+                'description': str(row.comment) if row.comment else "",
+                'format': json_format,
+                'pattern': None
+            })
+        
+        # Generate message schema
+        schema_template = jinja_env.get_template('message-schema.json.jinja2')
+        schema_id = f"https://kairos.ai/schemas/a2ui/{cls['name']}.json"
+        
+        schema_content = schema_template.render(
+            schema_id=schema_id,
+            title=f"{cls.get('label', cls['name'])} Message",
+            description=cls.get('comment', f"{cls['name']} message payload"),
+            properties=properties,
+            required=required
+        )
+        
+        artifacts[f"schemas/{cls['name']}.schema.json"] = schema_content
+    
+    return artifacts

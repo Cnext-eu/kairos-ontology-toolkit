@@ -262,6 +262,72 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
     Returns:
         Dictionary of {file_path: content}
     """
-    # TODO: Implement full Prompt projection
-    # For now, return empty to avoid breaking existing functionality
-    return {}
+    from jinja2 import Environment, FileSystemLoader
+    from datetime import datetime
+    from pathlib import Path
+    
+    # Setup Jinja2 environment
+    template_dir_path = Path(template_dir) if not isinstance(template_dir, Path) else template_dir
+    jinja_env = Environment(loader=FileSystemLoader(str(template_dir_path)))
+    
+    # Extract concepts from classes
+    concepts = []
+    for cls in classes:
+        concept = {
+            'name': cls['name'],
+            'label': cls.get('label', cls['name']),
+            'description': cls.get('comment', f"{cls['name']} concept"),
+            'synonyms': cls.get('synonyms', []),
+            'properties': cls.get('properties', []),
+            'examples': []
+        }
+        concepts.append(concept)
+    
+    # Extract relationships (object properties)
+    relationships = []
+    query = """
+    PREFIX owl: <http://www.w3.org/2002/07/owl#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    
+    SELECT ?property ?label ?comment ?domain ?range
+    WHERE {
+        ?property a owl:ObjectProperty .
+        OPTIONAL { ?property rdfs:label ?label }
+        OPTIONAL { ?property rdfs:comment ?comment }
+        OPTIONAL { ?property rdfs:domain ?domain }
+        OPTIONAL { ?property rdfs:range ?range }
+    }
+    """
+    
+    for row in graph.query(query):
+        prop_uri = str(row.property)
+        prop_name = extract_local_name(prop_uri)
+        
+        domain_name = extract_local_name(str(row.domain)) if row.domain else "Any"
+        range_name = extract_local_name(str(row.range)) if row.range else "Any"
+        
+        relationships.append({
+            'name': prop_name,
+            'label': str(row.label) if row.label else prop_name,
+            'description': str(row.comment) if row.comment else f"{prop_name} relationship",
+            'domain': domain_name,
+            'range': range_name
+        })
+    
+    # Generate artifacts for both templates
+    artifacts = {}
+    for template_name in ['compact', 'verbose']:
+        template = jinja_env.get_template(f'{template_name}.json.jinja2')
+        
+        content = template.render(
+            ontology_name="Kairos Core Ontology",
+            version="1.0.0",
+            timestamp=datetime.now().isoformat(),
+            description="Core business entities for the Kairos platform",
+            concepts=concepts,
+            relationships=relationships
+        )
+        
+        artifacts[f"prompt-context-{template_name}.json"] = content
+    
+    return artifacts

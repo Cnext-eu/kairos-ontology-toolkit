@@ -252,6 +252,85 @@ def generate_azure_search_artifacts(classes: list, graph, template_dir, namespac
     Returns:
         Dictionary of {file_path: content}
     """
-    # TODO: Implement full Azure Search projection
-    # For now, return empty to avoid breaking existing functionality
-    return {}
+    from jinja2 import Environment, FileSystemLoader
+    from pathlib import Path
+    from .uri_utils import extract_local_name
+    
+    # Setup Jinja2 environment
+    template_dir_path = Path(template_dir) if not isinstance(template_dir, Path) else template_dir
+    jinja_env = Environment(loader=FileSystemLoader(str(template_dir_path)))
+    
+    # XSD to Edm type mapping
+    XSD_TO_EDM_TYPES = {
+        str(XSD.string): "Edm.String",
+        str(XSD.integer): "Edm.Int64",
+        str(XSD.int): "Edm.Int32",
+        str(XSD.decimal): "Edm.Double",
+        str(XSD.float): "Edm.Single",
+        str(XSD.double): "Edm.Double",
+        str(XSD.boolean): "Edm.Boolean",
+        str(XSD.date): "Edm.DateTimeOffset",
+        str(XSD.dateTime): "Edm.DateTimeOffset",
+    }
+    
+    def to_camel_case(name: str) -> str:
+        """Convert snake_case or PascalCase to camelCase"""
+        import re
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        snake = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+        parts = snake.split('_')
+        return parts[0] + ''.join(word.capitalize() for word in parts[1:])
+    
+    artifacts = {}
+    
+    for cls in classes:
+        # Extract fields for this class
+        fields = []
+        query = f"""
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?property ?label ?comment ?range
+        WHERE {{
+            ?property a owl:DatatypeProperty .
+            ?property rdfs:domain <{cls['uri']}> .
+            OPTIONAL {{ ?property rdfs:label ?label }}
+            OPTIONAL {{ ?property rdfs:comment ?comment }}
+            OPTIONAL {{ ?property rdfs:range ?range }}
+        }}
+        """
+        
+        for row in graph.query(query):
+            prop_uri = str(row.property)
+            prop_name = extract_local_name(prop_uri)
+            
+            # Map XSD datatype to Edm type
+            range_type = str(row.range) if row.range else str(XSD.string)
+            edm_type = XSD_TO_EDM_TYPES.get(range_type, "Edm.String")
+            
+            # Determine field capabilities
+            is_text_field = edm_type == "Edm.String"
+            
+            fields.append({
+                'name': to_camel_case(prop_name),
+                'edm_type': edm_type,
+                'searchable': is_text_field,
+                'filterable': True,
+                'sortable': not is_text_field,
+                'facetable': edm_type in ["Edm.String", "Edm.Int32", "Edm.Int64", "Edm.Boolean"]
+            })
+        
+        # Generate index definition
+        index_template = jinja_env.get_template('index.json.jinja2')
+        index_name = cls['name'].lower()
+        
+        index_content = index_template.render(
+            index_name=index_name,
+            service_name="kairos-search",
+            fields=fields,
+            synonym_maps=[]
+        )
+        
+        artifacts[f"indexes/{index_name}-index.json"] = index_content
+    
+    return artifacts
