@@ -662,6 +662,313 @@ class TestProjector:
         compact_size = compact_file.stat().st_size
         assert detailed_size > compact_size, "Detailed format should be larger than compact"
     
+    def test_prompt_projection_extracts_properties(self, temp_dir):
+        """Test that prompt projection extracts all datatype properties."""
+        import json
+        
+        # Create ontology with multiple property types
+        ontology_content = """
+@prefix : <http://kairos.example/ontology/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+:TestOntology a owl:Ontology ;
+    rdfs:label "Test Ontology" .
+
+:Product a owl:Class ;
+    rdfs:label "Product" ;
+    rdfs:comment "A product in the catalog" .
+
+:productName a owl:DatatypeProperty ;
+    rdfs:domain :Product ;
+    rdfs:range xsd:string ;
+    rdfs:label "Product Name" ;
+    rdfs:comment "Name of the product" .
+
+:productPrice a owl:DatatypeProperty ;
+    rdfs:domain :Product ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "Product Price" ;
+    rdfs:comment "Price in USD" .
+
+:productQuantity a owl:DatatypeProperty ;
+    rdfs:domain :Product ;
+    rdfs:range xsd:integer ;
+    rdfs:label "Product Quantity" ;
+    rdfs:comment "Quantity in stock" .
+
+:productActive a owl:DatatypeProperty ;
+    rdfs:domain :Product ;
+    rdfs:range xsd:boolean ;
+    rdfs:label "Product Active" ;
+    rdfs:comment "Whether product is active" .
+
+:productLaunchDate a owl:DatatypeProperty ;
+    rdfs:domain :Product ;
+    rdfs:range xsd:dateTime ;
+    rdfs:label "Product Launch Date" ;
+    rdfs:comment "When product was launched" .
+"""
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "product.ttl"
+        onto_file.write_text(ontology_content, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='prompt'
+        )
+        
+        # Read compact file
+        compact_file = output_dir / "prompt" / "ontology-context.json"
+        compact_data = json.loads(compact_file.read_text(encoding='utf-8'))
+        
+        # Verify Product entity exists
+        assert 'Product' in compact_data['entities'], "Product entity should exist"
+        product = compact_data['entities']['Product']
+        
+        # Verify all properties are extracted
+        assert 'fields' in product, "Product should have fields"
+        fields = product['fields']
+        
+        assert 'productName' in fields, "Should have productName field"
+        assert 'productPrice' in fields, "Should have productPrice field"
+        assert 'productQuantity' in fields, "Should have productQuantity field"
+        assert 'productActive' in fields, "Should have productActive field"
+        assert 'productLaunchDate' in fields, "Should have productLaunchDate field"
+        
+        # Verify type mapping (XSD types to simplified types)
+        assert fields['productName']['type'] == 'text', "String should map to text"
+        assert fields['productPrice']['type'] == 'decimal', "Decimal should map to decimal"
+        assert fields['productQuantity']['type'] == 'number', "Integer should map to number"
+        assert fields['productActive']['type'] == 'boolean', "Boolean should map to boolean"
+        assert fields['productLaunchDate']['type'] == 'datetime', "DateTime should map to datetime"
+        
+        # Verify descriptions are included
+        assert 'desc' in fields['productName'], "Should have description"
+        assert fields['productName']['desc'] == "Name of the product"
+    
+    def test_prompt_projection_extracts_relationships(self, temp_dir):
+        """Test that prompt projection extracts object properties as relationships."""
+        import json
+        
+        # Create ontology with relationships
+        ontology_content = """
+@prefix : <http://kairos.example/ontology/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+:OrderOntology a owl:Ontology ;
+    rdfs:label "Order Ontology" .
+
+:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer" .
+
+:Order a owl:Class ;
+    rdfs:label "Order" ;
+    rdfs:comment "An order" .
+
+:Product a owl:Class ;
+    rdfs:label "Product" ;
+    rdfs:comment "A product" .
+
+:placedOrder a owl:ObjectProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range :Order ;
+    rdfs:label "Placed Order" ;
+    rdfs:comment "Customer placed an order" .
+
+:orderedProduct a owl:ObjectProperty ;
+    rdfs:domain :Order ;
+    rdfs:range :Product ;
+    rdfs:label "Ordered Product" ;
+    rdfs:comment "Order contains a product" .
+
+:customerName a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string ;
+    rdfs:comment "Customer name" .
+"""
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "order.ttl"
+        onto_file.write_text(ontology_content, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='prompt'
+        )
+        
+        # Read compact file
+        compact_file = output_dir / "prompt" / "ontology-context.json"
+        compact_data = json.loads(compact_file.read_text(encoding='utf-8'))
+        
+        # Verify relationships are extracted
+        assert 'relationships' in compact_data, "Should have relationships"
+        relationships = compact_data['relationships']
+        
+        assert len(relationships) == 2, "Should have 2 relationships"
+        
+        # Find relationships by name
+        rel_names = [r['name'] for r in relationships]
+        assert 'placedOrder' in rel_names, "Should have placedOrder relationship"
+        assert 'orderedProduct' in rel_names, "Should have orderedProduct relationship"
+        
+        # Verify relationship structure
+        placed_order = next(r for r in relationships if r['name'] == 'placedOrder')
+        assert placed_order['from'] == 'Customer', "Should have correct domain"
+        assert placed_order['to'] == 'Order', "Should have correct range"
+        assert placed_order['desc'] == "Customer placed an order", "Should have description"
+    
+    def test_prompt_projection_compact_vs_detailed_structure(self, temp_dir, sample_ontology):
+        """Test the structural differences between compact and detailed formats."""
+        import json
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "customer.ttl"
+        onto_file.write_text(sample_ontology, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='prompt'
+        )
+        
+        # Read both files
+        compact_file = output_dir / "prompt" / "ontology-context.json"
+        detailed_file = output_dir / "prompt" / "ontology-context-detailed.json"
+        
+        compact_data = json.loads(compact_file.read_text(encoding='utf-8'))
+        detailed_data = json.loads(detailed_file.read_text(encoding='utf-8'))
+        
+        # Verify compact structure (optimized for LLM)
+        assert isinstance(compact_data['entities'], dict), "Compact entities should be object/dict"
+        assert 'domain' in compact_data, "Compact should have domain"
+        assert 'ontology' not in compact_data, "Compact should not have ontology metadata"
+        
+        # Verify detailed structure (full reference)
+        assert isinstance(detailed_data['entities'], list), "Detailed entities should be array/list"
+        assert 'ontology' in detailed_data, "Detailed should have ontology metadata"
+        assert 'name' in detailed_data['ontology'], "Detailed should have ontology name"
+        assert 'version' in detailed_data['ontology'], "Detailed should have version"
+        assert 'generated' in detailed_data['ontology'], "Detailed should have timestamp"
+        
+        # Verify detailed entities have full structure
+        first_entity = detailed_data['entities'][0]
+        assert 'class' in first_entity, "Detailed entity should have class name"
+        assert 'label' in first_entity, "Detailed entity should have label"
+        assert 'description' in first_entity, "Detailed entity should have description"
+        assert 'properties' in first_entity, "Detailed entity should have properties array"
+    
+    def test_prompt_projection_handles_class_without_properties(self, temp_dir):
+        """Test that classes without datatype properties are handled correctly."""
+        import json
+        
+        # Create ontology with class but no properties
+        ontology_content = """
+@prefix : <http://kairos.example/ontology/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+:SimpleOntology a owl:Ontology ;
+    rdfs:label "Simple Ontology" .
+
+:Entity a owl:Class ;
+    rdfs:label "Entity" ;
+    rdfs:comment "An entity with no properties" .
+"""
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "simple.ttl"
+        onto_file.write_text(ontology_content, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='prompt'
+        )
+        
+        # Read compact file
+        compact_file = output_dir / "prompt" / "ontology-context.json"
+        compact_data = json.loads(compact_file.read_text(encoding='utf-8'))
+        
+        # Verify entity exists even without properties
+        assert 'Entity' in compact_data['entities'], "Entity should exist"
+        entity = compact_data['entities']['Entity']
+        
+        assert 'description' in entity, "Should have description"
+        # Fields may or may not be present when empty - both are acceptable
+        if 'fields' in entity:
+            assert len(entity['fields']) == 0, "Fields should be empty"
+    
+    def test_prompt_projection_json_valid_and_parseable(self, temp_dir, sample_ontology):
+        """Test that generated JSON is valid and parseable."""
+        import json
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "customer.ttl"
+        onto_file.write_text(sample_ontology, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='prompt'
+        )
+        
+        # Test compact file
+        compact_file = output_dir / "prompt" / "ontology-context.json"
+        compact_content = compact_file.read_text(encoding='utf-8')
+        
+        # Should parse without errors
+        try:
+            compact_data = json.loads(compact_content)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"Compact JSON is invalid: {e}")
+        
+        # Should be non-empty
+        assert len(compact_data) > 0, "Compact JSON should not be empty"
+        
+        # Test detailed file
+        detailed_file = output_dir / "prompt" / "ontology-context-detailed.json"
+        detailed_content = detailed_file.read_text(encoding='utf-8')
+        
+        try:
+            detailed_data = json.loads(detailed_content)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"Detailed JSON is invalid: {e}")
+        
+        assert len(detailed_data) > 0, "Detailed JSON should not be empty"
+    
     def test_all_projections_generate_artifacts(self, temp_dir, sample_ontology):
         """Test that all projection types generate artifacts."""
         ontologies_dir = temp_dir / "ontologies"
