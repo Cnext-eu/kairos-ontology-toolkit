@@ -265,25 +265,74 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
     from jinja2 import Environment, FileSystemLoader
     from datetime import datetime
     from pathlib import Path
+    from .uri_utils import extract_local_name
     
     # Setup Jinja2 environment
     template_dir_path = Path(template_dir) if not isinstance(template_dir, Path) else template_dir
     jinja_env = Environment(loader=FileSystemLoader(str(template_dir_path)))
     
-    # Extract concepts from classes
+    # Extract datatype properties for each class
+    def get_properties(class_uri: str) -> list:
+        """Extract datatype properties for a class"""
+        props = []
+        prop_query = f"""
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+        
+        SELECT ?property ?label ?comment ?range
+        WHERE {{
+            ?property a owl:DatatypeProperty .
+            ?property rdfs:domain <{class_uri}> .
+            OPTIONAL {{ ?property rdfs:label ?label }}
+            OPTIONAL {{ ?property rdfs:comment ?comment }}
+            OPTIONAL {{ ?property rdfs:range ?range }}
+        }}
+        """
+        
+        for row in graph.query(prop_query):
+            prop_name = extract_local_name(str(row.property))
+            range_type = extract_local_name(str(row.range)) if row.range else "string"
+            
+            # Simplify XSD types for LLM context
+            type_map = {
+                'string': 'text',
+                'integer': 'number',
+                'int': 'number',
+                'decimal': 'decimal',
+                'float': 'decimal',
+                'double': 'decimal',
+                'boolean': 'boolean',
+                'date': 'date',
+                'dateTime': 'datetime',
+                'time': 'time'
+            }
+            simple_type = type_map.get(range_type, range_type)
+            
+            prop_info = {
+                'name': prop_name,
+                'type': simple_type,
+                'description': str(row.comment) if row.comment else str(row.label) if row.label else ""
+            }
+            props.append(prop_info)
+        
+        return props
+    
+    # Build rich concept data
     concepts = []
     for cls in classes:
+        # Get properties
+        properties = get_properties(cls['uri'])
+        
         concept = {
             'name': cls['name'],
             'label': cls.get('label', cls['name']),
-            'description': cls.get('comment', f"{cls['name']} concept"),
-            'synonyms': cls.get('synonyms', []),
-            'properties': cls.get('properties', []),
-            'examples': []
+            'description': cls.get('comment', ''),
+            'properties': properties
         }
         concepts.append(concept)
     
-    # Extract relationships (object properties)
+    # Extract relationships (object properties) filtered by namespace
     relationships = []
     query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
@@ -301,33 +350,92 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
     
     for row in graph.query(query):
         prop_uri = str(row.property)
+        
+        # Only include relationships in our namespace
+        if not prop_uri.startswith(namespace):
+            continue
+        
         prop_name = extract_local_name(prop_uri)
+        domain_name = extract_local_name(str(row.domain)) if row.domain else None
+        range_name = extract_local_name(str(row.range)) if row.range else None
         
-        domain_name = extract_local_name(str(row.domain)) if row.domain else "Any"
-        range_name = extract_local_name(str(row.range)) if row.range else "Any"
-        
-        relationships.append({
+        rel_info = {
             'name': prop_name,
-            'label': str(row.label) if row.label else prop_name,
-            'description': str(row.comment) if row.comment else f"{prop_name} relationship",
-            'domain': domain_name,
-            'range': range_name
-        })
+            'from': domain_name,
+            'to': range_name,
+            'description': str(row.comment) if row.comment else str(row.label) if row.label else ""
+        }
+        relationships.append(rel_info)
     
-    # Generate artifacts for both templates
-    artifacts = {}
-    for template_name in ['compact', 'verbose']:
-        template = jinja_env.get_template(f'{template_name}.json.jinja2')
-        
-        content = template.render(
-            ontology_name="Kairos Core Ontology",
-            version="1.0.0",
-            timestamp=datetime.now().isoformat(),
-            description="Core business entities for the Kairos platform",
-            concepts=concepts,
-            relationships=relationships
-        )
-        
-        artifacts[f"prompt-context-{template_name}.json"] = content
+    # Create optimized LLM-friendly structure
+    import json
     
-    return artifacts
+    # Compact format optimized for LLM token efficiency
+    llm_context = {
+        "domain": "Business Domain Model",
+        "entities": {}
+    }
+    
+    # Add entities with properties
+    for concept in concepts:
+        entity = {
+            "description": concept['description'] or concept['label']
+        }
+        
+        # Add properties in compact format
+        if concept['properties']:
+            entity["fields"] = {
+                prop['name']: {
+                    "type": prop['type'],
+                    "desc": prop['description']
+                } if prop['description'] else prop['type']
+                for prop in concept['properties']
+            }
+        
+        llm_context["entities"][concept['name']] = entity
+    
+    # Add relationships in compact format
+    if relationships:
+        llm_context["relationships"] = [
+            {
+                "name": rel['name'],
+                "from": rel['from'],
+                "to": rel['to'],
+                "desc": rel['description']
+            } if rel['description'] else {
+                "name": rel['name'],
+                "from": rel['from'],
+                "to": rel['to']
+            }
+            for rel in relationships
+        ]
+    
+    # Generate compact JSON (optimized for LLM context)
+    compact_content = json.dumps(llm_context, indent=2, ensure_ascii=False)
+    
+    # Generate detailed format (for reference/debugging)
+    detailed_context = {
+        "ontology": {
+            "name": "Business Domain Ontology",
+            "version": "1.0.0",
+            "generated": datetime.now().isoformat()
+        },
+        "entities": [
+            {
+                "class": concept['name'],
+                "label": concept['label'],
+                "description": concept['description'],
+                "properties": concept['properties']
+            }
+            for concept in concepts
+        ],
+        "relationships": relationships
+    }
+    
+    detailed_content = json.dumps(detailed_context, indent=2, ensure_ascii=False)
+    
+    return {
+        'ontology-context.json': compact_content,
+        'ontology-context-detailed.json': detailed_content
+    }
+

@@ -623,37 +623,44 @@ class TestProjector:
         prompt_dir = output_dir / "prompt"
         assert prompt_dir.exists(), "Prompt output directory should exist"
         
-        # Check for both compact and verbose files
-        compact_file = prompt_dir / "prompt-context-compact.json"
-        verbose_file = prompt_dir / "prompt-context-verbose.json"
+        # Check for both compact and detailed files
+        compact_file = prompt_dir / "ontology-context.json"
+        detailed_file = prompt_dir / "ontology-context-detailed.json"
         
         assert compact_file.exists(), "Compact context file should exist"
-        assert verbose_file.exists(), "Verbose context file should exist"
+        assert detailed_file.exists(), "Detailed context file should exist"
         
-        # Verify compact file content
+        # Verify compact file content (LLM-optimized structure)
         import json
         compact_data = json.loads(compact_file.read_text(encoding='utf-8'))
         
-        assert 'ontology' in compact_data, "Should have ontology name"
-        assert 'version' in compact_data, "Should have version"
-        assert 'concepts' in compact_data, "Should have concepts array"
-        assert len(compact_data['concepts']) > 0, "Should have at least one concept"
+        assert 'domain' in compact_data, "Should have domain name"
+        assert 'entities' in compact_data, "Should have entities object"
+        # Relationships may be empty if no object properties exist
+        if 'relationships' in compact_data:
+            assert isinstance(compact_data['relationships'], list), "Relationships should be a list"
+        assert len(compact_data['entities']) > 0, "Should have at least one entity"
         
-        # Verify concept structure
-        first_concept = compact_data['concepts'][0]
-        assert 'class' in first_concept, "Concept should have class name"
-        assert 'label' in first_concept, "Concept should have label"
-        assert 'synonyms' in first_concept, "Concept should have synonyms"
-        assert 'properties' in first_concept, "Concept should have properties"
+        # Verify entity structure (first entity)
+        first_entity_name = list(compact_data['entities'].keys())[0]
+        first_entity = compact_data['entities'][first_entity_name]
+        assert 'description' in first_entity or 'fields' in first_entity, "Entity should have description or fields"
         
-        # Verify verbose file is different and larger
-        verbose_data = json.loads(verbose_file.read_text(encoding='utf-8'))
-        assert 'classes' in verbose_data, "Verbose format should have classes"
+        if 'fields' in first_entity:
+            # Verify field structure
+            first_field_name = list(first_entity['fields'].keys())[0]
+            first_field = first_entity['fields'][first_field_name]
+            assert 'type' in first_field, "Field should have type"
         
-        # Verify verbose has more detail
-        verbose_size = verbose_file.stat().st_size
+        # Verify detailed file is different and larger
+        detailed_data = json.loads(detailed_file.read_text(encoding='utf-8'))
+        assert 'ontology' in detailed_data, "Detailed format should have ontology metadata"
+        assert 'entities' in detailed_data, "Detailed format should have entities array"
+        
+        # Verify detailed has more metadata
+        detailed_size = detailed_file.stat().st_size
         compact_size = compact_file.stat().st_size
-        assert verbose_size > compact_size, "Verbose format should be larger than compact"
+        assert detailed_size > compact_size, "Detailed format should be larger than compact"
     
     def test_all_projections_generate_artifacts(self, temp_dir, sample_ontology):
         """Test that all projection types generate artifacts."""
