@@ -207,7 +207,7 @@ if __name__ == "__main__":
     main()
 
 
-def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str) -> dict:
+def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None) -> dict:
     """Generate Neo4j artifacts from pre-extracted classes and graph.
     
     Args:
@@ -215,6 +215,7 @@ def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str)
         graph: RDFLib graph
         template_dir: Path to Jinja2 templates
         namespace: Base namespace
+        ontology_name: Name of the ontology file (domain name) for organizing outputs
         
     Returns:
         Dictionary of {file_path: content}
@@ -237,4 +238,6 @@ def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str)
         relationships=[]
     )
     
-    return {'schema.cypher': content}
+    # Use domain-specific filename if ontology_name provided
+    filename = f"{ontology_name}-schema.cypher" if ontology_name else "schema.cypher"
+    return {filename: content}

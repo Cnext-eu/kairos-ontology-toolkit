@@ -240,7 +240,7 @@ if __name__ == "__main__":
     main()
 
 
-def generate_azure_search_artifacts(classes: list, graph, template_dir, namespace: str) -> dict:
+def generate_azure_search_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None) -> dict:
     """Generate Azure Search artifacts from pre-extracted classes and graph.
     
     Args:
@@ -248,6 +248,7 @@ def generate_azure_search_artifacts(classes: list, graph, template_dir, namespac
         graph: RDFLib graph
         template_dir: Path to Jinja2 templates
         namespace: Base namespace
+        ontology_name: Name of the ontology file (domain name) for organizing outputs
         
     Returns:
         Dictionary of {file_path: content}
@@ -282,6 +283,9 @@ def generate_azure_search_artifacts(classes: list, graph, template_dir, namespac
         return parts[0] + ''.join(word.capitalize() for word in parts[1:])
     
     artifacts = {}
+    
+    # Use domain-specific directory if ontology_name provided
+    index_dir = f"{ontology_name}/indexes" if ontology_name else "indexes"
     
     for cls in classes:
         # Extract fields for this class
@@ -331,6 +335,6 @@ def generate_azure_search_artifacts(classes: list, graph, template_dir, namespac
             synonym_maps=[]
         )
         
-        artifacts[f"indexes/{index_name}-index.json"] = index_content
+        artifacts[f"{index_dir}/{index_name}-index.json"] = index_content
     
     return artifacts

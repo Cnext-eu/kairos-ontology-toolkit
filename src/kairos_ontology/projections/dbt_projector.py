@@ -19,7 +19,7 @@ from jinja2 import Environment, FileSystemLoader
 from .uri_utils import extract_local_name
 
 
-def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, shapes_dir: Path = None) -> dict:
+def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, shapes_dir: Path = None, ontology_name: str = None) -> dict:
     """Generate DBT artifacts from pre-extracted classes and graph.
     
     This is the entry point called by the main projector orchestrator.
@@ -30,6 +30,7 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
         template_dir: Path to Jinja2 templates
         namespace: Base namespace for filtering (already used to extract classes)
         shapes_dir: Optional path to SHACL shapes directory
+        ontology_name: Name of the ontology file (domain name) for organizing outputs
         
     Returns:
         Dictionary of {file_path: content} for generated artifacts
@@ -40,6 +41,9 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
     artifacts = {}
     env = Environment(loader=FileSystemLoader(template_dir))
     skipped_classes = []
+    
+    # Use domain-specific directory if ontology_name provided
+    model_dir = f"{ontology_name}/models/silver" if ontology_name else "models/silver"
     
     # XSD to SQL type mapping
     XSD_TO_SQL_TYPES = {
@@ -194,7 +198,7 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
             description=class_info['comment'],
             properties=properties
         )
-        artifacts[f"models/silver/{class_info['name'].lower()}.sql"] = sql_content
+        artifacts[f"{model_dir}/{class_info['name'].lower()}.sql"] = sql_content
         
         # Generate schema YAML with proper column structure
         columns = []
@@ -213,7 +217,7 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
             description=class_info['comment'],
             columns=columns
         )
-        artifacts[f"models/silver/schema_{class_info['name'].lower()}.yml"] = yaml_content
+        artifacts[f"{model_dir}/schema_{class_info['name'].lower()}.yml"] = yaml_content
     
     # Print summary
     if skipped_classes:

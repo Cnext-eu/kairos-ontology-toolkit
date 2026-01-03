@@ -23,10 +23,6 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     print("🚀 Kairos Ontology Projections")
     print("=" * 50)
     
-    # Load all ontologies into merged graph
-    print("\nLoading ontologies...")
-    merged_graph = Graph()
-    
     # Get all ontology files
     ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
     
@@ -34,35 +30,39 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         print(f"  ⚠️  No ontology files found in {ontologies_path}")
         return
     
-    # Load each ontology file
+    print(f"\nFound {len(ontology_files)} ontology file(s)")
+    print("Each ontology will generate separate output files per domain\n")
+    
+    # Process each ontology file separately (each represents a data domain)
+    print("Loading ontologies...")
+    ontology_graphs = []
+    
     for onto_file in ontology_files:
         try:
+            file_graph = Graph()
             if catalog_path and catalog_path.exists():
                 # Load with catalog support for imports
                 from .catalog_utils import load_graph_with_catalog
                 file_graph = load_graph_with_catalog(onto_file, catalog_path)
-                # Merge into main graph
-                for s, p, o in file_graph:
-                    merged_graph.add((s, p, o))
             else:
                 # Load without catalog
-                merged_graph.parse(onto_file, format='turtle' if onto_file.suffix == '.ttl' else 'xml')
-            print(f"  ✓ Loaded {onto_file.name}")
+                file_graph.parse(onto_file, format='turtle' if onto_file.suffix == '.ttl' else 'xml')
+            
+            # Store graph with its source file info
+            ontology_graphs.append({
+                'file': onto_file,
+                'graph': file_graph,
+                'name': onto_file.stem  # filename without extension (e.g., 'customer' from 'customer.ttl')
+            })
+            print(f"  ✓ Loaded {onto_file.name} ({len(file_graph)} triples)")
         except Exception as e:
             print(f"  ⚠️  Could not parse {onto_file.name}: {e}")
     
-    print(f"  Loaded {len(merged_graph)} triples\n")
-    
-    if len(merged_graph) == 0:
-        print("  ⚠️  No triples loaded - check ontology files exist")
+    if not ontology_graphs:
+        print("  ⚠️  No ontologies loaded - check ontology files exist")
         return
     
-    # Auto-detect namespace if not provided
-    if namespace is None:
-        namespace = _auto_detect_namespace(merged_graph)
-        print(f"  Auto-detected namespace: {namespace}\n")
-    else:
-        print(f"  Using namespace: {namespace}\n")
+    print()
     
     # Create output directories
     output_path.mkdir(parents=True, exist_ok=True)
@@ -77,30 +77,47 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     
     targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt'] if target == 'all' else [target]
     
+    # Process each ontology separately for each target
     for target_name in targets_to_run:
         print(f"📦 Generating {target_name} projection...")
         target_output = output_path / target_name
         target_output.mkdir(exist_ok=True)
         
-        try:
-            artifacts = _run_projection(target_name, merged_graph, target_output, template_base, namespace, shapes_dir)
-            if artifacts:
-                # Save artifacts
-                for file_path, content in artifacts.items():
-                    output_file = target_output / file_path
-                    output_file.parent.mkdir(parents=True, exist_ok=True)
-                    output_file.write_text(content, encoding='utf-8')
-                
-                print(f"  ✓ {target_name} projection completed: {len(artifacts)} files\n")
-            else:
-                print(f"  ℹ️  {target_name}: No files generated\n")
-        except Exception as e:
-            import traceback
-            print(f"  ✗ {target_name} projection failed: {e}")
-            traceback.print_exc()
-            print()
+        total_files = 0
+        
+        for onto_info in ontology_graphs:
+            onto_graph = onto_info['graph']
+            onto_name = onto_info['name']
+            
+            # Auto-detect namespace for this ontology if not provided
+            onto_namespace = namespace
+            if onto_namespace is None:
+                onto_namespace = _auto_detect_namespace(onto_graph)
+                print(f"  [{onto_name}] Auto-detected namespace: {onto_namespace}")
+            
+            try:
+                # Generate artifacts for this specific ontology
+                artifacts = _run_projection(target_name, onto_graph, target_output, template_base, 
+                                          onto_namespace, shapes_dir, onto_name)
+                if artifacts:
+                    # Save artifacts
+                    for file_path, content in artifacts.items():
+                        output_file = target_output / file_path
+                        output_file.parent.mkdir(parents=True, exist_ok=True)
+                        output_file.write_text(content, encoding='utf-8')
+                    
+                    total_files += len(artifacts)
+                    print(f"  [{onto_name}] ✓ Generated {len(artifacts)} file(s)")
+            except Exception as e:
+                import traceback
+                print(f"  [{onto_name}] ✗ Failed: {e}")
+                if '--verbose' in str(target):  # Simple verbose check
+                    traceback.print_exc()
+        
+        print(f"  ✓ {target_name} projection completed: {total_files} total files\n")
     
     print("✅ Projection generation completed!")
+    print(f"   Generated artifacts for {len(ontology_graphs)} data domain(s)")
 
 
 def _auto_detect_namespace(graph: Graph) -> str:
@@ -224,8 +241,18 @@ def _auto_detect_namespace(graph: Graph) -> str:
     return "urn:kairos:ont:core:"
 
 
-def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path, namespace: str, shapes_dir: Path = None) -> dict:
-    """Run a specific projection type using simplified logic."""
+def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path, namespace: str, shapes_dir: Path = None, ontology_name: str = None) -> dict:
+    """Run a specific projection type using simplified logic.
+    
+    Args:
+        target: Projection type (dbt, neo4j, etc.)
+        graph: RDFLib graph for this specific ontology
+        output_path: Base output path for this target
+        template_base: Path to templates
+        namespace: Namespace to filter classes
+        shapes_dir: Optional SHACL shapes directory
+        ontology_name: Name of the ontology file (without extension) to use in output filenames
+    """
     
     query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
@@ -255,26 +282,24 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         })
     
     if not classes:
-        print(f"  ℹ️  No classes found with namespace: {namespace}")
         return {}
     
-    print(f"  Found {len(classes)} classes")
-    
     # Generate based on target using full-featured projector classes
+    # Pass ontology_name so each projector can create domain-specific filenames
     if target == 'dbt':
         from .projections.dbt_projector import generate_dbt_artifacts
-        return generate_dbt_artifacts(classes, graph, template_base / "dbt", namespace, shapes_dir)
+        return generate_dbt_artifacts(classes, graph, template_base / "dbt", namespace, shapes_dir, ontology_name)
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts
-        return generate_neo4j_artifacts(classes, graph, template_base / "neo4j", namespace)
+        return generate_neo4j_artifacts(classes, graph, template_base / "neo4j", namespace, ontology_name)
     elif target == 'azure-search':
         from .projections.azure_search_projector import generate_azure_search_artifacts
-        return generate_azure_search_artifacts(classes, graph, template_base / "azure-search", namespace)
+        return generate_azure_search_artifacts(classes, graph, template_base / "azure-search", namespace, ontology_name)
     elif target == 'a2ui':
         from .projections.a2ui_projector import generate_a2ui_artifacts
-        return generate_a2ui_artifacts(classes, graph, template_base / "a2ui", namespace)
+        return generate_a2ui_artifacts(classes, graph, template_base / "a2ui", namespace, ontology_name)
     elif target == 'prompt':
         from .projections.prompt_projector import generate_prompt_artifacts
-        return generate_prompt_artifacts(classes, graph, template_base / "prompt", namespace)
+        return generate_prompt_artifacts(classes, graph, template_base / "prompt", namespace, ontology_name)
     
     return {}

@@ -541,12 +541,12 @@ class TestProjector:
         azure_dir = output_dir / "azure-search"
         assert azure_dir.exists(), "Azure Search output directory should exist"
         
-        # Check for indexes directory
-        indexes_dir = azure_dir / "indexes"
-        assert indexes_dir.exists(), "Indexes directory should exist"
+        # Check for domain subdirectory with indexes
+        customer_dir = azure_dir / "customer" / "indexes"
+        assert customer_dir.exists(), "Customer indexes directory should exist"
         
         # Check for index JSON file
-        index_files = list(indexes_dir.glob("*.json"))
+        index_files = list(customer_dir.glob("*.json"))
         assert len(index_files) > 0, "Should have at least one index JSON file"
         
         # Verify index file content
@@ -584,12 +584,12 @@ class TestProjector:
         a2ui_dir = output_dir / "a2ui"
         assert a2ui_dir.exists(), "A2UI output directory should exist"
         
-        # Check for schemas directory
-        schemas_dir = a2ui_dir / "schemas"
-        assert schemas_dir.exists(), "Schemas directory should exist"
+        # Check for domain subdirectory with schemas
+        customer_dir = a2ui_dir / "customer" / "schemas"
+        assert customer_dir.exists(), "Customer schemas directory should exist"
         
         # Check for schema JSON files
-        schema_files = list(schemas_dir.glob("*.json"))
+        schema_files = list(customer_dir.glob("*.json"))
         assert len(schema_files) > 0, "Should have at least one schema JSON file"
         
         # Verify schema file content
@@ -623,9 +623,9 @@ class TestProjector:
         prompt_dir = output_dir / "prompt"
         assert prompt_dir.exists(), "Prompt output directory should exist"
         
-        # Check for both compact and detailed files
-        compact_file = prompt_dir / "ontology-context.json"
-        detailed_file = prompt_dir / "ontology-context-detailed.json"
+        # Check for both compact and detailed files with domain name
+        compact_file = prompt_dir / "customer-context.json"
+        detailed_file = prompt_dir / "customer-context-detailed.json"
         
         assert compact_file.exists(), "Compact context file should exist"
         assert detailed_file.exists(), "Detailed context file should exist"
@@ -726,8 +726,8 @@ class TestProjector:
             target='prompt'
         )
         
-        # Read compact file
-        compact_file = output_dir / "prompt" / "ontology-context.json"
+        # Read compact file (domain-specific filename based on ontology file name)
+        compact_file = output_dir / "prompt" / "product-context.json"
         compact_data = json.loads(compact_file.read_text(encoding='utf-8'))
         
         # Verify Product entity exists
@@ -814,8 +814,8 @@ class TestProjector:
             target='prompt'
         )
         
-        # Read compact file
-        compact_file = output_dir / "prompt" / "ontology-context.json"
+        # Read compact file (domain-specific filename based on ontology file name)
+        compact_file = output_dir / "prompt" / "order-context.json"
         compact_data = json.loads(compact_file.read_text(encoding='utf-8'))
         
         # Verify relationships are extracted
@@ -854,9 +854,9 @@ class TestProjector:
             target='prompt'
         )
         
-        # Read both files
-        compact_file = output_dir / "prompt" / "ontology-context.json"
-        detailed_file = output_dir / "prompt" / "ontology-context-detailed.json"
+        # Read both files (domain-specific filenames)
+        compact_file = output_dir / "prompt" / "customer-context.json"
+        detailed_file = output_dir / "prompt" / "customer-context-detailed.json"
         
         compact_data = json.loads(compact_file.read_text(encoding='utf-8'))
         detailed_data = json.loads(detailed_file.read_text(encoding='utf-8'))
@@ -913,8 +913,8 @@ class TestProjector:
             target='prompt'
         )
         
-        # Read compact file
-        compact_file = output_dir / "prompt" / "ontology-context.json"
+        # Read compact file (domain-specific filename based on ontology file name)
+        compact_file = output_dir / "prompt" / "simple-context.json"
         compact_data = json.loads(compact_file.read_text(encoding='utf-8'))
         
         # Verify entity exists even without properties
@@ -945,8 +945,8 @@ class TestProjector:
             target='prompt'
         )
         
-        # Test compact file
-        compact_file = output_dir / "prompt" / "ontology-context.json"
+        # Test compact file (domain-specific filename)
+        compact_file = output_dir / "prompt" / "customer-context.json"
         compact_content = compact_file.read_text(encoding='utf-8')
         
         # Should parse without errors
@@ -958,8 +958,8 @@ class TestProjector:
         # Should be non-empty
         assert len(compact_data) > 0, "Compact JSON should not be empty"
         
-        # Test detailed file
-        detailed_file = output_dir / "prompt" / "ontology-context-detailed.json"
+        # Test detailed file (domain-specific filename)
+        detailed_file = output_dir / "prompt" / "customer-context-detailed.json"
         detailed_content = detailed_file.read_text(encoding='utf-8')
         
         try:

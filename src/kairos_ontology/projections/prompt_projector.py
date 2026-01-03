@@ -250,7 +250,7 @@ if __name__ == "__main__":
     main()
 
 
-def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str) -> dict:
+def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None) -> dict:
     """Generate Prompt artifacts from pre-extracted classes and graph.
     
     Args:
@@ -258,6 +258,7 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
         graph: RDFLib graph
         template_dir: Path to Jinja2 templates
         namespace: Base namespace
+        ontology_name: Name of the ontology file (domain name) for organizing outputs
         
     Returns:
         Dictionary of {file_path: content}
@@ -434,8 +435,15 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
     
     detailed_content = json.dumps(detailed_context, indent=2, ensure_ascii=False)
     
-    return {
-        'ontology-context.json': compact_content,
-        'ontology-context-detailed.json': detailed_content
-    }
+    # Use domain-specific filenames if ontology_name provided
+    if ontology_name:
+        return {
+            f'{ontology_name}-context.json': compact_content,
+            f'{ontology_name}-context-detailed.json': detailed_content
+        }
+    else:
+        return {
+            'ontology-context.json': compact_content,
+            'ontology-context-detailed.json': detailed_content
+        }
 

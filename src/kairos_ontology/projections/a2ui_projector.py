@@ -240,7 +240,7 @@ if __name__ == "__main__":
     main()
 
 
-def generate_a2ui_artifacts(classes: list, graph, template_dir, namespace: str) -> dict:
+def generate_a2ui_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None) -> dict:
     """Generate A2UI artifacts from pre-extracted classes and graph.
     
     Args:
@@ -248,6 +248,7 @@ def generate_a2ui_artifacts(classes: list, graph, template_dir, namespace: str) 
         graph: RDFLib graph
         template_dir: Path to Jinja2 templates
         namespace: Base namespace
+        ontology_name: Name of the ontology file (domain name) for organizing outputs
         
     Returns:
         Dictionary of {file_path: content}
@@ -337,6 +338,9 @@ def generate_a2ui_artifacts(classes: list, graph, template_dir, namespace: str) 
             required=required
         )
         
-        artifacts[f"schemas/{cls['name']}.schema.json"] = schema_content
+        # Use domain-specific directory if ontology_name provided
+        schema_dir = f"{ontology_name}/schemas" if ontology_name else "schemas"
+        
+        artifacts[f"{schema_dir}/{cls['name']}.schema.json"] = schema_content
     
     return artifacts
