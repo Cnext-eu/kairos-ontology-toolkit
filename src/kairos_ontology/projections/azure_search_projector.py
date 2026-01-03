@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD
 from jinja2 import Environment, FileSystemLoader
-from projections.skos_utils import SKOSParser
+from .skos_utils import SKOSParser
 
 
 class AzureSearchProjector:
