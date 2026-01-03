@@ -122,25 +122,16 @@ Write-Host "🏗️  Building package..." -ForegroundColor Cyan
 & .venv\Scripts\python.exe -m poetry build
 Write-Host "  ✓ Package built" -ForegroundColor Green
 
-# Get release notes
+# Get release notes (single line)
 Write-Host ""
-Write-Host "📝 Enter release notes (press Ctrl+Z then Enter when done):" -ForegroundColor Cyan
-$releaseNotes = @()
-while ($true) {
-    try {
-        $line = Read-Host
-        $releaseNotes += $line
-    } catch {
-        break
-    }
-}
+$releaseNote = Read-Host "📝 Enter release notes (one line)"
 
-if ($releaseNotes.Count -eq 0) {
-    $releaseNotes = @("Release v$newVersion")
+if ([string]::IsNullOrWhiteSpace($releaseNote)) {
+    $releaseNote = "Release v$newVersion"
 }
 
 $commitMessage = "Release v$newVersion"
-$tagMessage = "Release v$newVersion - $releaseType release`n`n" + ($releaseNotes -join "`n")
+$tagMessage = "Release v$newVersion - $releaseType release`n`n$releaseNote"
 
 # Commit changes
 Write-Host ""
