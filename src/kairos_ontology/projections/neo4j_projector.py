@@ -51,7 +51,7 @@ class Neo4jProjector:
         
         for row in self.graph.query(query):
             class_uri = str(row['class'])
-            class_name = class_uri.split('#')[-1]
+            class_name = class_uri.split(':')[-1]
             
             # Find ID property (first datatype property with "id" in name)
             id_property = self._find_id_property(class_uri)
@@ -87,13 +87,13 @@ class Neo4jProjector:
         
         for row in self.graph.query(query):
             prop_uri = str(row.property)
-            prop_name = prop_uri.split('#')[-1]
+            prop_name = prop_uri.split(':')[-1]
             
             # Convert to SCREAMING_SNAKE_CASE for Neo4j relationship types
             rel_type = self._to_screaming_snake_case(prop_name)
             
-            domain_name = str(row.domain).split('#')[-1] if row.domain else "Node"
-            range_name = str(row.range).split('#')[-1] if row.range else "Node"
+            domain_name = str(row.domain).split(':')[-1] if row.domain else "Node"
+            range_name = str(row.range).split(':')[-1] if row.range else "Node"
             
             relationships.append({
                 'uri': prop_uri,
@@ -160,7 +160,7 @@ class Neo4jProjector:
         """
         
         for row in self.graph.query(query):
-            prop_name = str(row.property).split('#')[-1]
+            prop_name = str(row.property).split(':')[-1]
             if 'id' in prop_name.lower():
                 return self._to_snake_case(prop_name)
         

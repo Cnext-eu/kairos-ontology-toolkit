@@ -99,7 +99,7 @@ class DBTProjector:
             if not class_uri.startswith('urn:kairos:ont:'):
                 continue
             
-            class_name = class_uri.split('#')[-1]
+            class_name = class_uri.split(':')[-1]
             
             classes.append({
                 'uri': class_uri,
@@ -128,7 +128,7 @@ class DBTProjector:
         subclasses = []
         for row in self.graph.query(query):
             subclass_uri = str(row.subclass)
-            subclass_name = subclass_uri.split('#')[-1]
+            subclass_name = subclass_uri.split(':')[-1]
             subclasses.append({
                 'uri': subclass_uri,
                 'name': subclass_name,
@@ -176,7 +176,7 @@ class DBTProjector:
         
         for row in self.graph.query(query):
             prop_uri = str(row.property)
-            prop_name = prop_uri.split('#')[-1]
+            prop_name = prop_uri.split(':')[-1]
             
             # Map XSD datatype to SQL type
             range_type = row.range if row.range else XSD.string
@@ -210,7 +210,7 @@ class DBTProjector:
         tests_by_property = {}
         
         # Find shape for this class
-        class_name = class_uri.split('#')[-1]
+        class_name = class_uri.split(':')[-1]
         shape_uri = f"http://kairos.ai/ont/core#{class_name}Shape"
         
         # Query for property shapes
@@ -219,7 +219,7 @@ class DBTProjector:
             if not path:
                 continue
             
-            prop_name = str(path).split('#')[-1]
+            prop_name = str(path).split(':')[-1]
             column_name = self._to_snake_case(prop_name)
             tests = []
             

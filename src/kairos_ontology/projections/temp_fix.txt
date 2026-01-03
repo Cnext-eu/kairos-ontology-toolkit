@@ -1,0 +1,1484 @@
+"""Projection package initialization"""
+#!/usr/bin/env python3
+"""
+A2UI Protocol Projector - Generate JSON Schema for Agent-to-UI messages
+
+Generates JSON Schema definitions for message types based on ontology classes.
+"""
+
+import json
+from pathlib import Path
+from typing import Dict, List
+from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD
+from jinja2 import Environment, FileSystemLoader
+
+
+class A2UIProjector:
+    """Generate A2UI JSON Schema from OWL ontology"""
+    
+    # XSD to JSON Schema type mapping
+    XSD_TO_JSON_TYPES = {
+        XSD.string: "string",
+        XSD.integer: "integer",
+        XSD.int: "integer",
+        XSD.decimal: "number",
+        XSD.float: "number",
+        XSD.double: "number",
+        XSD.boolean: "boolean",
+        XSD.date: "string",  # with format
+        XSD.dateTime: "string",  # with format
+    }
+    
+    def __init__(self, ontology_path: Path, output_dir: Path, template_dir: Path):
+        self.ontology_path = ontology_path
+        self.output_dir = output_dir
+        self.template_dir = template_dir
+        
+        # Load ontology
+        self.graph = Graph()
+        self.graph.parse(ontology_path, format='turtle')
+        
+        # Setup Jinja2
+        self.jinja_env = Environment(loader=FileSystemLoader(template_dir))
+        
+        # Namespaces
+        self.KAIROS = Namespace("urn:kairos:ont:core:")
+    
+    def extract_classes(self) -> List[Dict]:
+        """Extract all OWL classes for message schema generation"""
+        classes = []
+        
+        query = """
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?class ?label ?comment
+        WHERE {
+            ?class a owl:Class .
+            OPTIONAL { ?class rdfs:label ?label }
+            OPTIONAL { ?class rdfs:comment ?comment }
+        }
+        """
+        
+        for row in self.graph.query(query):
+            class_uri = str(row['class'])
+            class_name = class_uri.split(':')[-1]
+            
+            classes.append({
+                'uri': class_uri,
+                'name': class_name,
+                'label': str(row.label) if row.label else class_name,
+                'description': str(row.comment) if row.comment else f"{class_name} message payload"
+            })
+        
+        return classes
+    
+    def extract_properties(self, class_uri: str) -> tuple[List[Dict], List[str]]:
+        """
+        Extract properties for JSON Schema
+        
+        Returns:
+            Tuple of (properties list, required fields list)
+        """
+        properties = []
+        required = []
+        
+        query = f"""
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?property ?label ?comment ?range
+        WHERE {{
+            ?property a owl:DatatypeProperty .
+            ?property rdfs:domain <{class_uri}> .
+            OPTIONAL {{ ?property rdfs:label ?label }}
+            OPTIONAL {{ ?property rdfs:comment ?comment }}
+            OPTIONAL {{ ?property rdfs:range ?range }}
+        }}
+        """
+        
+        # Also check SHACL for required fields
+        shapes_path = Path("ontology-hub/shapes") / (class_uri.split(':')[-1].lower() + ".shacl.ttl")
+        required_props = self._get_required_properties(class_uri, shapes_path)
+        
+        for row in self.graph.query(query):
+            prop_uri = str(row.property)
+            prop_name = prop_uri.split(':')[-1]
+            
+            # Map XSD datatype to JSON Schema type
+            range_type = row.range if row.range else XSD.string
+            json_type = self.XSD_TO_JSON_TYPES.get(range_type, "string")
+            
+            # Determine if this is a date/time field for format annotation
+            json_format = None
+            if range_type == XSD.date:
+                json_format = "date"
+            elif range_type == XSD.dateTime:
+                json_format = "date-time"
+            
+            # Get pattern from SHACL if exists
+            pattern = None  # TODO: Extract from SHACL shapes
+            
+            prop_data = {
+                'name': self._to_camel_case(prop_name),
+                'json_type': json_type,
+                'description': str(row.comment) if row.comment else "",
+                'format': json_format,
+                'pattern': pattern
+            }
+            
+            properties.append(prop_data)
+            
+            # Check if required
+            if prop_name in required_props:
+                required.append(self._to_camel_case(prop_name))
+        
+        return properties, required
+    
+    def _get_required_properties(self, class_uri: str, shapes_path: Path) -> List[str]:
+        """Extract required property names from SHACL shapes"""
+        if not shapes_path.exists():
+            return []
+        
+        try:
+            shapes_graph = Graph()
+            shapes_graph.parse(shapes_path, format='turtle')
+            
+            SH = Namespace("http://www.w3.org/ns/shacl#")
+            required_props = []
+            
+            for property_shape in shapes_graph.objects(predicate=SH.property):
+                path = shapes_graph.value(property_shape, SH.path)
+                min_count = shapes_graph.value(property_shape, SH.minCount)
+                
+                if path and min_count and int(min_count) > 0:
+                    prop_name = str(path).split(':')[-1]
+                    required_props.append(prop_name)
+            
+            return required_props
+        except:
+            return []
+    
+    def generate_message_schema(self, class_info: Dict, properties: List[Dict],
+                               required: List[str]) -> str:
+        """Generate JSON Schema for a message type"""
+        template = self.jinja_env.get_template('message-schema.json.jinja2')
+        
+        schema_id = f"https://kairos.ai/schemas/a2ui/{class_info['name']}.json"
+        
+        return template.render(
+            schema_id=schema_id,
+            title=f"{class_info['label']} Message",
+            description=class_info['description'],
+            properties=properties,
+            required=required
+        )
+    
+    def project(self) -> Dict[str, str]:
+        """
+        Execute projection: generate A2UI message schemas
+        
+        Returns:
+            Dictionary mapping output file paths to generated content
+        """
+        artifacts = {}
+        classes = self.extract_classes()
+        
+        for class_info in classes:
+            # Extract properties
+            properties, required = self.extract_properties(class_info['uri'])
+            
+            # Generate message schema
+            schema_content = self.generate_message_schema(class_info, properties, required)
+            schema_file = f"schemas/{class_info['name']}.schema.json"
+            artifacts[schema_file] = schema_content
+        
+        return artifacts
+    
+    def save_artifacts(self, artifacts: Dict[str, str]):
+        """Save generated artifacts to output directory"""
+        for file_path, content in artifacts.items():
+            output_file = self.output_dir / file_path
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            print(f"✅ Generated: {file_path}")
+    
+    @staticmethod
+    def _to_camel_case(name: str) -> str:
+        """Convert snake_case or PascalCase to camelCase"""
+        import re
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        snake = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+        
+        parts = snake.split('_')
+        return parts[0] + ''.join(word.capitalize() for word in parts[1:])
+
+
+def main():
+    """CLI entry point for A2UI projector"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate A2UI message schemas from ontology")
+    parser.add_argument("--ontology", type=Path, required=True, help="Path to ontology file")
+    parser.add_argument("--output", type=Path, default=Path("output/a2ui"),
+                       help="Output directory")
+    parser.add_argument("--templates", type=Path, default=Path("scripts/templates/a2ui"),
+                       help="Template directory")
+    
+    args = parser.parse_args()
+    
+    projector = A2UIProjector(args.ontology, args.output, args.templates)
+    artifacts = projector.project()
+    projector.save_artifacts(artifacts)
+    
+    print(f"\n✅ A2UI projection complete: {len(artifacts)} files generated")
+
+
+if __name__ == "__main__":
+    main()
+#!/usr/bin/env python3
+"""
+Azure Search Projector - Generate Azure AI Search index definitions
+
+Generates:
+1. JSON index definitions with field mappings
+2. SKOS-based synonym maps in Solr format
+"""
+
+import json
+from pathlib import Path
+from typing import Dict, List
+from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD
+from jinja2 import Environment, FileSystemLoader
+from .skos_utils import SKOSParser
+
+
+class AzureSearchProjector:
+    """Generate Azure AI Search artifacts from OWL ontology"""
+    
+    # XSD to Edm (Entity Data Model) type mapping
+    XSD_TO_EDM_TYPES = {
+        XSD.string: "Edm.String",
+        XSD.integer: "Edm.Int64",
+        XSD.int: "Edm.Int32",
+        XSD.decimal: "Edm.Double",
+        XSD.float: "Edm.Single",
+        XSD.double: "Edm.Double",
+        XSD.boolean: "Edm.Boolean",
+        XSD.date: "Edm.DateTimeOffset",
+        XSD.dateTime: "Edm.DateTimeOffset",
+    }
+    
+    def __init__(self, ontology_path: Path, output_dir: Path, template_dir: Path,
+                 mappings_dir: Path = None):
+        self.ontology_path = ontology_path
+        self.output_dir = output_dir
+        self.template_dir = template_dir
+        
+        # Load ontology
+        self.graph = Graph()
+        self.graph.parse(ontology_path, format='turtle')
+        
+        # Setup Jinja2
+        self.jinja_env = Environment(loader=FileSystemLoader(template_dir))
+        
+        # Setup SKOS parser
+        self.skos_parser = SKOSParser(mappings_dir)
+        self.skos_graph = self.skos_parser.load_all_mappings()
+        
+        # Namespaces
+        self.KAIROS = Namespace("urn:kairos:ont:core:")
+    
+    def extract_classes(self) -> List[Dict]:
+        """Extract all OWL classes for index creation"""
+        classes = []
+        
+        query = """
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?class ?label ?comment
+        WHERE {
+            ?class a owl:Class .
+            OPTIONAL { ?class rdfs:label ?label }
+            OPTIONAL { ?class rdfs:comment ?comment }
+        }
+        """
+        
+        for row in self.graph.query(query):
+            class_uri = str(row['class'])
+            class_name = class_uri.split(':')[-1]
+            
+            classes.append({
+                'uri': class_uri,
+                'name': class_name,
+                'label': str(row.label) if row.label else class_name,
+                'comment': str(row.comment) if row.comment else f"{class_name} entity"
+            })
+        
+        return classes
+    
+    def extract_fields(self, class_uri: str) -> List[Dict]:
+        """Extract all properties for a class as search fields"""
+        fields = []
+        
+        query = f"""
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?property ?label ?comment ?range
+        WHERE {{
+            ?property a owl:DatatypeProperty .
+            ?property rdfs:domain <{class_uri}> .
+            OPTIONAL {{ ?property rdfs:label ?label }}
+            OPTIONAL {{ ?property rdfs:comment ?comment }}
+            OPTIONAL {{ ?property rdfs:range ?range }}
+        }}
+        """
+        
+        for row in self.graph.query(query):
+            prop_uri = str(row.property)
+            prop_name = prop_uri.split(':')[-1]
+            
+            # Map XSD datatype to Edm type
+            range_type = row.range if row.range else XSD.string
+            edm_type = self.XSD_TO_EDM_TYPES.get(range_type, "Edm.String")
+            
+            # Determine field capabilities
+            is_text_field = edm_type == "Edm.String"
+            
+            fields.append({
+                'name': self._to_camel_case(prop_name),
+                'edm_type': edm_type,
+                'searchable': is_text_field,
+                'filterable': True,
+                'sortable': not is_text_field,  # Text fields can't be sorted in Azure Search
+                'facetable': edm_type in ["Edm.String", "Edm.Int32", "Edm.Int64", "Edm.Boolean"]
+            })
+        
+        return fields
+    
+    def generate_index_definition(self, class_info: Dict, fields: List[Dict],
+                                  synonym_maps: List[str]) -> str:
+        """Generate Azure Search index definition JSON"""
+        template = self.jinja_env.get_template('index.json.jinja2')
+        
+        index_name = class_info['name'].lower()
+        
+        return template.render(
+            index_name=index_name,
+            service_name="kairos-search",  # Placeholder
+            fields=fields,
+            synonym_maps=synonym_maps
+        )
+    
+    def generate_synonym_map(self, class_info: Dict, synonyms: List[str]) -> str:
+        """Generate Azure Search synonym map JSON"""
+        template = self.jinja_env.get_template('synonym-map.json.jinja2')
+        
+        synonym_map_name = f"{class_info['name'].lower()}-synonyms"
+        
+        # Generate Solr format synonyms
+        solr_line = self.skos_parser.generate_solr_synonyms(
+            class_info['name'],
+            class_info['label'],
+            synonyms
+        )
+        
+        return template.render(
+            synonym_map_name=synonym_map_name,
+            service_name="kairos-search",  # Placeholder
+            synonyms=[solr_line] if solr_line else []
+        )
+    
+    def project(self) -> Dict[str, str]:
+        """
+        Execute projection: generate Azure Search artifacts
+        
+        Returns:
+            Dictionary mapping output file paths to generated content
+        """
+        artifacts = {}
+        classes = self.extract_classes()
+        all_synonyms = self.skos_parser.get_all_synonyms(self.skos_graph)
+        
+        for class_info in classes:
+            # Extract fields
+            fields = self.extract_fields(class_info['uri'])
+            
+            # Get synonyms from SKOS
+            synonyms = all_synonyms.get(class_info['name'], [])
+            
+            # Generate synonym map name for index reference
+            synonym_map_names = []
+            if synonyms:
+                synonym_map_names.append(f"{class_info['name'].lower()}-synonyms")
+            
+            # Generate index definition
+            index_content = self.generate_index_definition(class_info, fields, synonym_map_names)
+            index_file = f"indexes/{class_info['name'].lower()}-index.json"
+            artifacts[index_file] = index_content
+            
+            # Generate synonym map if synonyms exist
+            if synonyms:
+                synonym_content = self.generate_synonym_map(class_info, synonyms)
+                synonym_file = f"synonym-maps/{class_info['name'].lower()}-synonyms.json"
+                artifacts[synonym_file] = synonym_content
+        
+        return artifacts
+    
+    def save_artifacts(self, artifacts: Dict[str, str]):
+        """Save generated artifacts to output directory"""
+        for file_path, content in artifacts.items():
+            output_file = self.output_dir / file_path
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            print(f"✅ Generated: {file_path}")
+    
+    @staticmethod
+    def _to_camel_case(name: str) -> str:
+        """Convert snake_case or PascalCase to camelCase"""
+        # First convert to snake_case if needed
+        import re
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        snake = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+        
+        # Then convert to camelCase
+        parts = snake.split('_')
+        return parts[0] + ''.join(word.capitalize() for word in parts[1:])
+
+
+def main():
+    """CLI entry point for Azure Search projector"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate Azure Search artifacts from ontology")
+    parser.add_argument("--ontology", type=Path, required=True, help="Path to ontology file")
+    parser.add_argument("--mappings", type=Path, default=Path("ontology-hub/mappings"),
+                       help="Path to SKOS mappings directory")
+    parser.add_argument("--output", type=Path, default=Path("output/azure-search"),
+                       help="Output directory")
+    parser.add_argument("--templates", type=Path, default=Path("scripts/templates/azure-search"),
+                       help="Template directory")
+    
+    args = parser.parse_args()
+    
+    projector = AzureSearchProjector(args.ontology, args.output, args.templates, args.mappings)
+    artifacts = projector.project()
+    projector.save_artifacts(artifacts)
+    
+    print(f"\n✅ Azure Search projection complete: {len(artifacts)} files generated")
+
+
+if __name__ == "__main__":
+    main()
+#!/usr/bin/env python3
+"""
+DBT Projector - Generate DBT models from ontology classes
+
+Generates:
+1. SQL model files (.sql) - CREATE TABLE statements
+2. Schema YAML files - Column descriptions and metadata
+3. DBT tests - Data quality tests from SHACL constraints
+
+INHERITANCE PATTERN (Single Table Inheritance):
+----------------------------------------------
+When a class has subclasses with NO unique properties, we generate a SINGLE table
+for the parent class with a discriminator column instead of separate tables.
+
+Why?
+- Avoids table proliferation in the data warehouse
+- Simplifies querying (no UNION needed across tables)
+- Standard data warehouse pattern for type hierarchies
+- Ontology preserves semantic hierarchy; DBT gets practical structure
+
+Example:
+  Service (parent) -> ConsultingService, TechnicalService (subclasses)
+  
+  Instead of 3 tables, generate 1 table with:
+    service_id, service_name, service_type (discriminator), ...
+    
+Subclasses are only materialized as separate tables if they have:
+  1. Unique properties not in parent class
+  2. Significantly different structure requiring separate schema
+"""
+
+from pathlib import Path
+from typing import Dict, List, Set, Tuple
+from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD
+from jinja2 import Environment, FileSystemLoader
+
+
+class DBTProjector:
+    """Generate DBT models, schemas, and tests from OWL ontology"""
+    
+    # XSD to SQL datatype mapping
+    XSD_TO_SQL_TYPES = {
+        XSD.string: "STRING",
+        XSD.integer: "INT64",
+        XSD.int: "INT64",
+        XSD.decimal: "NUMERIC",
+        XSD.float: "FLOAT64",
+        XSD.double: "FLOAT64",
+        XSD.boolean: "BOOL",
+        XSD.date: "DATE",
+        XSD.dateTime: "TIMESTAMP",
+        XSD.time: "TIME",
+    }
+    
+    def __init__(self, ontology_path: Path, output_dir: Path, template_dir: Path):
+        self.ontology_path = ontology_path
+        self.output_dir = output_dir
+        self.template_dir = template_dir
+        
+        # Load ontology
+        self.graph = Graph()
+        self.graph.parse(ontology_path, format='turtle')
+        
+        # Setup Jinja2
+        self.jinja_env = Environment(loader=FileSystemLoader(template_dir))
+        
+        # Namespaces
+        self.KAIROS = Namespace("urn:kairos:ont:core:")
+        
+    def extract_classes(self) -> List[Dict]:
+        """
+        Extract all OWL classes from ontology.
+        
+        Filters out:
+        - Anonymous/blank node classes (used in unionOf, intersectionOf, etc.)
+        - External ontology classes (not from the Kairos namespace)
+        """
+        classes = []
+        
+        query = """
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?class ?label ?comment ?parent
+        WHERE {
+            ?class a owl:Class .
+            OPTIONAL { ?class rdfs:label ?label }
+            OPTIONAL { ?class rdfs:comment ?comment }
+            OPTIONAL { ?class rdfs:subClassOf ?parent . FILTER(isIRI(?parent)) }
+            # Exclude blank nodes (anonymous classes from unionOf, intersectionOf, etc.)
+            FILTER(isIRI(?class))
+        }
+        """
+        
+        for row in self.graph.query(query):
+            class_uri = str(row['class'])
+            
+            # Skip classes from external ontologies (FIBO, etc.)
+            if not class_uri.startswith('urn:kairos:ont:'):
+                continue
+            
+            class_name = class_uri.split(':')[-1]
+            
+            classes.append({
+                'uri': class_uri,
+                'name': class_name,
+                'label': str(row.label) if row.label else class_name,
+                'comment': str(row.comment) if row.comment else f"{class_name} entity",
+                'parent_uri': str(row.parent) if row.parent else None
+            })
+        
+        return classes
+    
+    def get_subclasses(self, class_uri: str) -> List[str]:
+        """Get all direct subclasses of a class"""
+        query = f"""
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        
+        SELECT ?subclass ?label
+        WHERE {{
+            ?subclass a owl:Class .
+            ?subclass rdfs:subClassOf <{class_uri}> .
+            OPTIONAL {{ ?subclass rdfs:label ?label }}
+        }}
+        """
+        
+        subclasses = []
+        for row in self.graph.query(query):
+            subclass_uri = str(row.subclass)
+            subclass_name = subclass_uri.split(':')[-1]
+            subclasses.append({
+                'uri': subclass_uri,
+                'name': subclass_name,
+                'label': str(row.label) if row.label else subclass_name
+            })
+        
+        return subclasses
+    
+    def has_unique_properties(self, class_uri: str, parent_uri: str = None) -> bool:
+        """Check if a class has properties not defined on its parent"""
+        class_props = self.extract_properties(class_uri)
+        
+        if not parent_uri:
+            # No parent, so all properties are "unique"
+            return len(class_props) > 0
+        
+        parent_props = self.extract_properties(parent_uri)
+        parent_prop_uris = {p['uri'] for p in parent_props}
+        
+        # Check if any properties are not in parent
+        for prop in class_props:
+            if prop['uri'] not in parent_prop_uris:
+                return True
+        
+        return False
+    
+    def extract_properties(self, class_uri: str) -> List[Dict]:
+        """Extract all properties for a given class"""
+        properties = []
+        
+        # Query for datatype properties with this class as domain
+        query = f"""
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?property ?label ?comment ?range
+        WHERE {{
+            ?property a owl:DatatypeProperty .
+            ?property rdfs:domain <{class_uri}> .
+            OPTIONAL {{ ?property rdfs:label ?label }}
+            OPTIONAL {{ ?property rdfs:comment ?comment }}
+            OPTIONAL {{ ?property rdfs:range ?range }}
+        }}
+        """
+        
+        for row in self.graph.query(query):
+            prop_uri = str(row.property)
+            prop_name = prop_uri.split(':')[-1]
+            
+            # Map XSD datatype to SQL type
+            range_type = row.range if row.range else XSD.string
+            sql_type = self.XSD_TO_SQL_TYPES.get(range_type, "STRING")
+            
+            # Convert property name to snake_case column name
+            column_name = self._to_snake_case(prop_name)
+            
+            properties.append({
+                'uri': prop_uri,
+                'name': prop_name,
+                'column_name': column_name,
+                'label': str(row.label) if row.label else prop_name,
+                'comment': str(row.comment) if row.comment else "",
+                'range': str(range_type),
+                'sql_type': sql_type,
+                'sql_cast': f"CAST({column_name}_raw AS {sql_type})"
+            })
+        
+        return properties
+    
+    def extract_shacl_tests(self, class_uri: str, shapes_path: Path) -> Dict[str, List[str]]:
+        """Extract DBT tests from SHACL shapes"""
+        if not shapes_path.exists():
+            return {}
+        
+        shapes_graph = Graph()
+        shapes_graph.parse(shapes_path, format='turtle')
+        
+        SH = Namespace("http://www.w3.org/ns/shacl#")
+        tests_by_property = {}
+        
+        # Find shape for this class
+        class_name = class_uri.split(':')[-1]
+        shape_uri = f"http://kairos.ai/ont/core#{class_name}Shape"
+        
+        # Query for property shapes
+        for property_shape in shapes_graph.objects(predicate=SH.property):
+            path = shapes_graph.value(property_shape, SH.path)
+            if not path:
+                continue
+            
+            prop_name = str(path).split(':')[-1]
+            column_name = self._to_snake_case(prop_name)
+            tests = []
+            
+            # Check for minCount (not_null)
+            min_count = shapes_graph.value(property_shape, SH.minCount)
+            if min_count and int(min_count) > 0:
+                tests.append("not_null")
+            
+            # Check for pattern (regex)
+            pattern = shapes_graph.value(property_shape, SH.pattern)
+            if pattern:
+                tests.append(f"dbt_utils.accepted_values")
+            
+            # Check for uniqueness
+            # (SHACL doesn't have direct unique, but we can infer from maxCount=1 on inverse)
+            
+            if tests:
+                tests_by_property[column_name] = tests
+        
+        return tests_by_property
+    
+    def generate_sql_model(self, class_info: Dict, properties: List[Dict], 
+                           subclasses: List[Dict] = None, discriminator: Dict = None) -> str:
+        """Generate SQL model file for a class"""
+        template = self.jinja_env.get_template('model.sql.jinja2')
+        
+        return template.render(
+            class_name=class_info['name'],
+            ontology_uri=str(self.ontology_path.absolute()),
+            description=class_info['comment'],
+            properties=properties,
+            subclasses=subclasses,
+            discriminator=discriminator
+        )
+    
+    def generate_schema_yaml(self, class_info: Dict, properties: List[Dict], tests: Dict) -> str:
+        """Generate schema.yml for a class"""
+        template = self.jinja_env.get_template('schema.yml.jinja2')
+        
+        # Add tests to columns
+        columns = []
+        for prop in properties:
+            column_tests = tests.get(prop['column_name'], [])
+            columns.append({
+                'name': prop['column_name'],
+                'description': prop['comment'] or prop['label'],
+                'data_type': prop['sql_type'],
+                'tests': column_tests
+            })
+        
+        return template.render(
+            model_name=class_info['name'].lower(),
+            description=class_info['comment'],
+            columns=columns
+        )
+    
+    def project(self, shapes_path: Path = None) -> Dict[str, str]:
+        """
+        Execute projection: generate all DBT artifacts
+        
+        Implements SINGLE TABLE INHERITANCE pattern:
+        - Parent classes with subclasses that have no unique properties get ONE table
+        - Discriminator column added to indicate the specific subtype
+        - Only materializes subclasses as separate tables if they have unique properties
+        
+        Returns:
+            Dictionary mapping output file paths to generated content
+        """
+        artifacts = {}
+        classes = self.extract_classes()
+        
+        # Build class hierarchy map
+        classes_by_uri = {c['uri']: c for c in classes}
+        processed_classes = set()
+        
+        for class_info in classes:
+            class_uri = class_info['uri']
+            
+            # Skip if already processed as part of hierarchy
+            if class_uri in processed_classes:
+                continue
+            
+            # Check if this class has subclasses
+            subclasses = self.get_subclasses(class_uri)
+            
+            if subclasses:
+                # Check if ANY subclass has unique properties
+                has_specialized_subclass = any(
+                    self.has_unique_properties(sub['uri'], class_uri) 
+                    for sub in subclasses
+                )
+                
+                if not has_specialized_subclass:
+                    # SINGLE TABLE INHERITANCE: Generate one table for parent with discriminator
+                    print(f"ℹ️  Single-table inheritance: {class_info['name']} includes {len(subclasses)} subclasses")
+                    
+                    # Extract properties from parent
+                    properties = self.extract_properties(class_uri)
+                    
+                    # Extract SHACL tests if shapes file provided
+                    tests = {}
+                    if shapes_path:
+                        tests = self.extract_shacl_tests(class_uri, shapes_path)
+                    
+                    # Add discriminator column
+                    discriminator_column = {
+                        'column_name': f"{self._to_snake_case(class_info['name'])}_type",
+                        'label': f"{class_info['label']} Type",
+                        'comment': f"Discriminator column for {class_info['name']} subclasses",
+                        'sql_type': 'STRING',
+                        'sql_cast': None  # Will be handled in template
+                    }
+                    
+                    # Generate SQL model with subclasses info
+                    sql_content = self.generate_sql_model(
+                        class_info, 
+                        properties,
+                        subclasses=subclasses,
+                        discriminator=discriminator_column
+                    )
+                    sql_file = f"models/silver/{class_info['name'].lower()}.sql"
+                    artifacts[sql_file] = sql_content
+                    
+                    # Generate schema YAML with discriminator
+                    properties_with_discriminator = properties + [discriminator_column]
+                    yaml_content = self.generate_schema_yaml(class_info, properties_with_discriminator, tests)
+                    yaml_file = f"models/silver/schema_{class_info['name'].lower()}.yml"
+                    artifacts[yaml_file] = yaml_content
+                    
+                    # Mark parent and all subclasses as processed
+                    processed_classes.add(class_uri)
+                    for sub in subclasses:
+                        processed_classes.add(sub['uri'])
+                    
+                    continue
+            
+            # Check if this is a subclass without unique properties
+            parent_uri = class_info.get('parent_uri')
+            if parent_uri and parent_uri in classes_by_uri:
+                if not self.has_unique_properties(class_uri, parent_uri):
+                    # Skip - will be handled by parent's single-table inheritance
+                    print(f"ℹ️  Skipping {class_info['name']} (no unique properties, included in parent table)")
+                    processed_classes.add(class_uri)
+                    continue
+            
+            # STANDARD CASE: Generate separate table
+            properties = self.extract_properties(class_uri)
+            
+            # Extract SHACL tests if shapes file provided
+            tests = {}
+            if shapes_path:
+                tests = self.extract_shacl_tests(class_uri, shapes_path)
+            
+            # Generate SQL model
+            sql_content = self.generate_sql_model(class_info, properties)
+            sql_file = f"models/silver/{class_info['name'].lower()}.sql"
+            artifacts[sql_file] = sql_content
+            
+            # Generate schema YAML
+            yaml_content = self.generate_schema_yaml(class_info, properties, tests)
+            yaml_file = f"models/silver/schema_{class_info['name'].lower()}.yml"
+            artifacts[yaml_file] = yaml_content
+            
+            processed_classes.add(class_uri)
+        
+        return artifacts
+    
+    def save_artifacts(self, artifacts: Dict[str, str]):
+        """Save generated artifacts to output directory"""
+        for file_path, content in artifacts.items():
+            output_file = self.output_dir / file_path
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            print(f"✅ Generated: {file_path}")
+    
+    @staticmethod
+    def _to_snake_case(name: str) -> str:
+        """Convert camelCase or PascalCase to snake_case"""
+        import re
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+
+
+def main():
+    """CLI entry point for DBT projector"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate DBT models from ontology")
+    parser.add_argument("--ontology", type=Path, required=True, help="Path to ontology file")
+    parser.add_argument("--shapes", type=Path, help="Path to SHACL shapes file (optional)")
+    parser.add_argument("--output", type=Path, default=Path("output/dbt"), help="Output directory")
+    parser.add_argument("--templates", type=Path, default=Path("scripts/templates/dbt"), 
+                       help="Template directory")
+    
+    args = parser.parse_args()
+    
+    projector = DBTProjector(args.ontology, args.output, args.templates)
+    artifacts = projector.project(args.shapes)
+    projector.save_artifacts(artifacts)
+    
+    print(f"\n✅ DBT projection complete: {len(artifacts)} files generated")
+
+
+if __name__ == "__main__":
+    main()
+#!/usr/bin/env python3
+"""
+Neo4j Projector - Generate Neo4j schema from ontology
+
+Generates:
+1. Cypher schema script - Node labels, constraints, indexes
+2. Relationship type definitions
+3. Sample data model documentation
+"""
+
+from pathlib import Path
+from typing import Dict, List
+from datetime import datetime
+from rdflib import Graph, Namespace, RDF, RDFS, OWL
+from jinja2 import Environment, FileSystemLoader
+
+
+class Neo4jProjector:
+    """Generate Neo4j Cypher schema from OWL ontology"""
+    
+    def __init__(self, ontology_path: Path, output_dir: Path, template_dir: Path):
+        self.ontology_path = ontology_path
+        self.output_dir = output_dir
+        self.template_dir = template_dir
+        
+        # Load ontology
+        self.graph = Graph()
+        self.graph.parse(ontology_path, format='turtle')
+        
+        # Setup Jinja2
+        self.jinja_env = Environment(loader=FileSystemLoader(template_dir))
+        
+        # Namespaces
+        self.KAIROS = Namespace("urn:kairos:ont:core:")
+    
+    def extract_classes(self) -> List[Dict]:
+        """Extract all OWL classes for Neo4j node labels"""
+        classes = []
+        
+        query = """
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?class ?label ?comment
+        WHERE {
+            ?class a owl:Class .
+            OPTIONAL { ?class rdfs:label ?label }
+            OPTIONAL { ?class rdfs:comment ?comment }
+        }
+        """
+        
+        for row in self.graph.query(query):
+            class_uri = str(row['class'])
+            class_name = class_uri.split(':')[-1]
+            
+            # Find ID property (first datatype property with "id" in name)
+            id_property = self._find_id_property(class_uri)
+            
+            classes.append({
+                'uri': class_uri,
+                'name': class_name,
+                'label': str(row.label) if row.label else class_name,
+                'description': str(row.comment) if row.comment else f"{class_name} node",
+                'constraint_name': f"constraint_{class_name.lower()}_id",
+                'id_property': id_property
+            })
+        
+        return classes
+    
+    def extract_relationships(self) -> List[Dict]:
+        """Extract all object properties as Neo4j relationships"""
+        relationships = []
+        
+        query = """
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?property ?label ?comment ?domain ?range
+        WHERE {
+            ?property a owl:ObjectProperty .
+            OPTIONAL { ?property rdfs:label ?label }
+            OPTIONAL { ?property rdfs:comment ?comment }
+            OPTIONAL { ?property rdfs:domain ?domain }
+            OPTIONAL { ?property rdfs:range ?range }
+        }
+        """
+        
+        for row in self.graph.query(query):
+            prop_uri = str(row.property)
+            prop_name = prop_uri.split(':')[-1]
+            
+            # Convert to SCREAMING_SNAKE_CASE for Neo4j relationship types
+            rel_type = self._to_screaming_snake_case(prop_name)
+            
+            domain_name = str(row.domain).split(':')[-1] if row.domain else "Node"
+            range_name = str(row.range).split(':')[-1] if row.range else "Node"
+            
+            relationships.append({
+                'uri': prop_uri,
+                'name': rel_type,
+                'original_name': prop_name,
+                'label': str(row.label) if row.label else prop_name,
+                'description': str(row.comment) if row.comment else f"{prop_name} relationship",
+                'domain': domain_name,
+                'range': range_name
+            })
+        
+        return relationships
+    
+    def generate_schema(self, classes: List[Dict], relationships: List[Dict]) -> str:
+        """Generate Cypher schema script"""
+        template = self.jinja_env.get_template('schema.cypher.jinja2')
+        
+        return template.render(
+            ontology_uri=str(self.ontology_path.absolute()),
+            timestamp=datetime.now().isoformat(),
+            classes=classes,
+            relationships=relationships
+        )
+    
+    def project(self) -> Dict[str, str]:
+        """
+        Execute projection: generate Neo4j schema
+        
+        Returns:
+            Dictionary mapping output file paths to generated content
+        """
+        classes = self.extract_classes()
+        relationships = self.extract_relationships()
+        
+        schema_content = self.generate_schema(classes, relationships)
+        
+        return {
+            'schema.cypher': schema_content
+        }
+    
+    def save_artifacts(self, artifacts: Dict[str, str]):
+        """Save generated artifacts to output directory"""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        for file_path, content in artifacts.items():
+            output_file = self.output_dir / file_path
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            print(f"✅ Generated: {file_path}")
+    
+    def _find_id_property(self, class_uri: str) -> str:
+        """Find the ID property for a class (property name containing 'id')"""
+        query = f"""
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?property
+        WHERE {{
+            ?property a owl:DatatypeProperty .
+            ?property rdfs:domain <{class_uri}> .
+        }}
+        """
+        
+        for row in self.graph.query(query):
+            prop_name = str(row.property).split(':')[-1]
+            if 'id' in prop_name.lower():
+                return self._to_snake_case(prop_name)
+        
+        # Default to generic 'id' if no ID property found
+        return 'id'
+    
+    @staticmethod
+    def _to_snake_case(name: str) -> str:
+        """Convert camelCase to snake_case"""
+        import re
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+    
+    @staticmethod
+    def _to_screaming_snake_case(name: str) -> str:
+        """Convert camelCase to SCREAMING_SNAKE_CASE for Neo4j relationships"""
+        import re
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
+        return s2.upper()
+
+
+def main():
+    """CLI entry point for Neo4j projector"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate Neo4j schema from ontology")
+    parser.add_argument("--ontology", type=Path, required=True, help="Path to ontology file")
+    parser.add_argument("--output", type=Path, default=Path("output/neo4j"), help="Output directory")
+    parser.add_argument("--templates", type=Path, default=Path("scripts/templates/neo4j"),
+                       help="Template directory")
+    
+    args = parser.parse_args()
+    
+    projector = Neo4jProjector(args.ontology, args.output, args.templates)
+    artifacts = projector.project()
+    projector.save_artifacts(artifacts)
+    
+    print(f"\n✅ Neo4j projection complete: {len(artifacts)} files generated")
+
+
+if __name__ == "__main__":
+    main()
+#!/usr/bin/env python3
+"""
+Prompt Context Projector - Generate LLM prompt context from ontology
+
+Generates JSON packages containing ontology concepts with synonyms
+for use in AI agent prompts. Supports multiple output templates.
+"""
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List
+from rdflib import Graph, Namespace, RDF, RDFS, OWL
+from jinja2 import Environment, FileSystemLoader
+from .skos_utils import SKOSParser
+
+
+class PromptProjector:
+    """Generate prompt context packages from OWL ontology"""
+    
+    AVAILABLE_TEMPLATES = ['compact', 'verbose']
+    
+    def __init__(self, ontology_path: Path, output_dir: Path, template_dir: Path,
+                 mappings_dir: Path = None, templates: List[str] = None):
+        self.ontology_path = ontology_path
+        self.output_dir = output_dir
+        self.template_dir = template_dir
+        self.templates_to_use = templates or ['compact']
+        
+        # Load ontology
+        self.graph = Graph()
+        self.graph.parse(ontology_path, format='turtle')
+        
+        # Setup Jinja2
+        self.jinja_env = Environment(loader=FileSystemLoader(template_dir))
+        
+        # Setup SKOS parser
+        self.skos_parser = SKOSParser(mappings_dir)
+        self.skos_graph = self.skos_parser.load_all_mappings()
+        
+        # Namespaces
+        self.KAIROS = Namespace("urn:kairos:ont:core:")
+    
+    def extract_concepts(self) -> List[Dict]:
+        """Extract all OWL classes as concepts with metadata"""
+        concepts = []
+        all_synonyms = self.skos_parser.get_all_synonyms(self.skos_graph)
+        
+        query = """
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?class ?label ?comment
+        WHERE {
+            ?class a owl:Class .
+            OPTIONAL { ?class rdfs:label ?label }
+            OPTIONAL { ?class rdfs:comment ?comment }
+        }
+        """
+        
+        for row in self.graph.query(query):
+            class_uri = str(row['class'])
+            class_name = class_uri.split(':')[-1]
+            
+            # Get properties for this class
+            properties = self._extract_properties(class_uri)
+            
+            # Get SKOS synonyms
+            synonyms = all_synonyms.get(class_name, [])
+            
+            # Get examples from SKOS
+            examples = self._get_examples_from_skos(class_name)
+            
+            concepts.append({
+                'name': class_name,
+                'label': str(row.label) if row.label else class_name,
+                'description': str(row.comment) if row.comment else f"{class_name} concept",
+                'synonyms': synonyms,
+                'properties': properties,
+                'examples': examples
+            })
+        
+        return concepts
+    
+    def extract_relationships(self) -> List[Dict]:
+        """Extract all object properties as relationships"""
+        relationships = []
+        
+        query = """
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?property ?label ?comment ?domain ?range
+        WHERE {
+            ?property a owl:ObjectProperty .
+            OPTIONAL { ?property rdfs:label ?label }
+            OPTIONAL { ?property rdfs:comment ?comment }
+            OPTIONAL { ?property rdfs:domain ?domain }
+            OPTIONAL { ?property rdfs:range ?range }
+        }
+        """
+        
+        for row in self.graph.query(query):
+            prop_uri = str(row.property)
+            prop_name = prop_uri.split(':')[-1]
+            
+            domain_name = str(row.domain).split(':')[-1] if row.domain else "Any"
+            range_name = str(row.range).split(':')[-1] if row.range else "Any"
+            
+            relationships.append({
+                'name': prop_name,
+                'label': str(row.label) if row.label else prop_name,
+                'description': str(row.comment) if row.comment else f"{prop_name} relationship",
+                'domain': domain_name,
+                'range': range_name
+            })
+        
+        return relationships
+    
+    def _extract_properties(self, class_uri: str) -> List[Dict]:
+        """Extract datatype properties for a class"""
+        properties = []
+        
+        query = f"""
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        
+        SELECT ?property ?label ?comment ?range
+        WHERE {{
+            ?property a owl:DatatypeProperty .
+            ?property rdfs:domain <{class_uri}> .
+            OPTIONAL {{ ?property rdfs:label ?label }}
+            OPTIONAL {{ ?property rdfs:comment ?comment }}
+            OPTIONAL {{ ?property rdfs:range ?range }}
+        }}
+        """
+        
+        for row in self.graph.query(query):
+            prop_uri = str(row.property)
+            prop_name = prop_uri.split(':')[-1]
+            
+            range_type = str(row.range).split(':')[-1] if row.range else "string"
+            
+            properties.append({
+                'name': prop_name,
+                'type': range_type,
+                'description': str(row.comment) if row.comment else "",
+                'range': range_type
+            })
+        
+        return properties
+    
+    def _get_examples_from_skos(self, class_name: str) -> List[str]:
+        """Extract SKOS examples for a class"""
+        SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
+        
+        concept_uri = self.KAIROS[f"{class_name}Concept"]
+        examples = []
+        
+        for example in self.skos_graph.objects(subject=concept_uri, predicate=SKOS.example):
+            examples.append(str(example))
+        
+        return examples
+    
+    def generate_context(self, template_name: str, concepts: List[Dict],
+                        relationships: List[Dict]) -> str:
+        """Generate prompt context using specified template"""
+        template = self.jinja_env.get_template(f'{template_name}.json.jinja2')
+        
+        ontology_name = "Kairos Core Ontology"
+        version = "1.0.0"  # TODO: Extract from ontology metadata
+        description = "Core business entities for the Kairos platform"
+        
+        return template.render(
+            ontology_name=ontology_name,
+            version=version,
+            timestamp=datetime.now().isoformat(),
+            description=description,
+            concepts=concepts,
+            relationships=relationships
+        )
+    
+    def project(self) -> Dict[str, str]:
+        """
+        Execute projection: generate prompt context packages
+        
+        Returns:
+            Dictionary mapping output file paths to generated content
+        """
+        artifacts = {}
+        
+        # Extract concepts and relationships once
+        concepts = self.extract_concepts()
+        relationships = self.extract_relationships()
+        
+        # Generate for each requested template
+        for template_name in self.templates_to_use:
+            if template_name not in self.AVAILABLE_TEMPLATES:
+                print(f"Warning: Unknown template '{template_name}', skipping")
+                continue
+            
+            context_content = self.generate_context(template_name, concepts, relationships)
+            context_file = f"prompt-context-{template_name}.json"
+            artifacts[context_file] = context_content
+        
+        return artifacts
+    
+    def save_artifacts(self, artifacts: Dict[str, str]):
+        """Save generated artifacts to output directory"""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        for file_path, content in artifacts.items():
+            output_file = self.output_dir / file_path
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            print(f"✅ Generated: {file_path}")
+
+
+def main():
+    """CLI entry point for Prompt projector"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate prompt context from ontology")
+    parser.add_argument("--ontology", type=Path, required=True, help="Path to ontology file")
+    parser.add_argument("--mappings", type=Path, default=Path("ontology-hub/mappings"),
+                       help="Path to SKOS mappings directory")
+    parser.add_argument("--output", type=Path, default=Path("output/prompt"),
+                       help="Output directory")
+    parser.add_argument("--templates", type=Path, default=Path("scripts/templates/prompt"),
+                       help="Template directory")
+    parser.add_argument("--template-types", type=str, default="compact,verbose",
+                       help="Comma-separated list of template types (compact, verbose)")
+    
+    args = parser.parse_args()
+    
+    template_types = [t.strip() for t in args.template_types.split(',')]
+    
+    projector = PromptProjector(args.ontology, args.output, args.templates,
+                               args.mappings, template_types)
+    artifacts = projector.project()
+    projector.save_artifacts(artifacts)
+    
+    print(f"\n✅ Prompt projection complete: {len(artifacts)} files generated")
+
+
+if __name__ == "__main__":
+    main()
+#!/usr/bin/env python3
+"""
+SKOS Utilities - Parse SKOS mappings for synonym extraction
+
+Provides shared functionality for loading SKOS concepts and extracting
+alternative labels (synonyms) for use in projections.
+"""
+
+from pathlib import Path
+from typing import Dict, List
+from rdflib import Graph, Namespace, SKOS
+
+
+class SKOSParser:
+    """Parse SKOS mapping files and extract synonyms"""
+    
+    def __init__(self, mappings_dir: Path = None):
+        self.mappings_dir = mappings_dir or Path("ontology-hub/mappings")
+        self.SKOS = SKOS
+        self.KAIROS = Namespace("urn:kairos:ont:core:")
+    
+    def load_all_mappings(self) -> Graph:
+        """Load all SKOS mapping files from mappings directory"""
+        graph = Graph()
+        
+        if not self.mappings_dir.exists():
+            return graph
+        
+        for mapping_file in self.mappings_dir.glob("*.ttl"):
+            try:
+                graph.parse(mapping_file, format='turtle')
+            except Exception as e:
+                print(f"Warning: Could not parse {mapping_file}: {e}")
+        
+        return graph
+    
+    def get_synonyms_for_class(self, class_name: str, graph: Graph = None) -> List[str]:
+        """
+        Get all SKOS alternative labels for a class
+        
+        Args:
+            class_name: Name of the OWL class (e.g., "Customer")
+            graph: Optional pre-loaded SKOS graph
+        
+        Returns:
+            List of synonym strings
+        """
+        if graph is None:
+            graph = self.load_all_mappings()
+        
+        # Find SKOS concept for this class
+        concept_uri = f"urn:kairos:ont:core:{class_name}Concept"
+        
+        synonyms = []
+        for alt_label in graph.objects(subject=self.KAIROS[f"{class_name}Concept"], 
+                                       predicate=self.SKOS.altLabel):
+            synonyms.append(str(alt_label))
+        
+        return synonyms
+    
+    def get_all_synonyms(self, graph: Graph = None) -> Dict[str, List[str]]:
+        """
+        Get synonyms for all classes in SKOS mappings
+        
+        Returns:
+            Dictionary mapping class names to lists of synonyms
+        """
+        if graph is None:
+            graph = self.load_all_mappings()
+        
+        synonyms_map = {}
+        
+        # Query for all concepts with altLabels
+        query = """
+        PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+        
+        SELECT ?concept ?altLabel
+        WHERE {
+            ?concept skos:altLabel ?altLabel .
+        }
+        """
+        
+        for row in graph.query(query):
+            concept_uri = str(row.concept)
+            # Extract class name from concept URI (e.g., "CustomerConcept" -> "Customer")
+            if "Concept" in concept_uri:
+                class_name = concept_uri.split(':')[-1].replace("Concept", "")
+                
+                if class_name not in synonyms_map:
+                    synonyms_map[class_name] = []
+                
+                synonyms_map[class_name].append(str(row.altLabel))
+        
+        return synonyms_map
+    
+    def generate_solr_synonyms(self, class_name: str, preferred_label: str, 
+                               synonyms: List[str]) -> str:
+        """
+        Generate Solr-format synonym line
+        
+        Format: preferredLabel, synonym1, synonym2, ...
+        
+        Args:
+            class_name: Name of the class
+            preferred_label: Preferred term (e.g., "Customer")
+            synonyms: List of alternative terms
+        
+        Returns:
+            Solr synonym line
+        """
+        if not synonyms:
+            return ""
+        
+        # Combine preferred label with synonyms
+        all_terms = [preferred_label.lower()] + [s.lower() for s in synonyms]
+        # Remove duplicates while preserving order
+        unique_terms = list(dict.fromkeys(all_terms))
+        
+        return ", ".join(unique_terms)

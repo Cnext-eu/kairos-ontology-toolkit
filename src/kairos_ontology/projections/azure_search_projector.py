@@ -69,7 +69,7 @@ class AzureSearchProjector:
         
         for row in self.graph.query(query):
             class_uri = str(row['class'])
-            class_name = class_uri.split('#')[-1]
+            class_name = class_uri.split(':')[-1]
             
             classes.append({
                 'uri': class_uri,
@@ -100,7 +100,7 @@ class AzureSearchProjector:
         
         for row in self.graph.query(query):
             prop_uri = str(row.property)
-            prop_name = prop_uri.split('#')[-1]
+            prop_name = prop_uri.split(':')[-1]
             
             # Map XSD datatype to Edm type
             range_type = row.range if row.range else XSD.string

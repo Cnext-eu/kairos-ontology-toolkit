@@ -84,7 +84,7 @@ class SKOSParser:
             concept_uri = str(row.concept)
             # Extract class name from concept URI (e.g., "CustomerConcept" -> "Customer")
             if "Concept" in concept_uri:
-                class_name = concept_uri.split('#')[-1].replace("Concept", "")
+                class_name = concept_uri.split(':')[-1].replace("Concept", "")
                 
                 if class_name not in synonyms_map:
                     synonyms_map[class_name] = []

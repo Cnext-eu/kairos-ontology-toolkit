@@ -60,7 +60,7 @@ class PromptProjector:
         
         for row in self.graph.query(query):
             class_uri = str(row['class'])
-            class_name = class_uri.split('#')[-1]
+            class_name = class_uri.split(':')[-1]
             
             # Get properties for this class
             properties = self._extract_properties(class_uri)
@@ -102,10 +102,10 @@ class PromptProjector:
         
         for row in self.graph.query(query):
             prop_uri = str(row.property)
-            prop_name = prop_uri.split('#')[-1]
+            prop_name = prop_uri.split(':')[-1]
             
-            domain_name = str(row.domain).split('#')[-1] if row.domain else "Any"
-            range_name = str(row.range).split('#')[-1] if row.range else "Any"
+            domain_name = str(row.domain).split(':')[-1] if row.domain else "Any"
+            range_name = str(row.range).split(':')[-1] if row.range else "Any"
             
             relationships.append({
                 'name': prop_name,
@@ -137,9 +137,9 @@ class PromptProjector:
         
         for row in self.graph.query(query):
             prop_uri = str(row.property)
-            prop_name = prop_uri.split('#')[-1]
+            prop_name = prop_uri.split(':')[-1]
             
-            range_type = str(row.range).split('#')[-1] if row.range else "string"
+            range_type = str(row.range).split(':')[-1] if row.range else "string"
             
             properties.append({
                 'name': prop_name,
