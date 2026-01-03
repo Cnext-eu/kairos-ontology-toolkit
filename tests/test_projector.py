@@ -307,3 +307,37 @@ class TestProjector:
         assert dbt_dir.exists()
         sql_files = list(dbt_dir.glob('**/*.sql'))
         assert len(sql_files) > 0
+    
+    def test_windows_safe_filenames_from_http_uris(self, temp_dir, http_ontology):
+        """Test that HTTP URIs generate Windows-safe filenames (no colons in paths)."""
+        from kairos_ontology.projector import run_projections
+        
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        
+        onto_file = ontologies_dir / "products.ttl"
+        onto_file.write_text(http_ontology, encoding='utf-8')
+        
+        output_dir = temp_dir / "output"
+        
+        # Run projection - should create files with safe names
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target='all',
+            namespace='http://example.org/ontology/'
+        )
+        
+        # Check that NO files or directories contain colons (Windows-incompatible)
+        for item in output_dir.rglob('*'):
+            # File/directory names should not contain : (except drive letter on Windows)
+            name = item.name
+            assert ':' not in name, f"Found Windows-incompatible filename: {name}"
+            
+            # Specifically check SQL files use simple names
+            if item.suffix == '.sql':
+                # Should be like "product.sql" not "http://example.org/ontology/Product.sql"
+                assert 'http' not in name.lower()
+                assert '/' not in name
+                assert name.replace('.', '').replace('_', '').isalnum()
