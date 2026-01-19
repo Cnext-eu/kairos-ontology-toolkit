@@ -15,6 +15,32 @@ from urllib.parse import urlparse
 from rdflib import Graph
 
 
+def _get_rdf_format(file_path: Path) -> str:
+    """
+    Detect RDF format from file extension.
+    
+    Args:
+        file_path: Path to the RDF file
+        
+    Returns:
+        Format string for rdflib.Graph.parse()
+    """
+    suffix = file_path.suffix.lower()
+    format_map = {
+        '.ttl': 'turtle',
+        '.turtle': 'turtle',
+        '.rdf': 'xml',
+        '.xml': 'xml',
+        '.owl': 'xml',
+        '.n3': 'n3',
+        '.nt': 'nt',
+        '.ntriples': 'nt',
+        '.jsonld': 'json-ld',
+        '.json': 'json-ld',
+    }
+    return format_map.get(suffix, 'turtle')  # Default to turtle
+
+
 class CatalogResolver:
     """Resolves ontology URIs to local files using XML catalog."""
     
@@ -108,7 +134,7 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> Graph:
     
     # Load main graph
     graph = Graph()
-    graph.parse(ontology_path, format='turtle')
+    graph.parse(ontology_path, format=_get_rdf_format(ontology_path))
     
     # Find all owl:imports statements
     imports = list(graph.objects(predicate=OWL.imports))
@@ -127,8 +153,8 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> Graph:
         
         if local_path and local_path.exists():
             try:
-                # Parse RDF/XML (FIBO uses .rdf files)
-                graph.parse(local_path, format='xml')
+                # Detect format from file extension
+                graph.parse(local_path, format=_get_rdf_format(local_path))
                 loaded_count += 1
                 print(f"✓ Loaded import: {import_str}")
                 print(f"  → {local_path}")
