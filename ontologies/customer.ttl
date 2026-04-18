@@ -1,0 +1,36 @@
+@prefix : <http://kairos.example/ontology/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology"@en ;
+    rdfs:comment "Domain model for customer management"@en ;
+    owl:versionInfo "1.0.0" .
+
+:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+
+:VIPCustomer a owl:Class ;
+    rdfs:label "VIP Customer" ;
+    rdfs:comment "A high-value customer" ;
+    rdfs:subClassOf :Customer .
+
+:customerName a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "Customer Name" ;
+    rdfs:comment "Full name of the customer" .
+
+:customerEmail a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "Customer Email" ;
+    rdfs:comment "Email address of the customer" .
+
+:customerSince a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:dateTime ;
+    rdfs:label "Customer Since" ;
+    rdfs:comment "Date the customer was registered" .

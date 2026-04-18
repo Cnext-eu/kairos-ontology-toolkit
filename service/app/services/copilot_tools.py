@@ -1,11 +1,15 @@
 """Copilot SDK tool definitions for ontology operations.
 
-Defines 5 tools that the Copilot agent can invoke during a chat session:
+Defines 9 tools that the Copilot agent can invoke during a chat session:
   - query_ontology
   - propose_change
   - validate_ontology
   - generate_projection
   - apply_change
+  - scaffold_hub
+  - create_domain
+  - explain_ontology
+  - suggest_improvements
 
 Tools are created via ``make_tools(token)`` which returns Tool instances
 with the GitHub token captured in closures for repo access.
@@ -14,8 +18,10 @@ with the GitHub token captured in closures for repo access.
 import difflib
 import json
 import uuid
+from pathlib import Path
 from typing import Optional
 
+from jinja2 import Environment, FileSystemLoader
 from rdflib import Graph
 
 from kairos_ontology.ontology_ops import (
@@ -351,4 +357,420 @@ def make_tools(github_token: str) -> list:
         handler=_apply,
     )
 
-    return [query_tool, propose_tool, validate_tool, project_tool, apply_tool]
+    # ------------------------------------------------------------------
+    # 6. scaffold_hub
+    # ------------------------------------------------------------------
+    async def _scaffold(inv: ToolInvocation) -> ToolResult:
+        domain_name = inv.arguments.get("domain_name", "example")
+        description = inv.arguments.get("description", "Business domain ontology")
+        namespace = inv.arguments.get(
+            "namespace", f"http://kairos.example/ontology/{domain_name}#"
+        )
+        try:
+            # Render starter ontology from template
+            tmpl_dir = Path(__file__).resolve().parent.parent / "templates"
+            env = Environment(loader=FileSystemLoader(str(tmpl_dir)))
+            tmpl = env.get_template("domain_starter.ttl.jinja2")
+            ttl_content = tmpl.render(
+                namespace=namespace,
+                label=f"{domain_name.replace('-', ' ').title()} Ontology",
+                description=description,
+                classes=[{
+                    "name": domain_name.replace("-", " ").title().replace(" ", ""),
+                    "label": domain_name.replace("-", " ").title(),
+                    "comment": description,
+                    "superclass": None,
+                    "properties": [{
+                        "name": f"{domain_name.replace('-', '')}Name",
+                        "label": f"{domain_name.replace('-', ' ').title()} Name",
+                        "range": "xsd:string",
+                    }],
+                }],
+            )
+
+            branch_name = f"ontology/setup-{domain_name}-{uuid.uuid4().hex[:6]}"
+            await gh.create_branch(github_token, branch_name)
+
+            base = gh.settings.github_ontologies_path
+            await gh.write_file(
+                github_token,
+                f"{base}/{domain_name}.ttl",
+                ttl_content,
+                branch_name,
+                f"ontology: scaffold {domain_name} domain",
+            )
+
+            # Create shapes placeholder
+            shapes_placeholder = (
+                f"# SHACL shapes for {domain_name} domain\n"
+                f"# Add validation constraints here.\n"
+            )
+            await gh.write_file(
+                github_token,
+                f"shapes/{domain_name}.shacl.ttl",
+                shapes_placeholder,
+                branch_name,
+                f"ontology: add shapes placeholder for {domain_name}",
+            )
+
+            pr = await gh.create_pull_request(
+                github_token,
+                branch_name,
+                title=f"ontology: scaffold {domain_name} hub",
+                body=(
+                    f"Scaffolds the **{domain_name}** ontology domain.\n\n"
+                    f"- `{base}/{domain_name}.ttl` — starter ontology\n"
+                    f"- `shapes/{domain_name}.shacl.ttl` — SHACL shapes placeholder\n"
+                ),
+            )
+            return ToolResult(
+                text_result_for_llm=json.dumps({
+                    "branch": branch_name,
+                    "pull_request": pr.get("html_url"),
+                    "files_created": [
+                        f"{base}/{domain_name}.ttl",
+                        f"shapes/{domain_name}.shacl.ttl",
+                    ],
+                }),
+                result_type="success",
+                session_log=f"Scaffolded hub for {domain_name}",
+            )
+        except Exception as exc:
+            return ToolResult(
+                text_result_for_llm=f"Error scaffolding hub: {exc}",
+                result_type="error",
+            )
+
+    scaffold_tool = Tool(
+        name="scaffold_hub",
+        description=(
+            "Create a new ontology hub structure in the repository. "
+            "Creates a starter .ttl file and SHACL shapes placeholder on a feature branch, "
+            "then opens a pull request."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "domain_name": {
+                    "type": "string",
+                    "description": "Domain name (e.g., 'customer', 'sales-order')",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Brief description of the domain",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Ontology namespace URI (optional, auto-generated if omitted)",
+                },
+            },
+            "required": ["domain_name", "description"],
+        },
+        handler=_scaffold,
+    )
+
+    # ------------------------------------------------------------------
+    # 7. create_domain
+    # ------------------------------------------------------------------
+    async def _create_domain(inv: ToolInvocation) -> ToolResult:
+        domain_name = inv.arguments.get("domain_name", "example")
+        description = inv.arguments.get("description", "")
+        classes = inv.arguments.get("classes", [])
+        namespace = inv.arguments.get(
+            "namespace", f"http://kairos.example/ontology/{domain_name}#"
+        )
+        try:
+            tmpl_dir = Path(__file__).resolve().parent.parent / "templates"
+            env = Environment(loader=FileSystemLoader(str(tmpl_dir)))
+            tmpl = env.get_template("domain_starter.ttl.jinja2")
+
+            # Normalize class definitions
+            tmpl_classes = []
+            for cls in classes:
+                name = cls.get("name", "Thing")
+                props = []
+                for p in cls.get("properties", []):
+                    p_name = p if isinstance(p, str) else p.get("name", "")
+                    p_range = (
+                        "xsd:string" if isinstance(p, str) else p.get("range", "xsd:string")
+                    )
+                    p_label = (
+                        p_name.replace("_", " ").title()
+                        if isinstance(p, str)
+                        else p.get("label", p_name)
+                    )
+                    props.append({"name": p_name, "range": p_range, "label": p_label})
+                tmpl_classes.append({
+                    "name": name,
+                    "label": cls.get("label", name),
+                    "comment": cls.get("comment", ""),
+                    "superclass": cls.get("superclass"),
+                    "properties": props,
+                })
+
+            ttl_content = tmpl.render(
+                namespace=namespace,
+                label=f"{domain_name.replace('-', ' ').title()} Ontology",
+                description=description,
+                classes=tmpl_classes,
+            )
+
+            # Validate the generated TTL
+            validation = validate_content(ttl_content)
+            return ToolResult(
+                text_result_for_llm=json.dumps({
+                    "domain": domain_name,
+                    "ttl_content": ttl_content,
+                    "validation": validation,
+                    "class_count": len(tmpl_classes),
+                }, indent=2),
+                result_type="success",
+            )
+        except Exception as exc:
+            return ToolResult(
+                text_result_for_llm=f"Error creating domain: {exc}",
+                result_type="error",
+            )
+
+    create_domain_tool = Tool(
+        name="create_domain",
+        description=(
+            "Generate a complete starter ontology (valid TTL) from a structured description. "
+            "Returns the content for review — does NOT write to the repository."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "domain_name": {
+                    "type": "string",
+                    "description": "Domain name (e.g., 'customer')",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What this domain represents",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Namespace URI (optional, auto-generated if omitted)",
+                },
+                "classes": {
+                    "type": "array",
+                    "description": "List of class definitions",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "PascalCase class name",
+                            },
+                            "label": {"type": "string"},
+                            "comment": {"type": "string"},
+                            "superclass": {
+                                "type": "string",
+                                "description": "Parent class name",
+                            },
+                            "properties": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "range": {
+                                            "type": "string",
+                                            "description": "XSD type",
+                                        },
+                                        "label": {"type": "string"},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            "required": ["domain_name", "description", "classes"],
+        },
+        handler=_create_domain,
+        skip_permission=True,
+    )
+
+    # ------------------------------------------------------------------
+    # 8. explain_ontology
+    # ------------------------------------------------------------------
+    async def _explain(inv: ToolInvocation) -> ToolResult:
+        domain = inv.arguments.get("domain", "")
+        try:
+            file_path = _domain_to_path(domain)
+            content = await gh.read_file(github_token, file_path)
+            info = parse_ontology_content(content)
+
+            explanation = {
+                "domain": domain,
+                "namespace": info.namespace,
+                "summary": (
+                    f"The {domain} ontology defines {len(info.classes)} class(es) "
+                    f"and {len(info.relationships)} relationship(s)."
+                ),
+                "classes": [],
+                "relationships": [],
+            }
+
+            for cls in info.classes:
+                cls_info = {
+                    "name": cls.name,
+                    "description": cls.comment or "(no description)",
+                    "superclasses": cls.superclasses,
+                    "properties": [
+                        {
+                            "name": p.name,
+                            "type": p.range_name,
+                            "kind": "object" if p.is_object_property else "data",
+                        }
+                        for p in cls.properties
+                    ],
+                }
+                explanation["classes"].append(cls_info)
+
+            for rel in info.relationships:
+                explanation["relationships"].append({
+                    "name": rel.name,
+                    "from": rel.domain,
+                    "to": rel.range,
+                })
+
+            return ToolResult(
+                text_result_for_llm=json.dumps(explanation, indent=2),
+                result_type="success",
+            )
+        except Exception as exc:
+            return ToolResult(
+                text_result_for_llm=f"Error explaining ontology: {exc}",
+                result_type="error",
+            )
+
+    explain_tool = Tool(
+        name="explain_ontology",
+        description=(
+            "Generate a structured human-readable explanation of an ontology domain. "
+            "Shows classes, properties, relationships, and a summary."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string", "description": "Ontology domain name"},
+            },
+            "required": ["domain"],
+        },
+        handler=_explain,
+        skip_permission=True,
+    )
+
+    # ------------------------------------------------------------------
+    # 9. suggest_improvements
+    # ------------------------------------------------------------------
+    async def _suggest(inv: ToolInvocation) -> ToolResult:
+        domain = inv.arguments.get("domain", "")
+        try:
+            file_path = _domain_to_path(domain)
+            content = await gh.read_file(github_token, file_path)
+            info = parse_ontology_content(content)
+
+            suggestions = []
+
+            for cls in info.classes:
+                if not cls.comment:
+                    suggestions.append({
+                        "type": "missing_comment",
+                        "severity": "warning",
+                        "target": cls.name,
+                        "message": f"Class '{cls.name}' has no rdfs:comment.",
+                        "fix": f"Add rdfs:comment describing what {cls.name} represents.",
+                    })
+                if not cls.label:
+                    suggestions.append({
+                        "type": "missing_label",
+                        "severity": "warning",
+                        "target": cls.name,
+                        "message": f"Class '{cls.name}' has no rdfs:label.",
+                        "fix": "Add rdfs:label with a human-friendly name.",
+                    })
+                if not cls.properties and not cls.superclasses:
+                    suggestions.append({
+                        "type": "no_properties",
+                        "severity": "info",
+                        "target": cls.name,
+                        "message": f"Class '{cls.name}' has no properties.",
+                        "fix": "Consider adding datatype or object properties.",
+                    })
+                # Naming convention check
+                if cls.name and not cls.name[0].isupper():
+                    suggestions.append({
+                        "type": "naming_convention",
+                        "severity": "warning",
+                        "target": cls.name,
+                        "message": f"Class '{cls.name}' should use PascalCase.",
+                        "fix": f"Rename to '{cls.name[0].upper() + cls.name[1:]}'.",
+                    })
+
+            # Check for SHACL shapes
+            suggestions.append({
+                "type": "shacl_shapes",
+                "severity": "info",
+                "target": domain,
+                "message": (
+                    f"Consider adding SHACL shapes for the {domain} domain "
+                    f"to enforce property constraints."
+                ),
+                "fix": f"Create shapes/{domain}.shacl.ttl with NodeShape constraints.",
+            })
+
+            # Check isolated classes (no relationships to/from)
+            rel_participants = set()
+            for rel in info.relationships:
+                rel_participants.add(rel.domain)
+                rel_participants.add(rel.range)
+            for cls in info.classes:
+                if cls.name not in rel_participants and len(info.classes) > 1:
+                    suggestions.append({
+                        "type": "isolated_class",
+                        "severity": "info",
+                        "target": cls.name,
+                        "message": (
+                            f"Class '{cls.name}' has no relationships to other classes."
+                        ),
+                        "fix": "Consider adding object properties to connect it.",
+                    })
+
+            return ToolResult(
+                text_result_for_llm=json.dumps({
+                    "domain": domain,
+                    "suggestion_count": len(suggestions),
+                    "suggestions": suggestions,
+                }, indent=2),
+                result_type="success",
+            )
+        except Exception as exc:
+            return ToolResult(
+                text_result_for_llm=f"Error analyzing ontology: {exc}",
+                result_type="error",
+            )
+
+    suggest_tool = Tool(
+        name="suggest_improvements",
+        description=(
+            "Analyze an ontology domain and return actionable improvement suggestions. "
+            "Checks for missing labels, comments, naming conventions, isolated classes, "
+            "and SHACL shape coverage."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string", "description": "Ontology domain name"},
+            },
+            "required": ["domain"],
+        },
+        handler=_suggest,
+        skip_permission=True,
+    )
+
+    return [query_tool, propose_tool, validate_tool, project_tool, apply_tool,
+            scaffold_tool, create_domain_tool, explain_tool, suggest_tool]

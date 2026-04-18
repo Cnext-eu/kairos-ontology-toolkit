@@ -23,7 +23,7 @@ from kairos_ontology.ontology_ops import (
     serialize_graph,
 )
 
-from ..services import github_service as gh
+from ..config import get_github_service, settings
 
 router = APIRouter()
 
@@ -61,6 +61,7 @@ async def query_ontology(
 ):
     """List / search classes, properties, and relationships."""
     token = _extract_token(authorization)
+    gh = get_github_service()
     files = await gh.list_ttl_files(token)
 
     results = []
@@ -96,6 +97,7 @@ async def propose_change(
     """Propose a TTL change and return a diff preview."""
     token = _extract_token(authorization)
     file_path = _domain_to_path(req.domain)
+    gh = get_github_service()
     original = await gh.read_file(token, file_path)
 
     graph = Graph()
@@ -138,6 +140,7 @@ async def apply_change(
     file_path = _domain_to_path(req.domain)
 
     # Get current file SHA (needed for update)
+    gh = get_github_service()
     files = await gh.list_ttl_files(token)
     sha = None
     for f in files:
@@ -169,7 +172,7 @@ def _extract_token(authorization: str) -> str:
 
 def _domain_to_path(domain: str) -> str:
     name = domain if "." in domain else f"{domain}.ttl"
-    base = gh.settings.github_ontologies_path
+    base = settings.github_ontologies_path
     return f"{base}/{name}"
 
 

@@ -326,9 +326,103 @@ kairos-ontology-toolkit/
 │       ├── templates/        # Jinja2 templates
 │       ├── validator.py      # Validation pipeline
 │       ├── projector.py      # Projection orchestrator
+│       ├── ontology_ops.py   # rdflib CRUD operations
 │       └── catalog_utils.py  # Catalog resolution
-└── tests/                    # Unit tests
+├── service/                  # FastAPI service (REST + AI chat)
+│   ├── app/
+│   │   ├── main.py           # FastAPI entry point
+│   │   ├── config.py         # pydantic-settings configuration
+│   │   ├── routers/          # ontology, validation, projection, chat
+│   │   └── services/         # github_service, sdk_service, copilot_tools, local_service
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── .env.example
+├── tests/                    # Unit tests (toolkit + service)
+└── docker-compose.yml
 ```
+
+## Service
+
+The FastAPI service exposes the toolkit via REST endpoints and an AI chat interface powered by the [GitHub Copilot SDK](https://github.com/github/copilot-sdk).
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `GET` | `/api/ontology/query` | List / search classes, properties, relationships |
+| `POST` | `/api/ontology/change` | Propose a TTL change (returns diff preview) |
+| `POST` | `/api/ontology/apply` | Commit change to feature branch + open PR |
+| `POST` | `/api/validate` | Validate an ontology domain from the repo |
+| `POST` | `/api/validate/content` | Validate raw TTL content |
+| `GET` | `/api/project/targets` | List available projection targets |
+| `POST` | `/api/project` | Generate projection artifacts |
+| `POST` | `/api/chat` | AI chat via Copilot SDK (SSE streaming) |
+
+All endpoints except `/health`, `/api/validate/content`, and `/api/project/targets` require an `Authorization: Bearer <token>` header.
+
+### Copilot SDK Chat
+
+The `/api/chat` endpoint creates a Copilot SDK session with 5 custom tools:
+
+- **query_ontology** — search the ontology structure
+- **propose_change** — generate a modification with diff preview
+- **validate_ontology** — run SHACL / syntax validation
+- **generate_projection** — produce dbt / neo4j / azure-search / a2ui / prompt artifacts
+- **apply_change** — commit to a feature branch and open a PR
+
+### Setup
+
+1. Create a GitHub App with repository read/write permissions
+2. Install it on the target ontology repository
+3. Configure environment variables:
+
+```bash
+cp service/.env.example service/.env
+# Fill in KAIROS_GITHUB_APP_ID, KAIROS_GITHUB_APP_PRIVATE_KEY, etc.
+```
+
+### Running the Service
+
+**With Docker Compose:**
+
+```bash
+docker compose up --build
+```
+
+**Locally (dev mode — reads TTL files from disk, no GitHub App needed):**
+
+```bash
+# Install service dependencies
+pip install -e ".[service]"
+
+# Set dev mode
+export KAIROS_DEV_MODE=true
+export KAIROS_LOCAL_ONTOLOGIES_DIR=./ontologies
+
+# Start the server
+cd service
+uvicorn app.main:app --reload --port 8000
+```
+
+In dev mode, read-only endpoints (query, validate, project) work against local files. Write endpoints (change/apply) and AI chat are unavailable.
+
+### Docker
+
+```bash
+# Build
+docker build -f service/Dockerfile -t kairos-service .
+
+# Run
+docker run -p 8000:8000 --env-file service/.env kairos-service
+```
+
+### CI/CD
+
+The `.github/workflows/ci.yml` pipeline runs on every push and PR:
+
+1. **test** — installs dependencies, runs ruff lint, runs all 59 tests
+2. **docker** — builds the Docker image (depends on test passing)
 
 ## Troubleshooting
 

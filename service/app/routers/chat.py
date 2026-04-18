@@ -5,6 +5,7 @@ ontology tools.  The caller authenticates with their GitHub OAuth token,
 which the SDK uses for both Copilot API access and repo operations.
 """
 
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Header
@@ -13,7 +14,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from kairos_ontology.ontology_ops import parse_ontology_content
 
-from ..services import github_service as gh
+from ..config import get_github_service, settings
 from ..services import sdk_service
 
 router = APIRouter()
@@ -27,14 +28,26 @@ class ChatRequest(BaseModel):
 @router.post("")
 async def chat(
     req: ChatRequest,
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: str = Header(default=None, alias="Authorization"),
 ):
     """SSE-streaming chat endpoint for the Ontology Hub web viewer.
 
-    Creates a Copilot SDK session with 5 ontology tools, injects domain
+    Creates a Copilot SDK session with ontology tools, injects domain
     context into the system prompt, and streams the response via SSE.
+    In dev mode, falls back to KAIROS_DEV_GITHUB_TOKEN if no valid token
+    is provided in the Authorization header.
     """
-    token = _extract_token(authorization)
+    token = _extract_token(authorization or "")
+
+    # In dev mode, use configured token if header token looks like a placeholder
+    if settings.dev_mode and (not token or token == "dev-token"):
+        token = settings.dev_github_token
+    if not token:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "No GitHub token. Set KAIROS_DEV_GITHUB_TOKEN in .env for dev mode."},
+        )
 
     # Build ontology context
     ontology_context = await _build_ontology_context(token, req.domain)
@@ -59,13 +72,14 @@ async def chat(
         last_user_msg = "(no message)"
 
     async def event_generator():
-        async for chunk in sdk_service.stream_chat(
+        async for event in sdk_service.stream_chat(
             user_message=last_user_msg,
             github_token=token,
             ontology_context=ontology_context,
             conversation_history=conversation_history,
+            use_logged_in_user=settings.dev_mode,
         ):
-            yield {"data": chunk}
+            yield {"data": json.dumps(event)}
 
     return EventSourceResponse(event_generator())
 
@@ -76,6 +90,7 @@ async def chat(
 
 async def _build_ontology_context(token: str, domain: Optional[str]) -> str:
     """Load ontology domain(s) as text context for the system prompt."""
+    gh = get_github_service()
     if domain:
         file_path = _domain_to_path(domain)
         try:
@@ -105,4 +120,4 @@ def _extract_token(authorization: str) -> str:
 
 def _domain_to_path(domain: str) -> str:
     name = domain if "." in domain else f"{domain}.ttl"
-    return f"{gh.settings.github_ontologies_path}/{name}"
+    return f"{settings.github_ontologies_path}/{name}"

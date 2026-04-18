@@ -8,7 +8,7 @@ from rdflib import Graph
 
 from kairos_ontology.projector import VALID_TARGETS, project_graph
 
-from ..services import github_service as gh
+from ..config import get_github_service, settings
 
 router = APIRouter()
 
@@ -32,6 +32,7 @@ async def generate_projection(
     """Generate projection artifacts for a domain."""
     token = _extract_token(authorization)
     file_path = _domain_to_path(req.domain)
+    gh = get_github_service()
     content = await gh.read_file(token, file_path)
 
     graph = Graph()
@@ -53,4 +54,4 @@ def _extract_token(authorization: str) -> str:
 
 def _domain_to_path(domain: str) -> str:
     name = domain if "." in domain else f"{domain}.ttl"
-    return f"{gh.settings.github_ontologies_path}/{name}"
+    return f"{settings.github_ontologies_path}/{name}"

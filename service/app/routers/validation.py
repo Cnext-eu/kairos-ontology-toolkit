@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from kairos_ontology.validator import validate_content
 
-from ..services import github_service as gh
+from ..config import get_github_service, settings
 
 router = APIRouter()
 
@@ -30,6 +30,7 @@ async def validate_domain(
     """Validate an ontology domain from the repo."""
     token = _extract_token(authorization)
     file_path = _domain_to_path(req.domain)
+    gh = get_github_service()
     content = await gh.read_file(token, file_path)
     return validate_content(content, shapes_content=req.shapes_content)
 
@@ -48,4 +49,4 @@ def _extract_token(authorization: str) -> str:
 
 def _domain_to_path(domain: str) -> str:
     name = domain if "." in domain else f"{domain}.ttl"
-    return f"{gh.settings.github_ontologies_path}/{name}"
+    return f"{settings.github_ontologies_path}/{name}"

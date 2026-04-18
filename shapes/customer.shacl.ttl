@@ -1,0 +1,33 @@
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix :     <http://kairos.example/ontology/> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+:CustomerShape a sh:NodeShape ;
+    sh:targetClass :Customer ;
+    rdfs:label "Customer Shape" ;
+    rdfs:comment "SHACL constraints for the Customer class." ;
+
+    sh:property [
+        sh:path :customerName ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:message "Every Customer must have exactly one customerName (xsd:string)." ;
+    ] ;
+
+    sh:property [
+        sh:path :customerEmail ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:pattern "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$" ;
+        sh:message "Every Customer must have exactly one customerEmail in valid e-mail format." ;
+    ] ;
+
+    sh:property [
+        sh:path :customerSince ;
+        sh:datatype xsd:dateTime ;
+        sh:maxCount 1 ;
+        sh:message "customerSince must be an xsd:dateTime value." ;
+    ] .
