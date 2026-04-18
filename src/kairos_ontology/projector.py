@@ -1,11 +1,50 @@
 """Projection orchestrator - generates downstream artifacts."""
 
 from pathlib import Path
+from typing import Dict, List, Optional
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD, SKOS
 from jinja2 import Environment, FileSystemLoader
 import json
 from datetime import datetime
 from .projections.uri_utils import extract_local_name
+
+VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt"]
+
+
+def project_graph(
+    graph: Graph,
+    targets: Optional[List[str]] = None,
+    namespace: Optional[str] = None,
+    ontology_name: str = "ontology",
+    shapes_dir: Optional[Path] = None,
+) -> Dict[str, Dict[str, str]]:
+    """Generate projection artifacts from an in-memory rdflib Graph.
+
+    Args:
+        graph: Loaded rdflib Graph.
+        targets: List of projection targets (e.g. ``["dbt", "neo4j"]``).
+                 Defaults to all targets.
+        namespace: Base namespace to filter classes.  Auto-detected if ``None``.
+        ontology_name: Name used in output filenames.
+        shapes_dir: Optional path to SHACL shapes directory.
+
+    Returns:
+        ``{target: {filename: content}}`` mapping.
+    """
+    targets = targets or VALID_TARGETS
+    template_base = Path(__file__).parent / "templates"
+    ns = namespace or _auto_detect_namespace(graph)
+
+    results: Dict[str, Dict[str, str]] = {}
+    for target_name in targets:
+        if target_name not in VALID_TARGETS:
+            continue
+        artifacts = _run_projection(
+            target_name, graph, Path("."), template_base, ns, shapes_dir, ontology_name
+        )
+        if artifacts:
+            results[target_name] = artifacts
+    return results
 
 
 def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path, target: str, namespace: str = None):

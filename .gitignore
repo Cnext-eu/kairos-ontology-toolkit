@@ -42,3 +42,7 @@ htmlcov/
 # Distribution
 *.whl
 *.tar.gz
+
+# Service secrets
+service/.env
+*.pem

@@ -1,11 +1,66 @@
 """Ontology validation module - syntax, SHACL, consistency."""
 
 from pathlib import Path
+from typing import Optional
 import rdflib
 from rdflib import Graph, Namespace
 from pyshacl import validate as shacl_validate
 import json
 from .catalog_utils import load_graph_with_catalog
+
+
+def validate_content(
+    ontology_content: str,
+    shapes_content: Optional[str] = None,
+    do_syntax: bool = True,
+    do_shacl: bool = True,
+) -> dict:
+    """Validate ontology content (TTL string) programmatically.
+
+    Args:
+        ontology_content: Turtle-formatted ontology string.
+        shapes_content: Optional SHACL shapes as a Turtle string.
+        do_syntax: Run syntax validation.
+        do_shacl: Run SHACL validation (requires shapes_content).
+
+    Returns:
+        Dict with ``syntax`` and ``shacl`` keys, each containing
+        ``passed`` (bool), and ``errors`` (list of str).
+    """
+    result: dict = {
+        "syntax": {"passed": True, "errors": []},
+        "shacl": {"passed": True, "errors": []},
+    }
+
+    # Syntax
+    graph = None
+    if do_syntax:
+        try:
+            graph = Graph()
+            graph.parse(data=ontology_content, format="turtle")
+        except Exception as e:
+            result["syntax"]["passed"] = False
+            result["syntax"]["errors"].append(str(e))
+            return result  # can't continue without a valid graph
+
+    # SHACL
+    if do_shacl and shapes_content:
+        if graph is None:
+            graph = Graph()
+            graph.parse(data=ontology_content, format="turtle")
+        shapes_graph = Graph()
+        shapes_graph.parse(data=shapes_content, format="turtle")
+        conforms, _, report_text = shacl_validate(
+            graph,
+            shacl_graph=shapes_graph,
+            inference="rdfs",
+            abort_on_first=False,
+        )
+        if not conforms:
+            result["shacl"]["passed"] = False
+            result["shacl"]["errors"].append(report_text)
+
+    return result
 
 
 def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
