@@ -51,13 +51,16 @@ Write-Host ""
 
 # Prompt for release type
 Write-Host "Select release type:" -ForegroundColor Cyan
-Write-Host "  [1] Patch (bug fixes)         $major.$minor.$patch -> $major.$minor.$($patch+1)" -ForegroundColor White
-Write-Host "  [2] Minor (new features)      $major.$minor.$patch -> $major.$($minor+1).0" -ForegroundColor White
-Write-Host "  [3] Major (breaking changes)  $major.$minor.$patch -> $($major+1).0.0" -ForegroundColor White
+$patchTarget = "$major.$minor.$($patch + 1)"
+$minorTarget = "$major.$($minor + 1).0"
+$majorTarget = "$($major + 1).0.0"
+Write-Host "  [1] Patch `(bug fixes`)         $currentVersion -> $patchTarget" -ForegroundColor White
+Write-Host "  [2] Minor `(new features`)      $currentVersion -> $minorTarget" -ForegroundColor White
+Write-Host "  [3] Major `(breaking changes`)  $currentVersion -> $majorTarget" -ForegroundColor White
 Write-Host ""
 
 do {
-    $choice = Read-Host "Enter choice (1-3)"
+    $choice = Read-Host "Enter choice `(1-3`)"
 } while ($choice -notmatch '^[1-3]$')
 
 # Calculate new version
@@ -88,7 +91,7 @@ Write-Host "🚀 Preparing $releaseType release: $currentVersion -> $newVersion"
 Write-Host ""
 
 # Confirm
-$confirm = Read-Host "Continue? (y/n)"
+$confirm = Read-Host "Continue? `(y/n`)"
 if ($confirm -ne 'y') {
     Write-Host "❌ Release cancelled" -ForegroundColor Yellow
     exit 0
@@ -124,7 +127,7 @@ Write-Host "  ✓ Package built" -ForegroundColor Green
 
 # Get release notes (single line)
 Write-Host ""
-$releaseNote = Read-Host "📝 Enter release notes (one line)"
+$releaseNote = Read-Host "Enter release notes `(one line`)"
 
 if ([string]::IsNullOrWhiteSpace($releaseNote)) {
     $releaseNote = "Release v$newVersion"
