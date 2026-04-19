@@ -244,6 +244,14 @@ def remove_class(graph: Graph, class_uri: str) -> Graph:
     return graph
 
 
+def remove_property(graph: Graph, property_uri: str) -> Graph:
+    """Remove a property and all triples where it appears as subject or object."""
+    prop = URIRef(property_uri)
+    graph.remove((prop, None, None))
+    graph.remove((None, None, prop))
+    return graph
+
+
 # ---------------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------------

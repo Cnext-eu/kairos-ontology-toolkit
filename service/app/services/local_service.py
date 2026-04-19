@@ -14,10 +14,27 @@ def _ontologies_dir() -> Path:
     return Path(settings.local_ontologies_dir)
 
 
+async def list_repos(token: str = "") -> list[dict]:
+    """In dev mode, return just the configured repo."""
+    return [
+        {
+            "owner": settings.github_repo_owner or "local",
+            "name": settings.github_repo_name or "dev",
+            "full_name": (
+                f"{settings.github_repo_owner}/{settings.github_repo_name}"
+            ),
+            "description": "Local development",
+            "default_branch": settings.github_default_branch,
+        }
+    ]
+
+
 async def list_ttl_files(
     token: str = "",
     path: Optional[str] = None,
     branch: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> list[dict]:
     """List ``*.ttl`` / ``*.rdf`` files in the local ontologies directory."""
     base = Path(path) if path else _ontologies_dir()
@@ -39,6 +56,8 @@ async def read_file(
     token: str = "",
     path: str = "",
     branch: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> str:
     """Read a file from disk. *path* is relative to the workspace root or absolute."""
     # Try as-is first, then relative to ontologies dir
@@ -48,21 +67,46 @@ async def read_file(
     return p.read_text(encoding="utf-8")
 
 
-async def create_branch(token: str, branch_name: str, from_branch: Optional[str] = None) -> dict:
+async def create_branch(
+    token: str,
+    branch_name: str,
+    from_branch: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
+) -> dict:
     raise NotImplementedError("create_branch is not available in dev mode")
 
 
 async def write_file(
-    token: str, path: str, content: str, branch: str, message: str, sha: Optional[str] = None,
+    token: str,
+    path: str,
+    content: str,
+    branch: str,
+    message: str,
+    sha: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> dict:
     raise NotImplementedError("write_file is not available in dev mode")
 
 
 async def create_pull_request(
-    token: str, branch: str, title: str, body: str = "", base: Optional[str] = None,
+    token: str,
+    branch: str,
+    title: str,
+    body: str = "",
+    base: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> dict:
     raise NotImplementedError("create_pull_request is not available in dev mode")
 
 
-async def compare_branches(token: str, base: str, head: str) -> dict:
+async def compare_branches(
+    token: str,
+    base: str,
+    head: str,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
+) -> dict:
     raise NotImplementedError("compare_branches is not available in dev mode")

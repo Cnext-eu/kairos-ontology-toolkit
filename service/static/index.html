@@ -11,23 +11,71 @@
 </head>
 <body>
 
-<!-- Top bar -->
-<header id="topbar">
-  <div class="topbar-left">
-    <h1>Kairos Ontology Hub</h1>
-    <select id="domain-select"><option value="">Loading…</option></select>
-    <input id="search-input" type="text" placeholder="Search classes…">
-    <button id="btn-validate" title="Validate ontology">✓ Validate</button>
-    <button id="btn-project" title="Generate projections">⚙ Project</button>
-  </div>
-  <div class="topbar-right">
-    <span id="status-badge" class="badge hidden"></span>
-    <button id="btn-toggle-chat" title="Toggle chat panel">💬 Chat</button>
-  </div>
-</header>
-
 <!-- Main area -->
 <div id="main">
+
+  <!-- Sidebar -->
+  <nav id="sidebar" class="collapsed">
+    <div class="sidebar-header">
+      <h1>Kairos Ontology Hub</h1>
+    </div>
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Repository</div>
+      <div id="sidebar-repo-info" class="sidebar-repo-info">
+        <span id="sidebar-repo-status" class="repo-dot disconnected"></span>
+        <span id="sidebar-repo-name" class="sidebar-repo-label">No repo selected</span>
+      </div>
+      <select id="repo-select" class="sidebar-select" title="Select repository"><option value="">Loading repos…</option></select>
+    </div>
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Domain</div>
+      <select id="domain-select" class="sidebar-select"><option value="">Loading…</option></select>
+      <input id="search-input" class="sidebar-search" type="text" placeholder="Search classes…">
+    </div>
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Model</div>
+      <button class="sidebar-btn" id="sb-add-class">＋ New Class</button>
+      <button class="sidebar-btn" id="sb-validate">✓ Validate</button>
+      <button class="sidebar-btn" id="sb-undo" disabled>↩ Undo</button>
+      <button class="sidebar-btn" id="sb-redo" disabled>↪ Redo</button>
+      <button class="sidebar-btn sb-save hidden" id="sb-save">💾 Save Changes</button>
+    </div>
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Project</div>
+      <button class="sidebar-btn" id="sb-project">⚙ Generate Projections</button>
+    </div>
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Ask AI</div>
+      <button class="sidebar-btn" id="sb-explain">💡 Explain this domain</button>
+      <button class="sidebar-btn" id="sb-suggest">🔍 Suggest improvements</button>
+      <button class="sidebar-btn" id="sb-ask-free">💬 Ask a question</button>
+    </div>
+    <div class="sidebar-section" style="margin-top:auto;">
+      <div class="sidebar-divider"></div>
+      <div id="auth-section" class="sidebar-auth">
+        <div id="auth-logged-out">
+          <button class="sidebar-btn sb-login" id="btn-login">🔑 Login with GitHub</button>
+          <span class="auth-hint">Required for AI chat</span>
+        </div>
+        <div id="auth-logged-in" class="hidden">
+          <div class="auth-user-row">
+            <img id="auth-avatar" class="auth-avatar" src="" alt="">
+            <span id="auth-username" class="auth-username"></span>
+          </div>
+          <button class="sidebar-btn sb-logout" id="btn-logout">Logout</button>
+        </div>
+      </div>
+      <span id="status-badge" class="badge hidden" style="margin:8px 14px;"></span>
+    </div>
+  </nav>
+
+  <!-- Burger toggle floats over the workspace -->
+  <button id="btn-menu" title="Toggle menu">☰</button>
 
   <!-- Graph + detail -->
   <div id="workspace">
@@ -37,16 +85,54 @@
     </div>
     <div id="detail-panel" class="hidden">
       <button id="btn-close-detail" class="close-btn">✕</button>
-      <h2 id="detail-name"></h2>
-      <p id="detail-comment" class="muted"></p>
-      <div id="detail-superclasses"></div>
-      <h3>Properties</h3>
-      <table id="detail-props"><thead><tr><th>Name</th><th>Type</th><th>Kind</th></tr></thead><tbody></tbody></table>
+
+      <!-- View mode -->
+      <div id="detail-view">
+        <h2 id="detail-name"></h2>
+        <p id="detail-comment" class="muted"></p>
+        <div id="detail-superclasses"></div>
+        <h3>Properties</h3>
+        <table id="detail-props"><thead><tr><th>Name</th><th>Type</th><th>Kind</th></tr></thead><tbody></tbody></table>
+        <div class="detail-actions">
+          <button id="btn-edit-class" class="btn-sm btn-primary">✎ Edit</button>
+          <button id="btn-delete-class" class="btn-sm btn-danger">🗑 Delete</button>
+        </div>
+      </div>
+
+      <!-- Edit mode -->
+      <div id="detail-edit" class="hidden">
+        <h3>Edit Class</h3>
+        <label>Name <input id="edit-class-name" type="text" disabled></label>
+        <label>Label <input id="edit-class-label" type="text"></label>
+        <label>Comment <textarea id="edit-class-comment" rows="3"></textarea></label>
+        <div class="detail-actions">
+          <button id="btn-save-class" class="btn-sm btn-primary">Save</button>
+          <button id="btn-cancel-edit" class="btn-sm">Cancel</button>
+        </div>
+
+        <h3>Add Property</h3>
+        <label>Name <input id="add-prop-name" type="text" placeholder="camelCase"></label>
+        <label>Label <input id="add-prop-label" type="text" placeholder="Human-readable"></label>
+        <label>Range
+          <select id="add-prop-range">
+            <option value="xsd:string">xsd:string</option>
+            <option value="xsd:integer">xsd:integer</option>
+            <option value="xsd:decimal">xsd:decimal</option>
+            <option value="xsd:boolean">xsd:boolean</option>
+            <option value="xsd:date">xsd:date</option>
+            <option value="xsd:dateTime">xsd:dateTime</option>
+          </select>
+        </label>
+        <div class="detail-actions">
+          <button id="btn-add-prop" class="btn-sm btn-primary">+ Add Property</button>
+        </div>
+      </div>
     </div>
   </div>
 
   <!-- Chat panel -->
   <div id="chat-panel" class="hidden">
+    <div id="chat-resize-handle"></div>
     <div id="chat-header">
       <span>Ontology Assistant</span>
       <button id="btn-close-chat" class="close-btn">✕</button>
@@ -73,6 +159,62 @@
     </div>
     <div id="modal-result"></div>
   </div>
+</div>
+
+<div id="add-class-overlay" class="hidden">
+  <div id="add-class-modal" class="modal-box">
+    <div class="modal-box-header">
+      <span>New Class</span>
+      <button id="btn-close-add-class" class="close-btn">✕</button>
+    </div>
+    <div class="modal-box-body">
+      <label>Name <input id="new-class-name" type="text" placeholder="PascalCase"></label>
+      <label>Label <input id="new-class-label" type="text" placeholder="Human-readable label"></label>
+      <label>Comment <textarea id="new-class-comment" rows="2" placeholder="Description"></textarea></label>
+      <label>Superclass
+        <select id="new-class-super">
+          <option value="">(none)</option>
+        </select>
+      </label>
+      <div class="detail-actions">
+        <button id="btn-create-class" class="btn-sm btn-primary">Create</button>
+        <button id="btn-cancel-add-class" class="btn-sm">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="save-overlay" class="hidden">
+  <div id="save-modal" class="modal-box">
+    <div class="modal-box-header">
+      <span>Save Changes</span>
+      <button id="btn-close-save" class="close-btn">✕</button>
+    </div>
+    <div class="modal-box-body">
+      <p style="font-size:13px; color:#8b949e; margin-bottom:12px;">
+        <strong id="save-summary"></strong>
+      </p>
+      <label>Commit message
+        <input id="save-message" type="text" placeholder="ontology: describe your changes">
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+        <input id="save-create-pr" type="checkbox" checked style="width:auto;margin:0;">
+        Create pull request
+      </label>
+      <div class="detail-actions" style="margin-top:16px;">
+        <button id="btn-do-save" class="btn-sm btn-primary">💾 Save &amp; Commit</button>
+        <button id="btn-cancel-save" class="btn-sm">Cancel</button>
+      </div>
+      <div id="save-result" style="margin-top:12px; font-size:13px;"></div>
+    </div>
+  </div>
+</div>
+
+<div id="context-menu" class="hidden">
+  <button id="ctx-edit" class="ctx-item">✎ Edit</button>
+  <button id="ctx-add-prop" class="ctx-item">＋ Property</button>
+  <button id="ctx-add-sub" class="ctx-item">＋ Subclass</button>
+  <button id="ctx-delete" class="ctx-item ctx-danger">🗑 Delete</button>
 </div>
 
 <script src="/static/app.js"></script>

@@ -8,7 +8,8 @@ which the SDK uses for both Copilot API access and repo operations.
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Cookie, Header
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -16,6 +17,7 @@ from kairos_ontology.ontology_ops import parse_ontology_content
 
 from ..config import get_github_service, settings
 from ..services import sdk_service
+from .auth import get_user_token, _oauth_enabled
 
 router = APIRouter()
 
@@ -29,28 +31,35 @@ class ChatRequest(BaseModel):
 async def chat(
     req: ChatRequest,
     authorization: str = Header(default=None, alias="Authorization"),
+    repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
+    repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
+    kairos_session: Optional[str] = Cookie(None),
 ):
     """SSE-streaming chat endpoint for the Ontology Hub web viewer.
 
-    Creates a Copilot SDK session with ontology tools, injects domain
-    context into the system prompt, and streams the response via SSE.
-    In dev mode, falls back to KAIROS_DEV_GITHUB_TOKEN if no valid token
-    is provided in the Authorization header.
+    Token resolution order:
+      1. Per-user OAuth token (from session cookie)
+      2. gh CLI auth (use_logged_in_user=True) as fallback
     """
-    token = _extract_token(authorization or "")
+    # Try OAuth session token first
+    token = get_user_token(kairos_session)
+    use_gh_cli = False
 
-    # In dev mode, use configured token if header token looks like a placeholder
-    if settings.dev_mode and (not token or token == "dev-token"):
-        token = settings.dev_github_token
     if not token:
-        from fastapi.responses import JSONResponse
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "No GitHub token. Set KAIROS_DEV_GITHUB_TOKEN in .env for dev mode."},
-        )
+        if _oauth_enabled():
+            # OAuth is configured but user isn't authenticated — require login
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required. Please login via GitHub OAuth."},
+            )
+        # No OAuth configured — fall back to gh CLI auth (needs copilot scope)
+        use_gh_cli = True
+        token = "gh-cli"  # placeholder — SDK ignores this when use_logged_in_user=True
 
     # Build ontology context
-    ontology_context = await _build_ontology_context(token, req.domain)
+    ontology_context = await _build_ontology_context(
+        token, req.domain, repo_owner=repo_owner, repo_name=repo_name,
+    )
 
     # Extract last user message and build conversation history
     last_user_msg = ""
@@ -61,12 +70,13 @@ async def chat(
         if role == "user":
             last_user_msg = content
         if role in ("user", "assistant"):
-            history_parts.append(f"{role}: {content}")
+            prefix = "User" if role == "user" else "Assistant"
+            history_parts.append(f"[{prefix}]: {content}")
 
     # Everything except the final user turn is prior context
     conversation_history = ""
     if len(history_parts) > 1:
-        conversation_history = "\n".join(history_parts[:-1])
+        conversation_history = "\n\n".join(history_parts[:-1])
 
     if not last_user_msg:
         last_user_msg = "(no message)"
@@ -77,7 +87,7 @@ async def chat(
             github_token=token,
             ontology_context=ontology_context,
             conversation_history=conversation_history,
-            use_logged_in_user=settings.dev_mode,
+            use_logged_in_user=use_gh_cli,
         ):
             yield {"data": json.dumps(event)}
 
@@ -88,22 +98,33 @@ async def chat(
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _build_ontology_context(token: str, domain: Optional[str]) -> str:
+async def _build_ontology_context(
+    token: str,
+    domain: Optional[str],
+    repo_owner: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> str:
     """Load ontology domain(s) as text context for the system prompt."""
     gh = get_github_service()
     if domain:
         file_path = _domain_to_path(domain)
         try:
-            return await gh.read_file(token, file_path)
+            return await gh.read_file(
+                token, file_path, owner=repo_owner, repo=repo_name,
+            )
         except Exception:
             return f"(Could not load domain: {domain})"
 
     # Summarise all domains
     try:
-        files = await gh.list_ttl_files(token)
+        files = await gh.list_ttl_files(
+            token, owner=repo_owner, repo=repo_name,
+        )
         parts = []
         for f in files:
-            content = await gh.read_file(token, f["path"])
+            content = await gh.read_file(
+                token, f["path"], owner=repo_owner, repo=repo_name,
+            )
             info = parse_ontology_content(content)
             classes = ", ".join(c.name for c in info.classes)
             parts.append(f"Domain {f['name']}: classes=[{classes}]")

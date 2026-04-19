@@ -28,12 +28,14 @@ async def list_targets():
 async def generate_projection(
     req: ProjectRequest,
     authorization: str = Header(..., alias="Authorization"),
+    repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
+    repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
 ):
     """Generate projection artifacts for a domain."""
     token = _extract_token(authorization)
     file_path = _domain_to_path(req.domain)
     gh = get_github_service()
-    content = await gh.read_file(token, file_path)
+    content = await gh.read_file(token, file_path, owner=repo_owner, repo=repo_name)
 
     graph = Graph()
     graph.parse(data=content, format="turtle")
