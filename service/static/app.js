@@ -33,6 +33,16 @@
   const btnSaveClass   = document.getElementById("btn-save-class");
   const btnCancelEdit  = document.getElementById("btn-cancel-edit");
   const btnAddProp     = document.getElementById("btn-add-prop");
+  const btnAddClass       = document.getElementById("btn-add-class");
+  const addClassOverlay   = document.getElementById("add-class-overlay");
+  const btnCloseAddClass  = document.getElementById("btn-close-add-class");
+  const btnCreateClass    = document.getElementById("btn-create-class");
+  const btnCancelAddClass = document.getElementById("btn-cancel-add-class");
+  const contextMenu       = document.getElementById("context-menu");
+  const ctxEdit           = document.getElementById("ctx-edit");
+  const ctxAddProp        = document.getElementById("ctx-add-prop");
+  const ctxAddSub         = document.getElementById("ctx-add-sub");
+  const ctxDelete         = document.getElementById("ctx-delete");
 
   // ── State ─────────────────────────────────────────────────
   let cy = null;
@@ -41,6 +51,7 @@
   let chatHistory = [];      // [{role, content}]
   let activeRepo = null;     // {owner, name, full_name, default_branch}
   let selectedClassData = null;
+  let pendingChanges = [];   // [{action, domain, details, timestamp}]
 
   // ── Helpers ───────────────────────────────────────────────
   function headers(extra) {
@@ -91,6 +102,28 @@
     btnSaveClass.addEventListener("click", onSaveClass);
     btnCancelEdit.addEventListener("click", exitEditMode);
     btnAddProp.addEventListener("click", onAddProperty);
+    btnAddClass.addEventListener("click", showAddClassDialog);
+    btnCloseAddClass.addEventListener("click", hideAddClassDialog);
+    btnCreateClass.addEventListener("click", onCreateClass);
+    btnCancelAddClass.addEventListener("click", hideAddClassDialog);
+    ctxEdit.addEventListener("click", () => {
+      contextMenu.classList.add("hidden");
+      showDetail(selectedClassData);
+      enterEditMode();
+    });
+    ctxAddProp.addEventListener("click", () => {
+      contextMenu.classList.add("hidden");
+      showDetail(selectedClassData);
+      enterEditMode();
+    });
+    ctxAddSub.addEventListener("click", () => {
+      contextMenu.classList.add("hidden");
+      showAddClassDialog(selectedClassData ? selectedClassData.name : "");
+    });
+    ctxDelete.addEventListener("click", () => {
+      contextMenu.classList.add("hidden");
+      onDeleteClass();
+    });
     btnSend.addEventListener("click", sendChat);
     chatInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
@@ -140,13 +173,42 @@
           "target-arrow-color": "#3fb950",
           "target-arrow-shape": "triangle",
         }},
+        { selector: "node.modified", style: {
+          "border-color": "#d29922",
+          "border-width": 3,
+          "border-style": "dashed",
+        }},
+        { selector: "node.new-node", style: {
+          "border-color": "#3fb950",
+          "border-width": 3,
+          "border-style": "dashed",
+        }},
       ],
       layout: { name: "grid" },
       minZoom: 0.3,
       maxZoom: 3,
     });
     cy.on("tap", "node", (e) => showDetail(e.target.data()));
-    cy.on("tap", (e) => { if (e.target === cy) detailPanel.classList.add("hidden"); });
+    cy.on("tap", (e) => {
+      if (e.target === cy) detailPanel.classList.add("hidden");
+      contextMenu.classList.add("hidden");
+    });
+    cy.on("dbltap", (e) => {
+      if (e.target === cy) showAddClassDialog();
+    });
+    cy.on("cxttap", "node", (e) => {
+      e.originalEvent.preventDefault();
+      selectedClassData = e.target.data();
+      const pos = e.renderedPosition || e.originalEvent;
+      const x = pos.x || e.originalEvent.clientX;
+      const y = pos.y || e.originalEvent.clientY;
+      contextMenu.style.left = x + "px";
+      contextMenu.style.top = y + "px";
+      contextMenu.classList.remove("hidden");
+    });
+    document.addEventListener("click", (e) => {
+      if (!contextMenu.contains(e.target)) contextMenu.classList.add("hidden");
+    });
   }
 
   function renderGraph(domainData) {
@@ -207,6 +269,77 @@
     }).run();
 
     graphEmpty.classList.add("hidden");
+
+    for (const change of pendingChanges) {
+      const name = change.details.class_name || change.details.name;
+      if (!name) continue;
+      const node = cy.nodes().filter(n => n.data("name") === name);
+      if (change.action === "add_class") {
+        node.addClass("new-node");
+      } else {
+        node.addClass("modified");
+      }
+    }
+  }
+
+  // ── Add-class dialog ────────────────────────────────────
+  function showAddClassDialog(preSelectedSuper) {
+    const superSelect = document.getElementById("new-class-super");
+    superSelect.innerHTML = '<option value="">(none)</option>';
+    if (currentDomain) {
+      for (const cls of currentDomain.classes) {
+        const opt = document.createElement("option");
+        opt.value = cls.name;
+        opt.textContent = cls.name;
+        superSelect.appendChild(opt);
+      }
+    }
+    if (preSelectedSuper) superSelect.value = preSelectedSuper;
+    addClassOverlay.classList.remove("hidden");
+  }
+
+  function hideAddClassDialog() {
+    addClassOverlay.classList.add("hidden");
+    document.getElementById("new-class-name").value = "";
+    document.getElementById("new-class-label").value = "";
+    document.getElementById("new-class-comment").value = "";
+    document.getElementById("new-class-super").value = "";
+  }
+
+  async function onCreateClass() {
+    if (!currentDomain) return;
+    const domain = domainSelect.value.replace(".ttl", "");
+    const name = document.getElementById("new-class-name").value.trim();
+    const label = document.getElementById("new-class-label").value.trim();
+    const comment = document.getElementById("new-class-comment").value.trim();
+    const superclass = document.getElementById("new-class-super").value;
+
+    if (!name) { alert("Class name is required."); return; }
+
+    const details = {
+      name,
+      label: label || name,
+      comment: comment || name,
+    };
+    if (superclass) details.superclass = superclass;
+
+    try {
+      btnCreateClass.disabled = true;
+      btnCreateClass.textContent = "Creating…";
+      await api("POST", "/api/ontology/change", {
+        domain,
+        action: "add_class",
+        details,
+      });
+      pendingChanges.push({ action: "add_class", domain, details, timestamp: Date.now() });
+      hideAddClassDialog();
+      await reloadCurrentDomain();
+    } catch (err) {
+      alert("Error creating class: " + err.message);
+    } finally {
+      btnCreateClass.disabled = false;
+      btnCreateClass.textContent = "Create";
+    }
   }
 
   // ── Repo loading ──────────────────────────────────────────
@@ -383,6 +516,11 @@
           new_comment: newComment || undefined,
         },
       });
+      pendingChanges.push({
+        action: "modify_class", domain,
+        details: { class_name: selectedClassData.name },
+        timestamp: Date.now(),
+      });
       exitEditMode();
       await reloadCurrentDomain();
     } catch (err) {
@@ -402,6 +540,11 @@
         domain,
         action: "remove_class",
         details: { class_name: selectedClassData.name },
+      });
+      pendingChanges.push({
+        action: "remove_class", domain,
+        details: { class_name: selectedClassData.name },
+        timestamp: Date.now(),
       });
       detailPanel.classList.add("hidden");
       selectedClassData = null;
@@ -437,6 +580,11 @@
       });
       document.getElementById("add-prop-name").value = "";
       document.getElementById("add-prop-label").value = "";
+      pendingChanges.push({
+        action: "add_property", domain,
+        details: { class_name: selectedClassData.name },
+        timestamp: Date.now(),
+      });
       await reloadCurrentDomain();
     } catch (err) {
       alert("Error adding property: " + err.message);

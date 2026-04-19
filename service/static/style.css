@@ -101,3 +101,19 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 #btn-run-project:hover { background: #388bfd; }
 #modal-result { padding: 0 18px 16px; font-size: 13px; max-height: 300px; overflow-y: auto; }
 #modal-result pre { background: #0d1117; padding: 10px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; font-size: 12px; margin-top: 10px; }
+
+/* ── Add-class modal box ─────────────────────────────────── */
+#add-class-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal-box { background: #161b22; border: 1px solid #30363d; border-radius: 10px; width: 360px; max-height: 80vh; overflow-y: auto; }
+.modal-box-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; font-weight: 600; border-bottom: 1px solid #30363d; }
+.modal-box-body { padding: 16px 18px; }
+.modal-box-body label { display: block; font-size: 12px; color: #8b949e; margin-bottom: 10px; }
+.modal-box-body input, .modal-box-body textarea, .modal-box-body select { display: block; width: 100%; margin-top: 3px; padding: 6px 8px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: #c9d1d9; font-size: 13px; font-family: inherit; }
+.modal-box-body input:focus, .modal-box-body textarea:focus, .modal-box-body select:focus { outline: none; border-color: #58a6ff; }
+
+/* ── Context menu ────────────────────────────────────────── */
+#context-menu { position: fixed; z-index: 200; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 4px 0; min-width: 160px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+.ctx-item { display: block; width: 100%; padding: 8px 14px; border: none; background: none; color: #c9d1d9; font-size: 13px; text-align: left; cursor: pointer; }
+.ctx-item:hover { background: #21262d; }
+.ctx-danger { color: #da3633; }
+.ctx-danger:hover { background: #3d1214; }

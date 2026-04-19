@@ -19,6 +19,7 @@
     <span class="topbar-sep">›</span>
     <select id="domain-select"><option value="">Loading…</option></select>
     <input id="search-input" type="text" placeholder="Search classes…">
+    <button id="btn-add-class" title="Add new class">＋ Class</button>
     <button id="btn-validate" title="Validate ontology">✓ Validate</button>
     <button id="btn-project" title="Generate projections">⚙ Project</button>
   </div>
@@ -112,6 +113,36 @@
     </div>
     <div id="modal-result"></div>
   </div>
+</div>
+
+<div id="add-class-overlay" class="hidden">
+  <div id="add-class-modal" class="modal-box">
+    <div class="modal-box-header">
+      <span>New Class</span>
+      <button id="btn-close-add-class" class="close-btn">✕</button>
+    </div>
+    <div class="modal-box-body">
+      <label>Name <input id="new-class-name" type="text" placeholder="PascalCase"></label>
+      <label>Label <input id="new-class-label" type="text" placeholder="Human-readable label"></label>
+      <label>Comment <textarea id="new-class-comment" rows="2" placeholder="Description"></textarea></label>
+      <label>Superclass
+        <select id="new-class-super">
+          <option value="">(none)</option>
+        </select>
+      </label>
+      <div class="detail-actions">
+        <button id="btn-create-class" class="btn-sm btn-primary">Create</button>
+        <button id="btn-cancel-add-class" class="btn-sm">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="context-menu" class="hidden">
+  <button id="ctx-edit" class="ctx-item">✎ Edit</button>
+  <button id="ctx-add-prop" class="ctx-item">＋ Property</button>
+  <button id="ctx-add-sub" class="ctx-item">＋ Subclass</button>
+  <button id="ctx-delete" class="ctx-item ctx-danger">🗑 Delete</button>
 </div>
 
 <script src="/static/app.js"></script>

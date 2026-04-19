@@ -17,6 +17,7 @@ from kairos_ontology.ontology_ops import (
     modify_class,
     parse_ontology_content,
     remove_class,
+    remove_property,
     serialize_graph,
 )
 
@@ -122,6 +123,9 @@ async def propose_change(
     elif req.action == "remove_class":
         uri = req.details.get("class_uri") or f"{ns}{req.details.get('class_name', '')}"
         remove_class(graph, uri)
+    elif req.action == "remove_property":
+        uri = req.details.get("property_uri") or f"{ns}{req.details.get('property_name', '')}"
+        remove_property(graph, uri)
     else:
         raise HTTPException(400, f"Unknown action: {req.action}")
 
