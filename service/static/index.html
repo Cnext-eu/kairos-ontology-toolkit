@@ -14,19 +14,14 @@
 <!-- Top bar -->
 <header id="topbar">
   <div class="topbar-left">
+    <button id="btn-menu" title="Toggle menu">☰</button>
     <h1>Kairos Ontology Hub</h1>
     <select id="repo-select" title="Select repository"><option value="">Loading repos…</option></select>
     <span class="topbar-sep">›</span>
     <select id="domain-select"><option value="">Loading…</option></select>
     <input id="search-input" type="text" placeholder="Search classes…">
-    <button id="btn-add-class" title="Add new class">＋ Class</button>
-    <button id="btn-validate" title="Validate ontology">✓ Validate</button>
-    <button id="btn-project" title="Generate projections">⚙ Project</button>
   </div>
   <div class="topbar-right">
-    <button id="btn-undo" class="btn-topbar-sm" title="Undo (Ctrl+Z)" disabled>↩</button>
-    <button id="btn-redo" class="btn-topbar-sm" title="Redo (Ctrl+Y)" disabled>↪</button>
-    <button id="btn-save" class="btn-save hidden" title="Save changes to branch &amp; PR">💾 Save (<span id="change-count">0</span>)</button>
     <span id="status-badge" class="badge hidden"></span>
     <button id="btn-toggle-chat" title="Toggle chat panel">💬 Chat</button>
   </div>
@@ -34,6 +29,39 @@
 
 <!-- Main area -->
 <div id="main">
+
+  <!-- Sidebar -->
+  <nav id="sidebar" class="collapsed">
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Repository</div>
+      <div id="sidebar-repo-info" class="sidebar-repo-info">
+        <span id="sidebar-repo-status" class="repo-dot disconnected"></span>
+        <span id="sidebar-repo-name" class="sidebar-repo-label">No repo selected</span>
+      </div>
+      <button class="sidebar-btn" id="sb-switch-repo">↔ Switch Repository</button>
+    </div>
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Model</div>
+      <button class="sidebar-btn" id="sb-add-class">＋ New Class</button>
+      <button class="sidebar-btn" id="sb-validate">✓ Validate</button>
+      <button class="sidebar-btn" id="sb-undo" disabled>↩ Undo</button>
+      <button class="sidebar-btn" id="sb-redo" disabled>↪ Redo</button>
+      <button class="sidebar-btn sb-save hidden" id="sb-save">💾 Save Changes</button>
+    </div>
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Project</div>
+      <button class="sidebar-btn" id="sb-project">⚙ Generate Projections</button>
+    </div>
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Ask AI</div>
+      <button class="sidebar-btn" id="sb-explain">💡 Explain this domain</button>
+      <button class="sidebar-btn" id="sb-suggest">🔍 Suggest improvements</button>
+      <button class="sidebar-btn" id="sb-ask-free">💬 Ask a question</button>
+    </div>
+  </nav>
 
   <!-- Graph + detail -->
   <div id="workspace">

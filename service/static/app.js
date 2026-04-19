@@ -9,8 +9,6 @@
   const repoSelect     = document.getElementById("repo-select");
   const domainSelect   = document.getElementById("domain-select");
   const searchInput    = document.getElementById("search-input");
-  const btnValidate    = document.getElementById("btn-validate");
-  const btnProject     = document.getElementById("btn-project");
   const btnToggleChat  = document.getElementById("btn-toggle-chat");
   const statusBadge    = document.getElementById("status-badge");
   const graphEmpty     = document.getElementById("graph-empty");
@@ -33,7 +31,6 @@
   const btnSaveClass   = document.getElementById("btn-save-class");
   const btnCancelEdit  = document.getElementById("btn-cancel-edit");
   const btnAddProp     = document.getElementById("btn-add-prop");
-  const btnAddClass       = document.getElementById("btn-add-class");
   const addClassOverlay   = document.getElementById("add-class-overlay");
   const btnCloseAddClass  = document.getElementById("btn-close-add-class");
   const btnCreateClass    = document.getElementById("btn-create-class");
@@ -43,10 +40,6 @@
   const ctxAddProp        = document.getElementById("ctx-add-prop");
   const ctxAddSub         = document.getElementById("ctx-add-sub");
   const ctxDelete         = document.getElementById("ctx-delete");
-  const btnSave           = document.getElementById("btn-save");
-  const changeCount       = document.getElementById("change-count");
-  const btnUndo           = document.getElementById("btn-undo");
-  const btnRedo           = document.getElementById("btn-redo");
   const saveOverlay       = document.getElementById("save-overlay");
   const saveSummary       = document.getElementById("save-summary");
   const saveMessage       = document.getElementById("save-message");
@@ -55,6 +48,22 @@
   const btnCloseSave      = document.getElementById("btn-close-save");
   const btnCancelSave     = document.getElementById("btn-cancel-save");
   const saveResult        = document.getElementById("save-result");
+
+  // Sidebar refs
+  const sidebar            = document.getElementById("sidebar");
+  const btnMenu            = document.getElementById("btn-menu");
+  const sbAddClass         = document.getElementById("sb-add-class");
+  const sbValidate         = document.getElementById("sb-validate");
+  const sbUndo             = document.getElementById("sb-undo");
+  const sbRedo             = document.getElementById("sb-redo");
+  const sbSave             = document.getElementById("sb-save");
+  const sbProject          = document.getElementById("sb-project");
+  const sbExplain          = document.getElementById("sb-explain");
+  const sbSuggest          = document.getElementById("sb-suggest");
+  const sbAskFree          = document.getElementById("sb-ask-free");
+  const sbSwitchRepo       = document.getElementById("sb-switch-repo");
+  const sidebarRepoName    = document.getElementById("sidebar-repo-name");
+  const sidebarRepoStatus  = document.getElementById("sidebar-repo-status");
 
   // ── State ─────────────────────────────────────────────────
   let cy = null;
@@ -90,14 +99,13 @@
   function updateDirtyState() {
     if (pendingChanges.length > 0) {
       isDirty = true;
-      btnSave.classList.remove("hidden");
-      changeCount.textContent = pendingChanges.length;
+      sbSave.classList.remove("hidden");
     } else {
       isDirty = false;
-      btnSave.classList.add("hidden");
+      sbSave.classList.add("hidden");
     }
-    btnUndo.disabled = undoStack.length === 0;
-    btnRedo.disabled = redoStack.length === 0;
+    sbUndo.disabled = undoStack.length === 0;
+    sbRedo.disabled = redoStack.length === 0;
   }
 
   // ── Save dialog ─────────────────────────────────────────
@@ -233,8 +241,6 @@
     repoSelect.addEventListener("change", onRepoChange);
     domainSelect.addEventListener("change", onDomainChange);
     searchInput.addEventListener("input", onSearch);
-    btnValidate.addEventListener("click", onValidate);
-    btnProject.addEventListener("click", () => modalOverlay.classList.remove("hidden"));
     btnToggleChat.addEventListener("click", toggleChat);
     btnCloseChat.addEventListener("click", toggleChat);
     btnCloseDetail.addEventListener("click", () => detailPanel.classList.add("hidden"));
@@ -245,16 +251,26 @@
     btnSaveClass.addEventListener("click", onSaveClass);
     btnCancelEdit.addEventListener("click", exitEditMode);
     btnAddProp.addEventListener("click", onAddProperty);
-    btnAddClass.addEventListener("click", showAddClassDialog);
     btnCloseAddClass.addEventListener("click", hideAddClassDialog);
     btnCreateClass.addEventListener("click", onCreateClass);
     btnCancelAddClass.addEventListener("click", hideAddClassDialog);
-    btnSave.addEventListener("click", showSaveDialog);
-    btnUndo.addEventListener("click", onUndo);
-    btnRedo.addEventListener("click", onRedo);
     btnDoSave.addEventListener("click", onDoSave);
     btnCloseSave.addEventListener("click", hideSaveDialog);
     btnCancelSave.addEventListener("click", hideSaveDialog);
+
+    // Sidebar buttons
+    btnMenu.addEventListener("click", toggleSidebar);
+    sbAddClass.addEventListener("click", showAddClassDialog);
+    sbValidate.addEventListener("click", onValidate);
+    sbUndo.addEventListener("click", onUndo);
+    sbRedo.addEventListener("click", onRedo);
+    sbSave.addEventListener("click", showSaveDialog);
+    sbProject.addEventListener("click", () => modalOverlay.classList.remove("hidden"));
+    sbSwitchRepo.addEventListener("click", () => { repoSelect.focus(); });
+    sbExplain.addEventListener("click", () => sendQuickPrompt("Explain the currently loaded ontology domain in detail. List all classes, their properties, and relationships."));
+    sbSuggest.addEventListener("click", () => sendQuickPrompt("Suggest improvements for this ontology domain. Look for missing labels, incomplete properties, naming issues, and structural problems."));
+    sbAskFree.addEventListener("click", () => { if (chatPanel.classList.contains("hidden")) toggleChat(); chatInput.focus(); });
+
     document.addEventListener("keydown", (e) => {
       if (e.ctrlKey && e.key === "z" && !e.shiftKey) { e.preventDefault(); onUndo(); }
       if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
@@ -287,6 +303,27 @@
     chatInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
     });
+  }
+
+  // ── Sidebar ──────────────────────────────────────────────
+  function toggleSidebar() {
+    sidebar.classList.toggle("collapsed");
+  }
+
+  function updateSidebarRepo() {
+    if (activeRepo && activeRepo.name) {
+      sidebarRepoName.textContent = activeRepo.owner + "/" + activeRepo.name;
+      sidebarRepoStatus.className = "repo-dot connected";
+    } else {
+      sidebarRepoName.textContent = "No repo selected";
+      sidebarRepoStatus.className = "repo-dot disconnected";
+    }
+  }
+
+  function sendQuickPrompt(text) {
+    if (chatPanel.classList.contains("hidden")) toggleChat();
+    chatInput.value = text;
+    sendChat();
   }
 
   // ── Graph (Cytoscape) ────────────────────────────────────
@@ -538,6 +575,7 @@
       // Fall back to loading domains from default config
       await loadDomains();
     }
+    updateSidebarRepo();
   }
 
   function onRepoChange() {
@@ -571,6 +609,7 @@
     }
     activeRepo = JSON.parse(val);
     chatHistory = [];  // reset chat on repo switch
+    updateSidebarRepo();
     loadDomains();
   }
 
