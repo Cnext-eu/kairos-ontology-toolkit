@@ -1,6 +1,6 @@
 """Tests for the chat router (/api/chat)."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 
 class TestChat:

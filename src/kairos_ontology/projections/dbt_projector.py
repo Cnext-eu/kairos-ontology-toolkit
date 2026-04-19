@@ -13,8 +13,7 @@ by the main projector orchestrator to create DBT artifacts from ontology classes
 
 import re
 from pathlib import Path
-from typing import Dict, List
-from rdflib import Graph, Namespace, XSD
+from rdflib import Graph, XSD
 from jinja2 import Environment, FileSystemLoader
 from .uri_utils import extract_local_name
 
@@ -35,8 +34,6 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
     Returns:
         Dictionary of {file_path: content} for generated artifacts
     """
-    from jinja2 import Environment, FileSystemLoader
-    import re
     
     artifacts = {}
     env = Environment(loader=FileSystemLoader(template_dir))
@@ -79,7 +76,6 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
             shapes_graph = Graph()
             shapes_graph.parse(shape_file, format='turtle')
             
-            SH = Namespace("http://www.w3.org/ns/shacl#")
             tests_by_property = {}
             
             # Query for all property shapes
@@ -179,7 +175,7 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
         
         if not properties:
             print(f"  ⚠️  Skipping {class_info['name']}: No datatype properties defined")
-            print(f"      (DBT requires datatype properties to generate table columns)")
+            print("      (DBT requires datatype properties to generate table columns)")
             print(f"      Tip: Add owl:DatatypeProperty with rdfs:domain <{class_info['uri']}>")
             skipped_classes.append(class_info['name'])
             continue
@@ -224,6 +220,6 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
         print(f"\n  ⚠️  Skipped {len(skipped_classes)} class(es) with no datatype properties:")
         for class_name in skipped_classes:
             print(f"      - {class_name}")
-        print(f"      These classes only have object properties or no properties defined.")
+        print("      These classes only have object properties or no properties defined.")
     
     return artifacts

@@ -5,11 +5,11 @@ A2UI Protocol Projector - Generate JSON Schema for Agent-to-UI messages
 Generates JSON Schema definitions for message types based on ontology classes.
 """
 
-import json
 from pathlib import Path
 from typing import Dict, List
-from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD
+from rdflib import Graph, Namespace, XSD
 from jinja2 import Environment, FileSystemLoader
+from .uri_utils import extract_local_name
 
 
 class A2UIProjector:
@@ -157,7 +157,7 @@ class A2UIProjector:
                     required_props.append(prop_name)
             
             return required_props
-        except:
+        except Exception:
             return []
     
     def generate_message_schema(self, class_info: Dict, properties: List[Dict],

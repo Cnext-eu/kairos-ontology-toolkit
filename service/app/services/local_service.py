@@ -4,7 +4,6 @@ Used when ``KAIROS_DEV_MODE=true``.  Provides the same async interface as
 ``github_service`` so routers can use either backend transparently.
 """
 
-import os
 from pathlib import Path
 from typing import Optional
 

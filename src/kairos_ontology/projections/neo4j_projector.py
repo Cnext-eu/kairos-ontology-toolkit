@@ -11,7 +11,7 @@ Generates:
 from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
-from rdflib import Graph, Namespace, RDF, RDFS, OWL
+from rdflib import Graph, Namespace
 from jinja2 import Environment, FileSystemLoader
 from .uri_utils import extract_local_name
 

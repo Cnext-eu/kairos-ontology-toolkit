@@ -19,7 +19,6 @@ import difflib
 import json
 import uuid
 from pathlib import Path
-from typing import Optional
 
 from jinja2 import Environment, FileSystemLoader
 from rdflib import Graph
@@ -28,7 +27,6 @@ from kairos_ontology.ontology_ops import (
     ClassInfo,
     add_class,
     add_property,
-    list_relationships,
     modify_class,
     parse_ontology_content,
     remove_class,

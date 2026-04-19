@@ -1,6 +1,5 @@
 """Tests for the ontology CRUD router (/api/ontology)."""
 
-import json
 
 
 class TestQueryOntology:

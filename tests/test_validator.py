@@ -1,7 +1,6 @@
 """Tests for the validation module."""
 
 import pytest
-from pathlib import Path
 from kairos_ontology.validator import run_validation
 
 

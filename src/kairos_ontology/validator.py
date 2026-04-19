@@ -2,8 +2,7 @@
 
 from pathlib import Path
 from typing import Optional
-import rdflib
-from rdflib import Graph, Namespace
+from rdflib import Graph
 from pyshacl import validate as shacl_validate
 import json
 from .catalog_utils import load_graph_with_catalog

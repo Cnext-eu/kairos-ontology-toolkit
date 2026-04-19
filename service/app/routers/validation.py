@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header
 from pydantic import BaseModel
 
 from kairos_ontology.validator import validate_content

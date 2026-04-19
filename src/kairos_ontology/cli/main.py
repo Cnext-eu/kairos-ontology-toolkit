@@ -5,7 +5,6 @@ import click
 import shutil
 import subprocess
 from pathlib import Path
-from importlib import resources as importlib_resources
 from ..validator import run_validation
 from ..projector import run_projections
 from ..catalog_test import test_catalog_resolution
@@ -551,10 +550,10 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template):
 
     print(f"\n✅ Repository created: {repo_slug}")
     print(f"   GitHub: https://github.com/{org}/{repo_slug}")
-    print(f"\nNext steps:")
+    print("\nNext steps:")
     print(f"  cd {repo_slug}")
-    print(f"  pip install -e .")
-    print(f"  kairos-ontology init --domain <your-domain>")
+    print("  pip install -e .")
+    print("  kairos-ontology init --domain <your-domain>")
 
 
 def _create_repo_from_template(
@@ -610,7 +609,7 @@ def _run_smartcoding_update(repo_dir: Path):
              "-File", str(script), "-SkipSelfUpdateCheck"],
             cwd=repo_dir, check=True,
         )
-        print(f"  ✓ SmartCoding updated to latest")
+        print("  ✓ SmartCoding updated to latest")
     except FileNotFoundError:
         print(f"  ⚠  pwsh not found — run {_SMARTCODING_SCRIPT} manually")
     except subprocess.CalledProcessError:
@@ -648,7 +647,7 @@ def _add_reference_models(repo_dir: Path, version: str | None = None):
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode().strip() if exc.stderr else str(exc)
         print(f"  ⚠  Failed to add reference models submodule: {stderr}")
-        print(f"     You can add it manually:")
+        print("     You can add it manually:")
         print(f"       cd {repo_dir.name}")
         print(f"       git submodule add {_REF_MODELS_REPO} {_REF_MODELS_PATH}")
 
@@ -664,7 +663,7 @@ def _create_github_repo(repo_dir: Path, repo_slug: str, org: str,
         subprocess.run(["gh", "--version"], capture_output=True, check=True)
     except FileNotFoundError:
         print("  ⚠  gh CLI not found — install from https://cli.github.com")
-        print(f"     Then run manually:")
+        print("     Then run manually:")
         print(f"       gh repo create {full_name} {visibility} --source . --push")
         return
 
@@ -682,7 +681,7 @@ def _create_github_repo(repo_dir: Path, repo_slug: str, org: str,
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode().strip()
         print(f"  ⚠  gh repo create failed: {stderr}")
-        print(f"     You can create it manually:")
+        print("     You can create it manually:")
         print(f"       cd {repo_slug}")
         print(f"       gh repo create {full_name} {visibility} --source . --push")
 

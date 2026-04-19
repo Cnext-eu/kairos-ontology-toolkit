@@ -1,6 +1,5 @@
 """Tests for the kairos-ontology init and new-repo CLI commands."""
 
-import os
 from pathlib import Path
 from unittest import mock
 from click.testing import CliRunner

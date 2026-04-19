@@ -2,10 +2,7 @@
 
 from pathlib import Path
 from typing import Dict, List, Optional
-from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD, SKOS
-from jinja2 import Environment, FileSystemLoader
-import json
-from datetime import datetime
+from rdflib import Graph
 from .projections.uri_utils import extract_local_name
 
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt"]

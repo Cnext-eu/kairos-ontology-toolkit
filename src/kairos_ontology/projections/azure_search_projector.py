@@ -7,10 +7,9 @@ Generates:
 2. SKOS-based synonym maps in Solr format
 """
 
-import json
 from pathlib import Path
 from typing import Dict, List
-from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD
+from rdflib import Graph, Namespace, XSD
 from jinja2 import Environment, FileSystemLoader
 from .skos_utils import SKOSParser
 from .uri_utils import extract_local_name

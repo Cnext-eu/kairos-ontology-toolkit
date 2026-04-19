@@ -10,7 +10,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
-from rdflib import Graph, Namespace, RDF, RDFS, OWL
+from rdflib import Graph, Namespace
 from jinja2 import Environment, FileSystemLoader
 from .skos_utils import SKOSParser
 from .uri_utils import extract_local_name
@@ -263,14 +263,8 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
     Returns:
         Dictionary of {file_path: content}
     """
-    from jinja2 import Environment, FileSystemLoader
     from datetime import datetime
-    from pathlib import Path
     from .uri_utils import extract_local_name
-    
-    # Setup Jinja2 environment
-    template_dir_path = Path(template_dir) if not isinstance(template_dir, Path) else template_dir
-    jinja_env = Environment(loader=FileSystemLoader(str(template_dir_path)))
     
     # Extract datatype properties for each class
     def get_properties(class_uri: str) -> list:
@@ -369,7 +363,6 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
         relationships.append(rel_info)
     
     # Create optimized LLM-friendly structure
-    import json
     
     # Compact format optimized for LLM token efficiency
     llm_context = {

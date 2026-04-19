@@ -2,8 +2,8 @@
 
 import pytest
 from pathlib import Path
-from rdflib import Graph, Namespace, RDF, RDFS, OWL
-from kairos_ontology.projector import run_projections, _run_projection
+from rdflib import Graph, Namespace, RDF, OWL
+from kairos_ontology.projector import run_projections
 
 
 class TestProjector:
@@ -134,7 +134,6 @@ class TestProjector:
     
     def test_graph_merging(self, temp_dir, ontology_files):
         """Test that multiple ontology files are merged into a single graph."""
-        from rdflib import Graph
         
         # Manually load and merge to test the concept
         merged_graph = Graph()
@@ -152,7 +151,6 @@ class TestProjector:
     
     def test_urn_namespace_extraction(self, temp_dir, sample_ontology):
         """Test that HTTP namespace classes are correctly identified."""
-        from rdflib import Graph, Namespace
         
         graph = Graph()
         ontology_file = temp_dir / "test.ttl"
@@ -194,7 +192,6 @@ class TestProjector:
         ontology_file = temp_dir / "test.ttl"
         ontology_file.write_text(ontology_content, encoding='utf-8')
         
-        from rdflib import Graph
         graph = Graph()
         graph.parse(ontology_file, format='turtle')
         
@@ -439,8 +436,6 @@ class TestProjector:
         
         # Manually call the DBT projector to avoid emoji encoding issues
         from kairos_ontology.projections.dbt_projector import generate_dbt_artifacts
-        from rdflib import Graph
-        from pathlib import Path
         
         # Load ontology
         graph = Graph()

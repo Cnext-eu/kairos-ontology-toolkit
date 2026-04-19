@@ -10,7 +10,6 @@ Provides functions to:
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Optional
-from urllib.parse import urlparse
 
 from rdflib import Graph
 
@@ -127,7 +126,7 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> Graph:
     Returns:
         RDF graph with all imports loaded
     """
-    from rdflib import OWL, URIRef
+    from rdflib import OWL
     
     # Initialize resolver
     resolver = CatalogResolver(catalog_path)
