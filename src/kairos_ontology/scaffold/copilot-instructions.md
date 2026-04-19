@@ -70,10 +70,14 @@ Output is generated into `ontology-hub/output/`.
 
 ## Workflow
 
-1. Read `ontology-hub/README.md` for company context and domain model overview.
-2. Check the domain model overview table before creating new `.ttl` files.
-3. Create or modify `.ttl` files in `ontology-hub/ontologies/`.
-4. Update `ontology-hub/ontologies/_master.ttl` with `owl:imports` for any new domain.
-5. Run `kairos-ontology validate` to check for errors.
-6. Run `kairos-ontology project` to regenerate artifacts.
-7. Commit on a feature branch, open PR for review.
+**Always create a feature branch before making changes.** Never commit
+directly to `main`.  Use the SC-feature-branch skill to create one.
+
+1. Create a feature branch (e.g., `ontology/add-order-domain`).
+2. Read `ontology-hub/README.md` for company context and domain model overview.
+3. Check the domain model overview table before creating new `.ttl` files.
+4. Create or modify `.ttl` files in `ontology-hub/ontologies/`.
+5. Update `ontology-hub/ontologies/_master.ttl` with `owl:imports` for any new domain.
+6. Run `kairos-ontology validate` to check for errors.
+7. Run `kairos-ontology project` to regenerate artifacts.
+8. Commit changes, push, and open a PR to merge into `main`.

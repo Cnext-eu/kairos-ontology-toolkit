@@ -11,6 +11,8 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
 
 ## Before you start
 
+0. **Create a feature branch** — never work directly on `main`.  Use the
+   SC-feature-branch skill (e.g., `ontology/add-order-domain`).
 1. **Read the hub README** — open `ontology-hub/README.md` and note the company
    name, company domain, namespace base, and the domain model overview table.
    All new ontologies MUST use the namespace pattern documented there.
