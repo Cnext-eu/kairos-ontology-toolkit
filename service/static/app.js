@@ -6,6 +6,7 @@
   let AUTH = "Bearer dev-token";  // default; replaced by /api/config in dev mode
 
   // ── DOM refs ──────────────────────────────────────────────
+  const repoSelect     = document.getElementById("repo-select");
   const domainSelect   = document.getElementById("domain-select");
   const searchInput    = document.getElementById("search-input");
   const btnValidate    = document.getElementById("btn-validate");
@@ -31,10 +32,16 @@
   let allDomains = [];       // [{domain, namespace, classes, relationships}]
   let currentDomain = null;
   let chatHistory = [];      // [{role, content}]
+  let activeRepo = null;     // {owner, name, full_name, default_branch}
 
   // ── Helpers ───────────────────────────────────────────────
   function headers(extra) {
-    return Object.assign({ "Authorization": AUTH, "Content-Type": "application/json" }, extra || {});
+    const h = { "Authorization": AUTH, "Content-Type": "application/json" };
+    if (activeRepo) {
+      h["X-Kairos-Repo-Owner"] = activeRepo.owner;
+      h["X-Kairos-Repo-Name"] = activeRepo.name;
+    }
+    return Object.assign(h, extra || {});
   }
 
   async function api(method, path, body) {
@@ -53,11 +60,15 @@
       if (cfg.github_token) {
         AUTH = "Bearer " + cfg.github_token;
       }
+      if (cfg.active_repo) {
+        activeRepo = cfg.active_repo;
+      }
     } catch (_) { /* non-critical */ }
 
     initGraph();
-    await loadDomains();
+    await loadRepos();
     loadProjectTargets();
+    repoSelect.addEventListener("change", onRepoChange);
     domainSelect.addEventListener("change", onDomainChange);
     searchInput.addEventListener("input", onSearch);
     btnValidate.addEventListener("click", onValidate);
@@ -183,6 +194,54 @@
     }).run();
 
     graphEmpty.classList.add("hidden");
+  }
+
+  // ── Repo loading ──────────────────────────────────────────
+  async function loadRepos() {
+    try {
+      const repos = await api("GET", "/api/repos/");
+      repoSelect.innerHTML = '<option value="">— select repo —</option>';
+      for (const r of repos) {
+        const opt = document.createElement("option");
+        opt.value = JSON.stringify({ owner: r.owner, name: r.name });
+        opt.textContent = r.name.replace("-ontology-hub", "");
+        repoSelect.appendChild(opt);
+      }
+      // Auto-select if only one repo or if active repo matches
+      if (repos.length === 1) {
+        repoSelect.selectedIndex = 1;
+        onRepoChange();
+      } else if (activeRepo && activeRepo.name) {
+        for (let i = 0; i < repoSelect.options.length; i++) {
+          if (repoSelect.options[i].value.includes(activeRepo.name)) {
+            repoSelect.selectedIndex = i;
+            onRepoChange();
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load repos:", err);
+      repoSelect.innerHTML = '<option value="">Error loading repos</option>';
+      // Fall back to loading domains from default config
+      await loadDomains();
+    }
+  }
+
+  function onRepoChange() {
+    const val = repoSelect.value;
+    if (!val) {
+      activeRepo = null;
+      allDomains = [];
+      domainSelect.innerHTML = '<option value="">— select repo first —</option>';
+      cy.elements().remove();
+      graphEmpty.textContent = "Select a repository to begin";
+      graphEmpty.classList.remove("hidden");
+      return;
+    }
+    activeRepo = JSON.parse(val);
+    chatHistory = [];  // reset chat on repo switch
+    loadDomains();
   }
 
   // ── Domain loading ────────────────────────────────────────

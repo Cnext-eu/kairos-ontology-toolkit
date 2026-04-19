@@ -6,8 +6,10 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 #topbar { display: flex; align-items: center; justify-content: space-between; height: 48px; padding: 0 16px; background: #161b22; border-bottom: 1px solid #30363d; gap: 12px; }
 .topbar-left, .topbar-right { display: flex; align-items: center; gap: 10px; }
 #topbar h1 { font-size: 15px; font-weight: 600; white-space: nowrap; color: #58a6ff; }
-#domain-select, #search-input { height: 30px; padding: 0 8px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: #c9d1d9; font-size: 13px; }
+#domain-select, #repo-select, #search-input { height: 30px; padding: 0 8px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: #c9d1d9; font-size: 13px; }
+#repo-select { min-width: 140px; }
 #domain-select { min-width: 160px; }
+.topbar-sep { color: #484f58; font-size: 16px; user-select: none; }
 #search-input { width: 200px; }
 #topbar button { height: 30px; padding: 0 12px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; font-size: 13px; cursor: pointer; white-space: nowrap; }
 #topbar button:hover { background: #30363d; }
