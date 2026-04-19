@@ -9,6 +9,7 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Header
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -16,7 +17,7 @@ from kairos_ontology.ontology_ops import parse_ontology_content
 
 from ..config import get_github_service, settings
 from ..services import sdk_service
-from .auth import get_user_token
+from .auth import get_user_token, _oauth_enabled
 
 router = APIRouter()
 
@@ -45,8 +46,13 @@ async def chat(
     use_gh_cli = False
 
     if not token:
-        # No OAuth session — fall back to gh CLI auth which uses
-        # the locally authenticated `gh` CLI (needs copilot scope)
+        if _oauth_enabled():
+            # OAuth is configured but user isn't authenticated — require login
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required. Please login via GitHub OAuth."},
+            )
+        # No OAuth configured — fall back to gh CLI auth (needs copilot scope)
         use_gh_cli = True
         token = "gh-cli"  # placeholder — SDK ignores this when use_logged_in_user=True
 

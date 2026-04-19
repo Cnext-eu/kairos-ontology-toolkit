@@ -74,8 +74,19 @@ def _headers(token: str) -> dict:
     }
 
 
-def _repo_url(owner: str | None = None, repo: str | None = None) -> str:
+def _validate_owner(owner: str | None) -> str:
+    """Ensure the requested owner matches the configured org to prevent confused-deputy attacks."""
     o = owner or settings.github_repo_owner
+    allowed = settings.github_repo_owner
+    if allowed and o.lower() != allowed.lower():
+        raise ValueError(
+            f"Repo owner '{o}' is not allowed. Only '{allowed}' repos are accessible."
+        )
+    return o
+
+
+def _repo_url(owner: str | None = None, repo: str | None = None) -> str:
+    o = _validate_owner(owner)
     r = repo or settings.github_repo_name
     return f"{_BASE}/repos/{o}/{r}"
 

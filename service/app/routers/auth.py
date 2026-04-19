@@ -32,6 +32,19 @@ _GITHUB_TOKEN = "https://github.com/login/oauth/access_token"
 _GITHUB_USER = "https://api.github.com/user"
 _SESSION_COOKIE = "kairos_session"
 _SESSION_MAX_AGE = 8 * 3600  # 8 hours
+_OAUTH_STATE_TTL = 600  # 10 minutes — abandon stale OAuth flows
+_MAX_PENDING_STATES = 100  # cap to prevent memory flooding
+
+
+def _cleanup_stale_states():
+    """Remove expired OAuth state entries to prevent unbounded memory growth."""
+    now = time.time()
+    stale = [
+        k for k, v in _sessions.items()
+        if k.startswith("oauth_state:") and now - v.get("created", 0) > _OAUTH_STATE_TTL
+    ]
+    for k in stale:
+        del _sessions[k]
 
 
 def _oauth_enabled() -> bool:
@@ -51,6 +64,15 @@ async def login(request: Request):
     # Build callback URL from the current request
     callback_url = str(request.url_for("oauth_callback"))
     state = secrets.token_urlsafe(32)
+
+    # Cleanup stale states and enforce cap to prevent memory flooding
+    _cleanup_stale_states()
+    pending = sum(1 for k in _sessions if k.startswith("oauth_state:"))
+    if pending >= _MAX_PENDING_STATES:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many pending login attempts. Try again later."},
+        )
 
     # Store state for CSRF verification (simple in-memory, keyed by state)
     _sessions[f"oauth_state:{state}"] = {"created": time.time()}
@@ -73,8 +95,12 @@ async def oauth_callback(code: str, state: str, response: Response):
 
     # Verify state
     state_key = f"oauth_state:{state}"
-    if state_key not in _sessions:
+    state_entry = _sessions.get(state_key)
+    if not state_entry:
         return JSONResponse(status_code=400, content={"detail": "Invalid OAuth state"})
+    if time.time() - state_entry.get("created", 0) > _OAUTH_STATE_TTL:
+        del _sessions[state_key]
+        return JSONResponse(status_code=400, content={"detail": "OAuth state expired"})
     del _sessions[state_key]
 
     # Exchange code for token
