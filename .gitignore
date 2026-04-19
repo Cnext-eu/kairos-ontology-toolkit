@@ -46,3 +46,8 @@ htmlcov/
 # Service secrets
 service/.env
 *.pem
+
+# Frontend build artifacts
+service/frontend/node_modules/
+service/frontend/dist/
+

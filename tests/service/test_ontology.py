@@ -32,8 +32,9 @@ class TestQueryOntology:
         assert data[0]["classes"] == []
 
     def test_query_missing_auth(self, client, mock_github):
+        """Auth is optional for reads — query works without Authorization header."""
         resp = client.get("/api/ontology/query")
-        assert resp.status_code == 422  # missing Authorization header
+        assert resp.status_code == 200
 
 
 class TestProposeChange:

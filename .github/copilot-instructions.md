@@ -8,7 +8,7 @@ applyTo: "**"
 
 This is a Python toolkit + FastAPI service for managing OWL/Turtle ontologies.
 It provides validation (syntax + SHACL), multi-target projections (dbt, neo4j,
-azure-search, a2ui, prompt), and an AI chat interface via the GitHub Copilot SDK.
+azure-search, a2ui, prompt), and an AI chat interface via the GitHub Models API.
 
 ## Code conventions
 
@@ -18,6 +18,15 @@ azure-search, a2ui, prompt), and an AI chat interface via the GitHub Copilot SDK
 - Async endpoints in FastAPI routers; sync helpers in the core toolkit.
 - Service code lives under `service/app/`.
 - Tests live under `tests/` (toolkit) and `tests/service/` (API endpoints).
+
+## Testing rules
+
+- **Every new function, service, or endpoint MUST have unit tests.**
+- Toolkit tests go in `tests/`, service/API tests go in `tests/service/`.
+- Mock external calls (GitHub API, OpenAI client) with `unittest.mock` — never hit real APIs in tests.
+- Use `pytest-asyncio` with `asyncio_mode = "auto"` for async test functions.
+- Run tests with `py -m pytest` (Windows) or `python -m pytest` (Unix).
+- Aim for coverage of: happy path, auth failure (401), and at least one edge/error case per endpoint.
 
 ## Ontology conventions
 

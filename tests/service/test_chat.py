@@ -1,73 +1,97 @@
 """Tests for the chat router (/api/chat)."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 class TestChat:
     def test_chat_streams_response(self, client, auth_header, mock_github):
-        """Verify chat endpoint returns SSE stream from mocked SDK."""
+        """Chat endpoint returns SSE stream from mocked models_service."""
 
         async def fake_stream(**kwargs):
-            for text in ["Hello", " world"]:
-                yield {"type": "delta", "content": text}
+            yield {"type": "delta", "content": "Hello"}
+            yield {"type": "delta", "content": " world"}
 
-        with patch("service.app.routers.chat.sdk_service") as mock_sdk:
-            mock_sdk.stream_chat = fake_stream
+        with patch("service.app.routers.chat.models_service") as mock_svc:
+            mock_svc.stream_chat = fake_stream
             resp = client.post(
                 "/api/chat",
                 headers=auth_header,
                 json={"messages": [{"role": "user", "content": "list classes"}]},
             )
-            assert resp.status_code == 200
-            assert "text/event-stream" in resp.headers["content-type"]
-            # SSE body should contain the streamed chunks as JSON
-            body = resp.text
-            assert "Hello" in body
-            assert "world" in body
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        assert "Hello" in resp.text
+        assert "world" in resp.text
 
     def test_chat_with_domain(self, client, auth_header, mock_github):
-        """Chat with domain context should build ontology context."""
+        """Chat with domain= injects ontology context into stream_chat call."""
+        captured = {}
 
         async def fake_stream(**kwargs):
-            yield {"type": "delta", "content": kwargs.get("ontology_context", "no-context")}
+            captured.update(kwargs)
+            yield {"type": "delta", "content": "ok"}
 
-        with patch("service.app.routers.chat.sdk_service") as mock_sdk:
-            mock_sdk.stream_chat = fake_stream
+        with patch("service.app.routers.chat.models_service") as mock_svc:
+            mock_svc.stream_chat = fake_stream
             resp = client.post(
                 "/api/chat",
                 headers=auth_header,
                 json={
-                    "messages": [{"role": "user", "content": "describe customer"}],
+                    "messages": [{"role": "user", "content": "describe"}],
                     "domain": "customer",
                 },
             )
-            assert resp.status_code == 200
-            # The ontology context should have been loaded
-            body = resp.text
-            assert "Customer" in body or "kairos" in body.lower()
+        assert resp.status_code == 200
+        assert "ontology_context" in captured
 
     def test_chat_missing_auth(self, client, mock_github, monkeypatch):
-        # Ensure dev mode is off so missing auth returns 401
+        """Missing auth with no fallbacks returns 401."""
         from service.app import config
-        monkeypatch.setattr(config.settings, "dev_mode", False)
         monkeypatch.setattr(config.settings, "dev_github_token", "")
-        resp = client.post(
-            "/api/chat",
-            json={"messages": [{"role": "user", "content": "hello"}]},
-        )
+        monkeypatch.setattr(config.settings, "oauth_client_id", "")
+
+        # _gh_cli_token must also return None so we reach the 401
+        with patch("service.app.routers.chat._gh_cli_token", new=AsyncMock(return_value=None)):
+            resp = client.post(
+                "/api/chat",
+                json={"messages": [{"role": "user", "content": "hello"}]},
+            )
         assert resp.status_code == 401
 
     def test_chat_empty_messages(self, client, auth_header, mock_github):
-        """Empty messages list should still work (falls back to '(no message)')."""
+        """Empty messages list falls back to '(no message)'."""
+        captured = {}
 
         async def fake_stream(**kwargs):
-            yield {"type": "delta", "content": kwargs.get("user_message", "")}
+            captured.update(kwargs)
+            yield {"type": "delta", "content": "ok"}
 
-        with patch("service.app.routers.chat.sdk_service") as mock_sdk:
-            mock_sdk.stream_chat = fake_stream
+        with patch("service.app.routers.chat.models_service") as mock_svc:
+            mock_svc.stream_chat = fake_stream
             resp = client.post(
                 "/api/chat",
                 headers=auth_header,
                 json={"messages": []},
             )
-            assert resp.status_code == 200
+        assert resp.status_code == 200
+        assert captured.get("user_message") == "(no message)"
+
+    def test_chat_tool_events_passed_through(self, client, auth_header, mock_github):
+        """tool_start / tool_end events are forwarded in the SSE stream."""
+
+        async def fake_stream(**kwargs):
+            yield {"type": "tool_start", "name": "suggest_improvements", "intent": ""}
+            yield {"type": "tool_end", "name": "suggest_improvements"}
+            yield {"type": "delta", "content": "Done"}
+
+        with patch("service.app.routers.chat.models_service") as mock_svc:
+            mock_svc.stream_chat = fake_stream
+            resp = client.post(
+                "/api/chat",
+                headers=auth_header,
+                json={"messages": [{"role": "user", "content": "suggest"}]},
+            )
+        assert resp.status_code == 200
+        assert "tool_start" in resp.text
+        assert "suggest_improvements" in resp.text
+

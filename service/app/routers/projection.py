@@ -27,15 +27,17 @@ async def list_targets():
 @router.post("")
 async def generate_projection(
     req: ProjectRequest,
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
     repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
 ):
-    """Generate projection artifacts for a domain."""
-    token = _extract_token(authorization)
+    """Generate projection artifacts for a domain.
+
+    No user auth required — repo access is handled by the GitHub App.
+    """
     file_path = _domain_to_path(req.domain)
     gh = get_github_service()
-    content = await gh.read_file(token, file_path, owner=repo_owner, repo=repo_name)
+    content = await gh.read_file(file_path, owner=repo_owner, repo=repo_name)
 
     graph = Graph()
     graph.parse(data=content, format="turtle")

@@ -25,15 +25,17 @@ class ValidateContentRequest(BaseModel):
 @router.post("")
 async def validate_domain(
     req: ValidateRequest,
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
     repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
 ):
-    """Validate an ontology domain from the repo."""
-    token = _extract_token(authorization)
+    """Validate an ontology domain from the repo.
+
+    No user auth required — repo access is handled by the GitHub App.
+    """
     file_path = _domain_to_path(req.domain)
     gh = get_github_service()
-    content = await gh.read_file(token, file_path, owner=repo_owner, repo=repo_name)
+    content = await gh.read_file(file_path, owner=repo_owner, repo=repo_name)
     return validate_content(content, shapes_content=req.shapes_content)
 
 

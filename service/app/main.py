@@ -15,7 +15,7 @@ app = FastAPI(
     version="0.2.0",
     description=(
         "REST API for ontology CRUD, validation, projection, and AI chat. "
-        "Chat is powered by the GitHub Copilot SDK with custom ontology tools."
+        "Chat is powered by the GitHub Models API with custom ontology tools."
     ),
 )
 
@@ -49,6 +49,7 @@ async def get_config():
     return {
         "dev_mode": settings.dev_mode,
         "oauth_enabled": bool(settings.oauth_client_id and settings.oauth_client_secret),
+        "chat_model": settings.chat_model,
         "active_repo": {
             "owner": settings.github_repo_owner,
             "name": settings.github_repo_name,
@@ -56,11 +57,29 @@ async def get_config():
     }
 
 
-# Static UI
+# Static UI — prefer the compiled React/Vite build, fall back to legacy static/
+_frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 _static_dir = Path(__file__).resolve().parent.parent / "static"
-if _static_dir.is_dir():
-    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+_ui_dir = _frontend_dist if _frontend_dist.is_dir() else _static_dir
+
+if _ui_dir.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_ui_dir / "assets")), name="assets") \
+        if (_ui_dir / "assets").is_dir() else None
+    app.mount("/static", StaticFiles(directory=str(_ui_dir)), name="static")
 
     @app.get("/")
     async def root():
-        return FileResponse(str(_static_dir / "index.html"))
+        return FileResponse(str(_ui_dir / "index.html"))
+
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        """Return index.html for any non-API route (SPA client-side routing)."""
+        if full_path.startswith("api/"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404)
+        index = _ui_dir / "index.html"
+        if index.is_file():
+            return FileResponse(str(index))
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404)

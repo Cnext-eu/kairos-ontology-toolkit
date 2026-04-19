@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     oauth_client_secret: str = ""
     session_secret: str = "kairos-change-me-in-production"  # signs session cookies
 
+    # AI chat model (GitHub Models API)
+    chat_model: str = "gpt-4o"  # gpt-4o requires Copilot; gpt-4o-mini is free tier
+
     model_config = {"env_prefix": "KAIROS_", "env_file": str(_ENV_FILE)}
 
 
