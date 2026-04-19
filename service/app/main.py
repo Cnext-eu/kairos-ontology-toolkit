@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
-from .routers import chat, ontology, projection, repos, validation
+from .routers import auth, chat, ontology, projection, repos, validation
 
 app = FastAPI(
     title="Kairos Ontology Service",
@@ -35,6 +35,7 @@ app.include_router(validation.router, prefix="/api/validate", tags=["validation"
 app.include_router(projection.router, prefix="/api/project", tags=["projection"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(repos.router, prefix="/api/repos", tags=["repos"])
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 
 
 @app.get("/health")
@@ -47,6 +48,7 @@ async def get_config():
     """Public config endpoint — tells the UI about dev mode and active repo."""
     return {
         "dev_mode": settings.dev_mode,
+        "oauth_enabled": bool(settings.oauth_client_id and settings.oauth_client_secret),
         "active_repo": {
             "owner": settings.github_repo_owner,
             "name": settings.github_repo_name,

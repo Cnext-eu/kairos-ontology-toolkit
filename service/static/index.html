@@ -57,6 +57,19 @@
     </div>
     <div class="sidebar-section" style="margin-top:auto;">
       <div class="sidebar-divider"></div>
+      <div id="auth-section" class="sidebar-auth">
+        <div id="auth-logged-out">
+          <button class="sidebar-btn sb-login" id="btn-login">🔑 Login with GitHub</button>
+          <span class="auth-hint">Required for AI chat</span>
+        </div>
+        <div id="auth-logged-in" class="hidden">
+          <div class="auth-user-row">
+            <img id="auth-avatar" class="auth-avatar" src="" alt="">
+            <span id="auth-username" class="auth-username"></span>
+          </div>
+          <button class="sidebar-btn sb-logout" id="btn-logout">Logout</button>
+        </div>
+      </div>
       <span id="status-badge" class="badge hidden" style="margin:8px 14px;"></span>
     </div>
   </nav>

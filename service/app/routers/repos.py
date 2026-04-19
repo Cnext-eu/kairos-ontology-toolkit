@@ -12,10 +12,10 @@ router = APIRouter()
 
 @router.get("/")
 async def list_repos(
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """List ontology hub repos accessible to the authenticated user or App."""
-    token = _extract_token(authorization)
+    token = _extract_token(authorization) if authorization else None
 
     if settings.dev_mode:
         # In dev mode, try PAT-based discovery first

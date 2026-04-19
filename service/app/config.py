@@ -20,13 +20,18 @@ class Settings(BaseSettings):
     github_repo_owner: str = ""
     github_repo_name: str = ""
     github_default_branch: str = "main"
-    github_ontologies_path: str = "ontologies"
+    github_ontologies_path: str = "ontology-hub/ontologies"
 
     # Service
     allowed_origins: str = ""  # comma-separated CORS origins (empty = none)
     dev_mode: bool = False  # use local files instead of GitHub API
     local_ontologies_dir: str = "ontologies"  # path to local TTL files (dev mode)
     dev_github_token: str = ""  # GitHub PAT for Copilot SDK in dev mode
+
+    # GitHub OAuth (for per-user Copilot chat auth)
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
+    session_secret: str = "kairos-change-me-in-production"  # signs session cookies
 
     model_config = {"env_prefix": "KAIROS_", "env_file": str(_ENV_FILE)}
 

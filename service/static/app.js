@@ -64,6 +64,14 @@
   const sidebarRepoName    = document.getElementById("sidebar-repo-name");
   const sidebarRepoStatus  = document.getElementById("sidebar-repo-status");
 
+  // Auth refs
+  const authLoggedOut      = document.getElementById("auth-logged-out");
+  const authLoggedIn       = document.getElementById("auth-logged-in");
+  const btnLogin           = document.getElementById("btn-login");
+  const btnLogout          = document.getElementById("btn-logout");
+  const authAvatar         = document.getElementById("auth-avatar");
+  const authUsername        = document.getElementById("auth-username");
+
   // ── State ─────────────────────────────────────────────────
   let cy = null;
   let allDomains = [];       // [{domain, namespace, classes, relationships}]
@@ -75,6 +83,8 @@
   let isDirty = false;
   let undoStack = [];        // [{action, domain, details, reverseAction, reverseDetails}]
   let redoStack = [];
+  let authUser = null;       // {user, name, avatar} when logged in via OAuth
+  let oauthEnabled = false;
 
   // ── Helpers ───────────────────────────────────────────────
   function headers(extra) {
@@ -232,7 +242,11 @@
       if (cfg.active_repo) {
         activeRepo = cfg.active_repo;
       }
+      oauthEnabled = !!cfg.oauth_enabled;
     } catch (_) { /* non-critical */ }
+
+    // Check auth status
+    await checkAuthStatus();
 
     initGraph();
     await loadRepos();
@@ -267,6 +281,10 @@
     sbExplain.addEventListener("click", () => sendQuickPrompt("Explain the currently loaded ontology domain in detail. List all classes, their properties, and relationships."));
     sbSuggest.addEventListener("click", () => sendQuickPrompt("Suggest improvements for this ontology domain. Look for missing labels, incomplete properties, naming issues, and structural problems."));
     sbAskFree.addEventListener("click", () => { if (chatPanel.classList.contains("hidden")) toggleChat(); chatInput.focus(); });
+
+    // Auth buttons
+    btnLogin.addEventListener("click", () => { window.location.href = API + "/api/auth/login"; });
+    btnLogout.addEventListener("click", onLogout);
 
     document.addEventListener("keydown", (e) => {
       if (e.ctrlKey && e.key === "z" && !e.shiftKey) { e.preventDefault(); onUndo(); }
@@ -321,6 +339,48 @@
     if (chatPanel.classList.contains("hidden")) toggleChat();
     chatInput.value = text;
     sendChat();
+  }
+
+  // ── Authentication ──────────────────────────────────────────
+  async function checkAuthStatus() {
+    try {
+      const resp = await fetch(API + "/api/auth/status", { credentials: "same-origin" });
+      const data = await resp.json();
+      oauthEnabled = !!data.oauth_enabled;
+      if (data.authenticated) {
+        authUser = { user: data.user, name: data.name, avatar: data.avatar };
+        showAuthLoggedIn();
+      } else {
+        authUser = null;
+        showAuthLoggedOut();
+      }
+    } catch (_) {
+      showAuthLoggedOut();
+    }
+  }
+
+  function showAuthLoggedIn() {
+    authLoggedOut.classList.add("hidden");
+    authLoggedIn.classList.remove("hidden");
+    authAvatar.src = authUser.avatar || "";
+    authUsername.textContent = authUser.name || authUser.user || "User";
+  }
+
+  function showAuthLoggedOut() {
+    authLoggedIn.classList.add("hidden");
+    if (oauthEnabled) {
+      authLoggedOut.classList.remove("hidden");
+    } else {
+      authLoggedOut.classList.add("hidden");
+    }
+  }
+
+  async function onLogout() {
+    try {
+      await fetch(API + "/api/auth/logout", { method: "POST", credentials: "same-origin" });
+    } catch (_) { /* ok */ }
+    authUser = null;
+    showAuthLoggedOut();
   }
 
   // ── Graph (Cytoscape) ────────────────────────────────────
@@ -1033,6 +1093,7 @@
         method: "POST",
         headers: headers(),
         body: JSON.stringify(body),
+        credentials: "same-origin",
       });
 
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);

@@ -8,7 +8,7 @@ which the SDK uses for both Copilot API access and repo operations.
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Cookie, Header
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -16,6 +16,7 @@ from kairos_ontology.ontology_ops import parse_ontology_content
 
 from ..config import get_github_service, settings
 from ..services import sdk_service
+from .auth import get_user_token
 
 router = APIRouter()
 
@@ -31,30 +32,23 @@ async def chat(
     authorization: str = Header(default=None, alias="Authorization"),
     repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
     repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
+    kairos_session: Optional[str] = Cookie(None),
 ):
     """SSE-streaming chat endpoint for the Ontology Hub web viewer.
 
-    Creates a Copilot SDK session with ontology tools, injects domain
-    context into the system prompt, and streams the response via SSE.
-    In dev mode, falls back to KAIROS_DEV_GITHUB_TOKEN if no valid token
-    is provided in the Authorization header.
+    Token resolution order:
+      1. Per-user OAuth token (from session cookie)
+      2. gh CLI auth (use_logged_in_user=True) as fallback
     """
-    token = _extract_token(authorization or "")
+    # Try OAuth session token first
+    token = get_user_token(kairos_session)
+    use_gh_cli = False
 
-    # In dev mode, use configured token if header token looks like a placeholder
-    if settings.dev_mode and (not token or token == "dev-token"):
-        token = settings.dev_github_token
     if not token:
-        from fastapi.responses import JSONResponse
-        return JSONResponse(
-            status_code=401,
-            content={
-                "detail": (
-                    "No GitHub token. Set KAIROS_DEV_GITHUB_TOKEN"
-                    " in .env for dev mode."
-                )
-            },
-        )
+        # No OAuth session — fall back to gh CLI auth which uses
+        # the locally authenticated `gh` CLI (needs copilot scope)
+        use_gh_cli = True
+        token = "gh-cli"  # placeholder — SDK ignores this when use_logged_in_user=True
 
     # Build ontology context
     ontology_context = await _build_ontology_context(
@@ -87,7 +81,7 @@ async def chat(
             github_token=token,
             ontology_context=ontology_context,
             conversation_history=conversation_history,
-            use_logged_in_user=settings.dev_mode,
+            use_logged_in_user=use_gh_cli,
         ):
             yield {"data": json.dumps(event)}
 
