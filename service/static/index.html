@@ -24,6 +24,9 @@
     <button id="btn-project" title="Generate projections">⚙ Project</button>
   </div>
   <div class="topbar-right">
+    <button id="btn-undo" class="btn-topbar-sm" title="Undo (Ctrl+Z)" disabled>↩</button>
+    <button id="btn-redo" class="btn-topbar-sm" title="Redo (Ctrl+Y)" disabled>↪</button>
+    <button id="btn-save" class="btn-save hidden" title="Save changes to branch &amp; PR">💾 Save (<span id="change-count">0</span>)</button>
     <span id="status-badge" class="badge hidden"></span>
     <button id="btn-toggle-chat" title="Toggle chat panel">💬 Chat</button>
   </div>
@@ -134,6 +137,32 @@
         <button id="btn-create-class" class="btn-sm btn-primary">Create</button>
         <button id="btn-cancel-add-class" class="btn-sm">Cancel</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="save-overlay" class="hidden">
+  <div id="save-modal" class="modal-box">
+    <div class="modal-box-header">
+      <span>Save Changes</span>
+      <button id="btn-close-save" class="close-btn">✕</button>
+    </div>
+    <div class="modal-box-body">
+      <p style="font-size:13px; color:#8b949e; margin-bottom:12px;">
+        <strong id="save-summary"></strong>
+      </p>
+      <label>Commit message
+        <input id="save-message" type="text" placeholder="ontology: describe your changes">
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+        <input id="save-create-pr" type="checkbox" checked style="width:auto;margin:0;">
+        Create pull request
+      </label>
+      <div class="detail-actions" style="margin-top:16px;">
+        <button id="btn-do-save" class="btn-sm btn-primary">💾 Save &amp; Commit</button>
+        <button id="btn-cancel-save" class="btn-sm">Cancel</button>
+      </div>
+      <div id="save-result" style="margin-top:12px; font-size:13px;"></div>
     </div>
   </div>
 </div>

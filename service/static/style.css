@@ -117,3 +117,15 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .ctx-item:hover { background: #21262d; }
 .ctx-danger { color: #da3633; }
 .ctx-danger:hover { background: #3d1214; }
+
+/* ── Save button ─────────────────────────────────────────── */
+.btn-save { background: #d29922 !important; color: #000 !important; border-color: #d29922 !important; font-weight: 600; }
+.btn-save:hover { background: #e3b341 !important; }
+
+/* ── Undo / Redo buttons ─────────────────────────────────── */
+.btn-topbar-sm { height: 30px; width: 32px; padding: 0; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; font-size: 16px; cursor: pointer; }
+.btn-topbar-sm:hover:not(:disabled) { background: #30363d; }
+.btn-topbar-sm:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* ── Save overlay ────────────────────────────────────────── */
+#save-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; }

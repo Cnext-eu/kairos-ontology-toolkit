@@ -43,6 +43,18 @@
   const ctxAddProp        = document.getElementById("ctx-add-prop");
   const ctxAddSub         = document.getElementById("ctx-add-sub");
   const ctxDelete         = document.getElementById("ctx-delete");
+  const btnSave           = document.getElementById("btn-save");
+  const changeCount       = document.getElementById("change-count");
+  const btnUndo           = document.getElementById("btn-undo");
+  const btnRedo           = document.getElementById("btn-redo");
+  const saveOverlay       = document.getElementById("save-overlay");
+  const saveSummary       = document.getElementById("save-summary");
+  const saveMessage       = document.getElementById("save-message");
+  const saveCreatePr      = document.getElementById("save-create-pr");
+  const btnDoSave         = document.getElementById("btn-do-save");
+  const btnCloseSave      = document.getElementById("btn-close-save");
+  const btnCancelSave     = document.getElementById("btn-cancel-save");
+  const saveResult        = document.getElementById("save-result");
 
   // ── State ─────────────────────────────────────────────────
   let cy = null;
@@ -52,6 +64,9 @@
   let activeRepo = null;     // {owner, name, full_name, default_branch}
   let selectedClassData = null;
   let pendingChanges = [];   // [{action, domain, details, timestamp}]
+  let isDirty = false;
+  let undoStack = [];        // [{action, domain, details, reverseAction, reverseDetails}]
+  let redoStack = [];
 
   // ── Helpers ───────────────────────────────────────────────
   function headers(extra) {
@@ -69,6 +84,134 @@
     const res = await fetch(API + path, opts);
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     return res.json();
+  }
+
+  // ── Dirty-state tracking ──────────────────────────────────
+  function updateDirtyState() {
+    if (pendingChanges.length > 0) {
+      isDirty = true;
+      btnSave.classList.remove("hidden");
+      changeCount.textContent = pendingChanges.length;
+    } else {
+      isDirty = false;
+      btnSave.classList.add("hidden");
+    }
+    btnUndo.disabled = undoStack.length === 0;
+    btnRedo.disabled = redoStack.length === 0;
+  }
+
+  // ── Save dialog ─────────────────────────────────────────
+  function showSaveDialog() {
+    const domains = new Set(pendingChanges.map(c => c.domain));
+    saveSummary.textContent =
+      pendingChanges.length + " change(s) across " + domains.size + " domain(s)";
+    saveMessage.value = "ontology: " + pendingChanges.length + " changes";
+    saveResult.innerHTML = "";
+    btnDoSave.disabled = false;
+    btnDoSave.textContent = "💾 Save & Commit";
+    saveOverlay.classList.remove("hidden");
+  }
+
+  function hideSaveDialog() {
+    saveOverlay.classList.add("hidden");
+    saveResult.innerHTML = "";
+  }
+
+  async function onDoSave() {
+    const message = saveMessage.value.trim();
+    if (!message) { saveResult.textContent = "Commit message required."; return; }
+    const createPr = saveCreatePr.checked;
+    try {
+      btnDoSave.disabled = true;
+      btnDoSave.textContent = "Saving…";
+      saveResult.innerHTML = "<em>Saving…</em>";
+      const res = await api("POST", "/api/ontology/batch-apply", {
+        changes: pendingChanges.map(c => ({
+          domain: c.domain,
+          action: c.action,
+          details: c.details,
+        })),
+        message,
+        create_pr: createPr,
+      });
+      let html = "✅ Saved successfully.";
+      if (res.pr_url) {
+        html += ' <a href="' + esc(res.pr_url) +
+          '" target="_blank" style="color:#58a6ff;">View PR</a>';
+      }
+      saveResult.innerHTML = html;
+      pendingChanges = [];
+      undoStack = [];
+      redoStack = [];
+      updateDirtyState();
+      await reloadCurrentDomain();
+    } catch (err) {
+      saveResult.innerHTML = "❌ Error: " + esc(err.message);
+    } finally {
+      btnDoSave.disabled = false;
+      btnDoSave.textContent = "💾 Save & Commit";
+    }
+  }
+
+  // ── Undo / Redo ─────────────────────────────────────────
+  async function onUndo() {
+    if (!undoStack.length) return;
+    const entry = undoStack.pop();
+    try {
+      await api("POST", "/api/ontology/change", {
+        domain: entry.domain,
+        action: entry.reverseAction,
+        details: entry.reverseDetails,
+      });
+      redoStack.push({
+        action: entry.reverseAction, domain: entry.domain,
+        details: entry.reverseDetails,
+        reverseAction: entry.action,
+        reverseDetails: entry.details,
+      });
+      // Remove the last matching entry from pendingChanges
+      let idx = -1;
+      for (let i = pendingChanges.length - 1; i >= 0; i--) {
+        if (pendingChanges[i].action === entry.action &&
+            pendingChanges[i].domain === entry.domain) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx >= 0) pendingChanges.splice(idx, 1);
+      updateDirtyState();
+      await reloadCurrentDomain();
+    } catch (err) {
+      alert("Undo failed: " + err.message);
+      undoStack.push(entry);
+    }
+  }
+
+  async function onRedo() {
+    if (!redoStack.length) return;
+    const entry = redoStack.pop();
+    try {
+      await api("POST", "/api/ontology/change", {
+        domain: entry.domain,
+        action: entry.reverseAction,
+        details: entry.reverseDetails,
+      });
+      undoStack.push({
+        action: entry.reverseAction, domain: entry.domain,
+        details: entry.reverseDetails,
+        reverseAction: entry.action,
+        reverseDetails: entry.details,
+      });
+      pendingChanges.push({
+        action: entry.reverseAction, domain: entry.domain,
+        details: entry.reverseDetails, timestamp: Date.now(),
+      });
+      updateDirtyState();
+      await reloadCurrentDomain();
+    } catch (err) {
+      alert("Redo failed: " + err.message);
+      redoStack.push(entry);
+    }
   }
 
   // ── Init ──────────────────────────────────────────────────
@@ -106,6 +249,21 @@
     btnCloseAddClass.addEventListener("click", hideAddClassDialog);
     btnCreateClass.addEventListener("click", onCreateClass);
     btnCancelAddClass.addEventListener("click", hideAddClassDialog);
+    btnSave.addEventListener("click", showSaveDialog);
+    btnUndo.addEventListener("click", onUndo);
+    btnRedo.addEventListener("click", onRedo);
+    btnDoSave.addEventListener("click", onDoSave);
+    btnCloseSave.addEventListener("click", hideSaveDialog);
+    btnCancelSave.addEventListener("click", hideSaveDialog);
+    document.addEventListener("keydown", (e) => {
+      if (e.ctrlKey && e.key === "z" && !e.shiftKey) { e.preventDefault(); onUndo(); }
+      if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
+        e.preventDefault(); onRedo();
+      }
+    });
+    window.addEventListener("beforeunload", (e) => {
+      if (isDirty) { e.preventDefault(); e.returnValue = ""; }
+    });
     ctxEdit.addEventListener("click", () => {
       contextMenu.classList.add("hidden");
       showDetail(selectedClassData);
@@ -332,7 +490,14 @@
         details,
       });
       pendingChanges.push({ action: "add_class", domain, details, timestamp: Date.now() });
+      undoStack.push({
+        action: "add_class", domain, details,
+        reverseAction: "remove_class",
+        reverseDetails: { class_name: name },
+      });
+      redoStack = [];
       hideAddClassDialog();
+      updateDirtyState();
       await reloadCurrentDomain();
     } catch (err) {
       alert("Error creating class: " + err.message);
@@ -376,6 +541,24 @@
 
   function onRepoChange() {
     const val = repoSelect.value;
+    if (isDirty) {
+      if (!confirm("You have unsaved changes. Switch repository anyway?")) {
+        // Restore previous selection
+        if (activeRepo) {
+          for (let i = 0; i < repoSelect.options.length; i++) {
+            if (repoSelect.options[i].value.includes(activeRepo.name)) {
+              repoSelect.selectedIndex = i;
+              break;
+            }
+          }
+        }
+        return;
+      }
+      pendingChanges = [];
+      undoStack = [];
+      redoStack = [];
+      updateDirtyState();
+    }
     if (!val) {
       activeRepo = null;
       allDomains = [];
@@ -503,6 +686,8 @@
     const domain = domainSelect.value.replace(".ttl", "");
     const newLabel = document.getElementById("edit-class-label").value.trim();
     const newComment = document.getElementById("edit-class-comment").value.trim();
+    const oldLabel = selectedClassData.label || selectedClassData.name;
+    const oldComment = selectedClassData.comment || "";
 
     try {
       btnSaveClass.disabled = true;
@@ -521,7 +706,19 @@
         details: { class_name: selectedClassData.name },
         timestamp: Date.now(),
       });
+      undoStack.push({
+        action: "modify_class", domain,
+        details: { class_name: selectedClassData.name },
+        reverseAction: "modify_class",
+        reverseDetails: {
+          class_name: selectedClassData.name,
+          new_label: oldLabel,
+          new_comment: oldComment,
+        },
+      });
+      redoStack = [];
       exitEditMode();
+      updateDirtyState();
       await reloadCurrentDomain();
     } catch (err) {
       alert("Error saving: " + err.message);
@@ -535,19 +732,34 @@
     if (!selectedClassData || !currentDomain) return;
     if (!confirm(`Delete class "${selectedClassData.name}"? This cannot be undone.`)) return;
     const domain = domainSelect.value.replace(".ttl", "");
+    const deletedName = selectedClassData.name;
+    const deletedLabel = selectedClassData.label || selectedClassData.name;
+    const deletedComment = selectedClassData.comment || "";
     try {
       await api("POST", "/api/ontology/change", {
         domain,
         action: "remove_class",
-        details: { class_name: selectedClassData.name },
+        details: { class_name: deletedName },
       });
       pendingChanges.push({
         action: "remove_class", domain,
-        details: { class_name: selectedClassData.name },
+        details: { class_name: deletedName },
         timestamp: Date.now(),
       });
+      undoStack.push({
+        action: "remove_class", domain,
+        details: { class_name: deletedName },
+        reverseAction: "add_class",
+        reverseDetails: {
+          name: deletedName,
+          label: deletedLabel,
+          comment: deletedComment,
+        },
+      });
+      redoStack = [];
       detailPanel.classList.add("hidden");
       selectedClassData = null;
+      updateDirtyState();
       await reloadCurrentDomain();
     } catch (err) {
       alert("Error deleting: " + err.message);
@@ -582,9 +794,17 @@
       document.getElementById("add-prop-label").value = "";
       pendingChanges.push({
         action: "add_property", domain,
-        details: { class_name: selectedClassData.name },
+        details: { class_name: selectedClassData.name, property_name: name },
         timestamp: Date.now(),
       });
+      undoStack.push({
+        action: "add_property", domain,
+        details: { class_name: selectedClassData.name, property_name: name },
+        reverseAction: "remove_property",
+        reverseDetails: { property_name: name },
+      });
+      redoStack = [];
+      updateDirtyState();
       await reloadCurrentDomain();
     } catch (err) {
       alert("Error adding property: " + err.message);
