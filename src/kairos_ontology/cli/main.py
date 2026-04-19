@@ -85,7 +85,15 @@ def _copy_managed(src: Path, dst: Path) -> None:
 
 
 def _check_not_inside_git_repo(parent: Path, name: str) -> None:
-    """Raise ClickException if *parent* is inside an existing git repo."""
+    """Raise ClickException if *parent* is deeply inside an existing git repo.
+
+    We allow creating a new repo directly inside a git root (e.g.,
+    ``G:\\Git\\new-hub`` when ``G:\\Git`` is a repo) because ``git init``
+    in the subdirectory creates an independent nested repo.  We only block
+    when *parent* is a subdirectory **below** the git root (e.g., inside
+    ``some-repo/src/``), which almost certainly means the user is inside
+    another project.
+    """
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -93,14 +101,18 @@ def _check_not_inside_git_repo(parent: Path, name: str) -> None:
         )
         if result.returncode == 0:
             git_root = Path(result.stdout.strip()).resolve()
-            if parent.resolve().is_relative_to(git_root):
+            resolved_parent = parent.resolve()
+            # Allow if parent IS the git root (top-level directory)
+            if resolved_parent == git_root:
+                return
+            if resolved_parent.is_relative_to(git_root):
                 safe_path = git_root.parent
                 raise click.ClickException(
                     f"Cannot create a new repo inside an existing git "
                     f"repository.\n\n"
-                    f"  You are in:  {parent.resolve()}\n"
+                    f"  You are in:  {resolved_parent}\n"
                     f"  Git root:    {git_root}\n\n"
-                    f"  Fix: cd to a directory that is NOT inside a git repo,\n"
+                    f"  Fix: cd to the directory that contains your repos,\n"
                     f"  then run the command again.  For example:\n\n"
                     f"    cd {safe_path}\n"
                     f"    kairos-ontology new-repo {name}\n\n"

@@ -187,14 +187,38 @@ def test_new_repo_fails_if_dir_exists(tmp_path):
 
 
 def test_new_repo_rejects_inside_git_repo(tmp_path):
-    """new-repo should refuse when the target parent is inside a git repo."""
+    """new-repo should refuse when the target parent is a subdirectory of a git repo."""
+    runner = CliRunner()
+    # Simulate being inside a subdirectory of a git repo
+    subdir = tmp_path / "some-project" / "src"
+    subdir.mkdir(parents=True)
+
+    def fake_run(cmd, **kwargs):
+        # git rev-parse returns the repo root (parent of subdir)
+        if cmd == ["git", "rev-parse", "--show-toplevel"]:
+            result = mock.MagicMock(returncode=0, stdout=str(tmp_path / "some-project") + "\n")
+            return result
+        return mock.MagicMock(returncode=0)
+
+    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=fake_run):
+        result = runner.invoke(
+            cli,
+            ["new-repo", "contoso", "--path", str(subdir),
+             "--template", ""],
+        )
+    assert result.exit_code != 0
+    assert "inside an existing git repo" in result.output
+    assert "--path" in result.output
+
+
+def test_new_repo_allows_git_root_as_parent(tmp_path):
+    """new-repo should allow creating a repo when parent IS the git root."""
     runner = CliRunner()
 
     def fake_run(cmd, **kwargs):
-        # Simulate git rev-parse --show-toplevel returning the tmp_path
+        # git rev-parse returns tmp_path as the root — parent == git root
         if cmd == ["git", "rev-parse", "--show-toplevel"]:
-            result = mock.MagicMock(returncode=0, stdout=str(tmp_path) + "\n")
-            return result
+            return mock.MagicMock(returncode=0, stdout=str(tmp_path) + "\n")
         return mock.MagicMock(returncode=0)
 
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=fake_run):
@@ -203,9 +227,9 @@ def test_new_repo_rejects_inside_git_repo(tmp_path):
             ["new-repo", "contoso", "--path", str(tmp_path),
              "--template", ""],
         )
-    assert result.exit_code != 0
-    assert "inside an existing git repo" in result.output
-    assert "--path" in result.output
+    # Should NOT be blocked by the git check (may fail later for other reasons,
+    # but the exit should not mention "inside an existing git repo")
+    assert "inside an existing git repo" not in (result.output or "")
 
 
 def test_new_repo_default_org_is_cnext(tmp_path):
