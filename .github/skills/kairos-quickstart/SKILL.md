@@ -1,5 +1,5 @@
 ---
-name: quickstart
+name: kairos-quickstart
 description: >
   Step-by-step guide for creating a new Kairos ontology hub repository.
   Covers repo naming, CLI bootstrapping, first domain, validation, and projections.

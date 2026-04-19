@@ -1,5 +1,5 @@
 ---
-name: ontology-modeling
+name: kairos-ontology-modeling
 description: >
   Expert knowledge for designing and modifying OWL/Turtle ontologies.
   Covers class hierarchies, property design, naming, and common patterns.

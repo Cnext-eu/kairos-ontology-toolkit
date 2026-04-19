@@ -1,5 +1,5 @@
 ---
-name: projection-generation
+name: kairos-projection-generation
 description: >
   Knowledge about generating downstream artifacts from ontologies.
   Covers all 5 projection targets and when to use each.

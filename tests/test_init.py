@@ -33,10 +33,10 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/mappings/README.md").is_file()
 
             # Check skills installed
-            assert Path(".github/skills/hub-setup/SKILL.md").is_file()
-            assert Path(".github/skills/ontology-modeling/SKILL.md").is_file()
-            assert Path(".github/skills/ontology-validation/SKILL.md").is_file()
-            assert Path(".github/skills/projection-generation/SKILL.md").is_file()
+            assert Path(".github/skills/kairos-hub-setup/SKILL.md").is_file()
+            assert Path(".github/skills/kairos-ontology-modeling/SKILL.md").is_file()
+            assert Path(".github/skills/kairos-ontology-validation/SKILL.md").is_file()
+            assert Path(".github/skills/kairos-projection-generation/SKILL.md").is_file()
 
             # Check copilot instructions
             assert Path(".github/copilot-instructions.md").is_file()
@@ -66,7 +66,7 @@ def test_init_without_domain(tmp_path):
             assert result.exit_code == 0
 
             assert Path("ontology-hub/ontologies").is_dir()
-            assert Path(".github/skills/hub-setup/SKILL.md").is_file()
+            assert Path(".github/skills/kairos-hub-setup/SKILL.md").is_file()
             # No ontology files should be created
             assert list(Path("ontology-hub/ontologies").glob("*.ttl")) == []
 
@@ -159,8 +159,7 @@ def test_new_repo_creates_full_structure(tmp_path):
 
     # Copilot
     assert (repo / ".github" / "copilot-instructions.md").is_file()
-    assert (repo / ".github" / "skills" / "quickstart" / "SKILL.md").is_file()
-    assert (repo / ".github" / "skills" / "hub-setup" / "SKILL.md").is_file()
+    assert (repo / ".github" / "skills" / "kairos-hub-setup" / "SKILL.md").is_file()
 
     # Repo-level files
     assert (repo / "pyproject.toml").is_file()

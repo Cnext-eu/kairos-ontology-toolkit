@@ -1,5 +1,5 @@
 ---
-name: ontology-validation
+name: kairos-ontology-validation
 description: >
   Expertise for validating RDF/OWL ontologies using syntax checks and SHACL shapes.
   Covers common errors, SHACL shape patterns, and remediation steps.

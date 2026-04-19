@@ -1,5 +1,5 @@
 ---
-name: hub-setup
+name: kairos-hub-setup
 description: >
   Guide for setting up a new ontology hub repository.
   Covers folder structure, starter ontologies, SHACL shapes, and projections.
