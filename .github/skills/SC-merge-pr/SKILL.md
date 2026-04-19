@@ -119,6 +119,18 @@ gh pr create --base main \
 - [ ] Security review passed (no path traversal, no secrets, no shell=True)"
 ```
 
+### Step 5b — Merge the pull request
+
+After the PR has been reviewed and approved, merge it with `--delete-branch`
+so the remote branch is cleaned up automatically:
+
+```bash
+gh pr merge --squash --delete-branch
+```
+
+> `--delete-branch` tells GitHub to delete the remote branch automatically
+> after the merge completes.
+
 ### Step 6 — Confirm
 
 Print a summary:
@@ -127,21 +139,77 @@ Print a summary:
 ✅ Pull request created!
    Branch: feature/add-order-domain → main
    PR URL: https://github.com/<org>/<repo>/pull/<number>
+   🗑️  Remote branch will be deleted automatically after merge.
 
 Next steps:
   - Review the PR on GitHub
-  - After approval and merge, clean up locally:
-      git checkout main
-      git pull origin main
-      git branch -d feature/add-order-domain
+  - After merge, run local cleanup:
+      git checkout main && git pull origin main && git branch -d feature/add-order-domain
 ```
 
-## Post-merge cleanup (when user comes back after merge)
+## Post-merge cleanup and release
+
+After the PR is merged, perform **all** of the following steps automatically.
+
+### Step 7a — Clean up local branch
+
+The remote branch is already deleted (via `--delete-branch`).
+Clean up the local branch:
 
 ```bash
+BRANCH=$(git branch --show-current)
 git checkout main
 git pull origin main
-git branch -d <merged-branch>
+git branch -d "$BRANCH"
+```
+
+Do NOT ask for confirmation — the branch was already merged, so `-d`
+(safe delete) will succeed.  If the user is already on `main`, detect
+the merged branch from context or the PR URL and delete it.
+
+### Step 7b — Bump version and release
+
+> **Only applies to the `kairos-ontology-toolkit` repo itself.**
+> Skip this step for ontology hub repos (they don't publish packages).
+
+After switching to `main`, ask the user which version bump to apply:
+
+| Type | When |
+|------|------|
+| `patch` | Bug fixes, small skill/doc changes |
+| `minor` | New features, new projections, new CLI commands |
+| `major` | Breaking API changes |
+
+Then run the release script:
+
+```powershell
+.\release.ps1
+```
+
+The script will:
+1. Prompt for release type (major / minor / patch)
+2. Bump the version in `pyproject.toml` and `__init__.py`
+3. Commit the version change
+4. Create and push a `v*` git tag
+
+The tag push triggers the **release.yml** workflow which:
+- Builds the package
+- Publishes to **PyPI**
+- Creates a **GitHub Release**
+
+Wait for the release workflow to complete and confirm success:
+
+```bash
+gh run list --workflow release.yml --limit 1
+```
+
+Print a summary:
+
+```
+✅ Release complete!
+   Version: v1.3.0
+   PyPI:    https://pypi.org/project/kairos-ontology-toolkit/1.3.0/
+   Release: https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/tag/v1.3.0
 ```
 
 ## Error handling
