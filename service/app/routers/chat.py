@@ -1,11 +1,12 @@
 """Chat router — SSE streaming AI chat for the web viewer.
 
-Uses the GitHub Copilot SDK to create agentic sessions with custom
-ontology tools.  The caller authenticates with their GitHub OAuth token,
-which the SDK uses for both Copilot API access and repo operations.
+Uses the GitHub Models API (OpenAI-compatible, no Copilot subscription needed)
+with any valid GitHub PAT or OAuth token.
 """
 
+import asyncio
 import json
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Header
@@ -16,9 +17,10 @@ from sse_starlette.sse import EventSourceResponse
 from kairos_ontology.ontology_ops import parse_ontology_content
 
 from ..config import get_github_service, settings
-from ..services import sdk_service
+from ..services import models_service
 from .auth import get_user_token, _oauth_enabled
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -38,27 +40,38 @@ async def chat(
     """SSE-streaming chat endpoint for the Ontology Hub web viewer.
 
     Token resolution order:
-      1. Per-user OAuth token (from session cookie)
-      2. gh CLI auth (use_logged_in_user=True) as fallback
+      1. Per-user OAuth session token (cookie)
+      2. Authorization header token
+      3. DEV_GITHUB_TOKEN setting
+      4. gh CLI token (gh auth token) — dev fallback
+      5. 401
     """
-    # Try OAuth session token first
+    # Try OAuth session token first, then fall back to Authorization header
     token = get_user_token(kairos_session)
-    use_gh_cli = False
+
+    if not token and authorization:
+        token = _extract_token(authorization)
 
     if not token:
         if _oauth_enabled():
-            # OAuth is configured but user isn't authenticated — require login
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Authentication required. Please login via GitHub OAuth."},
             )
-        # No OAuth configured — fall back to gh CLI auth (needs copilot scope)
-        use_gh_cli = True
-        token = "gh-cli"  # placeholder — SDK ignores this when use_logged_in_user=True
+        elif settings.dev_github_token:
+            token = settings.dev_github_token
+        else:
+            # Try gh CLI as last resort (dev machines with `gh auth login`)
+            token = await _gh_cli_token()
+        if not token:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "No GitHub token available. Set DEV_GITHUB_TOKEN in .env or run `gh auth login`."},
+            )
 
     # Build ontology context
     ontology_context = await _build_ontology_context(
-        token, req.domain, repo_owner=repo_owner, repo_name=repo_name,
+        req.domain, repo_owner=repo_owner, repo_name=repo_name,
     )
 
     # Extract last user message and build conversation history
@@ -82,12 +95,14 @@ async def chat(
         last_user_msg = "(no message)"
 
     async def event_generator():
-        async for event in sdk_service.stream_chat(
+        async for event in models_service.stream_chat(
             user_message=last_user_msg,
             github_token=token,
             ontology_context=ontology_context,
             conversation_history=conversation_history,
-            use_logged_in_user=use_gh_cli,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            model=settings.chat_model,
         ):
             yield {"data": json.dumps(event)}
 
@@ -99,7 +114,6 @@ async def chat(
 # ---------------------------------------------------------------------------
 
 async def _build_ontology_context(
-    token: str,
     domain: Optional[str],
     repo_owner: Optional[str] = None,
     repo_name: Optional[str] = None,
@@ -109,22 +123,16 @@ async def _build_ontology_context(
     if domain:
         file_path = _domain_to_path(domain)
         try:
-            return await gh.read_file(
-                token, file_path, owner=repo_owner, repo=repo_name,
-            )
+            return await gh.read_file(file_path, owner=repo_owner, repo=repo_name)
         except Exception:
             return f"(Could not load domain: {domain})"
 
     # Summarise all domains
     try:
-        files = await gh.list_ttl_files(
-            token, owner=repo_owner, repo=repo_name,
-        )
+        files = await gh.list_ttl_files(owner=repo_owner, repo=repo_name)
         parts = []
         for f in files:
-            content = await gh.read_file(
-                token, f["path"], owner=repo_owner, repo=repo_name,
-            )
+            content = await gh.read_file(f["path"], owner=repo_owner, repo=repo_name)
             info = parse_ontology_content(content)
             classes = ", ".join(c.name for c in info.classes)
             parts.append(f"Domain {f['name']}: classes=[{classes}]")
@@ -137,6 +145,21 @@ def _extract_token(authorization: str) -> str:
     if authorization.lower().startswith("bearer "):
         return authorization[7:]
     return authorization
+
+
+async def _gh_cli_token() -> Optional[str]:
+    """Try to get a token from the gh CLI (dev machines with `gh auth login`)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "gh", "auth", "token",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        token = stdout.decode().strip()
+        return token if token else None
+    except Exception:
+        return None
 
 
 def _domain_to_path(domain: str) -> str:

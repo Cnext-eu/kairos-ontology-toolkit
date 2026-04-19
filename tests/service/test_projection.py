@@ -36,5 +36,6 @@ class TestGenerateProjection:
         assert "targets" in body
 
     def test_project_missing_auth(self, client, mock_github):
+        """Auth is optional for reads — projection works without Authorization header."""
         resp = client.post("/api/project", json={"domain": "customer"})
-        assert resp.status_code == 422
+        assert resp.status_code == 200

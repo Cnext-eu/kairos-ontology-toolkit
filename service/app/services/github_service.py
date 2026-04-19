@@ -23,11 +23,11 @@ def _build_jwt() -> str:
     """Build a JWT signed with the GitHub App's private key."""
     import jwt  # PyJWT
 
-    now = int(time.time())
+    iat = int(time.time()) - 60  # 60s clock-skew buffer
     payload = {
-        "iat": now - 60,  # issued at (60s skew)
-        "exp": now + (10 * 60),  # expires in 10 minutes
-        "iss": settings.github_app_id,
+        "iat": iat,
+        "exp": iat + (9 * 60),  # 9 min from iat — stays within GitHub's 10-min window
+        "iss": settings.github_app_id,  # must remain a string per GitHub API
     }
     # Private key may have escaped newlines from .env
     private_key = settings.github_app_private_key.replace("\\n", "\n")

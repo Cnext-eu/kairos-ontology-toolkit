@@ -1,3 +1,12 @@
+FROM node:20-slim AS frontend-build
+
+WORKDIR /frontend
+COPY service/frontend/package*.json ./
+RUN npm ci --quiet
+COPY service/frontend/ ./
+RUN npm run build
+
+# ── Python service ─────────────────────────────────────────
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -12,6 +21,9 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy service code
 COPY service/app /app/app
+
+# Copy compiled React frontend
+COPY --from=frontend-build /frontend/dist /app/frontend/dist
 
 EXPOSE 8000
 

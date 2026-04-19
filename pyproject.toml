@@ -44,7 +44,7 @@ uvicorn = {version = ">=0.30.0,<1.0.0", extras = ["standard"]}
 httpx = ">=0.27.0,<1.0.0"
 pydantic-settings = ">=2.0.0,<3.0.0"
 sse-starlette = ">=2.0.0,<3.0.0"
-github-copilot-sdk = ">=0.2.0,<1.0.0"
+openai = ">=1.0.0,<3.0.0"
 PyJWT = {version = ">=2.9.0,<3.0.0", extras = ["crypto"]}
 
 [tool.poetry.scripts]

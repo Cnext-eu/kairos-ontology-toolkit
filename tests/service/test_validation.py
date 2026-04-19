@@ -15,8 +15,9 @@ class TestValidateDomain:
         assert body["syntax"]["passed"] is True
 
     def test_validate_domain_missing_auth(self, client, mock_github):
+        """Auth is optional for reads — validation works without Authorization header."""
         resp = client.post("/api/validate", json={"domain": "customer"})
-        assert resp.status_code == 422
+        assert resp.status_code == 200
 
 
 class TestValidateContent:

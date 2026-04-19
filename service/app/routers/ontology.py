@@ -67,20 +67,22 @@ class BatchApplyRequest(BaseModel):
 async def query_ontology(
     domain: Optional[str] = None,
     search: Optional[str] = None,
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
     repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
 ):
-    """List / search classes, properties, and relationships."""
-    token = _extract_token(authorization)
+    """List / search classes, properties, and relationships.
+
+    No user auth required — repo access is handled by the GitHub App.
+    """
     gh = get_github_service()
-    files = await gh.list_ttl_files(token, owner=repo_owner, repo=repo_name)
+    files = await gh.list_ttl_files(owner=repo_owner, repo=repo_name)
 
     results = []
     for f in files:
         if domain and not f["name"].startswith(domain):
             continue
-        content = await gh.read_file(token, f["path"], owner=repo_owner, repo=repo_name)
+        content = await gh.read_file(f["path"], owner=repo_owner, repo=repo_name)
         info = parse_ontology_content(content)
         entry = {
             "domain": f["name"],
@@ -104,15 +106,17 @@ async def query_ontology(
 @router.post("/change")
 async def propose_change(
     req: ChangeRequest,
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
     repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
 ):
-    """Propose a TTL change and return a diff preview."""
-    token = _extract_token(authorization)
+    """Propose a TTL change and return a diff preview.
+
+    No user auth required — repo access is handled by the GitHub App.
+    """
     file_path = _domain_to_path(req.domain)
     gh = get_github_service()
-    original = await gh.read_file(token, file_path, owner=repo_owner, repo=repo_name)
+    original = await gh.read_file(file_path, owner=repo_owner, repo=repo_name)
 
     graph = Graph()
     graph.parse(data=original, format="turtle")
@@ -137,12 +141,11 @@ async def apply_change(
     repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
 ):
     """Commit proposed TTL content to a feature branch and create a PR."""
-    token = _extract_token(authorization)
     file_path = _domain_to_path(req.domain)
 
     # Get current file SHA (needed for update)
     gh = get_github_service()
-    files = await gh.list_ttl_files(token, owner=repo_owner, repo=repo_name)
+    files = await gh.list_ttl_files(owner=repo_owner, repo=repo_name)
     sha = None
     for f in files:
         if f["path"] == file_path:
@@ -150,13 +153,12 @@ async def apply_change(
             break
 
     branch_name = f"ontology/ai-{uuid.uuid4().hex[:8]}"
-    await gh.create_branch(token, branch_name, owner=repo_owner, repo=repo_name)
+    await gh.create_branch(branch_name, owner=repo_owner, repo=repo_name)
     await gh.write_file(
-        token, file_path, req.new_content, branch_name, req.message,
+        file_path, req.new_content, branch_name, req.message,
         sha=sha, owner=repo_owner, repo=repo_name,
     )
     pr = await gh.create_pull_request(
-        token,
         branch_name,
         title=req.message,
         body="Proposed by Kairos Ontology AI assistant.",
@@ -177,7 +179,6 @@ async def batch_apply(
     if not req.changes:
         raise HTTPException(400, "No changes provided")
 
-    token = _extract_token(authorization)
     gh = get_github_service()
 
     # Group changes by domain
@@ -186,15 +187,15 @@ async def batch_apply(
         domain_changes.setdefault(c.domain, []).append(c)
 
     branch_name = f"ontology/batch-{uuid.uuid4().hex[:8]}"
-    await gh.create_branch(token, branch_name, owner=repo_owner, repo=repo_name)
+    await gh.create_branch(branch_name, owner=repo_owner, repo=repo_name)
 
-    files = await gh.list_ttl_files(token, owner=repo_owner, repo=repo_name)
+    files = await gh.list_ttl_files(owner=repo_owner, repo=repo_name)
     file_sha_map = {f["path"]: f["sha"] for f in files}
 
     results = []
     for domain, changes in domain_changes.items():
         file_path = _domain_to_path(domain)
-        original = await gh.read_file(token, file_path, owner=repo_owner, repo=repo_name)
+        original = await gh.read_file(file_path, owner=repo_owner, repo=repo_name)
         graph = Graph()
         graph.parse(data=original, format="turtle")
         info = parse_ontology_content(original)
@@ -207,7 +208,7 @@ async def batch_apply(
         new_content = serialize_graph(graph)
         sha = file_sha_map.get(file_path)
         await gh.write_file(
-            token, file_path, new_content, branch_name, req.message,
+            file_path, new_content, branch_name, req.message,
             sha=sha, owner=repo_owner, repo=repo_name,
         )
         results.append({"domain": domain, "changes_applied": len(changes)})
@@ -215,7 +216,6 @@ async def batch_apply(
     pr_url = None
     if req.create_pr:
         pr = await gh.create_pull_request(
-            token,
             branch_name,
             title=req.message,
             body=f"Batch update: {sum(len(v) for v in domain_changes.values())} changes "
