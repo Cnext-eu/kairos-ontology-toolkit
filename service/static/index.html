@@ -39,11 +39,48 @@
     </div>
     <div id="detail-panel" class="hidden">
       <button id="btn-close-detail" class="close-btn">✕</button>
-      <h2 id="detail-name"></h2>
-      <p id="detail-comment" class="muted"></p>
-      <div id="detail-superclasses"></div>
-      <h3>Properties</h3>
-      <table id="detail-props"><thead><tr><th>Name</th><th>Type</th><th>Kind</th></tr></thead><tbody></tbody></table>
+
+      <!-- View mode -->
+      <div id="detail-view">
+        <h2 id="detail-name"></h2>
+        <p id="detail-comment" class="muted"></p>
+        <div id="detail-superclasses"></div>
+        <h3>Properties</h3>
+        <table id="detail-props"><thead><tr><th>Name</th><th>Type</th><th>Kind</th></tr></thead><tbody></tbody></table>
+        <div class="detail-actions">
+          <button id="btn-edit-class" class="btn-sm btn-primary">✎ Edit</button>
+          <button id="btn-delete-class" class="btn-sm btn-danger">🗑 Delete</button>
+        </div>
+      </div>
+
+      <!-- Edit mode -->
+      <div id="detail-edit" class="hidden">
+        <h3>Edit Class</h3>
+        <label>Name <input id="edit-class-name" type="text" disabled></label>
+        <label>Label <input id="edit-class-label" type="text"></label>
+        <label>Comment <textarea id="edit-class-comment" rows="3"></textarea></label>
+        <div class="detail-actions">
+          <button id="btn-save-class" class="btn-sm btn-primary">Save</button>
+          <button id="btn-cancel-edit" class="btn-sm">Cancel</button>
+        </div>
+
+        <h3>Add Property</h3>
+        <label>Name <input id="add-prop-name" type="text" placeholder="camelCase"></label>
+        <label>Label <input id="add-prop-label" type="text" placeholder="Human-readable"></label>
+        <label>Range
+          <select id="add-prop-range">
+            <option value="xsd:string">xsd:string</option>
+            <option value="xsd:integer">xsd:integer</option>
+            <option value="xsd:decimal">xsd:decimal</option>
+            <option value="xsd:boolean">xsd:boolean</option>
+            <option value="xsd:date">xsd:date</option>
+            <option value="xsd:dateTime">xsd:dateTime</option>
+          </select>
+        </label>
+        <div class="detail-actions">
+          <button id="btn-add-prop" class="btn-sm btn-primary">+ Add Property</button>
+        </div>
+      </div>
     </div>
   </div>
 

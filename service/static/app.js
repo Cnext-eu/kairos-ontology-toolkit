@@ -26,6 +26,13 @@
   const targetCBs      = document.getElementById("target-checkboxes");
   const btnRunProject  = document.getElementById("btn-run-project");
   const modalResult    = document.getElementById("modal-result");
+  const detailView     = document.getElementById("detail-view");
+  const detailEdit     = document.getElementById("detail-edit");
+  const btnEditClass   = document.getElementById("btn-edit-class");
+  const btnDeleteClass = document.getElementById("btn-delete-class");
+  const btnSaveClass   = document.getElementById("btn-save-class");
+  const btnCancelEdit  = document.getElementById("btn-cancel-edit");
+  const btnAddProp     = document.getElementById("btn-add-prop");
 
   // ── State ─────────────────────────────────────────────────
   let cy = null;
@@ -33,6 +40,7 @@
   let currentDomain = null;
   let chatHistory = [];      // [{role, content}]
   let activeRepo = null;     // {owner, name, full_name, default_branch}
+  let selectedClassData = null;
 
   // ── Helpers ───────────────────────────────────────────────
   function headers(extra) {
@@ -78,6 +86,11 @@
     btnCloseDetail.addEventListener("click", () => detailPanel.classList.add("hidden"));
     btnCloseModal.addEventListener("click", () => modalOverlay.classList.add("hidden"));
     btnRunProject.addEventListener("click", onRunProject);
+    btnEditClass.addEventListener("click", enterEditMode);
+    btnDeleteClass.addEventListener("click", onDeleteClass);
+    btnSaveClass.addEventListener("click", onSaveClass);
+    btnCancelEdit.addEventListener("click", exitEditMode);
+    btnAddProp.addEventListener("click", onAddProperty);
     btnSend.addEventListener("click", sendChat);
     chatInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
@@ -291,6 +304,7 @@
 
   // ── Detail panel ──────────────────────────────────────────
   function showDetail(data) {
+    selectedClassData = data;
     document.getElementById("detail-name").textContent = data.name || data.label;
     document.getElementById("detail-comment").textContent = data.comment || "No description";
 
@@ -315,7 +329,132 @@
       tbody.appendChild(tr);
     }
 
+    detailView.classList.remove("hidden");
+    detailEdit.classList.add("hidden");
     detailPanel.classList.remove("hidden");
+
+    // Populate range dropdown with class URIs for object properties
+    const rangeSelect = document.getElementById("add-prop-range");
+    [...rangeSelect.options].forEach(opt => {
+      if (!opt.value.startsWith("xsd:")) opt.remove();
+    });
+    if (currentDomain) {
+      for (const cls of currentDomain.classes) {
+        const opt = document.createElement("option");
+        opt.value = cls.name;
+        opt.textContent = cls.name + " (object)";
+        rangeSelect.appendChild(opt);
+      }
+    }
+  }
+
+  // ── Edit workflow ────────────────────────────────────────
+  function enterEditMode() {
+    if (!selectedClassData) return;
+    document.getElementById("edit-class-name").value = selectedClassData.name;
+    document.getElementById("edit-class-label").value =
+      selectedClassData.label || selectedClassData.name;
+    document.getElementById("edit-class-comment").value =
+      selectedClassData.comment || "";
+    detailView.classList.add("hidden");
+    detailEdit.classList.remove("hidden");
+  }
+
+  function exitEditMode() {
+    detailView.classList.remove("hidden");
+    detailEdit.classList.add("hidden");
+  }
+
+  async function onSaveClass() {
+    if (!selectedClassData || !currentDomain) return;
+    const domain = domainSelect.value.replace(".ttl", "");
+    const newLabel = document.getElementById("edit-class-label").value.trim();
+    const newComment = document.getElementById("edit-class-comment").value.trim();
+
+    try {
+      btnSaveClass.disabled = true;
+      btnSaveClass.textContent = "Saving…";
+      await api("POST", "/api/ontology/change", {
+        domain,
+        action: "modify_class",
+        details: {
+          class_name: selectedClassData.name,
+          new_label: newLabel || undefined,
+          new_comment: newComment || undefined,
+        },
+      });
+      exitEditMode();
+      await reloadCurrentDomain();
+    } catch (err) {
+      alert("Error saving: " + err.message);
+    } finally {
+      btnSaveClass.disabled = false;
+      btnSaveClass.textContent = "Save";
+    }
+  }
+
+  async function onDeleteClass() {
+    if (!selectedClassData || !currentDomain) return;
+    if (!confirm(`Delete class "${selectedClassData.name}"? This cannot be undone.`)) return;
+    const domain = domainSelect.value.replace(".ttl", "");
+    try {
+      await api("POST", "/api/ontology/change", {
+        domain,
+        action: "remove_class",
+        details: { class_name: selectedClassData.name },
+      });
+      detailPanel.classList.add("hidden");
+      selectedClassData = null;
+      await reloadCurrentDomain();
+    } catch (err) {
+      alert("Error deleting: " + err.message);
+    }
+  }
+
+  async function onAddProperty() {
+    if (!selectedClassData || !currentDomain) return;
+    const domain = domainSelect.value.replace(".ttl", "");
+    const name = document.getElementById("add-prop-name").value.trim();
+    const label = document.getElementById("add-prop-label").value.trim();
+    const range = document.getElementById("add-prop-range").value;
+
+    if (!name) { alert("Property name is required."); return; }
+
+    const isObject = !range.startsWith("xsd:");
+
+    try {
+      btnAddProp.disabled = true;
+      await api("POST", "/api/ontology/change", {
+        domain,
+        action: "add_property",
+        details: {
+          name,
+          label: label || name,
+          domain_class: selectedClassData.name,
+          range,
+          is_object: isObject,
+        },
+      });
+      document.getElementById("add-prop-name").value = "";
+      document.getElementById("add-prop-label").value = "";
+      await reloadCurrentDomain();
+    } catch (err) {
+      alert("Error adding property: " + err.message);
+    } finally {
+      btnAddProp.disabled = false;
+    }
+  }
+
+  async function reloadCurrentDomain() {
+    if (!domainSelect.value) return;
+    try {
+      allDomains = await api("GET", "/api/ontology/query");
+      const name = domainSelect.value;
+      currentDomain = allDomains.find(d => d.domain === name) || null;
+      if (currentDomain) renderGraph(currentDomain);
+    } catch (err) {
+      console.error("Failed to reload domain:", err);
+    }
   }
 
   // ── Validate ──────────────────────────────────────────────

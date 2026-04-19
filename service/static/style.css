@@ -39,6 +39,20 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 #detail-props td { padding: 4px 6px; border-bottom: 1px solid #21262d; }
 .close-btn { background: none; border: none; color: #8b949e; font-size: 18px; cursor: pointer; float: right; }
 .close-btn:hover { color: #c9d1d9; }
+.detail-actions { display: flex; gap: 8px; margin: 12px 0; }
+.btn-sm { height: 30px; padding: 0 12px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.btn-sm:hover { background: #30363d; }
+.btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: #238636; border-color: #238636; color: #fff; }
+.btn-primary:hover { background: #2ea043; }
+.btn-danger { background: #21262d; border-color: #da3633; color: #da3633; }
+.btn-danger:hover { background: #3d1214; }
+
+/* ── Edit panel form ─────────────────────────────────────── */
+#detail-edit label { display: block; font-size: 12px; color: #8b949e; margin-bottom: 10px; }
+#detail-edit input, #detail-edit textarea, #detail-edit select { display: block; width: 100%; margin-top: 3px; padding: 6px 8px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: #c9d1d9; font-size: 13px; font-family: inherit; }
+#detail-edit input:disabled { opacity: 0.5; }
+#detail-edit input:focus, #detail-edit textarea:focus, #detail-edit select:focus { outline: none; border-color: #58a6ff; }
 
 /* ── Chat panel ──────────────────────────────────────────── */
 #chat-panel { width: 380px; min-width: 320px; display: flex; flex-direction: column; background: #161b22; border-left: 1px solid #30363d; }
