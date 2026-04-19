@@ -11,16 +11,20 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
 
 ## Before you start
 
-0. **Create a feature branch** — never work directly on `main`.  Use the
+0. **Quick toolkit version check** — run `kairos-ontology update --check` once
+   at the start of the session.  If it reports outdated files, run
+   `kairos-ontology update` and commit the refresh before doing any other work.
+   See the kairos-toolkit-update skill for full upgrade steps.
+1. **Create a feature branch** — never work directly on `main`.  Use the
    SC-feature-branch skill (e.g., `ontology/add-order-domain`).
-1. **Read the hub README** — open `ontology-hub/README.md` and note the company
+2. **Read the hub README** — open `ontology-hub/README.md` and note the company
    name, company domain, namespace base, and the domain model overview table.
    All new ontologies MUST use the namespace pattern documented there.
-2. **Check the domain model overview** — before creating a new `.ttl` file,
+3. **Check the domain model overview** — before creating a new `.ttl` file,
    verify that a row for the intended domain exists in the overview table.
    If it doesn't, add the domain to the table first and get agreement from the
    user.  This avoids fragmented, overlapping ontology files.
-3. **Check the master ontology** — after creating a new domain file, add an
+4. **Check the master ontology** — after creating a new domain file, add an
    `owl:imports` line for it in `ontology-hub/ontologies/_master.ttl`.
 
 ## Class design

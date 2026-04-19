@@ -9,6 +9,13 @@ description: >
 
 You help users generate and understand projection artifacts.
 
+## Before you start
+
+0. **Quick toolkit version check** — run `kairos-ontology update --check` once
+   at the start of the session.  If it reports outdated files, run
+   `kairos-ontology update` and commit the refresh before doing any other work.
+   See the kairos-toolkit-update skill for full upgrade steps.
+
 ## Available targets
 
 | Target | Output | Use case |
