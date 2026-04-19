@@ -1,0 +1,47 @@
+# {repo_name}
+
+Kairos ontology hub for **{description}**.
+
+## Quick start
+
+```bash
+# Install dependencies (includes kairos-ontology-toolkit)
+pip install -e .
+
+# Validate all ontologies
+kairos-ontology validate
+
+# Generate all projections
+kairos-ontology project
+
+# Generate a single target
+kairos-ontology project --target prompt
+```
+
+## Repository structure
+
+```
+├── ontology-hub/                        # Main ontology workspace
+│   ├── ontologies/                      # Domain ontologies (Turtle/RDF)
+│   ├── shapes/                          # SHACL validation constraints
+│   ├── mappings/                        # SKOS synonym mappings
+│   └── output/                          # Generated projections (gitignored)
+├── ontology-reference-models/           # Reference ontologies
+│   ├── authoritative-ontologies/        # FIBO, Schema.org, etc.
+│   ├── derived-ontologies/              # Industry-specific derived models
+│   └── catalog-v001.xml                 # OASIS XML catalog for import resolution
+```
+
+## Workflow
+
+1. Create or edit `.ttl` files in `ontology-hub/ontologies/`.
+2. Run `kairos-ontology validate` to check for errors.
+3. Run `kairos-ontology project` to regenerate downstream artifacts.
+4. Commit on a feature branch, open a PR for review.
+
+## Naming conventions
+
+- **Ontology files**: lowercase with hyphens — `customer.ttl`, `sales-order.ttl`
+- **Classes**: PascalCase — `Customer`, `SalesOrder`
+- **Properties**: camelCase — `customerName`, `orderDate`
+- **Namespaces**: `http://<org>.example.org/ontology/<domain>#`

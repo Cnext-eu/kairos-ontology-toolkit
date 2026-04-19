@@ -16,6 +16,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 packages = [{include = "kairos_ontology", from = "src"}]
+include = [
+    "src/kairos_ontology/scaffold/**/*",
+    "src/kairos_ontology/templates/**/*",
+]
 
 [tool.poetry.dependencies]
 python = "^3.12"
