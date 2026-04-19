@@ -1,9 +1,9 @@
-@prefix : <http://example.org/ontology/{domain}#> .
+@prefix : <https://{company_domain}/ont/{domain}#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-<http://example.org/ontology/{domain}> a owl:Ontology ;
+<https://{company_domain}/ont/{domain}> a owl:Ontology ;
     rdfs:label "{label}"@en ;
     rdfs:comment "Ontology for the {label} domain"@en ;
     owl:versionInfo "0.1.0" .

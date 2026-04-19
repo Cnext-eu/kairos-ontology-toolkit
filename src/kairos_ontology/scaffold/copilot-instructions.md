@@ -48,7 +48,9 @@ kairos-ontology catalog-test --catalog ontology-reference-models/catalog-v001.xm
 
 - All ontology files use Turtle (.ttl) syntax and live in `ontology-hub/ontologies/`.
 - Every ontology MUST declare an `owl:Ontology` with `rdfs:label` and `owl:versionInfo`.
-- Use HTTP/HTTPS namespaces with `#` or `/` separator.
+- Use HTTPS namespaces following the pattern in `ontology-hub/README.md`:
+  `https://<company-domain>/ont/<domain>#`.
+- Read `ontology-hub/README.md` for company context, namespace base, and domain overview.
 - Every `owl:Class` must have `rdfs:label` and `rdfs:comment`.
 - Every property must have `rdfs:domain`, `rdfs:range`, and `rdfs:label`.
 - Naming: PascalCase for classes, camelCase for properties.
@@ -68,7 +70,10 @@ Output is generated into `ontology-hub/output/`.
 
 ## Workflow
 
-1. Create or modify `.ttl` files in `ontology-hub/ontologies/`.
-2. Run `kairos-ontology validate` to check for errors.
-3. Run `kairos-ontology project` to regenerate artifacts.
-4. Commit on a feature branch, open PR for review.
+1. Read `ontology-hub/README.md` for company context and domain model overview.
+2. Check the domain model overview table before creating new `.ttl` files.
+3. Create or modify `.ttl` files in `ontology-hub/ontologies/`.
+4. Update `ontology-hub/ontologies/_master.ttl` with `owl:imports` for any new domain.
+5. Run `kairos-ontology validate` to check for errors.
+6. Run `kairos-ontology project` to regenerate artifacts.
+7. Commit on a feature branch, open PR for review.

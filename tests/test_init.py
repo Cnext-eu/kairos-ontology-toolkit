@@ -14,7 +14,7 @@ def test_init_creates_hub_structure(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["init", "--domain", "order"])
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "order"])
             assert result.exit_code == 0
 
             # Check ontology-hub directories
@@ -62,13 +62,15 @@ def test_init_without_domain(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["init"])
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert result.exit_code == 0
 
             assert Path("ontology-hub/ontologies").is_dir()
             assert Path(".github/skills/kairos-hub-setup/SKILL.md").is_file()
-            # No ontology files should be created
-            assert list(Path("ontology-hub/ontologies").glob("*.ttl")) == []
+            # Only _master.ttl should exist (no domain starter)
+            ttl_files = sorted(Path("ontology-hub/ontologies").glob("*.ttl"))
+            assert len(ttl_files) == 1
+            assert ttl_files[0].name == "_master.ttl"
 
 
 def test_init_no_overwrite_without_force(tmp_path):
@@ -78,13 +80,13 @@ def test_init_no_overwrite_without_force(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
             # Run once
-            runner.invoke(cli, ["init", "--domain", "customer"])
+            runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer"])
             # Modify the ontology to detect if it gets overwritten
             marker = "# MARKER"
             Path("ontology-hub/ontologies/customer.ttl").write_text(marker, encoding="utf-8")
 
             # Run again without --force
-            result = runner.invoke(cli, ["init", "--domain", "customer"])
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer"])
             assert result.exit_code == 0
             assert Path("ontology-hub/ontologies/customer.ttl").read_text(encoding="utf-8") == marker
 
@@ -95,10 +97,10 @@ def test_init_force_overwrites(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            runner.invoke(cli, ["init", "--domain", "customer"])
+            runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer"])
             Path("ontology-hub/ontologies/customer.ttl").write_text("# MARKER", encoding="utf-8")
 
-            result = runner.invoke(cli, ["init", "--domain", "customer", "--force"])
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer", "--force"])
             assert result.exit_code == 0
             content = Path("ontology-hub/ontologies/customer.ttl").read_text(encoding="utf-8")
             assert "owl:Ontology" in content
@@ -184,6 +186,28 @@ def test_new_repo_fails_if_dir_exists(tmp_path):
     assert "already exists" in result.output
 
 
+def test_new_repo_rejects_inside_git_repo(tmp_path):
+    """new-repo should refuse when the target parent is inside a git repo."""
+    runner = CliRunner()
+
+    def fake_run(cmd, **kwargs):
+        # Simulate git rev-parse --show-toplevel returning the tmp_path
+        if cmd == ["git", "rev-parse", "--show-toplevel"]:
+            result = mock.MagicMock(returncode=0, stdout=str(tmp_path) + "\n")
+            return result
+        return mock.MagicMock(returncode=0)
+
+    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=fake_run):
+        result = runner.invoke(
+            cli,
+            ["new-repo", "contoso", "--path", str(tmp_path),
+             "--template", ""],
+        )
+    assert result.exit_code != 0
+    assert "inside an existing git repo" in result.output
+    assert "--path" in result.output
+
+
 def test_new_repo_default_org_is_cnext(tmp_path):
     """new-repo should default --org to Cnext-eu."""
     runner = CliRunner()
@@ -238,7 +262,9 @@ def test_new_repo_without_domain(tmp_path):
     assert result.exit_code == 0, result.output
     repo = tmp_path / "empty-client-ontology-hub"
     assert (repo / "ontology-hub" / "ontologies").is_dir()
-    assert list((repo / "ontology-hub" / "ontologies").glob("*.ttl")) == []
+    # Only _master.ttl should exist (no domain starter)
+    ttl_files = sorted(p.name for p in (repo / "ontology-hub" / "ontologies").glob("*.ttl"))
+    assert ttl_files == ["_master.ttl"]
 
 
 def test_new_repo_custom_org(tmp_path):
@@ -513,7 +539,7 @@ def test_init_includes_workflow(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["init"])
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert result.exit_code == 0
             wf = Path(".github/workflows/managed-check.yml")
             assert wf.is_file()
@@ -556,7 +582,7 @@ def test_init_submodule_skips_existing(tmp_path):
             refs.mkdir()
             (refs / "catalog-v001.xml").write_text("<catalog/>", encoding="utf-8")
 
-            result = runner.invoke(cli, ["init"])
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert result.exit_code == 0
 
             # Submodule add should NOT have been called
@@ -719,7 +745,7 @@ def test_init_smartcoding_runs_when_script_exists(tmp_path):
             Path("update-smartcoding-latest.ps1").write_text(
                 "# smartcoding", encoding="utf-8"
             )
-            result = runner.invoke(cli, ["init"])
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert result.exit_code == 0
 
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
@@ -733,9 +759,132 @@ def test_init_smartcoding_skipped_when_no_script(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["init"])
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert result.exit_code == 0
 
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
             pwsh_calls = [c for c in call_args_list if c[0] == "pwsh"]
             assert len(pwsh_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Company domain, hub README, master ontology
+# ---------------------------------------------------------------------------
+
+
+def test_init_generates_hub_readme(tmp_path):
+    """init --company-domain should create ontology-hub/README.md with company context."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "contoso.com"])
+            assert result.exit_code == 0
+
+            readme = Path("ontology-hub/README.md")
+            assert readme.is_file()
+            content = readme.read_text(encoding="utf-8")
+            assert "contoso.com" in content
+            assert "Contoso" in content
+            assert "https://contoso.com/ont/" in content
+
+
+def test_init_generates_master_ontology(tmp_path):
+    """init should create ontology-hub/ontologies/_master.ttl."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "contoso.com"])
+            assert result.exit_code == 0
+
+            master = Path("ontology-hub/ontologies/_master.ttl")
+            assert master.is_file()
+            content = master.read_text(encoding="utf-8")
+            assert "owl:Ontology" in content
+            assert "contoso.com/ont/master" in content
+            assert "Contoso" in content
+
+
+def test_init_starter_uses_company_domain(tmp_path):
+    """init --domain should use the company domain in the starter ontology namespace."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(
+                cli, ["init", "--company-domain", "acme.io", "--domain", "customer"]
+            )
+            assert result.exit_code == 0
+
+            content = Path("ontology-hub/ontologies/customer.ttl").read_text(encoding="utf-8")
+            assert "https://acme.io/ont/customer#" in content
+            assert "https://acme.io/ont/customer>" in content
+
+
+def test_init_requires_company_domain(tmp_path):
+    """init should fail when --company-domain is not provided."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init"])
+            assert result.exit_code != 0
+            assert "company-domain" in result.output.lower() or "required" in result.output.lower()
+
+
+def test_new_repo_generates_hub_readme(tmp_path):
+    """new-repo should create ontology-hub/README.md with derived company context."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        result = runner.invoke(
+            cli,
+            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+        )
+    assert result.exit_code == 0, result.output
+
+    repo = tmp_path / "contoso-ontology-hub"
+    readme = repo / "ontology-hub" / "README.md"
+    assert readme.is_file()
+    content = readme.read_text(encoding="utf-8")
+    assert "contoso.com" in content
+    assert "Contoso" in content
+
+
+def test_new_repo_generates_master_ontology(tmp_path):
+    """new-repo should create ontology-hub/ontologies/_master.ttl."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        result = runner.invoke(
+            cli,
+            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+        )
+    assert result.exit_code == 0, result.output
+
+    repo = tmp_path / "contoso-ontology-hub"
+    master = repo / "ontology-hub" / "ontologies" / "_master.ttl"
+    assert master.is_file()
+    content = master.read_text(encoding="utf-8")
+    assert "owl:Ontology" in content
+    assert "contoso.com/ont/master" in content
+
+
+def test_new_repo_custom_company_domain(tmp_path):
+    """new-repo --company-domain should override the derived domain."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        result = runner.invoke(
+            cli,
+            ["new-repo", "contoso", "--path", str(tmp_path),
+             "--company-domain", "contoso.io", "--template", ""],
+        )
+    assert result.exit_code == 0, result.output
+
+    repo = tmp_path / "contoso-ontology-hub"
+    readme = repo / "ontology-hub" / "README.md"
+    content = readme.read_text(encoding="utf-8")
+    assert "contoso.io" in content
+    assert "contoso.com" not in content

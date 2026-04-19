@@ -36,6 +36,11 @@ Rules:
 
 ## 2. Bootstrap a new repo (one command)
 
+> **Important:** Run `new-repo` from *outside* any existing git repository
+> (e.g., from `~/projects/` or `C:\Git\`).  The command will refuse to create
+> a repo inside another git repo.  Use `--path` to specify a different parent
+> directory if needed.
+
 ```bash
 pip install kairos-ontology-toolkit
 

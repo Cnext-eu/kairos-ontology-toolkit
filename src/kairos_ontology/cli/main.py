@@ -84,6 +84,26 @@ def _copy_managed(src: Path, dst: Path) -> None:
     dst.write_text(content, encoding="utf-8")
 
 
+def _check_not_inside_git_repo(parent: Path, name: str) -> None:
+    """Raise ClickException if *parent* is inside an existing git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=parent, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            git_root = Path(result.stdout.strip()).resolve()
+            if parent.resolve().is_relative_to(git_root):
+                raise click.ClickException(
+                    f"Current directory is inside an existing git repo "
+                    f"({git_root.name}/).\n"
+                    f"  Use --path to create the new repo elsewhere, e.g.:\n"
+                    f"    kairos-ontology new-repo {name} --path {git_root.parent}"
+                )
+    except FileNotFoundError:
+        pass  # git not installed yet — will fail later with a clearer message
+
+
 @click.group()
 @click.version_option(version=_toolkit_version, package_name="kairos-ontology-toolkit")
 def cli():
@@ -171,16 +191,21 @@ def catalog_test_cmd(catalog, ontology):
 @cli.command()
 @click.option('--domain', type=str, default=None,
               help='Name of the first domain (e.g., "customer"). Creates a starter .ttl file.')
+@click.option('--company-domain', 'company_domain', type=str, required=True,
+              help='Company internet domain (e.g., "contoso.com"). '
+                   'Used as the namespace base: https://<domain>/ont/')
 @click.option('--force', is_flag=True, help='Overwrite existing files')
-def init(domain, force):
+def init(domain, company_domain, force):
     """Initialize a Kairos ontology hub in the current directory.
 
     Creates the standard folder structure, installs Copilot skills, and
     optionally scaffolds a starter ontology domain.
     """
     cwd = Path.cwd()
+    company_name = company_domain.split(".")[0].replace("-", " ").title()
     print("🚀 Initializing Kairos ontology hub")
-    print(f"   Directory: {cwd}\n")
+    print(f"   Directory: {cwd}")
+    print(f"   Company:   {company_name} ({company_domain})\n")
 
     hub = cwd / "ontology-hub"
 
@@ -245,10 +270,48 @@ def init(domain, force):
             shutil.copy2(workflow_src, workflow_dst)
             print("  ✓ Installed .github/workflows/managed-check.yml")
 
+    # 4c. Copy update-referencemodels.ps1
+    refscript_src = _SCAFFOLD_DIR / "update-referencemodels.ps1"
+    refscript_dst = cwd / "update-referencemodels.ps1"
+    if refscript_src.is_file():
+        if refscript_dst.exists() and not force:
+            print("  ⏭  update-referencemodels.ps1 already exists (use --force to overwrite)")
+        else:
+            shutil.copy2(refscript_src, refscript_dst)
+            print("  ✓ Installed update-referencemodels.ps1")
+
     # 5. Add reference models as git submodule
     _add_reference_models(cwd)
 
-    # 6. Scaffold a starter domain ontology
+    # 6. Generate hub README with company context
+    hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
+    hub_readme_dst = hub / "README.md"
+    if hub_readme_src.is_file():
+        if hub_readme_dst.exists() and not force:
+            print("  ⏭  ontology-hub/README.md already exists (use --force to overwrite)")
+        else:
+            content = hub_readme_src.read_text(encoding="utf-8")
+            content = (content
+                       .replace("{company_name}", company_name)
+                       .replace("{company_domain}", company_domain))
+            hub_readme_dst.write_text(content, encoding="utf-8")
+            print("  ✓ Created ontology-hub/README.md (company context)")
+
+    # 7. Generate master ontology (imports all domains)
+    master_src = _SCAFFOLD_DIR / "ontology-hub" / "ontologies" / "master.ttl.template"
+    master_dst = hub / "ontologies" / "_master.ttl"
+    if master_src.is_file():
+        if master_dst.exists() and not force:
+            print("  ⏭  ontology-hub/ontologies/_master.ttl already exists (use --force)")
+        else:
+            content = master_src.read_text(encoding="utf-8")
+            content = (content
+                       .replace("{company_name}", company_name)
+                       .replace("{company_domain}", company_domain))
+            master_dst.write_text(content, encoding="utf-8")
+            print("  ✓ Created ontology-hub/ontologies/_master.ttl")
+
+    # 8. Scaffold a starter domain ontology
     if domain:
         template_src = _SCAFFOLD_DIR / "ontology-hub" / "ontologies" / "starter.ttl.template"
         ontology_dst = hub / "ontologies" / f"{domain}.ttl"
@@ -257,11 +320,14 @@ def init(domain, force):
         elif template_src.is_file():
             label = domain.replace("-", " ").replace("_", " ").title()
             content = template_src.read_text(encoding="utf-8")
-            content = content.replace("{domain}", domain).replace("{label}", label)
+            content = (content
+                       .replace("{domain}", domain)
+                       .replace("{label}", label)
+                       .replace("{company_domain}", company_domain))
             ontology_dst.write_text(content, encoding="utf-8")
             print(f"  ✓ Created ontology-hub/ontologies/{domain}.ttl")
 
-    # 7. Run smartcoding update if the script exists
+    # 9. Run smartcoding update if the script exists
     _run_smartcoding_update(cwd)
 
     print("\n✅ Ontology hub initialized!")
@@ -387,7 +453,10 @@ def _slugify(name: str) -> str:
 @click.option("--template", "template", type=str, default="kairos-app-template",
               help="GitHub repo template to use (default: kairos-app-template). "
                    "Pass empty string to skip.")
-def new_repo(name, desc, dest, org, is_private, ref_models_version, template):
+@click.option("--company-domain", "company_domain", type=str, default=None,
+              help="Company internet domain (e.g., \"contoso.com\"). "
+                   "Defaults to <name>.com if not provided.")
+def new_repo(name, desc, dest, org, is_private, ref_models_version, template, company_domain):
     """Create a new ontology hub GitHub repository.
 
     NAME is the client or project identifier (e.g., "contoso" or
@@ -424,8 +493,24 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template):
     parent = Path(dest) if dest else Path.cwd()
     repo_dir = parent / repo_slug
 
+    # Derive company domain from name if not provided
+    if not company_domain:
+        # "contoso-ontology-hub" -> "contoso", "acme-logistics" -> "acme-logistics"
+        base = name.lower().strip()
+        for suffix in ["-ontology-hub", "-ontology"]:
+            if base.endswith(suffix):
+                base = base[:-len(suffix)]
+                break
+        company_domain_val = f"{base}.com"
+    else:
+        company_domain_val = company_domain
+    company_name = company_domain_val.split(".")[0].replace("-", " ").title()
+
     if repo_dir.exists():
         raise click.ClickException(f"Directory already exists: {repo_dir}")
+
+    # Guard: don't create a new repo inside an existing git repository
+    _check_not_inside_git_repo(parent, name)
 
     print(f"🚀 Creating ontology hub repository: {repo_slug}")
     print(f"   Location: {repo_dir}\n")
@@ -460,6 +545,26 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template):
         dst = hub / subdir / "README.md"
         if src.is_file():
             shutil.copy2(src, dst)
+
+    # Hub-level README with company context
+    hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
+    if hub_readme_src.is_file():
+        content = hub_readme_src.read_text(encoding="utf-8")
+        content = (content
+                   .replace("{company_name}", company_name)
+                   .replace("{company_domain}", company_domain_val))
+        (hub / "README.md").write_text(content, encoding="utf-8")
+        print("  ✓ ontology-hub/README.md (company context)")
+
+    # Master ontology (imports all domains)
+    master_src = _SCAFFOLD_DIR / "ontology-hub" / "ontologies" / "master.ttl.template"
+    if master_src.is_file():
+        content = master_src.read_text(encoding="utf-8")
+        content = (content
+                   .replace("{company_name}", company_name)
+                   .replace("{company_domain}", company_domain_val))
+        (hub / "ontologies" / "_master.ttl").write_text(content, encoding="utf-8")
+        print("  ✓ ontology-hub/ontologies/_master.ttl")
 
     # Copilot skills
     skills_src = _SCAFFOLD_DIR / "skills"
@@ -514,6 +619,12 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template):
         (repo_dir / "README.md").write_text(content, encoding="utf-8")
         print("  ✓ README.md")
 
+    # update-referencemodels.ps1
+    refscript_src = _SCAFFOLD_DIR / "update-referencemodels.ps1"
+    if refscript_src.is_file():
+        shutil.copy2(refscript_src, repo_dir / "update-referencemodels.ps1")
+        print("  ✓ update-referencemodels.ps1")
+
     # --- Git + submodule + commit -------------------------------------------
     try:
         if not use_template:
@@ -551,7 +662,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template):
     print(f"\n✅ Repository created: {repo_slug}")
     print(f"   GitHub: https://github.com/{org}/{repo_slug}")
     print("\nNext steps:")
-    print(f"  cd {repo_slug}")
+    print(f"  cd {repo_dir}")
     print("  pip install -e .")
     print("  kairos-ontology init --domain <your-domain>")
 

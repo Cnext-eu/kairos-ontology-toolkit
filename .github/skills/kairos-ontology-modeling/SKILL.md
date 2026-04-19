@@ -9,6 +9,18 @@ description: >
 
 You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
 
+## Before you start
+
+1. **Read the hub README** — open `ontology-hub/README.md` and note the company
+   name, company domain, namespace base, and the domain model overview table.
+   All new ontologies MUST use the namespace pattern documented there.
+2. **Check the domain model overview** — before creating a new `.ttl` file,
+   verify that a row for the intended domain exists in the overview table.
+   If it doesn't, add the domain to the table first and get agreement from the
+   user.  This avoids fragmented, overlapping ontology files.
+3. **Check the master ontology** — after creating a new domain file, add an
+   `owl:imports` line for it in `ontology-hub/ontologies/_master.ttl`.
+
 ## Class design
 
 - Every class is declared as `owl:Class` with `rdfs:label` and `rdfs:comment`.
@@ -28,7 +40,8 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
 
 - **Classes**: PascalCase — `Customer`, `SalesOrder`, `VIPCustomer`.
 - **Properties**: camelCase — `customerName`, `orderDate`, `belongsToCustomer`.
-- **Namespaces**: Use descriptive HTTP URIs — `http://example.org/ontology/customer#`.
+- **Namespaces**: Use HTTPS URIs matching the hub's namespace base —
+  `https://<company-domain>/ont/<domain>#` (e.g., `https://contoso.com/ont/customer#`).
 
 ## Common patterns
 
@@ -66,12 +79,12 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
 
 Every .ttl file MUST start with an ontology declaration:
 ```turtle
-@prefix : <http://example.org/ontology/domain#> .
+@prefix : <https://contoso.com/ont/domain#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-<http://example.org/ontology/domain> a owl:Ontology ;
+<https://contoso.com/ont/domain> a owl:Ontology ;
     rdfs:label "Domain Ontology"@en ;
     rdfs:comment "Description of this domain"@en ;
     owl:versionInfo "1.0.0" .
@@ -83,3 +96,5 @@ Every .ttl file MUST start with an ontology declaration:
 - Do NOT use `xsd:string` for everything — use appropriate types (`xsd:dateTime`, `xsd:integer`, etc.).
 - Do NOT create circular subclass hierarchies.
 - Do NOT mix domains in a single .ttl file — one domain per file.
+- Do NOT use `http://` in namespace URIs — always use `https://`.
+- Do NOT forget to add new domains to `_master.ttl` and the hub README table.
