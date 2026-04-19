@@ -2,33 +2,23 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0d1117; color: #c9d1d9; }
 
-/* ── Top bar ─────────────────────────────────────────────── */
-#topbar { display: flex; align-items: center; justify-content: space-between; height: 48px; padding: 0 16px; background: #161b22; border-bottom: 1px solid #30363d; gap: 12px; }
-.topbar-left, .topbar-right { display: flex; align-items: center; gap: 10px; }
-#topbar h1 { font-size: 15px; font-weight: 600; white-space: nowrap; color: #58a6ff; }
-#domain-select, #repo-select, #search-input { height: 30px; padding: 0 8px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: #c9d1d9; font-size: 13px; }
-#repo-select { min-width: 140px; }
-#domain-select { min-width: 160px; }
-.topbar-sep { color: #484f58; font-size: 16px; user-select: none; }
-#search-input { width: 200px; }
-#topbar button { height: 30px; padding: 0 12px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; font-size: 13px; cursor: pointer; white-space: nowrap; }
-#topbar button:hover { background: #30363d; }
-
 .badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
 .badge.pass { background: #238636; color: #fff; }
 .badge.fail { background: #da3633; color: #fff; }
 .hidden { display: none !important; }
 
 /* ── Main layout ─────────────────────────────────────────── */
-#main { display: flex; height: calc(100vh - 48px); overflow: hidden; }
+#main { display: flex; height: 100vh; overflow: hidden; }
 #workspace { flex: 1; display: flex; position: relative; overflow: hidden; }
 
 /* ── Sidebar ─────────────────────────────────────────────── */
-#sidebar { width: 240px; min-width: 240px; height: 100%; background: #161b22; border-right: 1px solid #30363d; overflow-y: auto; overflow-x: hidden; padding: 12px 0; display: flex; flex-direction: column; flex-shrink: 0; transition: width 0.2s ease, min-width 0.2s ease, padding 0.2s ease; }
-#sidebar.collapsed { width: 0; min-width: 0; padding: 0; border-right: none; overflow: hidden; }
+#sidebar { width: 240px; min-width: 240px; height: 100%; background: #161b22; border-right: 1px solid #30363d; overflow-y: auto; overflow-x: hidden; padding: 0; display: flex; flex-direction: column; flex-shrink: 0; transition: width 0.2s ease, min-width 0.2s ease; }
+#sidebar.collapsed { width: 0; min-width: 0; border-right: none; overflow: hidden; }
+.sidebar-header { padding: 14px 14px 10px; }
+.sidebar-header h1 { font-size: 15px; font-weight: 600; white-space: nowrap; color: #58a6ff; }
 .sidebar-section { padding: 4px 14px; }
 .sidebar-section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #8b949e; margin-bottom: 8px; }
-.sidebar-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border: none; border-radius: 6px; background: none; color: #c9d1d9; font-size: 13px; cursor: pointer; text-align: left; }
+.sidebar-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border: none; border-radius: 6px; background: none; color: #c9d1d9; font-size: 13px; cursor: pointer; text-align: left; white-space: nowrap; }
 .sidebar-btn:hover:not(:disabled) { background: #21262d; }
 .sidebar-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .sidebar-btn.sb-save { color: #d29922; font-weight: 600; }
@@ -38,7 +28,15 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .repo-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .repo-dot.connected { background: #3fb950; }
 .repo-dot.disconnected { background: #484f58; }
-#btn-menu { background: none !important; border: none !important; color: #c9d1d9; font-size: 18px; cursor: pointer; padding: 0 4px !important; min-width: 28px; }
+.sidebar-select { width: 100%; height: 30px; padding: 0 8px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: #c9d1d9; font-size: 13px; margin-bottom: 6px; }
+.sidebar-select:focus { outline: none; border-color: #58a6ff; }
+.sidebar-search { width: 100%; height: 30px; padding: 0 8px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: #c9d1d9; font-size: 13px; }
+.sidebar-search:focus { outline: none; border-color: #58a6ff; }
+
+/* ── Floating burger button ──────────────────────────────── */
+#btn-menu { position: fixed; top: 10px; left: 10px; z-index: 50; width: 34px; height: 34px; border: 1px solid #30363d; border-radius: 6px; background: #161b22; color: #c9d1d9; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: left 0.2s ease; }
+#btn-menu:hover { background: #21262d; }
+#main:has(#sidebar:not(.collapsed)) #btn-menu { left: 250px; }
 
 /* ── Graph ───────────────────────────────────────────────── */
 #graph-container { flex: 1; position: relative; }
@@ -137,14 +135,7 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .ctx-danger { color: #da3633; }
 .ctx-danger:hover { background: #3d1214; }
 
-/* ── Save button ─────────────────────────────────────────── */
-.btn-save { background: #d29922 !important; color: #000 !important; border-color: #d29922 !important; font-weight: 600; }
-.btn-save:hover { background: #e3b341 !important; }
-
-/* ── Undo / Redo buttons ─────────────────────────────────── */
-.btn-topbar-sm { height: 30px; width: 32px; padding: 0; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; font-size: 16px; cursor: pointer; }
-.btn-topbar-sm:hover:not(:disabled) { background: #30363d; }
-.btn-topbar-sm:disabled { opacity: 0.3; cursor: not-allowed; }
+/* ── Save button (sidebar) ────────────────────────────────── */
 
 /* ── Save overlay ────────────────────────────────────────── */
 #save-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; }

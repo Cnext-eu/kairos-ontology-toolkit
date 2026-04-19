@@ -11,34 +11,28 @@
 </head>
 <body>
 
-<!-- Top bar -->
-<header id="topbar">
-  <div class="topbar-left">
-    <button id="btn-menu" title="Toggle menu">☰</button>
-    <h1>Kairos Ontology Hub</h1>
-    <select id="repo-select" title="Select repository"><option value="">Loading repos…</option></select>
-    <span class="topbar-sep">›</span>
-    <select id="domain-select"><option value="">Loading…</option></select>
-    <input id="search-input" type="text" placeholder="Search classes…">
-  </div>
-  <div class="topbar-right">
-    <span id="status-badge" class="badge hidden"></span>
-    <button id="btn-toggle-chat" title="Toggle chat panel">💬 Chat</button>
-  </div>
-</header>
-
 <!-- Main area -->
 <div id="main">
 
   <!-- Sidebar -->
   <nav id="sidebar" class="collapsed">
+    <div class="sidebar-header">
+      <h1>Kairos Ontology Hub</h1>
+    </div>
+    <div class="sidebar-divider"></div>
     <div class="sidebar-section">
       <div class="sidebar-section-title">Repository</div>
       <div id="sidebar-repo-info" class="sidebar-repo-info">
         <span id="sidebar-repo-status" class="repo-dot disconnected"></span>
         <span id="sidebar-repo-name" class="sidebar-repo-label">No repo selected</span>
       </div>
-      <button class="sidebar-btn" id="sb-switch-repo">↔ Switch Repository</button>
+      <select id="repo-select" class="sidebar-select" title="Select repository"><option value="">Loading repos…</option></select>
+    </div>
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Domain</div>
+      <select id="domain-select" class="sidebar-select"><option value="">Loading…</option></select>
+      <input id="search-input" class="sidebar-search" type="text" placeholder="Search classes…">
     </div>
     <div class="sidebar-divider"></div>
     <div class="sidebar-section">
@@ -61,7 +55,14 @@
       <button class="sidebar-btn" id="sb-suggest">🔍 Suggest improvements</button>
       <button class="sidebar-btn" id="sb-ask-free">💬 Ask a question</button>
     </div>
+    <div class="sidebar-section" style="margin-top:auto;">
+      <div class="sidebar-divider"></div>
+      <span id="status-badge" class="badge hidden" style="margin:8px 14px;"></span>
+    </div>
   </nav>
+
+  <!-- Burger toggle floats over the workspace -->
+  <button id="btn-menu" title="Toggle menu">☰</button>
 
   <!-- Graph + detail -->
   <div id="workspace">

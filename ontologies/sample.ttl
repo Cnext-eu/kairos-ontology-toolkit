@@ -1,0 +1,75 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix :     <https://example.org/sample#> .
+
+<https://example.org/sample> a owl:Ontology ;
+    rdfs:label "Sample Domain" ;
+    owl:versionInfo "0.1.0" .
+
+:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A person or organisation that purchases goods or services." .
+
+:Order a owl:Class ;
+    rdfs:label "Order" ;
+    rdfs:comment "A request to purchase one or more products." .
+
+:Product a owl:Class ;
+    rdfs:label "Product" ;
+    rdfs:comment "An item available for sale." .
+
+:orderedBy a owl:ObjectProperty ;
+    rdfs:label "orderedBy" ;
+    rdfs:domain :Order ;
+    rdfs:range :Customer .
+
+:containsProduct a owl:ObjectProperty ;
+    rdfs:label "containsProduct" ;
+    rdfs:domain :Order ;
+    rdfs:range :Product .
+
+:orderDate a owl:DatatypeProperty ;
+    rdfs:label "orderDate" ;
+    rdfs:domain :Order ;
+    rdfs:range xsd:date .
+
+:customerName a owl:DatatypeProperty ;
+    rdfs:label "customerName" ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string .
+
+:productName a owl:DatatypeProperty ;
+    rdfs:label "productName" ;
+    rdfs:domain :Product ;
+    rdfs:range xsd:string .
+
+:price a owl:DatatypeProperty ;
+    rdfs:label "price" ;
+    rdfs:domain :Product ;
+    rdfs:range xsd:decimal .
+
+:Invoice a owl:Class ;
+    rdfs:label "Invoice" ;
+    rdfs:comment "A financial document issued for an order, detailing the amount owed." .
+
+:hasInvoice a owl:ObjectProperty ;
+    rdfs:label "hasInvoice" ;
+    rdfs:domain :Order ;
+    rdfs:range :Invoice .
+
+:invoiceNumber a owl:DatatypeProperty ;
+    rdfs:label "invoiceNumber" ;
+    rdfs:domain :Invoice ;
+    rdfs:range xsd:string .
+
+:invoiceDate a owl:DatatypeProperty ;
+    rdfs:label "invoiceDate" ;
+    rdfs:domain :Invoice ;
+    rdfs:range xsd:date .
+
+:totalAmount a owl:DatatypeProperty ;
+    rdfs:label "totalAmount" ;
+    rdfs:domain :Invoice ;
+    rdfs:range xsd:decimal .

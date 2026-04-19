@@ -9,7 +9,7 @@
   const repoSelect     = document.getElementById("repo-select");
   const domainSelect   = document.getElementById("domain-select");
   const searchInput    = document.getElementById("search-input");
-  const btnToggleChat  = document.getElementById("btn-toggle-chat");
+  const btnToggleChat  = null; // removed from topbar; chat opens via sidebar Ask AI
   const statusBadge    = document.getElementById("status-badge");
   const graphEmpty     = document.getElementById("graph-empty");
   const detailPanel    = document.getElementById("detail-panel");
@@ -61,7 +61,6 @@
   const sbExplain          = document.getElementById("sb-explain");
   const sbSuggest          = document.getElementById("sb-suggest");
   const sbAskFree          = document.getElementById("sb-ask-free");
-  const sbSwitchRepo       = document.getElementById("sb-switch-repo");
   const sidebarRepoName    = document.getElementById("sidebar-repo-name");
   const sidebarRepoStatus  = document.getElementById("sidebar-repo-status");
 
@@ -241,7 +240,6 @@
     repoSelect.addEventListener("change", onRepoChange);
     domainSelect.addEventListener("change", onDomainChange);
     searchInput.addEventListener("input", onSearch);
-    btnToggleChat.addEventListener("click", toggleChat);
     btnCloseChat.addEventListener("click", toggleChat);
     btnCloseDetail.addEventListener("click", () => detailPanel.classList.add("hidden"));
     btnCloseModal.addEventListener("click", () => modalOverlay.classList.add("hidden"));
@@ -266,7 +264,6 @@
     sbRedo.addEventListener("click", onRedo);
     sbSave.addEventListener("click", showSaveDialog);
     sbProject.addEventListener("click", () => modalOverlay.classList.remove("hidden"));
-    sbSwitchRepo.addEventListener("click", () => { repoSelect.focus(); });
     sbExplain.addEventListener("click", () => sendQuickPrompt("Explain the currently loaded ontology domain in detail. List all classes, their properties, and relationships."));
     sbSuggest.addEventListener("click", () => sendQuickPrompt("Suggest improvements for this ontology domain. Look for missing labels, incomplete properties, naming issues, and structural problems."));
     sbAskFree.addEventListener("click", () => { if (chatPanel.classList.contains("hidden")) toggleChat(); chatInput.focus(); });
