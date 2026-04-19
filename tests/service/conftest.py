@@ -1,5 +1,6 @@
 """Fixtures for service tests."""
 
+import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
@@ -51,6 +52,13 @@ def client(mock_env):
     """
     # Re-import to pick up patched env
     from service.app.main import app
+
+    # Reset sse_starlette's module-level Event so it doesn't bind to a stale loop
+    try:
+        from sse_starlette.sse import AppStatus
+        AppStatus.should_exit_event = asyncio.Event()
+    except Exception:
+        pass
 
     return TestClient(app)
 
