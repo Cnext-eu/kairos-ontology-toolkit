@@ -27,11 +27,24 @@ You help users generate and understand projection artifacts.
 - **a2ui**: When generating UI forms. Creates JSON schemas that describe the data structure for automatic UI rendering.
 - **prompt**: When using the ontology as LLM context. Generates a compact version (entity→fields map) and a detailed version (with types, descriptions, relationships).
 
+## CLI commands
+
+```bash
+# Generate all projections for all domains
+kairos-ontology project
+
+# Generate a single target
+kairos-ontology project --target prompt
+
+# Available targets: dbt, neo4j, azure-search, a2ui, prompt
+```
+
 ## Output structure
 
-Each target generates files named after the domain:
+Output is generated into `ontology-hub/output/<target>/`:
+
 ```
-output/
+ontology-hub/output/
 ├── dbt/customer/models/silver/
 │   ├── customer.sql
 │   └── schema_customer.yml

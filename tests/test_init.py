@@ -239,7 +239,7 @@ def test_new_repo_creates_git_and_pushes(tmp_path):
     assert result.exit_code == 0, result.output
 
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
-    assert ["git", "init"] in call_args_list
+    assert ["git", "init", "-b", "main"] in call_args_list
     assert ["git", "add", "."] in call_args_list
     assert ["gh", "--version"] in call_args_list
     # Submodule should be added between git init and git add
@@ -678,7 +678,7 @@ def test_new_repo_template_no_git_init(tmp_path):
     assert result.exit_code == 0, result.output
 
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
-    assert ["git", "init"] not in call_args_list
+    assert ["git", "init", "-b", "main"] not in call_args_list
     # Should still commit + push
     assert ["git", "add", "."] in call_args_list
     push_calls = [c for c in call_args_list if c == ["git", "push"]]

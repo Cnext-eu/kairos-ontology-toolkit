@@ -9,56 +9,63 @@ description: >
 
 You guide users through setting up a new Kairos ontology hub.
 
+> **IMPORTANT:** Always use the `kairos-ontology` CLI commands to scaffold
+> the hub structure.  Do NOT manually create directories, READMEs, .gitignore,
+> skills, or other scaffold files — the CLI handles all of this automatically.
+
+## How hubs are created
+
+Hub repos are created using `kairos-ontology new-repo` (see the
+kairos-quickstart skill).  The `init` command then scaffolds the hub
+structure and adds domains inside an existing repo.
+
 ## Standard hub structure
 
-A Kairos ontology hub is a GitHub repository with this layout:
-
 ```
-.
-├── ontology-hub/                        # Main ontology workspace
-│   ├── ontologies/                      # Domain ontologies (Turtle/RDF)
+<name>-ontology-hub/
+├── .github/
+│   ├── copilot-instructions.md
+│   ├── skills/                          # AI skills for Copilot
+│   └── workflows/managed-check.yml
+├── ontology-hub/
+│   ├── README.md                        # Company context + domain overview
+│   ├── ontologies/
+│   │   ├── _master.ttl                  # Master ontology (imports all domains)
 │   │   ├── customer.ttl
-│   │   ├── product.ttl
-│   │   ├── order.ttl
 │   │   └── README.md
 │   ├── shapes/                          # SHACL validation constraints
-│   │   ├── customer.shacl.ttl
-│   │   ├── product.shacl.ttl
-│   │   ├── order.shacl.ttl
 │   │   └── README.md
 │   ├── mappings/                        # SKOS synonym mappings
-│   │   ├── schema-org.ttl               # Schema.org alignments
 │   │   └── README.md
 │   └── output/                          # Generated projections (gitignored)
-│       ├── dbt/                         # Data Build Tool SQL models
-│       ├── neo4j/                       # Cypher graph schemas
-│       ├── azure-search/                # Azure AI Search indexes
-│       ├── a2ui/                        # JSON Schema for UIs
-│       └── prompt/                      # LLM prompt contexts
-├── ontology-reference-models/           # Reference ontologies submodule (sparse)
-│   ├── authoritative-ontologies/        # FIBO and other authoritative ontologies
-│   ├── derived-ontologies/              # Supply-chain, DCSA, MMT derived models
-│   └── catalog-v001.xml                 # OASIS XML catalog for import resolution
+│       ├── dbt/ neo4j/ azure-search/ a2ui/ prompt/
+├── ontology-reference-models/           # Git submodule (sparse checkout)
+│   ├── authoritative-ontologies/
+│   ├── derived-ontologies/
+│   └── catalog-v001.xml
+├── .gitignore
+├── pyproject.toml                       # kairos-ontology-toolkit dependency
+└── README.md
 ```
 
-## Setup steps
+## Adding a domain with `init`
 
-1. **Install the toolkit** — `pip install kairos-ontology-toolkit`
-2. **Run init** — `kairos-ontology init --domain customer` scaffolds the full structure.
-3. **Choose a domain name** — e.g., "customer", "order", "product". Each domain gets its own .ttl file.
-4. **Define the namespace** — Use a descriptive HTTP URI: `http://{org}.example.org/ontology/{domain}#`
-5. **Create the ontology file** — Must include:
-   - `owl:Ontology` declaration with `rdfs:label` and `owl:versionInfo`
-   - At least one `owl:Class` with label and comment
-   - Properties with domain, range, and label
-6. **Validate** — Run syntax + SHACL validation before committing.
-7. **Generate projections** — Run projections to verify the ontology produces usable artifacts.
+```bash
+kairos-ontology init --company-domain contoso.com --domain customer
+```
+
+- `--company-domain` (required) — sets namespace base: `https://contoso.com/ont/`
+- `--domain` (optional) — creates a starter `.ttl` file
+- Also creates `ontology-hub/README.md` and `_master.ttl` if they don't exist
+
+The first `init` after `new-repo` can be done on `main` (initial setup).
+After that, always use a feature branch.
 
 ## Multi-domain architecture
 
-- Each .ttl file = one independently deployable domain.
+- Each `.ttl` file = one independently deployable domain.
 - Domains can reference each other via `owl:imports`.
-- Keep domains small and focused (5-15 classes per domain).
+- Keep domains small and focused (5–15 classes per domain).
 - Different teams can own different domains.
 
 ## Naming the ontology file
@@ -68,12 +75,15 @@ The filename becomes the domain identifier:
 - `sales-order.ttl` → domain "sales-order"
 - Use lowercase with hyphens for multi-word names.
 
-## First-time checklist
+## Adding a new domain checklist
 
-- [ ] Run `kairos-ontology init --domain <name>`
+- [ ] Create a feature branch (`ontology/<domain-name>`)
+- [ ] Run `kairos-ontology init --company-domain <domain> --domain <name>`
 - [ ] Edit `ontology-hub/ontologies/<name>.ttl` — add classes and properties
-- [ ] Validate (syntax should pass): `kairos-ontology validate`
-- [ ] Generate prompt projection: `kairos-ontology project --target prompt`
+- [ ] Update domain overview table in `ontology-hub/README.md`
+- [ ] Add `owl:imports` to `ontology-hub/ontologies/_master.ttl`
+- [ ] Validate: `kairos-ontology validate`
+- [ ] Generate projections: `kairos-ontology project --target prompt`
 - [ ] Optionally add SHACL shapes in `ontology-hub/shapes/`
 - [ ] Optionally add SKOS mappings in `ontology-hub/mappings/`
-- [ ] Commit on a feature branch, open PR for review
+- [ ] Commit, push, and open PR to merge into main

@@ -94,11 +94,18 @@ def _check_not_inside_git_repo(parent: Path, name: str) -> None:
         if result.returncode == 0:
             git_root = Path(result.stdout.strip()).resolve()
             if parent.resolve().is_relative_to(git_root):
+                safe_path = git_root.parent
                 raise click.ClickException(
-                    f"Current directory is inside an existing git repo "
-                    f"({git_root.name}/).\n"
-                    f"  Use --path to create the new repo elsewhere, e.g.:\n"
-                    f"    kairos-ontology new-repo {name} --path {git_root.parent}"
+                    f"Cannot create a new repo inside an existing git "
+                    f"repository.\n\n"
+                    f"  You are in:  {parent.resolve()}\n"
+                    f"  Git root:    {git_root}\n\n"
+                    f"  Fix: cd to a directory that is NOT inside a git repo,\n"
+                    f"  then run the command again.  For example:\n\n"
+                    f"    cd {safe_path}\n"
+                    f"    kairos-ontology new-repo {name}\n\n"
+                    f"  Or use --path to specify the parent directory:\n\n"
+                    f"    kairos-ontology new-repo {name} --path {safe_path}"
                 )
     except FileNotFoundError:
         pass  # git not installed yet — will fail later with a clearer message
@@ -279,6 +286,16 @@ def init(domain, company_domain, force):
         else:
             shutil.copy2(refscript_src, refscript_dst)
             print("  ✓ Installed update-referencemodels.ps1")
+
+    # 4d. Copy .gitignore
+    gitignore_src = _SCAFFOLD_DIR / "gitignore.template"
+    gitignore_dst = cwd / ".gitignore"
+    if gitignore_src.is_file():
+        if gitignore_dst.exists() and not force:
+            print("  ⏭  .gitignore already exists (use --force to overwrite)")
+        else:
+            shutil.copy2(gitignore_src, gitignore_dst)
+            print("  ✓ Installed .gitignore")
 
     # 5. Add reference models as git submodule
     _add_reference_models(cwd)
@@ -631,7 +648,10 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
     # --- Git + submodule + commit -------------------------------------------
     try:
         if not use_template:
-            subprocess.run(["git", "init"], cwd=repo_dir, capture_output=True, check=True)
+            subprocess.run(
+                ["git", "init", "-b", "main"],
+                cwd=repo_dir, capture_output=True, check=True,
+            )
         # Add reference models as git submodule
         _add_reference_models(repo_dir, ref_models_version)
         subprocess.run(["git", "add", "."], cwd=repo_dir, capture_output=True, check=True)
@@ -777,16 +797,16 @@ def _create_github_repo(repo_dir: Path, repo_slug: str, org: str,
     visibility = "--private" if is_private else "--public"
     full_name = f"{org}/{repo_slug}"
 
-    # Check gh is available
+    # Check gh is available — hard-fail, repos must be on GitHub
     try:
         subprocess.run(["gh", "--version"], capture_output=True, check=True)
     except FileNotFoundError:
-        print("  ⚠  gh CLI not found — install from https://cli.github.com")
-        print("     Then run manually:")
-        print(f"       gh repo create {full_name} {visibility} --source . --push")
-        return
+        raise click.ClickException(
+            "gh CLI is required to create the GitHub repository. "
+            "Install from https://cli.github.com and run `gh auth login`."
+        )
 
-    # Create the remote repo
+    # Create the remote repo — hard-fail so repos are never local-only
     try:
         subprocess.run(
             ["gh", "repo", "create", full_name,
@@ -799,10 +819,12 @@ def _create_github_repo(repo_dir: Path, repo_slug: str, org: str,
         print(f"  ✓ GitHub repo created: {full_name}")
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode().strip()
-        print(f"  ⚠  gh repo create failed: {stderr}")
-        print("     You can create it manually:")
-        print(f"       cd {repo_slug}")
-        print(f"       gh repo create {full_name} {visibility} --source . --push")
+        raise click.ClickException(
+            f"Failed to create GitHub repo {full_name}: {stderr}\n"
+            f"  Fix the issue and retry, or create manually:\n"
+            f"    cd {repo_dir}\n"
+            f"    gh repo create {full_name} {visibility} --source . --push"
+        )
 
 
 if __name__ == '__main__':
