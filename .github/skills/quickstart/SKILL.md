@@ -39,25 +39,24 @@ Rules:
 ```bash
 pip install kairos-ontology-toolkit
 
-kairos-ontology new-repo contoso --domain customer
+kairos-ontology new-repo contoso
 ```
 
-This creates a ready-to-use Git repository:
+This creates a ready-to-use Git repository on GitHub (from the
+`kairos-app-template` template) and clones it locally:
 
 ```
 contoso-ontology-hub/
 ├── .github/
 │   ├── copilot-instructions.md
-│   └── skills/                          # AI skills for Copilot
+│   ├── skills/                          # AI skills for Copilot
+│   └── workflows/managed-check.yml
 ├── ontology-hub/
-│   ├── ontologies/customer.ttl          # Starter domain
+│   ├── ontologies/                      # Empty — add domains later
 │   ├── shapes/
 │   ├── mappings/
 │   └── output/                          # Gitignored
-├── ontology-reference-models/
-│   ├── authoritative-ontologies/
-│   ├── derived-ontologies/
-│   └── catalog-v001.xml
+├── ontology-reference-models/           # Git submodule
 ├── .gitignore
 ├── pyproject.toml                       # kairos-ontology-toolkit dependency
 └── README.md
@@ -69,16 +68,17 @@ contoso-ontology-hub/
 kairos-ontology new-repo <NAME> [OPTIONS]
 
 Options:
-  --domain TEXT          First ontology domain to scaffold (e.g., "customer").
   --description TEXT     Short description for README / pyproject.
   --path PATH            Parent directory (default: current directory).
   --org TEXT             GitHub organisation (default: Cnext-eu).
   --private / --public   Repo visibility (default: private).
+  --template TEXT        GitHub repo template (default: kairos-app-template).
+  --ref-models-version   Git ref for reference-models submodule.
 ```
 
-The command always creates a GitHub repo under the given `--org` and pushes
-the initial commit.  Requires the [GitHub CLI (`gh`)](https://cli.github.com/)
-to be installed and authenticated.
+The command creates a GitHub repo under the given `--org`, clones it, overlays
+the hub scaffold, and pushes.  Requires the
+[GitHub CLI (`gh`)](https://cli.github.com/) to be installed and authenticated.
 
 ---
 
@@ -94,7 +94,19 @@ available. The repo itself has no Python code — just ontology files and config
 
 ---
 
-## 4. Define your first domain
+## 4. Initialize the hub and add your first domain
+
+```bash
+kairos-ontology init --domain customer
+```
+
+This scaffolds the ontology-hub folder structure and creates a starter
+`ontology-hub/ontologies/customer.ttl` file.  You can run `init` again later
+with `--domain order` (etc.) to add more domains.
+
+---
+
+## 5. Define your domain
 
 Edit `ontology-hub/ontologies/customer.ttl`:
 
@@ -126,7 +138,7 @@ Edit `ontology-hub/ontologies/customer.ttl`:
 
 ---
 
-## 5. Validate
+## 6. Validate
 
 ```bash
 kairos-ontology validate
@@ -136,7 +148,7 @@ Fix any syntax or SHACL errors before proceeding.
 
 ---
 
-## 6. Generate projections
+## 7. Generate projections
 
 ```bash
 # Quick check — prompt context
@@ -150,7 +162,7 @@ Output lands in `ontology-hub/output/<target>/`.
 
 ---
 
-## 7. Add more domains
+## 8. Add more domains
 
 Each domain is a separate `.ttl` file:
 
@@ -163,7 +175,7 @@ Domains can reference each other via `owl:imports`.
 
 ---
 
-## 8. Commit and collaborate
+## 9. Commit and collaborate
 
 ```bash
 git checkout -b feature/add-customer-domain
@@ -181,8 +193,8 @@ help reviewers and AI assistants understand the ontology structure.
 
 | Task | Command |
 |------|---------|
-| Create new hub repo | `kairos-ontology new-repo <name> --domain <domain>` |
-| Init in existing repo | `kairos-ontology init --domain <domain>` |
+| Create new hub repo | `kairos-ontology new-repo <name>` |
+| Init hub + first domain | `kairos-ontology init --domain <domain>` |
 | Validate | `kairos-ontology validate` |
 | Project (all) | `kairos-ontology project` |
 | Project (single) | `kairos-ontology project --target prompt` |

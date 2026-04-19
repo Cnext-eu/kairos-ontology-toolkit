@@ -86,7 +86,7 @@ def _copy_managed(src: Path, dst: Path) -> None:
 
 
 @click.group()
-@click.version_option()
+@click.version_option(version=_toolkit_version, package_name="kairos-ontology-toolkit")
 def cli():
     """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
     pass
