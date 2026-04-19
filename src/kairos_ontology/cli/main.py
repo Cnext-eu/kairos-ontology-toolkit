@@ -601,7 +601,10 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
     pyproject_src = _SCAFFOLD_DIR / "pyproject.toml.template"
     if pyproject_src.is_file():
         content = pyproject_src.read_text(encoding="utf-8")
-        content = content.replace("{repo_name}", repo_slug).replace("{description}", description)
+        content = (content
+                   .replace("{repo_name}", repo_slug)
+                   .replace("{description}", description)
+                   .replace("{toolkit_version}", _toolkit_version))
         (repo_dir / "pyproject.toml").write_text(content, encoding="utf-8")
         print("  ✓ pyproject.toml")
 
