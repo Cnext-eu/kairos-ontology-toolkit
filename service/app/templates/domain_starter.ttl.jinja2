@@ -1,0 +1,24 @@
+@prefix : <{{ namespace }}> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<{{ namespace | replace('#', '') | replace('/', '', 1) }}> a owl:Ontology ;
+    rdfs:label "{{ label }}"@en ;
+    rdfs:comment "{{ description }}"@en ;
+    owl:versionInfo "1.0.0" .
+
+{% for cls in classes %}
+:{{ cls.name }} a owl:Class ;
+    rdfs:label "{{ cls.label }}"{% if cls.comment %} ;
+    rdfs:comment "{{ cls.comment }}"{% endif %}{% if cls.superclass %} ;
+    rdfs:subClassOf :{{ cls.superclass }}{% endif %} .
+
+{% for prop in cls.properties %}
+:{{ prop.name }} a owl:DatatypeProperty ;
+    rdfs:domain :{{ cls.name }} ;
+    rdfs:range {{ prop.range | default("xsd:string") }} ;
+    rdfs:label "{{ prop.label }}" .
+
+{% endfor %}
+{% endfor %}

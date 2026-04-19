@@ -2,7 +2,6 @@
 
 from pathlib import Path
 from .catalog_utils import load_graph_with_catalog
-from rdflib import Graph
 
 
 def test_catalog_resolution(catalog_path: Path, ontology_path: Path = None):
@@ -17,11 +16,11 @@ def test_catalog_resolution(catalog_path: Path, ontology_path: Path = None):
         try:
             graph = load_graph_with_catalog(ontology_path, catalog_path)
             print(f"  ✓ Loaded {len(graph)} triples")
-            print(f"  ✓ All imports resolved successfully")
+            print("  ✓ All imports resolved successfully")
         except Exception as e:
             print(f"  ✗ Failed: {e}")
     else:
         print("No ontology specified - catalog file validated")
-        print(f"  ✓ Catalog file exists and is readable")
+        print("  ✓ Catalog file exists and is readable")
     
     print("\n✅ Catalog test completed")

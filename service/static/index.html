@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kairos Ontology Hub</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.7/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- Top bar -->
+<header id="topbar">
+  <div class="topbar-left">
+    <h1>Kairos Ontology Hub</h1>
+    <select id="domain-select"><option value="">Loading…</option></select>
+    <input id="search-input" type="text" placeholder="Search classes…">
+    <button id="btn-validate" title="Validate ontology">✓ Validate</button>
+    <button id="btn-project" title="Generate projections">⚙ Project</button>
+  </div>
+  <div class="topbar-right">
+    <span id="status-badge" class="badge hidden"></span>
+    <button id="btn-toggle-chat" title="Toggle chat panel">💬 Chat</button>
+  </div>
+</header>
+
+<!-- Main area -->
+<div id="main">
+
+  <!-- Graph + detail -->
+  <div id="workspace">
+    <div id="graph-container">
+      <div id="cy"></div>
+      <div id="graph-empty">Select a domain to visualize</div>
+    </div>
+    <div id="detail-panel" class="hidden">
+      <button id="btn-close-detail" class="close-btn">✕</button>
+      <h2 id="detail-name"></h2>
+      <p id="detail-comment" class="muted"></p>
+      <div id="detail-superclasses"></div>
+      <h3>Properties</h3>
+      <table id="detail-props"><thead><tr><th>Name</th><th>Type</th><th>Kind</th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <!-- Chat panel -->
+  <div id="chat-panel" class="hidden">
+    <div id="chat-header">
+      <span>Ontology Assistant</span>
+      <button id="btn-close-chat" class="close-btn">✕</button>
+    </div>
+    <div id="chat-messages"></div>
+    <div id="chat-input-area">
+      <textarea id="chat-input" placeholder="Ask about the ontology…" rows="2"></textarea>
+      <button id="btn-send">Send</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Projection modal -->
+<div id="modal-overlay" class="hidden">
+  <div id="modal">
+    <div id="modal-header">
+      <span>Generate Projections</span>
+      <button id="btn-close-modal" class="close-btn">✕</button>
+    </div>
+    <div id="modal-body">
+      <div id="target-checkboxes"></div>
+      <button id="btn-run-project">Generate</button>
+    </div>
+    <div id="modal-result"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

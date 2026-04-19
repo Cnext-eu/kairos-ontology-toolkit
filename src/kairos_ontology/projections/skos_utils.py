@@ -49,9 +49,6 @@ class SKOSParser:
         if graph is None:
             graph = self.load_all_mappings()
         
-        # Find SKOS concept for this class
-        concept_uri = f"urn:kairos:ont:core:{class_name}Concept"
-        
         synonyms = []
         for alt_label in graph.objects(subject=self.KAIROS[f"{class_name}Concept"], 
                                        predicate=self.SKOS.altLabel):

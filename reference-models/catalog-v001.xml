@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OASIS XML Catalog for Kairos ontology hub.
+  Maps external ontology IRIs to local copies under reference-models/.
+  Add <uri> entries as you import external ontologies (e.g. FIBO, Schema.org).
+-->
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"
+         prefer="public">
+
+  <!-- Example: uncomment and adjust when FIBO modules are downloaded locally
+  <uri name="https://spec.edmcouncil.org/fibo/ontology/FND/Utilities/AnnotationVocabulary/"
+       uri="fibo/FND/Utilities/AnnotationVocabulary.rdf"/>
+  -->
+
+</catalog>

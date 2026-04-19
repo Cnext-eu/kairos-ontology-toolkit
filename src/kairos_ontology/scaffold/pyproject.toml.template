@@ -1,0 +1,13 @@
+[project]
+name = "{repo_name}"
+version = "0.1.0"
+description = "Kairos ontology hub — {description}"
+requires-python = ">=3.12"
+dependencies = [
+    "kairos-ontology-toolkit>=1.1.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]

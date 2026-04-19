@@ -5,11 +5,11 @@ A2UI Protocol Projector - Generate JSON Schema for Agent-to-UI messages
 Generates JSON Schema definitions for message types based on ontology classes.
 """
 
-import json
 from pathlib import Path
 from typing import Dict, List
-from rdflib import Graph, Namespace, RDF, RDFS, OWL, XSD
+from rdflib import Graph, Namespace, XSD
 from jinja2 import Environment, FileSystemLoader
+from .uri_utils import extract_local_name
 
 
 class A2UIProjector:
@@ -28,10 +28,12 @@ class A2UIProjector:
         XSD.dateTime: "string",  # with format
     }
     
-    def __init__(self, ontology_path: Path, output_dir: Path, template_dir: Path):
+    def __init__(self, ontology_path: Path, output_dir: Path, template_dir: Path,
+                 shapes_dir: Path = None):
         self.ontology_path = ontology_path
         self.output_dir = output_dir
         self.template_dir = template_dir
+        self.shapes_dir = shapes_dir or (ontology_path.parent.parent / "shapes")
         
         # Load ontology
         self.graph = Graph()
@@ -97,7 +99,7 @@ class A2UIProjector:
         """
         
         # Also check SHACL for required fields
-        shapes_path = Path("ontology-hub/shapes") / (extract_local_name(class_uri).lower() + ".shacl.ttl")
+        shapes_path = self.shapes_dir / (extract_local_name(class_uri).lower() + ".shacl.ttl")
         required_props = self._get_required_properties(class_uri, shapes_path)
         
         for row in self.graph.query(query):
@@ -155,7 +157,7 @@ class A2UIProjector:
                     required_props.append(prop_name)
             
             return required_props
-        except:
+        except Exception:
             return []
     
     def generate_message_schema(self, class_info: Dict, properties: List[Dict],
