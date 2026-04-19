@@ -628,6 +628,11 @@ def _add_reference_models(repo_dir: Path, version: str | None = None):
         return
 
     try:
+        # Enable long paths to avoid Windows filename length issues
+        subprocess.run(
+            ["git", "config", "core.longpaths", "true"],
+            cwd=repo_dir, capture_output=True, check=True,
+        )
         subprocess.run(
             ["git", "submodule", "add", _REF_MODELS_REPO, _REF_MODELS_PATH],
             cwd=repo_dir, capture_output=True, check=True,
