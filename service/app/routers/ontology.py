@@ -55,17 +55,19 @@ async def query_ontology(
     domain: Optional[str] = None,
     search: Optional[str] = None,
     authorization: str = Header(..., alias="Authorization"),
+    repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
+    repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
 ):
     """List / search classes, properties, and relationships."""
     token = _extract_token(authorization)
     gh = get_github_service()
-    files = await gh.list_ttl_files(token)
+    files = await gh.list_ttl_files(token, owner=repo_owner, repo=repo_name)
 
     results = []
     for f in files:
         if domain and not f["name"].startswith(domain):
             continue
-        content = await gh.read_file(token, f["path"])
+        content = await gh.read_file(token, f["path"], owner=repo_owner, repo=repo_name)
         info = parse_ontology_content(content)
         entry = {
             "domain": f["name"],
@@ -90,12 +92,14 @@ async def query_ontology(
 async def propose_change(
     req: ChangeRequest,
     authorization: str = Header(..., alias="Authorization"),
+    repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
+    repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
 ):
     """Propose a TTL change and return a diff preview."""
     token = _extract_token(authorization)
     file_path = _domain_to_path(req.domain)
     gh = get_github_service()
-    original = await gh.read_file(token, file_path)
+    original = await gh.read_file(token, file_path, owner=repo_owner, repo=repo_name)
 
     graph = Graph()
     graph.parse(data=original, format="turtle")
@@ -131,6 +135,8 @@ async def propose_change(
 async def apply_change(
     req: ApplyRequest,
     authorization: str = Header(..., alias="Authorization"),
+    repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
+    repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
 ):
     """Commit proposed TTL content to a feature branch and create a PR."""
     token = _extract_token(authorization)
@@ -138,7 +144,7 @@ async def apply_change(
 
     # Get current file SHA (needed for update)
     gh = get_github_service()
-    files = await gh.list_ttl_files(token)
+    files = await gh.list_ttl_files(token, owner=repo_owner, repo=repo_name)
     sha = None
     for f in files:
         if f["path"] == file_path:
@@ -146,13 +152,18 @@ async def apply_change(
             break
 
     branch_name = f"ontology/ai-{uuid.uuid4().hex[:8]}"
-    await gh.create_branch(token, branch_name)
-    await gh.write_file(token, file_path, req.new_content, branch_name, req.message, sha=sha)
+    await gh.create_branch(token, branch_name, owner=repo_owner, repo=repo_name)
+    await gh.write_file(
+        token, file_path, req.new_content, branch_name, req.message,
+        sha=sha, owner=repo_owner, repo=repo_name,
+    )
     pr = await gh.create_pull_request(
         token,
         branch_name,
         title=req.message,
         body="Proposed by Kairos Ontology AI assistant.",
+        owner=repo_owner,
+        repo=repo_name,
     )
     return {"branch": branch_name, "pull_request": pr.get("html_url")}
 

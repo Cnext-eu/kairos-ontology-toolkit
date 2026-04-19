@@ -74,8 +74,41 @@ def _headers(token: str) -> dict:
     }
 
 
-def _repo_url() -> str:
-    return f"{_BASE}/repos/{settings.github_repo_owner}/{settings.github_repo_name}"
+def _repo_url(owner: str | None = None, repo: str | None = None) -> str:
+    o = owner or settings.github_repo_owner
+    r = repo or settings.github_repo_name
+    return f"{_BASE}/repos/{o}/{r}"
+
+
+# ---- Repo discovery --------------------------------------------------------
+
+async def list_repos(token: str) -> list[dict]:
+    """List ontology hub repos accessible to the GitHub App installation."""
+    url = f"{_BASE}/installation/repositories"
+    repos = []
+    page = 1
+    async with httpx.AsyncClient() as client:
+        while True:
+            resp = await client.get(
+                url,
+                headers=_headers(token),
+                params={"per_page": 100, "page": page},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            for r in data.get("repositories", []):
+                if r["name"].endswith("-ontology-hub"):
+                    repos.append({
+                        "owner": r["owner"]["login"],
+                        "name": r["name"],
+                        "full_name": r["full_name"],
+                        "description": r.get("description") or "",
+                        "default_branch": r.get("default_branch", "main"),
+                    })
+            if len(data.get("repositories", [])) < 100:
+                break
+            page += 1
+    return repos
 
 
 # ---- Read ------------------------------------------------------------------
@@ -84,11 +117,13 @@ async def list_ttl_files(
     token: str,
     path: Optional[str] = None,
     branch: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> list[dict]:
     """List ontology files (*.ttl, *.rdf) under *path* in the repo."""
     path = path or settings.github_ontologies_path
     branch = branch or settings.github_default_branch
-    url = f"{_repo_url()}/contents/{path}"
+    url = f"{_repo_url(owner, repo)}/contents/{path}"
     async with httpx.AsyncClient() as client:
         resp = await client.get(url, headers=_headers(token), params={"ref": branch})
         resp.raise_for_status()
@@ -106,10 +141,12 @@ async def read_file(
     token: str,
     path: str,
     branch: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> str:
     """Read a file's content from the repo (decoded from base64)."""
     branch = branch or settings.github_default_branch
-    url = f"{_repo_url()}/contents/{path}"
+    url = f"{_repo_url(owner, repo)}/contents/{path}"
     async with httpx.AsyncClient() as client:
         resp = await client.get(url, headers=_headers(token), params={"ref": branch})
         resp.raise_for_status()
@@ -119,11 +156,18 @@ async def read_file(
 
 # ---- Write -----------------------------------------------------------------
 
-async def create_branch(token: str, branch_name: str, from_branch: Optional[str] = None) -> dict:
+async def create_branch(
+    token: str,
+    branch_name: str,
+    from_branch: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
+) -> dict:
     """Create a new branch from *from_branch* (defaults to main)."""
     from_branch = from_branch or settings.github_default_branch
+    base = _repo_url(owner, repo)
     # Get the SHA of the source branch
-    url = f"{_repo_url()}/git/ref/heads/{from_branch}"
+    url = f"{base}/git/ref/heads/{from_branch}"
     async with httpx.AsyncClient() as client:
         resp = await client.get(url, headers=_headers(token))
         resp.raise_for_status()
@@ -131,7 +175,7 @@ async def create_branch(token: str, branch_name: str, from_branch: Optional[str]
 
         # Create the new ref
         resp = await client.post(
-            f"{_repo_url()}/git/refs",
+            f"{base}/git/refs",
             headers=_headers(token),
             json={"ref": f"refs/heads/{branch_name}", "sha": sha},
         )
@@ -146,12 +190,14 @@ async def write_file(
     branch: str,
     message: str,
     sha: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> dict:
     """Create or update a file via the Contents API.
 
     If *sha* is provided the file is updated; otherwise it is created.
     """
-    url = f"{_repo_url()}/contents/{path}"
+    url = f"{_repo_url(owner, repo)}/contents/{path}"
     body: dict = {
         "message": message,
         "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
@@ -171,10 +217,12 @@ async def create_pull_request(
     title: str,
     body: str = "",
     base: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> dict:
     """Create a pull request from *branch* into *base*."""
     base = base or settings.github_default_branch
-    url = f"{_repo_url()}/pulls"
+    url = f"{_repo_url(owner, repo)}/pulls"
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             url,
@@ -191,9 +239,11 @@ async def compare_branches(
     token: str,
     base: str,
     head: str,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> dict:
     """Return the comparison (diff) between two branches."""
-    url = f"{_repo_url()}/compare/{base}...{head}"
+    url = f"{_repo_url(owner, repo)}/compare/{base}...{head}"
     async with httpx.AsyncClient() as client:
         resp = await client.get(url, headers=_headers(token))
         resp.raise_for_status()

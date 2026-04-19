@@ -29,6 +29,8 @@ class ChatRequest(BaseModel):
 async def chat(
     req: ChatRequest,
     authorization: str = Header(default=None, alias="Authorization"),
+    repo_owner: Optional[str] = Header(None, alias="X-Kairos-Repo-Owner"),
+    repo_name: Optional[str] = Header(None, alias="X-Kairos-Repo-Name"),
 ):
     """SSE-streaming chat endpoint for the Ontology Hub web viewer.
 
@@ -46,11 +48,18 @@ async def chat(
         from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=401,
-            content={"detail": "No GitHub token. Set KAIROS_DEV_GITHUB_TOKEN in .env for dev mode."},
+            content={
+                "detail": (
+                    "No GitHub token. Set KAIROS_DEV_GITHUB_TOKEN"
+                    " in .env for dev mode."
+                )
+            },
         )
 
     # Build ontology context
-    ontology_context = await _build_ontology_context(token, req.domain)
+    ontology_context = await _build_ontology_context(
+        token, req.domain, repo_owner=repo_owner, repo_name=repo_name,
+    )
 
     # Extract last user message and build conversation history
     last_user_msg = ""
@@ -88,22 +97,33 @@ async def chat(
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _build_ontology_context(token: str, domain: Optional[str]) -> str:
+async def _build_ontology_context(
+    token: str,
+    domain: Optional[str],
+    repo_owner: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> str:
     """Load ontology domain(s) as text context for the system prompt."""
     gh = get_github_service()
     if domain:
         file_path = _domain_to_path(domain)
         try:
-            return await gh.read_file(token, file_path)
+            return await gh.read_file(
+                token, file_path, owner=repo_owner, repo=repo_name,
+            )
         except Exception:
             return f"(Could not load domain: {domain})"
 
     # Summarise all domains
     try:
-        files = await gh.list_ttl_files(token)
+        files = await gh.list_ttl_files(
+            token, owner=repo_owner, repo=repo_name,
+        )
         parts = []
         for f in files:
-            content = await gh.read_file(token, f["path"])
+            content = await gh.read_file(
+                token, f["path"], owner=repo_owner, repo=repo_name,
+            )
             info = parse_ontology_content(content)
             classes = ", ".join(c.name for c in info.classes)
             parts.append(f"Domain {f['name']}: classes=[{classes}]")
