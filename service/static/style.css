@@ -55,7 +55,9 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 #detail-edit input:focus, #detail-edit textarea:focus, #detail-edit select:focus { outline: none; border-color: #58a6ff; }
 
 /* ── Chat panel ──────────────────────────────────────────── */
-#chat-panel { width: 380px; min-width: 320px; display: flex; flex-direction: column; background: #161b22; border-left: 1px solid #30363d; }
+#chat-panel { width: 380px; min-width: 280px; max-width: 60vw; display: flex; flex-direction: column; background: #161b22; border-left: 1px solid #30363d; position: relative; }
+#chat-resize-handle { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 10; }
+#chat-resize-handle:hover, #chat-resize-handle.dragging { background: #58a6ff; }
 #chat-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; font-weight: 600; font-size: 14px; border-bottom: 1px solid #30363d; }
 #chat-messages { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 .chat-msg { padding: 8px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; max-width: 92%; word-wrap: break-word; white-space: pre-wrap; }

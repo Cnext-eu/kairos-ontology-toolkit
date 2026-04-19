@@ -264,6 +264,7 @@
     window.addEventListener("beforeunload", (e) => {
       if (isDirty) { e.preventDefault(); e.returnValue = ""; }
     });
+    initChatResize();
     ctxEdit.addEventListener("click", () => {
       contextMenu.classList.add("hidden");
       showDetail(selectedClassData);
@@ -880,6 +881,30 @@
   }
 
   // ── Chat ──────────────────────────────────────────────────
+  // ── Chat resize ──────────────────────────────────────────
+  function initChatResize() {
+    const handle = document.getElementById("chat-resize-handle");
+    let startX, startW;
+    function onMouseMove(e) {
+      const delta = startX - e.clientX;
+      const newW = Math.min(Math.max(startW + delta, 280), window.innerWidth * 0.6);
+      chatPanel.style.width = newW + "px";
+    }
+    function onMouseUp() {
+      handle.classList.remove("dragging");
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    }
+    handle.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      startX = e.clientX;
+      startW = chatPanel.offsetWidth;
+      handle.classList.add("dragging");
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    });
+  }
+
   function toggleChat() {
     chatPanel.classList.toggle("hidden");
     if (!chatPanel.classList.contains("hidden")) chatInput.focus();

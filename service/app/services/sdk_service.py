@@ -117,8 +117,17 @@ async def stream_chat(
     system_text = _SYSTEM_APPEND
     if ontology_context:
         system_text += f"\n\nONTOLOGY CONTEXT:\n{ontology_context}"
+
+    # Build a structured conversation transcript so the model treats
+    # prior turns as real dialogue, not background noise.
     if conversation_history:
-        system_text += f"\n\nPRIOR CONVERSATION:\n{conversation_history}"
+        system_text += (
+            "\n\n─── CONVERSATION HISTORY (you MUST remember and reference this) ───\n"
+            "The following is the conversation so far between you and the user.\n"
+            "Continue this conversation naturally. Reference earlier messages when relevant.\n\n"
+            f"{conversation_history}\n"
+            "─── END HISTORY ───"
+        )
 
     queue: asyncio.Queue[dict | None] = asyncio.Queue()
     error_holder: list[BaseException] = []

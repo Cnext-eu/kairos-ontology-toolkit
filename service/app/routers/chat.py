@@ -70,12 +70,13 @@ async def chat(
         if role == "user":
             last_user_msg = content
         if role in ("user", "assistant"):
-            history_parts.append(f"{role}: {content}")
+            prefix = "User" if role == "user" else "Assistant"
+            history_parts.append(f"[{prefix}]: {content}")
 
     # Everything except the final user turn is prior context
     conversation_history = ""
     if len(history_parts) > 1:
-        conversation_history = "\n".join(history_parts[:-1])
+        conversation_history = "\n\n".join(history_parts[:-1])
 
     if not last_user_msg:
         last_user_msg = "(no message)"
