@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Kairos ontology hub — {description}"
 requires-python = ">=3.12"
 dependencies = [
-    "kairos-ontology-toolkit>={toolkit_version}",
+    "kairos-ontology-toolkit @ git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@main",
 ]
 
 [project.optional-dependencies]

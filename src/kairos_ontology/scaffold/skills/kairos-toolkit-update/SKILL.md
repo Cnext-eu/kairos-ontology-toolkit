@@ -31,14 +31,11 @@ grep kairos-ontology-toolkit pyproject.toml
 ### Step 1 — Upgrade the package
 
 ```bash
-# Upgrade to latest release
-pip install --upgrade kairos-ontology-toolkit
+# Reinstall latest from main (the default dependency target)
+pip install --upgrade --force-reinstall "kairos-ontology-toolkit @ git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@main"
 
-# Or install a specific version
-pip install kairos-ontology-toolkit==1.3.0
-
-# Or install from GitHub main branch (pre-release)
-pip install --upgrade git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@main
+# Or install a specific version tag
+pip install "kairos-ontology-toolkit @ git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@v1.3.0"
 ```
 
 ### Step 2 — Refresh managed files
@@ -58,21 +55,16 @@ This updates:
 - `.github/copilot-instructions.md`
 - `.github/skills/*/SKILL.md`
 
-### Step 3 — Update the dependency pin
+### Step 3 — Reinstall hub dependencies
 
-Edit `pyproject.toml` to require at least the new version:
-
-```toml
-dependencies = [
-    "kairos-ontology-toolkit>=1.3.0",
-]
-```
-
-Then lock dependencies:
+Since the hub's `pyproject.toml` points to `@main`, reinstalling picks up
+the latest:
 
 ```bash
-pip install -e .
+pip install -e . --force-reinstall --no-deps
 ```
+
+No `pyproject.toml` edit is needed — it always tracks `main`.
 
 ### Step 4 — Commit
 

@@ -123,8 +123,12 @@ cd contoso-ontology-hub
 pip install -e .
 ```
 
-This installs the `kairos-ontology-toolkit` as a dependency of the hub and
-makes the `kairos-ontology` CLI available in the hub's context.
+This installs the `kairos-ontology-toolkit` from GitHub (`main` branch)
+and makes the `kairos-ontology` CLI available.
+
+> **If pip fails:** Ensure you have `git` installed and can access
+> `github.com/Cnext-eu/kairos-ontology-toolkit`. The toolkit is a private
+> GitHub package, not on PyPI.
 
 ---
 
