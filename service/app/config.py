@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     github_ontologies_path: str = "ontologies"
 
     # Service
-    allowed_origins: str = "*"  # comma-separated CORS origins
+    allowed_origins: str = ""  # comma-separated CORS origins (empty = none)
     dev_mode: bool = False  # use local files instead of GitHub API
     local_ontologies_dir: str = "ontologies"  # path to local TTL files (dev mode)
     dev_github_token: str = ""  # GitHub PAT for Copilot SDK in dev mode

@@ -58,7 +58,37 @@ git rebase origin/main
 
 If conflicts arise, help the user resolve them before continuing.
 
-### Step 4 — Push the branch
+### Step 4 — Security review
+
+Before pushing, scan the changed files for common security issues:
+
+```bash
+git diff main --name-only
+```
+
+**For Python / service code changes**, check:
+
+| Check | What to look for |
+|-------|-----------------|
+| **Path traversal** | User input used in file paths without sanitising `/`, `\`, `..` |
+| **Command injection** | `subprocess` calls using `shell=True` or string concatenation |
+| **Secret exposure** | Tokens, keys, or passwords in code, config defaults, or API responses |
+| **CORS** | `allow_origins=["*"]` in production settings |
+| **Auth bypass** | Endpoints missing `Authorization` header requirement |
+| **Dependency pinning** | New dependencies without version pins or from untrusted sources |
+
+**For ontology / scaffold changes**, check:
+
+| Check | What to look for |
+|-------|-----------------|
+| **Template injection** | User-controlled values interpolated into templates without sanitising |
+| **Namespace hijacking** | Namespace URIs pointing to domains the org doesn't control |
+| **Sensitive data in ontology** | PII, credentials, or internal URLs embedded in `.ttl` labels/comments |
+
+If any issues are found, fix them before proceeding.  Do NOT create the PR
+with known security problems.
+
+### Step 5 — Push the branch
 
 ```bash
 git push -u origin HEAD
@@ -85,7 +115,8 @@ gh pr create --base main \
 - [ ] `kairos-ontology validate` passes
 - [ ] `kairos-ontology project` regenerated (if ontology changed)
 - [ ] `_master.ttl` updated (if new domain added)
-- [ ] Hub README domain table updated (if new domain added)"
+- [ ] Hub README domain table updated (if new domain added)
+- [ ] Security review passed (no path traversal, no secrets, no shell=True)"
 ```
 
 ### Step 6 — Confirm

@@ -43,11 +43,8 @@ async def health():
 
 @app.get("/api/config")
 async def get_config():
-    """Public config endpoint — tells the UI about dev mode and token."""
-    result = {"dev_mode": settings.dev_mode}
-    if settings.dev_mode and settings.dev_github_token:
-        result["github_token"] = settings.dev_github_token
-    return result
+    """Public config endpoint — tells the UI about dev mode."""
+    return {"dev_mode": settings.dev_mode}
 
 
 # Static UI

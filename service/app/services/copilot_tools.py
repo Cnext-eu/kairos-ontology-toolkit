@@ -53,7 +53,9 @@ def _class_dict(c: ClassInfo) -> dict:
 
 
 def _domain_to_path(domain: str) -> str:
-    name = domain if "." in domain else f"{domain}.ttl"
+    # Sanitise: strip path separators to prevent traversal
+    safe = domain.replace("/", "").replace("\\", "").replace("..", "")
+    name = safe if "." in safe else f"{safe}.ttl"
     return f"{gh.settings.github_ontologies_path}/{name}"
 
 
