@@ -1,5 +1,11 @@
 // Neo4j Schema for: {{ ontology_uri }}
 // Generated: {{ timestamp }}
+{%- if ontology_metadata and ontology_metadata.version %}
+// Ontology version: {{ ontology_metadata.version }}
+{%- endif %}
+{%- if ontology_metadata and ontology_metadata.toolkit_version %}
+// Toolkit version: {{ ontology_metadata.toolkit_version }}
+{%- endif %}
 
 // Create Node Label Constraints
 {% for class in classes -%}

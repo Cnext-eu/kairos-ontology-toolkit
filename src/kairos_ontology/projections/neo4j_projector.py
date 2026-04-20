@@ -207,7 +207,7 @@ if __name__ == "__main__":
     main()
 
 
-def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None) -> dict:
+def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None, ontology_metadata: dict = None) -> dict:
     """Generate Neo4j artifacts from pre-extracted classes and graph.
     
     Args:
@@ -225,6 +225,7 @@ def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str,
     
     env = Environment(loader=FileSystemLoader(template_dir))
     template = env.get_template('schema.cypher.jinja2')
+    meta = ontology_metadata or {}
     
     # Add constraint info to classes
     for cls in classes:
@@ -232,10 +233,11 @@ def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str,
         cls['id_property'] = 'id'
     
     content = template.render(
-        ontology_uri="ontology",
-        timestamp=datetime.now().isoformat(),
+        ontology_uri=meta.get('iri', 'ontology'),
+        timestamp=meta.get('generated_at', datetime.now().isoformat()),
         classes=classes,
-        relationships=[]
+        relationships=[],
+        ontology_metadata=meta,
     )
     
     # Use domain-specific filename if ontology_name provided

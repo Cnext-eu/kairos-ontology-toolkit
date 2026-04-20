@@ -3,6 +3,9 @@
   "$id": "{{ schema_id }}",
   "title": "{{ title }}",
   "description": "{{ description }}",
+{%- if ontology_metadata and ontology_metadata.iri %}
+  "$comment": "Ontology IRI: {{ ontology_metadata.iri }}{% if ontology_metadata.version %} v{{ ontology_metadata.version }}{% endif %}",
+{%- endif %}
   "type": "object",
   "properties": {
 {%- for property in properties %}
