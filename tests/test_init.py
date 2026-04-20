@@ -703,10 +703,10 @@ def test_new_repo_template_no_git_init(tmp_path):
 
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
     assert ["git", "init", "-b", "main"] not in call_args_list
-    # Should still commit + push
+    # Should still commit + push (at least once; ref-models update may add a second push)
     assert ["git", "add", "."] in call_args_list
     push_calls = [c for c in call_args_list if c == ["git", "push"]]
-    assert len(push_calls) == 1
+    assert len(push_calls) >= 1
 
 
 def test_new_repo_template_full_org_slash(tmp_path):
@@ -755,8 +755,9 @@ def test_new_repo_smartcoding_runs_when_script_exists(tmp_path):
 
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
     pwsh_calls = [c for c in call_args_list if c[0] == "pwsh"]
-    assert len(pwsh_calls) == 1
-    assert "update-smartcoding-latest.ps1" in str(pwsh_calls[0])
+    # Both update-smartcoding-latest.ps1 and update-referencemodels.ps1 run
+    assert any("update-smartcoding-latest.ps1" in str(c) for c in pwsh_calls)
+    assert any("update-referencemodels.ps1" in str(c) for c in pwsh_calls)
 
 
 def test_init_smartcoding_runs_when_script_exists(tmp_path):

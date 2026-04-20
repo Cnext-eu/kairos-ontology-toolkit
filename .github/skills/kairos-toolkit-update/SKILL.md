@@ -17,10 +17,10 @@ Check the current state:
 
 ```bash
 # Installed toolkit version
-kairos-ontology --version
+python -m kairos_ontology --version
 
 # Check if managed files are outdated
-kairos-ontology update --check
+python -m kairos_ontology update --check
 
 # Current dependency pin in pyproject.toml
 grep kairos-ontology-toolkit pyproject.toml
@@ -45,10 +45,10 @@ skill files).  After upgrading, refresh them:
 
 ```bash
 # Preview what would change
-kairos-ontology update --check
+python -m kairos_ontology update --check
 
 # Apply the updates
-kairos-ontology update
+python -m kairos_ontology update
 ```
 
 This updates:
@@ -78,7 +78,7 @@ git commit -m "chore: update kairos-ontology-toolkit to vX.Y.Z"
 The toolkit uses semantic versioning (`MAJOR.MINOR.PATCH`):
 - **Patch** — bug fixes, no scaffold changes.
 - **Minor** — new features, skill updates, scaffold improvements.  Always run
-  `kairos-ontology update` after a minor upgrade.
+  `python -m kairos_ontology update` after a minor upgrade.
 - **Major** — breaking changes.  Read the changelog before upgrading.
 
 Managed files carry a version stamp:
@@ -95,7 +95,7 @@ Add to your CI workflow to catch outdated managed files:
 
 ```yaml
 - name: Check toolkit managed files
-  run: kairos-ontology update --check
+  run: python -m kairos_ontology update --check
 ```
 
 This is already included in `.github/workflows/managed-check.yml` if your
@@ -105,7 +105,7 @@ repo was scaffolded by `kairos-ontology new-repo`.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `update --check` reports drift | Toolkit was upgraded but managed files weren't refreshed | Run `kairos-ontology update` |
-| Managed files missing | Repo was created before the skill was added | Run `kairos-ontology init --company-domain <domain>` |
+| `update --check` reports drift | Toolkit was upgraded but managed files weren't refreshed | Run `python -m kairos_ontology update` |
+| Managed files missing | Repo was created before the skill was added | Run `python -m kairos_ontology init --company-domain <domain>` |
 | `--version` shows old version | pip cache or wrong virtualenv | `pip install --force-reinstall kairos-ontology-toolkit` |
 | pyproject.toml pin too old | Never updated after toolkit upgrade | Edit the `>=X.Y.Z` constraint manually |

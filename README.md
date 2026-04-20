@@ -37,6 +37,17 @@ pip install kairos-ontology-toolkit
 
 ## Usage
 
+> **Invoking the CLI in hub repos**
+>
+> In client ontology hub repositories, always invoke the toolkit as:
+> ```bash
+> python -m kairos_ontology <command>
+> ```
+> This works in any virtual environment without needing the Python `Scripts/`
+> directory on PATH.  The `kairos-ontology` console script (`.exe` on Windows)
+> is also installed for convenience, but `python -m kairos_ontology` is the
+> recommended form.
+
 ### Project Structure
 
 Create your ontology hub with this structure:
@@ -130,10 +141,10 @@ The toolkit uses semantic web best practices to detect your namespace:
 
 ```bash
 # Auto-detect (default)
-kairos-ontology project --target dbt
+python -m kairos_ontology project --target dbt
 
 # Explicit namespace
-kairos-ontology project --target dbt --namespace "http://example.org/ontology#"
+python -m kairos_ontology project --target dbt --namespace "http://example.org/ontology#"
 ```
 
 **Auto-detection priorities:**
@@ -210,32 +221,32 @@ output/
 
 ```bash
 # Validate everything (syntax + SHACL + consistency)
-kairos-ontology validate --all
+python -m kairos_ontology validate --all
 
 # Validate specific aspects
-kairos-ontology validate --syntax
-kairos-ontology validate --shacl
-kairos-ontology validate --consistency
+python -m kairos_ontology validate --syntax
+python -m kairos_ontology validate --shacl
+python -m kairos_ontology validate --consistency
 
 # Custom paths
-kairos-ontology validate --ontologies ./ontologies --shapes ./shapes --catalog ./catalog.xml
+python -m kairos_ontology validate --ontologies ./ontologies --shapes ./shapes --catalog ./catalog.xml
 ```
 
 ### Generate Projections
 
 ```bash
 # Generate all projections for all ontologies
-kairos-ontology project --target all
+python -m kairos_ontology project --target all
 
 # Generate specific projection type
-kairos-ontology project --target dbt
-kairos-ontology project --target neo4j
-kairos-ontology project --target azure-search
-kairos-ontology project --target a2ui
-kairos-ontology project --target prompt
+python -m kairos_ontology project --target dbt
+python -m kairos_ontology project --target neo4j
+python -m kairos_ontology project --target azure-search
+python -m kairos_ontology project --target a2ui
+python -m kairos_ontology project --target prompt
 
 # Custom paths
-kairos-ontology project --ontologies ./ontologies --output ./output --catalog ./catalog.xml
+python -m kairos_ontology project --ontologies ./ontologies --output ./output --catalog ./catalog.xml
 ```
 
 **Output Organization:**
@@ -268,10 +279,10 @@ output/prompt/order-context.json
 
 ```bash
 # Test catalog file
-kairos-ontology catalog-test --catalog ./catalog.xml
+python -m kairos_ontology catalog-test --catalog ./catalog.xml
 
 # Test with specific ontology
-kairos-ontology catalog-test --catalog ./catalog.xml --ontology ./ontologies/customer.ttl
+python -m kairos_ontology catalog-test --catalog ./catalog.xml --ontology ./ontologies/customer.ttl
 ```
 
 ## Development

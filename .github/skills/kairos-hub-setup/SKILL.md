@@ -9,7 +9,7 @@ description: >
 
 You guide users through setting up a new Kairos ontology hub.
 
-> **IMPORTANT:** Always use the `kairos-ontology` CLI commands to scaffold
+> **IMPORTANT:** Always use the `python -m kairos_ontology` CLI commands to scaffold
 > the hub structure.  Do NOT manually create directories, READMEs, .gitignore,
 > skills, or other scaffold files — the CLI handles all of this automatically.
 
@@ -53,7 +53,7 @@ structure and adds domains inside an existing repo.
 ## Adding a domain with `init`
 
 ```bash
-kairos-ontology init --company-domain contoso.com --domain customer
+python -m kairos_ontology init --company-domain contoso.com --domain customer
 ```
 
 - `--company-domain` (required) — sets namespace base: `https://contoso.com/ont/`
@@ -108,12 +108,12 @@ EOF
 ## Adding a new domain checklist
 
 - [ ] Create a feature branch (`ontology/<domain-name>`)
-- [ ] Run `kairos-ontology init --company-domain <domain> --domain <name>`
+- [ ] Run `python -m kairos_ontology init --company-domain <domain> --domain <name>`
 - [ ] Edit `ontology-hub/ontologies/<name>.ttl` — add classes and properties
 - [ ] Update domain overview table in `ontology-hub/README.md`
 - [ ] Add `owl:imports` to `ontology-hub/ontologies/_master.ttl`
-- [ ] Validate: `kairos-ontology validate`
-- [ ] Generate projections: `kairos-ontology project --target prompt`
+- [ ] Validate: `python -m kairos_ontology validate`
+- [ ] Generate projections: `python -m kairos_ontology project --target prompt`
 - [ ] Optionally add SHACL shapes in `ontology-hub/shapes/`
 - [ ] Optionally add SKOS mappings in `ontology-hub/mappings/`
 - [ ] Commit, push, and open PR to merge into main
