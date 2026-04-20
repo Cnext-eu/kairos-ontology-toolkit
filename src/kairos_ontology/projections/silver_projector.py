@@ -402,9 +402,13 @@ def _detect_ontology_uri(graph: Graph, namespace: str) -> URIRef:
 
 
 def _parse_audit_envelope(audit_str: str) -> list[ColumnDef]:
-    """Parse comma-separated 'name TYPE' audit column definitions."""
+    """Parse comma-separated ``name TYPE`` audit column definitions.
+
+    Commas inside parentheses (e.g. ``DECIMAL(18, 4)``) are preserved.
+    """
+    import re
     cols = []
-    for part in audit_str.split(","):
+    for part in re.split(r",\s*(?![^()]*\))", audit_str):
         part = part.strip()
         if not part:
             continue
@@ -590,6 +594,8 @@ def generate_master_erd(silver_output_path: Path, hub_name: str = "master") -> O
     """
     domain_erds: list[tuple[str, str]] = []
     for mmd_file in sorted(silver_output_path.rglob("*-erd.mmd")):
+        if mmd_file.name == "master-erd.mmd":
+            continue
         domain = mmd_file.parent.name
         content = mmd_file.read_text(encoding="utf-8")
         # Strip the erDiagram header and leading comment lines

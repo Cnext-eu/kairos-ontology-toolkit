@@ -410,3 +410,43 @@ def test_master_erd_returns_none_when_empty(tmp_path):
     silver_out = tmp_path / "silver"
     silver_out.mkdir()
     assert generate_master_erd(silver_out) is None
+
+
+def test_master_erd_excludes_own_previous_output(tmp_path):
+    """Regression: master-erd.mmd must not be included in its own merge."""
+    generate_master_erd = _sp.generate_master_erd
+
+    silver_out = tmp_path / "silver"
+    (silver_out / "customer").mkdir(parents=True)
+    (silver_out / "customer" / "customer-erd.mmd").write_text(
+        "erDiagram\n    %% Silver ERD: silver_customer / customer\n\n"
+        "    CUSTOMER {\n        NVARCHAR_36 customer_sk\n    }\n",
+        encoding="utf-8",
+    )
+    # Simulate a leftover master from a previous run
+    (silver_out / "master-erd.mmd").write_text(
+        "erDiagram\n    %% Master ERD — hub (all domains)\n\n"
+        "    %% --- Domain: customer ---\n"
+        "    CUSTOMER {\n        NVARCHAR_36 customer_sk\n    }\n",
+        encoding="utf-8",
+    )
+
+    result = generate_master_erd(silver_out, hub_name="hub")
+    assert result is not None
+    # CUSTOMER should appear exactly once (not duplicated from the old master)
+    assert result.count("CUSTOMER {") == 1
+    # Only one domain section
+    assert result.count("Domain: customer") == 1
+
+
+def test_parse_audit_envelope_with_parenthesized_types():
+    """Commas inside SQL type parentheses must not split the column definition."""
+    audit_str = "_total DECIMAL(18, 4), _load_date DATE, _amount NUMERIC(10, 2)"
+    cols = _parse_audit_envelope(audit_str)
+    assert len(cols) == 3
+    assert cols[0].name == "_total"
+    assert cols[0].sql_type == "DECIMAL(18, 4)"
+    assert cols[1].name == "_load_date"
+    assert cols[1].sql_type == "DATE"
+    assert cols[2].name == "_amount"
+    assert cols[2].sql_type == "NUMERIC(10, 2)"
