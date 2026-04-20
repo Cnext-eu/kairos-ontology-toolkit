@@ -559,3 +559,50 @@ def _sort_tables(tables: list[TableDef]) -> list[TableDef]:
     """Sort tables per ordering convention: root → subtype → satellite → reference."""
     order = {"root": 0, "subtype": 1, "satellite": 2, "reference": 3}
     return sorted(tables, key=lambda t: order.get(t.table_type, 0))
+
+
+def generate_master_erd(silver_output_path: Path, hub_name: str = "master") -> Optional[str]:
+    """Merge all per-domain ``*-erd.mmd`` files into one cross-domain master ERD.
+
+    Reads every ``<domain>/<domain>-erd.mmd`` file under *silver_output_path*,
+    strips the per-file ``erDiagram`` header and domain comment, then re-emits
+    them under a single ``erDiagram`` block with a section comment per domain.
+
+    Args:
+        silver_output_path: Path to the ``output/silver/`` directory.
+        hub_name: Label used in the master ERD header comment.
+
+    Returns:
+        Mermaid ERD string, or ``None`` if no domain ERDs were found.
+    """
+    domain_erds: list[tuple[str, str]] = []
+    for mmd_file in sorted(silver_output_path.rglob("*-erd.mmd")):
+        domain = mmd_file.parent.name
+        content = mmd_file.read_text(encoding="utf-8")
+        # Strip the erDiagram header and leading comment lines
+        body_lines = []
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped == "erDiagram" or stripped.startswith("%% Silver ERD:"):
+                continue
+            body_lines.append(line)
+        # Trim leading/trailing blank lines from the body
+        body = "\n".join(body_lines).strip()
+        if body:
+            domain_erds.append((domain, body))
+
+    if not domain_erds:
+        return None
+
+    lines = [
+        "erDiagram",
+        f"    %% Master ERD — {hub_name} (all domains)",
+        "",
+    ]
+    for domain, body in domain_erds:
+        lines.append(f"    %% --- Domain: {domain} ---")
+        lines.append(body)
+        lines.append("")
+
+    return "\n".join(lines)
+

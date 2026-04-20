@@ -321,3 +321,54 @@ def test_junction_table_generated():
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
     assert "engagement_team_member" in ddl
     assert "engagement_team_member_sk" in ddl
+
+
+# ---------------------------------------------------------------------------
+# generate_master_erd
+# ---------------------------------------------------------------------------
+
+def _load_silver_projector():
+    """Load silver_projector from source, not from installed site-packages."""
+    import importlib.util, sys
+    src = Path(__file__).parent.parent / "src" / "kairos_ontology" / "projections" / "silver_projector.py"
+    spec = importlib.util.spec_from_file_location("silver_projector_src", src)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_master_erd_merges_domains(tmp_path):
+    generate_master_erd = _load_silver_projector().generate_master_erd
+
+    # Simulate two domain ERD files in output/silver/
+    silver_out = tmp_path / "silver"
+    (silver_out / "customer").mkdir(parents=True)
+    (silver_out / "order").mkdir(parents=True)
+
+    (silver_out / "customer" / "customer-erd.mmd").write_text(
+        "erDiagram\n    %% Silver ERD: silver_customer / customer\n\n"
+        "    CUSTOMER {\n        NVARCHAR(36) customer_sk\n    }\n",
+        encoding="utf-8",
+    )
+    (silver_out / "order" / "order-erd.mmd").write_text(
+        "erDiagram\n    %% Silver ERD: silver_order / order\n\n"
+        "    ORDER {\n        NVARCHAR(36) order_sk\n    }\n",
+        encoding="utf-8",
+    )
+
+    result = generate_master_erd(silver_out, hub_name="test-hub")
+    assert result is not None
+    assert result.startswith("erDiagram")
+    assert "CUSTOMER" in result
+    assert "ORDER" in result
+    assert "Domain: customer" in result
+    assert "Domain: order" in result
+    assert result.count("erDiagram") == 1  # Only one header
+
+
+def test_master_erd_returns_none_when_empty(tmp_path):
+    generate_master_erd = _load_silver_projector().generate_master_erd
+
+    silver_out = tmp_path / "silver"
+    silver_out.mkdir()
+    assert generate_master_erd(silver_out) is None

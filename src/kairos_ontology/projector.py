@@ -159,7 +159,23 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 print(f"  [{onto_name}] ✗ Failed: {e}")
                 if '--verbose' in str(target):  # Simple verbose check
                     traceback.print_exc()
-        
+
+        # After all domains: generate master ERD for silver target
+        if target_name == "silver" and total_files > 0:
+            from .projections.silver_projector import generate_master_erd
+            silver_output = output_path / "silver"
+            hub_name = ontologies_path.parent.name  # e.g. "ontology-hub"
+            master_mmd = generate_master_erd(silver_output, hub_name=hub_name)
+            if master_mmd:
+                master_path = silver_output / "master-erd.mmd"
+                master_path.write_text(master_mmd, encoding="utf-8")
+                # Also write to application-models/ for web UI display
+                app_models = ontologies_path.parent / "application-models"
+                app_models.mkdir(exist_ok=True)
+                (app_models / "master-erd.mmd").write_text(master_mmd, encoding="utf-8")
+                total_files += 2
+                print(f"  ✓ Master ERD written: silver/master-erd.mmd + application-models/master-erd.mmd")
+
         print(f"  ✓ {target_name} projection completed: {total_files} total files\n")
     
     print("✅ Projection generation completed!")

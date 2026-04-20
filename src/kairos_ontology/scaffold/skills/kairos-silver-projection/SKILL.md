@@ -185,15 +185,20 @@ python -m kairos_ontology project --target silver
 Artifacts are written to `output/silver/{DOMAIN}/`:
 - `{DOMAIN}-ddl.sql` — CREATE TABLE statements (T-SQL / MS Fabric compatible)
 - `{DOMAIN}-alter.sql` — ALTER TABLE statements for UNIQUE and FK constraints
-- `{DOMAIN}-erd.mmd` — Mermaid `erDiagram` for documentation and the web UI
+- `{DOMAIN}-erd.mmd` — Mermaid `erDiagram` for this domain
 
-ERD files are also copied to `application-models/` for display in the Kairos web UI.
+**Automatically generated after all domains are projected:**
+- `output/silver/master-erd.mmd` — cross-domain master ERD (all tables + FK relationships)
+- `application-models/master-erd.mmd` — same file copied for display in the Kairos web UI
+
+The master ERD merges every `*-erd.mmd` into a single diagram with one section per domain.
+It is the primary artifact to review the full silver layer data model at a glance.
 
 ---
 
 ## Phase 5 — Review outputs
 
-### Check DDL
+### Check per-domain DDL
 
 Key things to verify:
 - Schema name matches expected (`silver_{domain}`)
@@ -202,13 +207,38 @@ Key things to verify:
 - Reference tables have `ref_` prefix and no SCD/audit columns
 - GDPR satellites use parent SK as PK, no own SK
 
-### Check ERD
+### Check master ERD
 
-Open `{DOMAIN}-erd.mmd` in a Mermaid viewer or the Kairos web UI.  
+Open `output/silver/master-erd.mmd` (or `application-models/master-erd.mmd`) in a
+Mermaid viewer or the Kairos web UI.
+
 Verify:
-- All classes are represented as entities
-- FK relationships are shown as `||--o{`
+- All domains and their tables appear
+- Cross-domain FK relationships are visible (e.g. `order` → `customer`)
 - No orphaned tables
+
+> **Tip**: The master ERD is the best way to review the full silver layer model with
+> a client. Share `application-models/master-erd.mmd` for stakeholder review.
+
+### Update master ERD manually (if needed)
+
+The master ERD is auto-generated from per-domain ERDs. If you need to add cross-domain
+relationships that aren't captured by FK annotations, add them directly to
+`application-models/master-erd.mmd` after generation:
+
+```
+erDiagram
+    %% Master ERD — my-hub (all domains)
+
+    %% --- Domain: customer ---
+    ...
+
+    %% --- Domain: order ---
+    ...
+
+    %% Cross-domain relationships (manually added)
+    CUSTOMER ||--o{ ORDER : "places"
+```
 
 ### Fix and iterate
 
@@ -216,6 +246,7 @@ If adjustments are needed, edit `{DOMAIN}-silver-ext.ttl` and re-run:
 ```bash
 python -m kairos_ontology project --target silver
 ```
+The master ERD is regenerated automatically on every run.
 
 ---
 
