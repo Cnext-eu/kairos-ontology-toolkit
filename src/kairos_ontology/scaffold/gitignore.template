@@ -1,6 +1,3 @@
-# Generated projection outputs
-ontology-hub/output/
-
 # Python
 __pycache__/
 *.py[cod]

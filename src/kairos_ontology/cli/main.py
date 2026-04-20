@@ -242,6 +242,11 @@ def init(domain, company_domain, force):
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
+    # Place .gitkeep in empty output subdirs so git tracks them
+    for target in ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver"]:
+        gitkeep = hub / "output" / target / ".gitkeep"
+        if not gitkeep.exists():
+            gitkeep.touch()
     # 2. Copy README files for each directory
     for subdir in ["ontologies", "shapes", "mappings"]:
         readme_src = _SCAFFOLD_DIR / "ontology-hub" / subdir / "README.md"
@@ -448,6 +453,25 @@ def update(check):
         if not updated and not missing:
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
 
+    # --- Migrate .gitignore: remove legacy output/ ignore line ---------------
+    if not check:
+        gitignore_path = repo_root / ".gitignore"
+        if gitignore_path.is_file():
+            content = gitignore_path.read_text(encoding="utf-8")
+            legacy_line = "ontology-hub/output/"
+            lines = content.splitlines(keepends=True)
+            filtered = [
+                l for l in lines
+                if l.strip() != legacy_line and l.strip() != f"# Generated projection outputs"
+            ]
+            # Also drop a blank line that may have been left behind after the block
+            cleaned = "".join(filtered).lstrip("\n")
+            if cleaned != content:
+                gitignore_path.write_text(cleaned, encoding="utf-8")
+                print(f"  ✓ Removed legacy 'ontology-hub/output/' from .gitignore "
+                      f"(projection outputs are now tracked in git)")
+
+
 
 # ---------------------------------------------------------------------------
 # Repo naming helper
@@ -569,6 +593,12 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
         hub / "output" / "silver",
     ]:
         d.mkdir(parents=True, exist_ok=True)
+
+    # Place .gitkeep in output subdirs so git tracks them
+    for target in ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver"]:
+        gitkeep = hub / "output" / target / ".gitkeep"
+        if not gitkeep.exists():
+            gitkeep.touch()
 
     # README files
     for subdir in ["ontologies", "shapes", "mappings"]:
