@@ -19,6 +19,15 @@ azure-search, a2ui, prompt), and an AI chat interface via the GitHub Models API.
 - Service code lives under `service/app/`.
 - Tests live under `tests/` (toolkit) and `tests/service/` (API endpoints).
 
+## Dev toolchain
+
+- **Poetry** manages dependencies and builds the package. It must be installed separately
+  on the developer's machine — it is NOT a pip dependency.
+  Install: `(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python -`
+  or `pipx install poetry`.
+- Run tests with `py -m pytest` (Windows) — Poetry's venv is not required for tests if
+  dependencies are already installed via pip.
+
 ## Testing rules
 
 - **Every new function, service, or endpoint MUST have unit tests.**

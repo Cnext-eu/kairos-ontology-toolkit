@@ -287,6 +287,22 @@ python -m kairos_ontology catalog-test --catalog ./catalog.xml --ontology ./onto
 
 ## Development
 
+### Prerequisites
+
+Poetry is required to manage dependencies and build the package.
+Install it once on your machine (not via pip — it manages its own environment):
+
+```powershell
+# Windows (PowerShell) — recommended installer
+(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python -
+
+# Or via pipx (also fine)
+pip install pipx
+pipx install poetry
+```
+
+Verify: `poetry --version`
+
 ```bash
 # Clone repository
 git clone https://github.com/Cnext-eu/kairos-ontology-toolkit.git
