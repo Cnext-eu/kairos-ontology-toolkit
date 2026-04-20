@@ -50,7 +50,7 @@ class TestListApplicationModels:
 
     def test_passes_repo_headers(self, client, mock_app_model_service):
         client.get(
-            "/api/application-models",
+            "/api/application-models/",
             headers={"X-Kairos-Repo-Owner": "myorg", "X-Kairos-Repo-Name": "myrepo"},
         )
         mock_app_model_service["list_mmd_files"].assert_called_once_with(

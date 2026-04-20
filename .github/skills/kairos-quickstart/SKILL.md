@@ -97,7 +97,7 @@ contoso-ontology-hub/
 │   ├── mappings/
 │   └── output/                          # Gitignored
 ├── application-models/                  # Mermaid ERD / class-diagram files (.mmd)
-├── ontology-reference-models/           # Git submodule
+├── ontology-reference-models/           # Populated automatically by update-referencemodels.ps1
 ├── .gitignore
 ├── pyproject.toml                       # kairos-ontology-toolkit dependency
 └── README.md
