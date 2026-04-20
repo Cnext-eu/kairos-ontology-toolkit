@@ -560,3 +560,88 @@ def test_discriminator_column_not_duplicated():
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
     # Column should appear exactly once (from discriminator, not duplicated by data prop)
     assert ddl.count("relation_type") == 1
+
+
+# ---------------------------------------------------------------------------
+# Cross-domain FK columns
+# ---------------------------------------------------------------------------
+
+PARTY_NS = "http://example.com/ont/party#"
+
+
+def test_cross_domain_fk_column_generated():
+    """A cross-domain ObjectProperty (Client → Party in different namespace)
+    must still produce a FK column in the DDL."""
+    ttl = f"""
+        @prefix ex:    <{BASE}> .
+        @prefix party: <{PARTY_NS}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl:   <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Client"@en ; owl:versionInfo "1.0" .
+
+        ex:Client a owl:Class ; rdfs:label "Client"@en ; rdfs:comment "."@en .
+
+        party:Party a owl:Class ; rdfs:label "Party"@en ; rdfs:comment "."@en .
+
+        ex:representsParty a owl:ObjectProperty ;
+            rdfs:domain ex:Client ;
+            rdfs:range party:Party ;
+            rdfs:label "represents party"@en ;
+            kairos-ext:silverColumnName "party_sk" .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Client", "name": "Client", "label": "Client", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="client")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    alter = next(v for k, v in result.items() if k.endswith("-alter.sql"))
+    erd = next(v for k, v in result.items() if k.endswith("-erd.mmd"))
+
+    # FK column must appear
+    assert "party_sk" in ddl
+    # FK constraint must reference the external schema
+    assert "silver_party" in alter
+    assert "REFERENCES" in alter
+    # ERD must show the relationship
+    assert "represents_party" in erd
+
+
+def test_cross_domain_fk_with_explicit_silver_schema():
+    """Cross-domain FK should use silverSchema annotation from the external ontology."""
+    ttl = f"""
+        @prefix ex:    <{BASE}> .
+        @prefix ext:   <http://other.com/ont/billing#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl:   <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Order"@en ; owl:versionInfo "1.0" .
+
+        # External ontology declares its schema
+        <http://other.com/ont/billing> kairos-ext:silverSchema "silver_billing" .
+
+        ext:Invoice a owl:Class ; rdfs:label "Invoice"@en ; rdfs:comment "."@en ;
+            kairos-ext:silverTableName "invoice" .
+
+        ex:Order a owl:Class ; rdfs:label "Order"@en ; rdfs:comment "."@en .
+
+        ex:hasInvoice a owl:ObjectProperty , owl:FunctionalProperty ;
+            rdfs:domain ex:Order ;
+            rdfs:range ext:Invoice ;
+            rdfs:label "has invoice"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="order")
+    alter = next(v for k, v in result.items() if k.endswith("-alter.sql"))
+    # Must reference the explicit schema
+    assert "silver_billing.invoice" in alter

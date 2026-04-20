@@ -323,7 +323,7 @@ def generate_silver_artifacts(
     # Junction tables from many-to-many object properties (R13)
     # ----------------------------------------------------------------
     junction_tables = _build_junction_tables(merged, class_uris, tables, schema_name,
-                                             table_name_for, audit_cols)
+                                             table_name_for, audit_cols, naming_conv)
 
     # ----------------------------------------------------------------
     # Sort tables per ordering convention
@@ -402,6 +402,50 @@ def _detect_ontology_uri(graph: Graph, namespace: str) -> URIRef:
         if str(s).startswith(namespace.rstrip("#/")):
             return s
     return URIRef(namespace.rstrip("#/"))
+
+
+def _resolve_external_table(
+    graph: Graph, range_cls: URIRef, naming_conv: str,
+) -> tuple[str, str]:
+    """Derive ``(schema, table_name)`` for a class outside the current domain.
+
+    Resolution order:
+
+    1. ``kairos-ext:silverTableName`` on the class → table name.
+    2. ``kairos-ext:silverSchema`` on the class's ontology → schema.
+    3. Fallback: ``silver_{domain}`` derived from the class namespace, and
+       ``snake_case(local_name)`` for the table.
+    """
+    # Table name: explicit annotation or derive from local name
+    tbl_override = _str_val(graph, range_cls, KAIROS_EXT.silverTableName)
+    local = _local_name(str(range_cls))
+    tbl_name = tbl_override or (
+        _camel_to_snake(local) if naming_conv == "camel-to-snake" else local.lower()
+    )
+
+    # Schema: look for the ontology that owns this class
+    cls_str = str(range_cls)
+    if "#" in cls_str:
+        ext_ns = cls_str.rsplit("#", 1)[0]
+    elif "/" in cls_str:
+        ext_ns = cls_str.rsplit("/", 1)[0]
+    else:
+        ext_ns = cls_str
+
+    # Try to find silverSchema on the external ontology URI
+    schema = None
+    for candidate in (URIRef(ext_ns), URIRef(ext_ns + "#"), URIRef(ext_ns + "/")):
+        val = _str_val(graph, candidate, KAIROS_EXT.silverSchema)
+        if val:
+            schema = val
+            break
+
+    if not schema:
+        # Derive from namespace: last path segment as domain name
+        domain_part = ext_ns.rstrip("/").rsplit("/", 1)[-1]
+        schema = f"silver_{domain_part}"
+
+    return schema, tbl_name
 
 
 def _parse_audit_envelope(audit_str: str) -> list[ColumnDef]:
@@ -499,19 +543,35 @@ def _add_object_property_fk_cols(
                 and not _has_max_cardinality_1(graph, cls_uri, prop):
             continue
         range_cls = graph.value(prop, RDFS.range)
-        if range_cls is None or str(range_cls) not in class_uris:
+        if range_cls is None:
             continue
-        range_local = _local_name(str(range_cls))
-        range_tbl = table_name_for(range_cls, range_local)
+
+        # Resolve target table — same domain or cross-domain
+        is_cross_domain = str(range_cls) not in class_uris
+        if is_cross_domain:
+            ref_schema, range_tbl = _resolve_external_table(
+                graph, range_cls, naming_conv,
+            )
+            ref_full = f"{ref_schema}.{range_tbl}"
+        else:
+            range_local = _local_name(str(range_cls))
+            range_tbl = table_name_for(range_cls, range_local)
+            ref_full = f"{schema_name}.{range_tbl}"
+
         col_name_override = _str_val(graph, prop, KAIROS_EXT.silverColumnName)
         col_name = col_name_override or f"{range_tbl}_sk"
         # Conditional nullable (R14)
         cond_on = _str_val(graph, prop, KAIROS_EXT.conditionalOnType)
-        comment = f"nullable: active when type IN ({cond_on})" if cond_on else ""
+        cross_note = f"cross-domain FK → {ref_full}" if is_cross_domain else ""
+        comment_parts = [p for p in [
+            f"nullable: active when type IN ({cond_on})" if cond_on else "",
+            cross_note,
+        ] if p]
+        comment = "; ".join(comment_parts)
         prop_label = _camel_to_snake(_local_name(str(prop)))
         tbl.columns.append(ColumnDef(col_name, "NVARCHAR(36)", nullable=True, comment=comment))
         tbl.fk_constraints.append(
-            (col_name, f"{schema_name}.{range_tbl}", f"{range_tbl}_sk", prop_label)
+            (col_name, ref_full, f"{range_tbl}_sk", prop_label)
         )
 
 
@@ -538,6 +598,7 @@ def _build_junction_tables(
     schema_name: str,
     table_name_for,
     audit_cols: list[ColumnDef],
+    naming_conv: str = "camel-to-snake",
 ) -> list[TableDef]:
     """Build junction (bridge) tables for many-to-many object properties (R13)."""
     junctions: list[TableDef] = []
@@ -553,13 +614,31 @@ def _build_junction_tables(
         range_cls = graph.value(prop, RDFS.range)
         if domain_cls is None or range_cls is None:
             continue
-        if str(domain_cls) not in class_uris or str(range_cls) not in class_uris:
+        # At least one side must be in the current domain
+        dom_in_domain = str(domain_cls) in class_uris
+        rng_in_domain = str(range_cls) in class_uris
+        if not dom_in_domain and not rng_in_domain:
             continue
 
-        dom_local = _local_name(str(domain_cls))
-        rng_local = _local_name(str(range_cls))
-        dom_tbl = table_name_for(domain_cls, dom_local)
-        rng_tbl = table_name_for(range_cls, rng_local)
+        # Resolve domain table
+        if dom_in_domain:
+            dom_local = _local_name(str(domain_cls))
+            dom_tbl = table_name_for(domain_cls, dom_local)
+            dom_ref = f"{schema_name}.{dom_tbl}"
+        else:
+            dom_schema, dom_tbl = _resolve_external_table(
+                graph, domain_cls, naming_conv)
+            dom_ref = f"{dom_schema}.{dom_tbl}"
+
+        # Resolve range table
+        if rng_in_domain:
+            rng_local = _local_name(str(range_cls))
+            rng_tbl = table_name_for(range_cls, rng_local)
+            rng_ref = f"{schema_name}.{rng_tbl}"
+        else:
+            rng_schema, rng_tbl = _resolve_external_table(
+                graph, range_cls, naming_conv)
+            rng_ref = f"{rng_schema}.{rng_tbl}"
 
         jct = TableDef(jct_name, schema_name)
         jct.table_type = "satellite"
@@ -571,13 +650,13 @@ def _build_junction_tables(
         # FK to domain
         jct.columns.append(ColumnDef(f"{dom_tbl}_sk", "NVARCHAR(36)", nullable=False))
         jct.fk_constraints.append(
-            (f"{dom_tbl}_sk", f"{schema_name}.{dom_tbl}", f"{dom_tbl}_sk",
+            (f"{dom_tbl}_sk", dom_ref, f"{dom_tbl}_sk",
              f"{prop_label}_domain")
         )
         # FK to range
         jct.columns.append(ColumnDef(f"{rng_tbl}_sk", "NVARCHAR(36)", nullable=False))
         jct.fk_constraints.append(
-            (f"{rng_tbl}_sk", f"{schema_name}.{rng_tbl}", f"{rng_tbl}_sk",
+            (f"{rng_tbl}_sk", rng_ref, f"{rng_tbl}_sk",
              f"{prop_label}_range")
         )
         # SCD 2
