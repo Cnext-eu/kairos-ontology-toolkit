@@ -27,6 +27,7 @@ _camel_to_snake = _sp._camel_to_snake
 _mmd_type = _sp._mmd_type
 _parse_audit_envelope = _sp._parse_audit_envelope
 generate_silver_artifacts = _sp.generate_silver_artifacts
+render_mermaid_svg = _sp.render_mermaid_svg
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -645,3 +646,18 @@ def test_cross_domain_fk_with_explicit_silver_schema():
     alter = next(v for k, v in result.items() if k.endswith("-alter.sql"))
     # Must reference the explicit schema
     assert "silver_billing.invoice" in alter
+
+
+# ---------------------------------------------------------------------------
+# render_mermaid_svg
+# ---------------------------------------------------------------------------
+
+def test_render_mermaid_svg_returns_none_when_mmdc_missing(tmp_path, monkeypatch):
+    """When mmdc is not available, render_mermaid_svg should return None."""
+    import shutil as _shutil
+    monkeypatch.setattr(_shutil, "which", lambda _name: None)
+    mmd = tmp_path / "test.mmd"
+    mmd.write_text("erDiagram\n    FOO {\n        STRING id\n    }\n")
+    result = render_mermaid_svg(mmd)
+    assert result is None
+    assert not (tmp_path / "test.svg").exists()

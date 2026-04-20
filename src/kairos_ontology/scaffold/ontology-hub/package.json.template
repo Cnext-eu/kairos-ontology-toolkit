@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "description": "Kairos ontology hub — dev dependencies for diagram rendering",
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "^11.4.0"
+  },
+  "scripts": {
+    "render-erd": "mmdc -i application-models/master-erd.mmd -o application-models/master-erd.svg"
+  }
+}

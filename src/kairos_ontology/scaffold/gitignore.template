@@ -7,6 +7,9 @@ build/
 .venv/
 venv/
 
+# Node.js
+node_modules/
+
 # IDE
 .vscode/
 .idea/

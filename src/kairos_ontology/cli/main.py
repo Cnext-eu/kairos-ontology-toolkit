@@ -689,6 +689,12 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
         shutil.copy2(refscript_src, repo_dir / "update-referencemodels.ps1")
         print("  ✓ update-referencemodels.ps1")
 
+    # package.json (Mermaid CLI for SVG rendering)
+    pkg_src = _SCAFFOLD_DIR / "ontology-hub" / "package.json.template"
+    if pkg_src.is_file() and not (repo_dir / "package.json").exists():
+        shutil.copy2(pkg_src, repo_dir / "package.json")
+        print("  ✓ package.json (mermaid-cli for SVG export)")
+
     # --- Git + submodule + commit -------------------------------------------
     try:
         if not use_template:

@@ -725,3 +725,44 @@ def generate_master_erd(silver_output_path: Path, hub_name: str = "master") -> O
 
     return "\n".join(lines)
 
+
+def render_mermaid_svg(mmd_path: Path) -> Optional[Path]:
+    """Render a ``.mmd`` file to SVG using the Mermaid CLI (``mmdc``).
+
+    Looks for ``mmdc`` on ``PATH`` or in ``./node_modules/.bin/``.
+    Returns the SVG path on success, or ``None`` if ``mmdc`` is unavailable.
+    """
+    import shutil
+    import subprocess
+
+    # Try local node_modules first, then global PATH
+    mmdc = None
+    search_dir = mmd_path.parent
+    while search_dir != search_dir.parent:
+        cmd_candidate = search_dir / "node_modules" / ".bin" / "mmdc.cmd"
+        sh_candidate = search_dir / "node_modules" / ".bin" / "mmdc"
+        if cmd_candidate.exists():
+            mmdc = str(cmd_candidate)
+            break
+        if sh_candidate.exists():
+            mmdc = str(sh_candidate)
+            break
+        search_dir = search_dir.parent
+
+    if not mmdc:
+        mmdc = shutil.which("mmdc")
+    if not mmdc:
+        return None
+
+    svg_path = mmd_path.with_suffix(".svg")
+    try:
+        subprocess.run(
+            [mmdc, "-i", str(mmd_path), "-o", str(svg_path), "-q"],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        return svg_path
+    except (subprocess.CalledProcessError, FileNotFoundError,
+            subprocess.TimeoutExpired):
+        return None

@@ -162,7 +162,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
 
         # After all domains: generate master ERD for silver target
         if target_name == "silver" and total_files > 0:
-            from .projections.silver_projector import generate_master_erd
+            from .projections.silver_projector import generate_master_erd, render_mermaid_svg
             silver_output = output_path / "silver"
             hub_name = ontologies_path.parent.name  # e.g. "ontology-hub"
             master_mmd = generate_master_erd(silver_output, hub_name=hub_name)
@@ -175,6 +175,26 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 (app_models / "master-erd.mmd").write_text(master_mmd, encoding="utf-8")
                 total_files += 2
                 print(f"  ✓ Master ERD written: silver/master-erd.mmd + application-models/master-erd.mmd")
+
+            # Render all .mmd files to SVG via Mermaid CLI (if available)
+            svg_count = 0
+            for mmd_file in sorted(silver_output.rglob("*.mmd")):
+                svg = render_mermaid_svg(mmd_file)
+                if svg:
+                    svg_count += 1
+            # Also render application-models copies
+            app_models = ontologies_path.parent / "application-models"
+            if app_models.exists():
+                for mmd_file in sorted(app_models.glob("*.mmd")):
+                    svg = render_mermaid_svg(mmd_file)
+                    if svg:
+                        svg_count += 1
+            if svg_count:
+                total_files += svg_count
+                print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
+            else:
+                print("  ℹ Mermaid CLI (mmdc) not found — SVG export skipped."
+                      " Install: npm install -D @mermaid-js/mermaid-cli")
 
         print(f"  ✓ {target_name} projection completed: {total_files} total files\n")
     
