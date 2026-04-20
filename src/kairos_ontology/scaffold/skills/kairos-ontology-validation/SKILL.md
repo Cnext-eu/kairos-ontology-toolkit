@@ -60,8 +60,8 @@ sh:property [
 
 ## Remediation workflow
 
-1. Run `kairos-ontology validate` on the hub.
+1. Run `python -m kairos_ontology validate` on the hub.
 2. If syntax fails: fix Turtle syntax errors first.
 3. If SHACL fails: review each violation and either fix the data or update the shape.
 4. Re-validate until both pass.
-5. Only then generate projections: `kairos-ontology project`.
+5. Only then generate projections: `python -m kairos_ontology project`.

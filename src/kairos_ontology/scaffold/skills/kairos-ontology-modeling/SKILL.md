@@ -11,9 +11,9 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
 
 ## Before you start
 
-0. **Quick toolkit version check** — run `kairos-ontology update --check` once
+0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
    at the start of the session.  If it reports outdated files, run
-   `kairos-ontology update` and commit the refresh before doing any other work.
+   `python -m kairos_ontology update` and commit the refresh before doing any other work.
    See the kairos-toolkit-update skill for full upgrade steps.
 1. **Create a feature branch** — never work directly on `main`.  Use the
    SC-feature-branch skill (e.g., `ontology/add-order-domain`).
@@ -26,6 +26,101 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
    user.  This avoids fragmented, overlapping ontology files.
 4. **Check the master ontology** — after creating a new domain file, add an
    `owl:imports` line for it in `ontology-hub/ontologies/_master.ttl`.
+5. **Check for standard model alignment** — if the user mentions basing the
+   domain on an industry standard (e.g. FIBO, DCSA, GS1, PROV-O, schema.org),
+   follow the steps in the [Standard model alignment](#standard-model-alignment)
+   section below before designing any classes or properties.
+
+---
+
+## Standard model alignment
+
+When a user wants to model a domain based on — or aligned with — an industry
+standard ontology (FIBO, DCSA, GS1, PROV-O, schema.org, etc.):
+
+### Step 1 — Confirm which standard
+
+Ask the user to confirm:
+- The exact standard or vocabulary (name + version/edition if relevant).
+- Whether they want **full alignment** (extend standard classes directly) or
+  **loose alignment** (model independently, use `owl:equivalentClass` /
+  `rdfs:seeAlso` mappings).
+
+### Step 2 — Check ontology-reference-models/
+
+Look inside `ontology-reference-models/` for the standard:
+
+```bash
+ls ontology-reference-models/
+```
+
+- If a folder or catalog entry for the standard **exists** → use it as the
+  alignment target.  Import it via the catalog in your domain TTL:
+  ```turtle
+  owl:imports <catalog-uri-for-the-standard> ;
+  ```
+- If the standard is **not present**, do NOT download or inline it manually.
+  Instead, inform the user:
+
+  > "The `<standard>` reference model is not yet in `ontology-reference-models/`.
+  > If you plan to reuse this standard across multiple projects, the recommended
+  > approach is to add it to the reference models repo first
+  > (`Cnext-eu/kairos-ontology-referencemodels`) so it becomes available to all
+  > hubs via `update-referencemodels.ps1`.  Alternatively, for a one-off
+  > alignment you can reference the public URI directly without importing the
+  > full model."
+
+  Then ask: **"Should we add it to the reference models first, or proceed with
+  a direct URI reference for now?"**
+
+### Step 3 — Alignment patterns
+
+#### Extend a standard class (full alignment)
+
+```turtle
+@prefix fibo-be: <https://spec.edmcouncil.org/fibo/ontology/BE/LegalEntities/LegalPersons/> .
+
+:LegalEntity rdfs:subClassOf fibo-be:LegalEntity ;
+    rdfs:label "Legal Entity"@en ;
+    rdfs:comment "A legal entity as defined in FIBO, specialised for this domain."@en .
+```
+
+#### Map to a standard class (loose alignment)
+
+```turtle
+:Customer a owl:Class ;
+    rdfs:label "Customer"@en ;
+    rdfs:comment "A party that purchases goods or services."@en ;
+    owl:equivalentClass schema:Person ;    # or rdfs:seeAlso
+    rdfs:seeAlso <https://spec.edmcouncil.org/fibo/...> .
+```
+
+#### Reuse a standard property by reference
+
+```turtle
+:carrierSCAC a owl:DatatypeProperty ;
+    rdfs:domain :Carrier ;
+    rdfs:range xsd:string ;
+    rdfs:label "Carrier SCAC"@en ;
+    rdfs:comment "Standard Carrier Alpha Code as defined by DCSA."@en ;
+    rdfs:seeAlso <https://dcsa.org/standards/> .
+```
+
+### Known standards and their reference model status
+
+| Standard | Domain | In reference models? | Notes |
+|----------|--------|---------------------|-------|
+| FIBO | Financial / legal entities | Check folder | Large; import selectively |
+| DCSA | Shipping / container logistics | Check folder | eBL, Track & Trace |
+| GS1 | Supply chain / product IDs | Check folder | GLN, GTIN, EPCIS |
+| PROV-O | Data provenance | Check folder | W3C standard |
+| schema.org | General-purpose web semantics | Check folder | Broad vocabulary |
+| Dublin Core (DC) | Metadata | Usually included | Small; safe to import |
+
+> **Rule:** Never hardcode a downloaded copy of a standard model inside the hub
+> repo.  Always reference it via the catalog or a public URI.
+
+---
 
 ## Class design
 
