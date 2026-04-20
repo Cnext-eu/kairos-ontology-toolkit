@@ -453,3 +453,110 @@ def test_parse_audit_envelope_with_parenthesized_types():
     assert cols[1].sql_type == "DATE"
     assert cols[2].name == "_amount"
     assert cols[2].sql_type == "NUMERIC(10, 2)"
+
+
+# ---------------------------------------------------------------------------
+# R12 — FK from silverColumnName without OWL cardinality restriction
+# ---------------------------------------------------------------------------
+
+def test_fk_column_from_silver_column_name_without_restriction():
+    """silverColumnName on an ObjectProperty must produce a FK column even
+    without an owl:maxQualifiedCardinality restriction."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Client a owl:Class ; rdfs:label "Client"@en ; rdfs:comment "."@en .
+        ex:Party  a owl:Class ; rdfs:label "Party"@en  ; rdfs:comment "."@en .
+
+        ex:hasParty a owl:ObjectProperty ;
+            rdfs:domain ex:Client ;
+            rdfs:range ex:Party ;
+            rdfs:label "has party"@en ;
+            kairos-ext:silverColumnName "party_sk" .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Client", "name": "Client", "label": "Client", "comment": ""},
+        {"uri": f"{BASE}Party", "name": "Party", "label": "Party", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    alter = next(v for k, v in result.items() if k.endswith("-alter.sql"))
+    erd = next(v for k, v in result.items() if k.endswith("-erd.mmd"))
+    # FK column must appear in DDL
+    assert "party_sk" in ddl
+    # FK constraint must appear
+    assert "fk_client_party_sk" in alter
+    # Relationship must appear in ERD with property label
+    assert "has_party" in erd
+
+
+def test_fk_column_from_functional_property():
+    """owl:FunctionalProperty must produce a FK column without cardinality restriction."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order   a owl:Class ; rdfs:label "Order"@en   ; rdfs:comment "."@en .
+        ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "."@en .
+
+        ex:placedBy a owl:ObjectProperty , owl:FunctionalProperty ;
+            rdfs:domain ex:Order ;
+            rdfs:range ex:Customer ;
+            rdfs:label "placed by"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "customer_sk" in ddl
+
+
+# ---------------------------------------------------------------------------
+# Discriminator column collision
+# ---------------------------------------------------------------------------
+
+def test_discriminator_column_not_duplicated():
+    """A data property with the same name as the discriminator column must not
+    produce a duplicate column."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Relation a owl:Class ; rdfs:label "Relation"@en ; rdfs:comment "."@en ;
+            kairos-ext:discriminatorColumn "relation_type" .
+
+        ex:relationType a owl:DatatypeProperty ;
+            rdfs:domain ex:Relation ;
+            rdfs:range xsd:string ;
+            rdfs:label "relation type"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Relation", "name": "Relation", "label": "Relation", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Column should appear exactly once (from discriminator, not duplicated by data prop)
+    assert ddl.count("relation_type") == 1

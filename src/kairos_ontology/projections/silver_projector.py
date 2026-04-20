@@ -440,6 +440,7 @@ def _not_null_from_shacl(shacl_graph: Optional[Graph], prop_uri: URIRef,
 def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
                           shacl_graph: Optional[Graph], naming_conv: str) -> None:
     """Add OWL DatatypeProperty columns to the table (business columns, R4, R11)."""
+    existing_col_names = {c.name for c in tbl.columns}
     for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
         domain = graph.value(prop, RDFS.domain)
         if domain != cls_uri:
@@ -456,6 +457,10 @@ def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
         col_name = col_name_override or (
             _camel_to_snake(prop_local) if naming_conv == "camel-to-snake" else prop_local.lower()
         )
+        # Skip if a column with the same name already exists (e.g. discriminator)
+        if col_name in existing_col_names:
+            continue
+        existing_col_names.add(col_name)
         # Nullability: explicit annotation wins, then SHACL, then nullable (R11)
         nullable_ann = graph.value(prop, KAIROS_EXT.nullable)
         if nullable_ann is not None:
@@ -472,7 +477,13 @@ def _add_object_property_fk_cols(
 ) -> None:
     """Add FK columns from max-cardinality-1 object properties (R12).
 
-    Adds junction table annotation is handled separately (R13).
+    A property qualifies as a FK column when ANY of:
+      - it has an explicit ``kairos-ext:silverColumnName`` annotation,
+      - it is declared ``owl:FunctionalProperty``,
+      - the domain class has an ``owl:maxQualifiedCardinality 1`` or
+        ``owl:maxCardinality 1`` restriction on the property.
+
+    Junction-table properties (R13) are always skipped.
     """
     for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
         domain = graph.value(prop, RDFS.domain)
@@ -481,8 +492,11 @@ def _add_object_property_fk_cols(
         # Skip if this property has a junctionTableName (R13)
         if graph.value(prop, KAIROS_EXT.junctionTableName):
             continue
-        # Check max-cardinality-1 restriction on this class
-        if not _has_max_cardinality_1(graph, cls_uri, prop):
+        # Determine if this is a many-to-one FK column
+        has_explicit_col = _str_val(graph, prop, KAIROS_EXT.silverColumnName) is not None
+        is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
+        if not has_explicit_col and not is_functional \
+                and not _has_max_cardinality_1(graph, cls_uri, prop):
             continue
         range_cls = graph.value(prop, RDFS.range)
         if range_cls is None or str(range_cls) not in class_uris:
