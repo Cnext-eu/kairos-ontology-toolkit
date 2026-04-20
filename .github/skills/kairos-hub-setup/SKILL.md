@@ -39,6 +39,8 @@ structure and adds domains inside an existing repo.
 │   │   └── README.md
 │   └── output/                          # Generated projections (gitignored)
 │       ├── dbt/ neo4j/ azure-search/ a2ui/ prompt/
+├── application-models/                  # Mermaid ERD / class-diagram files
+│   └── README.md                        # How to add application models
 ├── ontology-reference-models/           # Git submodule (sparse checkout)
 │   ├── authoritative-ontologies/
 │   ├── derived-ontologies/
@@ -74,6 +76,34 @@ The filename becomes the domain identifier:
 - `customer.ttl` → domain "customer"
 - `sales-order.ttl` → domain "sales-order"
 - Use lowercase with hyphens for multi-word names.
+
+## Adding application models
+
+Application models are Mermaid class diagrams (`.mmd` files) that describe
+entity-relationship structures derived from the ontology.  They live in
+`application-models/` at the repo root and are visualised in the Kairos web UI.
+
+```bash
+# Create the folder and add a model
+mkdir -p application-models
+cat > application-models/customer-order.mmd << 'EOF'
+classDiagram
+  class Customer {
+    +String id
+    +String name
+    +String email
+  }
+  class Order {
+    +String id
+    +Date placedAt
+  }
+  Customer "1" --> "*" Order : places
+EOF
+```
+
+- One `.mmd` file per application model.
+- Name the file after the process or view it represents (e.g. `customer-order.mmd`, `supplier-invoice.mmd`).
+- Files are picked up automatically by the web UI "Application Models" dropdown.
 
 ## Adding a new domain checklist
 

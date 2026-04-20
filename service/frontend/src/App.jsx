@@ -9,6 +9,7 @@ import ContextMenu from "./components/ContextMenu.jsx";
 import ProjectionModal from "./components/modals/ProjectionModal.jsx";
 import AddClassModal from "./components/modals/AddClassModal.jsx";
 import SaveModal from "./components/modals/SaveModal.jsx";
+import ApplicationModelPanel from "./components/ApplicationModelPanel.jsx";
 
 export default function App() {
   // ── Auth ─────────────────────────────────────────────────
@@ -50,6 +51,12 @@ export default function App() {
   // ── Projection targets ────────────────────────────────────
   const [projectionTargets, setProjectionTargets] = useState([]);
 
+  // ── Application models ───────────────────────────────────
+  const [appModels, setAppModels] = useState([]);
+  const [appModelOpen, setAppModelOpen] = useState(false);
+  const [currentAppModel, setCurrentAppModel] = useState(null);   // { name, content }
+  const [appModelLoading, setAppModelLoading] = useState(false);
+
   // ── Sync activeRepo into api module ──────────────────────
   useEffect(() => {
     setActiveRepo(activeRepo);
@@ -71,6 +78,7 @@ export default function App() {
       await checkAuthStatus();
       await loadRepos();
       await loadProjectTargets();
+      await loadAppModels();
     }
     init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,7 +150,9 @@ export default function App() {
     setActiveRepoState(repo);
     setActiveRepo(repo);
     setChatHistory([]);
+    setCurrentAppModel(null);
     await loadDomains(repo);
+    await loadAppModels();
   }
 
   async function handleRepoChange(repoJson) {
@@ -208,6 +218,34 @@ export default function App() {
       const data = await apiFetch("GET", "/api/project/targets");
       setProjectionTargets(data.targets || []);
     } catch (_) { /* ok */ }
+  }
+
+  // ── Application models ────────────────────────────────────
+  async function loadAppModels() {
+    try {
+      const data = await apiFetch("GET", "/api/application-models/");
+      setAppModels(data);
+    } catch (_) {
+      setAppModels([]);
+    }
+  }
+
+  async function handleAppModelChange(name) {
+    if (!name) {
+      setCurrentAppModel(null);
+      setAppModelOpen(false);
+      return;
+    }
+    setAppModelLoading(true);
+    setAppModelOpen(true);
+    try {
+      const data = await apiFetch("GET", `/api/application-models/${encodeURIComponent(name.replace(".mmd", ""))}`);
+      setCurrentAppModel({ name, content: data.content });
+    } catch (err) {
+      setCurrentAppModel({ name, content: `%% Error loading model: ${err.message}` });
+    } finally {
+      setAppModelLoading(false);
+    }
   }
 
   // ── Validate ──────────────────────────────────────────────
@@ -391,6 +429,8 @@ export default function App() {
     pendingQuickPrompt, setPendingQuickPrompt,
     sendQuickPrompt,
     projectionTargets,
+    appModels, appModelOpen, setAppModelOpen,
+    currentAppModel, appModelLoading, handleAppModelChange,
   };
 
   return (
@@ -403,6 +443,13 @@ export default function App() {
           {detailOpen && selectedClass && <DetailPanel />}
         </div>
         {chatOpen && <ChatPanel />}
+        {appModelOpen && currentAppModel && (
+          <ApplicationModelPanel
+            name={currentAppModel.name}
+            content={currentAppModel.content}
+            onClose={() => { setAppModelOpen(false); setCurrentAppModel(null); }}
+          />
+        )}
       </div>
 
       {contextMenu && (

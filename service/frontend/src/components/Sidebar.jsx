@@ -15,6 +15,7 @@ export default function Sidebar() {
     setSaveOpen, setProjectionOpen,
     setChatOpen, chatOpen,
     chatTriggerRef, sendQuickPrompt,
+    appModels, currentAppModel, appModelLoading, handleAppModelChange,
   } = useApp();
 
   function onRepoChange(e) {
@@ -131,6 +132,31 @@ export default function Sidebar() {
           <button className="sidebar-btn sb-save" onClick={() => setSaveOpen(true)}>
             💾 Save Changes
           </button>
+        )}
+      </div>
+
+      <div className="sidebar-divider" />
+
+      <div className="sidebar-section">
+        <div className="sidebar-section-title">Application Models</div>
+        <select
+          className="sidebar-select"
+          value={currentAppModel?.name || ""}
+          onChange={e => handleAppModelChange(e.target.value || null)}
+          disabled={appModelLoading}
+        >
+          <option value="">— select model —</option>
+          {appModels.map(m => (
+            <option key={m.name} value={m.name}>
+              {m.name.replace(".mmd", "")}
+            </option>
+          ))}
+        </select>
+        {appModelLoading && <span className="badge">Loading…</span>}
+        {appModels.length === 0 && (
+          <span className="auth-hint">
+            No models found. Add <code>.mmd</code> files to <code>application-models/</code> in your repo.
+          </span>
         )}
       </div>
 

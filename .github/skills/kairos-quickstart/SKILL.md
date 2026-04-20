@@ -96,6 +96,7 @@ contoso-ontology-hub/
 │   ├── shapes/
 │   ├── mappings/
 │   └── output/                          # Gitignored
+├── application-models/                  # Mermaid ERD / class-diagram files (.mmd)
 ├── ontology-reference-models/           # Git submodule
 ├── .gitignore
 ├── pyproject.toml                       # kairos-ontology-toolkit dependency
@@ -200,7 +201,40 @@ domain overview table in `ontology-hub/README.md`.
 
 ---
 
-## 8. Push and create PR
+## 8. Add application models (optional)
+
+Application models are Mermaid class diagrams stored in `application-models/`
+at the repo root.  They visualise entity-relationship structures derived from
+the ontology and appear in the Kairos web UI "Application Models" dropdown.
+
+```bash
+# Create a model for the customer-order process
+mkdir -p application-models
+```
+
+Then create `application-models/customer-order.mmd`:
+
+```
+classDiagram
+  class Customer {
+    +String id
+    +String name
+  }
+  class Order {
+    +String id
+    +Date placedAt
+  }
+  Customer "1" --> "*" Order : places
+```
+
+Rules:
+- One `.mmd` file per application model / process view.
+- Name the file after the process (e.g. `customer-order.mmd`, `supplier-invoice.mmd`).
+- Commit alongside the related ontology domain on the same feature branch.
+
+---
+
+## 9. Push and create PR
 
 ```bash
 git add .
@@ -219,6 +253,7 @@ Or use the SC-merge-pr skill.  Never push directly to `main`.
 |------|---------|
 | Create new hub repo | `kairos-ontology new-repo <name>` |
 | Init hub + first domain | `kairos-ontology init --company-domain <domain> --domain <domain>` |
+| Add application model | Create `application-models/<name>.mmd` (Mermaid class diagram) |
 | Validate | `kairos-ontology validate` |
 | Project (all) | `kairos-ontology project` |
 | Project (single) | `kairos-ontology project --target prompt` |

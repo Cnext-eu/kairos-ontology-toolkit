@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
-from .routers import auth, chat, ontology, projection, repos, validation
+from .routers import application_models, auth, chat, ontology, projection, repos, validation
 
 app = FastAPI(
     title="Kairos Ontology Service",
@@ -36,6 +36,7 @@ app.include_router(projection.router, prefix="/api/project", tags=["projection"]
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(repos.router, prefix="/api/repos", tags=["repos"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(application_models.router, prefix="/api/application-models", tags=["application-models"])
 
 
 @app.get("/health")

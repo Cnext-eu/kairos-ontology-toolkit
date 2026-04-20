@@ -182,6 +182,66 @@ async def read_file(
     return base64.b64decode(data["content"]).decode("utf-8")
 
 
+_APPLICATION_MODELS_PATH = "application-models"
+_APPLICATION_MODELS_FALLBACK_PATHS = ["application-models", "ontology-hub/application-models"]
+
+
+async def list_mmd_files(
+    branch: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
+) -> list[dict]:
+    """List Mermaid class-diagram files (*.mmd) under ``application-models/`` in the repo.
+
+    Tries ``application-models/`` first, then falls back to
+    ``ontology-hub/application-models/`` for repos with a nested layout.
+    """
+    t = await _token()
+    branch = branch or settings.github_default_branch
+    async with httpx.AsyncClient() as client:
+        for candidate in dict.fromkeys(_APPLICATION_MODELS_FALLBACK_PATHS):
+            url = f"{_repo_url(owner, repo)}/contents/{candidate}"
+            resp = await client.get(url, headers=_headers(t), params={"ref": branch})
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            items = resp.json()
+            if not isinstance(items, list):
+                items = [items]
+            files = [
+                {"name": f["name"], "path": f["path"], "sha": f["sha"], "size": f["size"]}
+                for f in items
+                if f["name"].endswith(".mmd")
+            ]
+            if files:
+                return files
+    return []
+
+
+async def read_mmd_file(
+    name: str,
+    branch: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
+) -> str:
+    """Read the content of a Mermaid file, trying all known folder locations."""
+    safe_name = name.replace("/", "").replace("\\", "").replace("..", "")
+    if not safe_name.endswith(".mmd"):
+        safe_name += ".mmd"
+    t = await _token()
+    branch = branch or settings.github_default_branch
+    async with httpx.AsyncClient() as client:
+        for candidate in dict.fromkeys(_APPLICATION_MODELS_FALLBACK_PATHS):
+            url = f"{_repo_url(owner, repo)}/contents/{candidate}/{safe_name}"
+            resp = await client.get(url, headers=_headers(t), params={"ref": branch})
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            return base64.b64decode(data["content"]).decode("utf-8")
+    raise FileNotFoundError(f"Application model '{safe_name}' not found in any known path.")
+
+
 # ---- Write -----------------------------------------------------------------
 
 async def create_branch(
