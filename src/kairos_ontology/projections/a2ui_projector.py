@@ -242,7 +242,7 @@ if __name__ == "__main__":
     main()
 
 
-def generate_a2ui_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None) -> dict:
+def generate_a2ui_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None, ontology_metadata: dict = None) -> dict:
     """Generate A2UI artifacts from pre-extracted classes and graph.
     
     Args:
@@ -260,6 +260,7 @@ def generate_a2ui_artifacts(classes: list, graph, template_dir, namespace: str, 
     from .uri_utils import extract_local_name
     
     # Setup Jinja2 environment
+    meta = ontology_metadata or {}
     template_dir_path = Path(template_dir) if not isinstance(template_dir, Path) else template_dir
     jinja_env = Environment(loader=FileSystemLoader(str(template_dir_path)))
     
@@ -337,7 +338,8 @@ def generate_a2ui_artifacts(classes: list, graph, template_dir, namespace: str, 
             title=f"{cls.get('label', cls['name'])} Message",
             description=cls.get('comment', f"{cls['name']} message payload"),
             properties=properties,
-            required=required
+            required=required,
+            ontology_metadata=meta,
         )
         
         # Use domain-specific directory if ontology_name provided

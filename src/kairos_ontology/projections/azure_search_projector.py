@@ -239,7 +239,7 @@ if __name__ == "__main__":
     main()
 
 
-def generate_azure_search_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None) -> dict:
+def generate_azure_search_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None, ontology_metadata: dict = None) -> dict:
     """Generate Azure Search artifacts from pre-extracted classes and graph.
     
     Args:
@@ -257,6 +257,7 @@ def generate_azure_search_artifacts(classes: list, graph, template_dir, namespac
     from .uri_utils import extract_local_name
     
     # Setup Jinja2 environment
+    meta = ontology_metadata or {}
     template_dir_path = Path(template_dir) if not isinstance(template_dir, Path) else template_dir
     jinja_env = Environment(loader=FileSystemLoader(str(template_dir_path)))
     
@@ -331,7 +332,8 @@ def generate_azure_search_artifacts(classes: list, graph, template_dir, namespac
             index_name=index_name,
             service_name="kairos-search",
             fields=fields,
-            synonym_maps=[]
+            synonym_maps=[],
+            ontology_metadata=meta,
         )
         
         artifacts[f"{index_dir}/{index_name}-index.json"] = index_content

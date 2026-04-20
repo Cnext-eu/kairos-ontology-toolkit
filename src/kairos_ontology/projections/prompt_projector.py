@@ -250,7 +250,7 @@ if __name__ == "__main__":
     main()
 
 
-def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None) -> dict:
+def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None, ontology_metadata: dict = None) -> dict:
     """Generate Prompt artifacts from pre-extracted classes and graph.
     
     Args:
@@ -408,11 +408,14 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
     compact_content = json.dumps(llm_context, indent=2, ensure_ascii=False)
     
     # Generate detailed format (for reference/debugging)
+    meta = ontology_metadata or {}
     detailed_context = {
         "ontology": {
-            "name": "Business Domain Ontology",
-            "version": "1.0.0",
-            "generated": datetime.now().isoformat()
+            "name": meta.get("label") or ontology_name or "Business Domain Ontology",
+            "iri": meta.get("iri", ""),
+            "version": meta.get("version") or "1.0.0",
+            "toolkit_version": meta.get("toolkit_version", ""),
+            "generated": meta.get("generated_at") or datetime.now().isoformat(),
         },
         "entities": [
             {

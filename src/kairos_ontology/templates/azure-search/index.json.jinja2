@@ -1,6 +1,18 @@
 {
   "name": "{{ index_name }}",
   "@odata.context": "https://{{ service_name }}.search.windows.net/$metadata#indexes/$entity",
+{%- if ontology_metadata and ontology_metadata.iri %}
+  "_ontology_iri": "{{ ontology_metadata.iri }}",
+{%- endif %}
+{%- if ontology_metadata and ontology_metadata.version %}
+  "_ontology_version": "{{ ontology_metadata.version }}",
+{%- endif %}
+{%- if ontology_metadata and ontology_metadata.toolkit_version %}
+  "_toolkit_version": "{{ ontology_metadata.toolkit_version }}",
+{%- endif %}
+{%- if ontology_metadata and ontology_metadata.generated_at %}
+  "_generated_at": "{{ ontology_metadata.generated_at }}",
+{%- endif %}
   "fields": [
     {
       "name": "id",

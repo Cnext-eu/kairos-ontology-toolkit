@@ -1,8 +1,11 @@
 """Projection orchestrator - generates downstream artifacts."""
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
-from rdflib import Graph
+from rdflib import Graph, Namespace, URIRef
+from rdflib.namespace import OWL, RDFS
 from .projections.uri_utils import extract_local_name
 
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver"]
@@ -31,13 +34,15 @@ def project_graph(
     targets = targets or VALID_TARGETS
     template_base = Path(__file__).parent / "templates"
     ns = namespace or _auto_detect_namespace(graph)
+    meta = extract_ontology_metadata(graph, ns)
 
     results: Dict[str, Dict[str, str]] = {}
     for target_name in targets:
         if target_name not in VALID_TARGETS:
             continue
         artifacts = _run_projection(
-            target_name, graph, Path("."), template_base, ns, shapes_dir, ontology_name
+            target_name, graph, Path("."), template_base, ns, shapes_dir, ontology_name,
+            ontology_metadata=meta,
         )
         if artifacts:
             results[target_name] = artifacts
@@ -113,6 +118,9 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
 
     targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver'] if target == 'all' else [target]
 
+    # Accumulate per-domain manifest data: {domain_name: {meta, targets: {target: [files]}}}
+    manifests: dict[str, dict] = {}
+
     for target_name in targets_to_run:
         print(f"📦 Generating {target_name} projection...")
         target_output = output_path / target_name
@@ -129,6 +137,9 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             if onto_namespace is None:
                 onto_namespace = _auto_detect_namespace(onto_graph)
                 print(f"  [{onto_name}] Auto-detected namespace: {onto_namespace}")
+
+            # Extract ontology provenance metadata
+            onto_meta = extract_ontology_metadata(onto_graph, onto_namespace)
             
             try:
                 # Generate artifacts for this specific ontology
@@ -144,7 +155,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
 
                 artifacts = _run_projection(target_name, onto_graph, target_output, template_base,
                                             onto_namespace, shapes_dir, onto_name,
-                                            projection_ext_path=ext_path)
+                                            projection_ext_path=ext_path,
+                                            ontology_metadata=onto_meta)
                 if artifacts:
                     # Save artifacts
                     for file_path, content in artifacts.items():
@@ -154,6 +166,14 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                     
                     total_files += len(artifacts)
                     print(f"  [{onto_name}] ✓ Generated {len(artifacts)} file(s)")
+
+                    # Track for manifest
+                    if onto_name not in manifests:
+                        manifests[onto_name] = {
+                            "meta": onto_meta,
+                            "targets": {},
+                        }
+                    manifests[onto_name]["targets"][target_name] = sorted(artifacts.keys())
             except Exception as e:
                 import traceback
                 print(f"  [{onto_name}] ✗ Failed: {e}")
@@ -200,6 +220,61 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     
     print("✅ Projection generation completed!")
     print(f"   Generated artifacts for {len(ontology_graphs)} data domain(s)")
+
+    # Write per-domain projection manifests
+    for domain_name, mdata in manifests.items():
+        manifest = {
+            "domain": domain_name,
+            "ontology_iri": mdata["meta"]["iri"],
+            "ontology_version": mdata["meta"]["version"],
+            "ontology_label": mdata["meta"]["label"],
+            "namespace": mdata["meta"]["namespace"],
+            "toolkit_version": mdata["meta"]["toolkit_version"],
+            "generated_at": mdata["meta"]["generated_at"],
+            "targets": mdata["targets"],
+        }
+        manifest_path = output_path / f"{domain_name}-projection-manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        print(f"   📋 Manifest: {manifest_path.name}")
+
+
+def extract_ontology_metadata(graph: Graph, namespace: str) -> dict:
+    """Extract provenance metadata from the owl:Ontology declaration.
+
+    Returns a dict with keys: ``iri``, ``version``, ``label``, ``namespace``,
+    ``toolkit_version``, and ``generated_at``.  Missing values default to
+    sensible placeholders so callers can always rely on the keys being present.
+    """
+    from kairos_ontology import __version__ as toolkit_version
+
+    iri: str = namespace.rstrip("#/")
+    version: str = ""
+    label: str = ""
+
+    # Find the owl:Ontology that lives in the given namespace
+    for subj in graph.subjects(predicate=None, object=OWL.Ontology):
+        subj_str = str(subj)
+        if subj_str.startswith(namespace.rstrip("#/")):
+            iri = subj_str
+            ver = graph.value(subj, OWL.versionInfo)
+            if ver:
+                version = str(ver)
+            lbl = graph.value(subj, RDFS.label)
+            if lbl:
+                label = str(lbl)
+            break
+
+    return {
+        "iri": iri,
+        "version": version,
+        "label": label,
+        "namespace": namespace,
+        "toolkit_version": toolkit_version,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
 
 
 def _auto_detect_namespace(graph: Graph) -> str:
@@ -325,7 +400,8 @@ def _auto_detect_namespace(graph: Graph) -> str:
 
 def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path,
                     namespace: str, shapes_dir: Path = None, ontology_name: str = None,
-                    projection_ext_path: Optional[Path] = None) -> dict:
+                    projection_ext_path: Optional[Path] = None,
+                    ontology_metadata: Optional[dict] = None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
@@ -337,6 +413,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         shapes_dir: Optional SHACL shapes directory
         ontology_name: Name of the ontology file (without extension)
         projection_ext_path: Optional path to *-silver-ext.ttl (silver target only)
+        ontology_metadata: Provenance metadata from extract_ontology_metadata()
     """
     
     query = """
@@ -369,23 +446,40 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
     if not classes:
         return {}
     
+    meta = ontology_metadata or {}
+
     # Generate based on target using full-featured projector classes
     # Pass ontology_name so each projector can create domain-specific filenames
     if target == 'dbt':
         from .projections.dbt_projector import generate_dbt_artifacts
-        return generate_dbt_artifacts(classes, graph, template_base / "dbt", namespace, shapes_dir, ontology_name)
+        return generate_dbt_artifacts(
+            classes, graph, template_base / "dbt", namespace, shapes_dir,
+            ontology_name, ontology_metadata=meta,
+        )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts
-        return generate_neo4j_artifacts(classes, graph, template_base / "neo4j", namespace, ontology_name)
+        return generate_neo4j_artifacts(
+            classes, graph, template_base / "neo4j", namespace,
+            ontology_name, ontology_metadata=meta,
+        )
     elif target == 'azure-search':
         from .projections.azure_search_projector import generate_azure_search_artifacts
-        return generate_azure_search_artifacts(classes, graph, template_base / "azure-search", namespace, ontology_name)
+        return generate_azure_search_artifacts(
+            classes, graph, template_base / "azure-search", namespace,
+            ontology_name, ontology_metadata=meta,
+        )
     elif target == 'a2ui':
         from .projections.a2ui_projector import generate_a2ui_artifacts
-        return generate_a2ui_artifacts(classes, graph, template_base / "a2ui", namespace, ontology_name)
+        return generate_a2ui_artifacts(
+            classes, graph, template_base / "a2ui", namespace,
+            ontology_name, ontology_metadata=meta,
+        )
     elif target == 'prompt':
         from .projections.prompt_projector import generate_prompt_artifacts
-        return generate_prompt_artifacts(classes, graph, template_base / "prompt", namespace, ontology_name)
+        return generate_prompt_artifacts(
+            classes, graph, template_base / "prompt", namespace,
+            ontology_name, ontology_metadata=meta,
+        )
     elif target == 'silver':
         from .projections.silver_projector import generate_silver_artifacts
         return generate_silver_artifacts(
@@ -395,6 +489,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             shapes_dir=shapes_dir,
             ontology_name=ontology_name or "domain",
             projection_ext_path=projection_ext_path,
+            ontology_metadata=meta,
         )
     
     return {}

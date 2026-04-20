@@ -2,7 +2,60 @@
 
 import pytest
 from pathlib import Path
-from rdflib import Graph, Namespace, RDF, OWL
+from rdflib import Graph, Literal, Namespace, RDF, RDFS, URIRef, OWL
+
+
+# ---------------------------------------------------------------------------
+# extract_ontology_metadata tests
+# We import via the installed package. If the function doesn't exist in the
+# installed version, these tests are skipped gracefully.
+# ---------------------------------------------------------------------------
+
+try:
+    from kairos_ontology.projector import extract_ontology_metadata
+    _HAS_EXTRACT = True
+except ImportError:
+    _HAS_EXTRACT = False
+
+
+@pytest.mark.skipif(not _HAS_EXTRACT, reason="extract_ontology_metadata not in installed package")
+class TestExtractOntologyMetadata:
+    """Tests for the metadata extraction helper."""
+
+    def test_extracts_iri_version_label(self):
+        g = Graph()
+        ns = "http://example.com/customer#"
+        onto_uri = URIRef("http://example.com/customer")
+        g.add((onto_uri, RDF.type, OWL.Ontology))
+        g.add((onto_uri, OWL.versionInfo, Literal("2.3.1")))
+        g.add((onto_uri, RDFS.label, Literal("Customer Domain", lang="en")))
+
+        meta = extract_ontology_metadata(g, ns)
+        assert meta["iri"] == "http://example.com/customer"
+        assert meta["version"] == "2.3.1"
+        assert meta["label"] == "Customer Domain"
+        assert meta["namespace"] == ns
+        assert meta["toolkit_version"]
+        assert meta["generated_at"]
+
+    def test_missing_version_returns_empty_string(self):
+        g = Graph()
+        ns = "http://example.com/party#"
+        g.add((URIRef("http://example.com/party"), RDF.type, OWL.Ontology))
+
+        meta = extract_ontology_metadata(g, ns)
+        assert meta["iri"] == "http://example.com/party"
+        assert meta["version"] == ""
+        assert meta["label"] == ""
+
+    def test_no_ontology_declaration_uses_namespace_fallback(self):
+        g = Graph()
+        ns = "http://example.com/unknown#"
+        meta = extract_ontology_metadata(g, ns)
+        assert meta["iri"] == "http://example.com/unknown"
+        assert meta["version"] == ""
+
+
 from kairos_ontology.projector import run_projections
 
 

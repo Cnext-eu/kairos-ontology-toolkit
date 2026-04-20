@@ -18,7 +18,7 @@ from jinja2 import Environment, FileSystemLoader
 from .uri_utils import extract_local_name
 
 
-def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, shapes_dir: Path = None, ontology_name: str = None) -> dict:
+def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, shapes_dir: Path = None, ontology_name: str = None, ontology_metadata: dict = None) -> dict:
     """Generate DBT artifacts from pre-extracted classes and graph.
     
     This is the entry point called by the main projector orchestrator.
@@ -36,6 +36,7 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
     """
     
     artifacts = {}
+    meta = ontology_metadata or {}
     env = Environment(loader=FileSystemLoader(template_dir))
     skipped_classes = []
     
@@ -190,9 +191,10 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
         template = env.get_template('model.sql.jinja2')
         sql_content = template.render(
             class_name=class_info['name'],
-            ontology_uri="ontology",
+            ontology_uri=meta.get('iri', 'ontology'),
             description=class_info['comment'],
-            properties=properties
+            properties=properties,
+            ontology_metadata=meta,
         )
         artifacts[f"{model_dir}/{class_info['name'].lower()}.sql"] = sql_content
         
@@ -211,7 +213,8 @@ def generate_dbt_artifacts(classes: list, graph, template_dir, namespace: str, s
         yaml_content = yaml_template.render(
             model_name=class_info['name'].lower(),
             description=class_info['comment'],
-            columns=columns
+            columns=columns,
+            ontology_metadata=meta,
         )
         artifacts[f"{model_dir}/schema_{class_info['name'].lower()}.yml"] = yaml_content
     

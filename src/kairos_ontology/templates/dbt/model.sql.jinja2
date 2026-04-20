@@ -1,5 +1,14 @@
 -- DBT Model: {{ class_name }}
 -- Generated from: {{ ontology_uri }}
+{%- if ontology_metadata and ontology_metadata.version %}
+-- Ontology version: {{ ontology_metadata.version }}
+{%- endif %}
+{%- if ontology_metadata and ontology_metadata.toolkit_version %}
+-- Toolkit version: {{ ontology_metadata.toolkit_version }}
+{%- endif %}
+{%- if ontology_metadata and ontology_metadata.generated_at %}
+-- Generated at: {{ ontology_metadata.generated_at }}
+{%- endif %}
 -- Description: {{ description }}
 {%- if subclasses %}
 -- Single-Table Inheritance: Includes {{ subclasses|length }} subclass(es)

@@ -653,6 +653,55 @@ def test_cross_domain_fk_with_explicit_silver_schema():
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Provenance metadata in output
+# ---------------------------------------------------------------------------
+
+
+def test_provenance_in_ddl_header():
+    """DDL output should contain ontology IRI, version, toolkit version when metadata provided."""
+    g, classes = _simple_ontology()
+    meta = {
+        "iri": "http://example.com/ont/test",
+        "version": "2.1.0",
+        "label": "Test Ontology",
+        "namespace": BASE,
+        "toolkit_version": "1.8.0",
+        "generated_at": "2026-04-21T00:00:00Z",
+    }
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test",
+                                       ontology_metadata=meta)
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "Ontology IRI: http://example.com/ont/test" in ddl
+    assert "Ontology version: 2.1.0" in ddl
+    assert "Toolkit version: 1.8.0" in ddl
+    assert "Generated at: 2026-04-21T00:00:00Z" in ddl
+
+
+def test_provenance_in_erd_header():
+    """ERD output should contain ontology IRI + version as Mermaid comments."""
+    g, classes = _simple_ontology()
+    meta = {
+        "iri": "http://example.com/ont/test",
+        "version": "2.1.0",
+        "toolkit_version": "1.8.0",
+    }
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test",
+                                       ontology_metadata=meta)
+    erd = next(v for k, v in result.items() if k.endswith("-erd.mmd"))
+    assert "%% Ontology IRI: http://example.com/ont/test" in erd
+    assert "%% Ontology version: 2.1.0" in erd
+
+
+def test_provenance_absent_when_no_metadata():
+    """When no metadata is provided, no provenance lines appear (backwards-compatible)."""
+    g, classes = _simple_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "Ontology IRI:" not in ddl
+    assert "Toolkit version:" not in ddl
+
+
+# ---------------------------------------------------------------------------
 # R16 — Empty subtype suppression under discriminator strategy
 # ---------------------------------------------------------------------------
 
