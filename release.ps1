@@ -116,13 +116,14 @@ Write-Host "  ✓ Updated __init__.py" -ForegroundColor Green
 # Update poetry lock
 Write-Host ""
 Write-Host "🔒 Updating poetry.lock..." -ForegroundColor Cyan
-& .venv\Scripts\python.exe -m poetry lock
+$venvPython = Join-Path $PSScriptRoot ".venv" "Scripts" "python.exe"
+& $venvPython -m poetry lock
 Write-Host "  ✓ Lock file updated" -ForegroundColor Green
 
 # Build package
 Write-Host ""
 Write-Host "🏗️  Building package..." -ForegroundColor Cyan
-& .venv\Scripts\python.exe -m poetry build
+& $venvPython -m poetry build
 Write-Host "  ✓ Package built" -ForegroundColor Green
 
 # Get release notes (single line)
