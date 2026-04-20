@@ -1,0 +1,101 @@
+# Silver-layer projection extension for the {DOMAIN} ontology
+#
+# This file drives DDL + ERD generation for the MS Fabric silver layer.
+# Rules referenced: R1–R15 (Silver Layer Projection Rules).
+#
+# Usage:
+#   python -m kairos_ontology project --target silver
+#
+# The generator discovers this file automatically if named {DOMAIN}-silver-ext.ttl
+# (or any *-silver-ext.ttl in the ontologies/ folder when projecting a hub).
+
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+# Replace {DOMAIN_URI} with your domain ontology base URI, e.g.
+# <http://example.com/ont/customer#>
+@prefix domain: <{DOMAIN_URI}> .
+
+# ---------------------------------------------------------------------------
+# Link this extension to the domain ontology
+# ---------------------------------------------------------------------------
+
+<{DOMAIN_EXTENSION_URI}> a owl:Ontology ;
+    rdfs:label "{DOMAIN} Silver Extension"@en ;
+    rdfs:comment "Silver-layer projection annotations for {DOMAIN}."@en ;
+    owl:imports <{DOMAIN_ONTOLOGY_URI}> .
+
+# ---------------------------------------------------------------------------
+# R1  — Schema name (default: silver_{domain})
+# ---------------------------------------------------------------------------
+
+<{DOMAIN_ONTOLOGY_URI}>
+    kairos-ext:silverSchema "silver_{domain}" ;
+
+    # R2  — Surrogate key strategy
+    kairos-ext:surrogateKeyStrategy "uuid" ;
+
+    # R3  — Include OWL IRI lineage column ({table}_iri)
+    kairos-ext:includeNaturalKeyColumn "true"^^xsd:boolean ;
+
+    # R4  — Naming convention (camelCase → snake_case)
+    kairos-ext:namingConvention "camel-to-snake" ;
+
+    # R9  — Audit envelope appended to every non-reference table
+    kairos-ext:auditEnvelope
+        "_created_at DATETIME2, _updated_at DATETIME2, _source_system NVARCHAR(128), _load_date DATE, _batch_id NVARCHAR(64)" .
+
+# ---------------------------------------------------------------------------
+# Class-level annotations (add one block per class)
+#
+# R5  — SCD type: "2" (history, default) or "1" (overwrite / reference)
+# R6  — Inheritance: "class-per-table" (default) or "discriminator"
+# R7  — GDPR satellite: kairos-ext:gdprSatelliteOf domain:ParentClass
+# R8  — Reference data: kairos-ext:isReferenceData "true"^^xsd:boolean
+# R10 — Partitioning / clustering
+# ---------------------------------------------------------------------------
+
+# Example: standard operational table (SCD Type 2, class-per-table)
+# domain:MyClass
+#     kairos-ext:scdType "2" ;
+#     kairos-ext:partitionBy "_load_date" .
+
+# Example: reference / code list table (SCD Type 1, ref_ prefix)
+# domain:MyCodeList
+#     kairos-ext:isReferenceData "true"^^xsd:boolean ;
+#     kairos-ext:scdType "1" .
+
+# Example: GDPR satellite (no surrogate key, PK = FK to parent)
+# domain:MySensitiveData
+#     kairos-ext:gdprSatelliteOf domain:MyParentClass .
+
+# Example: discriminator-based inheritance
+# domain:MyBaseClass
+#     kairos-ext:inheritanceStrategy "discriminator" ;
+#     kairos-ext:discriminatorColumn "entity_type" .
+
+# ---------------------------------------------------------------------------
+# Property-level annotations (add one block per property needing override)
+#
+# R4  — Column name / data type overrides
+# R11 — Explicit nullability (also inferred from SHACL sh:minCount 1)
+# R12 — FK column for max-cardinality-1 object property
+# R13 — Junction table for many-to-many object property
+# R14 — Conditional FK (discriminator pattern)
+# ---------------------------------------------------------------------------
+
+# Example: FK column for a many-to-one object property
+# domain:hasLegalForm
+#     kairos-ext:silverColumnName "legal_form_code" ;
+#     kairos-ext:silverDataType   "NVARCHAR(16)" .
+
+# Example: junction table for a many-to-many object property
+# domain:hasTeamMember
+#     kairos-ext:junctionTableName "engagement_team_member" .
+
+# Example: conditional FK (only meaningful for certain discriminator subtypes)
+# domain:hasSpecialAttribute
+#     kairos-ext:conditionalOnType "SubtypeA SubtypeB" .

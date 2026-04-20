@@ -1,0 +1,138 @@
+# kairos-ext: Silver Layer Projection Extension Vocabulary
+#
+# Namespace: https://kairos.cnext.eu/ext#
+# Prefix:    kairos-ext:
+#
+# This ontology defines annotation properties used to drive the silver-layer
+# projection (DDL + ERD generation) from OWL/Turtle domain ontologies.
+# Rules R1-R15 correspond to the Silver Layer Projection Rules document.
+#
+# These annotations belong in a SEPARATE projection extension file
+# (e.g. customer-silver-ext.ttl) that imports the domain ontology.
+# Domain ontologies must remain free of physical storage concerns (R15).
+
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/ext> a owl:Ontology ;
+    rdfs:label "Kairos Extension Vocabulary"@en ;
+    rdfs:comment "Annotation properties for silver-layer projection (DDL, ERD)."@en ;
+    owl:versionInfo "1.0.0" .
+
+# ---------------------------------------------------------------------------
+# Ontology-level annotations
+# ---------------------------------------------------------------------------
+
+kairos-ext:silverSchema a owl:AnnotationProperty ;
+    rdfs:label "silver schema"@en ;
+    rdfs:comment "Target Delta Lake / Fabric schema name (R1). Default: silver_{domain}."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
+kairos-ext:surrogateKeyStrategy a owl:AnnotationProperty ;
+    rdfs:label "surrogate key strategy"@en ;
+    rdfs:comment "Strategy for generating surrogate keys (R2). Values: 'uuid'."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
+kairos-ext:includeNaturalKeyColumn a owl:AnnotationProperty ;
+    rdfs:label "include natural key column"@en ;
+    rdfs:comment "If true, include {table}_iri IRI lineage column (R3). Default: true."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:boolean .
+
+kairos-ext:namingConvention a owl:AnnotationProperty ;
+    rdfs:label "naming convention"@en ;
+    rdfs:comment "Column/table naming convention (R4). Values: 'camel-to-snake'."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
+kairos-ext:auditEnvelope a owl:AnnotationProperty ;
+    rdfs:label "audit envelope"@en ;
+    rdfs:comment "Comma-separated 'name TYPE' audit columns appended to every non-reference table (R9)."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
+# ---------------------------------------------------------------------------
+# Class-level annotations
+# ---------------------------------------------------------------------------
+
+kairos-ext:silverTableName a owl:AnnotationProperty ;
+    rdfs:label "silver table name"@en ;
+    rdfs:comment "Explicit table name override (R4). Bypasses camel-to-snake conversion."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:scdType a owl:AnnotationProperty ;
+    rdfs:label "SCD type"@en ;
+    rdfs:comment "Slowly Changing Dimension type (R5, R8). Values: '1' (overwrite) or '2' (history). Default: '2'."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:inheritanceStrategy a owl:AnnotationProperty ;
+    rdfs:label "inheritance strategy"@en ;
+    rdfs:comment "OWL subclass projection strategy (R6). Values: 'class-per-table' (default) or 'discriminator'."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:discriminatorColumn a owl:AnnotationProperty ;
+    rdfs:label "discriminator column"@en ;
+    rdfs:comment "Column name for discriminator strategy (R6). Only used when inheritanceStrategy = 'discriminator'."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:gdprSatelliteOf a owl:AnnotationProperty ;
+    rdfs:label "GDPR satellite of"@en ;
+    rdfs:comment "Marks this class as a GDPR satellite table whose PK/FK points to the given parent class (R7)."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range owl:Class .
+
+kairos-ext:isReferenceData a owl:AnnotationProperty ;
+    rdfs:label "is reference data"@en ;
+    rdfs:comment "If true, the table is a reference/code-list table with ref_ prefix and SCD type 1 (R8)."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:boolean .
+
+kairos-ext:partitionBy a owl:AnnotationProperty ;
+    rdfs:label "partition by"@en ;
+    rdfs:comment "Column name(s) for PARTITIONED BY clause (R10)."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:clusterBy a owl:AnnotationProperty ;
+    rdfs:label "cluster by"@en ;
+    rdfs:comment "Column name(s) for CLUSTER BY (Delta Lake Liquid Clustering) (R10)."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+# ---------------------------------------------------------------------------
+# Property-level annotations
+# ---------------------------------------------------------------------------
+
+kairos-ext:silverColumnName a owl:AnnotationProperty ;
+    rdfs:label "silver column name"@en ;
+    rdfs:comment "Explicit column name override (R4, R12). Bypasses camel-to-snake conversion."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:silverDataType a owl:AnnotationProperty ;
+    rdfs:label "silver data type"@en ;
+    rdfs:comment "SQL data type override for this property's column (R12). E.g. 'NVARCHAR(64)'."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:nullable a owl:AnnotationProperty ;
+    rdfs:label "nullable"@en ;
+    rdfs:comment "Explicit nullability override (R11). false = NOT NULL. SHACL sh:minCount 1 also implies NOT NULL."@en ;
+    rdfs:range xsd:boolean .
+
+kairos-ext:junctionTableName a owl:AnnotationProperty ;
+    rdfs:label "junction table name"@en ;
+    rdfs:comment "Name of the junction/bridge table for a many-to-many object property (R13)."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:conditionalOnType a owl:AnnotationProperty ;
+    rdfs:label "conditional on type"@en ;
+    rdfs:comment "Space-separated discriminator subtype names for which this FK column is active (R14)."@en ;
+    rdfs:range xsd:string .

@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 from rdflib import Graph
 from .projections.uri_utils import extract_local_name
 
-VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt"]
+VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver"]
 
 
 def project_graph(
@@ -110,10 +110,9 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     shapes_dir = ontologies_path.parent / "shapes" if ontologies_path.parent else None
     if shapes_dir and shapes_dir.exists():
         print(f"  Found SHACL shapes directory: {shapes_dir}\n")
-    
-    targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt'] if target == 'all' else [target]
-    
-    # Process each ontology separately for each target
+
+    targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver'] if target == 'all' else [target]
+
     for target_name in targets_to_run:
         print(f"📦 Generating {target_name} projection...")
         target_output = output_path / target_name
@@ -133,8 +132,19 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             
             try:
                 # Generate artifacts for this specific ontology
-                artifacts = _run_projection(target_name, onto_graph, target_output, template_base, 
-                                          onto_namespace, shapes_dir, onto_name)
+                # For silver: auto-discover *-silver-ext.ttl alongside the ontology file
+                ext_path: Optional[Path] = None
+                if target_name == "silver":
+                    src_file: Path = onto_info["file"]
+                    candidates = list(src_file.parent.glob(f"{onto_name}-silver-ext.ttl"))
+                    candidates += list(src_file.parent.glob("*-silver-ext.ttl"))
+                    ext_path = candidates[0] if candidates else None
+                    if ext_path:
+                        print(f"  [{onto_name}] Using projection ext: {ext_path.name}")
+
+                artifacts = _run_projection(target_name, onto_graph, target_output, template_base,
+                                            onto_namespace, shapes_dir, onto_name,
+                                            projection_ext_path=ext_path)
                 if artifacts:
                     # Save artifacts
                     for file_path, content in artifacts.items():
@@ -277,17 +287,20 @@ def _auto_detect_namespace(graph: Graph) -> str:
     return "urn:kairos:ont:core:"
 
 
-def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path, namespace: str, shapes_dir: Path = None, ontology_name: str = None) -> dict:
+def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path,
+                    namespace: str, shapes_dir: Path = None, ontology_name: str = None,
+                    projection_ext_path: Optional[Path] = None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
-        target: Projection type (dbt, neo4j, etc.)
+        target: Projection type (dbt, neo4j, azure-search, a2ui, prompt, silver)
         graph: RDFLib graph for this specific ontology
         output_path: Base output path for this target
         template_base: Path to templates
         namespace: Namespace to filter classes
         shapes_dir: Optional SHACL shapes directory
-        ontology_name: Name of the ontology file (without extension) to use in output filenames
+        ontology_name: Name of the ontology file (without extension)
+        projection_ext_path: Optional path to *-silver-ext.ttl (silver target only)
     """
     
     query = """
@@ -337,5 +350,15 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
     elif target == 'prompt':
         from .projections.prompt_projector import generate_prompt_artifacts
         return generate_prompt_artifacts(classes, graph, template_base / "prompt", namespace, ontology_name)
+    elif target == 'silver':
+        from .projections.silver_projector import generate_silver_artifacts
+        return generate_silver_artifacts(
+            classes=classes,
+            graph=graph,
+            namespace=namespace,
+            shapes_dir=shapes_dir,
+            ontology_name=ontology_name or "domain",
+            projection_ext_path=projection_ext_path,
+        )
     
     return {}
