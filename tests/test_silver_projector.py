@@ -1,4 +1,4 @@
-"""Tests for the silver layer projector (R1-R15)."""
+"""Tests for the silver layer projector (R1-R16)."""
 
 import importlib.util
 import textwrap
@@ -651,6 +651,190 @@ def test_cross_domain_fk_with_explicit_silver_schema():
 # ---------------------------------------------------------------------------
 # render_mermaid_svg
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# R16 — Empty subtype suppression under discriminator strategy
+# ---------------------------------------------------------------------------
+
+
+def _r16_ontology() -> tuple[Graph, list[dict]]:
+    """Ontology with discriminator parent, empty subtypes, and one non-empty subtype."""
+    ttl = f"""
+        @prefix ex:    <{BASE}> .
+        @prefix owl:   <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "R16 Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Client a owl:Class ;
+            rdfs:label "Client"@en ;
+            rdfs:comment "A client."@en ;
+            kairos-ext:scdType "2" ;
+            kairos-ext:inheritanceStrategy "discriminator" ;
+            kairos-ext:discriminatorColumn "client_type" .
+
+        ex:clientName a owl:DatatypeProperty ;
+            rdfs:domain ex:Client ;
+            rdfs:range xsd:string ;
+            rdfs:label "client name"@en .
+
+        # Empty subtype — should be folded
+        ex:IndividualClient a owl:Class ;
+            rdfs:subClassOf ex:Client ;
+            rdfs:label "Individual Client"@en ;
+            rdfs:comment "An individual client."@en ;
+            kairos-ext:scdType "2" .
+
+        # Empty subtype — should be folded
+        ex:OrgClient a owl:Class ;
+            rdfs:subClassOf ex:Client ;
+            rdfs:label "Org Client"@en ;
+            rdfs:comment "An org client."@en ;
+            kairos-ext:scdType "2" .
+
+        # Non-empty subtype — has its own property, should NOT be folded
+        ex:SpecialClient a owl:Class ;
+            rdfs:subClassOf ex:Client ;
+            rdfs:label "Special Client"@en ;
+            rdfs:comment "A special client."@en ;
+            kairos-ext:scdType "2" .
+        ex:specialRating a owl:DatatypeProperty ;
+            rdfs:domain ex:SpecialClient ;
+            rdfs:range xsd:integer ;
+            rdfs:label "special rating"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Client", "name": "Client"},
+        {"uri": f"{BASE}IndividualClient", "name": "IndividualClient"},
+        {"uri": f"{BASE}OrgClient", "name": "OrgClient"},
+        {"uri": f"{BASE}SpecialClient", "name": "SpecialClient"},
+    ]
+    return g, classes
+
+
+def test_r16_empty_subtype_suppressed():
+    """Empty subtypes under discriminator parent are not generated as tables."""
+    g, classes = _r16_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="r16test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Parent and non-empty subtype should exist
+    assert "CREATE TABLE" in ddl
+    assert "silver_r16test.client" in ddl.lower()
+    assert "silver_r16test.special_client" in ddl.lower()
+    # Empty subtypes should NOT exist
+    assert "individual_client" not in ddl.lower()
+    assert "org_client" not in ddl.lower()
+
+
+def test_r16_folded_comment_in_ddl():
+    """Parent DDL should contain R16 comment listing folded subtypes."""
+    g, classes = _r16_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="r16test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "R16: subtypes folded into discriminator" in ddl
+    assert "IndividualClient" in ddl
+    assert "OrgClient" in ddl
+
+
+def test_r16_nonempty_subtype_kept():
+    """Subtypes with additional properties keep their own table."""
+    g, classes = _r16_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="r16test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "special_client" in ddl.lower()
+    assert "special_rating" in ddl.lower()
+
+
+def test_r16_class_per_table_not_affected():
+    """Subtypes under class-per-table strategy are NOT suppressed (even if empty)."""
+    ttl = f"""
+        @prefix ex:    <{BASE}> .
+        @prefix owl:   <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "CPT Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Account a owl:Class ;
+            rdfs:label "Account"@en ;
+            rdfs:comment "An account."@en ;
+            kairos-ext:scdType "2" ;
+            kairos-ext:inheritanceStrategy "class-per-table" .
+
+        ex:accountName a owl:DatatypeProperty ;
+            rdfs:domain ex:Account ;
+            rdfs:range xsd:string ;
+            rdfs:label "account name"@en .
+
+        # Empty subtype under class-per-table — should still get a table
+        ex:SavingsAccount a owl:Class ;
+            rdfs:subClassOf ex:Account ;
+            rdfs:label "Savings Account"@en ;
+            rdfs:comment "A savings account."@en ;
+            kairos-ext:scdType "2" .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Account", "name": "Account"},
+        {"uri": f"{BASE}SavingsAccount", "name": "SavingsAccount"},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="cpttest")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "savings_account" in ddl.lower()
+
+
+def test_r16_gdpr_satellite_not_suppressed():
+    """GDPR satellites are never suppressed even under discriminator strategy."""
+    ttl = f"""
+        @prefix ex:    <{BASE}> .
+        @prefix owl:   <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "GDPR Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Contact a owl:Class ;
+            rdfs:label "Contact"@en ;
+            rdfs:comment "A contact."@en ;
+            kairos-ext:scdType "2" ;
+            kairos-ext:inheritanceStrategy "discriminator" ;
+            kairos-ext:discriminatorColumn "contact_type" .
+
+        ex:contactInfo a owl:DatatypeProperty ;
+            rdfs:domain ex:Contact ;
+            rdfs:range xsd:string ;
+            rdfs:label "contact info"@en .
+
+        # GDPR satellite — should NOT be suppressed even though empty
+        ex:SensitiveContact a owl:Class ;
+            rdfs:subClassOf ex:Contact ;
+            rdfs:label "Sensitive Contact"@en ;
+            rdfs:comment "A sensitive contact."@en ;
+            kairos-ext:gdprSatelliteOf ex:Contact ;
+            kairos-ext:scdType "2" .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Contact", "name": "Contact"},
+        {"uri": f"{BASE}SensitiveContact", "name": "SensitiveContact"},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="gdprtest")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "sensitive_contact" in ddl.lower()
+
+
+# ---------------------------------------------------------------------------
+# render_mermaid_svg
+# ---------------------------------------------------------------------------
+
 
 def test_render_mermaid_svg_returns_none_when_mmdc_missing(tmp_path, monkeypatch):
     """When mmdc is not available, render_mermaid_svg should return None."""

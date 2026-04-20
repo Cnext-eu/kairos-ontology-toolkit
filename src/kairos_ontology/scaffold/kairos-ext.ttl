@@ -74,7 +74,7 @@ kairos-ext:scdType a owl:AnnotationProperty ;
 
 kairos-ext:inheritanceStrategy a owl:AnnotationProperty ;
     rdfs:label "inheritance strategy"@en ;
-    rdfs:comment "OWL subclass projection strategy (R6). Values: 'class-per-table' (default) or 'discriminator'."@en ;
+    rdfs:comment "OWL subclass projection strategy (R6, R16). Values: 'class-per-table' (default) or 'discriminator'. When 'discriminator', empty subtypes (no own properties) are automatically folded into the parent table (R16)."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
