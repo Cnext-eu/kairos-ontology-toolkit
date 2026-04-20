@@ -214,6 +214,7 @@ def generate_silver_artifacts(
     # Build class map: uri → TableDef
     tables: dict[str, TableDef] = {}
     class_uris = {c["uri"] for c in classes}
+    folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype names] (R16)
 
     for cls_info in classes:
         cls_uri = URIRef(cls_info["uri"])
@@ -244,6 +245,18 @@ def generate_silver_artifacts(
                 supertype_uri = parent
                 break
         is_subtype = supertype_uri is not None
+
+        # ----------------------------------------------------------------
+        # R16 — Empty subtype suppression under discriminator strategy
+        # ----------------------------------------------------------------
+        if is_subtype and not is_gdpr:
+            parent_strategy = _str_val(
+                merged, supertype_uri, KAIROS_EXT.inheritanceStrategy, "class-per-table"
+            )
+            if parent_strategy == "discriminator" and not _has_own_properties(merged, cls_uri):
+                parent_key = str(supertype_uri)
+                folded_subtypes.setdefault(parent_key, []).append(local)
+                continue  # skip table generation for this empty subtype
 
         # ----------------------------------------------------------------
         # Column ordering: SK → IRI → FK → discriminator → data → SCD → audit
@@ -344,6 +357,16 @@ def generate_silver_artifacts(
     ]
     for tbl in all_tables:
         ddl_lines.append(f"-- {tbl.table_type.upper()}: {tbl.full_name}")
+        # R16: note folded subtypes on parent tables
+        parent_uri_candidates = [
+            uri for uri, t in tables.items() if t is tbl
+        ]
+        for puri in parent_uri_candidates:
+            if puri in folded_subtypes:
+                names = ", ".join(folded_subtypes[puri])
+                ddl_lines.append(
+                    f"-- R16: subtypes folded into discriminator: {names}"
+                )
         ddl_lines.append(tbl.render_create())
         ddl_lines.append("")
 
@@ -463,6 +486,17 @@ def _parse_audit_envelope(audit_str: str) -> list[ColumnDef]:
         if len(tokens) >= 2:
             cols.append(ColumnDef(tokens[0], " ".join(tokens[1:]), nullable=True))
     return cols
+
+
+def _has_own_properties(graph: Graph, cls_uri: URIRef) -> bool:
+    """Return True if the class has any DatatypeProperty or ObjectProperty
+    whose ``rdfs:domain`` points directly to it (R16 check)."""
+    for prop in graph.subjects(RDFS.domain, cls_uri):
+        if (prop, RDF.type, OWL.DatatypeProperty) in graph:
+            return True
+        if (prop, RDF.type, OWL.ObjectProperty) in graph:
+            return True
+    return False
 
 
 def _not_null_from_shacl(shacl_graph: Optional[Graph], prop_uri: URIRef,

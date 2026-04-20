@@ -301,6 +301,46 @@ A property becomes `NOT NULL` when:
 
 ---
 
+## R16 — Empty subtype suppression (discriminator strategy)
+
+When a parent class uses `inheritanceStrategy "discriminator"`, subtypes that have
+**no additional properties** (no own data properties or object properties) are
+automatically folded into the parent table. No separate table is generated.
+
+This avoids generating empty subtype tables that contain only a PK/FK + audit envelope.
+The parent's discriminator column already identifies the subtype.
+
+**Behaviour:**
+- The OWL subtype classes remain in the TTL (they may be relevant for other projections)
+- The silver projector detects and skips them at generation time
+- A DDL comment on the parent table lists which subtypes are folded
+- Subtypes that DO have additional properties still generate their own table
+
+**Example:**
+```turtle
+ex:Client
+    kairos-ext:inheritanceStrategy "discriminator" ;
+    kairos-ext:discriminatorColumn "client_type" .
+
+# These subtypes have NO additional properties → folded into Client table
+ex:IndividualClient rdfs:subClassOf ex:Client .
+ex:OrganisationClient rdfs:subClassOf ex:Client .
+
+# This subtype HAS additional properties → gets its own table
+ex:SpecialClient rdfs:subClassOf ex:Client .
+ex:specialRating a owl:DatatypeProperty ;
+    rdfs:domain ex:SpecialClient ;
+    rdfs:range xsd:integer .
+```
+
+Generated DDL comment:
+```sql
+-- R16: subtypes folded into discriminator: IndividualClient, OrganisationClient
+CREATE TABLE silver_domain.client ( ... )
+```
+
+---
+
 ## Common patterns
 
 ### Full annotated class block
