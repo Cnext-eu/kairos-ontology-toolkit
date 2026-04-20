@@ -56,6 +56,19 @@ def _camel_to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
+def _mmd_type(sql_type: str) -> str:
+    """Sanitize a SQL type for use in a Mermaid erDiagram attribute.
+
+    Mermaid ATTRIBUTE_WORD only allows ``[A-Za-z0-9_]``.
+    Examples:
+      DECIMAL(18,4)   → DECIMAL_18_4
+      NVARCHAR(MAX)   → NVARCHAR_MAX
+      NVARCHAR(2048)  → NVARCHAR_2048
+      DATETIME2       → DATETIME2   (unchanged)
+    """
+    return re.sub(r"[^A-Za-z0-9_]", "_", sql_type).strip("_")
+
+
 def _local_name(uri: str) -> str:
     """Extract local name from a URI."""
     if "#" in uri:
@@ -357,7 +370,7 @@ def generate_silver_artifacts(
     for tbl in all_tables:
         mmd_lines.append(f"    {tbl.name.upper()} {{")
         for col in tbl.columns:
-            mmd_lines.append(f"        {col.sql_type} {col.name}")
+            mmd_lines.append(f"        {_mmd_type(col.sql_type)} {col.name}")
         mmd_lines.append("    }")
         mmd_lines.append("")
     # FK relationships in ERD

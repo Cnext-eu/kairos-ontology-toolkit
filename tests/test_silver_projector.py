@@ -1,5 +1,6 @@
 """Tests for the silver layer projector (R1-R15)."""
 
+import importlib.util
 import textwrap
 from pathlib import Path
 
@@ -7,13 +8,25 @@ import pytest
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
-from kairos_ontology.projections.silver_projector import (
-    ColumnDef,
-    TableDef,
-    _camel_to_snake,
-    _parse_audit_envelope,
-    generate_silver_artifacts,
-)
+# ---------------------------------------------------------------------------
+# Load silver_projector from source (not installed site-packages)
+# ---------------------------------------------------------------------------
+
+def _load_silver_projector():
+    src = Path(__file__).parent.parent / "src" / "kairos_ontology" / "projections" / "silver_projector.py"
+    spec = importlib.util.spec_from_file_location("silver_projector_src", src)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_sp = _load_silver_projector()
+ColumnDef = _sp.ColumnDef
+TableDef = _sp.TableDef
+_camel_to_snake = _sp._camel_to_snake
+_mmd_type = _sp._mmd_type
+_parse_audit_envelope = _sp._parse_audit_envelope
+generate_silver_artifacts = _sp.generate_silver_artifacts
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -76,6 +89,41 @@ def test_camel_to_snake_already_lower():
 
 def test_camel_to_snake_consecutive_caps():
     assert _camel_to_snake("legalFormCode") == "legal_form_code"
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — _mmd_type
+# ---------------------------------------------------------------------------
+
+def test_mmd_type_decimal_with_comma():
+    assert _mmd_type("DECIMAL(18,4)") == "DECIMAL_18_4"
+
+
+def test_mmd_type_nvarchar_with_parens():
+    assert _mmd_type("NVARCHAR(MAX)") == "NVARCHAR_MAX"
+
+
+def test_mmd_type_simple_unchanged():
+    assert _mmd_type("DATETIME2") == "DATETIME2"
+    assert _mmd_type("BIT") == "BIT"
+    assert _mmd_type("DATE") == "DATE"
+
+
+def test_mmd_type_no_commas_in_erd():
+    """ERD output must not contain commas inside type names (Mermaid parser rejects them)."""
+    g, classes = _simple_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    mmd = next(v for k, v in result.items() if k.endswith("-erd.mmd"))
+    # Every non-comment, non-relationship line inside entity blocks should have no comma in the type token
+    for line in mmd.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("%") and not stripped.startswith("erDiagram") \
+                and not stripped.startswith("}") and not stripped.startswith("{") \
+                and "||" not in stripped and not stripped.endswith("{"):
+            # Lines of the form "TYPE name" — type must not contain a comma
+            parts = stripped.split()
+            if len(parts) >= 2:
+                assert "," not in parts[0], f"Comma in Mermaid type token: {stripped}"
 
 
 # ---------------------------------------------------------------------------
@@ -327,18 +375,8 @@ def test_junction_table_generated():
 # generate_master_erd
 # ---------------------------------------------------------------------------
 
-def _load_silver_projector():
-    """Load silver_projector from source, not from installed site-packages."""
-    import importlib.util, sys
-    src = Path(__file__).parent.parent / "src" / "kairos_ontology" / "projections" / "silver_projector.py"
-    spec = importlib.util.spec_from_file_location("silver_projector_src", src)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def test_master_erd_merges_domains(tmp_path):
-    generate_master_erd = _load_silver_projector().generate_master_erd
+    generate_master_erd = _sp.generate_master_erd
 
     # Simulate two domain ERD files in output/silver/
     silver_out = tmp_path / "silver"
@@ -367,7 +405,7 @@ def test_master_erd_merges_domains(tmp_path):
 
 
 def test_master_erd_returns_none_when_empty(tmp_path):
-    generate_master_erd = _load_silver_projector().generate_master_erd
+    generate_master_erd = _sp.generate_master_erd
 
     silver_out = tmp_path / "silver"
     silver_out.mkdir()
