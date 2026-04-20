@@ -114,7 +114,8 @@ class TableDef:
         self.columns: list[ColumnDef] = []
         self.pk_column: Optional[str] = None
         self.unique_columns: list[str] = []
-        self.fk_constraints: list[tuple[str, str, str]] = []  # (col, ref_table, ref_col)
+        # (col, ref_table, ref_col, label) — label used in ERD relationships
+        self.fk_constraints: list[tuple[str, str, str, str]] = []
         self.partition_by: Optional[str] = None
         self.cluster_by: Optional[str] = None
         self.is_reference = False
@@ -142,7 +143,7 @@ class TableDef:
                 f"ALTER TABLE {self.full_name}\n"
                 f"    ADD CONSTRAINT u_{self.name}_{col} UNIQUE ({col});"
             )
-        for col, ref_table, ref_col in self.fk_constraints:
+        for col, ref_table, ref_col, *_label in self.fk_constraints:
             stmts.append(
                 f"ALTER TABLE {self.full_name}\n"
                 f"    ADD CONSTRAINT fk_{self.name}_{col}"
@@ -263,7 +264,8 @@ def generate_silver_artifacts(
             tbl.columns.append(sk_col)
             tbl.pk_column = f"{parent_tbl}_sk"
             tbl.fk_constraints.append(
-                (f"{parent_tbl}_sk", f"{schema_name}.{parent_tbl}", f"{parent_tbl}_sk")
+                (f"{parent_tbl}_sk", f"{schema_name}.{parent_tbl}",
+                 f"{parent_tbl}_sk", "inherits")
             )
             tbl.table_type = "subtype"
         elif is_gdpr:
@@ -275,7 +277,8 @@ def generate_silver_artifacts(
             tbl.columns.append(sk_col)
             tbl.pk_column = f"{parent_tbl}_sk"
             tbl.fk_constraints.append(
-                (f"{parent_tbl}_sk", f"{schema_name}.{parent_tbl}", f"{parent_tbl}_sk")
+                (f"{parent_tbl}_sk", f"{schema_name}.{parent_tbl}",
+                 f"{parent_tbl}_sk", "gdpr_satellite_of")
             )
             tbl.table_type = "satellite"
 
@@ -375,10 +378,10 @@ def generate_silver_artifacts(
         mmd_lines.append("")
     # FK relationships in ERD
     for tbl in all_tables:
-        for col, ref_full, ref_col in tbl.fk_constraints:
+        for col, ref_full, ref_col, label in tbl.fk_constraints:
             ref_tbl_name = ref_full.split(".")[-1].upper()
             mmd_lines.append(
-                f"    {ref_tbl_name} ||--o{{ {tbl.name.upper()} : \"FK\""
+                f"    {ref_tbl_name} ||--o{{ {tbl.name.upper()} : \"{label}\""
             )
 
     domain_dir = f"{ontology_name}/"
@@ -491,9 +494,10 @@ def _add_object_property_fk_cols(
         # Conditional nullable (R14)
         cond_on = _str_val(graph, prop, KAIROS_EXT.conditionalOnType)
         comment = f"nullable: active when type IN ({cond_on})" if cond_on else ""
+        prop_label = _camel_to_snake(_local_name(str(prop)))
         tbl.columns.append(ColumnDef(col_name, "NVARCHAR(36)", nullable=True, comment=comment))
         tbl.fk_constraints.append(
-            (col_name, f"{schema_name}.{range_tbl}", f"{range_tbl}_sk")
+            (col_name, f"{schema_name}.{range_tbl}", f"{range_tbl}_sk", prop_label)
         )
 
 
@@ -549,15 +553,18 @@ def _build_junction_tables(
         jct.columns.append(ColumnDef(f"{jct_name}_sk", "NVARCHAR(36)", nullable=False,
                                       comment="Surrogate key (UUID)"))
         jct.pk_column = f"{jct_name}_sk"
+        prop_label = _camel_to_snake(_local_name(str(prop)))
         # FK to domain
         jct.columns.append(ColumnDef(f"{dom_tbl}_sk", "NVARCHAR(36)", nullable=False))
         jct.fk_constraints.append(
-            (f"{dom_tbl}_sk", f"{schema_name}.{dom_tbl}", f"{dom_tbl}_sk")
+            (f"{dom_tbl}_sk", f"{schema_name}.{dom_tbl}", f"{dom_tbl}_sk",
+             f"{prop_label}_domain")
         )
         # FK to range
         jct.columns.append(ColumnDef(f"{rng_tbl}_sk", "NVARCHAR(36)", nullable=False))
         jct.fk_constraints.append(
-            (f"{rng_tbl}_sk", f"{schema_name}.{rng_tbl}", f"{rng_tbl}_sk")
+            (f"{rng_tbl}_sk", f"{schema_name}.{rng_tbl}", f"{rng_tbl}_sk",
+             f"{prop_label}_range")
         )
         # SCD 2
         jct.columns.extend([

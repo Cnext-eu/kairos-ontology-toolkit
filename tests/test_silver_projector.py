@@ -176,7 +176,7 @@ def test_table_def_render_create():
 
 def test_table_def_render_alter_fk():
     tbl = TableDef("address", "silver_test")
-    tbl.fk_constraints.append(("party_sk", "silver_test.party", "party_sk"))
+    tbl.fk_constraints.append(("party_sk", "silver_test.party", "party_sk", "has_party"))
     stmts = tbl.render_alter()
     assert len(stmts) == 1
     assert "ADD CONSTRAINT fk_address_party_sk" in stmts[0]
@@ -334,6 +334,9 @@ def test_subtype_uses_parent_sk_as_pk():
     # FK constraint from person to party
     assert "REFERENCES" in alter
     assert "fk_person_party_sk" in alter
+    # ERD uses descriptive label
+    erd = next(v for k, v in result.items() if k.endswith("-erd.mmd"))
+    assert '"inherits"' in erd
 
 
 # ---------------------------------------------------------------------------
