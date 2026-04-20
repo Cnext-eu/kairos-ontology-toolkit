@@ -15,7 +15,7 @@ to merge into `main`.
 1. Confirm the user is on a feature branch (not `main`).
 2. Check for uncommitted changes.
 3. Ask if they want to run validation before creating the PR:
-   `kairos-ontology validate`
+   `python -m kairos_ontology validate`
 
 ## Workflow
 
@@ -112,8 +112,8 @@ gh pr create --base main \
 - <bullet summary of what changed>
 
 ## Checklist
-- [ ] `kairos-ontology validate` passes
-- [ ] `kairos-ontology project` regenerated (if ontology changed)
+- [ ] `python -m kairos_ontology validate` passes
+- [ ] `python -m kairos_ontology project` regenerated (if ontology changed)
 - [ ] `_master.ttl` updated (if new domain added)
 - [ ] Hub README domain table updated (if new domain added)
 - [ ] Security review passed (no path traversal, no secrets, no shell=True)"
@@ -226,8 +226,8 @@ Print a summary:
 
 When the PR includes `.ttl` file changes, remind the user:
 
-1. Did you run `kairos-ontology validate`?
-2. Did you run `kairos-ontology project` to regenerate artifacts?
+1. Did you run `python -m kairos_ontology validate`?
+2. Did you run `python -m kairos_ontology project` to regenerate artifacts?
 3. If a new domain was added:
    - Is it in `ontology-hub/ontologies/_master.ttl`?
    - Is it in the domain table in `ontology-hub/README.md`?

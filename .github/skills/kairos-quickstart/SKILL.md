@@ -25,6 +25,10 @@ or project using the **kairos-ontology-toolkit** CLI.
   (`gh auth login`)
 - **kairos-ontology-toolkit** — `pip install kairos-ontology-toolkit`
 
+> **Tip:** In hub repos, always invoke the toolkit as `python -m kairos_ontology` rather than
+> `kairos-ontology`. This works in any virtual environment without needing the Python `Scripts/`
+> directory on PATH.
+
 ---
 
 ## 1. Repository naming convention
@@ -62,7 +66,7 @@ For repos under the **Cnext-eu** organisation (the default `--org`), always
 use the template — just run the bare command:
 
 ```bash
-kairos-ontology new-repo contoso
+python -m kairos_ontology new-repo contoso
 ```
 
 This uses the `kairos-app-template` template by default, which includes
@@ -75,7 +79,7 @@ For repos under a different GitHub org, skip the template since they won't
 have access to it:
 
 ```bash
-kairos-ontology new-repo contoso --org Acme-Corp --template ""
+python -m kairos_ontology new-repo contoso --org Acme-Corp --template ""
 ```
 
 ### What `new-repo` creates
@@ -139,7 +143,7 @@ and makes the `kairos-ontology` CLI available.
 on `main` since this is initial setup:
 
 ```bash
-kairos-ontology init --company-domain contoso.com --domain customer
+python -m kairos_ontology init --company-domain contoso.com --domain customer
 ```
 
 - `--company-domain` is **required** — sets the namespace base
@@ -181,8 +185,8 @@ kairos-ontology-modeling skill for design guidance.  At minimum ensure:
 ## 6. Validate and project
 
 ```bash
-kairos-ontology validate
-kairos-ontology project
+python -m kairos_ontology validate
+python -m kairos_ontology project
 ```
 
 Fix any errors before proceeding.  Output lands in
@@ -193,7 +197,7 @@ Fix any errors before proceeding.  Output lands in
 ## 7. Add more domains (repeat)
 
 ```bash
-kairos-ontology init --company-domain contoso.com --domain order
+python -m kairos_ontology init --company-domain contoso.com --domain order
 ```
 
 Then update `_master.ttl` to import the new domain and add it to the
@@ -251,10 +255,10 @@ Or use the SC-merge-pr skill.  Never push directly to `main`.
 
 | Task | Command |
 |------|---------|
-| Create new hub repo | `kairos-ontology new-repo <name>` |
-| Init hub + first domain | `kairos-ontology init --company-domain <domain> --domain <domain>` |
+| Create new hub repo | `python -m kairos_ontology new-repo <name>` |
+| Init hub + first domain | `python -m kairos_ontology init --company-domain <domain> --domain <domain>` |
 | Add application model | Create `application-models/<name>.mmd` (Mermaid class diagram) |
-| Validate | `kairos-ontology validate` |
-| Project (all) | `kairos-ontology project` |
-| Project (single) | `kairos-ontology project --target prompt` |
-| Test catalog | `kairos-ontology catalog-test --catalog ontology-reference-models/catalog-v001.xml` |
+| Validate | `python -m kairos_ontology validate` |
+| Project (all) | `python -m kairos_ontology project` |
+| Project (single) | `python -m kairos_ontology project --target prompt` |
+| Test catalog | `python -m kairos_ontology catalog-test --catalog ontology-reference-models/catalog-v001.xml` |

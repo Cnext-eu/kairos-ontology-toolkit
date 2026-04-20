@@ -11,9 +11,9 @@ You help users generate and understand projection artifacts.
 
 ## Before you start
 
-0. **Quick toolkit version check** — run `kairos-ontology update --check` once
+0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
    at the start of the session.  If it reports outdated files, run
-   `kairos-ontology update` and commit the refresh before doing any other work.
+   `python -m kairos_ontology update` and commit the refresh before doing any other work.
    See the kairos-toolkit-update skill for full upgrade steps.
 
 ## Available targets
@@ -38,10 +38,10 @@ You help users generate and understand projection artifacts.
 
 ```bash
 # Generate all projections for all domains
-kairos-ontology project
+python -m kairos_ontology project
 
 # Generate a single target
-kairos-ontology project --target prompt
+python -m kairos_ontology project --target prompt
 
 # Available targets: dbt, neo4j, azure-search, a2ui, prompt
 ```
