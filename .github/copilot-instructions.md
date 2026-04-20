@@ -46,5 +46,21 @@ azure-search, a2ui, prompt), and an AI chat interface via the GitHub Models API.
 
 ## Projection targets
 
-Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`.
+Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`.
 Each ontology domain produces separate output artifacts per target.
+
+## Scaffold packaging rules
+
+The scaffold folder `src/kairos_ontology/scaffold/` is what gets distributed to hub repos
+via `init`, `new-repo`, and `update`. Any change in this repo that affects hub repos MUST
+also be applied to the corresponding scaffold location:
+
+| What changed | Scaffold location to update |
+|---|---|
+| New or updated Copilot skill in `.github/skills/` | `src/kairos_ontology/scaffold/skills/<skill-name>/SKILL.md` |
+| New output target directory | Add to the `for d in [...]` directory lists in `cli/main.py` |
+| New scaffold template / config file | `src/kairos_ontology/scaffold/ontology-hub/` or `src/kairos_ontology/scaffold/` |
+
+**Rule**: After adding or modifying a skill in `.github/skills/`, always copy it to
+`src/kairos_ontology/scaffold/skills/` before committing. Run `py -m pytest` to confirm
+no packaging tests break.

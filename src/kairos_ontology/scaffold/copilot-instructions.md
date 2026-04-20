@@ -18,7 +18,7 @@ that are validated and projected into downstream artifacts using the
 │   ├── shapes/                          # SHACL validation constraints
 │   ├── mappings/                        # SKOS synonym mappings
 │   └── output/                          # Generated projections (gitignored)
-│       ├── dbt/ neo4j/ azure-search/ a2ui/ prompt/
+│       ├── dbt/ neo4j/ azure-search/ a2ui/ prompt/ silver/
 ├── ontology-reference-models/           # Reference ontologies
 │   ├── authoritative-ontologies/        # FIBO and other authoritative ontologies
 │   ├── derived-ontologies/              # Supply-chain, DCSA, MMT derived models
@@ -29,19 +29,22 @@ that are validated and projected into downstream artifacts using the
 
 ```bash
 # Validate all ontologies (syntax + SHACL)
-kairos-ontology validate
+python -m kairos_ontology validate
 
 # Validate syntax only
-kairos-ontology validate --syntax
+python -m kairos_ontology validate --syntax
 
 # Generate all projections
-kairos-ontology project
+python -m kairos_ontology project
 
 # Generate a specific projection target
-kairos-ontology project --target prompt
+python -m kairos_ontology project --target prompt
+
+# Generate silver layer DDL + ERD (requires *-silver-ext.ttl)
+python -m kairos_ontology project --target silver
 
 # Test catalog import resolution
-kairos-ontology catalog-test --catalog ontology-reference-models/catalog-v001.xml
+python -m kairos_ontology catalog-test --catalog ontology-reference-models/catalog-v001.xml
 ```
 
 ## Ontology conventions
@@ -64,9 +67,13 @@ kairos-ontology catalog-test --catalog ontology-reference-models/catalog-v001.xm
 
 ## Projection targets
 
-Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`.
+Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`.
 Each ontology domain produces separate output artifacts per target.
 Output is generated into `ontology-hub/output/`.
+
+For the **silver** target (MS Fabric / Delta Lake DDL + Mermaid ERD), first create
+a `{domain}-silver-ext.ttl` annotation file in `ontology-hub/ontologies/` using the
+**kairos-silver-projection** skill.
 
 ## Workflow
 
@@ -78,6 +85,6 @@ directly to `main`.  Use the SC-feature-branch skill to create one.
 3. Check the domain model overview table before creating new `.ttl` files.
 4. Create or modify `.ttl` files in `ontology-hub/ontologies/`.
 5. Update `ontology-hub/ontologies/_master.ttl` with `owl:imports` for any new domain.
-6. Run `kairos-ontology validate` to check for errors.
-7. Run `kairos-ontology project` to regenerate artifacts.
+6. Run `python -m kairos_ontology validate` to check for errors.
+7. Run `python -m kairos_ontology project` to regenerate artifacts.
 8. Commit changes, push, and open a PR to merge into `main`.
