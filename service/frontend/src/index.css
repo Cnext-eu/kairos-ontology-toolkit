@@ -163,3 +163,15 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 
 /* ── Save overlay ────────────────────────────────────────── */
 #save-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; }
+
+/* ── Application Model panel ─────────────────────────────── */
+#app-model-panel { display: flex; flex-direction: column; background: #0d1117; border-left: 1px solid #30363d; min-width: 400px; max-width: 70vw; width: 50vw; position: relative; }
+#app-model-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; font-weight: 600; font-size: 14px; border-bottom: 1px solid #30363d; background: #161b22; gap: 8px; }
+#app-model-title { color: #c9d1d9; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#app-model-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+#app-model-controls .sidebar-btn { width: auto; padding: 4px 8px; font-size: 13px; }
+#app-model-body { flex: 1; overflow: auto; padding: 16px; }
+#app-model-svg-wrap { display: inline-block; }
+#app-model-svg-wrap svg { max-width: none; }
+.app-model-error { color: #f85149; background: #3d1214; border-radius: 6px; padding: 12px; font-size: 13px; }
+.app-model-error pre { margin-top: 8px; font-size: 12px; white-space: pre-wrap; }

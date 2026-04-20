@@ -65,6 +65,44 @@ async def read_file(
     return p.read_text(encoding="utf-8")
 
 
+_APPLICATION_MODELS_PATH = "application-models"
+
+
+async def list_mmd_files(
+    branch: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
+) -> list[dict]:
+    """List Mermaid class-diagram files (*.mmd) under ``application-models/`` in the local dir."""
+    base = _ontologies_dir().parent / _APPLICATION_MODELS_PATH
+    if not base.exists():
+        return []
+    return [
+        {
+            "name": f.name,
+            "path": str(f.relative_to(base.parent)),
+            "sha": "",
+            "size": f.stat().st_size,
+        }
+        for f in sorted(base.iterdir())
+        if f.suffix == ".mmd"
+    ]
+
+
+async def read_mmd_file(
+    name: str,
+    branch: Optional[str] = None,
+    owner: Optional[str] = None,
+    repo: Optional[str] = None,
+) -> str:
+    """Read the content of a Mermaid file from ``application-models/<name>``."""
+    safe_name = name.replace("/", "").replace("\\", "").replace("..", "")
+    if not safe_name.endswith(".mmd"):
+        safe_name += ".mmd"
+    path = f"{_APPLICATION_MODELS_PATH}/{safe_name}"
+    return await read_file(path)
+
+
 async def create_branch(
     branch_name: str,
     from_branch: Optional[str] = None,
