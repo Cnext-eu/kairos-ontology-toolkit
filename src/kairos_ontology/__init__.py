@@ -1,6 +1,6 @@
 """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 from kairos_ontology.catalog_utils import CatalogResolver, load_graph_with_catalog
 from kairos_ontology.validator import run_validation, validate_content

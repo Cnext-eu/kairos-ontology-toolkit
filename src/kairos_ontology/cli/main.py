@@ -694,6 +694,9 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
     # --- Run smartcoding update if template provided the script ---------------
     _run_smartcoding_update(repo_dir)
 
+    # --- Populate reference models -------------------------------------------
+    _run_reference_models_update(repo_dir, ref_models_version)
+
     print(f"\n✅ Repository created: {repo_slug}")
     print(f"   GitHub: https://github.com/{org}/{repo_slug}")
     print("\nNext steps:")
@@ -740,6 +743,7 @@ def _create_repo_from_template(
 
 
 _SMARTCODING_SCRIPT = "update-smartcoding-latest.ps1"
+_REF_MODELS_SCRIPT = "update-referencemodels.ps1"
 
 
 def _run_smartcoding_update(repo_dir: Path):
@@ -760,6 +764,47 @@ def _run_smartcoding_update(repo_dir: Path):
         print(f"  ⚠  pwsh not found — run {_SMARTCODING_SCRIPT} manually")
     except subprocess.CalledProcessError:
         print(f"  ⚠  {_SMARTCODING_SCRIPT} failed — run it manually")
+
+
+def _run_reference_models_update(repo_dir: Path, version: str | None = None):
+    """Run update-referencemodels.ps1 to populate ontology-reference-models/.
+
+    The script performs a sparse clone and copies the reference model files
+    into the repo.  After running it, any new/changed files are committed.
+    """
+    script = repo_dir / _REF_MODELS_SCRIPT
+    if not script.is_file():
+        print(f"  ⚠  {_REF_MODELS_SCRIPT} not found — skipping reference models update")
+        return
+
+    print(f"  ▶ Running {_REF_MODELS_SCRIPT} …")
+    cmd = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
+    if version:
+        cmd += ["-Ref", version]
+    try:
+        subprocess.run(cmd, cwd=repo_dir, check=True)
+        # Commit the populated reference-models content
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_dir, capture_output=True, text=True,
+        )
+        if result.stdout.strip():
+            subprocess.run(["git", "add", "ontology-reference-models"], cwd=repo_dir,
+                           capture_output=True, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "chore: populate ontology-reference-models"],
+                cwd=repo_dir, capture_output=True, check=True,
+            )
+            subprocess.run(["git", "push"], cwd=repo_dir, capture_output=True, check=True)
+            print("  ✓ Reference models populated and committed")
+        else:
+            print("  ✓ Reference models already up to date")
+    except FileNotFoundError:
+        print(f"  ⚠  pwsh not found — run {_REF_MODELS_SCRIPT} manually to populate reference models")
+    except subprocess.CalledProcessError as exc:
+        print(f"  ⚠  {_REF_MODELS_SCRIPT} failed — run it manually")
+        if hasattr(exc, "stderr") and exc.stderr:
+            print(f"       {exc.stderr.decode().strip()}")
 
 
 def _add_reference_models(repo_dir: Path, version: str | None = None):
