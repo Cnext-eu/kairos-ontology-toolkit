@@ -113,17 +113,32 @@ Set-Content $initPath -Value $initContent -NoNewline
 Write-Host "  ✓ Updated pyproject.toml" -ForegroundColor Green
 Write-Host "  ✓ Updated __init__.py" -ForegroundColor Green
 
+# Resolve poetry executable — prefer a local .venv, fall back to PATH
+function Invoke-Poetry {
+    param([string[]]$Arguments)
+    $venvPython = Join-Path $PSScriptRoot ".venv" "Scripts" "python.exe"
+    if (Test-Path $venvPython) {
+        & $venvPython -m poetry @Arguments
+    } elseif (Get-Command poetry -ErrorAction SilentlyContinue) {
+        poetry @Arguments
+    } elseif (Get-Command py -ErrorAction SilentlyContinue) {
+        py -m poetry @Arguments
+    } else {
+        python -m poetry @Arguments
+    }
+    if ($LASTEXITCODE -ne 0) { throw "poetry $($Arguments -join ' ') failed (exit $LASTEXITCODE)" }
+}
+
 # Update poetry lock
 Write-Host ""
 Write-Host "🔒 Updating poetry.lock..." -ForegroundColor Cyan
-$venvPython = Join-Path $PSScriptRoot ".venv" "Scripts" "python.exe"
-& $venvPython -m poetry lock
+Invoke-Poetry "lock"
 Write-Host "  ✓ Lock file updated" -ForegroundColor Green
 
 # Build package
 Write-Host ""
 Write-Host "🏗️  Building package..." -ForegroundColor Cyan
-& $venvPython -m poetry build
+Invoke-Poetry "build"
 Write-Host "  ✓ Package built" -ForegroundColor Green
 
 # Get release notes (single line)
