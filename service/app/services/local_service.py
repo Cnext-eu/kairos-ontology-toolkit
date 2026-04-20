@@ -14,7 +14,7 @@ def _ontologies_dir() -> Path:
     return Path(settings.local_ontologies_dir)
 
 
-async def list_repos(token: str = "") -> list[dict]:
+async def list_repos() -> list[dict]:
     """In dev mode, return just the configured repo."""
     return [
         {
@@ -30,7 +30,6 @@ async def list_repos(token: str = "") -> list[dict]:
 
 
 async def list_ttl_files(
-    token: str = "",
     path: Optional[str] = None,
     branch: Optional[str] = None,
     owner: Optional[str] = None,
@@ -53,7 +52,6 @@ async def list_ttl_files(
 
 
 async def read_file(
-    token: str = "",
     path: str = "",
     branch: Optional[str] = None,
     owner: Optional[str] = None,
@@ -68,7 +66,6 @@ async def read_file(
 
 
 async def create_branch(
-    token: str,
     branch_name: str,
     from_branch: Optional[str] = None,
     owner: Optional[str] = None,
@@ -78,7 +75,6 @@ async def create_branch(
 
 
 async def write_file(
-    token: str,
     path: str,
     content: str,
     branch: str,
@@ -91,7 +87,6 @@ async def write_file(
 
 
 async def create_pull_request(
-    token: str,
     branch: str,
     title: str,
     body: str = "",
@@ -103,7 +98,6 @@ async def create_pull_request(
 
 
 async def compare_branches(
-    token: str,
     base: str,
     head: str,
     owner: Optional[str] = None,

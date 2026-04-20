@@ -74,7 +74,7 @@ async def chat(
         req.domain, repo_owner=repo_owner, repo_name=repo_name,
     )
 
-    # Extract last user message and build conversation history
+    # Extract last user message and build conversation history (cap at last 10 turns)
     last_user_msg = ""
     history_parts: list[str] = []
     for msg in req.messages:
@@ -86,10 +86,15 @@ async def chat(
             prefix = "User" if role == "user" else "Assistant"
             history_parts.append(f"[{prefix}]: {content}")
 
-    # Everything except the final user turn is prior context
+    # Keep only the last 10 turns before the current message to stay within token limits
+    MAX_HISTORY_TURNS = 10
+    prior_history = history_parts[:-1]
+    if len(prior_history) > MAX_HISTORY_TURNS:
+        prior_history = prior_history[-MAX_HISTORY_TURNS:]
+
     conversation_history = ""
-    if len(history_parts) > 1:
-        conversation_history = "\n\n".join(history_parts[:-1])
+    if prior_history:
+        conversation_history = "\n\n".join(prior_history)
 
     if not last_user_msg:
         last_user_msg = "(no message)"
@@ -113,29 +118,43 @@ async def chat(
 # Helpers
 # ---------------------------------------------------------------------------
 
+_MAX_ONTOLOGY_CONTEXT_CHARS = 12_000  # ~3 000 tokens — leave room for history + response
+
+
 async def _build_ontology_context(
     domain: Optional[str],
     repo_owner: Optional[str] = None,
     repo_name: Optional[str] = None,
 ) -> str:
-    """Load ontology domain(s) as text context for the system prompt."""
-    gh = get_github_service()
+    """Load ontology domain(s) as text context for the system prompt.
+
+    When a specific domain is selected, returns the raw TTL truncated to
+    ``_MAX_ONTOLOGY_CONTEXT_CHARS``.  When no domain is selected, returns a
+    compact class-list summary (never raw TTL) to keep the payload small.
+    """
+    gh_svc = get_github_service()
     if domain:
         file_path = _domain_to_path(domain)
         try:
-            return await gh.read_file(file_path, owner=repo_owner, repo=repo_name)
+            content = await gh_svc.read_file(file_path, owner=repo_owner, repo=repo_name)
+            if len(content) > _MAX_ONTOLOGY_CONTEXT_CHARS:
+                content = content[:_MAX_ONTOLOGY_CONTEXT_CHARS] + "\n... (truncated)"
+            return content
         except Exception:
             return f"(Could not load domain: {domain})"
 
-    # Summarise all domains
+    # No domain selected — build a compact summary (class names only, no raw TTL)
     try:
-        files = await gh.list_ttl_files(owner=repo_owner, repo=repo_name)
+        files = await gh_svc.list_ttl_files(owner=repo_owner, repo=repo_name)
         parts = []
         for f in files:
-            content = await gh.read_file(f["path"], owner=repo_owner, repo=repo_name)
-            info = parse_ontology_content(content)
-            classes = ", ".join(c.name for c in info.classes)
-            parts.append(f"Domain {f['name']}: classes=[{classes}]")
+            try:
+                content = await gh_svc.read_file(f["path"], owner=repo_owner, repo=repo_name)
+                info = parse_ontology_content(content)
+                classes = ", ".join(c.name for c in info.classes)
+                parts.append(f"Domain {f['name']}: classes=[{classes}]")
+            except Exception:
+                parts.append(f"Domain {f['name']}: (could not parse)")
         return "\n".join(parts)
     except Exception:
         return "(Could not load ontology files)"

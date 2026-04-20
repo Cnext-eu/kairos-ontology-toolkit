@@ -128,6 +128,9 @@ export default function App() {
       setRepos(data);
       if (data.length === 1) {
         await selectRepo(data[0]);
+      } else {
+        // More than one repo available — load domains for the pre-configured active repo
+        await loadDomains();
       }
     } catch (err) {
       console.error("Failed to load repos:", err);

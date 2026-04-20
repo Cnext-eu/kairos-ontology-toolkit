@@ -82,8 +82,12 @@ async def query_ontology(
     for f in files:
         if domain and not f["name"].startswith(domain):
             continue
-        content = await gh.read_file(f["path"], owner=repo_owner, repo=repo_name)
-        info = parse_ontology_content(content)
+        try:
+            content = await gh.read_file(f["path"], owner=repo_owner, repo=repo_name)
+            info = parse_ontology_content(content)
+        except Exception:
+            # Skip files that cannot be read or parsed rather than crashing
+            continue
         entry = {
             "domain": f["name"],
             "namespace": info.namespace,

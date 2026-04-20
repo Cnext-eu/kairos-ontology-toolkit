@@ -41,7 +41,7 @@ async def list_repos(
         ]
 
     gh = get_github_service()
-    repos = await gh.list_repos(token)
+    repos = await gh.list_repos()
     return repos
 
 

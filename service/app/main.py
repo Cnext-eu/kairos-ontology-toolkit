@@ -54,6 +54,8 @@ async def get_config():
             "owner": settings.github_repo_owner,
             "name": settings.github_repo_name,
         },
+        # Expose dev token so the UI can pre-fill auth for chat (local/dev use only)
+        "github_token": settings.dev_github_token or None,
     }
 
 

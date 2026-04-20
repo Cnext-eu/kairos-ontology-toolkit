@@ -453,6 +453,35 @@ async def stream_chat(
                     logger.error("Fallback model error: %s", exc2)
                     yield {"type": "error", "message": str(exc2)}
                     return
+            elif "413" in err_str or "tokens_limit_reached" in err_str.lower():
+                if model != "gpt-4o-mini":
+                    logger.warning("Token limit hit for %s, falling back to gpt-4o-mini", model)
+                    model = "gpt-4o-mini"
+                    try:
+                        stream = await client.chat.completions.create(
+                            model=model,
+                            messages=messages,
+                            tools=_TOOLS,
+                            stream=True,
+                        )
+                    except Exception as exc2:
+                        logger.error("Fallback model error: %s", exc2)
+                        yield {"type": "error", "message": str(exc2)}
+                        return
+                else:
+                    yield {"type": "error", "message": "Request too large even for gpt-4o-mini. Please select a specific domain to narrow the context."}
+                    return
+            elif "401" in err_str or "unauthorized" in err_str.lower():
+                logger.error("GitHub Models API auth error: %s", exc)
+                yield {
+                    "type": "error",
+                    "message": (
+                        "GitHub Models API authentication failed. "
+                        "Please enter a GitHub PAT with **Copilot** (models:read) access "
+                        "in the token field in the sidebar."
+                    ),
+                }
+                return
             else:
                 logger.error("GitHub Models API error: %s", exc)
                 yield {"type": "error", "message": err_str}

@@ -93,7 +93,7 @@ def _repo_url(owner: str | None = None, repo: str | None = None) -> str:
 
 # ---- Repo discovery --------------------------------------------------------
 
-async def list_repos(token: str | None = None) -> list[dict]:
+async def list_repos() -> list[dict]:
     """List ontology hub repos accessible to the GitHub App installation."""
     install_token = await _get_installation_token()
     url = f"{_BASE}/installation/repositories"
@@ -130,34 +130,42 @@ async def _token() -> str:
 # ---- Read ------------------------------------------------------------------
 
 async def list_ttl_files(
-    token: str | None = None,
     path: Optional[str] = None,
     branch: Optional[str] = None,
     owner: Optional[str] = None,
     repo: Optional[str] = None,
 ) -> list[dict]:
-    """List ontology files (*.ttl, *.rdf) under *path* in the repo."""
+    """List ontology files (*.ttl, *.rdf) under *path* in the repo.
+
+    If the configured path returns nothing, falls back to ``ontologies/``
+    at the repo root so repos with a flat layout are also supported.
+    """
     t = await _token()
-    path = path or settings.github_ontologies_path
+    primary_path = path or settings.github_ontologies_path
     branch = branch or settings.github_default_branch
-    url = f"{_repo_url(owner, repo)}/contents/{path}"
+    fallback_paths = [primary_path, "ontologies"]
+
     async with httpx.AsyncClient() as client:
-        resp = await client.get(url, headers=_headers(t), params={"ref": branch})
-        if resp.status_code == 404:
-            return []
-        resp.raise_for_status()
-    items = resp.json()
-    if not isinstance(items, list):
-        items = [items]
-    return [
-        {"name": f["name"], "path": f["path"], "sha": f["sha"], "size": f["size"]}
-        for f in items
-        if f["name"].endswith((".ttl", ".rdf"))
-    ]
+        for candidate in dict.fromkeys(fallback_paths):  # deduplicate, preserve order
+            url = f"{_repo_url(owner, repo)}/contents/{candidate}"
+            resp = await client.get(url, headers=_headers(t), params={"ref": branch})
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            items = resp.json()
+            if not isinstance(items, list):
+                items = [items]
+            files = [
+                {"name": f["name"], "path": f["path"], "sha": f["sha"], "size": f["size"]}
+                for f in items
+                if f["name"].endswith((".ttl", ".rdf"))
+            ]
+            if files:
+                return files
+    return []
 
 
 async def read_file(
-    token: str | None = None,
     path: str = "",
     branch: Optional[str] = None,
     owner: Optional[str] = None,
@@ -177,7 +185,6 @@ async def read_file(
 # ---- Write -----------------------------------------------------------------
 
 async def create_branch(
-    token: str | None = None,
     branch_name: str = "",
     from_branch: Optional[str] = None,
     owner: Optional[str] = None,
@@ -203,7 +210,6 @@ async def create_branch(
 
 
 async def write_file(
-    token: str | None = None,
     path: str = "",
     content: str = "",
     branch: str = "",
@@ -229,7 +235,6 @@ async def write_file(
 
 
 async def create_pull_request(
-    token: str | None = None,
     branch: str = "",
     title: str = "",
     body: str = "",
@@ -254,7 +259,6 @@ async def create_pull_request(
 # ---- Compare / diff --------------------------------------------------------
 
 async def compare_branches(
-    token: str | None = None,
     base: str = "",
     head: str = "",
     owner: Optional[str] = None,
