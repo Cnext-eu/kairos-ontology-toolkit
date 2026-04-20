@@ -175,7 +175,7 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
 @click.option('--output', type=click.Path(),
               default='ontology-hub/output',
               help='Output directory for projections')
-@click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt']),
+@click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver']),
               default='all', help='Projection target')
 @click.option('--namespace', type=str, default=None,
               help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
@@ -238,6 +238,7 @@ def init(domain, company_domain, force):
         hub / "output" / "azure-search",
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
+        hub / "output" / "silver",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -565,6 +566,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
         hub / "output" / "azure-search",
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
+        hub / "output" / "silver",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 

@@ -38,7 +38,7 @@ structure and adds domains inside an existing repo.
 │   ├── mappings/                        # SKOS synonym mappings
 │   │   └── README.md
 │   └── output/                          # Generated projections (gitignored)
-│       ├── dbt/ neo4j/ azure-search/ a2ui/ prompt/
+│       ├── dbt/ neo4j/ azure-search/ a2ui/ prompt/ silver/
 ├── application-models/                  # Mermaid ERD / class-diagram files
 │   └── README.md                        # How to add application models
 ├── ontology-reference-models/           # Git submodule (sparse checkout)
@@ -114,6 +114,7 @@ EOF
 - [ ] Add `owl:imports` to `ontology-hub/ontologies/_master.ttl`
 - [ ] Validate: `python -m kairos_ontology validate`
 - [ ] Generate projections: `python -m kairos_ontology project --target prompt`
+- [ ] (Optional) Generate silver layer: add `*-silver-ext.ttl`, then `python -m kairos_ontology project --target silver`
 - [ ] Optionally add SHACL shapes in `ontology-hub/shapes/`
 - [ ] Optionally add SKOS mappings in `ontology-hub/mappings/`
 - [ ] Commit, push, and open PR to merge into main

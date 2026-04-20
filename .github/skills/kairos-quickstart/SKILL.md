@@ -261,4 +261,5 @@ Or use the SC-merge-pr skill.  Never push directly to `main`.
 | Validate | `python -m kairos_ontology validate` |
 | Project (all) | `python -m kairos_ontology project` |
 | Project (single) | `python -m kairos_ontology project --target prompt` |
+| Silver layer DDL | `python -m kairos_ontology project --target silver` (needs `*-silver-ext.ttl`) |
 | Test catalog | `python -m kairos_ontology catalog-test --catalog ontology-reference-models/catalog-v001.xml` |

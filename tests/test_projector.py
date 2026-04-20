@@ -337,7 +337,7 @@ class TestProjector:
                 # Should be like "product.sql" not "http://example.org/ontology/Product.sql"
                 assert 'http' not in name.lower()
                 assert '/' not in name
-                assert name.replace('.', '').replace('_', '').isalnum()
+                assert name.replace('.', '').replace('_', '').replace('-', '').isalnum()
     
     def test_auto_detect_prefers_custom_namespace_over_fibo(self, temp_dir, ontology_with_fibo_imports):
         """Test that auto-detection picks custom namespace even when FIBO has more classes."""
