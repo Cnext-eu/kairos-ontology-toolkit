@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Tests for the /api/application-models endpoints."""
 
 from unittest.mock import AsyncMock

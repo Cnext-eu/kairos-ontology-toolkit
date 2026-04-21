@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Chat router — SSE streaming AI chat for the web viewer.
 
 Uses the GitHub Models API (OpenAI-compatible, no Copilot subscription needed)

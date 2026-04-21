@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """GitHub OAuth authentication router.
 
 Implements the standard GitHub OAuth web application flow so each user

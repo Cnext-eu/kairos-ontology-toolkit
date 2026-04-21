@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Local file service — reads ontology files from disk instead of GitHub.
 
 Used when ``KAIROS_DEV_MODE=true``.  Provides the same async interface as

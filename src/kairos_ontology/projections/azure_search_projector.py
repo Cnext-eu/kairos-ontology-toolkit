@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 #!/usr/bin/env python3
 """
 Azure Search Projector - Generate Azure AI Search index definitions

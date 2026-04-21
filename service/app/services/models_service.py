@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """GitHub Models API chat service — OpenAI-compatible, no Copilot subscription required.
 
 Uses https://models.inference.ai.azure.com with any GitHub PAT.

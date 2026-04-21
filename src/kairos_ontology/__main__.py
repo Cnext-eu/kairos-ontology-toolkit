@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Allow ``python -m kairos_ontology`` as an alternative to the ``kairos-ontology`` CLI.
 
 This is the recommended way to invoke the toolkit in client hub repos because

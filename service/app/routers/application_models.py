@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Application Models router — list and read Mermaid class-diagram files.
 
 Application models are stored as ``*.mmd`` files under ``application-models/``

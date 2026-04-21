@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Projection router — generate downstream artifacts from ontologies."""
 
 from typing import List, Optional

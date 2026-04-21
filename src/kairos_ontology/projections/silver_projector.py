@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Silver Layer Projector — generate MS Fabric / Delta Lake silver DDL, FK scripts,
 and Mermaid ERD from OWL ontologies annotated with kairos-ext: projection extensions.
 

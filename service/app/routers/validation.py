@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Validation router — syntax and SHACL validation for ontologies."""
 
 from typing import Optional
