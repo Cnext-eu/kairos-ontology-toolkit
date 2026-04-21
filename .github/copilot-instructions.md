@@ -19,6 +19,48 @@ azure-search, a2ui, prompt), and an AI chat interface via the GitHub Models API.
 - Service code lives under `service/app/`.
 - Tests live under `tests/` (toolkit) and `tests/service/` (API endpoints).
 
+## Open-source & licensing
+
+This project is **open source** under the **Apache License 2.0**, part of the
+**Kairos Community Edition** by Cnext.eu.
+
+### SPDX headers (mandatory)
+
+Every `.py` file MUST start with these two lines:
+
+```python
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+```
+
+When creating a new Python file, always include the SPDX header as the very
+first lines, before any docstrings or imports.
+
+### PR / code-review checklist (open-source)
+
+When reviewing or creating a pull request, verify:
+
+| Check | What to look for |
+|-------|-----------------|
+| **SPDX headers** | Every new or modified `.py` file has the `SPDX-License-Identifier` + `Copyright` header |
+| **No secrets** | No API keys, tokens, passwords, or internal URLs in code, config, or comments |
+| **No PII** | No personal data (names, emails, addresses) in ontology labels, test fixtures, or comments |
+| **Dependency licenses** | New dependencies must be compatible with Apache 2.0 (BSD, MIT, Apache, ISC are OK; GPL is NOT) |
+| **DCO sign-off** | Contributor commits should have `Signed-off-by:` trailer (enforced by convention) |
+| **NOTICE file** | If adding a bundled third-party component, update `NOTICE` with attribution |
+| **No proprietary content** | Ontology examples, sample data, and docs must not contain client-specific or proprietary information |
+
+### Key open-source files
+
+| File | Purpose |
+|------|---------|
+| `LICENSE` | Apache License 2.0 full text |
+| `NOTICE` | Required attribution file (Apache 2.0 §4d) |
+| `CONTRIBUTING.md` | Contribution guidelines + DCO workflow |
+| `CODE_OF_CONDUCT.md` | Contributor Covenant v2.1 |
+| `SECURITY.md` | Vulnerability reporting policy |
+| `CHANGELOG.md` | Release history |
+
 ## Dev toolchain
 
 - **Poetry** manages dependencies and builds the package. It must be installed separately

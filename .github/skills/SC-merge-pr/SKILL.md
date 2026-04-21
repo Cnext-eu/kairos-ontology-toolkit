@@ -70,12 +70,14 @@ git diff main --name-only
 
 | Check | What to look for |
 |-------|-----------------|
+| **SPDX headers** | Every new/modified `.py` file starts with `# SPDX-License-Identifier: Apache-2.0` and `# Copyright 2026 Cnext.eu` |
 | **Path traversal** | User input used in file paths without sanitising `/`, `\`, `..` |
 | **Command injection** | `subprocess` calls using `shell=True` or string concatenation |
 | **Secret exposure** | Tokens, keys, or passwords in code, config defaults, or API responses |
 | **CORS** | `allow_origins=["*"]` in production settings |
 | **Auth bypass** | Endpoints missing `Authorization` header requirement |
 | **Dependency pinning** | New dependencies without version pins or from untrusted sources |
+| **Dependency license** | New dependencies must be Apache-2.0-compatible (BSD, MIT, ISC OK; GPL is NOT) |
 
 **For ontology / scaffold changes**, check:
 
@@ -84,6 +86,7 @@ git diff main --name-only
 | **Template injection** | User-controlled values interpolated into templates without sanitising |
 | **Namespace hijacking** | Namespace URIs pointing to domains the org doesn't control |
 | **Sensitive data in ontology** | PII, credentials, or internal URLs embedded in `.ttl` labels/comments |
+| **No proprietary content** | No client-specific or proprietary information in examples or sample data |
 
 If any issues are found, fix them before proceeding.  Do NOT create the PR
 with known security problems.
