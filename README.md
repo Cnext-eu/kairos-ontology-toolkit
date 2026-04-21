@@ -1,487 +1,145 @@
-# Kairos Ontology Toolkit
+<p align="center">
+  <strong>Kairos Ontology Toolkit</strong><br>
+  <em>Part of the <a href="https://github.com/Cnext-eu">Kairos Community Edition</a> by Cnext.eu</em>
+</p>
 
-Validation and projection tools for OWL/Turtle ontologies in the Kairos platform.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="https://pypi.org/project/kairos-ontology-toolkit/"><img src="https://img.shields.io/pypi/v/kairos-ontology-toolkit.svg" alt="PyPI"></a>
+  <img src="https://img.shields.io/badge/python-3.12%2B-brightgreen.svg" alt="Python">
+</p>
 
-> 📖 **New here?** Read the [User Guide](docs/USER_GUIDE.md) for a complete
-> walkthrough — from creating your first ontology hub to generating production
-> DDL, dbt models, and ERD diagrams.
+---
 
-## Features
+**Turn OWL/Turtle ontologies into production-ready data artifacts** — DDL schemas,
+dbt models, graph databases, search indexes, UI schemas, and AI prompt context — with
+built-in validation and a single CLI command.
 
-- **3-Level Validation Pipeline**
-  - Syntax validation (RDF/OWL parsing)
-  - SHACL constraint validation
-  - Consistency checking (SPARQL)
+> 📖 **New here?** Read the [User Guide](docs/USER_GUIDE.md) for a complete walkthrough.
 
-- **Multi-Target Projections**
-  - DBT SQL models for data warehouses
-  - Neo4j Cypher schemas for graph databases
-  - Azure AI Search index definitions
-  - A2UI JSON schemas for UI generation
-  - Prompt context for LLM interactions
+---
 
-- **Domain-Specific Outputs**
-  - Each ontology file generates separate output artifacts
-  - Enables independent deployment of data domains
-  - Organized by domain name for better isolation
+## ✨ Key Features
 
-- **Catalog-Based Import Resolution**
-  - Resolve external ontology imports via XML catalogs
-  - Support for FIBO and other standard ontologies
+- 🔍 **3-Level Validation** — Syntax (RDF/OWL), SHACL constraints, and SPARQL consistency checks
+- 🏗️ **6 Projection Targets** — Generate downstream artifacts from a single ontology source
+- 🥈 **Silver Layer DDL** — Full CREATE TABLE generation with SCD2, GDPR satellites, junction tables, and ERD diagrams
+- 📦 **Hub Scaffolding** — `kairos init` bootstraps a complete ontology repository in seconds
+- 🤖 **AI Chat Service** — FastAPI + GitHub Copilot SDK for conversational ontology management
+- 🔗 **Traceability** — Every generated artifact links back to its source ontology IRI and version
+- 🌐 **Multi-Domain** — Each domain deploys independently with domain-scoped output folders
 
-## Installation
+## 🚀 Quick Start
 
 ```bash
-# Install from GitHub
-pip install git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git
-
-# Or install from PyPI (when published)
+# Install
 pip install kairos-ontology-toolkit
-```
 
-## Usage
-
-> **Invoking the CLI in hub repos**
->
-> In client ontology hub repositories, always invoke the toolkit as:
-> ```bash
-> python -m kairos_ontology <command>
-> ```
-> This works in any virtual environment without needing the Python `Scripts/`
-> directory on PATH.  The `kairos-ontology` console script (`.exe` on Windows)
-> is also installed for convenience, but `python -m kairos_ontology` is the
-> recommended form.
-
-### Project Structure
-
-Create your ontology hub with this structure:
-
-```
-my-ontology-hub/
-├── ontologies/                    # Your custom ontologies (default)
-│   ├── customer.ttl              # Customer domain
-│   ├── order.ttl                 # Order domain
-│   └── product.ttl               # Product domain
-├── shapes/                        # SHACL validation shapes (default)
-│   ├── customer.shacl.ttl
-│   └── order.shacl.ttl
-├── reference-models/              # External ontologies
-│   ├── catalog-v001.xml          # Import resolution catalog (default)
-│   └── fibo/                     # Example: FIBO ontologies
-└── output/                        # Generated projections (default)
-    ├── dbt/
-    │   ├── customer/             # Customer domain outputs
-    │   │   └── models/silver/
-    │   │       ├── customer.sql
-    │   │       └── schema_customer.yml
-    │   └── order/                # Order domain outputs
-    │       └── models/silver/
-    ├── neo4j/
-    │   ├── customer-schema.cypher
-    │   └── order-schema.cypher
-    ├── azure-search/
-    │   ├── customer/
-    │   │   └── indexes/
-    │   └── order/
-    │       └── indexes/
-    ├── a2ui/
-    │   ├── customer/
-    │   │   └── schemas/
-    │   └── order/
-    │       └── schemas/
-    └── prompt/
-        ├── customer-context.json
-        ├── customer-context-detailed.json
-        ├── order-context.json
-        └── order-context-detailed.json
-```
-
-**Why this structure?**
-- Each ontology file (e.g., `customer.ttl`) represents a separate data domain
-- Domain-specific outputs enable independent deployment to production
-- Different teams can own and deploy their domains separately
-- Supports multi-domain architectures and microservices
-
-### Namespace Format
-
-**Best Practice:** Use standard HTTP/HTTPS namespaces with proper `owl:Ontology` declarations:
-
-#### Declaring Your Ontology (Recommended)
-
-```turtle
-@prefix owl: <http://www.w3.org/2002/07/owl#> .
-@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix ex: <http://example.org/ontology#> .
-
-# Declare your ontology (this defines the main namespace)
-<http://example.org/ontology> a owl:Ontology ;
-    rdfs:label "My Application Ontology" ;
-    owl:versionInfo "1.0.0" ;
-    owl:imports <https://spec.edmcouncil.org/fibo/ontology/FND/Relations/Relations/> .
-
-# Your classes
-ex:Customer a owl:Class ;
-    rdfs:label "Customer" ;
-    rdfs:comment "A customer entity" .
-
-ex:customerName a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ;
-    rdfs:range xsd:string .
-```
-
-**Why this matters:**
-- The `owl:Ontology` declaration tells the toolkit which namespace is yours
-- `owl:imports` declares external ontologies (FIBO, Schema.org, etc.)
-- The toolkit automatically excludes imported namespaces from projection
-- No need for hardcoded exclusion lists - works with ANY external ontology
-
-#### Namespace Auto-Detection
-
-The toolkit uses semantic web best practices to detect your namespace:
-
-1. **Check `owl:Ontology` declaration** (preferred) - Uses the namespace of the declared ontology
-2. **Exclude `owl:imports`** - Automatically filters out imported external ontologies
-3. **Count classes in remaining namespaces** - Fallback if no declaration found
-
-```bash
-# Auto-detect (default)
-python -m kairos_ontology project --target dbt
-
-# Explicit namespace
-python -m kairos_ontology project --target dbt --namespace "http://example.org/ontology#"
-```
-
-**Auto-detection priorities:**
-1. ✅ Uses `owl:Ontology` declaration namespace
-2. ✅ Excludes `owl:imports` (FIBO, Schema.org, etc. automatically filtered)
-3. ✅ Falls back to most common non-standard namespace
-4. ✅ Works with ANY external ontology - no hardcoded lists needed
-
-**Supported namespace formats:**
-- HTTP fragment: `http://example.org/ont#`
-- HTTP path: `http://example.org/ont/`
-- HTTPS: `https://example.org/ont#`
-- URN: `urn:example:ont:`
-
-### Multi-Domain Architecture
-
-The toolkit supports multi-domain ontology architectures where each domain is independently deployable:
-
-```turtle
-# customer.ttl - Customer domain
-@prefix cust: <http://example.org/customer#> .
-@prefix owl: <http://www.w3.org/2002/07/owl#> .
-
-<http://example.org/customer> a owl:Ontology ;
-    rdfs:label "Customer Domain Ontology" ;
-    owl:versionInfo "1.0.0" .
-
-cust:Customer a owl:Class ;
-    rdfs:label "Customer" .
-
-cust:customerName a owl:DatatypeProperty ;
-    rdfs:domain cust:Customer ;
-    rdfs:range xsd:string .
-```
-
-```turtle
-# order.ttl - Order domain
-@prefix ord: <http://example.org/order#> .
-@prefix owl: <http://www.w3.org/2002/07/owl#> .
-
-<http://example.org/order> a owl:Ontology ;
-    rdfs:label "Order Domain Ontology" ;
-    owl:versionInfo "1.0.0" .
-
-ord:Order a owl:Class ;
-    rdfs:label "Order" .
-
-ord:orderDate a owl:DatatypeProperty ;
-    rdfs:domain ord:Order ;
-    rdfs:range xsd:dateTime .
-```
-
-**Projection Output:**
-```
-output/
-├── dbt/
-│   ├── customer/models/silver/customer.sql
-│   └── order/models/silver/order.sql
-├── neo4j/
-│   ├── customer-schema.cypher
-│   └── order-schema.cypher
-└── prompt/
-    ├── customer-context.json
-    └── order-context.json
-```
-
-**Deployment:**
-- Deploy customer domain independently: `dbt run --models customer.*`
-- Deploy order domain separately: `dbt run --models order.*`
-- Version and release domains independently
-- Different teams can own different domains
-
-### Validate Ontologies
-
-```bash
-# Validate everything (syntax + SHACL + consistency)
+# Validate your ontologies
 python -m kairos_ontology validate --all
 
-# Validate specific aspects
-python -m kairos_ontology validate --syntax
-python -m kairos_ontology validate --shacl
-python -m kairos_ontology validate --consistency
-
-# Custom paths
-python -m kairos_ontology validate --ontologies ./ontologies --shapes ./shapes --catalog ./catalog.xml
-```
-
-### Generate Projections
-
-```bash
-# Generate all projections for all ontologies
+# Generate all projections
 python -m kairos_ontology project --target all
-
-# Generate specific projection type
-python -m kairos_ontology project --target dbt
-python -m kairos_ontology project --target neo4j
-python -m kairos_ontology project --target azure-search
-python -m kairos_ontology project --target a2ui
-python -m kairos_ontology project --target prompt
-
-# Custom paths
-python -m kairos_ontology project --ontologies ./ontologies --output ./output --catalog ./catalog.xml
 ```
 
-**Output Organization:**
-
-Each ontology file generates domain-specific outputs:
+To scaffold a brand-new ontology hub repository:
 
 ```bash
-# Input: ontologies/customer.ttl, ontologies/order.ttl
-
-# DBT outputs:
-output/dbt/customer/models/silver/customer.sql
-output/dbt/order/models/silver/order.sql
-
-# Neo4j outputs:
-output/neo4j/customer-schema.cypher
-output/neo4j/order-schema.cypher
-
-# Prompt outputs:
-output/prompt/customer-context.json
-output/prompt/order-context.json
+python -m kairos_ontology init my-ontology-hub
 ```
 
-**Benefits:**
-- Deploy each domain independently to production
-- Different teams can own different domains
-- Selective deployment and versioning per domain
-- Better organization and isolation of artifacts
+## 🎯 Projection Targets
 
-### Test Catalog Resolution
+| Target | Output | Use Case |
+|--------|--------|----------|
+| **silver** | `CREATE TABLE` DDL, `ALTER TABLE`, Mermaid ERD + SVG | Data warehouse physical layer |
+| **dbt** | SQL models + `schema.yml` | dbt-based transformation pipelines |
+| **neo4j** | Cypher `CREATE` statements | Knowledge graph databases |
+| **azure-search** | JSON index definitions | Azure AI Search |
+| **a2ui** | JSON Schema messages | UI generation / form builders |
+| **prompt** | JSON context documents | LLM prompt engineering |
 
-```bash
-# Test catalog file
-python -m kairos_ontology catalog-test --catalog ./catalog.xml
+Each target produces per-domain output — deploy and version domains independently.
 
-# Test with specific ontology
-python -m kairos_ontology catalog-test --catalog ./catalog.xml --ontology ./ontologies/customer.ttl
-```
-
-## Development
-
-### Prerequisites
-
-Poetry is required to manage dependencies and build the package.
-Install it once on your machine (not via pip — it manages its own environment):
-
-```powershell
-# Windows (PowerShell) — recommended installer
-(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python -
-
-# Or via pipx (also fine)
-pip install pipx
-pipx install poetry
-```
-
-Verify: `poetry --version`
-
-```bash
-# Clone repository
-git clone https://github.com/Cnext-eu/kairos-ontology-toolkit.git
-cd kairos-ontology-toolkit
-
-# Install with Poetry
-poetry install
-
-# Run tests
-poetry run pytest
-
-# Build package
-poetry build
-```
-
-### Creating a Release
-
-Use the automated release script:
-
-```powershell
-# Windows (PowerShell)
-.\release.ps1
-```
-
-```bash
-# Linux/Mac
-./release.sh
-```
-
-The script will:
-1. Check for uncommitted changes
-2. Prompt for release type (patch/minor/major)
-3. Update version numbers in `pyproject.toml` and `__init__.py`
-4. Update `poetry.lock`
-5. Build the package
-6. Commit changes
-7. Create and push a git tag
-8. Display installation instructions
-
-## Architecture
+## 🏛️ Architecture
 
 ```
 kairos-ontology-toolkit/
-├── src/
-│   └── kairos_ontology/
-│       ├── cli/              # Click-based CLI
-│       ├── projections/      # Projection generators
-│       ├── templates/        # Jinja2 templates
-│       ├── validator.py      # Validation pipeline
-│       ├── projector.py      # Projection orchestrator
-│       ├── ontology_ops.py   # rdflib CRUD operations
-│       └── catalog_utils.py  # Catalog resolution
-├── service/                  # FastAPI service (REST + AI chat)
-│   ├── app/
-│   │   ├── main.py           # FastAPI entry point
-│   │   ├── config.py         # pydantic-settings configuration
-│   │   ├── routers/          # ontology, validation, projection, chat
-│   │   └── services/         # github_service, sdk_service, copilot_tools, local_service
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── .env.example
-├── tests/                    # Unit tests (toolkit + service)
-└── docker-compose.yml
+├── src/kairos_ontology/           # Core toolkit (pip-installable)
+│   ├── cli/                       # Click CLI (validate, project, init)
+│   ├── projections/               # 6 projection generators
+│   ├── templates/                 # Jinja2 output templates
+│   ├── validator.py               # 3-level validation pipeline
+│   └── projector.py               # Projection orchestrator
+├── service/                       # FastAPI REST API + AI chat
+│   ├── app/routers/               # Endpoints: ontology, validate, project, chat
+│   └── app/services/              # GitHub integration, Copilot SDK
+├── tests/                         # pytest test suite (172+ tests)
+└── docker-compose.yml             # One-command service deployment
 ```
 
-## Service
+## 🌐 Web Service
 
-The FastAPI service exposes the toolkit via REST endpoints and an AI chat interface powered by the [GitHub Copilot SDK](https://github.com/github/copilot-sdk).
-
-### Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check |
-| `GET` | `/api/ontology/query` | List / search classes, properties, relationships |
-| `POST` | `/api/ontology/change` | Propose a TTL change (returns diff preview) |
-| `POST` | `/api/ontology/apply` | Commit change to feature branch + open PR |
-| `POST` | `/api/validate` | Validate an ontology domain from the repo |
-| `POST` | `/api/validate/content` | Validate raw TTL content |
-| `GET` | `/api/project/targets` | List available projection targets |
-| `POST` | `/api/project` | Generate projection artifacts |
-| `POST` | `/api/chat` | AI chat via Copilot SDK (SSE streaming) |
-
-All endpoints except `/health`, `/api/validate/content`, and `/api/project/targets` require an `Authorization: Bearer <token>` header.
-
-### Copilot SDK Chat
-
-The `/api/chat` endpoint creates a Copilot SDK session with 5 custom tools:
-
-- **query_ontology** — search the ontology structure
-- **propose_change** — generate a modification with diff preview
-- **validate_ontology** — run SHACL / syntax validation
-- **generate_projection** — produce dbt / neo4j / azure-search / a2ui / prompt artifacts
-- **apply_change** — commit to a feature branch and open a PR
-
-### Setup
-
-1. Create a GitHub App with repository read/write permissions
-2. Install it on the target ontology repository
-3. Configure environment variables:
+The toolkit ships with a FastAPI service for REST-based ontology management and an
+AI chat interface powered by the GitHub Copilot SDK.
 
 ```bash
-cp service/.env.example service/.env
-# Fill in KAIROS_GITHUB_APP_ID, KAIROS_GITHUB_APP_PRIVATE_KEY, etc.
-```
-
-### Running the Service
-
-**With Docker Compose:**
-
-```bash
+# Docker (production)
 docker compose up --build
+
+# Local dev mode (no GitHub App required)
+KAIROS_DEV_MODE=true uvicorn service.app.main:app --reload
 ```
 
-**Locally (dev mode — reads TTL files from disk, no GitHub App needed):**
+Key endpoints: `/api/validate`, `/api/project`, `/api/ontology/query`, `/api/chat`
+
+➡️ See the [User Guide — Service section](docs/USER_GUIDE.md) for full endpoint
+documentation and setup instructions.
+
+## 📂 Hub Repository Structure
+
+When you run `kairos init`, you get:
+
+```
+my-ontology-hub/
+├── ontologies/           # Your domain ontologies (.ttl)
+├── shapes/               # SHACL validation shapes
+├── reference-models/     # External ontologies + XML catalog
+└── output/               # Generated projections (per target, per domain)
+    ├── silver/  dbt/  neo4j/  azure-search/  a2ui/  prompt/
+```
+
+➡️ See the [User Guide](docs/USER_GUIDE.md) for namespace conventions, multi-domain
+architecture, and detailed examples.
+
+## 🛠️ Development
 
 ```bash
-# Install service dependencies
-pip install -e ".[service]"
-
-# Set dev mode
-export KAIROS_DEV_MODE=true
-export KAIROS_LOCAL_ONTOLOGIES_DIR=./ontologies
-
-# Start the server
-cd service
-uvicorn app.main:app --reload --port 8000
+git clone https://github.com/Cnext-eu/kairos-ontology-toolkit.git
+cd kairos-ontology-toolkit
+pip install -e ".[dev]"
+python -m pytest                   # 172+ tests
 ```
 
-In dev mode, read-only endpoints (query, validate, project) work against local files. Write endpoints (change/apply) and AI chat are unavailable.
+[Poetry](https://python-poetry.org/) is used for packaging and releases.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
-### Docker
+## 🤝 Community
 
-```bash
-# Build
-docker build -f service/Dockerfile -t kairos-service .
+This project is part of the **Kairos Community Edition** — an open-source suite of
+tools for ontology-driven data architecture.
 
-# Run
-docker run -p 8000:8000 --env-file service/.env kairos-service
-```
+| | |
+|---|---|
+| 📋 [Contributing Guide](CONTRIBUTING.md) | How to contribute (DCO sign-off, PR process) |
+| 📜 [Code of Conduct](CODE_OF_CONDUCT.md) | Contributor Covenant v2.1 |
+| 🔒 [Security Policy](SECURITY.md) | Vulnerability reporting |
+| 📝 [Changelog](CHANGELOG.md) | Release history |
+| 📖 [User Guide](docs/USER_GUIDE.md) | Complete walkthrough & reference |
 
-### CI/CD
+## 📄 License
 
-The `.github/workflows/ci.yml` pipeline runs on every push and PR:
+Licensed under the **Apache License, Version 2.0** — see [LICENSE](LICENSE) for details.
 
-1. **test** — installs dependencies, runs ruff lint, runs all 59 tests
-2. **docker** — builds the Docker image (depends on test passing)
-
-## Troubleshooting
-
-### No Files Generated for a Domain
-
-This usually means:
-1. No classes found with the auto-detected namespace
-2. Classes exist but have no datatype properties
-3. Check your ontology has proper `owl:Ontology` declaration
-4. Verify namespace matches between ontology declaration and class URIs
-
-### Understanding Domain-Specific Outputs
-
-**Before (v1.1.x and earlier):**
-- All ontologies merged into single output
-- Single set of files per projection type
-
-**After (v1.2.0+):**
-- Each ontology file processed separately
-- Domain-specific outputs per ontology
-- Example: `customer.ttl` → `customer-context.json`
-
-### Windows Path Errors
-
-If you see errors with `:` in file paths, ensure your ontology namespaces use proper URL format. The toolkit automatically sanitizes filenames to be Windows-compatible.
-
-## License
-
-Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE) for details.
-
-This project is part of the **Kairos Community Edition** by [Cnext.eu](https://cnext.eu).
+Copyright 2026 [Cnext.eu](https://cnext.eu) — Built with ❤️ as part of the
+**Kairos Community Edition**.
