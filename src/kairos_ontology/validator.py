@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Ontology validation module - syntax, SHACL, consistency."""
 
 from pathlib import Path

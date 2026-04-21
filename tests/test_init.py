@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Tests for the kairos-ontology init and new-repo CLI commands."""
 
 from pathlib import Path

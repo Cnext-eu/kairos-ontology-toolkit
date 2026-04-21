@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """GitHub REST API wrapper — read files, create branches, commits, PRs.
 
 All repo operations are stateless (no local cloning).  Uses httpx for async calls.

@@ -3,7 +3,7 @@ name = "kairos-ontology-toolkit"
 version = "1.9.0"
 description = "Validation and projection tools for OWL/Turtle ontologies in the Kairos platform"
 authors = ["Cnext <info@cnext.eu>"]
-license = "MIT"
+license = "Apache-2.0"
 readme = "README.md"
 homepage = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
 repository = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
@@ -11,7 +11,7 @@ keywords = ["ontology", "owl", "turtle", "rdf", "shacl", "validation", "projecti
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
 ]

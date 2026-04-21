@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """URI utilities for extracting local names from ontology URIs."""
 
 

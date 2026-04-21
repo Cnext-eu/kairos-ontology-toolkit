@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Main CLI entry point for kairos-ontology toolkit."""
 
 import re

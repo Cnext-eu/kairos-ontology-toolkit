@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Ontology CRUD router — query, propose changes, and apply them
 via feature branches and pull requests.
 """

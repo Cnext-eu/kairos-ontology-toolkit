@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Tests for the chat router (/api/chat)."""
 
 from unittest.mock import AsyncMock, patch

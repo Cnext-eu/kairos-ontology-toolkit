@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Tests for models_service — GitHub Models API chat backend."""
 
 import json

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 #!/usr/bin/env python3
 """
 A2UI Protocol Projector - Generate JSON Schema for Agent-to-UI messages

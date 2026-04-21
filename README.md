@@ -482,4 +482,6 @@ If you see errors with `:` in file paths, ensure your ontology namespaces use pr
 
 ## License
 
-MIT License - see LICENSE file for details.
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE) for details.
+
+This project is part of the **Kairos Community Edition** by [Cnext.eu](https://cnext.eu).

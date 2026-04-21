@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Ontology CRUD operations on in-memory rdflib Graphs."""
 
 from dataclasses import dataclass, field
