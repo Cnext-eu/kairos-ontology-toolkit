@@ -2,6 +2,10 @@
 
 Validation and projection tools for OWL/Turtle ontologies in the Kairos platform.
 
+> 📖 **New here?** Read the [User Guide](docs/USER_GUIDE.md) for a complete
+> walkthrough — from creating your first ontology hub to generating production
+> DDL, dbt models, and ERD diagrams.
+
 ## Features
 
 - **3-Level Validation Pipeline**
