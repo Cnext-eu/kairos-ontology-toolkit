@@ -9,6 +9,24 @@ from pyshacl import validate as shacl_validate
 import json
 from .catalog_utils import load_graph_with_catalog
 
+# Filename patterns that are NOT domain ontologies and should be skipped.
+_NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")
+_NON_DOMAIN_PREFIXES = ("_",)
+
+
+def _is_domain_ontology(path: Path) -> bool:
+    """Return True if *path* looks like a domain ontology file.
+
+    Excludes annotation/configuration files such as ``*-silver-ext.ttl``
+    and metadata files whose name starts with ``_`` (e.g. ``_master.ttl``).
+    """
+    stem = path.stem
+    if any(stem.startswith(p) for p in _NON_DOMAIN_PREFIXES):
+        return False
+    if any(stem.endswith(s) for s in _NON_DOMAIN_SUFFIXES):
+        return False
+    return True
+
 
 def validate_content(
     ontology_content: str,
@@ -79,6 +97,8 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
     
     # Find all ontology files
     ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
+    # Skip non-domain files: silver-ext annotations, _master imports, etc.
+    ontology_files = [f for f in ontology_files if _is_domain_ontology(f)]
     
     print(f"\nFound {len(ontology_files)} ontology files\n")
     
