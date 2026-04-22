@@ -145,10 +145,15 @@ class TableDef:
                 f"ALTER TABLE {self.full_name}\n"
                 f"    ADD CONSTRAINT u_{self.name}_{col} UNIQUE ({col});"
             )
+        seen_constraints: set[str] = set()
         for col, ref_table, ref_col, *_label in self.fk_constraints:
+            constraint_name = f"fk_{self.name}_{col}"
+            if constraint_name in seen_constraints:
+                continue
+            seen_constraints.add(constraint_name)
             stmts.append(
                 f"ALTER TABLE {self.full_name}\n"
-                f"    ADD CONSTRAINT fk_{self.name}_{col}"
+                f"    ADD CONSTRAINT {constraint_name}"
                 f" FOREIGN KEY ({col}) REFERENCES {ref_table} ({ref_col});"
             )
         return stmts
@@ -590,7 +595,13 @@ def _add_object_property_fk_cols(
         ``owl:maxCardinality 1`` restriction on the property.
 
     Junction-table properties (R13) are always skipped.
+
+    Handles duplicate column names (e.g. two self-referential FKs to the same
+    range class) by appending the property name as a disambiguator.
     """
+    # Track existing column names to avoid duplicates (PK, IRI, discriminator, etc.)
+    existing_cols = {col.name for col in tbl.columns}
+
     for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
         domain = graph.value(prop, RDFS.domain)
         if domain != cls_uri:
@@ -622,6 +633,24 @@ def _add_object_property_fk_cols(
 
         col_name_override = _str_val(graph, prop, KAIROS_EXT.silverColumnName)
         col_name = col_name_override or f"{range_tbl}_sk"
+
+        # Disambiguate duplicate column names (e.g. two FKs → same target table)
+        if col_name in existing_cols:
+            prop_suffix = _camel_to_snake(_local_name(str(prop)))
+            col_name = f"{prop_suffix}_sk"
+            # Final fallback if still duplicate
+            if col_name in existing_cols:
+                col_name = f"{range_tbl}_{prop_suffix}_sk"
+
+        existing_cols.add(col_name)
+
+        # Nullability: explicit annotation wins, default is nullable (R14)
+        nullable_ann = graph.value(prop, KAIROS_EXT.nullable)
+        if nullable_ann is not None:
+            nullable = str(nullable_ann).lower() not in ("false", "0")
+        else:
+            nullable = True
+
         # Conditional nullable (R14)
         cond_on = _str_val(graph, prop, KAIROS_EXT.conditionalOnType)
         cross_note = f"cross-domain FK → {ref_full}" if is_cross_domain else ""
@@ -631,7 +660,7 @@ def _add_object_property_fk_cols(
         ] if p]
         comment = "; ".join(comment_parts)
         prop_label = _camel_to_snake(_local_name(str(prop)))
-        tbl.columns.append(ColumnDef(col_name, "NVARCHAR(36)", nullable=True, comment=comment))
+        tbl.columns.append(ColumnDef(col_name, "NVARCHAR(36)", nullable=nullable, comment=comment))
         tbl.fk_constraints.append(
             (col_name, ref_full, f"{range_tbl}_sk", prop_label)
         )
