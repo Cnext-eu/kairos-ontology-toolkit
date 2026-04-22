@@ -896,3 +896,180 @@ def test_render_mermaid_svg_returns_none_when_mmdc_missing(tmp_path, monkeypatch
     result = render_mermaid_svg(mmd)
     assert result is None
     assert not (tmp_path / "test.svg").exists()
+
+
+# ---------------------------------------------------------------------------
+# Duplicate FK column fixes (Bug #17)
+# ---------------------------------------------------------------------------
+
+
+def _self_referential_ontology() -> tuple[Graph, list[dict]]:
+    """Ontology with two self-referential FKs to the same class (Employee)."""
+    ttl = f"""
+        @prefix ex:    <{BASE}> .
+        @prefix owl:   <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Self-Ref Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Employee a owl:Class ;
+            rdfs:label "Employee"@en ;
+            rdfs:comment "An employee."@en ;
+            kairos-ext:scdType "2" .
+
+        ex:employeeName a owl:DatatypeProperty ;
+            rdfs:domain ex:Employee ;
+            rdfs:range xsd:string ;
+            rdfs:label "employee name"@en .
+
+        ex:reportsTo a owl:ObjectProperty, owl:FunctionalProperty ;
+            rdfs:domain ex:Employee ;
+            rdfs:range ex:Employee ;
+            rdfs:label "reports to"@en .
+
+        ex:supervisor a owl:ObjectProperty, owl:FunctionalProperty ;
+            rdfs:domain ex:Employee ;
+            rdfs:range ex:Employee ;
+            rdfs:label "supervisor"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [{"uri": f"{BASE}Employee", "name": "Employee"}]
+    return g, classes
+
+
+def test_self_referential_fk_no_duplicate_columns():
+    """Two self-referential FKs to same class produce distinct column names."""
+    g, classes = _self_referential_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="selfref")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Both FK columns should exist with different names
+    lines = ddl.lower().split("\n")
+    col_lines = [l.strip() for l in lines if "_sk" in l and "nvarchar" in l]
+    col_names = [l.split()[0] for l in col_lines]
+    # Should have unique column names (no duplicates)
+    assert len(col_names) == len(set(col_names)), (
+        f"Duplicate FK columns found: {col_names}"
+    )
+    # At least 2 FK columns (the two self-referential properties)
+    fk_cols = [c for c in col_names if c != "employee_sk"]
+    assert len(fk_cols) >= 1, f"Expected disambiguated FK columns, got: {col_names}"
+
+
+def test_self_referential_fk_no_duplicate_constraints():
+    """Two self-referential FKs produce distinct ALTER TABLE constraints."""
+    g, classes = _self_referential_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="selfref")
+    alter = next(v for k, v in result.items() if k.endswith("-alter.sql"))
+    # Extract constraint names
+    import re
+    constraints = re.findall(r"ADD CONSTRAINT (\S+)", alter)
+    assert len(constraints) == len(set(constraints)), (
+        f"Duplicate FK constraint names: {constraints}"
+    )
+
+
+def _self_referential_pk_collision_ontology() -> tuple[Graph, list[dict]]:
+    """Ontology with a self-referential FK that collides with PK name."""
+    ttl = f"""
+        @prefix ex:    <{BASE}> .
+        @prefix owl:   <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "PK Collision Test"@en ; owl:versionInfo "1.0" .
+
+        ex:OrgUnit a owl:Class ;
+            rdfs:label "Organisational Unit"@en ;
+            rdfs:comment "An organisational unit."@en ;
+            kairos-ext:scdType "2" .
+
+        ex:unitName a owl:DatatypeProperty ;
+            rdfs:domain ex:OrgUnit ;
+            rdfs:range xsd:string ;
+            rdfs:label "unit name"@en .
+
+        ex:parentUnit a owl:ObjectProperty, owl:FunctionalProperty ;
+            rdfs:domain ex:OrgUnit ;
+            rdfs:range ex:OrgUnit ;
+            rdfs:label "parent unit"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [{"uri": f"{BASE}OrgUnit", "name": "OrgUnit"}]
+    return g, classes
+
+
+def test_self_referential_fk_does_not_collide_with_pk():
+    """A self-referential FK should not reuse the PK column name."""
+    g, classes = _self_referential_pk_collision_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="orgtest")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    lines = ddl.lower().split("\n")
+    col_lines = [l.strip() for l in lines if "_sk" in l and ("nvarchar" in l or "primary" in l.lower())]
+    col_names = [l.split()[0] for l in col_lines]
+    assert len(col_names) == len(set(col_names)), (
+        f"FK column collides with PK: {col_names}"
+    )
+
+
+def test_fk_nullable_annotation_respected():
+    """FK columns should respect kairos-ext:nullable annotation."""
+    ttl = f"""
+        @prefix ex:    <{BASE}> .
+        @prefix owl:   <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Nullable Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Party a owl:Class ;
+            rdfs:label "Party"@en ;
+            rdfs:comment "A party."@en ;
+            kairos-ext:scdType "2" .
+
+        ex:partyName a owl:DatatypeProperty ;
+            rdfs:domain ex:Party ;
+            rdfs:range xsd:string ;
+            rdfs:label "party name"@en .
+
+        ex:Client a owl:Class ;
+            rdfs:label "Client"@en ;
+            rdfs:comment "A client."@en ;
+            kairos-ext:scdType "2" .
+
+        ex:clientName a owl:DatatypeProperty ;
+            rdfs:domain ex:Client ;
+            rdfs:range xsd:string ;
+            rdfs:label "client name"@en .
+
+        ex:representsParty a owl:ObjectProperty, owl:FunctionalProperty ;
+            rdfs:domain ex:Client ;
+            rdfs:range ex:Party ;
+            rdfs:label "represents party"@en ;
+            kairos-ext:nullable "false" .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Party", "name": "Party"},
+        {"uri": f"{BASE}Client", "name": "Client"},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="nulltest")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Find the client table's party_sk line
+    in_client = False
+    for line in ddl.split("\n"):
+        if "silver_nulltest.client" in line.lower() and "create table" in line.lower():
+            in_client = True
+        if in_client and "party_sk" in line.lower():
+            assert "NOT NULL" in line, (
+                f"FK column party_sk should be NOT NULL when nullable=false, got: {line.strip()}"
+            )
+            break
+    else:
+        pytest.fail("Could not find party_sk column in client table DDL")
