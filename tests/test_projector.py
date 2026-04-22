@@ -1045,3 +1045,74 @@ class TestProjector:
             files = list(target_dir.rglob("*"))
             file_count = sum(1 for f in files if f.is_file())
             assert file_count > 0, f"{target} should generate at least one file"
+
+
+class TestIsDomainOntology:
+    """Tests for the _is_domain_ontology file filter."""
+
+    def test_regular_domain_file_accepted(self):
+        from kairos_ontology.projector import _is_domain_ontology
+        assert _is_domain_ontology(Path("ontologies/customer.ttl")) is True
+        assert _is_domain_ontology(Path("ontologies/order.ttl")) is True
+
+    def test_silver_ext_file_skipped(self):
+        from kairos_ontology.projector import _is_domain_ontology
+        assert _is_domain_ontology(Path("ontologies/client-silver-ext.ttl")) is False
+        assert _is_domain_ontology(Path("ontologies/party-silver-ext.ttl")) is False
+
+    def test_generic_ext_file_skipped(self):
+        from kairos_ontology.projector import _is_domain_ontology
+        assert _is_domain_ontology(Path("ontologies/common-ext.ttl")) is False
+
+    def test_underscore_prefix_skipped(self):
+        from kairos_ontology.projector import _is_domain_ontology
+        assert _is_domain_ontology(Path("ontologies/_master.ttl")) is False
+        assert _is_domain_ontology(Path("ontologies/_imports.ttl")) is False
+
+    def test_validator_has_same_filter(self):
+        from kairos_ontology.validator import _is_domain_ontology
+        assert _is_domain_ontology(Path("ontologies/customer.ttl")) is True
+        assert _is_domain_ontology(Path("ontologies/client-silver-ext.ttl")) is False
+        assert _is_domain_ontology(Path("ontologies/_master.ttl")) is False
+
+    def test_non_domain_files_excluded_from_projection(self, tmp_path, capsys):
+        """Integration test: silver-ext and _master files should not be loaded."""
+        ontologies_dir = tmp_path / "ontologies"
+        ontologies_dir.mkdir()
+
+        domain_ttl = """
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix ex: <http://example.org/test#> .
+
+        <http://example.org/test> a owl:Ontology ;
+            rdfs:label "Test" ;
+            owl:versionInfo "1.0" .
+
+        ex:Widget a owl:Class ;
+            rdfs:label "Widget" ;
+            rdfs:comment "A test widget" .
+
+        ex:widgetName a owl:DatatypeProperty ;
+            rdfs:domain ex:Widget ;
+            rdfs:range xsd:string ;
+            rdfs:label "widget name" .
+        """
+        (ontologies_dir / "widgets.ttl").write_text(domain_ttl, encoding="utf-8")
+        (ontologies_dir / "widgets-silver-ext.ttl").write_text(domain_ttl, encoding="utf-8")
+        (ontologies_dir / "_master.ttl").write_text(domain_ttl, encoding="utf-8")
+
+        output_dir = tmp_path / "output"
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=None,
+            output_path=output_dir,
+            target="prompt",
+        )
+
+        captured = capsys.readouterr()
+        assert "Found 1 ontology file" in captured.out
+        assert "widgets.ttl" in captured.out
+        assert "silver-ext" not in captured.out
+        assert "_master" not in captured.out

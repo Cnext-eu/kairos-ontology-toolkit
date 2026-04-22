@@ -12,6 +12,24 @@ from .projections.uri_utils import extract_local_name
 
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver"]
 
+# Filename patterns that are NOT domain ontologies and should be skipped.
+_NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")
+_NON_DOMAIN_PREFIXES = ("_",)
+
+
+def _is_domain_ontology(path: Path) -> bool:
+    """Return True if *path* looks like a domain ontology file.
+
+    Excludes annotation/configuration files such as ``*-silver-ext.ttl``
+    and metadata files whose name starts with ``_`` (e.g. ``_master.ttl``).
+    """
+    stem = path.stem
+    if any(stem.startswith(p) for p in _NON_DOMAIN_PREFIXES):
+        return False
+    if any(stem.endswith(s) for s in _NON_DOMAIN_SUFFIXES):
+        return False
+    return True
+
 
 def project_graph(
     graph: Graph,
@@ -68,6 +86,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     
     # Get all ontology files
     ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
+    # Skip non-domain files: silver-ext annotations, _master imports, etc.
+    ontology_files = [f for f in ontology_files if _is_domain_ontology(f)]
     
     if not ontology_files:
         print(f"  ⚠️  No ontology files found in {ontologies_path}")
