@@ -482,6 +482,22 @@ def update(check):
                 print(f"  ✓ Removed legacy 'ontology-hub/output/' from .gitignore "
                       f"(projection outputs are now tracked in git)")
 
+    # --- Ensure package.json exists (Mermaid CLI for SVG export) -------------
+    if not check:
+        pkg_json = repo_root / "package.json"
+        pkg_src = _SCAFFOLD_DIR / "ontology-hub" / "package.json.template"
+        if not pkg_json.is_file() and pkg_src.is_file():
+            shutil.copy2(pkg_src, pkg_json)
+            print("  ✓ Created package.json (run 'npm install' for Mermaid CLI SVG export)")
+
+    # --- Ensure .devcontainer exists (VS Code Dev Container) -----------------
+    if not check:
+        devcontainer_dst = repo_root / ".devcontainer"
+        devcontainer_src = _SCAFFOLD_DIR / ".devcontainer"
+        if not devcontainer_dst.exists() and devcontainer_src.is_dir():
+            shutil.copytree(devcontainer_src, devcontainer_dst)
+            print("  ✓ Created .devcontainer/ (VS Code Dev Container with Node.js)")
+
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +721,13 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
     if pkg_src.is_file() and not (repo_dir / "package.json").exists():
         shutil.copy2(pkg_src, repo_dir / "package.json")
         print("  ✓ package.json (mermaid-cli for SVG export)")
+
+    # .devcontainer (VS Code Dev Container with Node.js + Python)
+    devcontainer_src = _SCAFFOLD_DIR / ".devcontainer"
+    devcontainer_dst = repo_dir / ".devcontainer"
+    if devcontainer_src.is_dir() and not devcontainer_dst.exists():
+        shutil.copytree(devcontainer_src, devcontainer_dst)
+        print("  ✓ .devcontainer/ (VS Code Dev Container)")
 
     # --- Git + submodule + commit -------------------------------------------
     try:
