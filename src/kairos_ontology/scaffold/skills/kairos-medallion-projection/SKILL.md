@@ -2,8 +2,8 @@
 name: kairos-medallion-projection
 description: >
   Expert guide for generating dbt Core staging and silver models as part of the
-  medallion architecture. Covers the full bronze-to-silver pipeline using bronze
-  vocabulary, source-to-silver column mappings (SKOS + kairos-map:), and
+  medallion architecture. Covers the full bronze-to-silver pipeline using source
+  vocabulary, source-to-domain column mappings (SKOS + kairos-map:), and
   SHACL-derived dbt tests.
 ---
 
@@ -15,8 +15,8 @@ is driven by:
 
 - **Domain ontology** — OWL classes and properties defining the silver target schema
 - **Bronze vocabulary** — `kairos-bronze:` descriptions of source system tables/columns
-- **Source-to-silver mappings** — SKOS match predicates linking bronze columns to silver
-  properties, enriched with `kairos-map:` annotations for SQL transforms. These are
+- **Source-to-domain mappings** — SKOS match predicates linking source columns to domain
+  ontology properties, enriched with `kairos-map:` annotations for SQL transforms. These are
   **not** ontology-alignment mappings (domain ↔ external standards like FIBO) — they
   are technical data-transformation mappings that drive dbt code generation.
 - **SHACL shapes** — data quality constraints converted to dbt tests
@@ -25,7 +25,7 @@ is driven by:
 
 Before running this projection, ensure the following artifacts exist in the hub:
 
-- **Bronze vocabulary** must exist in `integration/sources/{system-name}/` — one `{system-name}.bronze.ttl` file per source system
+- **Source vocabulary** must exist in `integration/sources/{system-name}/` — one `{system-name}.vocabulary.ttl` file per source system
   describing tables and columns using the `kairos-bronze:` vocabulary. Use the
   `kairos-medallion-staging` skill to create these from source system documentation
   found in `integration/sources/`. The dbt projector scans `integration/sources/`
@@ -33,9 +33,9 @@ Before running this projection, ensure the following artifacts exist in the hub:
 - **Silver canonical schema** should exist — domain ontologies with silver projection
   annotations (`kairos-ext:` / `kairos-silver:` properties). Use the
   `kairos-medallion-silver` skill to design and generate the silver layer schema.
-- **Source-to-silver mappings** must exist in `model/mappings/{system-name}/` — one `.ttl` file per source-to-domain
-  combination (e.g. `adminpulse-to-party.ttl`) linking bronze columns to silver
-  domain properties using SKOS match predicates and `kairos-map:` transforms.
+- **Source-to-domain mappings** must exist in `model/mappings/{system-name}/` — one `.ttl` file per source-to-domain
+  combination (e.g. `adminpulse-to-party.ttl`) linking source columns to domain
+  ontology properties using SKOS match predicates and `kairos-map:` transforms.
 
 ## Architecture
 
@@ -63,12 +63,12 @@ Bronze (source systems)          Silver (domain model)
 
 ### 1a — Create the bronze vocabulary file
 
-In the source system folder under `integration/sources/`, create a `.bronze.ttl` file per source system:
+In the source system folder under `integration/sources/`, create a `.vocabulary.ttl` file per source system:
 
 ```bash
 ls ontology-hub/integration/sources/
 # Create the bronze vocabulary alongside the source docs:
-touch ontology-hub/integration/sources/{system-name}/{system-name}.bronze.ttl
+touch ontology-hub/integration/sources/{system-name}/{system-name}.vocabulary.ttl
 ```
 
 ### 1b — Fill in source tables and columns
@@ -135,7 +135,7 @@ In `model/mappings/{system-name}/`, create `{source}-to-{domain}.ttl`:
 @prefix bronze-ap: <https://your-company.com/bronze/adminpulse#> .
 @prefix party: <https://your-company.com/ont/party#> .
 
-# Table-level: which source table feeds which silver entity
+# Table-level: which source table feeds which domain entity
 bronze-ap:tblClient skos:exactMatch party:Client ;
     kairos-map:mappingType "direct" .
 
@@ -159,7 +159,7 @@ bronze-ap:tblClient_Address skos:narrowMatch party:addressLine1 ;
 |---------------|---------------------------|
 | `skos:exactMatch` | 1:1, same semantics |
 | `skos:closeMatch` | 1:1 but needs transformation |
-| `skos:narrowMatch` | Source is more specific → silver is broader |
+| `skos:narrowMatch` | Source is more specific → domain is broader |
 | `skos:broadMatch` | Source is broader → filter/split required |
 | `skos:relatedMatch` | Indirect — business logic / lookup needed |
 
@@ -246,11 +246,11 @@ ontology-hub/
     sources/
       adminpulse/                    # Source system reference docs
         README.md                    # System description, connection details
-        adminpulse.bronze.ttl        # Bronze vocabulary (kairos-bronze:)
+        adminpulse.vocabulary.ttl        # Source vocabulary (kairos-bronze:)
         sql-ddl/                     # CREATE TABLE exports
       erp-navision/
         README.md
-        erp-navision.bronze.ttl      # Bronze vocabulary (kairos-bronze:)
+        erp-navision.vocabulary.ttl      # Source vocabulary (kairos-bronze:)
   model/
     ontologies/
       party.ttl                      # Silver domain ontology

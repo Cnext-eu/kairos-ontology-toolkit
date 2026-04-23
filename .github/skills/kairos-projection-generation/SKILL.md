@@ -2,7 +2,7 @@
 name: kairos-projection-generation
 description: >
   Knowledge about generating downstream artifacts from ontologies.
-  Covers all 6 projection targets and when to use each.
+  Covers all 7 projection targets and when to use each.
 ---
 
 # Projection Generation Skill
@@ -26,10 +26,11 @@ You help users generate and understand projection artifacts.
 | **a2ui** | Message schema JSON | UI generation / form scaffolding |
 | **prompt** | Compact + detailed context JSON | LLM prompt context injection |
 | **silver** | DDL + ALTER + Mermaid ERD | MS Fabric / Delta Lake silver layer |
+| **report** | HTML mapping reports | Business analyst mapping coverage review |
 
 ## When to use each target
 
-- **dbt**: When the ontology drives a data warehouse using dbt Core. Generates a complete dbt project with staging models (from bronze source systems via SKOS mappings), silver entity models, schema YAML with SHACL-derived tests, and project config. Requires bronze vocabulary files (`*.bronze.ttl`) in `integration/sources/{system-name}/` for source system descriptions and `model/mappings/{system-name}/*.ttl` for SKOS column mappings. The dbt projector scans `integration/sources/` recursively for `*.ttl` files with the `kairos-bronze:` namespace. See the **kairos-medallion-projection** skill.
+- **dbt**: When the ontology drives a data warehouse using dbt Core. Generates a complete dbt project with staging models (from source systems via SKOS mappings), silver entity models, schema YAML with SHACL-derived tests, and project config. Requires source vocabulary files (`*.vocabulary.ttl`) in `integration/sources/{system-name}/` for source system descriptions and `model/mappings/{system-name}/*.ttl` for SKOS column mappings to domain ontology properties. The dbt projector scans `integration/sources/` recursively for `*.ttl` files with the `kairos-bronze:` namespace. See the **kairos-medallion-projection** skill.
 - **neo4j**: When building a knowledge graph. Generates `CREATE CONSTRAINT` statements and relationship patterns.
 - **azure-search**: When building a search index. Maps ontology properties to Azure Search field types with filters and facets.
 - **a2ui**: When generating UI forms. Creates JSON schemas that describe the data structure for automatic UI rendering.

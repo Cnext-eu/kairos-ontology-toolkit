@@ -23,13 +23,14 @@ that are validated and projected into downstream artifacts using the
 │   │       └── {system-name}/           # e.g. adminpulse-to-party.ttl
 │   ├── integration/                     # Source system integration
 │   │   └── sources/                     # Source system reference docs + bronze vocab
-│   │       └── {system-name}/           # Per-system: API specs, SQL DDL, *.bronze.ttl
+│   │       └── {system-name}/           # Per-system: API specs, SQL DDL, *.vocabulary.ttl
 │   └── output/                          # Projection outputs (committed)
 │       ├── medallion/                   # Medallion architecture outputs
 │       │   ├── silver/                  # Silver canonical DDL / ERD
 │       │   ├── gold/                    # Gold dimensional models
 │       │   └── dbt/                     # dbt models (bronze → silver)
 │       ├── neo4j/ azure-search/ a2ui/ prompt/
+│       └── report/                    # HTML mapping reports (per source system)
 ├── ontology-reference-models/           # Reference ontologies
 │   ├── authoritative-ontologies/        # FIBO and other authoritative ontologies
 │   ├── derived-ontologies/              # Supply-chain, DCSA, MMT derived models
@@ -78,7 +79,7 @@ python -m kairos_ontology catalog-test --catalog ontology-reference-models/catal
 
 ## Projection targets
 
-Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`.
+Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`, `report`.
 Each ontology domain produces separate output artifacts per target.
 Output is generated into `ontology-hub/output/`.
 
@@ -90,6 +91,10 @@ For the **dbt** target (medallion bronze-to-silver pipeline), first populate
 `ontology-hub/integration/sources/` with reference docs, generate bronze vocabulary using the
 **kairos-medallion-staging** skill, then create SKOS mappings and run the
 **kairos-medallion-projection** skill.
+
+For the **report** target (HTML mapping coverage reports), ensure source vocabularies
+and SKOS mappings exist, then run `project --target report`.  Reports go to
+`output/report/{system}-mapping-report.html`.  Use the **kairos-mapping-report** skill.
 
 ## Workflow
 

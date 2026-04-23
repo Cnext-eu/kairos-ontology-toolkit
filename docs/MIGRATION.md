@@ -40,7 +40,7 @@ ontology-hub/
 │       └── {system}/    # {system}-to-{domain}.ttl
 ├── integration/         # Source system integration
 │   └── sources/         # Reference docs + bronze vocabulary TTL
-│       └── {system}/    # Per-system: docs, DDL, {system}.bronze.ttl
+│       └── {system}/    # Per-system: docs, DDL, {system}.vocabulary.ttl
 └── output/              # All projections (committed, not gitignored)
     ├── medallion/       # Medallion architecture
     │   ├── silver/      # Silver DDL/ERD
@@ -61,7 +61,7 @@ ontology-hub/
 | `shapes/` | `model/shapes/` |
 | `sources/` | `integration/sources/` |
 | `mappings/` | `model/mappings/{system-name}/` |
-| `bronze/` | `integration/sources/{system-name}/` (as `{system-name}.bronze.ttl`) |
+| `bronze/` | `integration/sources/{system-name}/` (as `{system-name}.vocabulary.ttl`) |
 | `output/silver/` | `output/medallion/silver/` |
 | `output/dbt/` | `output/medallion/dbt/` |
 | *(none)* | `output/medallion/gold/` |
@@ -166,11 +166,11 @@ mv mappings/* model/mappings/
 
 ```bash
 # Move each bronze/*.ttl into the corresponding source system folder
-# e.g. bronze/adminpulse.ttl → integration/sources/adminpulse/adminpulse.bronze.ttl
+# e.g. bronze/adminpulse.ttl → integration/sources/adminpulse/adminpulse.vocabulary.ttl
 for f in bronze/*.ttl; do
   name=$(basename "$f" .ttl)
   mkdir -p "integration/sources/$name"
-  mv "$f" "integration/sources/$name/$name.bronze.ttl"
+  mv "$f" "integration/sources/$name/$name.vocabulary.ttl"
 done
 mv output/silver/* output/medallion/silver/
 mv output/dbt/*    output/medallion/dbt/

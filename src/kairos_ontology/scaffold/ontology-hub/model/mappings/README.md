@@ -21,9 +21,9 @@ cust:customerName skos:exactMatch schema:name .
 cust:customerEmail skos:exactMatch schema:email .
 ```
 
-## 2. Bronze-to-Silver data mappings (for dbt projection)
+## 2. Source-to-domain data mappings (for dbt projection)
 
-Map source system columns to silver domain properties. Use SKOS match
+Map source system columns to domain ontology properties. Use SKOS match
 properties to express semantic correspondence, and `kairos-map:` annotations
 for technical transformation details:
 
@@ -33,7 +33,7 @@ for technical transformation details:
 @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
 @prefix party: <https://example.com/ont/party#> .
 
-# Table-level: which source table feeds which silver entity
+# Table-level: which source table feeds which domain entity
 bronze-ap:tblClient skos:exactMatch party:Client ;
     kairos-map:mappingType "direct" .
 
@@ -70,7 +70,7 @@ model/mappings/
 └── README.md
 ```
 
-### Naming convention for bronze-to-silver mappings
+### Naming convention for source-to-domain mappings
 
 ```
 {source-system}/{source-system}-to-{domain}.ttl
@@ -84,6 +84,6 @@ Examples: `adminpulse/adminpulse-to-party.ttl`, `erp-navision/erp-navision-to-cl
 |---------------|---------|
 | `skos:exactMatch` | 1:1 mapping, same semantics |
 | `skos:closeMatch` | 1:1 but needs transformation |
-| `skos:narrowMatch` | Source is more specific → maps to broader silver concept |
-| `skos:broadMatch` | Source is broader → filter/split to silver concept |
+| `skos:narrowMatch` | Source is more specific → maps to broader domain concept |
+| `skos:broadMatch` | Source is broader → filter/split to domain concept |
 | `skos:relatedMatch` | Indirect — needs business logic / lookup |

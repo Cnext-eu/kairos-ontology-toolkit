@@ -279,13 +279,14 @@ def init(domain, company_domain, force):
         hub / "output" / "azure-search",
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
+        hub / "output" / "report",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
     # Place .gitkeep in empty output subdirs so git tracks them
     for target in [
         "medallion/silver", "medallion/gold", "medallion/dbt",
-        "neo4j", "azure-search", "a2ui", "prompt",
+        "neo4j", "azure-search", "a2ui", "prompt", "report",
     ]:
         gitkeep = hub / "output" / target / ".gitkeep"
         if not gitkeep.exists():
@@ -879,13 +880,14 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
         hub / "output" / "azure-search",
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
+        hub / "output" / "report",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
     # Place .gitkeep in output subdirs so git tracks them
     for target in [
         "medallion/silver", "medallion/gold", "medallion/dbt",
-        "neo4j", "azure-search", "a2ui", "prompt",
+        "neo4j", "azure-search", "a2ui", "prompt", "report",
     ]:
         gitkeep = hub / "output" / target / ".gitkeep"
         if not gitkeep.exists():
