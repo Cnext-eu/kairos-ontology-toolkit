@@ -1003,6 +1003,9 @@ def test_migrate_check_mode(tmp_path):
     assert "MOVE" in result.output
     assert "would be moved" in result.output
 
+    # Silver-ext move to extensions/ must be previewed
+    assert "model/extensions/customer-silver-ext.ttl" in result.output
+
     # Files should NOT have moved
     assert (hub / "ontologies" / "customer.ttl").is_file()
     assert not (hub / "model").exists()

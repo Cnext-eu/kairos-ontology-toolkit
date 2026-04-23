@@ -621,6 +621,14 @@ def migrate(check, hub_path):
             items = list(old_dir.iterdir())
             if items:
                 for item in items:
+                    # In check mode, skip silver-ext files from ontologies/
+                    # — they'll be shown in step 3 with correct final destination.
+                    if (
+                        check
+                        and old_name == "ontologies"
+                        and item.name.endswith("-silver-ext.ttl")
+                    ):
+                        continue
                     dst = new_dir / item.name
                     if check:
                         print(f"  MOVE  {old_name}/{item.name}  →  {new_rel}/{item.name}")
@@ -634,13 +642,15 @@ def migrate(check, hub_path):
                     moved_count += 1
 
     # --- 3. Move *-silver-ext.ttl from model/ontologies/ to model/extensions/ -
+    # In --check mode files haven't moved yet, so scan the original location.
     onto_dir = hub / "model" / "ontologies"
+    ext_scan_dir = (hub / "ontologies") if check and not onto_dir.is_dir() else onto_dir
     ext_dir = hub / "model" / "extensions"
-    if onto_dir.is_dir():
-        for ext_file in list(onto_dir.glob("*-silver-ext.ttl")):
+    if ext_scan_dir.is_dir():
+        for ext_file in list(ext_scan_dir.glob("*-silver-ext.ttl")):
             dst = ext_dir / ext_file.name
             if check:
-                print(f"  MOVE  model/ontologies/{ext_file.name}  →  model/extensions/{ext_file.name}")
+                print(f"  MOVE  {ext_file.name}  →  model/extensions/{ext_file.name}")
             else:
                 if dst.exists():
                     dst.unlink()
