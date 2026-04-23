@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+#
+# Kairos Mapping Vocabulary
+# Namespace: https://kairos.cnext.eu/mapping#
+#
+# Extends SKOS mappings with technical transformation metadata for
+# generating dbt models. Used alongside skos:exactMatch / closeMatch
+# to describe HOW a bronze source column maps to a silver domain property.
+
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/mapping>
+    a owl:Ontology ;
+    rdfs:label "Kairos Mapping Vocabulary" ;
+    owl:versionInfo "1.0.0" ;
+    rdfs:comment "Technical mapping annotations for bronze-to-silver column transformations." .
+
+# ---------------------------------------------------------------------------
+# Mapping type (table-level)
+# ---------------------------------------------------------------------------
+
+kairos-map:mappingType a owl:DatatypeProperty ;
+    rdfs:label "mapping type" ;
+    rdfs:comment """How the source table maps to the silver target:
+  direct  — 1:1 table mapping
+  split   — one source table → multiple silver tables
+  merge   — multiple source tables → one silver table
+  pivot   — source rows become silver columns (or vice versa)
+  lookup  — source table is used as a lookup/enrichment join""" ;
+    rdfs:range xsd:string .
+
+# ---------------------------------------------------------------------------
+# Column-level mapping properties
+# ---------------------------------------------------------------------------
+
+kairos-map:transform a owl:DatatypeProperty ;
+    rdfs:label "transform" ;
+    rdfs:comment """SQL expression to transform the source value to the silver value.
+Use 'source.' prefix to reference source columns.
+Examples:
+  CAST(source.ClientID AS STRING)
+  TRIM(source.Name)
+  CONCAT(source.Street, ' ', source.Nr)
+  CASE WHEN source.IsActive = 1 THEN true ELSE false END""" ;
+    rdfs:range xsd:string .
+
+kairos-map:sourceColumns a owl:DatatypeProperty ;
+    rdfs:label "source columns" ;
+    rdfs:comment "Space-separated list of source column names used in a computed mapping." ;
+    rdfs:range xsd:string .
+
+kairos-map:defaultValue a owl:DatatypeProperty ;
+    rdfs:label "default value" ;
+    rdfs:comment "Default value when the source column is NULL or missing." ;
+    rdfs:range xsd:string .
+
+kairos-map:filterCondition a owl:DatatypeProperty ;
+    rdfs:label "filter condition" ;
+    rdfs:comment "SQL WHERE clause fragment to filter source rows (e.g. 'source.IsDeleted = 0')." ;
+    rdfs:range xsd:string .
+
+kairos-map:deduplicationKey a owl:DatatypeProperty ;
+    rdfs:label "deduplication key" ;
+    rdfs:comment "Space-separated columns to use for ROW_NUMBER() deduplication in staging." ;
+    rdfs:range xsd:string .
+
+kairos-map:deduplicationOrder a owl:DatatypeProperty ;
+    rdfs:label "deduplication order" ;
+    rdfs:comment "ORDER BY clause for deduplication (e.g. 'ModifiedDate DESC')." ;
+    rdfs:range xsd:string .

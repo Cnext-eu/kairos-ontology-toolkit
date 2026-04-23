@@ -5,6 +5,37 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] — 2026-04-23
+
+### Added
+
+- **dbt projector rewrite** — complete dbt Core project generation from ontology + bronze
+  source system descriptions + SKOS mappings. Generates staging models (views), silver
+  entity models (tables), schema YAML with SHACL-derived tests, `dbt_project.yml`, and
+  `packages.yml`.
+- **`kairos-bronze:` vocabulary** — new namespace (`https://kairos.cnext.eu/bronze#`)
+  for describing source system schemas (SourceSystem, SourceTable, SourceColumn).
+- **`kairos-map:` vocabulary** — new namespace (`https://kairos.cnext.eu/mapping#`)
+  for technical mapping annotations (transform expressions, deduplication, filtering).
+- **Bronze directory scaffold** — `bronze/` directory with README and template for
+  describing source systems in hub repositories.
+- **Updated mappings scaffold** — `mappings/README.md` now documents both external
+  vocabulary alignment and bronze-to-silver SKOS mapping patterns.
+- **`kairos-dbt-projection` skill** — 4-phase guide for describing bronze sources,
+  creating SKOS mappings, running the projection, and validating dbt output.
+- **19 new dbt projector tests** — covers bronze parsing, SKOS mapping, SHACL test
+  extraction, and full artifact generation (225 total tests).
+- **6 new Jinja2 templates** — `sources.yml`, `staging_model.sql`, `silver_model.sql`,
+  `schema_models.yml`, `dbt_project.yml`, `packages.yml`.
+
+### Changed
+
+- **dbt staging models materialized as views** (per dbt best practices).
+- **SHACL → dbt test mapping** now uses `dbt_expectations` package for regex, length,
+  and range constraints (previously used `dbt_utils.expression_is_true`).
+- **Projector orchestrator** now auto-discovers `bronze/` and `mappings/` directories
+  and passes them to the dbt projector.
+
 ## [2.2.2] — 2025-07-26
 
 ### Added

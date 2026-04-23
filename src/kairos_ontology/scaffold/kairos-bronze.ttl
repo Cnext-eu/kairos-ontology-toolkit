@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+#
+# Kairos Bronze Layer Vocabulary
+# Namespace: https://kairos.cnext.eu/bronze#
+#
+# Describes source system schemas (tables, columns, types) for the bronze
+# layer of the medallion architecture. Used by the dbt projector to generate
+# staging models from source system metadata.
+
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/bronze>
+    a owl:Ontology ;
+    rdfs:label "Kairos Bronze Layer Vocabulary" ;
+    owl:versionInfo "1.0.0" ;
+    rdfs:comment "Schema vocabulary for describing source system tables and columns in the bronze layer." .
+
+# ---------------------------------------------------------------------------
+# Classes
+# ---------------------------------------------------------------------------
+
+kairos-bronze:SourceSystem a owl:Class ;
+    rdfs:label "Source System" ;
+    rdfs:comment "A source system (e.g. AdminPulse, ERP, CRM) that feeds bronze-layer data." .
+
+kairos-bronze:SourceTable a owl:Class ;
+    rdfs:label "Source Table" ;
+    rdfs:comment "A table or view in a source system." .
+
+kairos-bronze:SourceColumn a owl:Class ;
+    rdfs:label "Source Column" ;
+    rdfs:comment "A column in a source system table." .
+
+# ---------------------------------------------------------------------------
+# Source System properties
+# ---------------------------------------------------------------------------
+
+kairos-bronze:connectionType a owl:DatatypeProperty ;
+    rdfs:label "connection type" ;
+    rdfs:comment "Connection technology: jdbc, odbc, api, file, lakehouse." ;
+    rdfs:domain kairos-bronze:SourceSystem ;
+    rdfs:range xsd:string .
+
+kairos-bronze:database a owl:DatatypeProperty ;
+    rdfs:label "database" ;
+    rdfs:comment "Database or catalog name in the source system." ;
+    rdfs:domain kairos-bronze:SourceSystem ;
+    rdfs:range xsd:string .
+
+kairos-bronze:schema a owl:DatatypeProperty ;
+    rdfs:label "schema" ;
+    rdfs:comment "Default schema name (e.g. dbo, public)." ;
+    rdfs:domain kairos-bronze:SourceSystem ;
+    rdfs:range xsd:string .
+
+kairos-bronze:systemVersion a owl:DatatypeProperty ;
+    rdfs:label "system version" ;
+    rdfs:comment "Version of the source system software." ;
+    rdfs:domain kairos-bronze:SourceSystem ;
+    rdfs:range xsd:string .
+
+# ---------------------------------------------------------------------------
+# Source Table properties
+# ---------------------------------------------------------------------------
+
+kairos-bronze:sourceSystem a owl:ObjectProperty ;
+    rdfs:label "source system" ;
+    rdfs:comment "The source system this table belongs to." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range kairos-bronze:SourceSystem .
+
+kairos-bronze:schemaName a owl:DatatypeProperty ;
+    rdfs:label "schema name" ;
+    rdfs:comment "Schema containing this table (overrides system default)." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range xsd:string .
+
+kairos-bronze:tableName a owl:DatatypeProperty ;
+    rdfs:label "table name" ;
+    rdfs:comment "Physical table or view name in the source." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range xsd:string .
+
+kairos-bronze:tableType a owl:DatatypeProperty ;
+    rdfs:label "table type" ;
+    rdfs:comment "Type: table, view, synonym, external." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range xsd:string .
+
+kairos-bronze:incrementalColumn a owl:DatatypeProperty ;
+    rdfs:label "incremental column" ;
+    rdfs:comment "Column used for incremental extraction (e.g. ModifiedDate)." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range xsd:string .
+
+kairos-bronze:primaryKeyColumns a owl:DatatypeProperty ;
+    rdfs:label "primary key columns" ;
+    rdfs:comment "Space-separated list of PK column names." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range xsd:string .
+
+# ---------------------------------------------------------------------------
+# Source Column properties
+# ---------------------------------------------------------------------------
+
+kairos-bronze:sourceTable a owl:ObjectProperty ;
+    rdfs:label "source table" ;
+    rdfs:comment "The table this column belongs to." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range kairos-bronze:SourceTable .
+
+kairos-bronze:columnName a owl:DatatypeProperty ;
+    rdfs:label "column name" ;
+    rdfs:comment "Physical column name in the source table." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:string .
+
+kairos-bronze:dataType a owl:DatatypeProperty ;
+    rdfs:label "data type" ;
+    rdfs:comment "Source system data type (e.g. int, nvarchar(255), datetime2)." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:string .
+
+kairos-bronze:nullable a owl:DatatypeProperty ;
+    rdfs:label "nullable" ;
+    rdfs:comment "Whether the column allows NULL values." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:boolean .
+
+kairos-bronze:isPrimaryKey a owl:DatatypeProperty ;
+    rdfs:label "is primary key" ;
+    rdfs:comment "Whether this column is part of the source table primary key." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:boolean .
+
+kairos-bronze:maxLength a owl:DatatypeProperty ;
+    rdfs:label "max length" ;
+    rdfs:comment "Maximum length for string/binary columns." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:integer .
+
+kairos-bronze:precision a owl:DatatypeProperty ;
+    rdfs:label "precision" ;
+    rdfs:comment "Numeric precision." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:integer .
+
+kairos-bronze:scale a owl:DatatypeProperty ;
+    rdfs:label "scale" ;
+    rdfs:comment "Numeric scale." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:integer .

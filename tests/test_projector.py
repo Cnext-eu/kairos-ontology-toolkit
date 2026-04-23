@@ -516,7 +516,8 @@ class TestProjector:
             graph=graph,
             template_dir=Path(__file__).parent.parent / 'src' / 'kairos_ontology' / 'templates' / 'dbt',
             namespace='http://kairos.example/ontology/',
-            shapes_dir=shapes_dir
+            shapes_dir=shapes_dir,
+            ontology_name='customer',
         )
         
         # Write artifacts
@@ -526,9 +527,9 @@ class TestProjector:
             output_file.parent.mkdir(parents=True, exist_ok=True)
             output_file.write_text(content, encoding='utf-8')
         
-        # Check schema YAML was created
-        schema_file = dbt_dir / 'models' / 'silver' / 'schema_customer.yml'
-        assert schema_file.exists(), "Schema YAML file should be created"
+        # Check schema YAML was created (new path: models/silver/{domain}/_{domain}__models.yml)
+        schema_file = dbt_dir / 'models' / 'silver' / 'customer' / '_customer__models.yml'
+        assert schema_file.exists(), f"Schema YAML should exist at {schema_file}"
         
         # Parse YAML and verify structure
         schema_content = yaml.safe_load(schema_file.read_text(encoding='utf-8'))
@@ -539,20 +540,21 @@ class TestProjector:
         
         model = schema_content['models'][0]
         
-        # Verify model has correct name (lowercase)
+        # Verify model has correct name (lowercase snake_case)
         assert model.get('name') == 'customer', f"Model name should be 'customer', got {model.get('name')}"
         assert 'description' in model, "Model should have description"
         assert 'columns' in model, "Model should have columns"
         
-        # Verify columns structure
+        # Verify columns structure — new projector includes sk + iri columns
         columns = {col['name']: col for col in model['columns']}
+        
+        # Check surrogate key column
+        assert 'customer_sk' in columns, "Should have customer_sk column"
         
         # Check customer_name column
         assert 'customer_name' in columns, "Should have customer_name column"
         customer_name_col = columns['customer_name']
         assert 'description' in customer_name_col, "Column should have description"
-        assert 'data_type' in customer_name_col, "Column should have data_type"
-        assert customer_name_col['data_type'] == 'STRING', f"Should be STRING type, got {customer_name_col['data_type']}"
         
         # Verify SHACL tests were extracted
         assert 'tests' in customer_name_col, "Column should have tests"

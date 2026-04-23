@@ -1,14 +1,11 @@
 # SKOS Mappings
 
-This directory contains SKOS synonym and alignment mappings that link your
-domain ontology terms to external vocabularies (e.g., Schema.org, FIBO).
+This directory contains SKOS mapping files that link concepts across
+vocabularies. Two main use cases:
 
-## Usage
+## 1. External vocabulary alignment
 
-Mappings use `skos:exactMatch`, `skos:closeMatch`, or `skos:broadMatch` to
-express relationships between your ontology concepts and external standards.
-
-## Example mapping
+Link your domain ontology terms to external standards (Schema.org, FIBO):
 
 ```turtle
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
@@ -19,3 +16,56 @@ cust:Customer skos:exactMatch schema:Person .
 cust:customerName skos:exactMatch schema:name .
 cust:customerEmail skos:exactMatch schema:email .
 ```
+
+## 2. Bronze-to-Silver data mappings (for dbt projection)
+
+Map source system columns to silver domain properties. Use SKOS match
+properties to express semantic correspondence, and `kairos-map:` annotations
+for technical transformation details:
+
+```turtle
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+@prefix party: <https://example.com/ont/party#> .
+
+# Table-level: which source table feeds which silver entity
+bronze-ap:tblClient skos:exactMatch party:Client ;
+    kairos-map:mappingType "direct" .
+
+# Column-level: 1:1 with type cast
+bronze-ap:tblClient_ClientID skos:exactMatch party:clientId ;
+    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+
+# Column-level: needs cleaning
+bronze-ap:tblClient_Name skos:closeMatch party:clientName ;
+    kairos-map:transform "TRIM(source.Name)" .
+
+# Computed column: derived from multiple source columns
+bronze-ap:tblClient_FullAddress skos:narrowMatch party:addressLine1 ;
+    kairos-map:transform "CONCAT(source.Street, ' ', source.Nr, ', ', source.City)" ;
+    kairos-map:sourceColumns "Street Nr City" .
+
+# With default value for NULLs
+bronze-ap:tblClient_Country skos:exactMatch party:country ;
+    kairos-map:transform "COALESCE(source.Country, 'BE')" ;
+    kairos-map:defaultValue "BE" .
+```
+
+### Naming convention for bronze-to-silver mappings
+
+```
+{source-system}-to-{domain}.ttl
+```
+
+Examples: `adminpulse-to-party.ttl`, `erp-to-client.ttl`
+
+### SKOS property semantics
+
+| SKOS Property | Meaning |
+|---------------|---------|
+| `skos:exactMatch` | 1:1 mapping, same semantics |
+| `skos:closeMatch` | 1:1 but needs transformation |
+| `skos:narrowMatch` | Source is more specific → maps to broader silver concept |
+| `skos:broadMatch` | Source is broader → filter/split to silver concept |
+| `skos:relatedMatch` | Indirect — needs business logic / lookup |

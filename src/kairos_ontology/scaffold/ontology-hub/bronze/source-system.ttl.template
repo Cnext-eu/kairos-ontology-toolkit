@@ -1,0 +1,47 @@
+# Bronze source system description template
+# Replace {SYSTEM_NAME}, {SYSTEM_URI}, {PREFIX} with your values.
+#
+# Usage: cp this file to bronze/{system-name}.ttl and fill in tables/columns.
+
+@prefix {PREFIX}: <{SYSTEM_URI}#> .
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+# ---------------------------------------------------------------------------
+# Source System
+# ---------------------------------------------------------------------------
+
+{PREFIX}:{SYSTEM_NAME} a kairos-bronze:SourceSystem ;
+    rdfs:label "{SYSTEM_NAME}" ;
+    kairos-bronze:connectionType "jdbc" ;
+    kairos-bronze:database "{DATABASE}" ;
+    kairos-bronze:schema "dbo" .
+
+# ---------------------------------------------------------------------------
+# Tables — add one block per source table
+# ---------------------------------------------------------------------------
+
+# {PREFIX}:tblExample a kairos-bronze:SourceTable ;
+#     rdfs:label "tblExample" ;
+#     kairos-bronze:sourceSystem {PREFIX}:{SYSTEM_NAME} ;
+#     kairos-bronze:tableName "tblExample" ;
+#     kairos-bronze:primaryKeyColumns "ExampleID" ;
+#     kairos-bronze:incrementalColumn "ModifiedDate" .
+
+# ---------------------------------------------------------------------------
+# Columns — add one block per column
+# ---------------------------------------------------------------------------
+
+# {PREFIX}:tblExample_ExampleID a kairos-bronze:SourceColumn ;
+#     kairos-bronze:sourceTable {PREFIX}:tblExample ;
+#     kairos-bronze:columnName "ExampleID" ;
+#     kairos-bronze:dataType "int" ;
+#     kairos-bronze:nullable "false"^^xsd:boolean ;
+#     kairos-bronze:isPrimaryKey "true"^^xsd:boolean .
+
+# {PREFIX}:tblExample_Name a kairos-bronze:SourceColumn ;
+#     kairos-bronze:sourceTable {PREFIX}:tblExample ;
+#     kairos-bronze:columnName "Name" ;
+#     kairos-bronze:dataType "nvarchar(255)" ;
+#     kairos-bronze:nullable "true"^^xsd:boolean .
