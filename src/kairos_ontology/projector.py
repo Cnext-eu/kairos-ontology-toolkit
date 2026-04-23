@@ -10,10 +10,13 @@ from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 from .projections.uri_utils import extract_local_name
 
-VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver"]
+VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "report"]
 
 # Targets that live under output/medallion/ (medallion architecture outputs).
 _MEDALLION_TARGETS = {"dbt", "silver"}
+
+# Targets processed after the per-domain loop (they span all domains).
+_POST_DOMAIN_TARGETS = {"report"}
 
 # Filename patterns that are NOT domain ontologies and should be skipped.
 _NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")
@@ -151,12 +154,15 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     if mappings_dir and mappings_dir.exists():
         print(f"  Found SKOS mappings directory: {mappings_dir}\n")
 
-    targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver'] if target == 'all' else [target]
+    targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'report'] if target == 'all' else [target]
 
     # Accumulate per-domain manifest data: {domain_name: {meta, targets: {target: [files]}}}
     manifests: dict[str, dict] = {}
 
     for target_name in targets_to_run:
+        # Report target is handled after the per-domain loop (spans all domains)
+        if target_name in _POST_DOMAIN_TARGETS:
+            continue
         print(f"📦 Generating {target_name} projection...")
         # Medallion targets go under output/medallion/; others directly under output/
         if target_name in _MEDALLION_TARGETS:
@@ -254,6 +260,40 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                       " Install: npm install -D @mermaid-js/mermaid-cli")
 
         print(f"  ✓ {target_name} projection completed: {total_files} total files\n")
+
+    # ── Post-domain targets (span all ontology domains) ──────────────────
+    if "report" in targets_to_run:
+        print("📦 Generating report projection...")
+        report_output = output_path / "report"
+        report_output.mkdir(parents=True, exist_ok=True)
+
+        # Merge all domain ontology graphs for cross-domain property lookup
+        merged_classes: dict = {}
+        for onto_info in ontology_graphs:
+            onto_ns = namespace or _auto_detect_namespace(onto_info["graph"])
+            if onto_ns:
+                from .projections.mapping_report_projector import (
+                    _extract_ontology_properties,
+                )
+                domain_classes = _extract_ontology_properties(
+                    onto_info["graph"], onto_ns
+                )
+                merged_classes.update(domain_classes)
+
+        from .projections.mapping_report_projector import generate_mapping_report
+        report_artifacts = generate_mapping_report(
+            ontology_classes=merged_classes,
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            template_dir=template_base,
+        )
+        report_count = 0
+        for fname, html in report_artifacts.items():
+            out_file = report_output / fname
+            out_file.write_text(html, encoding="utf-8")
+            report_count += 1
+            print(f"  ✓ {fname}")
+        print(f"  ✓ report projection completed: {report_count} total files\n")
     
     print("✅ Projection generation completed!")
     print(f"   Generated artifacts for {len(ontology_graphs)} data domain(s)")

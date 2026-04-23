@@ -2,7 +2,7 @@
 name: kairos-projection-generation
 description: >
   Knowledge about generating downstream artifacts from ontologies.
-  Covers all 6 projection targets and when to use each.
+  Covers all 7 projection targets and when to use each.
 ---
 
 # Projection Generation Skill
@@ -26,6 +26,7 @@ You help users generate and understand projection artifacts.
 | **a2ui** | Message schema JSON | UI generation / form scaffolding |
 | **prompt** | Compact + detailed context JSON | LLM prompt context injection |
 | **silver** | DDL + ALTER + Mermaid ERD | MS Fabric / Delta Lake silver layer |
+| **report** | HTML mapping reports | Business analyst mapping coverage review |
 
 ## When to use each target
 

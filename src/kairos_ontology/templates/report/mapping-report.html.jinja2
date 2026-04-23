@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mapping Report — {{ system.system_label }}</title>
+<style>
+  :root {
+    --exact: #22c55e; --close: #eab308; --narrow: #f97316;
+    --broad: #f97316; --related: #ef4444; --unmapped: #94a3b8;
+    --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0;
+    --text: #1e293b; --muted: #64748b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+    max-width: 1200px; margin: 0 auto; padding: 2rem;
+  }
+  h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
+  h2 { font-size: 1.25rem; margin: 2rem 0 1rem; border-bottom: 2px solid var(--border); padding-bottom: 0.5rem; }
+  h3 { font-size: 1.1rem; margin: 1.5rem 0 0.75rem; }
+  .subtitle { color: var(--muted); margin-bottom: 2rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+  .stats-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem; margin-bottom: 2rem;
+  }
+  .stat-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1rem; text-align: center;
+  }
+  .stat-value { font-size: 2rem; font-weight: 700; }
+  .stat-label { color: var(--muted); font-size: 0.875rem; }
+  .badge {
+    display: inline-block; padding: 0.125rem 0.5rem; border-radius: 9999px;
+    font-size: 0.75rem; font-weight: 600; color: white;
+  }
+  .badge-exact { background: var(--exact); }
+  .badge-close { background: var(--close); color: #1e293b; }
+  .badge-narrow, .badge-broad { background: var(--narrow); }
+  .badge-related { background: var(--related); }
+  .badge-unmapped { background: var(--unmapped); }
+  .progress-bar {
+    height: 8px; background: #e2e8f0; border-radius: 4px;
+    overflow: hidden; margin: 0.25rem 0;
+  }
+  .progress-fill {
+    height: 100%; border-radius: 4px; transition: width 0.3s;
+  }
+  table {
+    width: 100%; border-collapse: collapse; font-size: 0.875rem;
+    margin-bottom: 1rem;
+  }
+  th {
+    text-align: left; padding: 0.5rem 0.75rem; background: #f1f5f9;
+    border-bottom: 2px solid var(--border); font-weight: 600;
+  }
+  td {
+    padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:hover { background: #f8fafc; }
+  tr.unmapped td { color: var(--muted); }
+  .meta-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.5rem; font-size: 0.875rem;
+  }
+  .meta-label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .action-item {
+    padding: 0.75rem 1rem; border-left: 4px solid; margin-bottom: 0.5rem;
+    border-radius: 0 4px 4px 0; font-size: 0.875rem;
+  }
+  .action-error { border-color: var(--related); background: #fef2f2; }
+  .action-warning { border-color: var(--close); background: #fefce8; }
+  .action-info { border-color: var(--unmapped); background: #f8fafc; }
+  .action-type {
+    font-weight: 600; text-transform: uppercase; font-size: 0.75rem;
+    margin-right: 0.5rem;
+  }
+  details { margin-bottom: 1rem; }
+  summary {
+    cursor: pointer; padding: 0.75rem 1rem; background: #f1f5f9;
+    border: 1px solid var(--border); border-radius: 6px; font-weight: 600;
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  summary:hover { background: #e2e8f0; }
+  details[open] summary { border-radius: 6px 6px 0 0; border-bottom: none; }
+  details .detail-content {
+    border: 1px solid var(--border); border-top: none;
+    border-radius: 0 0 6px 6px; padding: 1rem;
+  }
+  .coverage-text { font-weight: 600; font-size: 0.875rem; }
+  .timestamp { color: var(--muted); font-size: 0.75rem; margin-top: 2rem; text-align: center; }
+  @media print {
+    body { padding: 1rem; max-width: 100%; }
+    details { page-break-inside: avoid; }
+    details[open] summary ~ .detail-content { display: block; }
+    .card { box-shadow: none; border: 1px solid #ccc; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Mapping Report</h1>
+<p class="subtitle">{{ system.system_label }} → Domain Ontology</p>
+
+{# ── System overview ── #}
+<div class="card">
+  <h3>Source System</h3>
+  <div class="meta-grid" style="margin-top: 0.75rem;">
+    <div>
+      <div class="meta-label">System</div>
+      <div>{{ system.system_label }}</div>
+    </div>
+    {% if system.database %}
+    <div>
+      <div class="meta-label">Database</div>
+      <div>{{ system.database }}</div>
+    </div>
+    {% endif %}
+    {% if system.schema %}
+    <div>
+      <div class="meta-label">Schema</div>
+      <div>{{ system.schema }}</div>
+    </div>
+    {% endif %}
+    {% if system.connection_type %}
+    <div>
+      <div class="meta-label">Connection</div>
+      <div>{{ system.connection_type }}</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Coverage dashboard ── #}
+<h2>Coverage Overview</h2>
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-value">{{ tables | length }}</div>
+    <div class="stat-label">Source Tables</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ total_columns }}</div>
+    <div class="stat-label">Source Columns</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ total_mapped }}</div>
+    <div class="stat-label">Mapped Columns</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color: {% if overall_coverage_pct >= 80 %}var(--exact){% elif overall_coverage_pct >= 50 %}var(--close){% else %}var(--related){% endif %}">
+      {{ overall_coverage_pct }}%
+    </div>
+    <div class="stat-label">Overall Coverage</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="progress-bar">
+    <div class="progress-fill" style="width: {{ overall_coverage_pct }}%; background: {% if overall_coverage_pct >= 80 %}var(--exact){% elif overall_coverage_pct >= 50 %}var(--close){% else %}var(--related){% endif %};"></div>
+  </div>
+  <div class="coverage-text" style="margin-top: 0.5rem;">
+    {{ total_mapped }} of {{ total_columns }} columns mapped ({{ overall_coverage_pct }}%)
+  </div>
+</div>
+
+{# ── Table mappings ── #}
+<h2>Table Mappings</h2>
+
+{% for tbl in tables %}
+<details{% if tbl.columns %} open{% endif %}>
+  <summary>
+    <span class="badge badge-{{ tbl.table_match_type | default('unmapped', true) | lower }}">{{ tbl.table_match_label }}</span>
+    {{ tbl.source_table }}
+    {% if tbl.target_entity %}→ {{ tbl.target_label }}{% endif %}
+    <span style="margin-left: auto; color: var(--muted); font-weight: 400; font-size: 0.875rem;">
+      {{ tbl.mapped_count }}/{{ tbl.column_count }} columns ({{ tbl.coverage_pct }}%)
+    </span>
+  </summary>
+  <div class="detail-content">
+    <div class="progress-bar" style="margin-bottom: 1rem;">
+      <div class="progress-fill" style="width: {{ tbl.coverage_pct }}%; background: {% if tbl.coverage_pct >= 80 %}var(--exact){% elif tbl.coverage_pct >= 50 %}var(--close){% else %}var(--related){% endif %};"></div>
+    </div>
+    {% if tbl.columns %}
+    <table>
+      <thead>
+        <tr>
+          <th>Source Column</th>
+          <th>Type</th>
+          <th>Match</th>
+          <th>Domain Property</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for col in tbl.columns %}
+        <tr{% if not col.mapped %} class="unmapped"{% endif %}>
+          <td><code>{{ col.source_name }}</code></td>
+          <td>{{ col.source_type }}</td>
+          <td>
+            {% if col.mapped %}
+            <span class="badge badge-{{ col.match_type | lower }}">{{ col.match_label }}</span>
+            {% else %}
+            <span class="badge badge-unmapped">Unmapped</span>
+            {% endif %}
+          </td>
+          <td>{% if col.mapped %}<code>{{ col.target_name }}</code>{% endif %}</td>
+          <td>{{ col.target_comment }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color: var(--muted);">No columns defined in source vocabulary.</p>
+    {% endif %}
+  </div>
+</details>
+{% endfor %}
+
+{# ── Uncovered domain properties ── #}
+{% if uncovered_properties %}
+<h2>Uncovered Domain Properties</h2>
+<p class="subtitle" style="margin-bottom: 1rem;">
+  Domain ontology properties not covered by any mapping from this source system.
+</p>
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>Entity</th>
+        <th>Property</th>
+        <th>Label</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for prop in uncovered_properties %}
+      <tr>
+        <td><code>{{ prop.entity }}</code></td>
+        <td><code>{{ prop.property }}</code></td>
+        <td>{{ prop.label }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{# ── Action items ── #}
+{% if action_items %}
+<h2>Action Items</h2>
+<p class="subtitle" style="margin-bottom: 1rem;">
+  Items requiring attention — unmapped columns, non-exact matches, and missing table mappings.
+</p>
+{% for item in action_items %}
+<div class="action-item action-{{ item.severity }}">
+  <span class="action-type">{{ item.type | replace('_', ' ') }}</span>
+  {{ item.message }}
+</div>
+{% endfor %}
+{% endif %}
+
+<p class="timestamp">Generated by Kairos Ontology Toolkit</p>
+
+</body>
+</html>
