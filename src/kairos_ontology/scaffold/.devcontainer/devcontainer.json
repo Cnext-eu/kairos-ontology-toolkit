@@ -1,0 +1,19 @@
+{
+  "name": "Kairos Ontology Hub",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "postCreateCommand": "pip install kairos-ontology-toolkit && npm install",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "stardog-union.stardog-rdf-grammars",
+        "GitHub.copilot"
+      ]
+    }
+  }
+}
