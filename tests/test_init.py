@@ -24,8 +24,7 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/model/shapes").is_dir()
             assert Path("ontology-hub/model/extensions").is_dir()
             assert Path("ontology-hub/integration/sources").is_dir()
-            assert Path("ontology-hub/integration/mappings").is_dir()
-            assert Path("ontology-hub/output/medallion/bronze").is_dir()
+            assert Path("ontology-hub/model/mappings").is_dir()
             assert Path("ontology-hub/output/medallion/silver").is_dir()
             assert Path("ontology-hub/output/medallion/gold").is_dir()
             assert Path("ontology-hub/output/medallion/dbt").is_dir()
@@ -37,7 +36,7 @@ def test_init_creates_hub_structure(tmp_path):
             # Check README files
             assert Path("ontology-hub/model/ontologies/README.md").is_file()
             assert Path("ontology-hub/model/shapes/README.md").is_file()
-            assert Path("ontology-hub/integration/mappings/README.md").is_file()
+            assert Path("ontology-hub/model/mappings/README.md").is_file()
 
             # Check skills installed
             assert Path(".github/skills/kairos-hub-setup/SKILL.md").is_file()
@@ -164,7 +163,7 @@ def test_new_repo_creates_full_structure(tmp_path):
     # Hub structure
     assert (repo / "ontology-hub" / "model" / "ontologies").is_dir()
     assert (repo / "ontology-hub" / "model" / "shapes" / "README.md").is_file()
-    assert (repo / "ontology-hub" / "integration" / "mappings" / "README.md").is_file()
+    assert (repo / "ontology-hub" / "model" / "mappings" / "README.md").is_file()
     assert (repo / "ontology-hub" / "output" / "medallion" / "dbt").is_dir()
 
     # Submodule add was called for reference models
@@ -978,11 +977,11 @@ def test_migrate_moves_files(tmp_path):
     assert not (hub / "model" / "ontologies" / "customer-silver-ext.ttl").exists()
 
     # Integration files moved
-    assert (hub / "integration" / "mappings" / "customer-mapping.ttl").is_file()
+    assert (hub / "model" / "mappings" / "customer-mapping.ttl").is_file()
     assert (hub / "integration" / "sources" / "source-system-template" / "README.md").is_file()
 
     # Output files moved
-    assert (hub / "output" / "medallion" / "bronze" / "erp.ttl").is_file()
+    assert (hub / "integration" / "sources" / "erp.ttl").is_file()
     assert (hub / "output" / "medallion" / "dbt" / "project.yml").is_file()
     assert (hub / "output" / "medallion" / "silver" / "ddl.sql").is_file()
 

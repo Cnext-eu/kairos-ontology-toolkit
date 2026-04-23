@@ -21,14 +21,15 @@ is driven by:
 
 Before running this projection, ensure the following artifacts exist in the hub:
 
-- **Bronze vocabulary** must exist in `output/medallion/bronze/` — one `.ttl` file per source system
+- **Bronze vocabulary** must exist in `integration/sources/{system-name}/` — one `{system-name}.bronze.ttl` file per source system
   describing tables and columns using the `kairos-bronze:` vocabulary. Use the
   `kairos-medallion-staging` skill to create these from source system documentation
-  found in `integration/sources/`.
+  found in `integration/sources/`. The dbt projector scans `integration/sources/`
+  recursively for `*.ttl` files with the `kairos-bronze:` namespace.
 - **Silver canonical schema** should exist — domain ontologies with silver projection
   annotations (`kairos-ext:` / `kairos-silver:` properties). Use the
   `kairos-medallion-silver` skill to design and generate the silver layer schema.
-- **SKOS mappings** must exist in `integration/mappings/` — one `.ttl` file per source-to-domain
+- **SKOS mappings** must exist in `model/mappings/{system-name}/` — one `.ttl` file per source-to-domain
   combination (e.g. `adminpulse-to-party.ttl`) linking bronze columns to silver
   domain properties using SKOS match predicates and `kairos-map:` transforms.
 
@@ -58,13 +59,12 @@ Bronze (source systems)          Silver (domain model)
 
 ### 1a — Create the bronze vocabulary file
 
-In the hub's `output/medallion/bronze/` directory, create a TTL file per source system:
+In the source system folder under `integration/sources/`, create a `.bronze.ttl` file per source system:
 
 ```bash
-ls ontology-hub/output/medallion/bronze/
-# If empty, copy the template:
-cp "$(python -m kairos_ontology _scaffold_path)/ontology-hub/bronze/source-system.ttl.template" \
-   ontology-hub/output/medallion/bronze/{system-name}.ttl
+ls ontology-hub/integration/sources/
+# Create the bronze vocabulary alongside the source docs:
+touch ontology-hub/integration/sources/{system-name}/{system-name}.bronze.ttl
 ```
 
 ### 1b — Fill in source tables and columns
@@ -123,7 +123,7 @@ bronze-ap:tblClient_ClientID a kairos-bronze:SourceColumn ;
 
 ### 2a — Create mapping file
 
-In `integration/mappings/`, create `{source}-to-{domain}.ttl`:
+In `model/mappings/{system-name}/`, create `{source}-to-{domain}.ttl`:
 
 ```turtle
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
@@ -242,7 +242,11 @@ ontology-hub/
     sources/
       adminpulse/                    # Source system reference docs
         README.md                    # System description, connection details
+        adminpulse.bronze.ttl        # Bronze vocabulary (kairos-bronze:)
         sql-ddl/                     # CREATE TABLE exports
+      erp-navision/
+        README.md
+        erp-navision.bronze.ttl      # Bronze vocabulary (kairos-bronze:)
     mappings/
       adminpulse-to-party.ttl        # SKOS: AdminPulse → Party
       adminpulse-to-client.ttl       # SKOS: AdminPulse → Client
@@ -255,9 +259,6 @@ ontology-hub/
       client.shacl.ttl               # SHACL → dbt tests
   output/
     medallion/
-      bronze/
-        adminpulse.ttl               # Bronze: source system schema
-        erp-navision.ttl             # Bronze: another source
       silver/                        # Generated silver DDL
       dbt/                           # Generated dbt project
 ```

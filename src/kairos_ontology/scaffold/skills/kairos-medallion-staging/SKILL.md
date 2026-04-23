@@ -3,7 +3,7 @@ name: kairos-medallion-staging
 description: >
   Expert guide for creating bronze vocabulary descriptions from source system
   reference documentation. Reads API specs, SQL DDL, sample data from the
-  sources/ folder and generates kairos-bronze: TTL files in bronze/.
+  sources/ folder and generates kairos-bronze: TTL files alongside the source docs.
 ---
 
 # Kairos Medallion Staging Skill
@@ -21,13 +21,13 @@ dbt staging model generation.
 ## Architecture
 
 ```
-integration/sources/{system}/       output/medallion/bronze/{system}.ttl
-┌──────────────────────┐            ┌──────────────────────┐
-│ sql-ddl/             │──→         │ kairos-bronze:        │
-│ api-specs/           │  AI        │   SourceSystem        │
-│ samples/             │  skill     │   SourceTable         │
-│ README.md            │──→         │   SourceColumn        │
-└──────────────────────┘            └──────────────────────┘
+integration/sources/{system}/
+┌──────────────────────┐
+│ sql-ddl/             │
+│ api-specs/           │  AI skill generates
+│ samples/             │──────────────────→  {system}.bronze.ttl
+│ README.md            │                     (in same folder)
+└──────────────────────┘
 ```
 
 ---
@@ -102,14 +102,14 @@ If `samples/` contains CSV or JSON files, infer:
 
 ### 3a — Create the output file
 
-Create `ontology-hub/output/medallion/bronze/{system-name}.ttl` using the template:
+Create `ontology-hub/integration/sources/{system-name}/{system-name}.bronze.ttl`:
 
 ```bash
-cp ontology-hub/output/medallion/bronze/source-system.ttl.template \
-   ontology-hub/output/medallion/bronze/{system-name}.ttl
+# Create from scratch in the source system folder following the kairos-bronze: vocabulary.
+touch ontology-hub/integration/sources/{system-name}/{system-name}.bronze.ttl
 ```
 
-Or create from scratch following the kairos-bronze: vocabulary.
+The bronze vocabulary file lives alongside the source system documentation it describes.
 
 ### 3b — Fill in the source system
 
@@ -191,7 +191,7 @@ Verify:
 
 After the bronze vocabulary is complete:
 
-1. **Create SKOS mappings** in `integration/mappings/` to link bronze columns to silver domain properties
+1. **Create SKOS mappings** in `model/mappings/{system-name}/` to link bronze columns to silver domain properties
 2. **Run the medallion projection** to generate dbt staging + silver models:
    ```bash
    python -m kairos_ontology project --target dbt
@@ -205,10 +205,11 @@ See the **kairos-medallion-projection** skill for the full bronze-to-silver pipe
 
 ```
 ontology-hub/integration/sources/{system-name}/
-  README.md             # System description, owner, connection details
-  sql-ddl/              # CREATE TABLE exports from the source database
-  api-specs/            # OpenAPI / Swagger specification files
-  samples/              # Sample data files (CSV, JSON, XML)
-  docs/                 # Additional documentation (ERD, data dictionary)
-  notes.md              # Free-form observations and notes
+  README.md                        # System description, owner, connection details
+  {system-name}.bronze.ttl         # Bronze vocabulary (kairos-bronze: TTL)
+  sql-ddl/                         # CREATE TABLE exports from the source database
+  api-specs/                       # OpenAPI / Swagger specification files
+  samples/                         # Sample data files (CSV, JSON, XML)
+  docs/                            # Additional documentation (ERD, data dictionary)
+  notes.md                         # Free-form observations and notes
 ```

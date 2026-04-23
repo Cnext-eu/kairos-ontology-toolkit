@@ -18,7 +18,7 @@ class SKOSParser:
     """Parse SKOS mapping files and extract synonyms"""
     
     def __init__(self, mappings_dir: Path = None):
-        self.mappings_dir = mappings_dir or Path("ontology-hub/integration/mappings")
+        self.mappings_dir = mappings_dir or Path("ontology-hub/model/mappings")
         self.SKOS = SKOS
         self.KAIROS = Namespace("urn:kairos:ont:core:")
     

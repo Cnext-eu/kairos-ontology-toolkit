@@ -35,12 +35,14 @@ ontology-hub/
 │   ├── ontologies/      # Domain .ttl files
 │   ├── shapes/          # SHACL constraints
 │   └── extensions/      # *-silver-ext.ttl projection annotations
+├── model/
+│   └── mappings/        # SKOS mappings (per-source-system subfolders)
+│       └── {system}/    # {system}-to-{domain}.ttl
 ├── integration/         # Source system integration
-│   ├── sources/         # Reference docs (API specs, SQL DDL)
-│   └── mappings/        # SKOS mappings
+│   └── sources/         # Reference docs + bronze vocabulary TTL
+│       └── {system}/    # Per-system: docs, DDL, {system}.bronze.ttl
 └── output/              # All projections (committed, not gitignored)
     ├── medallion/       # Medallion architecture
-    │   ├── bronze/      # Bronze vocabulary TTL
     │   ├── silver/      # Silver DDL/ERD
     │   ├── gold/        # Gold dimensional models
     │   └── dbt/         # dbt models (bronze → silver)
@@ -58,8 +60,8 @@ ontology-hub/
 | `ontologies/*-silver-ext.ttl` | `model/extensions/` |
 | `shapes/` | `model/shapes/` |
 | `sources/` | `integration/sources/` |
-| `mappings/` | `integration/mappings/` |
-| `bronze/` | `output/medallion/bronze/` |
+| `mappings/` | `model/mappings/{system-name}/` |
+| `bronze/` | `integration/sources/{system-name}/` (as `{system-name}.bronze.ttl`) |
 | `output/silver/` | `output/medallion/silver/` |
 | `output/dbt/` | `output/medallion/dbt/` |
 | *(none)* | `output/medallion/gold/` |
@@ -129,8 +131,8 @@ your hub repository.
 
 ```bash
 mkdir -p model/ontologies model/shapes model/extensions
-mkdir -p integration/sources integration/mappings
-mkdir -p output/medallion/bronze output/medallion/silver
+mkdir -p integration/sources model/mappings
+mkdir -p output/medallion/silver
 mkdir -p output/medallion/gold output/medallion/dbt
 ```
 
@@ -157,13 +159,19 @@ mv shapes/* model/shapes/
 
 ```bash
 mv sources/* integration/sources/
-mv mappings/* integration/mappings/
+mv mappings/* model/mappings/
 ```
 
-### Step 6 — Move medallion outputs
+### Step 6 — Move bronze vocabulary and medallion outputs
 
 ```bash
-mv bronze/*  output/medallion/bronze/
+# Move each bronze/*.ttl into the corresponding source system folder
+# e.g. bronze/adminpulse.ttl → integration/sources/adminpulse/adminpulse.bronze.ttl
+for f in bronze/*.ttl; do
+  name=$(basename "$f" .ttl)
+  mkdir -p "integration/sources/$name"
+  mv "$f" "integration/sources/$name/$name.bronze.ttl"
+done
 mv output/silver/* output/medallion/silver/
 mv output/dbt/*    output/medallion/dbt/
 ```
@@ -224,8 +232,8 @@ The new layout **commits all projection output** so that:
 | `--shapes` | `shapes/` | `model/shapes/` |
 | `--extensions` | *(none)* | `model/extensions/` |
 | `--sources` | `sources/` | `integration/sources/` |
-| `--mappings` | `mappings/` | `integration/mappings/` |
-| `--bronze` | `bronze/` | `output/medallion/bronze/` |
+| `--mappings` | `mappings/` | `model/mappings/` |
+| `--bronze` | `bronze/` | `integration/sources/` |
 
 ---
 

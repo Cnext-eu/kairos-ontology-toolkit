@@ -1,7 +1,11 @@
 # SKOS Mappings
 
 This directory contains SKOS mapping files that link concepts across
-vocabularies. Two main use cases:
+vocabularies. Each mapping file can serve **both** purposes below — SKOS
+predicates express the semantic relationship while `kairos-map:` annotations
+add the technical detail needed for dbt code generation. This dual-purpose
+design avoids redundancy: one file per source×domain is the single source
+of truth for alignment **and** transformation.
 
 ## 1. External vocabulary alignment
 
@@ -52,13 +56,27 @@ bronze-ap:tblClient_Country skos:exactMatch party:country ;
     kairos-map:defaultValue "BE" .
 ```
 
+### Folder structure
+
+Organise mapping files by source system:
+
+```
+model/mappings/
+├── adminpulse/
+│   ├── adminpulse-to-party.ttl
+│   └── adminpulse-to-client.ttl
+├── erp-navision/
+│   └── erp-navision-to-order.ttl
+└── README.md
+```
+
 ### Naming convention for bronze-to-silver mappings
 
 ```
-{source-system}-to-{domain}.ttl
+{source-system}/{source-system}-to-{domain}.ttl
 ```
 
-Examples: `adminpulse-to-party.ttl`, `erp-to-client.ttl`
+Examples: `adminpulse/adminpulse-to-party.ttl`, `erp-navision/erp-navision-to-client.ttl`
 
 ### SKOS property semantics
 

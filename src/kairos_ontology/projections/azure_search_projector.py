@@ -221,7 +221,7 @@ def main():
     
     parser = argparse.ArgumentParser(description="Generate Azure Search artifacts from ontology")
     parser.add_argument("--ontology", type=Path, required=True, help="Path to ontology file")
-    parser.add_argument("--mappings", type=Path, default=Path("ontology-hub/integration/mappings"),
+    parser.add_argument("--mappings", type=Path, default=Path("ontology-hub/model/mappings"),
                        help="Path to SKOS mappings directory")
     parser.add_argument("--output", type=Path, default=Path("output/azure-search"),
                        help="Output directory")

@@ -270,9 +270,8 @@ def init(domain, company_domain, force):
         hub / "model" / "ontologies",
         hub / "model" / "shapes",
         hub / "model" / "extensions",
+        hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "integration" / "mappings",
-        hub / "output" / "medallion" / "bronze",
         hub / "output" / "medallion" / "silver",
         hub / "output" / "medallion" / "gold",
         hub / "output" / "medallion" / "dbt",
@@ -285,7 +284,7 @@ def init(domain, company_domain, force):
 
     # Place .gitkeep in empty output subdirs so git tracks them
     for target in [
-        "medallion/bronze", "medallion/silver", "medallion/gold", "medallion/dbt",
+        "medallion/silver", "medallion/gold", "medallion/dbt",
         "neo4j", "azure-search", "a2ui", "prompt",
     ]:
         gitkeep = hub / "output" / target / ".gitkeep"
@@ -295,9 +294,8 @@ def init(domain, company_domain, force):
     readme_map = {
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
-        "integration/mappings": "integration/mappings",
+        "model/mappings": "model/mappings",
         "integration/sources": "integration/sources",
-        "output/medallion/bronze": "output/medallion/bronze",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
         readme_src = _SCAFFOLD_DIR / "ontology-hub" / scaffold_subdir / "README.md"
@@ -313,12 +311,6 @@ def init(domain, company_domain, force):
             shutil.rmtree(src_template_dst)
         shutil.copytree(src_template_src, src_template_dst)
         print("  ✓ Installed integration/sources/source-system-template/")
-
-    # 2c. Copy bronze source-system TTL template
-    bronze_template_src = _SCAFFOLD_DIR / "ontology-hub" / "output" / "medallion" / "bronze" / "source-system.ttl.template"
-    bronze_template_dst = hub / "output" / "medallion" / "bronze" / "source-system.ttl.template"
-    if bronze_template_src.is_file() and (not bronze_template_dst.exists() or force):
-        shutil.copy2(bronze_template_src, bronze_template_dst)
 
     # 3. Copy Copilot skills into .github/skills/
     skills_src = _SCAFFOLD_DIR / "skills"
@@ -579,9 +571,8 @@ _MIGRATE_DIR_MAP = {
     "shapes": "model/shapes",
     # integration
     "sources": "integration/sources",
-    "mappings": "integration/mappings",
-    # output/medallion
-    "bronze": "output/medallion/bronze",
+    "mappings": "model/mappings",
+    "bronze": "integration/sources",
 }
 
 # Old output subdirs that move under output/medallion/
@@ -642,9 +633,8 @@ def migrate(check, hub_path):
         hub / "model" / "ontologies",
         hub / "model" / "shapes",
         hub / "model" / "extensions",
+        hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "integration" / "mappings",
-        hub / "output" / "medallion" / "bronze",
         hub / "output" / "medallion" / "silver",
         hub / "output" / "medallion" / "gold",
         hub / "output" / "medallion" / "dbt",
@@ -880,9 +870,8 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
         hub / "model" / "ontologies",
         hub / "model" / "shapes",
         hub / "model" / "extensions",
+        hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "integration" / "mappings",
-        hub / "output" / "medallion" / "bronze",
         hub / "output" / "medallion" / "silver",
         hub / "output" / "medallion" / "gold",
         hub / "output" / "medallion" / "dbt",
@@ -895,7 +884,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
 
     # Place .gitkeep in output subdirs so git tracks them
     for target in [
-        "medallion/bronze", "medallion/silver", "medallion/gold", "medallion/dbt",
+        "medallion/silver", "medallion/gold", "medallion/dbt",
         "neo4j", "azure-search", "a2ui", "prompt",
     ]:
         gitkeep = hub / "output" / target / ".gitkeep"
@@ -906,9 +895,8 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
     readme_map = {
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
-        "integration/mappings": "integration/mappings",
+        "model/mappings": "model/mappings",
         "integration/sources": "integration/sources",
-        "output/medallion/bronze": "output/medallion/bronze",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
         src = _SCAFFOLD_DIR / "ontology-hub" / scaffold_subdir / "README.md"
@@ -921,12 +909,6 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
     src_template_dst = hub / "integration" / "sources" / "source-system-template"
     if src_template_src.is_dir() and not src_template_dst.exists():
         shutil.copytree(src_template_src, src_template_dst)
-
-    # Bronze source-system TTL template
-    bronze_template_src = _SCAFFOLD_DIR / "ontology-hub" / "output" / "medallion" / "bronze" / "source-system.ttl.template"
-    bronze_template_dst = hub / "output" / "medallion" / "bronze" / "source-system.ttl.template"
-    if bronze_template_src.is_file() and not bronze_template_dst.exists():
-        shutil.copy2(bronze_template_src, bronze_template_dst)
 
     # Hub-level README with company context
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
