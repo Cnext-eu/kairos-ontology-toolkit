@@ -60,28 +60,39 @@ class CatalogResolver:
     
     def _load_catalog(self):
         """Parse XML catalog and build URI → local path mappings."""
-        if not self.catalog_path.exists():
-            raise FileNotFoundError(f"Catalog not found: {self.catalog_path}")
-        
-        tree = ET.parse(self.catalog_path)
+        self._load_catalog_file(self.catalog_path)
+
+    def _load_catalog_file(self, path: Path):
+        """Parse a single catalog file, following <nextCatalog> references."""
+        if not path.exists():
+            raise FileNotFoundError(f"Catalog not found: {path}")
+
+        tree = ET.parse(path)
         root = tree.getroot()
-        
+        catalog_dir = path.parent
+
         # Parse all <uri> elements
         for uri_elem in root.findall(f"{self.CATALOG_NS}uri"):
             uri_name = uri_elem.get("name")
             uri_path = uri_elem.get("uri")
-            
+
             if uri_name and uri_path:
-                # Resolve relative path from catalog directory
-                catalog_dir = self.catalog_path.parent
                 local_path = (catalog_dir / uri_path).resolve()
-                
+
                 # Normalize URI (ensure trailing slash consistency)
                 normalized_uri = uri_name.rstrip('/') + '/'
                 self.mappings[normalized_uri] = local_path
-                
+
                 # Also add without trailing slash for flexibility
                 self.mappings[normalized_uri.rstrip('/')] = local_path
+
+        # Follow <nextCatalog> references
+        for next_elem in root.findall(f"{self.CATALOG_NS}nextCatalog"):
+            next_catalog = next_elem.get("catalog")
+            if next_catalog:
+                next_path = (catalog_dir / next_catalog).resolve()
+                if next_path.exists():
+                    self._load_catalog_file(next_path)
     
     def resolve(self, uri: str) -> Optional[Path]:
         """

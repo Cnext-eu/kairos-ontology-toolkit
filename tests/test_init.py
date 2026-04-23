@@ -62,6 +62,13 @@ def test_init_creates_hub_structure(tmp_path):
             assert "owl:Ontology" in content
             assert "order" in content
 
+            # Check catalog file
+            assert Path("ontology-hub/catalog-v001.xml").is_file()
+            cat_content = Path("ontology-hub/catalog-v001.xml").read_text(encoding="utf-8")
+            assert "urn:oasis:names:tc:entity:xmlns:xml:catalog" in cat_content
+            assert "nextCatalog" in cat_content
+            assert "test.com" in cat_content
+
 
 def test_init_without_domain(tmp_path):
     """init without --domain should still create the structure but no starter ontology."""

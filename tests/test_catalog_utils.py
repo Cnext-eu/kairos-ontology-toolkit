@@ -75,3 +75,49 @@ class TestCatalogResolver:
         
         with pytest.raises(FileNotFoundError):
             CatalogResolver(catalog_file)
+
+    def test_next_catalog_chaining(self, temp_dir):
+        """Test <nextCatalog> loads mappings from chained catalog."""
+        # Create a child catalog with one mapping
+        child_dir = temp_dir / "reference-models"
+        child_dir.mkdir()
+        (child_dir / "fibo.ttl").write_text("# fibo", encoding="utf-8")
+        child_catalog = child_dir / "catalog-v001.xml"
+        child_catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <uri name="https://spec.edmcouncil.org/fibo/test" uri="fibo.ttl"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        # Create a parent catalog that chains to the child
+        parent_catalog = temp_dir / "catalog-v001.xml"
+        parent_catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <uri name="https://example.com/ont/customer" uri="customer.ttl"/>\n'
+            '  <nextCatalog catalog="reference-models/catalog-v001.xml"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        resolver = CatalogResolver(parent_catalog)
+
+        # Should resolve both the local and the chained mapping
+        assert resolver.resolve("https://example.com/ont/customer") is not None
+        assert resolver.resolve("https://spec.edmcouncil.org/fibo/test") is not None
+
+    def test_next_catalog_missing_is_silently_skipped(self, temp_dir):
+        """nextCatalog pointing to a missing file should not raise."""
+        catalog = temp_dir / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <uri name="urn:example:ok" uri="ok.ttl"/>\n'
+            '  <nextCatalog catalog="does-not-exist/catalog.xml"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        resolver = CatalogResolver(catalog)
+        assert resolver.resolve("urn:example:ok") is not None

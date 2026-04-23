@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Local catalog for {company_name} domain ontologies.
+  Maps ontology URIs to local files so owl:imports resolve without network access.
+
+  Usage:
+    kairos-ontology validate
+    kairos-ontology project
+
+  The toolkit auto-discovers this file at ontology-hub/catalog-v001.xml.
+  If you also use FIBO or other reference ontologies, the <nextCatalog>
+  entry below chains to the shared ontology-reference-models catalog.
+-->
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+
+  <!-- ============================================================
+       Domain ontologies — add one <uri> per domain
+       ============================================================ -->
+
+  <!--
+  <uri name="https://{company_domain}/ont/customer/"
+       uri="model/ontologies/customer.ttl"/>
+  -->
+
+  <!-- ============================================================
+       Chain to shared reference-models catalog (FIBO, etc.)
+       Remove or comment out if you don't use reference models.
+       ============================================================ -->
+  <nextCatalog catalog="../ontology-reference-models/catalog-v001.xml"/>
+
+</catalog>

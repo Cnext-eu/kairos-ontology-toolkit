@@ -132,6 +132,28 @@ def cli():
     pass
 
 
+# Catalog search order: hub-local catalog first, then shared reference-models.
+_CATALOG_CANDIDATES = [
+    Path("ontology-hub/catalog-v001.xml"),
+    Path("ontology-reference-models/catalog-v001.xml"),
+]
+
+
+def _resolve_catalog(explicit: str | None) -> Path | None:
+    """Return the catalog path to use.
+
+    If *explicit* is given (user passed ``--catalog``), use it directly.
+    Otherwise, search ``_CATALOG_CANDIDATES`` in order and return the
+    first one that exists, or ``None`` if no catalog is found.
+    """
+    if explicit:
+        return Path(explicit)
+    for candidate in _CATALOG_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 @cli.command()
 @click.option('--ontologies', type=click.Path(exists=True),
               default='ontology-hub/model/ontologies',
@@ -140,8 +162,10 @@ def cli():
               default='ontology-hub/model/shapes',
               help='Path to SHACL shapes directory')
 @click.option('--catalog', type=click.Path(exists=True),
-              default='ontology-reference-models/catalog-v001.xml',
-              help='Path to catalog file for resolving imports')
+              default=None,
+              help='Path to catalog file for resolving imports '
+                   '(default: ontology-hub/catalog-v001.xml or '
+                   'ontology-reference-models/catalog-v001.xml)')
 @click.option('--all', 'validate_all', is_flag=True,
               help='Validate all: syntax + SHACL + consistency')
 @click.option('--syntax', is_flag=True, help='Validate syntax only')
@@ -152,7 +176,7 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
     """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan)."""
     ontologies_path = Path(ontologies)
     shapes_path = Path(shapes)
-    catalog_path = Path(catalog) if catalog else None
+    catalog_path = _resolve_catalog(catalog)
     
     # Default to all if nothing specified
     if not any([validate_all, syntax, shacl, consistency, gdpr]):
@@ -181,8 +205,10 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
               default='ontology-hub/model/ontologies',
               help='Path to ontologies directory')
 @click.option('--catalog', type=click.Path(exists=True),
-              default='ontology-reference-models/catalog-v001.xml',
-              help='Path to catalog file for resolving imports')
+              default=None,
+              help='Path to catalog file for resolving imports '
+                   '(default: ontology-hub/catalog-v001.xml or '
+                   'ontology-reference-models/catalog-v001.xml)')
 @click.option('--output', type=click.Path(),
               default='ontology-hub/output',
               help='Output directory for projections')
@@ -193,7 +219,7 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
 def project(ontologies, catalog, output, target, namespace):
     """Generate projections from ontologies."""
     ontologies_path = Path(ontologies)
-    catalog_path = Path(catalog) if catalog else None
+    catalog_path = _resolve_catalog(catalog)
     output_path = Path(output)
     
     run_projections(
@@ -385,6 +411,20 @@ def init(domain, company_domain, force):
                        .replace("{company_domain}", company_domain))
             master_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created ontology-hub/model/ontologies/_master.ttl")
+
+    # 7b. Generate local catalog (URI → local file mapping)
+    catalog_src = _SCAFFOLD_DIR / "ontology-hub" / "catalog-v001.xml.template"
+    catalog_dst = hub / "catalog-v001.xml"
+    if catalog_src.is_file():
+        if catalog_dst.exists() and not force:
+            print("  ⏭  ontology-hub/catalog-v001.xml already exists (use --force)")
+        else:
+            content = catalog_src.read_text(encoding="utf-8")
+            content = (content
+                       .replace("{company_name}", company_name)
+                       .replace("{company_domain}", company_domain))
+            catalog_dst.write_text(content, encoding="utf-8")
+            print("  ✓ Created ontology-hub/catalog-v001.xml")
 
     # 8. Scaffold a starter domain ontology
     if domain:
@@ -907,6 +947,16 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
                    .replace("{company_domain}", company_domain_val))
         (hub / "model" / "ontologies" / "_master.ttl").write_text(content, encoding="utf-8")
         print("  ✓ ontology-hub/model/ontologies/_master.ttl")
+
+    # Local catalog (URI → local file mapping)
+    catalog_src = _SCAFFOLD_DIR / "ontology-hub" / "catalog-v001.xml.template"
+    if catalog_src.is_file():
+        content = catalog_src.read_text(encoding="utf-8")
+        content = (content
+                   .replace("{company_name}", company_name)
+                   .replace("{company_domain}", company_domain_val))
+        (hub / "catalog-v001.xml").write_text(content, encoding="utf-8")
+        print("  ✓ ontology-hub/catalog-v001.xml")
 
     # Copilot skills
     skills_src = _SCAFFOLD_DIR / "skills"
