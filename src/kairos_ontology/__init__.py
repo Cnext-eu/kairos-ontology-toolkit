@@ -5,7 +5,7 @@
 __version__ = "2.1.1"
 
 from kairos_ontology.catalog_utils import CatalogResolver, load_graph_with_catalog
-from kairos_ontology.validator import run_validation, validate_content
+from kairos_ontology.validator import run_validation, validate_content, validate_gdpr
 from kairos_ontology.projector import run_projections, project_graph
 from kairos_ontology.ontology_ops import (
     list_classes,
@@ -26,6 +26,7 @@ __all__ = [
     "load_graph_with_catalog",
     "run_validation",
     "validate_content",
+    "validate_gdpr",
     "run_projections",
     "project_graph",
     "list_classes",

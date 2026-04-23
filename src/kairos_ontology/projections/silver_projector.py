@@ -20,12 +20,15 @@ Namespace:  kairos-ext:  https://kairos.cnext.eu/ext#
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Optional
 
 from rdflib import Graph, Namespace, URIRef, Literal, XSD
 from rdflib.namespace import OWL, RDF, RDFS
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # kairos-ext namespace
@@ -96,6 +99,48 @@ def _bool_val(graph: Graph, subject: URIRef, predicate: URIRef, default: bool = 
     if val is None:
         return default
     return str(val).lower() in ("true", "1", "yes")
+
+
+# PII keywords for projection-time GDPR warning (mirrors validator.PII_KEYWORDS)
+_PII_KEYWORDS: list[str] = [
+    "first_name", "last_name", "date_of_birth", "national_id", "iban",
+    "phone", "email", "address", "ssn", "passport", "tax_id", "gender",
+    "ethnicity", "religion", "health", "maiden_name", "birth_place",
+    "nationality", "marital_status",
+]
+
+
+def _warn_unprotected_pii(
+    graph: Graph,
+    domain_classes: list[dict],
+    namespace: str,
+) -> None:
+    """Emit warnings for classes with PII-like properties lacking gdprSatelliteOf."""
+    protected: set[str] = set()
+    for subj in graph.subjects(KAIROS_EXT.gdprSatelliteOf, None):
+        protected.add(str(subj))
+    parents_with_sat: set[str] = set()
+    for subj, obj in graph.subject_objects(KAIROS_EXT.gdprSatelliteOf):
+        parents_with_sat.add(str(obj))
+
+    for cls_info in domain_classes:
+        cls_uri_str = cls_info["uri"]
+        if cls_uri_str in protected or cls_uri_str in parents_with_sat:
+            continue
+        cls_uri = URIRef(cls_uri_str)
+        for prop in graph.subjects(RDFS.domain, cls_uri):
+            if (prop, RDF.type, OWL.DatatypeProperty) not in graph:
+                continue
+            local = _local_name(str(prop))
+            snake = _camel_to_snake(local)
+            for kw in _PII_KEYWORDS:
+                if kw in snake:
+                    logger.warning(
+                        "GDPR: %s.%s matches PII keyword '%s' but class has no "
+                        "gdprSatelliteOf annotation",
+                        cls_info["name"], local, kw,
+                    )
+                    break
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +297,10 @@ def generate_silver_artifacts(
     # resolved via _resolve_external_table to point at the canonical schema.
     domain_classes = [c for c in classes if c["uri"].startswith(namespace)]
     class_uris = {c["uri"] for c in domain_classes}
+
+    # GDPR PII warning: scan for PII-like properties on unprotected classes
+    _warn_unprotected_pii(merged, domain_classes, namespace)
+
     # S3: Track all subtypes to flatten into parent tables
     folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype names]
     # Map of subtype_uri → parent_uri for property merging

@@ -2,7 +2,6 @@
 # Copyright 2026 Cnext.eu
 """Tests for the silver layer projector (R1-R16 annotations + S1-S8 Fabric rules)."""
 
-import importlib.util
 import textwrap
 from pathlib import Path
 
@@ -10,27 +9,17 @@ import pytest
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
-# ---------------------------------------------------------------------------
-# Load silver_projector from source (not installed site-packages)
-# ---------------------------------------------------------------------------
-
-def _load_silver_projector():
-    src = Path(__file__).parent.parent / "src" / "kairos_ontology" / "projections" / "silver_projector.py"
-    spec = importlib.util.spec_from_file_location("silver_projector_src", src)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_sp = _load_silver_projector()
-ColumnDef = _sp.ColumnDef
-TableDef = _sp.TableDef
-_camel_to_snake = _sp._camel_to_snake
-_mmd_type = _sp._mmd_type
-_parse_audit_envelope = _sp._parse_audit_envelope
-_s4_inlined_name = _sp._s4_inlined_name
-generate_silver_artifacts = _sp.generate_silver_artifacts
-render_mermaid_svg = _sp.render_mermaid_svg
+from kairos_ontology.projections.silver_projector import (
+    ColumnDef,
+    TableDef,
+    _camel_to_snake,
+    _mmd_type,
+    _parse_audit_envelope,
+    _s4_inlined_name,
+    generate_master_erd,
+    generate_silver_artifacts,
+    render_mermaid_svg,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -386,8 +375,6 @@ def test_junction_table_generated():
 # ---------------------------------------------------------------------------
 
 def test_master_erd_merges_domains(tmp_path):
-    generate_master_erd = _sp.generate_master_erd
-
     # Simulate two domain ERD files in output/silver/
     silver_out = tmp_path / "silver"
     (silver_out / "customer").mkdir(parents=True)
@@ -415,8 +402,6 @@ def test_master_erd_merges_domains(tmp_path):
 
 
 def test_master_erd_returns_none_when_empty(tmp_path):
-    generate_master_erd = _sp.generate_master_erd
-
     silver_out = tmp_path / "silver"
     silver_out.mkdir()
     assert generate_master_erd(silver_out) is None
@@ -424,8 +409,6 @@ def test_master_erd_returns_none_when_empty(tmp_path):
 
 def test_master_erd_excludes_own_previous_output(tmp_path):
     """Regression: master-erd.mmd must not be included in its own merge."""
-    generate_master_erd = _sp.generate_master_erd
-
     silver_out = tmp_path / "silver"
     (silver_out / "customer").mkdir(parents=True)
     (silver_out / "customer" / "customer-erd.mmd").write_text(

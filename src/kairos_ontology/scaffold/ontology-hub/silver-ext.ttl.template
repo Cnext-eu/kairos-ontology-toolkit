@@ -1,7 +1,11 @@
 # Silver-layer projection extension for the {DOMAIN} ontology
 #
 # This file drives DDL + ERD generation for the MS Fabric silver layer.
-# Rules referenced: R1–R15 (Silver Layer Projection Rules).
+# Rules referenced: R1–R16 (common annotations) + S1–S8 (Silver Fabric rules).
+#
+# IMPORTANT: Always write every annotation explicitly, even when the value
+# matches the projector default. This ensures deterministic, reproducible
+# output across toolkit versions.
 #
 # Usage:
 #   python -m kairos_ontology project --target silver
@@ -29,10 +33,11 @@
     owl:imports <{DOMAIN_ONTOLOGY_URI}> .
 
 # ---------------------------------------------------------------------------
-# R1  — Schema name (default: silver_{domain})
+# Ontology-level annotations (apply to all tables in this domain)
 # ---------------------------------------------------------------------------
 
 <{DOMAIN_ONTOLOGY_URI}>
+    # R1  — Schema name (default: silver_{domain})
     kairos-ext:silverSchema "silver_{domain}" ;
 
     # R2  — Surrogate key strategy
@@ -44,23 +49,35 @@
     # R4  — Naming convention (camelCase → snake_case)
     kairos-ext:namingConvention "camel-to-snake" ;
 
+    # S4  — Inline ref threshold (ref tables with ≤N business columns are inlined)
+    kairos-ext:inlineRefThreshold "3"^^xsd:integer ;
+
     # R9  — Audit envelope appended to every non-reference table
     kairos-ext:auditEnvelope
-        "_created_at DATETIME2, _updated_at DATETIME2, _source_system NVARCHAR(128), _load_date DATE, _batch_id NVARCHAR(64)" .
+        "_created_at TIMESTAMP, _updated_at TIMESTAMP, _source_system STRING, _load_date DATE, _batch_id STRING" .
 
 # ---------------------------------------------------------------------------
 # Class-level annotations (add one block per class)
 #
-# R5  — SCD type: "2" (history, default) or "1" (overwrite / reference)
-# R6  — Inheritance: "class-per-table" (default) or "discriminator"
-# R7  — GDPR satellite: kairos-ext:gdprSatelliteOf domain:ParentClass
-# R8  — Reference data: kairos-ext:isReferenceData "true"^^xsd:boolean
-# R10 — Partitioning / clustering
+# ⚠️  Write EVERY annotation explicitly — even when using the default value.
+#     This ensures deterministic output across toolkit versions.
+#
+# Required per class:
+#   kairos-ext:scdType              "2" (history) or "1" (overwrite)
+#   kairos-ext:isReferenceData      "true"/"false"
+#
+# Conditional:
+#   kairos-ext:inheritanceStrategy  "class-per-table" or "discriminator" (if has subclasses)
+#   kairos-ext:discriminatorColumn  column name (if strategy = discriminator)
+#   kairos-ext:gdprSatelliteOf      parent class (if GDPR isolation needed)
+#   kairos-ext:partitionBy          partition column
+#   kairos-ext:clusterBy            cluster columns
 # ---------------------------------------------------------------------------
 
-# Example: standard operational table (SCD Type 2, class-per-table)
+# Example: standard operational table (SCD Type 2)
 # domain:MyClass
 #     kairos-ext:scdType "2" ;
+#     kairos-ext:isReferenceData "false"^^xsd:boolean ;
 #     kairos-ext:partitionBy "_load_date" .
 
 # Example: reference / code list table (SCD Type 1, ref_ prefix)
@@ -72,8 +89,10 @@
 # domain:MySensitiveData
 #     kairos-ext:gdprSatelliteOf domain:MyParentClass .
 
-# Example: discriminator-based inheritance
+# Example: discriminator-based inheritance (explicit, even though S3 always flattens)
 # domain:MyBaseClass
+#     kairos-ext:scdType "2" ;
+#     kairos-ext:isReferenceData "false"^^xsd:boolean ;
 #     kairos-ext:inheritanceStrategy "discriminator" ;
 #     kairos-ext:discriminatorColumn "entity_type" .
 
@@ -90,7 +109,7 @@
 # Example: FK column for a many-to-one object property
 # domain:hasLegalForm
 #     kairos-ext:silverColumnName "legal_form_code" ;
-#     kairos-ext:silverDataType   "NVARCHAR(16)" .
+#     kairos-ext:silverDataType   "STRING" .
 
 # Example: junction table for a many-to-many object property
 # domain:hasTeamMember

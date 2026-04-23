@@ -5,6 +5,28 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] — 2025-07-26
+
+### Added
+
+- **GDPR PII validation** (`validate --gdpr`) — scans domain ontologies for
+  properties matching PII keywords (first_name, national_id, iban, email, etc.)
+  and warns when the owning class lacks a `kairos-ext:gdprSatelliteOf` annotation.
+  Runs as part of `validate --all` or standalone with `validate --gdpr`.
+- **Projection-time GDPR warning** — the silver projector now emits `logging.warning`
+  messages when classes with PII-like properties lack GDPR satellite protection.
+- **Explicit annotation mandate** — silver projection skill (Phase 2) updated to
+  instruct Copilot to always write every annotation explicitly, even defaults.
+  Includes new Phase 2f "Annotation completeness check" step.
+- `validate_gdpr()` function added to public API.
+
+### Changed
+
+- **Scaffold template** (`silver-ext.ttl.template`) — audit envelope example now
+  uses Spark SQL types (TIMESTAMP, STRING) instead of T-SQL (DATETIME2, NVARCHAR).
+  Added `kairos-ext:inlineRefThreshold` ontology-level annotation. All class-level
+  examples now show explicit `isReferenceData "false"` for non-reference classes.
+
 ## [2.1.1] — 2025-07-26
 
 ### Fixed
