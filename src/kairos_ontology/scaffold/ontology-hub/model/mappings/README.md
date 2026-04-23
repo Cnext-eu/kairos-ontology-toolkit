@@ -1,7 +1,11 @@
 # SKOS Mappings
 
 This directory contains SKOS mapping files that link concepts across
-vocabularies. Two main use cases:
+vocabularies. Each mapping file can serve **both** purposes below — SKOS
+predicates express the semantic relationship while `kairos-map:` annotations
+add the technical detail needed for dbt code generation. This dual-purpose
+design avoids redundancy: one file per source×domain is the single source
+of truth for alignment **and** transformation.
 
 ## 1. External vocabulary alignment
 
