@@ -3,7 +3,8 @@ name: kairos-medallion-projection
 description: >
   Expert guide for generating dbt Core staging and silver models as part of the
   medallion architecture. Covers the full bronze-to-silver pipeline using bronze
-  vocabulary, SKOS mappings, and SHACL-derived dbt tests.
+  vocabulary, source-to-silver column mappings (SKOS + kairos-map:), and
+  SHACL-derived dbt tests.
 ---
 
 # Kairos Medallion Projection Skill
@@ -14,7 +15,10 @@ is driven by:
 
 - **Domain ontology** — OWL classes and properties defining the silver target schema
 - **Bronze vocabulary** — `kairos-bronze:` descriptions of source system tables/columns
-- **SKOS mappings** — semantic + technical column mappings between bronze and silver
+- **Source-to-silver mappings** — SKOS match predicates linking bronze columns to silver
+  properties, enriched with `kairos-map:` annotations for SQL transforms. These are
+  **not** ontology-alignment mappings (domain ↔ external standards like FIBO) — they
+  are technical data-transformation mappings that drive dbt code generation.
 - **SHACL shapes** — data quality constraints converted to dbt tests
 
 ## Prerequisites / Dependencies
@@ -29,7 +33,7 @@ Before running this projection, ensure the following artifacts exist in the hub:
 - **Silver canonical schema** should exist — domain ontologies with silver projection
   annotations (`kairos-ext:` / `kairos-silver:` properties). Use the
   `kairos-medallion-silver` skill to design and generate the silver layer schema.
-- **SKOS mappings** must exist in `model/mappings/{system-name}/` — one `.ttl` file per source-to-domain
+- **Source-to-silver mappings** must exist in `model/mappings/{system-name}/` — one `.ttl` file per source-to-domain
   combination (e.g. `adminpulse-to-party.ttl`) linking bronze columns to silver
   domain properties using SKOS match predicates and `kairos-map:` transforms.
 
@@ -247,9 +251,6 @@ ontology-hub/
       erp-navision/
         README.md
         erp-navision.bronze.ttl      # Bronze vocabulary (kairos-bronze:)
-    mappings/
-      adminpulse-to-party.ttl        # SKOS: AdminPulse → Party
-      adminpulse-to-client.ttl       # SKOS: AdminPulse → Client
   model/
     ontologies/
       party.ttl                      # Silver domain ontology
@@ -257,6 +258,12 @@ ontology-hub/
       party-silver-ext.ttl           # Silver projection annotations
     shapes/
       client.shacl.ttl               # SHACL → dbt tests
+    mappings/
+      adminpulse/
+        adminpulse-to-party.ttl      # SKOS + kairos-map: AdminPulse → Party
+        adminpulse-to-client.ttl     # SKOS + kairos-map: AdminPulse → Client
+      erp-navision/
+        erp-navision-to-order.ttl    # SKOS + kairos-map: ERP → Order
   output/
     medallion/
       silver/                        # Generated silver DDL
