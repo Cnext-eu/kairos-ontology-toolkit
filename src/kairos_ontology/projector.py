@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 from rdflib import Graph, Namespace, URIRef
-from rdflib.namespace import OWL, RDFS
+from rdflib.namespace import OWL, RDF, RDFS
 from .projections.uri_utils import extract_local_name
 
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver"]
@@ -333,13 +333,27 @@ def _auto_detect_namespace(graph: Graph) -> str:
     for row in graph.query(ontology_query):
         onto_uri = str(row['ontology'])
         
-        # Extract namespace from ontology URI
+        # Extract namespace from ontology URI.
+        # Key insight: many ontologies declare URI without '#' (e.g.
+        # https://example.com/ont/client) but their classes use '#' fragments
+        # (e.g. https://example.com/ont/client#Client).  In that case the
+        # namespace is '{onto_uri}#', NOT the parent path.
         if '#' in onto_uri:
             namespace = onto_uri.rsplit('#', 1)[0] + '#'
-        elif '/' in onto_uri:
-            namespace = onto_uri.rsplit('/', 1)[0] + '/'
         else:
-            namespace = onto_uri + ':'  # URN format
+            # Probe: do any owl:Class URIs start with '{onto_uri}#'?
+            hash_ns = onto_uri + '#'
+            has_hash_classes = any(
+                str(cls).startswith(hash_ns)
+                for cls in graph.subjects(RDF.type, OWL.Class)
+                if isinstance(cls, URIRef)
+            )
+            if has_hash_classes:
+                namespace = hash_ns
+            elif '/' in onto_uri:
+                namespace = onto_uri.rsplit('/', 1)[0] + '/'
+            else:
+                namespace = onto_uri + ':'  # URN format
         
         # Skip standard W3C ontologies
         if namespace not in standard_namespaces:

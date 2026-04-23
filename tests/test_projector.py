@@ -19,6 +19,12 @@ try:
 except ImportError:
     _HAS_EXTRACT = False
 
+try:
+    from kairos_ontology.projector import _auto_detect_namespace
+    _HAS_DETECT_NS = True
+except ImportError:
+    _HAS_DETECT_NS = False
+
 
 @pytest.mark.skipif(not _HAS_EXTRACT, reason="extract_ontology_metadata not in installed package")
 class TestExtractOntologyMetadata:
@@ -1116,3 +1122,67 @@ class TestIsDomainOntology:
         assert "widgets.ttl" in captured.out
         assert "silver-ext" not in captured.out
         assert "_master" not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Namespace detection regression tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _HAS_DETECT_NS, reason="_auto_detect_namespace not available")
+class TestAutoDetectNamespace:
+    """Regression tests for _auto_detect_namespace hash-fragment handling."""
+
+    def test_hash_fragment_ontology_returns_hash_namespace(self):
+        """Ontology URI without '#' but classes with '#' → namespace = uri + '#'."""
+        g = Graph()
+        onto_uri = URIRef("https://pkf-bofidi.com/ont/client")
+        g.add((onto_uri, RDF.type, OWL.Ontology))
+        g.add((onto_uri, RDFS.label, Literal("Client Ontology")))
+
+        cls_uri = URIRef("https://pkf-bofidi.com/ont/client#Client")
+        g.add((cls_uri, RDF.type, OWL.Class))
+
+        ns = _auto_detect_namespace(g)
+        assert ns == "https://pkf-bofidi.com/ont/client#", (
+            f"Expected 'https://pkf-bofidi.com/ont/client#', got '{ns}'"
+        )
+
+    def test_hash_fragment_does_not_match_other_domains(self):
+        """Two domains with shared path prefix must produce distinct namespaces."""
+        g = Graph()
+        # client domain
+        onto_client = URIRef("https://example.com/ont/client")
+        g.add((onto_client, RDF.type, OWL.Ontology))
+        g.add((URIRef("https://example.com/ont/client#Client"), RDF.type, OWL.Class))
+        # party domain classes present (via import) but no ontology declaration
+        g.add((URIRef("https://example.com/ont/party#Party"), RDF.type, OWL.Class))
+
+        ns = _auto_detect_namespace(g)
+        assert ns == "https://example.com/ont/client#"
+        # Verify the party class does NOT match this namespace
+        assert not "https://example.com/ont/party#Party".startswith(ns)
+
+    def test_slash_based_namespace_unchanged(self):
+        """Ontology URI with slash-based classes → slash namespace (existing behaviour)."""
+        g = Graph()
+        onto_uri = URIRef("http://example.org/ontology/")
+        g.add((onto_uri, RDF.type, OWL.Ontology))
+
+        cls_uri = URIRef("http://example.org/ontology/Product")
+        g.add((cls_uri, RDF.type, OWL.Class))
+
+        ns = _auto_detect_namespace(g)
+        # Slash-based: classes are under the ontology URI directly
+        assert ns == "http://example.org/ontology/"
+
+    def test_hash_in_ontology_uri_still_works(self):
+        """Ontology URI that already contains '#' → existing '#' logic."""
+        g = Graph()
+        onto_uri = URIRef("http://example.org/onto#MyOntology")
+        g.add((onto_uri, RDF.type, OWL.Ontology))
+
+        cls_uri = URIRef("http://example.org/onto#Customer")
+        g.add((cls_uri, RDF.type, OWL.Class))
+
+        ns = _auto_detect_namespace(g)
+        assert ns == "http://example.org/onto#"
