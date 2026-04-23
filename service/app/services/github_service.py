@@ -184,8 +184,11 @@ async def read_file(
     return base64.b64decode(data["content"]).decode("utf-8")
 
 
-_APPLICATION_MODELS_PATH = "application-models"
-_APPLICATION_MODELS_FALLBACK_PATHS = ["application-models", "ontology-hub/application-models"]
+_APPLICATION_MODELS_PATH = "ontology-hub/output/medallion/silver"
+_APPLICATION_MODELS_FALLBACK_PATHS = [
+    "ontology-hub/output/medallion/silver",
+    "output/medallion/silver",
+]
 
 
 async def list_mmd_files(
@@ -193,10 +196,10 @@ async def list_mmd_files(
     owner: Optional[str] = None,
     repo: Optional[str] = None,
 ) -> list[dict]:
-    """List Mermaid class-diagram files (*.mmd) under ``application-models/`` in the repo.
+    """List Mermaid class-diagram files (*.mmd) in the silver output folder.
 
-    Tries ``application-models/`` first, then falls back to
-    ``ontology-hub/application-models/`` for repos with a nested layout.
+    Tries ``ontology-hub/output/medallion/silver/`` first, then falls back to
+    ``output/medallion/silver/`` for repos with a flat layout.
     """
     t = await _token()
     branch = branch or settings.github_default_branch

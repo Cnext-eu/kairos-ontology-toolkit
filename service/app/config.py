@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     github_repo_owner: str = ""
     github_repo_name: str = ""
     github_default_branch: str = "main"
-    github_ontologies_path: str = "ontology-hub/ontologies"
+    github_ontologies_path: str = "ontology-hub/model/ontologies"
 
     # Service
     allowed_origins: str = ""  # comma-separated CORS origins (empty = none)

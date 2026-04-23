@@ -95,12 +95,24 @@ contoso-ontology-hub/
 │   └── workflows/managed-check.yml
 ├── ontology-hub/
 │   ├── README.md                        # Company context + domain overview
-│   ├── ontologies/
-│   │   └── _master.ttl                  # Master ontology (imports all domains)
-│   ├── shapes/
-│   ├── mappings/
-│   └── output/                          # Gitignored
-├── application-models/                  # Mermaid ERD / class-diagram files (.mmd)
+│   ├── model/                           # Domain model (ontology-centric)
+│   │   ├── ontologies/
+│   │   │   └── _master.ttl              # Master ontology (imports all domains)
+│   │   ├── shapes/
+│   │   └── extensions/                  # *-silver-ext.ttl projection annotations
+│   ├── integration/                     # Source system integration
+│   │   ├── sources/
+│   │   └── mappings/
+│   └── output/                          # All projection outputs (committed)
+│       ├── medallion/
+│       │   ├── bronze/
+│       │   ├── silver/
+│       │   ├── gold/
+│       │   └── dbt/
+│       ├── neo4j/
+│       ├── azure-search/
+│       ├── a2ui/
+│       └── prompt/
 ├── ontology-reference-models/           # Populated automatically by update-referencemodels.ps1
 ├── .gitignore
 ├── pyproject.toml                       # kairos-ontology-toolkit dependency
@@ -152,7 +164,7 @@ python -m kairos_ontology init --company-domain contoso.com --domain customer
   with a different `--domain` to add more.
 
 The `init` command also creates `ontology-hub/README.md` (company context)
-and `ontology-hub/ontologies/_master.ttl` (imports all domains) if they
+and `ontology-hub/model/ontologies/_master.ttl` (imports all domains) if they
 don't exist yet.
 
 Commit the scaffold to `main`:
@@ -172,7 +184,7 @@ Use the SC-feature-branch skill or:
 git checkout -b ontology/customer-domain
 ```
 
-Edit `ontology-hub/ontologies/customer.ttl` — see the
+Edit `ontology-hub/model/ontologies/customer.ttl` — see the
 kairos-ontology-modeling skill for design guidance.  At minimum ensure:
 
 - `owl:Ontology` with `rdfs:label` and `owl:versionInfo`
@@ -205,40 +217,7 @@ domain overview table in `ontology-hub/README.md`.
 
 ---
 
-## 8. Add application models (optional)
-
-Application models are Mermaid class diagrams stored in `application-models/`
-at the repo root.  They visualise entity-relationship structures derived from
-the ontology and appear in the Kairos web UI "Application Models" dropdown.
-
-```bash
-# Create a model for the customer-order process
-mkdir -p application-models
-```
-
-Then create `application-models/customer-order.mmd`:
-
-```
-classDiagram
-  class Customer {
-    +String id
-    +String name
-  }
-  class Order {
-    +String id
-    +Date placedAt
-  }
-  Customer "1" --> "*" Order : places
-```
-
-Rules:
-- One `.mmd` file per application model / process view.
-- Name the file after the process (e.g. `customer-order.mmd`, `supplier-invoice.mmd`).
-- Commit alongside the related ontology domain on the same feature branch.
-
----
-
-## 9. Push and create PR
+## 8. Push and create PR
 
 ```bash
 git add .
@@ -257,9 +236,8 @@ Or use the SC-merge-pr skill.  Never push directly to `main`.
 |------|---------|
 | Create new hub repo | `python -m kairos_ontology new-repo <name>` |
 | Init hub + first domain | `python -m kairos_ontology init --company-domain <domain> --domain <domain>` |
-| Add application model | Create `application-models/<name>.mmd` (Mermaid class diagram) |
 | Validate | `python -m kairos_ontology validate` |
 | Project (all) | `python -m kairos_ontology project` |
 | Project (single) | `python -m kairos_ontology project --target prompt` |
-| Silver layer DDL | `python -m kairos_ontology project --target silver` (needs `*-silver-ext.ttl`) |
+| Silver layer DDL | `python -m kairos_ontology project --target silver` (needs `*-silver-ext.ttl` in `model/extensions/`) |
 | Test catalog | `python -m kairos_ontology catalog-test --catalog ontology-reference-models/catalog-v001.xml` |

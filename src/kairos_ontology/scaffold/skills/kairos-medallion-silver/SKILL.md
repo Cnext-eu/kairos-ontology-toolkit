@@ -30,7 +30,7 @@ The projection is governed by two rule sets:
 ### 1a — Check for existing file
 
 ```bash
-ls ontology-hub/ontologies/*-silver-ext.ttl
+ls ontology-hub/model/extensions/*-silver-ext.ttl
 ```
 
 - If found: load it and skip to Phase 2.
@@ -42,10 +42,10 @@ Copy the scaffold template for each domain ontology that should be projected:
 
 ```bash
 cp "$(python -m kairos_ontology _scaffold_path)/ontology-hub/silver-ext.ttl.template" \
-   ontology-hub/ontologies/{DOMAIN}-silver-ext.ttl
+   ontology-hub/model/extensions/{DOMAIN}-silver-ext.ttl
 ```
 
-Or manually create `ontology-hub/ontologies/{DOMAIN}-silver-ext.ttl`.
+Or manually create `ontology-hub/model/extensions/{DOMAIN}-silver-ext.ttl`.
 
 The template is pre-populated with all R1-R16 annotations and defaults.
 Replace `{DOMAIN}`, `{DOMAIN_URI}`, `{DOMAIN_ONTOLOGY_URI}`, and `{DOMAIN_EXTENSION_URI}`
@@ -170,8 +170,8 @@ class in the domain MUST have at minimum:
 Run a quick scan:
 ```bash
 # Count classes vs annotated classes — they should match
-grep -c "owl:Class" ontology-hub/ontologies/{DOMAIN}.ttl
-grep -c "kairos-ext:scdType" ontology-hub/ontologies/{DOMAIN}-silver-ext.ttl
+grep -c "owl:Class" ontology-hub/model/ontologies/{DOMAIN}.ttl
+grep -c "kairos-ext:scdType" ontology-hub/model/extensions/{DOMAIN}-silver-ext.ttl
 ```
 
 ---
@@ -228,24 +228,22 @@ ex:{PropertyName}
 ```bash
 # Project a single ontology file + extension
 python -m kairos_ontology project \
-    --ontology ontology-hub/ontologies/{DOMAIN}.ttl \
+    --ontology ontology-hub/model/ontologies/{DOMAIN}.ttl \
     --target silver
 
 # Project all domains in a hub
 python -m kairos_ontology project --target silver
 ```
 
-Artifacts are written to `output/silver/{DOMAIN}/`:
+Artifacts are written to `output/medallion/silver/{DOMAIN}/`:
 - `{DOMAIN}-ddl.sql` — CREATE TABLE statements (Spark SQL / MS Fabric Warehouse compatible)
 - `{DOMAIN}-alter.sql` — ALTER TABLE statements for UNIQUE and FK constraints
 - `{DOMAIN}-erd.mmd` — Mermaid `erDiagram` for this domain
 - `{DOMAIN}-erd.svg` — SVG render of the ERD (requires Mermaid CLI)
 
 **Automatically generated after all domains are projected:**
-- `output/silver/master-erd.mmd` — cross-domain master ERD (all tables + FK relationships)
-- `output/silver/master-erd.svg` — SVG render of the master ERD
-- `application-models/master-erd.mmd` — same file copied for display in the Kairos web UI
-- `application-models/master-erd.svg` — SVG for stakeholder review
+- `output/medallion/silver/master-erd.mmd` — cross-domain master ERD (all tables + FK relationships)
+- `output/medallion/silver/master-erd.svg` — SVG render of the master ERD
 
 The master ERD merges every `*-erd.mmd` into a single diagram with one section per domain.
 It is the primary artifact to review the full silver layer data model at a glance.
@@ -281,7 +279,7 @@ Key things to verify:
 
 ### Check master ERD
 
-Open `output/silver/master-erd.mmd` (or `application-models/master-erd.mmd`) in a
+Open `output/medallion/silver/master-erd.mmd` in a
 Mermaid viewer or the Kairos web UI.
 
 Verify:
@@ -290,13 +288,13 @@ Verify:
 - No orphaned tables
 
 > **Tip**: The master ERD is the best way to review the full silver layer model with
-> a client. Share `application-models/master-erd.mmd` for stakeholder review.
+> a client. Share `output/medallion/silver/master-erd.mmd` for stakeholder review.
 
 ### Update master ERD manually (if needed)
 
 The master ERD is auto-generated from per-domain ERDs. If you need to add cross-domain
 relationships that aren't captured by FK annotations, add them directly to
-`application-models/master-erd.mmd` after generation:
+`output/medallion/silver/master-erd.mmd` after generation:
 
 ```
 erDiagram
@@ -349,7 +347,7 @@ The master ERD is regenerated automatically on every run.
 
 ## Standard SHACL integration (R11)
 
-If SHACL shapes are present in `shapes/`, they are automatically merged at generation time.
+If SHACL shapes are present in `model/shapes/`, they are automatically merged at generation time.
 A property becomes `NOT NULL` when:
 1. The SHACL property shape has `sh:minCount 1`, **or**
 2. `kairos-ext:nullable "false"^^xsd:boolean` is set on the OWL property.

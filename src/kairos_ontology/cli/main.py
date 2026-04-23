@@ -134,10 +134,10 @@ def cli():
 
 @cli.command()
 @click.option('--ontologies', type=click.Path(exists=True),
-              default='ontology-hub/ontologies',
+              default='ontology-hub/model/ontologies',
               help='Path to ontologies directory')
 @click.option('--shapes', type=click.Path(exists=True),
-              default='ontology-hub/shapes',
+              default='ontology-hub/model/shapes',
               help='Path to SHACL shapes directory')
 @click.option('--catalog', type=click.Path(exists=True),
               default='ontology-reference-models/catalog-v001.xml',
@@ -178,7 +178,7 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
 
 @cli.command()
 @click.option('--ontologies', type=click.Path(exists=True),
-              default='ontology-hub/ontologies',
+              default='ontology-hub/model/ontologies',
               help='Path to ontologies directory')
 @click.option('--catalog', type=click.Path(exists=True),
               default='ontology-reference-models/catalog-v001.xml',
@@ -241,44 +241,56 @@ def init(domain, company_domain, force):
 
     # 1. Create directory structure
     for d in [
-        hub / "ontologies",
-        hub / "shapes",
-        hub / "mappings",
-        hub / "bronze",
-        hub / "sources",
-        hub / "output" / "dbt",
+        hub / "model" / "ontologies",
+        hub / "model" / "shapes",
+        hub / "model" / "extensions",
+        hub / "integration" / "sources",
+        hub / "integration" / "mappings",
+        hub / "output" / "medallion" / "bronze",
+        hub / "output" / "medallion" / "silver",
+        hub / "output" / "medallion" / "gold",
+        hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
         hub / "output" / "azure-search",
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
-        hub / "output" / "silver",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
     # Place .gitkeep in empty output subdirs so git tracks them
-    for target in ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver"]:
+    for target in [
+        "medallion/bronze", "medallion/silver", "medallion/gold", "medallion/dbt",
+        "neo4j", "azure-search", "a2ui", "prompt",
+    ]:
         gitkeep = hub / "output" / target / ".gitkeep"
         if not gitkeep.exists():
             gitkeep.touch()
     # 2. Copy README files for each directory
-    for subdir in ["ontologies", "shapes", "mappings", "bronze", "sources"]:
-        readme_src = _SCAFFOLD_DIR / "ontology-hub" / subdir / "README.md"
-        readme_dst = hub / subdir / "README.md"
+    readme_map = {
+        "model/ontologies": "model/ontologies",
+        "model/shapes": "model/shapes",
+        "integration/mappings": "integration/mappings",
+        "integration/sources": "integration/sources",
+        "output/medallion/bronze": "output/medallion/bronze",
+    }
+    for scaffold_subdir, hub_subdir in readme_map.items():
+        readme_src = _SCAFFOLD_DIR / "ontology-hub" / scaffold_subdir / "README.md"
+        readme_dst = hub / hub_subdir / "README.md"
         if readme_src.is_file() and (not readme_dst.exists() or force):
             shutil.copy2(readme_src, readme_dst)
 
-    # 2b. Copy source-system-template into sources/
-    src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "sources" / "source-system-template"
-    src_template_dst = hub / "sources" / "source-system-template"
+    # 2b. Copy source-system-template into integration/sources/
+    src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "integration" / "sources" / "source-system-template"
+    src_template_dst = hub / "integration" / "sources" / "source-system-template"
     if src_template_src.is_dir() and (not src_template_dst.exists() or force):
         if src_template_dst.exists():
             shutil.rmtree(src_template_dst)
         shutil.copytree(src_template_src, src_template_dst)
-        print("  ✓ Installed sources/source-system-template/")
+        print("  ✓ Installed integration/sources/source-system-template/")
 
     # 2c. Copy bronze source-system TTL template
-    bronze_template_src = _SCAFFOLD_DIR / "ontology-hub" / "bronze" / "source-system.ttl.template"
-    bronze_template_dst = hub / "bronze" / "source-system.ttl.template"
+    bronze_template_src = _SCAFFOLD_DIR / "ontology-hub" / "output" / "medallion" / "bronze" / "source-system.ttl.template"
+    bronze_template_dst = hub / "output" / "medallion" / "bronze" / "source-system.ttl.template"
     if bronze_template_src.is_file() and (not bronze_template_dst.exists() or force):
         shutil.copy2(bronze_template_src, bronze_template_dst)
 
@@ -361,25 +373,25 @@ def init(domain, company_domain, force):
             print("  ✓ Created ontology-hub/README.md (company context)")
 
     # 7. Generate master ontology (imports all domains)
-    master_src = _SCAFFOLD_DIR / "ontology-hub" / "ontologies" / "master.ttl.template"
-    master_dst = hub / "ontologies" / "_master.ttl"
+    master_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "master.ttl.template"
+    master_dst = hub / "model" / "ontologies" / "_master.ttl"
     if master_src.is_file():
         if master_dst.exists() and not force:
-            print("  ⏭  ontology-hub/ontologies/_master.ttl already exists (use --force)")
+            print("  ⏭  ontology-hub/model/ontologies/_master.ttl already exists (use --force)")
         else:
             content = master_src.read_text(encoding="utf-8")
             content = (content
                        .replace("{company_name}", company_name)
                        .replace("{company_domain}", company_domain))
             master_dst.write_text(content, encoding="utf-8")
-            print("  ✓ Created ontology-hub/ontologies/_master.ttl")
+            print("  ✓ Created ontology-hub/model/ontologies/_master.ttl")
 
     # 8. Scaffold a starter domain ontology
     if domain:
-        template_src = _SCAFFOLD_DIR / "ontology-hub" / "ontologies" / "starter.ttl.template"
-        ontology_dst = hub / "ontologies" / f"{domain}.ttl"
+        template_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "starter.ttl.template"
+        ontology_dst = hub / "model" / "ontologies" / f"{domain}.ttl"
         if ontology_dst.exists() and not force:
-            print(f"  ⏭  ontology-hub/ontologies/{domain}.ttl already exists (use --force to overwrite)")
+            print(f"  ⏭  ontology-hub/model/ontologies/{domain}.ttl already exists (use --force to overwrite)")
         elif template_src.is_file():
             label = domain.replace("-", " ").replace("_", " ").title()
             content = template_src.read_text(encoding="utf-8")
@@ -388,14 +400,14 @@ def init(domain, company_domain, force):
                        .replace("{label}", label)
                        .replace("{company_domain}", company_domain))
             ontology_dst.write_text(content, encoding="utf-8")
-            print(f"  ✓ Created ontology-hub/ontologies/{domain}.ttl")
+            print(f"  ✓ Created ontology-hub/model/ontologies/{domain}.ttl")
 
     # 9. Run smartcoding update if the script exists
     _run_smartcoding_update(cwd)
 
     print("\n✅ Ontology hub initialized!")
     print("\nNext steps:")
-    print("  1. Edit ontology-hub/ontologies/*.ttl to define your domain classes and properties")
+    print("  1. Edit ontology-hub/model/ontologies/*.ttl to define your domain classes and properties")
     print("  2. Run: kairos-ontology validate")
     print("  3. Run: kairos-ontology project --target prompt")
 
@@ -516,6 +528,205 @@ def update(check):
             print("  ✓ Created .devcontainer/ (VS Code Dev Container with Node.js)")
 
 
+# ---------------------------------------------------------------------------
+# migrate — move files from old flat layout to model/integration/output
+# ---------------------------------------------------------------------------
+
+# Old (flat) → new (grouped) directory mapping for migration.
+_MIGRATE_DIR_MAP = {
+    # model
+    "ontologies": "model/ontologies",
+    "shapes": "model/shapes",
+    # integration
+    "sources": "integration/sources",
+    "mappings": "integration/mappings",
+    # output/medallion
+    "bronze": "output/medallion/bronze",
+}
+
+# Old output subdirs that move under output/medallion/
+_MIGRATE_OUTPUT_MAP = {
+    "silver": "medallion/silver",
+    "dbt": "medallion/dbt",
+}
+
+
+def _is_old_layout(hub: Path) -> bool:
+    """Return True if *hub* still has the old flat directory layout."""
+    return (hub / "ontologies").is_dir() and not (hub / "model").is_dir()
+
+
+@cli.command()
+@click.option("--check", is_flag=True,
+              help="Preview what would change without modifying anything.")
+@click.option("--hub", "hub_path", type=click.Path(exists=True),
+              default="ontology-hub",
+              help="Path to the ontology-hub directory (default: ontology-hub).")
+def migrate(check, hub_path):
+    """Migrate an existing ontology hub from the flat layout to the grouped layout.
+
+    Moves files into the new model/ + integration/ + output/medallion/ structure
+    and cleans up empty old directories.
+
+    \b
+    After migrating, run:
+      kairos-ontology update      # refresh managed files (skills, instructions)
+      kairos-ontology validate    # verify ontologies still parse correctly
+      kairos-ontology project     # regenerate projections with new paths
+    """
+    hub = Path(hub_path)
+
+    if not hub.is_dir():
+        raise click.ClickException(f"Hub directory not found: {hub}")
+
+    # Guard: already migrated?
+    if (hub / "model").is_dir() and not (hub / "ontologies").is_dir():
+        print("✅ Hub is already using the new layout — nothing to migrate.")
+        return
+
+    if not _is_old_layout(hub):
+        raise click.ClickException(
+            f"Cannot detect old flat layout in {hub}. "
+            f"Expected ontology-hub/ontologies/ to exist."
+        )
+
+    if check:
+        print("🔍 Migration preview (no files will be moved):\n")
+    else:
+        print("🚀 Migrating ontology hub to new layout\n")
+
+    moved_count = 0
+
+    # --- 1. Create new directory structure -----------------------------------
+    new_dirs = [
+        hub / "model" / "ontologies",
+        hub / "model" / "shapes",
+        hub / "model" / "extensions",
+        hub / "integration" / "sources",
+        hub / "integration" / "mappings",
+        hub / "output" / "medallion" / "bronze",
+        hub / "output" / "medallion" / "silver",
+        hub / "output" / "medallion" / "gold",
+        hub / "output" / "medallion" / "dbt",
+    ]
+    if not check:
+        for d in new_dirs:
+            d.mkdir(parents=True, exist_ok=True)
+
+    # --- 2. Move top-level hub dirs ------------------------------------------
+    for old_name, new_rel in _MIGRATE_DIR_MAP.items():
+        old_dir = hub / old_name
+        new_dir = hub / new_rel
+        if old_dir.is_dir():
+            items = list(old_dir.iterdir())
+            if items:
+                for item in items:
+                    # In check mode, skip silver-ext files from ontologies/
+                    # — they'll be shown in step 3 with correct final destination.
+                    if (
+                        check
+                        and old_name == "ontologies"
+                        and item.name.endswith("-silver-ext.ttl")
+                    ):
+                        continue
+                    dst = new_dir / item.name
+                    if check:
+                        print(f"  MOVE  {old_name}/{item.name}  →  {new_rel}/{item.name}")
+                    else:
+                        if dst.exists():
+                            if dst.is_dir():
+                                shutil.rmtree(dst)
+                            else:
+                                dst.unlink()
+                        shutil.move(str(item), str(dst))
+                    moved_count += 1
+
+    # --- 3. Move *-silver-ext.ttl from model/ontologies/ to model/extensions/ -
+    # In --check mode files haven't moved yet, so scan the original location.
+    onto_dir = hub / "model" / "ontologies"
+    ext_scan_dir = (hub / "ontologies") if check and not onto_dir.is_dir() else onto_dir
+    ext_dir = hub / "model" / "extensions"
+    if ext_scan_dir.is_dir():
+        for ext_file in list(ext_scan_dir.glob("*-silver-ext.ttl")):
+            dst = ext_dir / ext_file.name
+            if check:
+                print(f"  MOVE  {ext_file.name}  →  model/extensions/{ext_file.name}")
+            else:
+                if dst.exists():
+                    dst.unlink()
+                shutil.move(str(ext_file), str(dst))
+            moved_count += 1
+
+    # --- 4. Move old output/silver/ and output/dbt/ to output/medallion/ -----
+    output_dir = hub / "output"
+    if output_dir.is_dir():
+        for old_target, new_rel in _MIGRATE_OUTPUT_MAP.items():
+            old_target_dir = output_dir / old_target
+            new_target_dir = output_dir / new_rel
+            if old_target_dir.is_dir():
+                items = list(old_target_dir.iterdir())
+                if items:
+                    for item in items:
+                        dst = new_target_dir / item.name
+                        if check:
+                            print(f"  MOVE  output/{old_target}/{item.name}  →  output/{new_rel}/{item.name}")
+                        else:
+                            if dst.exists():
+                                if dst.is_dir():
+                                    shutil.rmtree(dst)
+                                else:
+                                    dst.unlink()
+                            shutil.move(str(item), str(dst))
+                        moved_count += 1
+
+    # --- 5. Remove application-models/ ---------------------------------------
+    app_models = hub.parent / "application-models"
+    if app_models.is_dir():
+        if check:
+            print(f"  DELETE  application-models/  (ERDs now in output/medallion/silver/)")
+        else:
+            shutil.rmtree(app_models)
+            print("  ✓ Removed application-models/")
+
+    # --- 6. Clean up old empty directories -----------------------------------
+    old_dirs = ["ontologies", "shapes", "mappings", "sources", "bronze"]
+    for old_name in old_dirs:
+        old_dir = hub / old_name
+        if old_dir.is_dir():
+            remaining = list(old_dir.iterdir())
+            if not remaining:
+                if check:
+                    print(f"  RMDIR  {old_name}/")
+                else:
+                    old_dir.rmdir()
+            else:
+                print(f"  ⚠  {old_name}/ still has files — not removed: "
+                      f"{[f.name for f in remaining]}")
+
+    # Clean up old output subdirs
+    for old_target in _MIGRATE_OUTPUT_MAP:
+        old_target_dir = output_dir / old_target
+        if old_target_dir.is_dir():
+            remaining = list(old_target_dir.iterdir())
+            if not remaining:
+                if check:
+                    print(f"  RMDIR  output/{old_target}/")
+                else:
+                    old_target_dir.rmdir()
+
+    # --- Summary -------------------------------------------------------------
+    if check:
+        print(f"\n📋 {moved_count} item(s) would be moved.")
+        print("   Run without --check to apply.")
+    else:
+        print(f"\n✅ Migration complete — {moved_count} item(s) moved.")
+        print("\nNext steps:")
+        print("  1. kairos-ontology update     # refresh managed files")
+        print("  2. kairos-ontology validate   # verify ontologies parse")
+        print("  3. kairos-ontology project    # regenerate projections")
+        print("  4. git add -A && git commit -m 'refactor: migrate hub to new layout'")
+
+
 
 # ---------------------------------------------------------------------------
 # Repo naming helper
@@ -626,42 +837,54 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
     hub = repo_dir / "ontology-hub"
 
     for d in [
-        hub / "ontologies",
-        hub / "shapes",
-        hub / "mappings",
-        hub / "bronze",
-        hub / "sources",
-        hub / "output" / "dbt",
+        hub / "model" / "ontologies",
+        hub / "model" / "shapes",
+        hub / "model" / "extensions",
+        hub / "integration" / "sources",
+        hub / "integration" / "mappings",
+        hub / "output" / "medallion" / "bronze",
+        hub / "output" / "medallion" / "silver",
+        hub / "output" / "medallion" / "gold",
+        hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
         hub / "output" / "azure-search",
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
-        hub / "output" / "silver",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
     # Place .gitkeep in output subdirs so git tracks them
-    for target in ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver"]:
+    for target in [
+        "medallion/bronze", "medallion/silver", "medallion/gold", "medallion/dbt",
+        "neo4j", "azure-search", "a2ui", "prompt",
+    ]:
         gitkeep = hub / "output" / target / ".gitkeep"
         if not gitkeep.exists():
             gitkeep.touch()
 
     # README files
-    for subdir in ["ontologies", "shapes", "mappings", "bronze", "sources"]:
-        src = _SCAFFOLD_DIR / "ontology-hub" / subdir / "README.md"
-        dst = hub / subdir / "README.md"
+    readme_map = {
+        "model/ontologies": "model/ontologies",
+        "model/shapes": "model/shapes",
+        "integration/mappings": "integration/mappings",
+        "integration/sources": "integration/sources",
+        "output/medallion/bronze": "output/medallion/bronze",
+    }
+    for scaffold_subdir, hub_subdir in readme_map.items():
+        src = _SCAFFOLD_DIR / "ontology-hub" / scaffold_subdir / "README.md"
+        dst = hub / hub_subdir / "README.md"
         if src.is_file():
             shutil.copy2(src, dst)
 
-    # Source-system-template into sources/
-    src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "sources" / "source-system-template"
-    src_template_dst = hub / "sources" / "source-system-template"
+    # Source-system-template into integration/sources/
+    src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "integration" / "sources" / "source-system-template"
+    src_template_dst = hub / "integration" / "sources" / "source-system-template"
     if src_template_src.is_dir() and not src_template_dst.exists():
         shutil.copytree(src_template_src, src_template_dst)
 
     # Bronze source-system TTL template
-    bronze_template_src = _SCAFFOLD_DIR / "ontology-hub" / "bronze" / "source-system.ttl.template"
-    bronze_template_dst = hub / "bronze" / "source-system.ttl.template"
+    bronze_template_src = _SCAFFOLD_DIR / "ontology-hub" / "output" / "medallion" / "bronze" / "source-system.ttl.template"
+    bronze_template_dst = hub / "output" / "medallion" / "bronze" / "source-system.ttl.template"
     if bronze_template_src.is_file() and not bronze_template_dst.exists():
         shutil.copy2(bronze_template_src, bronze_template_dst)
 
@@ -676,14 +899,14 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
         print("  ✓ ontology-hub/README.md (company context)")
 
     # Master ontology (imports all domains)
-    master_src = _SCAFFOLD_DIR / "ontology-hub" / "ontologies" / "master.ttl.template"
+    master_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "master.ttl.template"
     if master_src.is_file():
         content = master_src.read_text(encoding="utf-8")
         content = (content
                    .replace("{company_name}", company_name)
                    .replace("{company_domain}", company_domain_val))
-        (hub / "ontologies" / "_master.ttl").write_text(content, encoding="utf-8")
-        print("  ✓ ontology-hub/ontologies/_master.ttl")
+        (hub / "model" / "ontologies" / "_master.ttl").write_text(content, encoding="utf-8")
+        print("  ✓ ontology-hub/model/ontologies/_master.ttl")
 
     # Copilot skills
     skills_src = _SCAFFOLD_DIR / "skills"

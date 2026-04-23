@@ -32,7 +32,7 @@ coverage.
 
 ## Master ontology
 
-The file `ontology-hub/ontologies/_master.ttl` imports all domain ontologies
+The file `ontology-hub/model/ontologies/_master.ttl` imports all domain ontologies
 into a single unified graph.  Keep it updated when adding or removing domains.
 
 ## Conventions

@@ -227,7 +227,7 @@ def main():
     
     parser = argparse.ArgumentParser(description="Generate prompt context from ontology")
     parser.add_argument("--ontology", type=Path, required=True, help="Path to ontology file")
-    parser.add_argument("--mappings", type=Path, default=Path("ontology-hub/mappings"),
+    parser.add_argument("--mappings", type=Path, default=Path("ontology-hub/integration/mappings"),
                        help="Path to SKOS mappings directory")
     parser.add_argument("--output", type=Path, default=Path("output/prompt"),
                        help="Output directory")

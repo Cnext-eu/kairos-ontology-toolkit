@@ -232,6 +232,6 @@ When the PR includes `.ttl` file changes, remind the user:
 1. Did you run `python -m kairos_ontology validate`?
 2. Did you run `python -m kairos_ontology project` to regenerate artifacts?
 3. If a new domain was added:
-   - Is it in `ontology-hub/ontologies/_master.ttl`?
+   - Is it in `ontology-hub/model/ontologies/_master.ttl`?
    - Is it in the domain table in `ontology-hub/README.md`?
 4. Are projection outputs committed (if not gitignored)?

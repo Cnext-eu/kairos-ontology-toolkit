@@ -14,14 +14,21 @@ that are validated and projected into downstream artifacts using the
 
 ```
 ├── ontology-hub/                        # Main ontology workspace
-│   ├── ontologies/                      # Domain ontologies (Turtle/RDF)
-│   ├── shapes/                          # SHACL validation constraints
-│   ├── mappings/                        # SKOS synonym mappings
-│   ├── sources/                         # Source system reference docs
-│   │   └── {system-name}/              # Per-system: API specs, SQL DDL, samples
-│   ├── bronze/                          # Bronze vocabulary TTL (from sources)
-│   └── output/                          # Generated projections (gitignored)
-│       ├── dbt/ neo4j/ azure-search/ a2ui/ prompt/ silver/
+│   ├── model/                           # Domain model (ontology-centric)
+│   │   ├── ontologies/                  # Domain ontologies (Turtle/RDF)
+│   │   ├── shapes/                      # SHACL validation constraints
+│   │   └── extensions/                  # Projection annotations (*-silver-ext.ttl)
+│   ├── integration/                     # Source system integration
+│   │   ├── sources/                     # Source system reference docs
+│   │   │   └── {system-name}/           # Per-system: API specs, SQL DDL, samples
+│   │   └── mappings/                    # SKOS synonym mappings
+│   └── output/                          # Projection outputs (committed)
+│       ├── medallion/                   # Medallion architecture outputs
+│       │   ├── bronze/                  # Bronze vocabulary TTL (from sources)
+│       │   ├── silver/                  # Silver canonical DDL / ERD
+│       │   ├── gold/                    # Gold dimensional models
+│       │   └── dbt/                     # dbt models (bronze → silver)
+│       ├── neo4j/ azure-search/ a2ui/ prompt/
 ├── ontology-reference-models/           # Reference ontologies
 │   ├── authoritative-ontologies/        # FIBO and other authoritative ontologies
 │   ├── derived-ontologies/              # Supply-chain, DCSA, MMT derived models
@@ -52,7 +59,7 @@ python -m kairos_ontology catalog-test --catalog ontology-reference-models/catal
 
 ## Ontology conventions
 
-- All ontology files use Turtle (.ttl) syntax and live in `ontology-hub/ontologies/`.
+- All ontology files use Turtle (.ttl) syntax and live in `ontology-hub/model/ontologies/`.
 - Every ontology MUST declare an `owl:Ontology` with `rdfs:label` and `owl:versionInfo`.
 - Use HTTPS namespaces following the pattern in `ontology-hub/README.md`:
   `https://<company-domain>/ont/<domain>#`.
@@ -65,7 +72,7 @@ python -m kairos_ontology catalog-test --catalog ontology-reference-models/catal
 ## Validation rules
 
 - Always validate syntax before committing changes.
-- SHACL shapes live in `ontology-hub/shapes/` and are optional.
+- SHACL shapes live in `ontology-hub/model/shapes/` and are optional.
 - Run `kairos-ontology validate` to check all ontologies.
 
 ## Projection targets
@@ -75,11 +82,11 @@ Each ontology domain produces separate output artifacts per target.
 Output is generated into `ontology-hub/output/`.
 
 For the **silver** target (MS Fabric / Delta Lake DDL + Mermaid ERD), first create
-a `{domain}-silver-ext.ttl` annotation file in `ontology-hub/ontologies/` using the
+a `{domain}-silver-ext.ttl` annotation file in `ontology-hub/model/extensions/` using the
 **kairos-medallion-silver** skill.
 
 For the **dbt** target (medallion bronze-to-silver pipeline), first populate
-`ontology-hub/sources/` with reference docs, generate bronze vocabulary using the
+`ontology-hub/integration/sources/` with reference docs, generate bronze vocabulary using the
 **kairos-medallion-staging** skill, then create SKOS mappings and run the
 **kairos-medallion-projection** skill.
 
@@ -91,8 +98,8 @@ directly to `main`.  Use the SC-feature-branch skill to create one.
 1. Create a feature branch (e.g., `ontology/add-order-domain`).
 2. Read `ontology-hub/README.md` for company context and domain model overview.
 3. Check the domain model overview table before creating new `.ttl` files.
-4. Create or modify `.ttl` files in `ontology-hub/ontologies/`.
-5. Update `ontology-hub/ontologies/_master.ttl` with `owl:imports` for any new domain.
+4. Create or modify `.ttl` files in `ontology-hub/model/ontologies/`.
+5. Update `ontology-hub/model/ontologies/_master.ttl` with `owl:imports` for any new domain.
 6. Run `python -m kairos_ontology validate` to check for errors.
 7. Run `python -m kairos_ontology project` to regenerate artifacts.
 8. Commit changes, push, and open a PR to merge into `main`.

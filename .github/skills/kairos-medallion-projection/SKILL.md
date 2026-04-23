@@ -21,14 +21,14 @@ is driven by:
 
 Before running this projection, ensure the following artifacts exist in the hub:
 
-- **Bronze vocabulary** must exist in `bronze/` — one `.ttl` file per source system
+- **Bronze vocabulary** must exist in `output/medallion/bronze/` — one `.ttl` file per source system
   describing tables and columns using the `kairos-bronze:` vocabulary. Use the
   `kairos-medallion-staging` skill to create these from source system documentation
-  found in `sources/`.
+  found in `integration/sources/`.
 - **Silver canonical schema** should exist — domain ontologies with silver projection
   annotations (`kairos-ext:` / `kairos-silver:` properties). Use the
   `kairos-medallion-silver` skill to design and generate the silver layer schema.
-- **SKOS mappings** must exist in `mappings/` — one `.ttl` file per source-to-domain
+- **SKOS mappings** must exist in `integration/mappings/` — one `.ttl` file per source-to-domain
   combination (e.g. `adminpulse-to-party.ttl`) linking bronze columns to silver
   domain properties using SKOS match predicates and `kairos-map:` transforms.
 
@@ -58,13 +58,13 @@ Bronze (source systems)          Silver (domain model)
 
 ### 1a — Create the bronze vocabulary file
 
-In the hub's `bronze/` directory, create a TTL file per source system:
+In the hub's `output/medallion/bronze/` directory, create a TTL file per source system:
 
 ```bash
-ls ontology-hub/bronze/
+ls ontology-hub/output/medallion/bronze/
 # If empty, copy the template:
 cp "$(python -m kairos_ontology _scaffold_path)/ontology-hub/bronze/source-system.ttl.template" \
-   ontology-hub/bronze/{system-name}.ttl
+   ontology-hub/output/medallion/bronze/{system-name}.ttl
 ```
 
 ### 1b — Fill in source tables and columns
@@ -123,7 +123,7 @@ bronze-ap:tblClient_ClientID a kairos-bronze:SourceColumn ;
 
 ### 2a — Create mapping file
 
-In `mappings/`, create `{source}-to-{domain}.ttl`:
+In `integration/mappings/`, create `{source}-to-{domain}.ttl`:
 
 ```turtle
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
@@ -180,13 +180,13 @@ bronze-ap:tblClient_Address skos:narrowMatch party:addressLine1 ;
 python -m kairos_ontology project --target dbt
 
 # Generate for a specific ontology
-python -m kairos_ontology project --ontology ontology-hub/ontologies/client.ttl --target dbt
+python -m kairos_ontology project --ontology ontology-hub/model/ontologies/client.ttl --target dbt
 ```
 
 ### Output structure
 
 ```
-output/dbt/
+output/medallion/dbt/
   models/
     staging/{source}/
       _{source}__sources.yml         # dbt source definitions
@@ -225,7 +225,7 @@ output/dbt/
 ### Run dbt locally
 
 ```bash
-cd output/dbt
+cd output/medallion/dbt
 dbt deps       # Install packages
 dbt compile    # Validate SQL
 dbt run        # Execute models (requires warehouse connection)
@@ -238,22 +238,26 @@ dbt test       # Run SHACL-derived tests
 
 ```
 ontology-hub/
-  sources/
-    adminpulse/                    # Source system reference docs
-      README.md                    # System description, connection details
-      sql-ddl/                     # CREATE TABLE exports
-  ontologies/
-    party.ttl                      # Silver domain ontology
-    party-silver-ext.ttl           # Silver projection annotations
-  bronze/
-    adminpulse.ttl                 # Bronze: source system schema
-    erp-navision.ttl               # Bronze: another source
-  mappings/
-    adminpulse-to-party.ttl        # SKOS: AdminPulse → Party
-    adminpulse-to-client.ttl       # SKOS: AdminPulse → Client
-  shapes/
-    client.shacl.ttl               # SHACL → dbt tests
+  integration/
+    sources/
+      adminpulse/                    # Source system reference docs
+        README.md                    # System description, connection details
+        sql-ddl/                     # CREATE TABLE exports
+    mappings/
+      adminpulse-to-party.ttl        # SKOS: AdminPulse → Party
+      adminpulse-to-client.ttl       # SKOS: AdminPulse → Client
+  model/
+    ontologies/
+      party.ttl                      # Silver domain ontology
+    extensions/
+      party-silver-ext.ttl           # Silver projection annotations
+    shapes/
+      client.shacl.ttl               # SHACL → dbt tests
   output/
-    dbt/                           # Generated dbt project
-    silver/                        # Generated silver DDL
+    medallion/
+      bronze/
+        adminpulse.ttl               # Bronze: source system schema
+        erp-navision.ttl             # Bronze: another source
+      silver/                        # Generated silver DDL
+      dbt/                           # Generated dbt project
 ```

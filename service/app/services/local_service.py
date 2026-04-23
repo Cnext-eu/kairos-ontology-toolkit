@@ -67,7 +67,7 @@ async def read_file(
     return p.read_text(encoding="utf-8")
 
 
-_APPLICATION_MODELS_PATH = "application-models"
+_APPLICATION_MODELS_PATH = "ontology-hub/output/medallion/silver"
 
 
 async def list_mmd_files(
@@ -75,7 +75,7 @@ async def list_mmd_files(
     owner: Optional[str] = None,
     repo: Optional[str] = None,
 ) -> list[dict]:
-    """List Mermaid class-diagram files (*.mmd) under ``application-models/`` in the local dir."""
+    """List Mermaid class-diagram files (*.mmd) in the local silver output folder."""
     base = _ontologies_dir().parent / _APPLICATION_MODELS_PATH
     if not base.exists():
         return []
@@ -97,7 +97,7 @@ async def read_mmd_file(
     owner: Optional[str] = None,
     repo: Optional[str] = None,
 ) -> str:
-    """Read the content of a Mermaid file from ``application-models/<name>``."""
+    """Read the content of a Mermaid file from the silver output folder."""
     safe_name = name.replace("/", "").replace("\\", "").replace("..", "")
     if not safe_name.endswith(".mmd"):
         safe_name += ".mmd"
