@@ -5,6 +5,27 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] — 2026-04-23
+
+### Added
+
+- **`<nextCatalog>` chaining** — `CatalogResolver` now follows `<nextCatalog>` elements
+  recursively, enabling hub-local catalogs to chain to shared reference catalogs.
+- **Hub-local catalog support** — `init` and `new-repo` generate
+  `ontology-hub/catalog-v001.xml` with `<nextCatalog>` pointing to the shared
+  `ontology-reference-models/catalog-v001.xml`. Auto-discovered by `--catalog`.
+
+### Changed
+
+- **Bronze vocabulary relocated** — moved from `output/medallion/bronze/` to
+  `integration/sources/{system-name}/` as it is a discovery artifact, not a projection
+  output. `_parse_bronze()` now uses `rglob("*.ttl")` on the sources directory.
+- **Mappings relocated** — moved from `integration/mappings/` to `model/mappings/` with
+  per-source-system subfolders (`model/mappings/{system-name}/`).
+- **Mappings README** — clarified dual-purpose design: each mapping file contains both
+  SKOS alignment and `kairos-map:` dbt transform annotations.
+- Updated all skills (×10), MIGRATION.md, and copilot-instructions.md for new paths.
+
 ## [2.3.0] — 2026-04-23
 
 ### Added
