@@ -244,6 +244,8 @@ def init(domain, company_domain, force):
         hub / "ontologies",
         hub / "shapes",
         hub / "mappings",
+        hub / "bronze",
+        hub / "sources",
         hub / "output" / "dbt",
         hub / "output" / "neo4j",
         hub / "output" / "azure-search",
@@ -259,11 +261,26 @@ def init(domain, company_domain, force):
         if not gitkeep.exists():
             gitkeep.touch()
     # 2. Copy README files for each directory
-    for subdir in ["ontologies", "shapes", "mappings"]:
+    for subdir in ["ontologies", "shapes", "mappings", "bronze", "sources"]:
         readme_src = _SCAFFOLD_DIR / "ontology-hub" / subdir / "README.md"
         readme_dst = hub / subdir / "README.md"
         if readme_src.is_file() and (not readme_dst.exists() or force):
             shutil.copy2(readme_src, readme_dst)
+
+    # 2b. Copy source-system-template into sources/
+    src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "sources" / "source-system-template"
+    src_template_dst = hub / "sources" / "source-system-template"
+    if src_template_src.is_dir() and (not src_template_dst.exists() or force):
+        if src_template_dst.exists():
+            shutil.rmtree(src_template_dst)
+        shutil.copytree(src_template_src, src_template_dst)
+        print("  ✓ Installed sources/source-system-template/")
+
+    # 2c. Copy bronze source-system TTL template
+    bronze_template_src = _SCAFFOLD_DIR / "ontology-hub" / "bronze" / "source-system.ttl.template"
+    bronze_template_dst = hub / "bronze" / "source-system.ttl.template"
+    if bronze_template_src.is_file() and (not bronze_template_dst.exists() or force):
+        shutil.copy2(bronze_template_src, bronze_template_dst)
 
     # 3. Copy Copilot skills into .github/skills/
     skills_src = _SCAFFOLD_DIR / "skills"
@@ -612,6 +629,8 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
         hub / "ontologies",
         hub / "shapes",
         hub / "mappings",
+        hub / "bronze",
+        hub / "sources",
         hub / "output" / "dbt",
         hub / "output" / "neo4j",
         hub / "output" / "azure-search",
@@ -628,11 +647,23 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
             gitkeep.touch()
 
     # README files
-    for subdir in ["ontologies", "shapes", "mappings"]:
+    for subdir in ["ontologies", "shapes", "mappings", "bronze", "sources"]:
         src = _SCAFFOLD_DIR / "ontology-hub" / subdir / "README.md"
         dst = hub / subdir / "README.md"
         if src.is_file():
             shutil.copy2(src, dst)
+
+    # Source-system-template into sources/
+    src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "sources" / "source-system-template"
+    src_template_dst = hub / "sources" / "source-system-template"
+    if src_template_src.is_dir() and not src_template_dst.exists():
+        shutil.copytree(src_template_src, src_template_dst)
+
+    # Bronze source-system TTL template
+    bronze_template_src = _SCAFFOLD_DIR / "ontology-hub" / "bronze" / "source-system.ttl.template"
+    bronze_template_dst = hub / "bronze" / "source-system.ttl.template"
+    if bronze_template_src.is_file() and not bronze_template_dst.exists():
+        shutil.copy2(bronze_template_src, bronze_template_dst)
 
     # Hub-level README with company context
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"

@@ -1,5 +1,5 @@
 ---
-name: kairos-silver-projection
+name: kairos-medallion-silver
 description: >
   Expert guide for designing and running the silver-layer projection.
   Covers the R1-R16 common annotation vocabulary and S1-S8 Silver Fabric
@@ -7,7 +7,7 @@ description: >
   ALTER TABLE FK scripts for MS Fabric Warehouse.
 ---
 
-# Kairos Silver Projection Skill
+# Kairos Medallion Silver Skill
 
 You are helping the user generate a **MS Fabric / Delta Lake silver layer** from an OWL
 ontology.  The silver layer is a structured relational layer (medallion architecture) where

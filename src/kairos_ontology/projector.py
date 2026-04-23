@@ -138,9 +138,12 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     if shapes_dir and shapes_dir.exists():
         print(f"  Found SHACL shapes directory: {shapes_dir}\n")
 
-    # Look for bronze source system descriptions and SKOS mappings (for dbt)
+    # Look for source system reference docs, bronze descriptions, and SKOS mappings
+    sources_dir = ontologies_path.parent / "sources" if ontologies_path.parent else None
     bronze_dir = ontologies_path.parent / "bronze" if ontologies_path.parent else None
     mappings_dir = ontologies_path.parent / "mappings" if ontologies_path.parent else None
+    if sources_dir and sources_dir.exists():
+        print(f"  Found source system references: {sources_dir}")
     if bronze_dir and bronze_dir.exists():
         print(f"  Found bronze source descriptions: {bronze_dir}")
     if mappings_dir and mappings_dir.exists():

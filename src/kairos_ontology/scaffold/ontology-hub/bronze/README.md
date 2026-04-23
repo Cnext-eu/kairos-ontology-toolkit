@@ -7,6 +7,13 @@ These are NOT domain ontologies. They describe the physical structure of
 source systems (AdminPulse, ERP, CRM, etc.) so the dbt projector can
 generate staging models automatically.
 
+## Source reference documentation
+
+Before creating a bronze vocabulary file, place source system reference
+documentation (API specs, SQL DDL exports, sample data) in the corresponding
+`../sources/{system-name}/` folder. Use the **kairos-medallion-staging** skill
+to generate the bronze TTL from those reference docs.
+
 ## Naming convention
 
 ```
@@ -63,3 +70,6 @@ bronze-ap:tblClient_ClientID a kairos-bronze:SourceColumn ;
 1. Create a bronze TTL per source system in this directory
 2. Create SKOS mappings in `../mappings/` to link bronze → silver
 3. Run `python -m kairos_ontology project --target dbt` to generate dbt models
+
+> **Tip:** Use the **kairos-medallion-staging** skill to create bronze TTL files
+> from source reference documentation in `../sources/`.

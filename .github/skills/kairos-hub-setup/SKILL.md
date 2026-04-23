@@ -37,6 +37,12 @@ structure and adds domains inside an existing repo.
 │   │   └── README.md
 │   ├── mappings/                        # SKOS synonym mappings
 │   │   └── README.md
+│   ├── sources/                         # Source system reference docs
+│   │   ├── README.md
+│   │   └── source-system-template/      # Template for new source systems
+│   ├── bronze/                          # Bronze vocabulary TTL (from sources)
+│   │   ├── README.md
+│   │   └── source-system.ttl.template
 │   └── output/                          # Generated projections (gitignored)
 │       ├── dbt/ neo4j/ azure-search/ a2ui/ prompt/ silver/
 ├── application-models/                  # Mermaid ERD / class-diagram files
@@ -115,6 +121,7 @@ EOF
 - [ ] Validate: `python -m kairos_ontology validate`
 - [ ] Generate projections: `python -m kairos_ontology project --target prompt`
 - [ ] (Optional) Generate silver layer: add `*-silver-ext.ttl`, then `python -m kairos_ontology project --target silver`
+- [ ] (Optional) Add source system docs in `ontology-hub/sources/` and generate bronze vocab with **kairos-medallion-staging** skill
+- [ ] (Optional) Create SKOS mappings in `ontology-hub/mappings/` and run **kairos-medallion-projection** skill for dbt models
 - [ ] Optionally add SHACL shapes in `ontology-hub/shapes/`
-- [ ] Optionally add SKOS mappings in `ontology-hub/mappings/`
 - [ ] Commit, push, and open PR to merge into main
