@@ -1,13 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Ontology validation module - syntax, SHACL, consistency."""
+"""Ontology validation module - syntax, SHACL, consistency, GDPR PII scanning."""
 
+import logging
 from pathlib import Path
 from typing import Optional
-from rdflib import Graph
+from rdflib import Graph, Namespace, URIRef
+from rdflib.namespace import OWL, RDF, RDFS
 from pyshacl import validate as shacl_validate
 import json
 from .catalog_utils import load_graph_with_catalog
+
+logger = logging.getLogger(__name__)
+
+KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
+
+# PII indicator keywords — if a property local name or label contains any of these
+# substrings, it is flagged as potentially containing personal data.
+PII_KEYWORDS: list[str] = [
+    "first_name", "last_name", "date_of_birth", "national_id", "iban",
+    "phone", "email", "address", "ssn", "passport", "tax_id", "gender",
+    "ethnicity", "religion", "health", "maiden_name", "birth_place",
+    "nationality", "marital_status",
+]
 
 # Filename patterns that are NOT domain ontologies and should be skipped.
 _NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")
@@ -80,6 +95,147 @@ def validate_content(
             result["shacl"]["errors"].append(report_text)
 
     return result
+
+
+def _camel_to_snake(name: str) -> str:
+    """Convert CamelCase to snake_case for PII matching."""
+    import re
+    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+
+
+def validate_gdpr(
+    ontology_content: str,
+    extension_content: Optional[str] = None,
+) -> dict:
+    """Scan an ontology for PII-like properties that lack GDPR satellite protection.
+
+    For each ``owl:DatatypeProperty``, checks whether the property local name or
+    ``rdfs:label`` contains any PII keyword.  Then verifies whether the property's
+    ``rdfs:domain`` class (or a parent class) is protected by
+    ``kairos-ext:gdprSatelliteOf``.
+
+    Args:
+        ontology_content: Turtle-formatted domain ontology.
+        extension_content: Optional silver-ext TTL with ``kairos-ext:`` annotations.
+
+    Returns:
+        Dict with ``passed`` (bool — True if no unprotected PII found),
+        ``warnings`` (list of dicts with class, property, keyword), and
+        ``protected_classes`` (list of class URIs that have gdprSatelliteOf).
+    """
+    graph = Graph()
+    graph.parse(data=ontology_content, format="turtle")
+
+    if extension_content:
+        graph.parse(data=extension_content, format="turtle")
+
+    # Collect classes protected by gdprSatelliteOf (the satellite class itself)
+    protected_classes: set[str] = set()
+    for subj in graph.subjects(KAIROS_EXT.gdprSatelliteOf, None):
+        protected_classes.add(str(subj))
+
+    # Also collect the parent classes that HAVE a GDPR satellite
+    # (i.e. the parent is indirectly protected — its PII is in the satellite)
+    parents_with_satellite: set[str] = set()
+    for subj, obj in graph.subject_objects(KAIROS_EXT.gdprSatelliteOf):
+        parents_with_satellite.add(str(obj))
+
+    warnings: list[dict] = []
+
+    for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+        prop_uri = str(prop)
+        local = prop_uri.rsplit("#", 1)[-1] if "#" in prop_uri else prop_uri.rsplit("/", 1)[-1]
+        snake_local = _camel_to_snake(local)
+
+        # Check label too
+        label = str(graph.value(prop, RDFS.label) or "")
+        label_lower = label.lower().replace(" ", "_")
+
+        # Find matching PII keyword
+        matched_keyword = None
+        for kw in PII_KEYWORDS:
+            if kw in snake_local or kw in label_lower:
+                matched_keyword = kw
+                break
+
+        if not matched_keyword:
+            continue
+
+        # Find domain class(es) for this property
+        for domain_cls in graph.objects(prop, RDFS.domain):
+            cls_uri = str(domain_cls)
+            # Skip if this class IS a GDPR satellite (it's already protected)
+            if cls_uri in protected_classes:
+                continue
+            # Skip if this class HAS a GDPR satellite (PII should be there)
+            if cls_uri in parents_with_satellite:
+                continue
+            # Unprotected PII
+            cls_local = (
+                cls_uri.rsplit("#", 1)[-1] if "#" in cls_uri
+                else cls_uri.rsplit("/", 1)[-1]
+            )
+            warnings.append({
+                "class": cls_local,
+                "class_uri": cls_uri,
+                "property": local,
+                "property_uri": prop_uri,
+                "keyword": matched_keyword,
+            })
+
+    return {
+        "passed": len(warnings) == 0,
+        "warnings": warnings,
+        "protected_classes": list(protected_classes),
+    }
+
+
+def run_gdpr_validation(ontologies_path: Path, catalog_path: Optional[Path] = None):
+    """Run GDPR PII scan across all domain ontologies.
+
+    Prints warnings for classes with PII-like properties that lack
+    ``kairos-ext:gdprSatelliteOf`` annotations.
+    """
+    print("\U0001f512 Kairos GDPR PII Scan")
+    print("=" * 50)
+
+    ontology_files = list(ontologies_path.glob("**/*.ttl"))
+    ontology_files = [f for f in ontology_files if _is_domain_ontology(f)]
+
+    # Pair each domain with its extension (if any)
+    ext_map: dict[str, Path] = {}
+    for f in ontologies_path.glob("**/*-silver-ext.ttl"):
+        domain_name = f.stem.replace("-silver-ext", "")
+        ext_map[domain_name] = f
+
+    total_warnings = 0
+    total_domains = 0
+
+    for ontology_file in ontology_files:
+        domain_name = ontology_file.stem
+        ext_file = ext_map.get(domain_name)
+        ext_content = ext_file.read_text(encoding="utf-8") if ext_file else None
+
+        ontology_content = ontology_file.read_text(encoding="utf-8")
+        result = validate_gdpr(ontology_content, ext_content)
+        total_domains += 1
+
+        if result["warnings"]:
+            total_warnings += len(result["warnings"])
+            print(f"\n  \u26a0\ufe0f  {ontology_file.name}:")
+            for w in result["warnings"]:
+                print(f"     {w['class']}.{w['property']} \u2014 "
+                      f"PII keyword '{w['keyword']}' without gdprSatelliteOf")
+
+    print(f"\n  Scanned {total_domains} domains")
+    if total_warnings:
+        print(f"  \u26a0\ufe0f  {total_warnings} unprotected PII warning(s)")
+        print("  Consider adding kairos-ext:gdprSatelliteOf annotations.")
+    else:
+        print("  \u2705 No unprotected PII detected")
+
+    return total_warnings
 
 
 def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,

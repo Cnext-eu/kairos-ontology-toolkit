@@ -7,7 +7,7 @@ import click
 import shutil
 import subprocess
 from pathlib import Path
-from ..validator import run_validation
+from ..validator import run_validation, run_gdpr_validation
 from ..projector import run_projections
 from ..catalog_test import test_catalog_resolution
 from .. import __version__ as _toolkit_version
@@ -147,16 +147,25 @@ def cli():
 @click.option('--syntax', is_flag=True, help='Validate syntax only')
 @click.option('--shacl', is_flag=True, help='Validate SHACL only')
 @click.option('--consistency', is_flag=True, help='Validate consistency only')
-def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consistency):
-    """Validate ontologies (syntax, SHACL, consistency)."""
+@click.option('--gdpr', is_flag=True, help='Scan for PII properties without GDPR satellite protection')
+def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consistency, gdpr):
+    """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan)."""
     ontologies_path = Path(ontologies)
     shapes_path = Path(shapes)
     catalog_path = Path(catalog) if catalog else None
     
     # Default to all if nothing specified
-    if not any([validate_all, syntax, shacl, consistency]):
+    if not any([validate_all, syntax, shacl, consistency, gdpr]):
         validate_all = True
     
+    if gdpr or validate_all:
+        run_gdpr_validation(
+            ontologies_path=ontologies_path,
+            catalog_path=catalog_path,
+        )
+        if gdpr and not any([validate_all, syntax, shacl, consistency]):
+            return  # GDPR-only mode
+
     run_validation(
         ontologies_path=ontologies_path,
         shapes_path=shapes_path,

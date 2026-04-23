@@ -62,8 +62,17 @@ The annotation namespace must be exactly:
 
 ## Phase 2 — Gather per-class design decisions
 
+> **⚠️ IMPORTANT — Explicit annotation mandate:**
+> Every class MUST have **all applicable annotations written explicitly** in the
+> extension TTL, **even when the value matches the projector default**. This ensures
+> that the projection output is fully deterministic and reproducible — if the extension
+> file is re-created from scratch, the output must remain identical.
+>
+> **Never rely on implicit defaults.** If a class is SCD Type 2, write `scdType "2"`.
+> If a class is NOT reference data, write `isReferenceData "false"`.
+
 For each `owl:Class` in the domain ontology, ask the following questions
-(only those that apply — skip irrelevant ones):
+and **always write the annotation** — even when the answer is the default:
 
 ### 2a — Is this a reference / code list table? (R8)
 
@@ -80,6 +89,12 @@ ex:{ClassName}
 - No SCD columns, no audit envelope.
 - **S4 note:** reference tables with ≤3 business columns will be automatically inlined
   into the referencing parent table (see S4 — Inline small ref tables).
+
+If **no** (standard table — still write explicitly):
+```turtle
+ex:{ClassName}
+    kairos-ext:isReferenceData "false"^^xsd:boolean .
+```
 
 ### 2b — Is this a GDPR-sensitive satellite? (R7)
 
@@ -99,8 +114,11 @@ ex:{ClassName}
 > "Does `{ClassName}` have subclasses? If yes, which inheritance strategy:
 > `class-per-table` (joined-table) or `discriminator` (flat table with type column)?"
 
-For **class-per-table** (default — no annotation needed):
-- Each subclass gets its own table; PK = FK to supertype.
+For **class-per-table** (default — still write explicitly):
+```turtle
+ex:{ClassName}
+    kairos-ext:inheritanceStrategy "class-per-table" .
+```
 
 For **discriminator**:
 ```turtle
@@ -119,8 +137,9 @@ ex:{ClassName}
 > "Should `{ClassName}` maintain full history (SCD Type 2, default) or just the current
 > record (SCD Type 1, overwrite)?"
 
+Always write explicitly:
 ```turtle
-ex:{ClassName}    kairos-ext:scdType "2" .   -- default, no need to annotate
+ex:{ClassName}    kairos-ext:scdType "2" .   -- history (write even though it's default)
 ex:{ClassName}    kairos-ext:scdType "1" .   -- overwrite
 ```
 
@@ -132,6 +151,27 @@ ex:{ClassName}    kairos-ext:scdType "1" .   -- overwrite
 ex:{ClassName}
     kairos-ext:partitionBy "_load_date" ;
     kairos-ext:clusterBy   "is_current, party_type" .
+```
+
+### 2f — Annotation completeness check (new)
+
+After annotating all classes, verify completeness. **Every** non-GDPR, non-satellite
+class in the domain MUST have at minimum:
+
+| Annotation | Required? | Default value |
+|------------|-----------|--------------|
+| `kairos-ext:scdType` | ✅ Always | `"2"` |
+| `kairos-ext:isReferenceData` | ✅ Always | `"false"` |
+| `kairos-ext:inheritanceStrategy` | Only if has subclasses | `"class-per-table"` |
+| `kairos-ext:namingConvention` | Ontology-level | `"camel-to-snake"` |
+| `kairos-ext:includeNaturalKeyColumn` | Ontology-level | `"true"` |
+| `kairos-ext:inlineRefThreshold` | Ontology-level | `"3"` |
+
+Run a quick scan:
+```bash
+# Count classes vs annotated classes — they should match
+grep -c "owl:Class" ontology-hub/ontologies/{DOMAIN}.ttl
+grep -c "kairos-ext:scdType" ontology-hub/ontologies/{DOMAIN}-silver-ext.ttl
 ```
 
 ---
