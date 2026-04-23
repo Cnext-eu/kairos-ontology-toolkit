@@ -1,0 +1,30 @@
+version: 2
+
+models:
+{%- for model in models %}
+  - name: {{ model.name }}
+    description: "{{ model.description }}"
+{%- if model.meta %}
+    meta:
+{%- for key, value in model.meta.items() %}
+      {{ key }}: "{{ value }}"
+{%- endfor %}
+{%- endif %}
+    columns:
+{%- for column in model.columns %}
+      - name: {{ column.name }}
+        description: "{{ column.description }}"
+{%- if column.meta %}
+        meta:
+{%- for key, value in column.meta.items() %}
+          {{ key }}: "{{ value }}"
+{%- endfor %}
+{%- endif %}
+{%- if column.tests %}
+        tests:
+{%- for test in column.tests %}
+          - {{ test }}
+{%- endfor %}
+{%- endif %}
+{%- endfor %}
+{%- endfor %}

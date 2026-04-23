@@ -29,7 +29,7 @@ You help users generate and understand projection artifacts.
 
 ## When to use each target
 
-- **dbt**: When the ontology drives a data warehouse. Generates `silver` layer models with one SQL file per class and a schema.yml with column descriptions and tests.
+- **dbt**: When the ontology drives a data warehouse using dbt Core. Generates a complete dbt project with staging models (from bronze source systems via SKOS mappings), silver entity models, schema YAML with SHACL-derived tests, and project config. Requires `bronze/*.ttl` for source system descriptions and `mappings/*.ttl` for SKOS column mappings. See the **kairos-dbt-projection** skill.
 - **neo4j**: When building a knowledge graph. Generates `CREATE CONSTRAINT` statements and relationship patterns.
 - **azure-search**: When building a search index. Maps ontology properties to Azure Search field types with filters and facets.
 - **a2ui**: When generating UI forms. Creates JSON schemas that describe the data structure for automatic UI rendering.

@@ -138,6 +138,14 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     if shapes_dir and shapes_dir.exists():
         print(f"  Found SHACL shapes directory: {shapes_dir}\n")
 
+    # Look for bronze source system descriptions and SKOS mappings (for dbt)
+    bronze_dir = ontologies_path.parent / "bronze" if ontologies_path.parent else None
+    mappings_dir = ontologies_path.parent / "mappings" if ontologies_path.parent else None
+    if bronze_dir and bronze_dir.exists():
+        print(f"  Found bronze source descriptions: {bronze_dir}")
+    if mappings_dir and mappings_dir.exists():
+        print(f"  Found SKOS mappings directory: {mappings_dir}\n")
+
     targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver'] if target == 'all' else [target]
 
     # Accumulate per-domain manifest data: {domain_name: {meta, targets: {target: [files]}}}
@@ -178,7 +186,9 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 artifacts = _run_projection(target_name, onto_graph, target_output, template_base,
                                             onto_namespace, shapes_dir, onto_name,
                                             projection_ext_path=ext_path,
-                                            ontology_metadata=onto_meta)
+                                            ontology_metadata=onto_meta,
+                                            bronze_dir=bronze_dir,
+                                            mappings_dir=mappings_dir)
                 if artifacts:
                     # Save artifacts
                     for file_path, content in artifacts.items():
@@ -437,7 +447,9 @@ def _auto_detect_namespace(graph: Graph) -> str:
 def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path,
                     namespace: str, shapes_dir: Path = None, ontology_name: str = None,
                     projection_ext_path: Optional[Path] = None,
-                    ontology_metadata: Optional[dict] = None) -> dict:
+                    ontology_metadata: Optional[dict] = None,
+                    bronze_dir: Optional[Path] = None,
+                    mappings_dir: Optional[Path] = None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
@@ -450,6 +462,8 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         ontology_name: Name of the ontology file (without extension)
         projection_ext_path: Optional path to *-silver-ext.ttl (silver target only)
         ontology_metadata: Provenance metadata from extract_ontology_metadata()
+        bronze_dir: Optional path to bronze/ source system directory (dbt target)
+        mappings_dir: Optional path to mappings/ SKOS directory (dbt target)
     """
     
     query = """
@@ -491,6 +505,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         return generate_dbt_artifacts(
             classes, graph, template_base / "dbt", namespace, shapes_dir,
             ontology_name, ontology_metadata=meta,
+            bronze_dir=bronze_dir, mappings_dir=mappings_dir,
         )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts
