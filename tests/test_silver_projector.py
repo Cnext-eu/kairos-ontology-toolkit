@@ -28,6 +28,7 @@ TableDef = _sp.TableDef
 _camel_to_snake = _sp._camel_to_snake
 _mmd_type = _sp._mmd_type
 _parse_audit_envelope = _sp._parse_audit_envelope
+_s4_inlined_name = _sp._s4_inlined_name
 generate_silver_artifacts = _sp.generate_silver_artifacts
 render_mermaid_svg = _sp.render_mermaid_svg
 
@@ -1250,3 +1251,146 @@ def test_s6_deleted_at_column():
     result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
     assert "_deleted_at" in ddl
+
+
+# ---------------------------------------------------------------------------
+# BUG-1 — S5/S6 columns present even with custom audit envelope
+# ---------------------------------------------------------------------------
+
+
+def test_bug1_s5_s6_with_custom_audit():
+    """BUG-1: _row_hash and _deleted_at must appear even when a custom audit
+    envelope is specified (they are fixed S5/S6 columns, not customizable)."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Test"@en ; owl:versionInfo "1.0" ;
+            kairos-ext:auditEnvelope "_load_date DATE, _source STRING" .
+
+        ex:Thing a owl:Class ; rdfs:label "Thing"@en ; rdfs:comment "."@en .
+    """
+    g = _make_graph(ttl)
+    classes = [{"uri": f"{BASE}Thing", "name": "Thing"}]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Custom audit columns present
+    assert "_load_date" in ddl
+    assert "_source" in ddl
+    # S5/S6 always present despite custom audit
+    assert "_row_hash" in ddl
+    assert "_deleted_at" in ddl
+
+
+# ---------------------------------------------------------------------------
+# BUG-2 — No duplicate subtype names in S3 flattening comment
+# ---------------------------------------------------------------------------
+
+
+def test_bug2_no_duplicate_subtype_names():
+    """BUG-2: Subtypes listed in the S3 comment must be deduplicated."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Animal a owl:Class ; rdfs:label "Animal"@en ; rdfs:comment "."@en .
+        ex:Dog a owl:Class ; rdfs:label "Dog"@en ; rdfs:comment "."@en ;
+            rdfs:subClassOf ex:Animal .
+        ex:Cat a owl:Class ; rdfs:label "Cat"@en ; rdfs:comment "."@en ;
+            rdfs:subClassOf ex:Animal .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Animal", "name": "Animal"},
+        {"uri": f"{BASE}Dog", "name": "Dog"},
+        {"uri": f"{BASE}Cat", "name": "Cat"},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # "Dog" should appear exactly once
+    assert ddl.count("Dog") == 1
+    # "Cat" should appear exactly once
+    assert ddl.count("Cat") == 1
+
+
+# ---------------------------------------------------------------------------
+# BUG-3 / IMP-1 — Only domain-owned classes generate tables
+# ---------------------------------------------------------------------------
+
+
+def test_bug3_imp1_imported_classes_not_materialized():
+    """BUG-3/IMP-1: Classes from another namespace should NOT produce tables.
+    Cross-domain FK references should point to the canonical schema."""
+    PARTY_NS = "http://example.com/ont/party#"
+    CLIENT_NS = "http://example.com/ont/client#"
+    ttl = f"""
+        @prefix party: <{PARTY_NS}> .
+        @prefix client: <{CLIENT_NS}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <http://example.com/ont/client> a owl:Ontology ;
+            rdfs:label "Client"@en ; owl:versionInfo "1.0" ;
+            owl:imports <http://example.com/ont/party> .
+
+        party:Party a owl:Class ;
+            rdfs:label "Party"@en ; rdfs:comment "."@en .
+
+        client:Client a owl:Class ;
+            rdfs:label "Client"@en ; rdfs:comment "."@en .
+        client:representsParty a owl:ObjectProperty, owl:FunctionalProperty ;
+            rdfs:domain client:Client ; rdfs:range party:Party ;
+            rdfs:label "represents party"@en .
+    """
+    g = _make_graph(ttl)
+    # Caller passes both imported and local classes
+    classes = [
+        {"uri": f"{PARTY_NS}Party", "name": "Party"},
+        {"uri": f"{CLIENT_NS}Client", "name": "Client"},
+    ]
+    result = generate_silver_artifacts(
+        classes, g, CLIENT_NS, ontology_name="client"
+    )
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Client table should exist
+    assert "silver_client.client" in ddl.lower()
+    # Party table should NOT be materialized (different namespace)
+    assert "CREATE TABLE silver_client.party" not in ddl
+    # FK should point to canonical silver_party schema
+    assert "silver_party.party" in ddl.lower()
+
+
+# ---------------------------------------------------------------------------
+# BUG-4 — S4 inlined column name shortening
+# ---------------------------------------------------------------------------
+
+
+def test_bug4_s4_short_inlined_names():
+    """BUG-4: _s4_inlined_name avoids redundant prefix segments."""
+    # Full prefix match — no doubling
+    assert _s4_inlined_name("gender", "gender_code") == "gender_code"
+    # Overlapping suffix — strip overlap
+    assert _s4_inlined_name("shareholder_property_right", "property_right_name_en") == \
+        "shareholder_property_right_name_en"
+    # Partial suffix match
+    assert _s4_inlined_name("professional_role", "role_code") == "professional_role_code"
+    # Column starts with full prefix
+    assert _s4_inlined_name("acceptance_status", "acceptance_status_name") == \
+        "acceptance_status_name"
+    # No overlap at all
+    assert _s4_inlined_name("country", "iso_alpha3") == "country_iso_alpha3"

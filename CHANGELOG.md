@@ -5,6 +5,33 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] — 2025-07-26
+
+### Fixed
+
+- **BUG-1: S5/S6 columns on all domains** — `_row_hash` and `_deleted_at` are now
+  fixed structural columns, always appended after the audit envelope. Previously
+  they were part of the customizable `auditEnvelope` string and could be missing
+  when a domain used a pre-v2.1.0 custom audit annotation.
+- **BUG-2: Duplicate subtype names** — S3 flattening comment no longer lists the
+  same subtype multiple times when a class is reachable via multiple import paths.
+- **BUG-3: GDPR satellite breach in imported tables** — Imported classes from
+  other namespaces are no longer materialized as tables. This prevents GDPR
+  satellite columns (e.g. NaturalPerson PII) from being flattened into
+  cross-domain copies where the GDPR annotation is not visible.
+- **BUG-4: S4 inlined column names** — Smarter prefix merging avoids redundant
+  segments (e.g. `shareholder_property_right_property_right_name_en` →
+  `shareholder_property_right_name_en`).
+
+### Changed
+
+- **IMP-1: Canonical schema only** — The projector now only generates tables for
+  classes whose URI belongs to the current domain namespace. Imported classes
+  become cross-domain FK comment references (e.g. `-- FK: party_sk →
+  silver_party.party`). This typically reduces table count by 40-60%.
+- `_resolve_external_table` now handles `ref_` prefix for cross-domain reference
+  data classes.
+
 ## [2.1.0] — 2025-07-26
 
 ### Changed

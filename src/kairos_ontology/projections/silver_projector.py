@@ -54,11 +54,10 @@ XSD_TO_SQL: dict[str, str] = {
     str(XSD.anyURI): "STRING",
 }
 
-# Default audit envelope columns (R9 + S5 _row_hash + S6 _deleted_at)
+# Default audit envelope columns (R9)
 _DEFAULT_AUDIT = (
     "_created_at TIMESTAMP, _updated_at TIMESTAMP, "
-    "_source_system STRING, _load_date DATE, _batch_id STRING, "
-    "_row_hash BINARY, _deleted_at TIMESTAMP"
+    "_source_system STRING, _load_date DATE, _batch_id STRING"
 )
 
 
@@ -247,14 +246,19 @@ def generate_silver_artifacts(
 
     # Build class map: uri → TableDef
     tables: dict[str, TableDef] = {}
-    class_uris = {c["uri"] for c in classes}
+    # IMP-1 / BUG-3: Filter to domain-owned classes only.
+    # Classes whose URI doesn't start with this domain's namespace are imported
+    # copies — they should NOT be materialized. Cross-domain FK references are
+    # resolved via _resolve_external_table to point at the canonical schema.
+    domain_classes = [c for c in classes if c["uri"].startswith(namespace)]
+    class_uris = {c["uri"] for c in domain_classes}
     # S3: Track all subtypes to flatten into parent tables
     folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype names]
     # Map of subtype_uri → parent_uri for property merging
     subtype_parents: dict[str, str] = {}
 
     # Pre-scan: identify all subtype relationships and build folded_subtypes map
-    for cls_info in classes:
+    for cls_info in domain_classes:
         cls_uri = URIRef(cls_info["uri"])
         gdpr_parent = merged.value(cls_uri, KAIROS_EXT.gdprSatelliteOf)
         if gdpr_parent is not None:
@@ -262,10 +266,13 @@ def generate_silver_artifacts(
         for parent in merged.objects(cls_uri, RDFS.subClassOf):
             if isinstance(parent, URIRef) and str(parent) in class_uris:
                 subtype_parents[cls_info["uri"]] = str(parent)
-                folded_subtypes.setdefault(str(parent), []).append(cls_info["name"])
+                # BUG-2 fix: use set-like append to avoid duplicates from import paths
+                existing = folded_subtypes.setdefault(str(parent), [])
+                if cls_info["name"] not in existing:
+                    existing.append(cls_info["name"])
                 break
 
-    for cls_info in classes:
+    for cls_info in domain_classes:
         cls_uri = URIRef(cls_info["uri"])
         local = cls_info["name"]
         tbl_name = table_name_for(cls_uri, local)
@@ -354,6 +361,12 @@ def generate_silver_artifacts(
         # 7. Audit envelope (R9) — skip for reference tables
         if not is_ref:
             tbl.columns.extend(audit_cols)
+            # S5: _row_hash for incremental MERGE (always added, not customizable)
+            tbl.columns.append(ColumnDef("_row_hash", "BINARY", nullable=True,
+                                         comment="S5: SHA-256 hash for incremental MERGE"))
+            # S6: _deleted_at for soft-delete tracking (always added, not customizable)
+            tbl.columns.append(ColumnDef("_deleted_at", "TIMESTAMP", nullable=True,
+                                         comment="S6: soft-delete timestamp"))
 
         if is_ref:
             tbl.table_type = "reference"
@@ -368,7 +381,7 @@ def generate_silver_artifacts(
             continue
         parent_tbl = tables[parent_uri_str]
         # Find subtype class URIs and merge their properties
-        for cls_info in classes:
+        for cls_info in domain_classes:
             if cls_info["name"] not in subtype_names:
                 continue
             sub_uri = URIRef(cls_info["uri"])
@@ -533,6 +546,11 @@ def _resolve_external_table(
         _camel_to_snake(local) if naming_conv == "camel-to-snake" else local.lower()
     )
 
+    # Reference data → prefix with ref_ (mirrors table_name_for logic)
+    is_ref = _bool_val(graph, range_cls, KAIROS_EXT.isReferenceData, False)
+    if is_ref and not tbl_name.startswith("ref_"):
+        tbl_name = f"ref_{tbl_name}"
+
     # Schema: look for the ontology that owns this class
     cls_str = str(range_cls)
     if "#" in cls_str:
@@ -556,6 +574,33 @@ def _resolve_external_table(
         schema = f"silver_{domain_part}"
 
     return schema, tbl_name
+
+
+def _s4_inlined_name(ref_prefix: str, col_name: str) -> str:
+    """Build a short inlined column name avoiding redundant prefix segments.
+
+    Examples:
+      ("gender", "gender_code")                     → "gender_code"
+      ("shareholder_property_right", "property_right_name_en")
+                                                     → "shareholder_property_right_name_en"
+      ("professional_role", "role_code")             → "professional_role_code"
+      ("acceptance_status", "acceptance_status_name")→ "acceptance_status_name"
+    """
+    # If the column already starts with the full prefix, use as-is
+    if col_name.startswith(f"{ref_prefix}_"):
+        return col_name
+
+    # Find the longest suffix of ref_prefix segments that matches a prefix of col_name
+    prefix_parts = ref_prefix.split("_")
+    for i in range(len(prefix_parts)):
+        suffix = "_".join(prefix_parts[i:])
+        if col_name.startswith(f"{suffix}_") or col_name == suffix:
+            # Keep only the prefix segments NOT in the overlap
+            unique_prefix = "_".join(prefix_parts[:i]) if i > 0 else ref_prefix
+            return f"{unique_prefix}_{col_name}" if unique_prefix else col_name
+
+    # No overlap — use full prefix
+    return f"{ref_prefix}_{col_name}"
 
 
 def _inline_small_ref_tables(
@@ -604,11 +649,7 @@ def _inline_small_ref_tables(
                 ref_prefix = ref_table.split(".")[-1].replace("ref_", "")
                 existing = {c.name for c in tbl.columns}
                 for biz_col in small_refs[ref_table]:
-                    # Avoid double-prefixing (e.g. gender_gender_code)
-                    if biz_col.name.startswith(f"{ref_prefix}_"):
-                        inlined_name = biz_col.name
-                    else:
-                        inlined_name = f"{ref_prefix}_{biz_col.name}"
+                    inlined_name = _s4_inlined_name(ref_prefix, biz_col.name)
                     if inlined_name in existing:
                         continue
                     existing.add(inlined_name)
