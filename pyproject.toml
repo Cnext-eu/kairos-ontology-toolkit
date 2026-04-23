@@ -34,6 +34,7 @@ pytest-cov = "^4.1.0"
 black = "^24.1.0"
 ruff = "^0.1.11"
 pytest-asyncio = ">=0.23,<1.0"
+poetry = "^2.3.4"
 
 [tool.poetry.group.service]
 optional = true
