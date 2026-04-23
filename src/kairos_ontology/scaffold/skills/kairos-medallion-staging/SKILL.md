@@ -15,19 +15,19 @@ dbt staging model generation.
 
 ## Prerequisites
 
-- Source system reference docs should be placed in `ontology-hub/sources/{system-name}/`
+- Source system reference docs should be placed in `ontology-hub/integration/sources/{system-name}/`
 - The `kairos-bronze:` vocabulary is defined in the toolkit (`kairos-bronze.ttl`)
 
 ## Architecture
 
 ```
-sources/{system}/               bronze/{system}.ttl
-┌──────────────────────┐        ┌──────────────────────┐
-│ sql-ddl/             │──→     │ kairos-bronze:        │
-│ api-specs/           │  AI    │   SourceSystem        │
-│ samples/             │  skill │   SourceTable         │
-│ README.md            │──→     │   SourceColumn        │
-└──────────────────────┘        └──────────────────────┘
+integration/sources/{system}/       output/medallion/bronze/{system}.ttl
+┌──────────────────────┐            ┌──────────────────────┐
+│ sql-ddl/             │──→         │ kairos-bronze:        │
+│ api-specs/           │  AI        │   SourceSystem        │
+│ samples/             │  skill     │   SourceTable         │
+│ README.md            │──→         │   SourceColumn        │
+└──────────────────────┘            └──────────────────────┘
 ```
 
 ---
@@ -37,15 +37,15 @@ sources/{system}/               bronze/{system}.ttl
 ### 1a — Check for source system folder
 
 ```bash
-ls ontology-hub/sources/
+ls ontology-hub/integration/sources/
 ```
 
 If the system folder doesn't exist yet, create it:
 
 ```bash
-mkdir -p ontology-hub/sources/{system-name}
-cp ontology-hub/sources/source-system-template/README.md \
-   ontology-hub/sources/{system-name}/README.md
+mkdir -p ontology-hub/integration/sources/{system-name}
+cp ontology-hub/integration/sources/source-system-template/README.md \
+   ontology-hub/integration/sources/{system-name}/README.md
 ```
 
 ### 1b — Inventory reference materials
@@ -62,7 +62,7 @@ Check what documentation is available in the source folder:
 
 ### 1c — Review the source system README
 
-Read `ontology-hub/sources/{system-name}/README.md` for:
+Read `ontology-hub/integration/sources/{system-name}/README.md` for:
 - System name and version
 - Connection type (jdbc, odbc, api, file, lakehouse)
 - Database and schema names
@@ -102,11 +102,11 @@ If `samples/` contains CSV or JSON files, infer:
 
 ### 3a — Create the output file
 
-Create `ontology-hub/bronze/{system-name}.ttl` using the template:
+Create `ontology-hub/output/medallion/bronze/{system-name}.ttl` using the template:
 
 ```bash
-cp ontology-hub/bronze/source-system.ttl.template \
-   ontology-hub/bronze/{system-name}.ttl
+cp ontology-hub/output/medallion/bronze/source-system.ttl.template \
+   ontology-hub/output/medallion/bronze/{system-name}.ttl
 ```
 
 Or create from scratch following the kairos-bronze: vocabulary.
@@ -183,7 +183,7 @@ Verify:
 - [ ] Every column has a `kairos-bronze:SourceColumn` entry
 - [ ] All primary key columns are marked with `kairos-bronze:isPrimaryKey "true"`
 - [ ] Data types are filled in for all columns
-- [ ] The source system README in `sources/` is up to date
+- [ ] The source system README in `integration/sources/` is up to date
 
 ---
 
@@ -191,7 +191,7 @@ Verify:
 
 After the bronze vocabulary is complete:
 
-1. **Create SKOS mappings** in `mappings/` to link bronze columns to silver domain properties
+1. **Create SKOS mappings** in `integration/mappings/` to link bronze columns to silver domain properties
 2. **Run the medallion projection** to generate dbt staging + silver models:
    ```bash
    python -m kairos_ontology project --target dbt
@@ -204,7 +204,7 @@ See the **kairos-medallion-projection** skill for the full bronze-to-silver pipe
 ## Source system folder structure reference
 
 ```
-ontology-hub/sources/{system-name}/
+ontology-hub/integration/sources/{system-name}/
   README.md             # System description, owner, connection details
   sql-ddl/              # CREATE TABLE exports from the source database
   api-specs/            # OpenAPI / Swagger specification files

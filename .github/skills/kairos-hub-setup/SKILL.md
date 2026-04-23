@@ -29,24 +29,32 @@ structure and adds domains inside an existing repo.
 │   └── workflows/managed-check.yml
 ├── ontology-hub/
 │   ├── README.md                        # Company context + domain overview
-│   ├── ontologies/
-│   │   ├── _master.ttl                  # Master ontology (imports all domains)
-│   │   ├── customer.ttl
-│   │   └── README.md
-│   ├── shapes/                          # SHACL validation constraints
-│   │   └── README.md
-│   ├── mappings/                        # SKOS synonym mappings
-│   │   └── README.md
-│   ├── sources/                         # Source system reference docs
-│   │   ├── README.md
-│   │   └── source-system-template/      # Template for new source systems
-│   ├── bronze/                          # Bronze vocabulary TTL (from sources)
-│   │   ├── README.md
-│   │   └── source-system.ttl.template
-│   └── output/                          # Generated projections (gitignored)
-│       ├── dbt/ neo4j/ azure-search/ a2ui/ prompt/ silver/
-├── application-models/                  # Mermaid ERD / class-diagram files
-│   └── README.md                        # How to add application models
+│   ├── model/                           # Domain model (ontology-centric)
+│   │   ├── ontologies/
+│   │   │   ├── _master.ttl              # Master ontology (imports all domains)
+│   │   │   ├── customer.ttl
+│   │   │   └── README.md
+│   │   ├── shapes/                      # SHACL validation constraints
+│   │   │   └── README.md
+│   │   └── extensions/                  # *-silver-ext.ttl projection annotations
+│   ├── integration/                     # Source system integration
+│   │   ├── sources/                     # Source system reference docs
+│   │   │   ├── README.md
+│   │   │   └── source-system-template/  # Template for new source systems
+│   │   └── mappings/                    # SKOS synonym mappings
+│   │       └── README.md
+│   └── output/                          # All projection outputs (committed)
+│       ├── medallion/
+│       │   ├── bronze/                  # Bronze vocabulary TTL
+│       │   │   ├── README.md
+│       │   │   └── source-system.ttl.template
+│       │   ├── silver/                  # Silver DDL/ERD
+│       │   ├── gold/                    # Gold dimensional models
+│       │   └── dbt/                     # dbt models (bronze → silver)
+│       ├── neo4j/
+│       ├── azure-search/
+│       ├── a2ui/
+│       └── prompt/
 ├── ontology-reference-models/           # Git submodule (sparse checkout)
 │   ├── authoritative-ontologies/
 │   ├── derived-ontologies/
@@ -83,45 +91,17 @@ The filename becomes the domain identifier:
 - `sales-order.ttl` → domain "sales-order"
 - Use lowercase with hyphens for multi-word names.
 
-## Adding application models
-
-Application models are Mermaid class diagrams (`.mmd` files) that describe
-entity-relationship structures derived from the ontology.  They live in
-`application-models/` at the repo root and are visualised in the Kairos web UI.
-
-```bash
-# Create the folder and add a model
-mkdir -p application-models
-cat > application-models/customer-order.mmd << 'EOF'
-classDiagram
-  class Customer {
-    +String id
-    +String name
-    +String email
-  }
-  class Order {
-    +String id
-    +Date placedAt
-  }
-  Customer "1" --> "*" Order : places
-EOF
-```
-
-- One `.mmd` file per application model.
-- Name the file after the process or view it represents (e.g. `customer-order.mmd`, `supplier-invoice.mmd`).
-- Files are picked up automatically by the web UI "Application Models" dropdown.
-
 ## Adding a new domain checklist
 
 - [ ] Create a feature branch (`ontology/<domain-name>`)
 - [ ] Run `python -m kairos_ontology init --company-domain <domain> --domain <name>`
-- [ ] Edit `ontology-hub/ontologies/<name>.ttl` — add classes and properties
+- [ ] Edit `ontology-hub/model/ontologies/<name>.ttl` — add classes and properties
 - [ ] Update domain overview table in `ontology-hub/README.md`
-- [ ] Add `owl:imports` to `ontology-hub/ontologies/_master.ttl`
+- [ ] Add `owl:imports` to `ontology-hub/model/ontologies/_master.ttl`
 - [ ] Validate: `python -m kairos_ontology validate`
 - [ ] Generate projections: `python -m kairos_ontology project --target prompt`
-- [ ] (Optional) Generate silver layer: add `*-silver-ext.ttl`, then `python -m kairos_ontology project --target silver`
-- [ ] (Optional) Add source system docs in `ontology-hub/sources/` and generate bronze vocab with **kairos-medallion-staging** skill
-- [ ] (Optional) Create SKOS mappings in `ontology-hub/mappings/` and run **kairos-medallion-projection** skill for dbt models
-- [ ] Optionally add SHACL shapes in `ontology-hub/shapes/`
+- [ ] (Optional) Generate silver layer: add `*-silver-ext.ttl` in `ontology-hub/model/extensions/`, then `python -m kairos_ontology project --target silver`
+- [ ] (Optional) Add source system docs in `ontology-hub/integration/sources/` and generate bronze vocab with **kairos-medallion-staging** skill
+- [ ] (Optional) Create SKOS mappings in `ontology-hub/integration/mappings/` and run **kairos-medallion-projection** skill for dbt models
+- [ ] Optionally add SHACL shapes in `ontology-hub/model/shapes/`
 - [ ] Commit, push, and open PR to merge into main

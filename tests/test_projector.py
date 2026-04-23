@@ -151,7 +151,7 @@ class TestProjector:
         )
         
         # Check if DBT output directory was created
-        dbt_dir = output_dir / "dbt"
+        dbt_dir = output_dir / "medallion" / "dbt"
         assert dbt_dir.exists()
     
     def test_neo4j_projection_creates_files(self, temp_dir, ontology_files):
@@ -187,7 +187,7 @@ class TestProjector:
         )
         
         # Check that all target directories were created
-        assert (output_dir / "dbt").exists()
+        assert (output_dir / "medallion" / "dbt").exists()
         assert (output_dir / "neo4j").exists()
         assert (output_dir / "azure-search").exists()
         assert (output_dir / "a2ui").exists()
@@ -295,7 +295,7 @@ class TestProjector:
         )
         
         # Verify DBT files were created
-        dbt_dir = output_dir / 'dbt'
+        dbt_dir = output_dir / 'medallion' / 'dbt'
         assert dbt_dir.exists()
         
         # Check that Product class was found (files may be in models/silver subdirectory)
@@ -361,7 +361,7 @@ class TestProjector:
         )
         
         # Should still generate files
-        dbt_dir = output_dir / 'dbt'
+        dbt_dir = output_dir / 'medallion' / 'dbt'
         assert dbt_dir.exists()
         sql_files = list(dbt_dir.glob('**/*.sql'))
         assert len(sql_files) > 0
@@ -423,7 +423,7 @@ class TestProjector:
         )
         
         # Check that custom classes were projected, not FIBO
-        dbt_dir = output_dir / 'dbt'
+        dbt_dir = output_dir / 'medallion' / 'dbt'
         assert dbt_dir.exists()
         
         sql_files = list(dbt_dir.glob('**/*.sql'))
@@ -464,7 +464,7 @@ class TestProjector:
         )
         
         # Should generate files for the custom namespace
-        dbt_dir = output_dir / 'dbt'
+        dbt_dir = output_dir / 'medallion' / 'dbt'
         assert dbt_dir.exists()
         
         sql_files = list(dbt_dir.glob('**/*.sql'))
@@ -1046,7 +1046,11 @@ class TestProjector:
                 target=target
             )
             
-            target_dir = output_dir / target
+            # Medallion targets go under medallion/ subdirectory
+            if target in ('dbt', 'silver'):
+                target_dir = output_dir / "medallion" / target
+            else:
+                target_dir = output_dir / target
             assert target_dir.exists(), f"{target} output directory should exist"
             
             # Count files (recursively)

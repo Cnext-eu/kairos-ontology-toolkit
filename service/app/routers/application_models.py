@@ -2,9 +2,10 @@
 # Copyright 2026 Cnext.eu
 """Application Models router — list and read Mermaid class-diagram files.
 
-Application models are stored as ``*.mmd`` files under ``application-models/``
-in each ontology-hub repository.  They complement ontology domains by providing
-entity-relationship diagrams that can be rendered directly in the web UI.
+Application models are stored as ``*.mmd`` files under
+``output/medallion/silver/`` in each ontology-hub repository.  They complement
+ontology domains by providing entity-relationship diagrams that can be rendered
+directly in the web UI.
 """
 
 from typing import Optional
@@ -24,7 +25,7 @@ async def list_application_models(
     """Return a list of available application-model files for the active repo.
 
     Each entry has ``name``, ``path``, ``sha``, and ``size``.
-    Returns an empty list when the ``application-models/`` folder does not exist.
+    Returns an empty list when the silver output folder does not exist.
     """
     gh = get_github_service()
     files = await gh.list_mmd_files(owner=repo_owner, repo=repo_name)

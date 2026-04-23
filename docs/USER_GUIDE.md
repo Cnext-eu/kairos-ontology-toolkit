@@ -138,7 +138,6 @@ my-company-ontology-hub/
 │   │   └── _master.ttl             # Imports all domains
 │   ├── shapes/                     # SHACL validation shapes
 │   ├── output/                     # Generated projections
-│   ├── application-models/         # ERD diagrams for web display
 │   ├── kairos-ext.ttl              # Extension vocabulary (DO NOT EDIT)
 │   ├── silver-ext.ttl.template     # Template for silver annotations
 │   └── package.json                # Mermaid CLI dependency

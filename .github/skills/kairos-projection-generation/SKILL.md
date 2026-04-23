@@ -29,12 +29,12 @@ You help users generate and understand projection artifacts.
 
 ## When to use each target
 
-- **dbt**: When the ontology drives a data warehouse using dbt Core. Generates a complete dbt project with staging models (from bronze source systems via SKOS mappings), silver entity models, schema YAML with SHACL-derived tests, and project config. Requires `bronze/*.ttl` for source system descriptions and `mappings/*.ttl` for SKOS column mappings. See the **kairos-medallion-projection** skill.
+- **dbt**: When the ontology drives a data warehouse using dbt Core. Generates a complete dbt project with staging models (from bronze source systems via SKOS mappings), silver entity models, schema YAML with SHACL-derived tests, and project config. Requires `output/medallion/bronze/*.ttl` for source system descriptions and `integration/mappings/*.ttl` for SKOS column mappings. See the **kairos-medallion-projection** skill.
 - **neo4j**: When building a knowledge graph. Generates `CREATE CONSTRAINT` statements and relationship patterns.
 - **azure-search**: When building a search index. Maps ontology properties to Azure Search field types with filters and facets.
 - **a2ui**: When generating UI forms. Creates JSON schemas that describe the data structure for automatic UI rendering.
 - **prompt**: When using the ontology as LLM context. Generates a compact version (entity→fields map) and a detailed version (with types, descriptions, relationships).
-- **silver**: When building the silver layer of a medallion data platform (e.g. MS Fabric warehouse). Generates T-SQL DDL (`CREATE TABLE`), FK/UNIQUE constraints (`ALTER TABLE`), and a Mermaid ERD. Requires a `*-silver-ext.ttl` annotation file. See the **kairos-medallion-silver** skill.
+- **silver**: When building the silver layer of a medallion data platform (e.g. MS Fabric warehouse). Generates T-SQL DDL (`CREATE TABLE`), FK/UNIQUE constraints (`ALTER TABLE`), and a Mermaid ERD. Requires a `*-silver-ext.ttl` annotation file in `model/extensions/`. See the **kairos-medallion-silver** skill.
 
 ## CLI commands
 
@@ -45,7 +45,7 @@ python -m kairos_ontology project
 # Generate a single target
 python -m kairos_ontology project --target prompt
 
-# Generate silver layer (requires *-silver-ext.ttl alongside the ontology)
+# Generate silver layer (requires *-silver-ext.ttl in model/extensions/)
 python -m kairos_ontology project --target silver
 
 # Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver
@@ -57,22 +57,24 @@ Output is generated into `ontology-hub/output/<target>/`:
 
 ```
 ontology-hub/output/
-├── dbt/customer/models/silver/
-│   ├── customer.sql
-│   └── schema_customer.yml
+├── medallion/
+│   ├── dbt/customer/models/silver/
+│   │   ├── customer.sql
+│   │   └── schema_customer.yml
+│   ├── silver/customer/
+│   │   ├── customer-ddl.sql               # CREATE TABLE (T-SQL / MS Fabric)
+│   │   ├── customer-alter.sql             # ALTER TABLE (UNIQUE + FK constraints)
+│   │   └── customer-erd.mmd               # Mermaid erDiagram
+│   └── gold/                              # Gold dimensional models
 ├── neo4j/
 │   └── customer-schema.cypher
 ├── azure-search/customer/indexes/
 │   └── customer-index.json
 ├── a2ui/customer/schemas/
 │   └── customer-message-schema.json
-├── prompt/
-│   ├── customer-context.json          # compact
-│   └── customer-context-detailed.json  # verbose
-└── silver/customer/
-    ├── customer-ddl.sql               # CREATE TABLE (T-SQL / MS Fabric)
-    ├── customer-alter.sql             # ALTER TABLE (UNIQUE + FK constraints)
-    └── customer-erd.mmd               # Mermaid erDiagram (also in application-models/)
+└── prompt/
+    ├── customer-context.json              # compact
+    └── customer-context-detailed.json     # verbose
 ```
 
 ## Property type mapping
@@ -91,4 +93,4 @@ ontology-hub/output/
 - Generate `prompt` projection first to quickly verify the ontology structure is correct.
 - Use `dbt` projection when you want to see the full property extraction including SHACL tests.
 - Run all targets at once to catch issues specific to certain mappings.
-- For `silver`: run the **kairos-medallion-silver** skill first to set up `kairos-ext:` annotations before projecting.
+- For `silver`: run the **kairos-medallion-silver** skill first to set up `kairos-ext:` annotations in `model/extensions/` before projecting.

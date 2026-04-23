@@ -25,7 +25,7 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
    If it doesn't, add the domain to the table first and get agreement from the
    user.  This avoids fragmented, overlapping ontology files.
 4. **Check the master ontology** — after creating a new domain file, add an
-   `owl:imports` line for it in `ontology-hub/ontologies/_master.ttl`.
+   `owl:imports` line for it in `ontology-hub/model/ontologies/_master.ttl`.
 5. **Check for standard model alignment** — if the user mentions basing the
    domain on an industry standard (e.g. FIBO, DCSA, GS1, PROV-O, schema.org),
    follow the steps in the [Standard model alignment](#standard-model-alignment)

@@ -20,19 +20,24 @@ def test_init_creates_hub_structure(tmp_path):
             assert result.exit_code == 0
 
             # Check ontology-hub directories
-            assert Path("ontology-hub/ontologies").is_dir()
-            assert Path("ontology-hub/shapes").is_dir()
-            assert Path("ontology-hub/mappings").is_dir()
-            assert Path("ontology-hub/output/dbt").is_dir()
+            assert Path("ontology-hub/model/ontologies").is_dir()
+            assert Path("ontology-hub/model/shapes").is_dir()
+            assert Path("ontology-hub/model/extensions").is_dir()
+            assert Path("ontology-hub/integration/sources").is_dir()
+            assert Path("ontology-hub/integration/mappings").is_dir()
+            assert Path("ontology-hub/output/medallion/bronze").is_dir()
+            assert Path("ontology-hub/output/medallion/silver").is_dir()
+            assert Path("ontology-hub/output/medallion/gold").is_dir()
+            assert Path("ontology-hub/output/medallion/dbt").is_dir()
             assert Path("ontology-hub/output/neo4j").is_dir()
             assert Path("ontology-hub/output/azure-search").is_dir()
             assert Path("ontology-hub/output/a2ui").is_dir()
             assert Path("ontology-hub/output/prompt").is_dir()
 
             # Check README files
-            assert Path("ontology-hub/ontologies/README.md").is_file()
-            assert Path("ontology-hub/shapes/README.md").is_file()
-            assert Path("ontology-hub/mappings/README.md").is_file()
+            assert Path("ontology-hub/model/ontologies/README.md").is_file()
+            assert Path("ontology-hub/model/shapes/README.md").is_file()
+            assert Path("ontology-hub/integration/mappings/README.md").is_file()
 
             # Check skills installed
             assert Path(".github/skills/kairos-hub-setup/SKILL.md").is_file()
@@ -52,8 +57,8 @@ def test_init_creates_hub_structure(tmp_path):
             assert "ontology-reference-models" in submodule_calls[0]
 
             # Check starter ontology
-            assert Path("ontology-hub/ontologies/order.ttl").is_file()
-            content = Path("ontology-hub/ontologies/order.ttl").read_text(encoding="utf-8")
+            assert Path("ontology-hub/model/ontologies/order.ttl").is_file()
+            content = Path("ontology-hub/model/ontologies/order.ttl").read_text(encoding="utf-8")
             assert "owl:Ontology" in content
             assert "order" in content
 
@@ -67,10 +72,10 @@ def test_init_without_domain(tmp_path):
             result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert result.exit_code == 0
 
-            assert Path("ontology-hub/ontologies").is_dir()
+            assert Path("ontology-hub/model/ontologies").is_dir()
             assert Path(".github/skills/kairos-hub-setup/SKILL.md").is_file()
             # Only _master.ttl should exist (no domain starter)
-            ttl_files = sorted(Path("ontology-hub/ontologies").glob("*.ttl"))
+            ttl_files = sorted(Path("ontology-hub/model/ontologies").glob("*.ttl"))
             assert len(ttl_files) == 1
             assert ttl_files[0].name == "_master.ttl"
 
@@ -85,12 +90,12 @@ def test_init_no_overwrite_without_force(tmp_path):
             runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer"])
             # Modify the ontology to detect if it gets overwritten
             marker = "# MARKER"
-            Path("ontology-hub/ontologies/customer.ttl").write_text(marker, encoding="utf-8")
+            Path("ontology-hub/model/ontologies/customer.ttl").write_text(marker, encoding="utf-8")
 
             # Run again without --force
             result = runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer"])
             assert result.exit_code == 0
-            assert Path("ontology-hub/ontologies/customer.ttl").read_text(encoding="utf-8") == marker
+            assert Path("ontology-hub/model/ontologies/customer.ttl").read_text(encoding="utf-8") == marker
 
 
 def test_init_force_overwrites(tmp_path):
@@ -100,11 +105,11 @@ def test_init_force_overwrites(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
             runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer"])
-            Path("ontology-hub/ontologies/customer.ttl").write_text("# MARKER", encoding="utf-8")
+            Path("ontology-hub/model/ontologies/customer.ttl").write_text("# MARKER", encoding="utf-8")
 
             result = runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer", "--force"])
             assert result.exit_code == 0
-            content = Path("ontology-hub/ontologies/customer.ttl").read_text(encoding="utf-8")
+            content = Path("ontology-hub/model/ontologies/customer.ttl").read_text(encoding="utf-8")
             assert "owl:Ontology" in content
 
 
@@ -150,10 +155,10 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert repo.is_dir()
 
     # Hub structure
-    assert (repo / "ontology-hub" / "ontologies").is_dir()
-    assert (repo / "ontology-hub" / "shapes" / "README.md").is_file()
-    assert (repo / "ontology-hub" / "mappings" / "README.md").is_file()
-    assert (repo / "ontology-hub" / "output" / "dbt").is_dir()
+    assert (repo / "ontology-hub" / "model" / "ontologies").is_dir()
+    assert (repo / "ontology-hub" / "model" / "shapes" / "README.md").is_file()
+    assert (repo / "ontology-hub" / "integration" / "mappings" / "README.md").is_file()
+    assert (repo / "ontology-hub" / "output" / "medallion" / "dbt").is_dir()
 
     # Submodule add was called for reference models
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
@@ -287,9 +292,9 @@ def test_new_repo_without_domain(tmp_path):
         )
     assert result.exit_code == 0, result.output
     repo = tmp_path / "empty-client-ontology-hub"
-    assert (repo / "ontology-hub" / "ontologies").is_dir()
+    assert (repo / "ontology-hub" / "model" / "ontologies").is_dir()
     # Only _master.ttl should exist (no domain starter)
-    ttl_files = sorted(p.name for p in (repo / "ontology-hub" / "ontologies").glob("*.ttl"))
+    ttl_files = sorted(p.name for p in (repo / "ontology-hub" / "model" / "ontologies").glob("*.ttl"))
     assert ttl_files == ["_master.ttl"]
 
 
@@ -657,7 +662,7 @@ def test_new_repo_template_creates_from_template(tmp_path):
         )
     assert result.exit_code == 0, result.output
     assert repo_dir.is_dir()
-    assert (repo_dir / "ontology-hub" / "ontologies").is_dir()
+    assert (repo_dir / "ontology-hub" / "model" / "ontologies").is_dir()
 
 
 def test_new_repo_template_gh_create_has_template_flag(tmp_path):
@@ -817,7 +822,7 @@ def test_init_generates_hub_readme(tmp_path):
 
 
 def test_init_generates_master_ontology(tmp_path):
-    """init should create ontology-hub/ontologies/_master.ttl."""
+    """init should create ontology-hub/model/ontologies/_master.ttl."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
@@ -825,7 +830,7 @@ def test_init_generates_master_ontology(tmp_path):
             result = runner.invoke(cli, ["init", "--company-domain", "contoso.com"])
             assert result.exit_code == 0
 
-            master = Path("ontology-hub/ontologies/_master.ttl")
+            master = Path("ontology-hub/model/ontologies/_master.ttl")
             assert master.is_file()
             content = master.read_text(encoding="utf-8")
             assert "owl:Ontology" in content
@@ -844,7 +849,7 @@ def test_init_starter_uses_company_domain(tmp_path):
             )
             assert result.exit_code == 0
 
-            content = Path("ontology-hub/ontologies/customer.ttl").read_text(encoding="utf-8")
+            content = Path("ontology-hub/model/ontologies/customer.ttl").read_text(encoding="utf-8")
             assert "https://acme.io/ont/customer#" in content
             assert "https://acme.io/ont/customer>" in content
 
@@ -880,7 +885,7 @@ def test_new_repo_generates_hub_readme(tmp_path):
 
 
 def test_new_repo_generates_master_ontology(tmp_path):
-    """new-repo should create ontology-hub/ontologies/_master.ttl."""
+    """new-repo should create ontology-hub/model/ontologies/_master.ttl."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
@@ -891,7 +896,7 @@ def test_new_repo_generates_master_ontology(tmp_path):
     assert result.exit_code == 0, result.output
 
     repo = tmp_path / "contoso-ontology-hub"
-    master = repo / "ontology-hub" / "ontologies" / "_master.ttl"
+    master = repo / "ontology-hub" / "model" / "ontologies" / "_master.ttl"
     assert master.is_file()
     content = master.read_text(encoding="utf-8")
     assert "owl:Ontology" in content

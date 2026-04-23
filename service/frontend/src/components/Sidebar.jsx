@@ -155,7 +155,7 @@ export default function Sidebar() {
         {appModelLoading && <span className="badge">Loading…</span>}
         {appModels.length === 0 && (
           <span className="auth-hint">
-            No models found. Add <code>.mmd</code> files to <code>application-models/</code> in your repo.
+            No models found. Add <code>.mmd</code> files to <code>output/medallion/silver/</code> in your repo.
           </span>
         )}
       </div>

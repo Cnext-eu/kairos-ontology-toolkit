@@ -11,7 +11,7 @@
 #   python -m kairos_ontology project --target silver
 #
 # The generator discovers this file automatically if named {DOMAIN}-silver-ext.ttl
-# (or any *-silver-ext.ttl in the ontologies/ folder when projecting a hub).
+# (or any *-silver-ext.ttl in the model/extensions/ folder when projecting a hub).
 
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .

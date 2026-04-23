@@ -12,6 +12,9 @@ from .projections.uri_utils import extract_local_name
 
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver"]
 
+# Targets that live under output/medallion/ (medallion architecture outputs).
+_MEDALLION_TARGETS = {"dbt", "silver"}
+
 # Filename patterns that are NOT domain ontologies and should be skipped.
 _NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")
 _NON_DOMAIN_PREFIXES = ("_",)
@@ -133,15 +136,17 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     # Determine template directory
     template_base = Path(__file__).parent / "templates"
     
-    # Look for SHACL shapes directory
-    shapes_dir = ontologies_path.parent / "shapes" if ontologies_path.parent else None
+    # Look for SHACL shapes directory — hub layout: model/ontologies/, model/shapes/
+    hub_root = ontologies_path.parent.parent if ontologies_path.parent else None
+    shapes_dir = hub_root / "model" / "shapes" if hub_root else None
     if shapes_dir and shapes_dir.exists():
         print(f"  Found SHACL shapes directory: {shapes_dir}\n")
 
     # Look for source system reference docs, bronze descriptions, and SKOS mappings
-    sources_dir = ontologies_path.parent / "sources" if ontologies_path.parent else None
-    bronze_dir = ontologies_path.parent / "bronze" if ontologies_path.parent else None
-    mappings_dir = ontologies_path.parent / "mappings" if ontologies_path.parent else None
+    sources_dir = hub_root / "integration" / "sources" if hub_root else None
+    bronze_dir = hub_root / "output" / "medallion" / "bronze" if hub_root else None
+    mappings_dir = hub_root / "integration" / "mappings" if hub_root else None
+    extensions_dir = hub_root / "model" / "extensions" if hub_root else None
     if sources_dir and sources_dir.exists():
         print(f"  Found source system references: {sources_dir}")
     if bronze_dir and bronze_dir.exists():
@@ -156,8 +161,12 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
 
     for target_name in targets_to_run:
         print(f"📦 Generating {target_name} projection...")
-        target_output = output_path / target_name
-        target_output.mkdir(exist_ok=True)
+        # Medallion targets go under output/medallion/; others directly under output/
+        if target_name in _MEDALLION_TARGETS:
+            target_output = output_path / "medallion" / target_name
+        else:
+            target_output = output_path / target_name
+        target_output.mkdir(parents=True, exist_ok=True)
         
         total_files = 0
         
@@ -176,13 +185,20 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             
             try:
                 # Generate artifacts for this specific ontology
-                # For silver: auto-discover *-silver-ext.ttl alongside the ontology file
+                # For silver: auto-discover *-silver-ext.ttl in extensions/ directory
                 ext_path: Optional[Path] = None
                 if target_name == "silver":
                     src_file: Path = onto_info["file"]
-                    candidates = list(src_file.parent.glob(f"{onto_name}-silver-ext.ttl"))
-                    candidates += list(src_file.parent.glob("*-silver-ext.ttl"))
-                    ext_path = candidates[0] if candidates else None
+                    # Look in model/extensions/ first (new layout)
+                    if extensions_dir and extensions_dir.exists():
+                        candidates = list(extensions_dir.glob(f"{onto_name}-silver-ext.ttl"))
+                        candidates += list(extensions_dir.glob("*-silver-ext.ttl"))
+                        ext_path = candidates[0] if candidates else None
+                    # Fallback: check alongside the ontology file (legacy layout)
+                    if not ext_path:
+                        candidates = list(src_file.parent.glob(f"{onto_name}-silver-ext.ttl"))
+                        candidates += list(src_file.parent.glob("*-silver-ext.ttl"))
+                        ext_path = candidates[0] if candidates else None
                     if ext_path:
                         print(f"  [{onto_name}] Using projection ext: {ext_path.name}")
 
@@ -218,18 +234,14 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         # After all domains: generate master ERD for silver target
         if target_name == "silver" and total_files > 0:
             from .projections.silver_projector import generate_master_erd, render_mermaid_svg
-            silver_output = output_path / "silver"
-            hub_name = ontologies_path.parent.name  # e.g. "ontology-hub"
+            silver_output = output_path / "medallion" / "silver"
+            hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
             master_mmd = generate_master_erd(silver_output, hub_name=hub_name)
             if master_mmd:
                 master_path = silver_output / "master-erd.mmd"
                 master_path.write_text(master_mmd, encoding="utf-8")
-                # Also write to application-models/ for web UI display
-                app_models = ontologies_path.parent / "application-models"
-                app_models.mkdir(exist_ok=True)
-                (app_models / "master-erd.mmd").write_text(master_mmd, encoding="utf-8")
-                total_files += 2
-                print(f"  ✓ Master ERD written: silver/master-erd.mmd + application-models/master-erd.mmd")
+                total_files += 1
+                print(f"  ✓ Master ERD written: silver/master-erd.mmd")
 
             # Render all .mmd files to SVG via Mermaid CLI (if available)
             svg_count = 0
@@ -237,13 +249,6 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 svg = render_mermaid_svg(mmd_file)
                 if svg:
                     svg_count += 1
-            # Also render application-models copies
-            app_models = ontologies_path.parent / "application-models"
-            if app_models.exists():
-                for mmd_file in sorted(app_models.glob("*.mmd")):
-                    svg = render_mermaid_svg(mmd_file)
-                    if svg:
-                        svg_count += 1
             if svg_count:
                 total_files += svg_count
                 print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
