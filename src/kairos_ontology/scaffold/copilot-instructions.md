@@ -23,7 +23,7 @@ that are validated and projected into downstream artifacts using the
 │   │       └── {system-name}/           # e.g. adminpulse-to-party.ttl
 │   ├── integration/                     # Source system integration
 │   │   └── sources/                     # Source system reference docs + bronze vocab
-│   │       └── {system-name}/           # Per-system: API specs, SQL DDL, *.bronze.ttl
+│   │       └── {system-name}/           # Per-system: API specs, SQL DDL, *.vocabulary.ttl
 │   └── output/                          # Projection outputs (committed)
 │       ├── medallion/                   # Medallion architecture outputs
 │       │   ├── silver/                  # Silver canonical DDL / ERD

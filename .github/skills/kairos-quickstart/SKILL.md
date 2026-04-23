@@ -100,7 +100,7 @@ contoso-ontology-hub/
 │   │   │   └── _master.ttl              # Master ontology (imports all domains)
 │   │   ├── shapes/
 │   │   ├── extensions/                  # *-silver-ext.ttl projection annotations
-│   │   └── mappings/                    # Source-to-silver SKOS + kairos-map: mappings
+│   │   └── mappings/                    # Source-to-domain SKOS + kairos-map: mappings
 │   ├── integration/                     # Source system integration
 │   │   └── sources/                     # Source system docs + bronze vocab
 │   └── output/                          # All projection outputs (committed)

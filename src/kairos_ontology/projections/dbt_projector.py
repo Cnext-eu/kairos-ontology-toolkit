@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""dbt Projector — generate a dbt Core project from ontology + bronze + SKOS mappings.
+"""dbt Projector — generate a dbt Core project from ontology + source vocabulary + SKOS mappings.
 
 Generates a complete dbt project with:
 
-1. **Sources** — ``_sources.yml`` per source system (from ``bronze/*.ttl``)
+1. **Sources** — ``_sources.yml`` per source system (from source vocabulary TTL)
 2. **Staging models** — ``stg_{source}__{table}.sql`` (rename + cast, materialized as views)
 3. **Silver models** — ``{entity}.sql`` per domain class (staging → silver, matches silver DDL)
 4. **Schema YAML** — ``_models.yml`` with column descriptions + SHACL-derived tests
@@ -112,9 +112,9 @@ def _source_type_to_spark(src_type: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _parse_bronze(sources_dir: Path) -> list[dict]:
-    """Parse bronze vocabulary TTL files from *sources_dir* and return source system metadata.
+    """Parse source vocabulary TTL files from *sources_dir* and return source system metadata.
 
-    Scans ``integration/sources/<system>/*.ttl`` (and ``*.bronze.ttl``)
+    Scans ``integration/sources/<system>/*.ttl`` (including ``*.vocabulary.ttl``)
     recursively, looking for ``kairos-bronze:SourceSystem`` instances.
 
     Returns a list of dicts, one per source system::
@@ -148,7 +148,7 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
         try:
             g.parse(ttl, format="turtle")
         except Exception as exc:
-            logger.warning("Could not parse bronze file %s: %s", ttl.name, exc)
+            logger.warning("Could not parse vocabulary file %s: %s", ttl.name, exc)
 
     systems: list[dict] = []
     for sys_uri in g.subjects(RDF.type, KAIROS_BRONZE.SourceSystem):
@@ -704,7 +704,7 @@ def generate_dbt_artifacts(
     sources_dir: Path = None,
     mappings_dir: Path = None,
 ) -> dict:
-    """Generate dbt project artifacts from ontology + bronze + SKOS mappings.
+    """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
     This is the entry point called by the main projector orchestrator.
 
@@ -717,7 +717,7 @@ def generate_dbt_artifacts(
         ontology_name: Domain name (e.g. ``party``, ``client``).
         ontology_metadata: Provenance metadata dict.
         bronze_dir: Deprecated — use *sources_dir* instead.
-        sources_dir: Path to ``integration/sources/`` directory.  Bronze TTLs
+        sources_dir: Path to ``integration/sources/`` directory.  Vocabulary TTLs
             are discovered recursively under each source system sub-folder.
         mappings_dir: Path to ``mappings/`` directory with SKOS mapping TTLs.
 
@@ -729,14 +729,14 @@ def generate_dbt_artifacts(
     onto_name = ontology_name or "domain"
     env = Environment(loader=FileSystemLoader(str(template_dir)))
 
-    # Parse bronze source systems — prefer sources_dir, fall back to bronze_dir
+    # Parse source vocabulary — prefer sources_dir, fall back to bronze_dir
     systems = _parse_bronze(sources_dir or bronze_dir)
 
     # Parse SKOS mappings
     mappings = _parse_skos_mappings(mappings_dir)
 
     if not systems:
-        logger.info("No bronze source systems found — generating silver models only")
+        logger.info("No source systems found — generating silver models only")
 
     # 1. Sources YAML
     if systems:

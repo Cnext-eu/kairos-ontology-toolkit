@@ -45,12 +45,12 @@ naming quirks, fields that are always null, deprecated endpoints, etc._
 ## Generating the bronze vocabulary
 
 Once your reference documents are in place, use the **`kairos-medallion-staging`**
-Copilot skill to generate the bronze vocabulary TTL file:
+Copilot skill to generate the source vocabulary TTL file:
 
 1. Make sure this folder contains at least one reference document (API spec,
    DDL export, or sample data).
 2. Invoke the `kairos-medallion-staging` skill and point it at this folder.
-3. The skill will produce (or update) the bronze vocabulary TTL **in this
-   folder** (e.g. `erp-system.bronze.ttl`).
-4. Review the generated TTL and commit both the source docs and the bronze
-   vocabulary together.
+3. The skill will produce (or update) the source vocabulary TTL **in this
+   folder** (e.g. `erp-system.vocabulary.ttl`).
+4. Review the generated TTL and commit both the source docs and the vocabulary
+   together.

@@ -25,7 +25,7 @@ integration/sources/{system}/
 ┌──────────────────────┐
 │ sql-ddl/             │
 │ api-specs/           │  AI skill generates
-│ samples/             │──────────────────→  {system}.bronze.ttl
+│ samples/             │──────────────────→  {system}.vocabulary.ttl
 │ README.md            │                     (in same folder)
 └──────────────────────┘
 ```
@@ -102,11 +102,11 @@ If `samples/` contains CSV or JSON files, infer:
 
 ### 3a — Create the output file
 
-Create `ontology-hub/integration/sources/{system-name}/{system-name}.bronze.ttl`:
+Create `ontology-hub/integration/sources/{system-name}/{system-name}.vocabulary.ttl`:
 
 ```bash
 # Create from scratch in the source system folder following the kairos-bronze: vocabulary.
-touch ontology-hub/integration/sources/{system-name}/{system-name}.bronze.ttl
+touch ontology-hub/integration/sources/{system-name}/{system-name}.vocabulary.ttl
 ```
 
 The bronze vocabulary file lives alongside the source system documentation it describes.
@@ -191,7 +191,7 @@ Verify:
 
 After the bronze vocabulary is complete:
 
-1. **Create SKOS mappings** in `model/mappings/{system-name}/` to link bronze columns to silver domain properties
+1. **Create SKOS mappings** in `model/mappings/{system-name}/` to link source columns to domain ontology properties
 2. **Run the medallion projection** to generate dbt staging + silver models:
    ```bash
    python -m kairos_ontology project --target dbt
@@ -206,7 +206,7 @@ See the **kairos-medallion-projection** skill for the full bronze-to-silver pipe
 ```
 ontology-hub/integration/sources/{system-name}/
   README.md                        # System description, owner, connection details
-  {system-name}.bronze.ttl         # Bronze vocabulary (kairos-bronze: TTL)
+  {system-name}.vocabulary.ttl         # Source vocabulary (kairos-bronze: TTL)
   sql-ddl/                         # CREATE TABLE exports from the source database
   api-specs/                       # OpenAPI / Swagger specification files
   samples/                         # Sample data files (CSV, JSON, XML)
