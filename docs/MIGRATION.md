@@ -36,11 +36,11 @@ ontology-hub/
 │   ├── shapes/          # SHACL constraints
 │   └── extensions/      # *-silver-ext.ttl projection annotations
 ├── integration/         # Source system integration
-│   ├── sources/         # Reference docs (API specs, SQL DDL)
+│   ├── sources/         # Reference docs + bronze vocabulary TTL
+│   │   └── {system}/    # Per-system: docs, DDL, {system}.bronze.ttl
 │   └── mappings/        # SKOS mappings
 └── output/              # All projections (committed, not gitignored)
     ├── medallion/       # Medallion architecture
-    │   ├── bronze/      # Bronze vocabulary TTL
     │   ├── silver/      # Silver DDL/ERD
     │   ├── gold/        # Gold dimensional models
     │   └── dbt/         # dbt models (bronze → silver)
@@ -59,7 +59,7 @@ ontology-hub/
 | `shapes/` | `model/shapes/` |
 | `sources/` | `integration/sources/` |
 | `mappings/` | `integration/mappings/` |
-| `bronze/` | `output/medallion/bronze/` |
+| `bronze/` | `integration/sources/{system-name}/` (as `{system-name}.bronze.ttl`) |
 | `output/silver/` | `output/medallion/silver/` |
 | `output/dbt/` | `output/medallion/dbt/` |
 | *(none)* | `output/medallion/gold/` |
@@ -130,7 +130,7 @@ your hub repository.
 ```bash
 mkdir -p model/ontologies model/shapes model/extensions
 mkdir -p integration/sources integration/mappings
-mkdir -p output/medallion/bronze output/medallion/silver
+mkdir -p output/medallion/silver
 mkdir -p output/medallion/gold output/medallion/dbt
 ```
 
@@ -160,10 +160,16 @@ mv sources/* integration/sources/
 mv mappings/* integration/mappings/
 ```
 
-### Step 6 — Move medallion outputs
+### Step 6 — Move bronze vocabulary and medallion outputs
 
 ```bash
-mv bronze/*  output/medallion/bronze/
+# Move each bronze/*.ttl into the corresponding source system folder
+# e.g. bronze/adminpulse.ttl → integration/sources/adminpulse/adminpulse.bronze.ttl
+for f in bronze/*.ttl; do
+  name=$(basename "$f" .ttl)
+  mkdir -p "integration/sources/$name"
+  mv "$f" "integration/sources/$name/$name.bronze.ttl"
+done
 mv output/silver/* output/medallion/silver/
 mv output/dbt/*    output/medallion/dbt/
 ```
@@ -225,7 +231,7 @@ The new layout **commits all projection output** so that:
 | `--extensions` | *(none)* | `model/extensions/` |
 | `--sources` | `sources/` | `integration/sources/` |
 | `--mappings` | `mappings/` | `integration/mappings/` |
-| `--bronze` | `bronze/` | `output/medallion/bronze/` |
+| `--bronze` | `bronze/` | `integration/sources/` |
 
 ---
 

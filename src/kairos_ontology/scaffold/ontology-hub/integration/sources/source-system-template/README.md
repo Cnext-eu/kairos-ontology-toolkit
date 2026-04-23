@@ -50,7 +50,7 @@ Copilot skill to generate the bronze vocabulary TTL file:
 1. Make sure this folder contains at least one reference document (API spec,
    DDL export, or sample data).
 2. Invoke the `kairos-medallion-staging` skill and point it at this folder.
-3. The skill will produce (or update) the corresponding bronze vocabulary TTL
-   in the `bronze/` folder.
+3. The skill will produce (or update) the bronze vocabulary TTL **in this
+   folder** (e.g. `erp-system.bronze.ttl`).
 4. Review the generated TTL and commit both the source docs and the bronze
    vocabulary together.

@@ -14,17 +14,17 @@ that are validated and projected into downstream artifacts using the
 
 ```
 ├── ontology-hub/                        # Main ontology workspace
+│   ├── catalog-v001.xml                 # Local URI → file catalog (auto-chains to reference-models)
 │   ├── model/                           # Domain model (ontology-centric)
 │   │   ├── ontologies/                  # Domain ontologies (Turtle/RDF)
 │   │   ├── shapes/                      # SHACL validation constraints
 │   │   └── extensions/                  # Projection annotations (*-silver-ext.ttl)
 │   ├── integration/                     # Source system integration
-│   │   ├── sources/                     # Source system reference docs
-│   │   │   └── {system-name}/           # Per-system: API specs, SQL DDL, samples
+│   │   ├── sources/                     # Source system reference docs + bronze vocab
+│   │   │   └── {system-name}/           # Per-system: API specs, SQL DDL, *.bronze.ttl
 │   │   └── mappings/                    # SKOS synonym mappings
 │   └── output/                          # Projection outputs (committed)
 │       ├── medallion/                   # Medallion architecture outputs
-│       │   ├── bronze/                  # Bronze vocabulary TTL (from sources)
 │       │   ├── silver/                  # Silver canonical DDL / ERD
 │       │   ├── gold/                    # Gold dimensional models
 │       │   └── dbt/                     # dbt models (bronze → silver)

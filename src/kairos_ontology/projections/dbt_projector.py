@@ -111,8 +111,11 @@ def _source_type_to_spark(src_type: str) -> str:
 # Bronze TTL parser
 # ---------------------------------------------------------------------------
 
-def _parse_bronze(bronze_dir: Path) -> list[dict]:
-    """Parse all ``*.ttl`` files in *bronze_dir* and return source system metadata.
+def _parse_bronze(sources_dir: Path) -> list[dict]:
+    """Parse bronze vocabulary TTL files from *sources_dir* and return source system metadata.
+
+    Scans ``integration/sources/<system>/*.ttl`` (and ``*.bronze.ttl``)
+    recursively, looking for ``kairos-bronze:SourceSystem`` instances.
 
     Returns a list of dicts, one per source system::
 
@@ -137,11 +140,11 @@ def _parse_bronze(bronze_dir: Path) -> list[dict]:
             ]
         }
     """
-    if not bronze_dir or not bronze_dir.is_dir():
+    if not sources_dir or not sources_dir.is_dir():
         return []
 
     g = Graph()
-    for ttl in sorted(bronze_dir.glob("*.ttl")):
+    for ttl in sorted(sources_dir.rglob("*.ttl")):
         try:
             g.parse(ttl, format="turtle")
         except Exception as exc:
@@ -698,6 +701,7 @@ def generate_dbt_artifacts(
     ontology_name: str = None,
     ontology_metadata: dict = None,
     bronze_dir: Path = None,
+    sources_dir: Path = None,
     mappings_dir: Path = None,
 ) -> dict:
     """Generate dbt project artifacts from ontology + bronze + SKOS mappings.
@@ -712,7 +716,9 @@ def generate_dbt_artifacts(
         shapes_dir: Optional SHACL shapes directory.
         ontology_name: Domain name (e.g. ``party``, ``client``).
         ontology_metadata: Provenance metadata dict.
-        bronze_dir: Path to ``bronze/`` directory with source system TTLs.
+        bronze_dir: Deprecated — use *sources_dir* instead.
+        sources_dir: Path to ``integration/sources/`` directory.  Bronze TTLs
+            are discovered recursively under each source system sub-folder.
         mappings_dir: Path to ``mappings/`` directory with SKOS mapping TTLs.
 
     Returns:
@@ -723,8 +729,8 @@ def generate_dbt_artifacts(
     onto_name = ontology_name or "domain"
     env = Environment(loader=FileSystemLoader(str(template_dir)))
 
-    # Parse bronze source systems
-    systems = _parse_bronze(bronze_dir)
+    # Parse bronze source systems — prefer sources_dir, fall back to bronze_dir
+    systems = _parse_bronze(sources_dir or bronze_dir)
 
     # Parse SKOS mappings
     mappings = _parse_skos_mappings(mappings_dir)
