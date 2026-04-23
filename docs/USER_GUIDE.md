@@ -288,8 +288,17 @@ ontology-hub/output/
 
 ## 8. Silver Layer Projection
 
-The silver target is the most feature-rich projection. It generates
-production-ready DDL for analytics databases.
+The silver target generates production-ready DDL for **MS Fabric Warehouse**
+(Delta Lake / medallion architecture). Ontology classes map to tables, properties
+map to columns, and relationships become FK references.
+
+The projection uses a **three-layer rule architecture**:
+
+- **R1–R16**: Common annotation vocabulary (`kairos-ext:`) — shared across all
+  projection targets
+- **S1–S8**: Silver Fabric Warehouse behaviours — how the projector interprets
+  annotations for MS Fabric
+- **G1–G8**: Gold Power BI rules (placeholder — future projection target)
 
 ### Annotating Your Ontology for Silver
 
@@ -302,9 +311,8 @@ Create a `<domain>-silver-ext.ttl` file alongside your ontology:
 # Schema-level settings (on the owl:Ontology)
 <https://mycompany.com/ontology/customer>
     kairos-ext:silverSchema "silver_customer" ;
-    kairos-ext:surrogateKeyStrategy "hash" ;
-    kairos-ext:namingConvention "camel-to-snake" ;
-    kairos-ext:auditEnvelope "_load_date TIMESTAMP_NTZ, _source_system NVARCHAR(100), is_current BOOLEAN" .
+    kairos-ext:surrogateKeyStrategy "uuid" ;
+    kairos-ext:namingConvention "camel-to-snake" .
 
 # Per-class settings
 ex:Customer
@@ -312,42 +320,71 @@ ex:Customer
     kairos-ext:partitionBy "_load_date" ;
     kairos-ext:clusterBy "is_current" .
 
-# Inheritance with discriminator (subtypes folded into parent table)
+# Inheritance — S3 always flattens in silver; annotation preserved for Gold
 ex:Client
     kairos-ext:inheritanceStrategy "discriminator" ;
     kairos-ext:discriminatorColumn "client_type" .
 
-# Reference data (SCD Type 1, ref_ prefix)
+# Reference data (SCD Type 1, ref_ prefix; small refs auto-inlined by S4)
 ex:Country
     kairos-ext:isReferenceData "true"^^xsd:boolean ;
     kairos-ext:scdType "1" .
 
-# GDPR satellite table
+# GDPR satellite table (exempt from S3 flattening)
 ex:CustomerPII
     kairos-ext:gdprSatelliteOf ex:Customer ;
     kairos-ext:scdType "2" .
 ```
 
-### Silver Projection Rules (R1–R16)
+### Common Annotation Rules (R1–R16)
 
 | Rule | What it does |
 |------|--------------|
 | R1   | Schema name from `kairos-ext:silverSchema` or `silver_{domain}` |
-| R2   | Surrogate key strategy: `hash` (BINARY(20)) or `uuid` (NVARCHAR(36)) |
-| R3   | Audit envelope columns appended to every table |
+| R2   | Surrogate key strategy: `uuid` (STRING) |
+| R3   | IRI lineage column (`{table}_iri`) on every root table |
 | R4   | Naming convention: `camel-to-snake` or `as-is` |
-| R5   | SQL type mapping from XSD types |
+| R5   | SCD Type 1 (overwrite) or Type 2 (history) |
 | R6   | Inheritance: `class-per-table` or `discriminator` strategy |
 | R7   | GDPR satellite tables with PK/FK back to parent |
 | R8   | Reference data tables with `ref_` prefix, SCD Type 1 |
-| R9   | Audit envelope parsing with custom columns |
-| R10  | IRI lineage column (`{table}_iri`) on every table |
+| R9   | Audit envelope columns (customizable) |
+| R10  | Partitioning and clustering hints |
 | R11  | NOT NULL from SHACL `sh:minCount 1` or `kairos-ext:nullable "false"` |
-| R12  | FK constraints via ALTER TABLE script |
+| R12  | FK column name/type overrides |
 | R13  | Junction tables for many-to-many relationships |
-| R14  | Mermaid ERD generation with relationship labels |
-| R15  | Projection extension merging (`*-silver-ext.ttl`) |
-| R16  | Empty subtype suppression under discriminator strategy |
+| R14  | Conditional FK (polymorphic, active for specific subtypes) |
+| R15  | Separation of concerns — annotations in separate `*-silver-ext.ttl` |
+| R16  | (Superseded by S3) Empty subtype suppression |
+
+### Silver Fabric Warehouse Rules (S1–S8)
+
+These rules control how the projector generates DDL for MS Fabric Warehouse:
+
+| Rule | What it does |
+|------|--------------|
+| S1   | **Spark SQL types** — BOOLEAN, TIMESTAMP, STRING, DOUBLE (not BIT, DATETIME2, NVARCHAR, FLOAT) |
+| S2   | **Constraints as comments** — PK/FK/UNIQUE emitted as `-- PK:`, `-- FK:` DDL comments |
+| S3   | **Full flattening** — ALL subtypes merge into parent table with discriminator column |
+| S4   | **Inline small refs** — Reference tables with ≤3 columns denormalized into parent |
+| S5   | **_row_hash** — SHA-256 hash column for efficient incremental MERGE |
+| S6   | **_deleted_at** — Soft-delete timestamp for source deletions |
+| S7   | **Canonical schema** — No cross-domain table duplication |
+| S8   | **No dim_/fact_** — Plain table names in silver; prefixes reserved for Gold |
+
+### Column Ordering
+
+| Position | Column(s) |
+|----------|-----------|
+| 1 | `{table}_sk` STRING — surrogate key (PK) |
+| 2 | `{table}_iri` STRING — OWL IRI lineage (root tables only) |
+| 3 | FK columns (STRING, with comment noting target) |
+| 4 | Discriminator column (if hierarchy) |
+| 5 | Business columns (from OWL data properties + merged subtypes) |
+| 6 | `valid_from` DATE, `valid_to` DATE, `is_current` BOOLEAN (SCD2 only) |
+| 7 | `_created_at` TIMESTAMP, `_updated_at` TIMESTAMP, `_source_system` STRING, `_load_date` DATE, `_batch_id` STRING |
+| 8 | `_row_hash` BINARY |
+| 9 | `_deleted_at` TIMESTAMP NULL |
 
 ---
 
@@ -438,7 +475,7 @@ pointing to `party:Party`), the silver projector generates a cross-schema FK:
 
 ```sql
 -- In silver_client.client table:
-party_sk BINARY(20)   -- FK → silver_party.party(party_sk)
+party_sk STRING   -- FK → silver_party.party(party_sk)
 ```
 
 The FK is tracked in ALTER SQL and ERD but the constraint is logical (not

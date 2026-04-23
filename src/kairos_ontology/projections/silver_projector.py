@@ -1,10 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Silver Layer Projector — generate MS Fabric / Delta Lake silver DDL, FK scripts,
+"""Silver Layer Projector — generate MS Fabric Warehouse silver DDL, FK reference,
 and Mermaid ERD from OWL ontologies annotated with kairos-ext: projection extensions.
 
-Rules R1–R15 are implemented here.  Projection annotations live in a separate
-``*-silver-ext.ttl`` file that is merged with the domain ontology at generation time.
+Common annotation rules R1–R16 define the shared ``kairos-ext:`` vocabulary.
+Silver Fabric rules S1–S8 control Warehouse-specific output behaviour:
+
+  S1 — Spark SQL types (BOOLEAN, TIMESTAMP, STRING, DOUBLE)
+  S2 — PK/FK/UNIQUE as DDL comments (Fabric can't enforce constraints)
+  S3 — Flatten ALL inheritance to single table + discriminator
+  S4 — Inline small reference tables (≤3 columns) into parent
+  S5 — ``_row_hash`` BINARY column for incremental MERGE
+  S6 — ``_deleted_at`` TIMESTAMP soft-delete column
+  S7 — Canonical schema ownership (no cross-domain table duplication)
+  S8 — No ``dim_``/``fact_`` prefixes (reserved for Gold layer)
 
 Namespace:  kairos-ext:  https://kairos.cnext.eu/ext#
 """
@@ -24,7 +33,7 @@ from rdflib.namespace import OWL, RDF, RDFS
 KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
 
 # ---------------------------------------------------------------------------
-# XSD → SQL type mapping (MS Fabric / T-SQL / Delta Lake compatible)
+# XSD → SQL type mapping (S1 — Spark SQL types for MS Fabric Warehouse)
 # ---------------------------------------------------------------------------
 XSD_TO_SQL: dict[str, str] = {
     str(XSD.string): "STRING",
@@ -35,20 +44,21 @@ XSD_TO_SQL: dict[str, str] = {
     str(XSD.long): "BIGINT",
     str(XSD.short): "SMALLINT",
     str(XSD.decimal): "DECIMAL(18,4)",
-    str(XSD.float): "FLOAT",
-    str(XSD.double): "FLOAT",
-    str(XSD.boolean): "BIT",
+    str(XSD.float): "DOUBLE",
+    str(XSD.double): "DOUBLE",
+    str(XSD.boolean): "BOOLEAN",
     str(XSD.date): "DATE",
-    str(XSD.dateTime): "DATETIME2",
-    str(XSD.time): "TIME",
+    str(XSD.dateTime): "TIMESTAMP",
+    str(XSD.time): "STRING",
     str(XSD.gYear): "INT",
-    str(XSD.anyURI): "NVARCHAR(2048)",
+    str(XSD.anyURI): "STRING",
 }
 
-# Default audit envelope columns (R9)
+# Default audit envelope columns (R9 + S5 _row_hash + S6 _deleted_at)
 _DEFAULT_AUDIT = (
-    "_created_at DATETIME2, _updated_at DATETIME2, "
-    "_source_system NVARCHAR(128), _load_date DATE, _batch_id NVARCHAR(64)"
+    "_created_at TIMESTAMP, _updated_at TIMESTAMP, "
+    "_source_system STRING, _load_date DATE, _batch_id STRING, "
+    "_row_hash BINARY, _deleted_at TIMESTAMP"
 )
 
 
@@ -64,9 +74,8 @@ def _mmd_type(sql_type: str) -> str:
     Mermaid ATTRIBUTE_WORD only allows ``[A-Za-z0-9_]``.
     Examples:
       DECIMAL(18,4)   → DECIMAL_18_4
-      NVARCHAR(MAX)   → NVARCHAR_MAX
-      NVARCHAR(2048)  → NVARCHAR_2048
-      DATETIME2       → DATETIME2   (unchanged)
+      STRING          → STRING   (unchanged)
+      BOOLEAN         → BOOLEAN  (unchanged)
     """
     return re.sub(r"[^A-Za-z0-9_]", "_", sql_type).strip("_")
 
@@ -124,11 +133,9 @@ class TableDef:
         self.table_type: str = "root"  # root | subtype | satellite | reference
 
     def render_create(self) -> str:
+        """Render CREATE TABLE with constraints as comments (S2)."""
         lines = [f"CREATE TABLE {self.full_name} ("]
         col_lines = [c.ddl_fragment() for c in self.columns]
-        # Primary key constraint
-        if self.pk_column:
-            col_lines.append(f"    CONSTRAINT pk_{self.name} PRIMARY KEY ({self.pk_column})")
         lines.append(",\n".join(col_lines))
         lines.append(")")
         # Partitioning / clustering
@@ -136,14 +143,26 @@ class TableDef:
             lines.append(f"PARTITIONED BY ({self.partition_by})")
         if self.cluster_by:
             lines.append(f"CLUSTER BY ({self.cluster_by})")
-        return "\n".join(lines) + ";"
+        result = "\n".join(lines) + ";"
+        # S2: PK/FK/UNIQUE as comments (Fabric Warehouse cannot enforce constraints)
+        constraint_comments = []
+        if self.pk_column:
+            constraint_comments.append(f"-- PK: {self.pk_column}")
+        for col in self.unique_columns:
+            constraint_comments.append(f"-- UNIQUE: {col}")
+        for col, ref_table, ref_col, *_label in self.fk_constraints:
+            constraint_comments.append(f"-- FK: {col} -> {ref_table} ({ref_col})")
+        if constraint_comments:
+            result += "\n" + "\n".join(constraint_comments)
+        return result
 
     def render_alter(self) -> list[str]:
+        """Render constraints as documentation-only comments (S2)."""
         stmts = []
         for col in self.unique_columns:
             stmts.append(
-                f"ALTER TABLE {self.full_name}\n"
-                f"    ADD CONSTRAINT u_{self.name}_{col} UNIQUE ({col});"
+                f"-- ALTER TABLE {self.full_name}\n"
+                f"--     ADD CONSTRAINT u_{self.name}_{col} UNIQUE ({col});"
             )
         seen_constraints: set[str] = set()
         for col, ref_table, ref_col, *_label in self.fk_constraints:
@@ -152,8 +171,8 @@ class TableDef:
                 continue
             seen_constraints.add(constraint_name)
             stmts.append(
-                f"ALTER TABLE {self.full_name}\n"
-                f"    ADD CONSTRAINT {constraint_name}"
+                f"-- ALTER TABLE {self.full_name}\n"
+                f"--     ADD CONSTRAINT {constraint_name}"
                 f" FOREIGN KEY ({col}) REFERENCES {ref_table} ({ref_col});"
             )
         return stmts
@@ -217,13 +236,34 @@ def generate_silver_artifacts(
         if override:
             return override
         if naming_conv == "camel-to-snake":
-            return _camel_to_snake(local)
-        return local.lower()
+            name = _camel_to_snake(local)
+        else:
+            name = local.lower()
+        # Reference data → prefix with ref_
+        is_ref = _bool_val(merged, cls_uri, KAIROS_EXT.isReferenceData, False)
+        if is_ref and not name.startswith("ref_"):
+            name = f"ref_{name}"
+        return name
 
     # Build class map: uri → TableDef
     tables: dict[str, TableDef] = {}
     class_uris = {c["uri"] for c in classes}
-    folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype names] (R16)
+    # S3: Track all subtypes to flatten into parent tables
+    folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype names]
+    # Map of subtype_uri → parent_uri for property merging
+    subtype_parents: dict[str, str] = {}
+
+    # Pre-scan: identify all subtype relationships and build folded_subtypes map
+    for cls_info in classes:
+        cls_uri = URIRef(cls_info["uri"])
+        gdpr_parent = merged.value(cls_uri, KAIROS_EXT.gdprSatelliteOf)
+        if gdpr_parent is not None:
+            continue  # GDPR satellites are never flattened
+        for parent in merged.objects(cls_uri, RDFS.subClassOf):
+            if isinstance(parent, URIRef) and str(parent) in class_uris:
+                subtype_parents[cls_info["uri"]] = str(parent)
+                folded_subtypes.setdefault(str(parent), []).append(cls_info["name"])
+                break
 
     for cls_info in classes:
         cls_uri = URIRef(cls_info["uri"])
@@ -236,10 +276,6 @@ def generate_silver_artifacts(
         is_gdpr = gdpr_parent is not None
         scd = _str_val(merged, cls_uri, KAIROS_EXT.scdType, "1" if is_ref else "2")
 
-        # Reference data → prefix with ref_
-        if is_ref:
-            tbl_name = f"ref_{tbl_name}" if not tbl_name.startswith("ref_") else tbl_name
-
         tbl = TableDef(tbl_name, schema_name)
         tbl.is_reference = is_ref
         tbl.partition_by = _str_val(merged, cls_uri, KAIROS_EXT.partitionBy) or None
@@ -249,52 +285,32 @@ def generate_silver_artifacts(
         # Determine inheritance: is this a subtype?
         # ----------------------------------------------------------------
         supertype_uri = None
-        for parent in merged.objects(cls_uri, RDFS.subClassOf):
-            if isinstance(parent, URIRef) and str(parent) in class_uris:
-                supertype_uri = parent
-                break
+        if cls_info["uri"] in subtype_parents:
+            supertype_uri = URIRef(subtype_parents[cls_info["uri"]])
         is_subtype = supertype_uri is not None
 
         # ----------------------------------------------------------------
-        # R16 — Empty subtype suppression under discriminator strategy
+        # S3 — Flatten ALL subtypes into parent table (except GDPR)
+        # Silver always uses single-table inheritance with discriminator.
         # ----------------------------------------------------------------
         if is_subtype and not is_gdpr:
-            parent_strategy = _str_val(
-                merged, supertype_uri, KAIROS_EXT.inheritanceStrategy, "class-per-table"
-            )
-            if parent_strategy == "discriminator" and not _has_own_properties(merged, cls_uri):
-                parent_key = str(supertype_uri)
-                folded_subtypes.setdefault(parent_key, []).append(local)
-                continue  # skip table generation for this empty subtype
+            continue  # skip table generation — properties merged in post-pass
 
         # ----------------------------------------------------------------
         # Column ordering: SK → IRI → FK → discriminator → data → SCD → audit
         # ----------------------------------------------------------------
 
-        # 1. Surrogate key (R2) — skip for GDPR satellites and subtypes (class-per-table)
-        if not is_gdpr and not is_subtype:
-            sk_col = ColumnDef(f"{tbl_name}_sk", "NVARCHAR(36)", nullable=False,
+        # 1. Surrogate key (R2)
+        if not is_gdpr:
+            sk_col = ColumnDef(f"{tbl_name}_sk", "STRING", nullable=False,
                                comment="Surrogate key (UUID)")
             tbl.columns.append(sk_col)
             tbl.pk_column = f"{tbl_name}_sk"
-        elif is_subtype:
-            # Subtype: FK to supertype table acts as PK (R6 class-per-table)
-            parent_local = _local_name(str(supertype_uri))
-            parent_tbl = table_name_for(supertype_uri, parent_local)
-            sk_col = ColumnDef(f"{parent_tbl}_sk", "NVARCHAR(36)", nullable=False,
-                               comment=f"PK/FK → {parent_tbl} (joined-table inheritance)")
-            tbl.columns.append(sk_col)
-            tbl.pk_column = f"{parent_tbl}_sk"
-            tbl.fk_constraints.append(
-                (f"{parent_tbl}_sk", f"{schema_name}.{parent_tbl}",
-                 f"{parent_tbl}_sk", "inherits")
-            )
-            tbl.table_type = "subtype"
-        elif is_gdpr:
+        else:
             # GDPR satellite: PK = FK to parent (R7)
             parent_local = _local_name(str(gdpr_parent))
             parent_tbl = table_name_for(gdpr_parent, parent_local)
-            sk_col = ColumnDef(f"{parent_tbl}_sk", "NVARCHAR(36)", nullable=False,
+            sk_col = ColumnDef(f"{parent_tbl}_sk", "STRING", nullable=False,
                                comment=f"PK/FK → {parent_tbl} (GDPR satellite)")
             tbl.columns.append(sk_col)
             tbl.pk_column = f"{parent_tbl}_sk"
@@ -304,9 +320,9 @@ def generate_silver_artifacts(
             )
             tbl.table_type = "satellite"
 
-        # 2. IRI lineage column (R3) — skip for subtypes, ref, and GDPR satellites
-        if include_iri and not is_subtype and not is_gdpr and not is_ref:
-            iri_col = ColumnDef(f"{tbl_name}_iri", "NVARCHAR(2048)", nullable=False,
+        # 2. IRI lineage column (R3, S7) — skip for ref and GDPR satellites
+        if include_iri and not is_gdpr and not is_ref:
+            iri_col = ColumnDef(f"{tbl_name}_iri", "STRING", nullable=False,
                                 comment="OWL IRI lineage")
             tbl.columns.append(iri_col)
             tbl.unique_columns.append(f"{tbl_name}_iri")
@@ -315,10 +331,13 @@ def generate_silver_artifacts(
         _add_object_property_fk_cols(merged, cls_uri, tbl, table_name_for, schema_name,
                                      class_uris, naming_conv)
 
-        # 4. Discriminator column (R6 — discriminator strategy)
+        # 4. Discriminator column (R6 + S3 — auto-add if class has subtypes)
         disc_col = _str_val(merged, cls_uri, KAIROS_EXT.discriminatorColumn)
+        if not disc_col and cls_info["uri"] in folded_subtypes:
+            # S3: auto-generate discriminator for parent with flattened subtypes
+            disc_col = f"{tbl_name}_type"
         if disc_col:
-            tbl.columns.append(ColumnDef(disc_col, "NVARCHAR(64)", nullable=False,
+            tbl.columns.append(ColumnDef(disc_col, "STRING", nullable=False,
                                          comment="Type discriminator"))
 
         # 5. Data properties (business columns)
@@ -329,7 +348,7 @@ def generate_silver_artifacts(
             tbl.columns.append(ColumnDef("valid_from", "DATE", nullable=False))
             tbl.columns.append(ColumnDef("valid_to", "DATE", nullable=True,
                                          comment="NULL = current record"))
-            tbl.columns.append(ColumnDef("is_current", "BIT", nullable=False,
+            tbl.columns.append(ColumnDef("is_current", "BOOLEAN", nullable=False,
                                          comment="DEFAULT 1"))
 
         # 7. Audit envelope (R9) — skip for reference tables
@@ -340,6 +359,39 @@ def generate_silver_artifacts(
             tbl.table_type = "reference"
 
         tables[cls_info["uri"]] = tbl
+
+    # ----------------------------------------------------------------
+    # S3 post-pass: merge subtype properties into parent tables
+    # ----------------------------------------------------------------
+    for parent_uri_str, subtype_names in folded_subtypes.items():
+        if parent_uri_str not in tables:
+            continue
+        parent_tbl = tables[parent_uri_str]
+        # Find subtype class URIs and merge their properties
+        for cls_info in classes:
+            if cls_info["name"] not in subtype_names:
+                continue
+            sub_uri = URIRef(cls_info["uri"])
+            # Merge data properties as nullable columns with subtype comment
+            _add_data_properties(
+                merged, sub_uri, parent_tbl, shacl_graph, naming_conv,
+                comment_prefix=f"from {cls_info['name']}"
+            )
+            # Merge object property FK columns
+            _add_object_property_fk_cols(
+                merged, sub_uri, parent_tbl, table_name_for, schema_name,
+                class_uris, naming_conv,
+                comment_prefix=f"from {cls_info['name']}"
+            )
+
+    # ----------------------------------------------------------------
+    # S4 post-pass: inline small reference tables into parent
+    # ----------------------------------------------------------------
+    inline_threshold = 3  # default: inline ref tables with ≤3 business columns
+    onto_threshold = merged.value(onto_uri, KAIROS_EXT.inlineRefThreshold)
+    if onto_threshold is not None:
+        inline_threshold = int(str(onto_threshold))
+    _inline_small_ref_tables(tables, inline_threshold)
 
     # ----------------------------------------------------------------
     # Junction tables from many-to-many object properties (R13)
@@ -388,7 +440,7 @@ def generate_silver_artifacts(
             if puri in folded_subtypes:
                 names = ", ".join(folded_subtypes[puri])
                 ddl_lines.append(
-                    f"-- R16: subtypes folded into discriminator: {names}"
+                    f"-- S3: subtypes flattened into this table: {names}"
                 )
         ddl_lines.append(tbl.render_create())
         ddl_lines.append("")
@@ -397,7 +449,9 @@ def generate_silver_artifacts(
     # Render ALTER TABLE script
     # ----------------------------------------------------------------
     alter_lines = [
-        f"-- Silver layer constraints: {schema_name}",
+        f"-- Silver layer constraints (documentation only — S2): {schema_name}",
+        f"-- Fabric Warehouse cannot enforce PK/FK/UNIQUE constraints.",
+        f"-- These are provided as reference for data engineers.",
         f"-- Domain: {ontology_name}",
     ]
     if meta.get("iri"):
@@ -504,6 +558,86 @@ def _resolve_external_table(
     return schema, tbl_name
 
 
+def _inline_small_ref_tables(
+    tables: dict[str, TableDef],
+    threshold: int = 3,
+) -> None:
+    """S4: Inline small reference tables (≤threshold business columns) into parents.
+
+    For each FK relationship pointing to a reference table with few business columns,
+    replace the FK column with the ref table's business columns (denormalized).
+    The reference table is then removed from the output.
+    """
+    # Identify small ref tables (count business columns = non-PK, non-audit, non-SCD)
+    audit_prefixes = ("_created_at", "_updated_at", "_source_system", "_load_date",
+                      "_batch_id", "_row_hash", "_deleted_at")
+    scd_names = ("valid_from", "valid_to", "is_current")
+
+    small_refs: dict[str, list[ColumnDef]] = {}  # full_name → business columns
+    for uri, tbl in tables.items():
+        if not tbl.is_reference:
+            continue
+        biz_cols = [
+            c for c in tbl.columns
+            if c.name != tbl.pk_column
+            and c.name not in audit_prefixes
+            and c.name not in scd_names
+            and not c.name.endswith("_iri")
+        ]
+        if len(biz_cols) <= threshold:
+            small_refs[tbl.full_name] = biz_cols
+
+    if not small_refs:
+        return
+
+    # Inline into parent tables
+    refs_to_remove: set[str] = set()
+    for uri, tbl in tables.items():
+        if tbl.is_reference:
+            continue
+        new_fk_constraints = []
+        for fk_col, ref_table, ref_col, *label in tbl.fk_constraints:
+            if ref_table in small_refs:
+                # Remove the FK column
+                tbl.columns = [c for c in tbl.columns if c.name != fk_col]
+                # Inline the ref table's business columns
+                ref_prefix = ref_table.split(".")[-1].replace("ref_", "")
+                existing = {c.name for c in tbl.columns}
+                for biz_col in small_refs[ref_table]:
+                    # Avoid double-prefixing (e.g. gender_gender_code)
+                    if biz_col.name.startswith(f"{ref_prefix}_"):
+                        inlined_name = biz_col.name
+                    else:
+                        inlined_name = f"{ref_prefix}_{biz_col.name}"
+                    if inlined_name in existing:
+                        continue
+                    existing.add(inlined_name)
+                    tbl.columns.insert(
+                        _find_insert_pos(tbl, fk_col),
+                        ColumnDef(
+                            inlined_name, biz_col.sql_type, nullable=True,
+                            comment=f"S4: inlined from {ref_table}"
+                        )
+                    )
+                refs_to_remove.add(ref_table)
+            else:
+                new_fk_constraints.append((fk_col, ref_table, ref_col, *label))
+        tbl.fk_constraints = new_fk_constraints
+
+    # Remove inlined ref tables from output
+    to_delete = [uri for uri, tbl in tables.items() if tbl.full_name in refs_to_remove]
+    for uri in to_delete:
+        del tables[uri]
+
+
+def _find_insert_pos(tbl: TableDef, after_col: str) -> int:
+    """Find the position after the given column name, or end of columns."""
+    for i, c in enumerate(tbl.columns):
+        if c.name == after_col:
+            return i + 1
+    return len(tbl.columns)
+
+
 def _parse_audit_envelope(audit_str: str) -> list[ColumnDef]:
     """Parse comma-separated ``name TYPE`` audit column definitions.
 
@@ -549,15 +683,21 @@ def _not_null_from_shacl(shacl_graph: Optional[Graph], prop_uri: URIRef,
 
 
 def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
-                          shacl_graph: Optional[Graph], naming_conv: str) -> None:
-    """Add OWL DatatypeProperty columns to the table (business columns, R4, R11)."""
+                          shacl_graph: Optional[Graph], naming_conv: str,
+                          comment_prefix: str = "") -> None:
+    """Add OWL DatatypeProperty columns to the table (business columns, R4, R11).
+
+    Args:
+        comment_prefix: If set (S3 flattening), prepended to column comment and
+            forces nullable=True (subtype columns are always nullable on parent).
+    """
     existing_col_names = {c.name for c in tbl.columns}
     for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
         domain = graph.value(prop, RDFS.domain)
         if domain != cls_uri:
             continue
         range_uri = graph.value(prop, RDFS.range)
-        sql_type = XSD_TO_SQL.get(str(range_uri), "NVARCHAR(MAX)") if range_uri else "NVARCHAR(MAX)"
+        sql_type = XSD_TO_SQL.get(str(range_uri), "STRING") if range_uri else "STRING"
         # Override from annotation
         override_type = _str_val(graph, prop, KAIROS_EXT.silverDataType)
         if override_type:
@@ -572,19 +712,26 @@ def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
         if col_name in existing_col_names:
             continue
         existing_col_names.add(col_name)
-        # Nullability: explicit annotation wins, then SHACL, then nullable (R11)
-        nullable_ann = graph.value(prop, KAIROS_EXT.nullable)
-        if nullable_ann is not None:
-            nullable = str(nullable_ann).lower() not in ("false", "0")
+        # Nullability: S3 subtype columns are always nullable on parent
+        if comment_prefix:
+            nullable = True
         else:
-            nullable = not _not_null_from_shacl(shacl_graph, prop, cls_uri)
+            nullable_ann = graph.value(prop, KAIROS_EXT.nullable)
+            if nullable_ann is not None:
+                nullable = str(nullable_ann).lower() not in ("false", "0")
+            else:
+                nullable = not _not_null_from_shacl(shacl_graph, prop, cls_uri)
         label = _str_val(graph, prop, RDFS.label, "")
-        tbl.columns.append(ColumnDef(col_name, sql_type, nullable=nullable, comment=label))
+        comment = f"{comment_prefix}; {label}" if comment_prefix and label else (
+            comment_prefix or label
+        )
+        tbl.columns.append(ColumnDef(col_name, sql_type, nullable=nullable, comment=comment))
 
 
 def _add_object_property_fk_cols(
     graph: Graph, cls_uri: URIRef, tbl: TableDef,
     table_name_for, schema_name: str, class_uris: set[str], naming_conv: str,
+    comment_prefix: str = "",
 ) -> None:
     """Add FK columns from max-cardinality-1 object properties (R12).
 
@@ -598,6 +745,10 @@ def _add_object_property_fk_cols(
 
     Handles duplicate column names (e.g. two self-referential FKs to the same
     range class) by appending the property name as a disambiguator.
+
+    Args:
+        comment_prefix: If set (S3 flattening), appended to FK comment and
+            forces nullable=True (subtype FK columns are always nullable on parent).
     """
     # Track existing column names to avoid duplicates (PK, IRI, discriminator, etc.)
     existing_cols = {col.name for col in tbl.columns}
@@ -644,23 +795,27 @@ def _add_object_property_fk_cols(
 
         existing_cols.add(col_name)
 
-        # Nullability: explicit annotation wins, default is nullable (R14)
-        nullable_ann = graph.value(prop, KAIROS_EXT.nullable)
-        if nullable_ann is not None:
-            nullable = str(nullable_ann).lower() not in ("false", "0")
-        else:
+        # Nullability: S3 subtype FK columns are always nullable on parent
+        if comment_prefix:
             nullable = True
+        else:
+            nullable_ann = graph.value(prop, KAIROS_EXT.nullable)
+            if nullable_ann is not None:
+                nullable = str(nullable_ann).lower() not in ("false", "0")
+            else:
+                nullable = True
 
         # Conditional nullable (R14)
         cond_on = _str_val(graph, prop, KAIROS_EXT.conditionalOnType)
         cross_note = f"cross-domain FK → {ref_full}" if is_cross_domain else ""
         comment_parts = [p for p in [
+            comment_prefix,
             f"nullable: active when type IN ({cond_on})" if cond_on else "",
             cross_note,
         ] if p]
         comment = "; ".join(comment_parts)
         prop_label = _camel_to_snake(_local_name(str(prop)))
-        tbl.columns.append(ColumnDef(col_name, "NVARCHAR(36)", nullable=nullable, comment=comment))
+        tbl.columns.append(ColumnDef(col_name, "STRING", nullable=nullable, comment=comment))
         tbl.fk_constraints.append(
             (col_name, ref_full, f"{range_tbl}_sk", prop_label)
         )
@@ -734,18 +889,18 @@ def _build_junction_tables(
         jct = TableDef(jct_name, schema_name)
         jct.table_type = "satellite"
         # SK
-        jct.columns.append(ColumnDef(f"{jct_name}_sk", "NVARCHAR(36)", nullable=False,
+        jct.columns.append(ColumnDef(f"{jct_name}_sk", "STRING", nullable=False,
                                       comment="Surrogate key (UUID)"))
         jct.pk_column = f"{jct_name}_sk"
         prop_label = _camel_to_snake(_local_name(str(prop)))
         # FK to domain
-        jct.columns.append(ColumnDef(f"{dom_tbl}_sk", "NVARCHAR(36)", nullable=False))
+        jct.columns.append(ColumnDef(f"{dom_tbl}_sk", "STRING", nullable=False))
         jct.fk_constraints.append(
             (f"{dom_tbl}_sk", dom_ref, f"{dom_tbl}_sk",
              f"{prop_label}_domain")
         )
         # FK to range
-        jct.columns.append(ColumnDef(f"{rng_tbl}_sk", "NVARCHAR(36)", nullable=False))
+        jct.columns.append(ColumnDef(f"{rng_tbl}_sk", "STRING", nullable=False))
         jct.fk_constraints.append(
             (f"{rng_tbl}_sk", rng_ref, f"{rng_tbl}_sk",
              f"{prop_label}_range")
@@ -754,7 +909,7 @@ def _build_junction_tables(
         jct.columns.extend([
             ColumnDef("valid_from", "DATE", nullable=False),
             ColumnDef("valid_to", "DATE", nullable=True, comment="NULL = current"),
-            ColumnDef("is_current", "BIT", nullable=False, comment="DEFAULT 1"),
+            ColumnDef("is_current", "BOOLEAN", nullable=False, comment="DEFAULT 1"),
         ])
         # Audit
         jct.columns.extend(audit_cols)

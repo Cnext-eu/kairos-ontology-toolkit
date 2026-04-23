@@ -136,3 +136,13 @@ kairos-ext:conditionalOnType a owl:AnnotationProperty ;
     rdfs:label "conditional on type"@en ;
     rdfs:comment "Space-separated discriminator subtype names for which this FK column is active (R14)."@en ;
     rdfs:range xsd:string .
+
+# ---------------------------------------------------------------------------
+# Silver Fabric Warehouse annotations (S4)
+# ---------------------------------------------------------------------------
+
+kairos-ext:inlineRefThreshold a owl:AnnotationProperty ;
+    rdfs:label "inline reference threshold"@en ;
+    rdfs:comment "Maximum number of business columns for a reference table to be inlined into the parent (S4). Default: 3."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:integer .

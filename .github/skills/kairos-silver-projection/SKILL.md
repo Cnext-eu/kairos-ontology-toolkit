@@ -2,8 +2,9 @@
 name: kairos-silver-projection
 description: >
   Expert guide for designing and running the silver-layer projection.
-  Guides the ontology designer through annotation decisions (R1-R15),
-  generates MS Fabric DDL, Mermaid ERD, and ALTER TABLE FK scripts.
+  Covers the R1-R16 common annotation vocabulary and S1-S8 Silver Fabric
+  Warehouse behaviours. Generates Spark SQL DDL, Mermaid ERD, and
+  ALTER TABLE FK scripts for MS Fabric Warehouse.
 ---
 
 # Kairos Silver Projection Skill
@@ -13,9 +14,14 @@ ontology.  The silver layer is a structured relational layer (medallion architec
 ontology classes map to Delta Lake tables, properties map to columns, and relationships
 become FK constraints or junction tables.
 
-The projection rules (R1-R15) are encoded in `silver_projector.py` and driven by
-`kairos-ext:` annotations in a separate `*-silver-ext.ttl` file (R15 — domain ontologies
-must remain free of physical storage concerns).
+The projection is governed by two rule sets:
+
+- **R1-R16** — common annotation vocabulary shared across all projections, encoded as
+  `kairos-ext:` annotations in a separate `*-silver-ext.ttl` file (R15 — domain ontologies
+  must remain free of physical storage concerns).
+- **S1-S8** — Silver Fabric Warehouse-specific behaviours encoded in the silver projector
+  (`silver_projector.py`). These rules adapt the common annotations for the physical
+  constraints and conventions of MS Fabric Warehouse / Spark SQL.
 
 ---
 
@@ -41,7 +47,7 @@ cp "$(python -m kairos_ontology _scaffold_path)/ontology-hub/silver-ext.ttl.temp
 
 Or manually create `ontology-hub/ontologies/{DOMAIN}-silver-ext.ttl`.
 
-The template is pre-populated with all R1-R15 annotations and defaults.
+The template is pre-populated with all R1-R16 annotations and defaults.
 Replace `{DOMAIN}`, `{DOMAIN_URI}`, `{DOMAIN_ONTOLOGY_URI}`, and `{DOMAIN_EXTENSION_URI}`
 with the actual values.
 
@@ -72,6 +78,8 @@ ex:{ClassName}
 ```
 - Table will get `ref_` prefix.
 - No SCD columns, no audit envelope.
+- **S4 note:** reference tables with ≤3 business columns will be automatically inlined
+  into the referencing parent table (see S4 — Inline small ref tables).
 
 ### 2b — Is this a GDPR-sensitive satellite? (R7)
 
@@ -100,6 +108,11 @@ ex:{ClassName}
     kairos-ext:inheritanceStrategy "discriminator" ;
     kairos-ext:discriminatorColumn "entity_type" .
 ```
+
+> **S3 note:** In the silver layer, ALL subtypes are always flattened into the parent
+> table regardless of the `inheritanceStrategy` annotation value. Subtype properties
+> become nullable columns with a `-- from {SubtypeName}` comment. The annotation is
+> preserved in the extension file for future Gold-layer projections.
 
 ### 2d — SCD type (R5)
 
@@ -183,7 +196,7 @@ python -m kairos_ontology project --target silver
 ```
 
 Artifacts are written to `output/silver/{DOMAIN}/`:
-- `{DOMAIN}-ddl.sql` — CREATE TABLE statements (T-SQL / MS Fabric compatible)
+- `{DOMAIN}-ddl.sql` — CREATE TABLE statements (Spark SQL / MS Fabric Warehouse compatible)
 - `{DOMAIN}-alter.sql` — ALTER TABLE statements for UNIQUE and FK constraints
 - `{DOMAIN}-erd.mmd` — Mermaid `erDiagram` for this domain
 - `{DOMAIN}-erd.svg` — SVG render of the ERD (requires Mermaid CLI)
@@ -280,6 +293,8 @@ The master ERD is regenerated automatically on every run.
 | 5 | Business columns (from OWL data properties) |
 | 6 | `valid_from`, `valid_to`, `is_current` (SCD Type 2 only) |
 | 7 | Audit envelope: `_created_at`, `_updated_at`, `_source_system`, `_load_date`, `_batch_id` |
+| 8 | `_row_hash` BINARY — SHA-256 hash of business columns (S5) |
+| 9 | `_deleted_at` TIMESTAMP NULL — soft-delete tracking (S6) |
 
 ## Table ordering convention (within a schema)
 
@@ -301,43 +316,104 @@ A property becomes `NOT NULL` when:
 
 ---
 
-## R16 — Empty subtype suppression (discriminator strategy)
+## Silver Fabric Warehouse Rules (S1-S8)
 
-When a parent class uses `inheritanceStrategy "discriminator"`, subtypes that have
-**no additional properties** (no own data properties or object properties) are
-automatically folded into the parent table. No separate table is generated.
+These rules are specific to the silver-layer Fabric Warehouse projector and adapt the
+common R1-R16 annotation vocabulary to the physical constraints of MS Fabric Warehouse
+and Spark SQL.
 
-This avoids generating empty subtype tables that contain only a PK/FK + audit envelope.
-The parent's discriminator column already identifies the subtype.
+### S1 — Spark SQL types
+
+All data types are Spark SQL native. Type mappings:
+
+| Logical type | Spark SQL type |
+|--------------|---------------|
+| Boolean | `BOOLEAN` (not BIT) |
+| Timestamp / datetime | `TIMESTAMP` (not DATETIME2) |
+| String / text | `STRING` (not NVARCHAR) |
+| Floating point | `DOUBLE` (not FLOAT) |
+
+SK, IRI, discriminator, and audit columns all use `STRING`, `TIMESTAMP`, or `BOOLEAN`.
+
+### S2 — Constraints as comments
+
+Fabric Warehouse cannot enforce PK, FK, or UNIQUE constraints. The projector emits them
+as DDL comments instead of enforceable SQL:
+
+```sql
+-- PK: party_sk
+-- FK: party_sk -> silver_customer.party(party_sk)
+-- UNIQUE: party_iri
+```
+
+The `{DOMAIN}-alter.sql` file is **documentation-only** — it is not executable.
+
+### S3 — Full inheritance flattening
+
+In the silver layer, **all** subtypes are merged into their parent table — not just
+empty ones (which was the old R16 behaviour). This applies regardless of the
+`inheritanceStrategy` annotation value.
 
 **Behaviour:**
-- The OWL subtype classes remain in the TTL (they may be relevant for other projections)
-- The silver projector detects and skips them at generation time
-- A DDL comment on the parent table lists which subtypes are folded
-- Subtypes that DO have additional properties still generate their own table
+- Subtype properties become nullable columns with a `-- from {SubtypeName}` comment
+- A `{table}_type` discriminator column is auto-generated if none is annotated
+  via `kairos-ext:discriminatorColumn`
+- GDPR satellites are **exempt** — they remain separate tables
+- The `inheritanceStrategy` annotation is preserved for future Gold-layer projections
 
-**Example:**
-```turtle
-ex:Client
-    kairos-ext:inheritanceStrategy "discriminator" ;
-    kairos-ext:discriminatorColumn "client_type" .
-
-# These subtypes have NO additional properties → folded into Client table
-ex:IndividualClient rdfs:subClassOf ex:Client .
-ex:OrganisationClient rdfs:subClassOf ex:Client .
-
-# This subtype HAS additional properties → gets its own table
-ex:SpecialClient rdfs:subClassOf ex:Client .
-ex:specialRating a owl:DatatypeProperty ;
-    rdfs:domain ex:SpecialClient ;
-    rdfs:range xsd:integer .
-```
-
-Generated DDL comment:
+**Example output:**
 ```sql
--- R16: subtypes folded into discriminator: IndividualClient, OrganisationClient
-CREATE TABLE silver_domain.client ( ... )
+-- S3: subtypes flattened: IndividualClient, OrganisationClient, SpecialClient
+CREATE TABLE silver_domain.client (
+    client_sk       STRING NOT NULL,
+    client_iri      STRING NOT NULL,
+    client_type     STRING,           -- auto-generated discriminator
+    name            STRING,
+    special_rating  INT,              -- from SpecialClient
+    ...
+)
 ```
+
+### S4 — Inline small ref tables
+
+Reference tables (R8) with **≤3 business columns** are automatically denormalized
+(inlined) into the referencing parent table. The inlined columns are prefixed with the
+reference entity name.
+
+**Example:** `ref_belgian_legal_form` with columns `code`, `label` →
+parent table gets `belgian_legal_form_code STRING`, `belgian_legal_form_label STRING`.
+
+The threshold is configurable via `kairos-ext:inlineRefThreshold` on the ontology:
+```turtle
+<https://example.org/ontology> kairos-ext:inlineRefThreshold "5"^^xsd:integer .
+```
+
+### S5 — _row_hash
+
+A `_row_hash BINARY` column is added to the audit envelope. It contains a SHA-256 hash
+of all business columns, enabling efficient incremental MERGE/upsert operations without
+comparing every column.
+
+### S6 — _deleted_at
+
+A `_deleted_at TIMESTAMP NULL` column is added to the audit envelope for soft-delete
+tracking. When a source system signals a record deletion, this column records the
+timestamp instead of physically removing the row.
+
+### S7 — Canonical schema
+
+Each class belongs to exactly one schema — its owning domain (`silver_{domain}`).
+Tables are **never** duplicated across domain schemas. Cross-domain references use
+FK comments (S2) with schema-qualified names:
+
+```sql
+-- FK: customer_sk -> silver_customer.customer(customer_sk)
+```
+
+### S8 — No dim_/fact_ prefixes
+
+Silver-layer tables use plain entity names (e.g. `party`, `engagement`).
+The `dim_`/`fact_` naming convention is reserved for the Gold layer.
 
 ---
 
