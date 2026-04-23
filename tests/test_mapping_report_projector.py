@@ -9,7 +9,9 @@ import pytest
 from rdflib import Graph
 
 from kairos_ontology.projections.mapping_report_projector import (
+    _build_entity_view,
     _build_report_data,
+    _extract_domain_prefix,
     _extract_ontology_properties,
     _parse_mappings,
     _parse_source_systems,
@@ -58,11 +60,14 @@ MAPPING_TTL = textwrap.dedent("""\
     @prefix onto:  <http://example.com/ontology#> .
 
     src:erp_customers skos:exactMatch onto:Customer ;
-        km:mappingType "table" .
+        km:mappingType "direct" .
 
-    src:erp_customers_id skos:exactMatch onto:customerId .
+    src:erp_customers_id skos:exactMatch onto:customerId ;
+        km:transform "CAST(source.customer_id AS STRING)" .
 
-    src:erp_customers_name skos:closeMatch onto:customerName .
+    src:erp_customers_name skos:closeMatch onto:customerName ;
+        km:transform "TRIM(source.name)" ;
+        km:filterCondition "source.type = 1" .
 """)
 
 ONTOLOGY_TTL = textwrap.dedent("""\
@@ -154,7 +159,9 @@ class TestParseMappings:
     def test_parses_table_mapping(self, mappings_dir):
         result = _parse_mappings(mappings_dir)
         assert "http://example.com/source/erp_customers" in result["table_maps"]
-        tm = result["table_maps"]["http://example.com/source/erp_customers"]
+        entries = result["table_maps"]["http://example.com/source/erp_customers"]
+        assert len(entries) >= 1
+        tm = entries[0]
         assert tm["match_type"] == "exactMatch"
         assert tm["target_uri"] == "http://example.com/ontology#Customer"
 
@@ -162,13 +169,33 @@ class TestParseMappings:
         result = _parse_mappings(mappings_dir)
         cm = result["column_maps"]
         assert "http://example.com/source/erp_customers_id" in cm
-        assert cm["http://example.com/source/erp_customers_id"]["match_type"] == "exactMatch"
+        entries = cm["http://example.com/source/erp_customers_id"]
+        assert entries[0]["match_type"] == "exactMatch"
         assert "http://example.com/source/erp_customers_name" in cm
-        assert cm["http://example.com/source/erp_customers_name"]["match_type"] == "closeMatch"
+        assert cm["http://example.com/source/erp_customers_name"][0]["match_type"] == "closeMatch"
 
     def test_unmapped_column_not_in_maps(self, mappings_dir):
         result = _parse_mappings(mappings_dir)
         assert "http://example.com/source/erp_customers_email" not in result["column_maps"]
+
+    def test_extracts_transform(self, mappings_dir):
+        result = _parse_mappings(mappings_dir)
+        cm = result["column_maps"]
+        id_entry = cm["http://example.com/source/erp_customers_id"][0]
+        assert id_entry["transform"] == "CAST(source.customer_id AS STRING)"
+        name_entry = cm["http://example.com/source/erp_customers_name"][0]
+        assert name_entry["transform"] == "TRIM(source.name)"
+
+    def test_extracts_filter_condition(self, mappings_dir):
+        result = _parse_mappings(mappings_dir)
+        cm = result["column_maps"]
+        name_entry = cm["http://example.com/source/erp_customers_name"][0]
+        assert name_entry["filter_condition"] == "source.type = 1"
+
+    def test_extracts_mapping_type(self, mappings_dir):
+        result = _parse_mappings(mappings_dir)
+        tm = result["table_maps"]["http://example.com/source/erp_customers"]
+        assert tm[0]["mapping_type"] == "direct"
 
 
 # ── Tests: _extract_ontology_properties ────────────────────────────────
@@ -187,6 +214,16 @@ class TestExtractOntologyProperties:
     def test_filters_by_namespace(self, ontology_graph):
         classes = _extract_ontology_properties(ontology_graph, "http://other.ns/")
         assert len(classes) == 0
+
+
+# ── Tests: _extract_domain_prefix ──────────────────────────────────────
+
+class TestExtractDomainPrefix:
+    def test_hash_namespace(self):
+        assert _extract_domain_prefix("http://example.com/ont/client#something") == "client"
+
+    def test_slash_namespace(self):
+        assert _extract_domain_prefix("http://example.com/ont/party/something") == "party"
 
 
 # ── Tests: _build_report_data ──────────────────────────────────────────
@@ -231,6 +268,106 @@ class TestBuildReportData:
 
         uncovered_names = {p["property"] for p in report["uncovered_properties"]}
         assert "customerEmail" in uncovered_names
+
+    def test_match_distribution(self, sources_dir, mappings_dir, ontology_graph):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        report = _build_report_data(systems[0], mappings, classes)
+
+        dist = report["match_distribution"]
+        assert dist["exactMatch"] == 1
+        assert dist["closeMatch"] == 1
+
+    def test_domain_coverage(self, sources_dir, mappings_dir, ontology_graph):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        report = _build_report_data(systems[0], mappings, classes)
+
+        assert report["total_domain_properties"] == 3
+        assert report["covered_domain_properties"] == 2
+        assert report["domain_coverage_pct"] == 67
+
+    def test_action_item_counts(self, sources_dir, mappings_dir, ontology_graph):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        report = _build_report_data(systems[0], mappings, classes)
+
+        assert report["error_count"] == 0
+        assert report["warning_count"] == 1
+        assert report["info_count"] == 1
+
+    def test_transform_in_column_report(self, sources_dir, mappings_dir, ontology_graph):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        report = _build_report_data(systems[0], mappings, classes)
+
+        tbl = report["tables"][0]
+        mapped_cols = [c for c in tbl["columns"] if c["mapped"]]
+        transforms = {c["source_name"]: c["transform"] for c in mapped_cols}
+        assert transforms["customer_id"] == "CAST(source.customer_id AS STRING)"
+        assert transforms["name"] == "TRIM(source.name)"
+
+    def test_entity_view_present(self, sources_dir, mappings_dir, ontology_graph):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        report = _build_report_data(systems[0], mappings, classes)
+
+        assert "entity_view" in report
+        assert len(report["entity_view"]) >= 1
+        entity = report["entity_view"][0]
+        assert entity["name"] == "Customer"
+        assert len(entity["column_mappings"]) == 2
+
+
+# ── Tests: _build_entity_view ──────────────────────────────────────────
+
+class TestBuildEntityView:
+    def test_groups_by_target_entity(self, sources_dir, mappings_dir, ontology_graph):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        entities = _build_entity_view(systems[0], mappings, classes)
+
+        assert len(entities) >= 1
+        customer = next(e for e in entities if e["name"] == "Customer")
+        assert customer["label"] == "Customer"
+        assert customer["comment"] == "A customer entity"
+
+    def test_entity_has_column_mappings(self, sources_dir, mappings_dir, ontology_graph):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        entities = _build_entity_view(systems[0], mappings, classes)
+
+        customer = next(e for e in entities if e["name"] == "Customer")
+        col_names = {cm["source_column"] for cm in customer["column_mappings"]}
+        assert col_names == {"customer_id", "name"}
+
+    def test_entity_has_source_tables(self, sources_dir, mappings_dir, ontology_graph):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        entities = _build_entity_view(systems[0], mappings, classes)
+
+        customer = next(e for e in entities if e["name"] == "Customer")
+        assert len(customer["source_tables"]) >= 1
+        assert customer["source_tables"][0]["table_name"] == "customers"
+
+    def test_entity_column_has_transform(self, sources_dir, mappings_dir, ontology_graph):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        entities = _build_entity_view(systems[0], mappings, classes)
+
+        customer = next(e for e in entities if e["name"] == "Customer")
+        id_map = next(cm for cm in customer["column_mappings"]
+                      if cm["source_column"] == "customer_id")
+        assert id_map["transform"] == "CAST(source.customer_id AS STRING)"
 
 
 # ── Tests: generate_mapping_report (integration) ──────────────────────
@@ -315,3 +452,58 @@ class TestGenerateMappingReport:
         assert len(result) == 1
         html = list(result.values())[0]
         assert "Customer" in html
+
+    def test_html_contains_data_flow(
+        self, sources_dir, mappings_dir, ontology_graph, template_dir
+    ):
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        result = generate_mapping_report(
+            ontology_classes=classes,
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            template_dir=template_dir,
+        )
+        html = list(result.values())[0]
+        assert "Data Flow Overview" in html
+        assert "Bronze Layer" in html
+        assert "Silver Layer" in html
+
+    def test_html_contains_entity_view(
+        self, sources_dir, mappings_dir, ontology_graph, template_dir
+    ):
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        result = generate_mapping_report(
+            ontology_classes=classes,
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            template_dir=template_dir,
+        )
+        html = list(result.values())[0]
+        assert "Domain Entity Details" in html
+
+    def test_html_contains_transform(
+        self, sources_dir, mappings_dir, ontology_graph, template_dir
+    ):
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        result = generate_mapping_report(
+            ontology_classes=classes,
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            template_dir=template_dir,
+        )
+        html = list(result.values())[0]
+        assert "CAST(source.customer_id AS STRING)" in html
+        assert "TRIM(source.name)" in html
+
+    def test_html_contains_match_distribution(
+        self, sources_dir, mappings_dir, ontology_graph, template_dir
+    ):
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        result = generate_mapping_report(
+            ontology_classes=classes,
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            template_dir=template_dir,
+        )
+        html = list(result.values())[0]
+        assert "Match Type Distribution" in html
