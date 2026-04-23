@@ -17,6 +17,9 @@ that are validated and projected into downstream artifacts using the
 │   ├── ontologies/                      # Domain ontologies (Turtle/RDF)
 │   ├── shapes/                          # SHACL validation constraints
 │   ├── mappings/                        # SKOS synonym mappings
+│   ├── sources/                         # Source system reference docs
+│   │   └── {system-name}/              # Per-system: API specs, SQL DDL, samples
+│   ├── bronze/                          # Bronze vocabulary TTL (from sources)
 │   └── output/                          # Generated projections (gitignored)
 │       ├── dbt/ neo4j/ azure-search/ a2ui/ prompt/ silver/
 ├── ontology-reference-models/           # Reference ontologies
@@ -73,7 +76,12 @@ Output is generated into `ontology-hub/output/`.
 
 For the **silver** target (MS Fabric / Delta Lake DDL + Mermaid ERD), first create
 a `{domain}-silver-ext.ttl` annotation file in `ontology-hub/ontologies/` using the
-**kairos-silver-projection** skill.
+**kairos-medallion-silver** skill.
+
+For the **dbt** target (medallion bronze-to-silver pipeline), first populate
+`ontology-hub/sources/` with reference docs, generate bronze vocabulary using the
+**kairos-medallion-staging** skill, then create SKOS mappings and run the
+**kairos-medallion-projection** skill.
 
 ## Workflow
 

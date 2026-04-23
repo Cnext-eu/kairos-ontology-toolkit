@@ -1,12 +1,12 @@
 ---
-name: kairos-dbt-projection
+name: kairos-medallion-projection
 description: >
-  Expert guide for generating dbt Core projects from ontology + bronze source
-  system descriptions + SKOS mappings. Covers bronze vocabulary, column mappings,
-  staging models, silver models, and SHACL-derived dbt tests.
+  Expert guide for generating dbt Core staging and silver models as part of the
+  medallion architecture. Covers the full bronze-to-silver pipeline using bronze
+  vocabulary, SKOS mappings, and SHACL-derived dbt tests.
 ---
 
-# Kairos dbt Projection Skill
+# Kairos Medallion Projection Skill
 
 You are helping the user generate a **dbt Core project** that transforms bronze
 (source system) data into silver (domain-conformed) tables. The transformation
@@ -16,6 +16,21 @@ is driven by:
 - **Bronze vocabulary** — `kairos-bronze:` descriptions of source system tables/columns
 - **SKOS mappings** — semantic + technical column mappings between bronze and silver
 - **SHACL shapes** — data quality constraints converted to dbt tests
+
+## Prerequisites / Dependencies
+
+Before running this projection, ensure the following artifacts exist in the hub:
+
+- **Bronze vocabulary** must exist in `bronze/` — one `.ttl` file per source system
+  describing tables and columns using the `kairos-bronze:` vocabulary. Use the
+  `kairos-medallion-staging` skill to create these from source system documentation
+  found in `sources/`.
+- **Silver canonical schema** should exist — domain ontologies with silver projection
+  annotations (`kairos-ext:` / `kairos-silver:` properties). Use the
+  `kairos-medallion-silver` skill to design and generate the silver layer schema.
+- **SKOS mappings** must exist in `mappings/` — one `.ttl` file per source-to-domain
+  combination (e.g. `adminpulse-to-party.ttl`) linking bronze columns to silver
+  domain properties using SKOS match predicates and `kairos-map:` transforms.
 
 ## Architecture
 
@@ -223,6 +238,10 @@ dbt test       # Run SHACL-derived tests
 
 ```
 ontology-hub/
+  sources/
+    adminpulse/                    # Source system reference docs
+      README.md                    # System description, connection details
+      sql-ddl/                     # CREATE TABLE exports
   ontologies/
     party.ttl                      # Silver domain ontology
     party-silver-ext.ttl           # Silver projection annotations

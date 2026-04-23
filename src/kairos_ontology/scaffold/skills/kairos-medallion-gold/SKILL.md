@@ -1,11 +1,11 @@
 ---
-name: kairos-gold-projection
+name: kairos-medallion-gold
 description: >
   Placeholder design document for the Gold layer projection (Power BI / dimensional model).
   Defines G1-G8 rules inferred from kairos-ext: annotations. No projector code exists yet.
 ---
 
-# Kairos Gold Projection Skill (Placeholder)
+# Kairos Medallion Gold Skill (Placeholder)
 
 This skill documents the **planned Gold layer projection rules** for generating
 Power BI / dimensional model artifacts from OWL ontologies annotated with `kairos-ext:`

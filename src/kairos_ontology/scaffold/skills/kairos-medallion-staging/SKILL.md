@@ -1,0 +1,214 @@
+---
+name: kairos-medallion-staging
+description: >
+  Expert guide for creating bronze vocabulary descriptions from source system
+  reference documentation. Reads API specs, SQL DDL, sample data from the
+  sources/ folder and generates kairos-bronze: TTL files in bronze/.
+---
+
+# Kairos Medallion Staging Skill
+
+You are helping the user create a **bronze vocabulary description** for a source
+system. The bronze vocabulary uses the `kairos-bronze:` namespace to describe
+tables, columns, and data types from the source system — enabling downstream
+dbt staging model generation.
+
+## Prerequisites
+
+- Source system reference docs should be placed in `ontology-hub/sources/{system-name}/`
+- The `kairos-bronze:` vocabulary is defined in the toolkit (`kairos-bronze.ttl`)
+
+## Architecture
+
+```
+sources/{system}/               bronze/{system}.ttl
+┌──────────────────────┐        ┌──────────────────────┐
+│ sql-ddl/             │──→     │ kairos-bronze:        │
+│ api-specs/           │  AI    │   SourceSystem        │
+│ samples/             │  skill │   SourceTable         │
+│ README.md            │──→     │   SourceColumn        │
+└──────────────────────┘        └──────────────────────┘
+```
+
+---
+
+## Phase 1 — Verify source documentation
+
+### 1a — Check for source system folder
+
+```bash
+ls ontology-hub/sources/
+```
+
+If the system folder doesn't exist yet, create it:
+
+```bash
+mkdir -p ontology-hub/sources/{system-name}
+cp ontology-hub/sources/source-system-template/README.md \
+   ontology-hub/sources/{system-name}/README.md
+```
+
+### 1b — Inventory reference materials
+
+Check what documentation is available in the source folder:
+
+| Material | Location | Priority |
+|----------|----------|----------|
+| SQL DDL (CREATE TABLE) | `sql-ddl/*.sql` | ⭐ Best — exact schema |
+| API specs (OpenAPI/Swagger) | `api-specs/*.yaml` or `*.json` | ⭐ Good — typed endpoints |
+| Sample data (CSV/JSON) | `samples/*` | 🔶 Useful — infer types |
+| Database documentation | `docs/*` | 🔶 Context — business meaning |
+| Notes / observations | `README.md`, `notes.md` | 📝 Context |
+
+### 1c — Review the source system README
+
+Read `ontology-hub/sources/{system-name}/README.md` for:
+- System name and version
+- Connection type (jdbc, odbc, api, file, lakehouse)
+- Database and schema names
+- Owner and contact info
+- Any known quirks or limitations
+
+---
+
+## Phase 2 — Extract schema information
+
+### 2a — From SQL DDL
+
+If `sql-ddl/` contains CREATE TABLE statements, extract:
+- Table names, column names, data types
+- Primary keys, foreign keys
+- Nullable constraints
+- Default values
+
+### 2b — From API specs
+
+If `api-specs/` contains OpenAPI/Swagger files, extract:
+- Resource/endpoint names → map to tables
+- Request/response properties → map to columns
+- Property types → map to data types
+- Required properties → map to NOT NULL
+
+### 2c — From sample data
+
+If `samples/` contains CSV or JSON files, infer:
+- Column names from headers / keys
+- Data types from values (inspect patterns)
+- Nullable from presence of empty values
+
+---
+
+## Phase 3 — Generate the bronze vocabulary TTL
+
+### 3a — Create the output file
+
+Create `ontology-hub/bronze/{system-name}.ttl` using the template:
+
+```bash
+cp ontology-hub/bronze/source-system.ttl.template \
+   ontology-hub/bronze/{system-name}.ttl
+```
+
+Or create from scratch following the kairos-bronze: vocabulary.
+
+### 3b — Fill in the source system
+
+```turtle
+@prefix bronze-{prefix}: <https://{company-domain}/bronze/{system-name}#> .
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+bronze-{prefix}:{SystemName} a kairos-bronze:SourceSystem ;
+    rdfs:label "{System Display Name}" ;
+    kairos-bronze:connectionType "{jdbc|odbc|api|file|lakehouse}" ;
+    kairos-bronze:database "{DatabaseName}" ;
+    kairos-bronze:schema "{SchemaName}" .
+```
+
+### 3c — Add tables
+
+For each table/resource extracted in Phase 2:
+
+```turtle
+bronze-{prefix}:{tableName} a kairos-bronze:SourceTable ;
+    rdfs:label "{tableName}" ;
+    kairos-bronze:sourceSystem bronze-{prefix}:{SystemName} ;
+    kairos-bronze:tableName "{tableName}" ;
+    kairos-bronze:primaryKeyColumns "{PK1} {PK2}" ;
+    kairos-bronze:incrementalColumn "{ModifiedDate}" .
+```
+
+### 3d — Add columns
+
+For each column/property:
+
+```turtle
+bronze-{prefix}:{tableName}_{columnName} a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-{prefix}:{tableName} ;
+    kairos-bronze:columnName "{columnName}" ;
+    kairos-bronze:dataType "{dataType}" ;
+    kairos-bronze:nullable "{true|false}"^^xsd:boolean ;
+    kairos-bronze:isPrimaryKey "{true|false}"^^xsd:boolean .
+```
+
+### Data type mapping reference
+
+| Source (SQL Server) | Source (API/JSON) | kairos-bronze:dataType |
+|--------------------|--------------------|----------------------|
+| `int` | `integer` | `"int"` |
+| `bigint` | `integer (int64)` | `"bigint"` |
+| `nvarchar(N)` | `string` | `"nvarchar(N)"` |
+| `varchar(N)` | `string` | `"varchar(N)"` |
+| `datetime2` | `date-time` | `"datetime2"` |
+| `date` | `date` | `"date"` |
+| `bit` | `boolean` | `"bit"` |
+| `decimal(P,S)` | `number` | `"decimal(P,S)"` |
+| `uniqueidentifier` | `string (uuid)` | `"uniqueidentifier"` |
+
+---
+
+## Phase 4 — Validate the output
+
+### 4a — Syntax check
+
+```bash
+python -m kairos_ontology validate
+```
+
+### 4b — Completeness check
+
+Verify:
+- [ ] Every table from the source has a `kairos-bronze:SourceTable` entry
+- [ ] Every column has a `kairos-bronze:SourceColumn` entry
+- [ ] All primary key columns are marked with `kairos-bronze:isPrimaryKey "true"`
+- [ ] Data types are filled in for all columns
+- [ ] The source system README in `sources/` is up to date
+
+---
+
+## Phase 5 — Next steps
+
+After the bronze vocabulary is complete:
+
+1. **Create SKOS mappings** in `mappings/` to link bronze columns to silver domain properties
+2. **Run the medallion projection** to generate dbt staging + silver models:
+   ```bash
+   python -m kairos_ontology project --target dbt
+   ```
+
+See the **kairos-medallion-projection** skill for the full bronze-to-silver pipeline.
+
+---
+
+## Source system folder structure reference
+
+```
+ontology-hub/sources/{system-name}/
+  README.md             # System description, owner, connection details
+  sql-ddl/              # CREATE TABLE exports from the source database
+  api-specs/            # OpenAPI / Swagger specification files
+  samples/              # Sample data files (CSV, JSON, XML)
+  docs/                 # Additional documentation (ERD, data dictionary)
+  notes.md              # Free-form observations and notes
+```
