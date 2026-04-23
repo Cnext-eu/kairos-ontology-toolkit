@@ -5,6 +5,15 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.1] — 2026-04-23
+
+### Fixed
+
+- **Mapping terminology** — clarified "source-to-silver mappings (SKOS + kairos-map:)"
+  vs "ontology alignment" across medallion-projection, hub-setup, and quickstart skills.
+- **Stale directory trees** — fixed hub-setup and quickstart skills still showing old
+  `integration/mappings/` and `output/medallion/bronze/` paths.
+
 ## [2.6.0] — 2026-04-23
 
 ### Added
