@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Tests for the silver layer projector (R1-R16)."""
+"""Tests for the silver layer projector (R1-R16 annotations + S1-S8 Fabric rules)."""
 
 import importlib.util
 import textwrap
@@ -170,11 +170,13 @@ def test_column_def_nullable_with_comment():
 
 def test_table_def_render_create():
     tbl = TableDef("party", "silver_test")
-    tbl.columns.append(ColumnDef("party_sk", "NVARCHAR(36)", nullable=False))
+    tbl.columns.append(ColumnDef("party_sk", "STRING", nullable=False))
     tbl.pk_column = "party_sk"
     sql = tbl.render_create()
     assert "CREATE TABLE silver_test.party" in sql
-    assert "CONSTRAINT pk_party PRIMARY KEY (party_sk)" in sql
+    # S2: PK as comment, not enforceable constraint
+    assert "-- PK: party_sk" in sql
+    assert "CONSTRAINT" not in sql
 
 
 def test_table_def_render_alter_fk():
@@ -182,7 +184,9 @@ def test_table_def_render_alter_fk():
     tbl.fk_constraints.append(("party_sk", "silver_test.party", "party_sk", "has_party"))
     stmts = tbl.render_alter()
     assert len(stmts) == 1
-    assert "ADD CONSTRAINT fk_address_party_sk" in stmts[0]
+    # S2: constraints as documentation-only comments
+    assert stmts[0].startswith("-- ALTER TABLE")
+    assert "fk_address_party_sk" in stmts[0]
     assert "REFERENCES silver_test.party" in stmts[0]
 
 
@@ -309,6 +313,7 @@ def test_gdpr_satellite_no_separate_sk():
 # ---------------------------------------------------------------------------
 
 def test_subtype_uses_parent_sk_as_pk():
+    """S3: Subtypes are flattened into parent table — no separate table generated."""
     ttl = f"""
         @prefix ex:  <{BASE}> .
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
@@ -329,17 +334,15 @@ def test_subtype_uses_parent_sk_as_pk():
     ]
     result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
-    alter = next(v for k, v in result.items() if k.endswith("-alter.sql"))
-    # Person table should not generate person_sk
-    assert "person_sk" not in ddl
-    # party_sk should appear in person table (as PK/FK)
-    assert "party_sk" in ddl
-    # FK constraint from person to party
-    assert "REFERENCES" in alter
-    assert "fk_person_party_sk" in alter
-    # ERD uses descriptive label
-    erd = next(v for k, v in result.items() if k.endswith("-erd.mmd"))
-    assert '"inherits"' in erd
+    # S3: Person is flattened into Party — no separate person table
+    assert "CREATE TABLE" in ddl
+    assert ddl.lower().count("create table") == 1  # only Party table
+    assert "silver_test.party" in ddl.lower()
+    # S3: auto-generated discriminator
+    assert "party_type" in ddl.lower()
+    # S3: comment noting flattened subtypes
+    assert "S3: subtypes flattened" in ddl
+    assert "Person" in ddl
 
 
 # ---------------------------------------------------------------------------
@@ -704,12 +707,12 @@ def test_provenance_absent_when_no_metadata():
 
 
 # ---------------------------------------------------------------------------
-# R16 — Empty subtype suppression under discriminator strategy
+# S3 — Full inheritance flattening (replaces R16 empty subtype suppression)
 # ---------------------------------------------------------------------------
 
 
-def _r16_ontology() -> tuple[Graph, list[dict]]:
-    """Ontology with discriminator parent, empty subtypes, and one non-empty subtype."""
+def _s3_ontology() -> tuple[Graph, list[dict]]:
+    """Ontology with parent, empty subtypes, and one subtype with own properties."""
     ttl = f"""
         @prefix ex:    <{BASE}> .
         @prefix owl:   <http://www.w3.org/2002/07/owl#> .
@@ -718,13 +721,12 @@ def _r16_ontology() -> tuple[Graph, list[dict]]:
         @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
         @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 
-        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "R16 Test"@en ; owl:versionInfo "1.0" .
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "S3 Test"@en ; owl:versionInfo "1.0" .
 
         ex:Client a owl:Class ;
             rdfs:label "Client"@en ;
             rdfs:comment "A client."@en ;
             kairos-ext:scdType "2" ;
-            kairos-ext:inheritanceStrategy "discriminator" ;
             kairos-ext:discriminatorColumn "client_type" .
 
         ex:clientName a owl:DatatypeProperty ;
@@ -732,21 +734,21 @@ def _r16_ontology() -> tuple[Graph, list[dict]]:
             rdfs:range xsd:string ;
             rdfs:label "client name"@en .
 
-        # Empty subtype — should be folded
+        # Empty subtype — flattened
         ex:IndividualClient a owl:Class ;
             rdfs:subClassOf ex:Client ;
             rdfs:label "Individual Client"@en ;
             rdfs:comment "An individual client."@en ;
             kairos-ext:scdType "2" .
 
-        # Empty subtype — should be folded
+        # Empty subtype — flattened
         ex:OrgClient a owl:Class ;
             rdfs:subClassOf ex:Client ;
             rdfs:label "Org Client"@en ;
             rdfs:comment "An org client."@en ;
             kairos-ext:scdType "2" .
 
-        # Non-empty subtype — has its own property, should NOT be folded
+        # Non-empty subtype — ALSO flattened (S3 flattens ALL subtypes)
         ex:SpecialClient a owl:Class ;
             rdfs:subClassOf ex:Client ;
             rdfs:label "Special Client"@en ;
@@ -767,41 +769,43 @@ def _r16_ontology() -> tuple[Graph, list[dict]]:
     return g, classes
 
 
-def test_r16_empty_subtype_suppressed():
-    """Empty subtypes under discriminator parent are not generated as tables."""
-    g, classes = _r16_ontology()
-    result = generate_silver_artifacts(classes, g, BASE, ontology_name="r16test")
+def test_s3_all_subtypes_flattened():
+    """S3: ALL subtypes (including those with own properties) are flattened."""
+    g, classes = _s3_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="s3test")
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
-    # Parent and non-empty subtype should exist
-    assert "CREATE TABLE" in ddl
-    assert "silver_r16test.client" in ddl.lower()
-    assert "silver_r16test.special_client" in ddl.lower()
-    # Empty subtypes should NOT exist
-    assert "individual_client" not in ddl.lower()
-    assert "org_client" not in ddl.lower()
+    # Only one CREATE TABLE (the parent)
+    assert ddl.lower().count("create table") == 1
+    assert "silver_s3test.client" in ddl.lower()
+    # No subtype tables
+    assert "individual_client" not in ddl.lower().replace("from individualclient", "")
+    assert "org_client" not in ddl.lower().replace("from orgclient", "")
+    assert "special_client" not in ddl.lower().replace("from specialclient", "")
 
 
-def test_r16_folded_comment_in_ddl():
-    """Parent DDL should contain R16 comment listing folded subtypes."""
-    g, classes = _r16_ontology()
-    result = generate_silver_artifacts(classes, g, BASE, ontology_name="r16test")
+def test_s3_subtype_properties_merged():
+    """S3: Subtype properties become nullable columns on the parent table."""
+    g, classes = _s3_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="s3test")
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
-    assert "R16: subtypes folded into discriminator" in ddl
+    # SpecialClient's special_rating should appear as nullable column on Client table
+    assert "special_rating" in ddl.lower()
+    assert "from SpecialClient" in ddl
+
+
+def test_s3_folded_comment_in_ddl():
+    """Parent DDL should contain S3 comment listing flattened subtypes."""
+    g, classes = _s3_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="s3test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "S3: subtypes flattened into this table" in ddl
     assert "IndividualClient" in ddl
     assert "OrgClient" in ddl
+    assert "SpecialClient" in ddl
 
 
-def test_r16_nonempty_subtype_kept():
-    """Subtypes with additional properties keep their own table."""
-    g, classes = _r16_ontology()
-    result = generate_silver_artifacts(classes, g, BASE, ontology_name="r16test")
-    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
-    assert "special_client" in ddl.lower()
-    assert "special_rating" in ddl.lower()
-
-
-def test_r16_class_per_table_not_affected():
-    """Subtypes under class-per-table strategy are NOT suppressed (even if empty)."""
+def test_s3_class_per_table_also_flattened():
+    """S3: Even class-per-table annotated subtypes are flattened in silver."""
     ttl = f"""
         @prefix ex:    <{BASE}> .
         @prefix owl:   <http://www.w3.org/2002/07/owl#> .
@@ -823,7 +827,6 @@ def test_r16_class_per_table_not_affected():
             rdfs:range xsd:string ;
             rdfs:label "account name"@en .
 
-        # Empty subtype under class-per-table — should still get a table
         ex:SavingsAccount a owl:Class ;
             rdfs:subClassOf ex:Account ;
             rdfs:label "Savings Account"@en ;
@@ -837,7 +840,11 @@ def test_r16_class_per_table_not_affected():
     ]
     result = generate_silver_artifacts(classes, g, BASE, ontology_name="cpttest")
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
-    assert "savings_account" in ddl.lower()
+    # S3: SavingsAccount is flattened into Account (no separate table)
+    assert ddl.lower().count("create table") == 1
+    assert "savings_account" not in ddl.lower()
+    # Auto-discriminator added
+    assert "account_type" in ddl.lower()
 
 
 def test_r16_gdpr_satellite_not_suppressed():
@@ -947,7 +954,7 @@ def test_self_referential_fk_no_duplicate_columns():
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
     # Both FK columns should exist with different names
     lines = ddl.lower().split("\n")
-    col_lines = [l.strip() for l in lines if "_sk" in l and "nvarchar" in l]
+    col_lines = [l.strip() for l in lines if "_sk" in l and "string" in l]
     col_names = [l.split()[0] for l in col_lines]
     # Should have unique column names (no duplicates)
     assert len(col_names) == len(set(col_names)), (
@@ -959,11 +966,11 @@ def test_self_referential_fk_no_duplicate_columns():
 
 
 def test_self_referential_fk_no_duplicate_constraints():
-    """Two self-referential FKs produce distinct ALTER TABLE constraints."""
+    """Two self-referential FKs produce distinct constraint comments (S2)."""
     g, classes = _self_referential_ontology()
     result = generate_silver_artifacts(classes, g, BASE, ontology_name="selfref")
     alter = next(v for k, v in result.items() if k.endswith("-alter.sql"))
-    # Extract constraint names
+    # S2: constraints are now documentation-only comments
     import re
     constraints = re.findall(r"ADD CONSTRAINT (\S+)", alter)
     assert len(constraints) == len(set(constraints)), (
@@ -1009,7 +1016,7 @@ def test_self_referential_fk_does_not_collide_with_pk():
     result = generate_silver_artifacts(classes, g, BASE, ontology_name="orgtest")
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
     lines = ddl.lower().split("\n")
-    col_lines = [l.strip() for l in lines if "_sk" in l and ("nvarchar" in l or "primary" in l.lower())]
+    col_lines = [l.strip() for l in lines if "_sk" in l and "string" in l]
     col_names = [l.split()[0] for l in col_lines]
     assert len(col_names) == len(set(col_names)), (
         f"FK column collides with PK: {col_names}"
@@ -1073,3 +1080,173 @@ def test_fk_nullable_annotation_respected():
             break
     else:
         pytest.fail("Could not find party_sk column in client table DDL")
+
+
+# ---------------------------------------------------------------------------
+# S1 — Spark SQL types
+# ---------------------------------------------------------------------------
+
+
+def test_s1_spark_sql_types_in_ddl():
+    """S1: DDL uses Spark SQL types (BOOLEAN, TIMESTAMP, STRING, DOUBLE)."""
+    g, classes = _simple_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Surrogate key uses STRING (not NVARCHAR)
+    assert "STRING NOT NULL" in ddl
+    # Audit columns use TIMESTAMP (not DATETIME2)
+    assert "TIMESTAMP" in ddl
+    # No old T-SQL types
+    assert "NVARCHAR" not in ddl
+    assert "DATETIME2" not in ddl
+    assert "BIT" not in ddl
+
+
+def test_s1_boolean_type():
+    """S1: xsd:boolean maps to BOOLEAN (not BIT)."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Thing a owl:Class ; rdfs:label "Thing"@en ; rdfs:comment "."@en .
+        ex:isActive a owl:DatatypeProperty ;
+            rdfs:domain ex:Thing ;
+            rdfs:range xsd:boolean ;
+            rdfs:label "is active"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [{"uri": f"{BASE}Thing", "name": "Thing"}]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "BOOLEAN" in ddl
+    assert "BIT" not in ddl.split("is_active")[0]  # ignore is_current which is also BOOLEAN
+
+
+# ---------------------------------------------------------------------------
+# S2 — Constraints as comments
+# ---------------------------------------------------------------------------
+
+
+def test_s2_no_constraint_keyword_in_create():
+    """S2: CREATE TABLE must not contain CONSTRAINT keyword."""
+    g, classes = _simple_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "CONSTRAINT" not in ddl
+
+
+def test_s2_pk_as_comment():
+    """S2: PK constraint appears as DDL comment."""
+    g, classes = _simple_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "-- PK: party_sk" in ddl
+
+
+def test_s2_alter_file_is_documentation():
+    """S2: ALTER TABLE file contains only commented-out constraints."""
+    g, classes = _simple_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    alter = next(v for k, v in result.items() if k.endswith("-alter.sql"))
+    # Header indicates documentation-only
+    assert "documentation only" in alter.lower()
+    # All constraint lines are comments
+    for line in alter.strip().split("\n"):
+        if line.strip() and not line.strip().startswith("--"):
+            # Only empty lines are non-comment
+            assert line.strip() == "", f"Non-comment line in alter file: {line}"
+
+
+# ---------------------------------------------------------------------------
+# S4 — Inline small reference tables
+# ---------------------------------------------------------------------------
+
+
+def test_s4_small_ref_table_inlined():
+    """S4: Reference table with ≤3 business columns is inlined into parent."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Gender a owl:Class ;
+            rdfs:label "Gender"@en ;
+            rdfs:comment "Gender reference."@en ;
+            kairos-ext:isReferenceData "true"^^xsd:boolean ;
+            kairos-ext:scdType "1" .
+
+        ex:genderCode a owl:DatatypeProperty ;
+            rdfs:domain ex:Gender ;
+            rdfs:range xsd:string ;
+            rdfs:label "code"@en .
+
+        ex:genderLabel a owl:DatatypeProperty ;
+            rdfs:domain ex:Gender ;
+            rdfs:range xsd:string ;
+            rdfs:label "label"@en .
+
+        ex:Person a owl:Class ;
+            rdfs:label "Person"@en ;
+            rdfs:comment "A person."@en ;
+            kairos-ext:scdType "2" .
+
+        ex:personName a owl:DatatypeProperty ;
+            rdfs:domain ex:Person ;
+            rdfs:range xsd:string ;
+            rdfs:label "name"@en .
+
+        ex:hasGender a owl:ObjectProperty, owl:FunctionalProperty ;
+            rdfs:domain ex:Person ;
+            rdfs:range ex:Gender ;
+            rdfs:label "has gender"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Gender", "name": "Gender"},
+        {"uri": f"{BASE}Person", "name": "Person"},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # ref_gender table definition should NOT exist (inlined)
+    assert "CREATE TABLE silver_test.ref_gender" not in ddl
+    # Person table should have inlined columns
+    assert "gender_gender_code" in ddl.lower() or "gender_code" in ddl.lower()
+    # S4 comment should be present
+    assert "S4: inlined" in ddl
+
+
+# ---------------------------------------------------------------------------
+# S5 — _row_hash column
+# ---------------------------------------------------------------------------
+
+
+def test_s5_row_hash_column():
+    """S5: Non-reference tables include _row_hash BINARY column."""
+    g, classes = _simple_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "_row_hash" in ddl
+    assert "BINARY" in ddl
+
+
+# ---------------------------------------------------------------------------
+# S6 — _deleted_at column
+# ---------------------------------------------------------------------------
+
+
+def test_s6_deleted_at_column():
+    """S6: Non-reference tables include _deleted_at TIMESTAMP NULL column."""
+    g, classes = _simple_ontology()
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "_deleted_at" in ddl

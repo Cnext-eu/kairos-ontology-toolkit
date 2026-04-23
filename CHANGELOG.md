@@ -5,6 +5,70 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] — 2025-07-26
+
+### Changed
+
+- **Silver Fabric Warehouse rules (S1–S8)** — Major overhaul of silver projector
+  targeting MS Fabric Warehouse:
+  - **S1**: Spark SQL types — BOOLEAN, TIMESTAMP, STRING, DOUBLE replace T-SQL types
+  - **S2**: PK/FK/UNIQUE constraints emitted as DDL comments (Fabric cannot enforce)
+  - **S3**: Full inheritance flattening — ALL subtypes merge into parent table with
+    auto-generated discriminator column (supersedes R16 empty-subtype-only suppression)
+  - **S4**: Inline small reference tables (≤3 business columns) into parent table
+  - **S5**: `_row_hash BINARY` column added to audit envelope for incremental MERGE
+  - **S6**: `_deleted_at TIMESTAMP` column added for soft-delete tracking
+  - **S7**: Canonical schema ownership — no cross-domain table duplication
+  - **S8**: No dim_/fact_ prefixes in silver (reserved for Gold layer)
+
+### Added
+
+- **Three-layer rule architecture** — R1–R16 common annotations + S1–S8 Silver
+  Fabric behaviours + G1–G8 Gold placeholder rules
+- **Gold projection placeholder** — G1–G8 rules documented in skill file for
+  future Power BI / dimensional model projector
+- `kairos-ext:inlineRefThreshold` annotation property for S4 configuration
+- `ref_` prefix now included in `table_name_for()` for consistent FK references
+
+### Fixed
+
+- FK columns to reference tables now correctly use `ref_` prefix in column and
+  constraint names (was generating `gender_sk` instead of `ref_gender_sk`)
+
+## [2.0.2] — 2025-07-25
+
+### Fixed
+
+- **Duplicate FK column** — Self-referential properties (e.g. reportsTo, supervisor)
+  no longer generate duplicate column names
+- **PK/FK collision** — Self-referential FK no longer collides with table PK name
+- **Duplicate constraints** — ALTER TABLE no longer emits duplicate FK constraints
+- **Nullable annotations** — `kairos-ext:nullable "false"` now correctly generates
+  NOT NULL on FK columns
+
+## [2.0.1] — 2025-07-25
+
+### Fixed
+
+- **Non-domain TTL filter** — Projector now skips `*-silver-ext.ttl` and
+  `_master.ttl` files when discovering domain ontologies
+
+## [2.0.0] — 2025-07-25
+
+### Changed
+
+- **License**: Migrated from MIT to **Apache License 2.0** as part of Kairos
+  Community Edition
+- SPDX headers added to all Python source files
+
+### Added
+
+- `NOTICE` file with copyright attribution
+- `CONTRIBUTING.md` with contribution guidelines
+- `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1)
+- `SECURITY.md` with vulnerability reporting policy
+- GitHub issue and PR templates
+
 ## [1.9.0] — 2025-07-25
 
 ### Added
