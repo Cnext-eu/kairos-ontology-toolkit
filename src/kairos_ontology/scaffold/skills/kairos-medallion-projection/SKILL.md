@@ -238,6 +238,10 @@ dbt test       # Run SHACL-derived tests
 
 ```
 ontology-hub/
+  sources/
+    adminpulse/                    # Source system reference docs
+      README.md                    # System description, connection details
+      sql-ddl/                     # CREATE TABLE exports
   ontologies/
     party.ttl                      # Silver domain ontology
     party-silver-ext.ttl           # Silver projection annotations
