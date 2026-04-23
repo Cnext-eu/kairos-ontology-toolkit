@@ -3,8 +3,9 @@
 """Mapping Report Projector — generate HTML reports showing functional mappings.
 
 Produces per-source-system HTML reports for business analysts showing how source
-system concepts map to the domain ontology via SKOS match types.  Focuses on
-semantic/business-level alignment — no dbt transforms or SQL details.
+system concepts map to the domain ontology via SKOS match types.  Combines a
+source-centric view (table-by-table coverage) with a target-entity-centric view
+(organized by domain class) and includes ``kairos-map:`` transform annotations.
 """
 
 from __future__ import annotations
@@ -52,6 +53,15 @@ def _extract_local_name(uri: str) -> str:
     if "#" in uri:
         return uri.rsplit("#", 1)[-1]
     return uri.rsplit("/", 1)[-1]
+
+
+def _extract_domain_prefix(uri: str) -> str:
+    """Extract a short domain prefix from a namespace URI.
+
+    E.g. ``https://example.com/ont/client#prop`` → ``client``.
+    """
+    base = uri.rsplit("#", 1)[0] if "#" in uri else uri.rsplit("/", 1)[0]
+    return base.rsplit("/", 1)[-1] if "/" in base else base
 
 
 def _parse_source_systems(sources_dir: Path) -> list[dict]:
@@ -124,20 +134,32 @@ def _parse_source_systems(sources_dir: Path) -> list[dict]:
 def _parse_mappings(mappings_dir: Path) -> dict:
     """Parse SKOS mappings and return functional mapping data.
 
-    Only extracts SKOS match type — ignores ``kairos-map:`` transform details
-    since this report is for business-level review.
+    Extracts SKOS match types together with ``kairos-map:`` technical annotations
+    (transform expressions, filter conditions, mapping types, etc.).
+
+    A single source URI may map to **multiple** targets (e.g. a source table that
+    splits into several domain entities).  Both ``table_maps`` and ``column_maps``
+    therefore store *lists* of mapping entries per source URI.
 
     Returns::
 
         {
-            "table_maps": {source_table_uri: {
+            "table_maps": {source_table_uri: [{
                 "target_uri": str,
                 "match_type": str,
-            }},
-            "column_maps": {source_col_uri: {
+                "mapping_type": str | None,
+                "filter_condition": str | None,
+                "dedup_key": str | None,
+                "dedup_order": str | None,
+            }]},
+            "column_maps": {source_col_uri: [{
                 "target_uri": str,
                 "match_type": str,
-            }}
+                "transform": str | None,
+                "filter_condition": str | None,
+                "source_columns": str | None,
+                "default_value": str | None,
+            }]}
         }
     """
     result: dict = {"table_maps": {}, "column_maps": {}}
@@ -159,17 +181,46 @@ def _parse_mappings(mappings_dir: Path) -> dict:
 
                 mapping_type = g.value(subj, KAIROS_MAP.mappingType)
                 if mapping_type is not None:
-                    result["table_maps"][subj_str] = {
+                    entry = {
                         "target_uri": obj_str,
                         "match_type": match_name,
+                        "mapping_type": str(mapping_type),
+                        "filter_condition": _opt_str(
+                            g.value(subj, KAIROS_MAP.filterCondition)
+                        ),
+                        "dedup_key": _opt_str(
+                            g.value(subj, KAIROS_MAP.deduplicationKey)
+                        ),
+                        "dedup_order": _opt_str(
+                            g.value(subj, KAIROS_MAP.deduplicationOrder)
+                        ),
                     }
+                    result["table_maps"].setdefault(subj_str, []).append(entry)
                 else:
-                    result["column_maps"][subj_str] = {
+                    entry = {
                         "target_uri": obj_str,
                         "match_type": match_name,
+                        "transform": _opt_str(
+                            g.value(subj, KAIROS_MAP.transform)
+                        ),
+                        "filter_condition": _opt_str(
+                            g.value(subj, KAIROS_MAP.filterCondition)
+                        ),
+                        "source_columns": _opt_str(
+                            g.value(subj, KAIROS_MAP.sourceColumns)
+                        ),
+                        "default_value": _opt_str(
+                            g.value(subj, KAIROS_MAP.defaultValue)
+                        ),
                     }
+                    result["column_maps"].setdefault(subj_str, []).append(entry)
 
     return result
+
+
+def _opt_str(val) -> str | None:
+    """Convert an rdflib Literal/URIRef to str, or return None."""
+    return str(val) if val is not None else None
 
 
 def _extract_ontology_properties(graph: Graph, namespace: Optional[str]) -> dict:
@@ -220,6 +271,117 @@ def _extract_ontology_properties(graph: Graph, namespace: Optional[str]) -> dict
     return classes
 
 
+def _build_entity_view(
+    system: dict,
+    mappings: dict,
+    ontology_classes: dict,
+) -> list[dict]:
+    """Build a target-entity-centric view of the mappings.
+
+    Groups all source table/column mappings by their **target** domain entity so
+    the report can show an entity-organized view alongside the source-table view.
+
+    Returns a list of entity dicts sorted by entity name.
+    """
+    entity_map: dict[str, dict] = {}
+
+    for table in system["tables"]:
+        tbl_uri = table["uri"]
+        tbl_maps = mappings["table_maps"].get(tbl_uri, [])
+
+        for tbl_map in tbl_maps:
+            target_uri = tbl_map["target_uri"]
+            entity = entity_map.setdefault(target_uri, {
+                "uri": target_uri,
+                "name": _extract_local_name(target_uri),
+                "label": "",
+                "comment": "",
+                "domain_prefix": _extract_domain_prefix(target_uri),
+                "source_tables": [],
+                "column_mappings": [],
+            })
+
+            cls_info = ontology_classes.get(target_uri)
+            if cls_info:
+                entity["label"] = cls_info.get("label", entity["name"])
+                entity["comment"] = cls_info.get("comment", "")
+
+            entity["source_tables"].append({
+                "table_name": table["name"],
+                "table_label": table["label"],
+                "match_type": tbl_map["match_type"],
+                "match_label": MATCH_LABELS.get(tbl_map["match_type"], "?"),
+                "match_color": MATCH_COLORS.get(tbl_map["match_type"], "#888"),
+                "mapping_type": tbl_map.get("mapping_type"),
+                "filter_condition": tbl_map.get("filter_condition"),
+            })
+
+        for col in table["columns"]:
+            col_uri = col["uri"]
+            col_maps = mappings["column_maps"].get(col_uri, [])
+
+            for col_map in col_maps:
+                target_prop_uri = col_map["target_uri"]
+                target_entity_uri = _find_entity_for_property(
+                    target_prop_uri, ontology_classes
+                )
+                if not target_entity_uri:
+                    target_entity_uri = target_prop_uri
+
+                entity = entity_map.setdefault(target_entity_uri, {
+                    "uri": target_entity_uri,
+                    "name": _extract_local_name(target_entity_uri),
+                    "label": "",
+                    "comment": "",
+                    "domain_prefix": _extract_domain_prefix(target_entity_uri),
+                    "source_tables": [],
+                    "column_mappings": [],
+                })
+
+                cls_info = ontology_classes.get(target_entity_uri)
+                if cls_info:
+                    entity["label"] = cls_info.get("label", entity["name"])
+                    entity["comment"] = cls_info.get("comment", "")
+
+                target_prop_info = None
+                if cls_info:
+                    target_prop_info = cls_info["properties"].get(target_prop_uri)
+                if not target_prop_info:
+                    target_prop_info = {
+                        "name": _extract_local_name(target_prop_uri),
+                        "label": _extract_local_name(target_prop_uri),
+                        "comment": "",
+                    }
+
+                entity["column_mappings"].append({
+                    "source_table": table["name"],
+                    "source_column": col["name"],
+                    "source_type": col["data_type"],
+                    "match_type": col_map["match_type"],
+                    "match_label": MATCH_LABELS.get(col_map["match_type"], "?"),
+                    "match_color": MATCH_COLORS.get(col_map["match_type"], "#888"),
+                    "target_property": target_prop_info["name"],
+                    "target_label": target_prop_info["label"],
+                    "target_comment": target_prop_info["comment"],
+                    "domain_prefix": _extract_domain_prefix(target_prop_uri),
+                    "transform": col_map.get("transform"),
+                    "filter_condition": col_map.get("filter_condition"),
+                })
+
+    entities = sorted(entity_map.values(), key=lambda e: e["name"])
+    for entity in entities:
+        entity["label"] = entity["label"] or entity["name"]
+    return entities
+
+
+def _find_entity_for_property(prop_uri: str, ontology_classes: dict) -> str | None:
+    """Return the entity URI whose properties contain *prop_uri*, or None."""
+    for cls_uri, cls_info in ontology_classes.items():
+        if prop_uri in cls_info["properties"]:
+            return cls_uri
+    return None
+
+
 def _build_report_data(
     system: dict,
     mappings: dict,
@@ -235,10 +397,16 @@ def _build_report_data(
     total_columns = 0
     total_mapped = 0
     action_items: list[dict] = []
+    match_distribution: dict[str, int] = {
+        "exactMatch": 0, "closeMatch": 0, "narrowMatch": 0,
+        "broadMatch": 0, "relatedMatch": 0,
+    }
+    out_of_scope_tables: list[dict] = []
 
     for table in system["tables"]:
         tbl_uri = table["uri"]
-        tbl_map = mappings["table_maps"].get(tbl_uri)
+        tbl_maps = mappings["table_maps"].get(tbl_uri, [])
+        tbl_map = tbl_maps[0] if tbl_maps else None
 
         target_class = None
         if tbl_map:
@@ -255,7 +423,8 @@ def _build_report_data(
 
         for col in table["columns"]:
             col_uri = col["uri"]
-            col_map = mappings["column_maps"].get(col_uri)
+            col_maps = mappings["column_maps"].get(col_uri, [])
+            col_map = col_maps[0] if col_maps else None
             total_columns += 1
 
             if col_map:
@@ -263,6 +432,10 @@ def _build_report_data(
                 total_mapped += 1
                 target_prop_uri = col_map["target_uri"]
                 all_mapped_properties.add(target_prop_uri)
+
+                match_distribution[col_map["match_type"]] = (
+                    match_distribution.get(col_map["match_type"], 0) + 1
+                )
 
                 target_prop = None
                 if target_class:
@@ -284,6 +457,9 @@ def _build_report_data(
                     "target_name": target_prop["name"],
                     "target_label": target_prop["label"],
                     "target_comment": target_prop["comment"],
+                    "domain_prefix": _extract_domain_prefix(target_prop_uri),
+                    "transform": col_map.get("transform"),
+                    "filter_condition": col_map.get("filter_condition"),
                 })
 
                 if col_map["match_type"] != "exactMatch":
@@ -311,6 +487,9 @@ def _build_report_data(
                     "target_name": "",
                     "target_label": "",
                     "target_comment": "",
+                    "domain_prefix": "",
+                    "transform": None,
+                    "filter_condition": None,
                 })
                 action_items.append({
                     "type": "unmapped_column",
@@ -325,6 +504,15 @@ def _build_report_data(
         coverage_pct = round(mapped_count / col_count * 100) if col_count > 0 else 0
 
         if not tbl_map:
+            has_any_col_mapping = any(
+                mappings["column_maps"].get(c["uri"]) for c in table["columns"]
+            )
+            if not has_any_col_mapping:
+                out_of_scope_tables.append({
+                    "name": table["name"],
+                    "label": table["label"],
+                    "column_count": col_count,
+                })
             action_items.append({
                 "type": "unmapped_table",
                 "severity": "error",
@@ -344,6 +532,8 @@ def _build_report_data(
                 tbl_map["match_type"], "#888") if tbl_map else "#888",
             "table_match_label": MATCH_LABELS.get(
                 tbl_map["match_type"], "Unmapped") if tbl_map else "Unmapped",
+            "table_mapping_type": tbl_map.get("mapping_type") if tbl_map else None,
+            "table_filter": tbl_map.get("filter_condition") if tbl_map else None,
             "columns": col_reports,
             "column_count": col_count,
             "mapped_count": mapped_count,
@@ -352,8 +542,10 @@ def _build_report_data(
 
     # Reverse coverage: domain properties not covered by this source
     uncovered_properties: list[dict] = []
+    total_domain_properties = 0
     for cls_uri, cls_info in ontology_classes.items():
         for prop_uri, prop_info in cls_info["properties"].items():
+            total_domain_properties += 1
             if prop_uri not in all_mapped_properties:
                 uncovered_properties.append({
                     "entity": cls_info["name"],
@@ -361,11 +553,27 @@ def _build_report_data(
                     "label": prop_info["label"],
                 })
 
+    domain_coverage_pct = (
+        round(
+            (total_domain_properties - len(uncovered_properties))
+            / total_domain_properties * 100
+        )
+        if total_domain_properties > 0 else 0
+    )
+
     overall_pct = round(total_mapped / total_columns * 100) if total_columns > 0 else 0
 
     # Sort action items: errors first, then warnings, then info
     severity_order = {"error": 0, "warning": 1, "info": 2}
     action_items.sort(key=lambda a: (severity_order.get(a["severity"], 9), a["table"]))
+
+    # Entity-centric view
+    entity_view = _build_entity_view(system, mappings, ontology_classes)
+
+    # Count action items by severity
+    error_count = sum(1 for a in action_items if a["severity"] == "error")
+    warning_count = sum(1 for a in action_items if a["severity"] == "warning")
+    info_count = sum(1 for a in action_items if a["severity"] == "info")
 
     return {
         "system": system,
@@ -373,8 +581,17 @@ def _build_report_data(
         "total_columns": total_columns,
         "total_mapped": total_mapped,
         "overall_coverage_pct": overall_pct,
+        "domain_coverage_pct": domain_coverage_pct,
+        "total_domain_properties": total_domain_properties,
+        "covered_domain_properties": total_domain_properties - len(uncovered_properties),
+        "match_distribution": match_distribution,
         "uncovered_properties": uncovered_properties,
+        "out_of_scope_tables": out_of_scope_tables,
+        "entity_view": entity_view,
         "action_items": action_items,
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "info_count": info_count,
     }
 
 
