@@ -247,9 +247,6 @@ ontology-hub/
       erp-navision/
         README.md
         erp-navision.bronze.ttl      # Bronze vocabulary (kairos-bronze:)
-    mappings/
-      adminpulse-to-party.ttl        # SKOS: AdminPulse → Party
-      adminpulse-to-client.ttl       # SKOS: AdminPulse → Client
   model/
     ontologies/
       party.ttl                      # Silver domain ontology
@@ -257,6 +254,12 @@ ontology-hub/
       party-silver-ext.ttl           # Silver projection annotations
     shapes/
       client.shacl.ttl               # SHACL → dbt tests
+    mappings/
+      adminpulse/
+        adminpulse-to-party.ttl      # SKOS + kairos-map: AdminPulse → Party
+        adminpulse-to-client.ttl     # SKOS + kairos-map: AdminPulse → Client
+      erp-navision/
+        erp-navision-to-order.ttl    # SKOS + kairos-map: ERP → Order
   output/
     medallion/
       silver/                        # Generated silver DDL
