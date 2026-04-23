@@ -212,7 +212,7 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
 @click.option('--output', type=click.Path(),
               default='ontology-hub/output',
               help='Output directory for projections')
-@click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver']),
+@click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'report']),
               default='all', help='Projection target')
 @click.option('--namespace', type=str, default=None,
               help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
