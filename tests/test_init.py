@@ -920,3 +920,101 @@ def test_new_repo_custom_company_domain(tmp_path):
     content = readme.read_text(encoding="utf-8")
     assert "contoso.io" in content
     assert "contoso.com" not in content
+
+
+# ---------------------------------------------------------------------------
+# migrate command
+# ---------------------------------------------------------------------------
+
+
+def _create_old_layout(hub: Path):
+    """Create the old flat hub layout for testing migration."""
+    (hub / "ontologies").mkdir(parents=True)
+    (hub / "shapes").mkdir(parents=True)
+    (hub / "mappings").mkdir(parents=True)
+    (hub / "sources" / "source-system-template").mkdir(parents=True)
+    (hub / "bronze").mkdir(parents=True)
+    (hub / "output" / "dbt").mkdir(parents=True)
+    (hub / "output" / "silver").mkdir(parents=True)
+    (hub / "output" / "neo4j").mkdir(parents=True)
+    # Domain files
+    (hub / "ontologies" / "customer.ttl").write_text("# customer", encoding="utf-8")
+    (hub / "ontologies" / "_master.ttl").write_text("# master", encoding="utf-8")
+    (hub / "ontologies" / "customer-silver-ext.ttl").write_text("# ext", encoding="utf-8")
+    (hub / "shapes" / "customer.shacl.ttl").write_text("# shacl", encoding="utf-8")
+    (hub / "mappings" / "customer-mapping.ttl").write_text("# map", encoding="utf-8")
+    (hub / "sources" / "source-system-template" / "README.md").write_text("# src", encoding="utf-8")
+    (hub / "bronze" / "erp.ttl").write_text("# bronze", encoding="utf-8")
+    (hub / "output" / "dbt" / "project.yml").write_text("# dbt", encoding="utf-8")
+    (hub / "output" / "silver" / "ddl.sql").write_text("# silver", encoding="utf-8")
+    # application-models at parent level
+    (hub.parent / "application-models").mkdir(parents=True)
+    (hub.parent / "application-models" / "master-erd.mmd").write_text("# erd", encoding="utf-8")
+
+
+def test_migrate_moves_files(tmp_path):
+    """migrate should move files from old flat layout to grouped layout."""
+    runner = CliRunner()
+    hub = tmp_path / "ontology-hub"
+    _create_old_layout(hub)
+
+    result = runner.invoke(cli, ["migrate", "--hub", str(hub)])
+    assert result.exit_code == 0, result.output
+
+    # Model files moved
+    assert (hub / "model" / "ontologies" / "customer.ttl").is_file()
+    assert (hub / "model" / "ontologies" / "_master.ttl").is_file()
+    assert (hub / "model" / "shapes" / "customer.shacl.ttl").is_file()
+
+    # Silver-ext moved to extensions/
+    assert (hub / "model" / "extensions" / "customer-silver-ext.ttl").is_file()
+    assert not (hub / "model" / "ontologies" / "customer-silver-ext.ttl").exists()
+
+    # Integration files moved
+    assert (hub / "integration" / "mappings" / "customer-mapping.ttl").is_file()
+    assert (hub / "integration" / "sources" / "source-system-template" / "README.md").is_file()
+
+    # Output files moved
+    assert (hub / "output" / "medallion" / "bronze" / "erp.ttl").is_file()
+    assert (hub / "output" / "medallion" / "dbt" / "project.yml").is_file()
+    assert (hub / "output" / "medallion" / "silver" / "ddl.sql").is_file()
+
+    # Old dirs removed
+    assert not (hub / "ontologies").exists()
+    assert not (hub / "shapes").exists()
+    assert not (hub / "mappings").exists()
+    assert not (hub / "sources").exists()
+    assert not (hub / "bronze").exists()
+    assert not (hub / "output" / "dbt").exists()
+    assert not (hub / "output" / "silver").exists()
+
+    # application-models removed
+    assert not (tmp_path / "application-models").exists()
+
+
+def test_migrate_check_mode(tmp_path):
+    """migrate --check should preview without moving files."""
+    runner = CliRunner()
+    hub = tmp_path / "ontology-hub"
+    _create_old_layout(hub)
+
+    result = runner.invoke(cli, ["migrate", "--hub", str(hub), "--check"])
+    assert result.exit_code == 0, result.output
+    assert "MOVE" in result.output
+    assert "would be moved" in result.output
+
+    # Files should NOT have moved
+    assert (hub / "ontologies" / "customer.ttl").is_file()
+    assert not (hub / "model").exists()
+
+
+def test_migrate_already_migrated(tmp_path):
+    """migrate should detect already-migrated layout and skip."""
+    runner = CliRunner()
+    hub = tmp_path / "ontology-hub"
+    (hub / "model" / "ontologies").mkdir(parents=True)
+    (hub / "model" / "ontologies" / "customer.ttl").write_text("# ok", encoding="utf-8")
+
+    result = runner.invoke(cli, ["migrate", "--hub", str(hub)])
+    assert result.exit_code == 0
+    assert "already using the new layout" in result.output

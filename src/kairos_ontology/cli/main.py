@@ -528,6 +528,195 @@ def update(check):
             print("  ✓ Created .devcontainer/ (VS Code Dev Container with Node.js)")
 
 
+# ---------------------------------------------------------------------------
+# migrate — move files from old flat layout to model/integration/output
+# ---------------------------------------------------------------------------
+
+# Old (flat) → new (grouped) directory mapping for migration.
+_MIGRATE_DIR_MAP = {
+    # model
+    "ontologies": "model/ontologies",
+    "shapes": "model/shapes",
+    # integration
+    "sources": "integration/sources",
+    "mappings": "integration/mappings",
+    # output/medallion
+    "bronze": "output/medallion/bronze",
+}
+
+# Old output subdirs that move under output/medallion/
+_MIGRATE_OUTPUT_MAP = {
+    "silver": "medallion/silver",
+    "dbt": "medallion/dbt",
+}
+
+
+def _is_old_layout(hub: Path) -> bool:
+    """Return True if *hub* still has the old flat directory layout."""
+    return (hub / "ontologies").is_dir() and not (hub / "model").is_dir()
+
+
+@cli.command()
+@click.option("--check", is_flag=True,
+              help="Preview what would change without modifying anything.")
+@click.option("--hub", "hub_path", type=click.Path(exists=True),
+              default="ontology-hub",
+              help="Path to the ontology-hub directory (default: ontology-hub).")
+def migrate(check, hub_path):
+    """Migrate an existing ontology hub from the flat layout to the grouped layout.
+
+    Moves files into the new model/ + integration/ + output/medallion/ structure
+    and cleans up empty old directories.
+
+    \b
+    After migrating, run:
+      kairos-ontology update      # refresh managed files (skills, instructions)
+      kairos-ontology validate    # verify ontologies still parse correctly
+      kairos-ontology project     # regenerate projections with new paths
+    """
+    hub = Path(hub_path)
+
+    if not hub.is_dir():
+        raise click.ClickException(f"Hub directory not found: {hub}")
+
+    # Guard: already migrated?
+    if (hub / "model").is_dir() and not (hub / "ontologies").is_dir():
+        print("✅ Hub is already using the new layout — nothing to migrate.")
+        return
+
+    if not _is_old_layout(hub):
+        raise click.ClickException(
+            f"Cannot detect old flat layout in {hub}. "
+            f"Expected ontology-hub/ontologies/ to exist."
+        )
+
+    if check:
+        print("🔍 Migration preview (no files will be moved):\n")
+    else:
+        print("🚀 Migrating ontology hub to new layout\n")
+
+    moved_count = 0
+
+    # --- 1. Create new directory structure -----------------------------------
+    new_dirs = [
+        hub / "model" / "ontologies",
+        hub / "model" / "shapes",
+        hub / "model" / "extensions",
+        hub / "integration" / "sources",
+        hub / "integration" / "mappings",
+        hub / "output" / "medallion" / "bronze",
+        hub / "output" / "medallion" / "silver",
+        hub / "output" / "medallion" / "gold",
+        hub / "output" / "medallion" / "dbt",
+    ]
+    if not check:
+        for d in new_dirs:
+            d.mkdir(parents=True, exist_ok=True)
+
+    # --- 2. Move top-level hub dirs ------------------------------------------
+    for old_name, new_rel in _MIGRATE_DIR_MAP.items():
+        old_dir = hub / old_name
+        new_dir = hub / new_rel
+        if old_dir.is_dir():
+            items = list(old_dir.iterdir())
+            if items:
+                for item in items:
+                    dst = new_dir / item.name
+                    if check:
+                        print(f"  MOVE  {old_name}/{item.name}  →  {new_rel}/{item.name}")
+                    else:
+                        if dst.exists():
+                            if dst.is_dir():
+                                shutil.rmtree(dst)
+                            else:
+                                dst.unlink()
+                        shutil.move(str(item), str(dst))
+                    moved_count += 1
+
+    # --- 3. Move *-silver-ext.ttl from model/ontologies/ to model/extensions/ -
+    onto_dir = hub / "model" / "ontologies"
+    ext_dir = hub / "model" / "extensions"
+    if onto_dir.is_dir():
+        for ext_file in list(onto_dir.glob("*-silver-ext.ttl")):
+            dst = ext_dir / ext_file.name
+            if check:
+                print(f"  MOVE  model/ontologies/{ext_file.name}  →  model/extensions/{ext_file.name}")
+            else:
+                if dst.exists():
+                    dst.unlink()
+                shutil.move(str(ext_file), str(dst))
+            moved_count += 1
+
+    # --- 4. Move old output/silver/ and output/dbt/ to output/medallion/ -----
+    output_dir = hub / "output"
+    if output_dir.is_dir():
+        for old_target, new_rel in _MIGRATE_OUTPUT_MAP.items():
+            old_target_dir = output_dir / old_target
+            new_target_dir = output_dir / new_rel
+            if old_target_dir.is_dir():
+                items = list(old_target_dir.iterdir())
+                if items:
+                    for item in items:
+                        dst = new_target_dir / item.name
+                        if check:
+                            print(f"  MOVE  output/{old_target}/{item.name}  →  output/{new_rel}/{item.name}")
+                        else:
+                            if dst.exists():
+                                if dst.is_dir():
+                                    shutil.rmtree(dst)
+                                else:
+                                    dst.unlink()
+                            shutil.move(str(item), str(dst))
+                        moved_count += 1
+
+    # --- 5. Remove application-models/ ---------------------------------------
+    app_models = hub.parent / "application-models"
+    if app_models.is_dir():
+        if check:
+            print(f"  DELETE  application-models/  (ERDs now in output/medallion/silver/)")
+        else:
+            shutil.rmtree(app_models)
+            print("  ✓ Removed application-models/")
+
+    # --- 6. Clean up old empty directories -----------------------------------
+    old_dirs = ["ontologies", "shapes", "mappings", "sources", "bronze"]
+    for old_name in old_dirs:
+        old_dir = hub / old_name
+        if old_dir.is_dir():
+            remaining = list(old_dir.iterdir())
+            if not remaining:
+                if check:
+                    print(f"  RMDIR  {old_name}/")
+                else:
+                    old_dir.rmdir()
+            else:
+                print(f"  ⚠  {old_name}/ still has files — not removed: "
+                      f"{[f.name for f in remaining]}")
+
+    # Clean up old output subdirs
+    for old_target in _MIGRATE_OUTPUT_MAP:
+        old_target_dir = output_dir / old_target
+        if old_target_dir.is_dir():
+            remaining = list(old_target_dir.iterdir())
+            if not remaining:
+                if check:
+                    print(f"  RMDIR  output/{old_target}/")
+                else:
+                    old_target_dir.rmdir()
+
+    # --- Summary -------------------------------------------------------------
+    if check:
+        print(f"\n📋 {moved_count} item(s) would be moved.")
+        print("   Run without --check to apply.")
+    else:
+        print(f"\n✅ Migration complete — {moved_count} item(s) moved.")
+        print("\nNext steps:")
+        print("  1. kairos-ontology update     # refresh managed files")
+        print("  2. kairos-ontology validate   # verify ontologies parse")
+        print("  3. kairos-ontology project    # regenerate projections")
+        print("  4. git add -A && git commit -m 'refactor: migrate hub to new layout'")
+
+
 
 # ---------------------------------------------------------------------------
 # Repo naming helper
