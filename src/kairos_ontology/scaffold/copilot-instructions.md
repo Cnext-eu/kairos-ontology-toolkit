@@ -18,11 +18,12 @@ that are validated and projected into downstream artifacts using the
 │   ├── model/                           # Domain model (ontology-centric)
 │   │   ├── ontologies/                  # Domain ontologies (Turtle/RDF)
 │   │   ├── shapes/                      # SHACL validation constraints
-│   │   └── extensions/                  # Projection annotations (*-silver-ext.ttl)
+│   │   ├── extensions/                  # Projection annotations (*-silver-ext.ttl)
+│   │   └── mappings/                    # SKOS mappings (per source system subfolder)
+│   │       └── {system-name}/           # e.g. adminpulse-to-party.ttl
 │   ├── integration/                     # Source system integration
-│   │   ├── sources/                     # Source system reference docs + bronze vocab
-│   │   │   └── {system-name}/           # Per-system: API specs, SQL DDL, *.bronze.ttl
-│   │   └── mappings/                    # SKOS synonym mappings
+│   │   └── sources/                     # Source system reference docs + bronze vocab
+│   │       └── {system-name}/           # Per-system: API specs, SQL DDL, *.bronze.ttl
 │   └── output/                          # Projection outputs (committed)
 │       ├── medallion/                   # Medallion architecture outputs
 │       │   ├── silver/                  # Silver canonical DDL / ERD

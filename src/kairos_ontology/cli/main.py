@@ -270,8 +270,8 @@ def init(domain, company_domain, force):
         hub / "model" / "ontologies",
         hub / "model" / "shapes",
         hub / "model" / "extensions",
+        hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "integration" / "mappings",
         hub / "output" / "medallion" / "silver",
         hub / "output" / "medallion" / "gold",
         hub / "output" / "medallion" / "dbt",
@@ -294,7 +294,7 @@ def init(domain, company_domain, force):
     readme_map = {
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
-        "integration/mappings": "integration/mappings",
+        "model/mappings": "model/mappings",
         "integration/sources": "integration/sources",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
@@ -571,7 +571,7 @@ _MIGRATE_DIR_MAP = {
     "shapes": "model/shapes",
     # integration
     "sources": "integration/sources",
-    "mappings": "integration/mappings",
+    "mappings": "model/mappings",
     "bronze": "integration/sources",
 }
 
@@ -633,8 +633,8 @@ def migrate(check, hub_path):
         hub / "model" / "ontologies",
         hub / "model" / "shapes",
         hub / "model" / "extensions",
+        hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "integration" / "mappings",
         hub / "output" / "medallion" / "silver",
         hub / "output" / "medallion" / "gold",
         hub / "output" / "medallion" / "dbt",
@@ -870,8 +870,8 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
         hub / "model" / "ontologies",
         hub / "model" / "shapes",
         hub / "model" / "extensions",
+        hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "integration" / "mappings",
         hub / "output" / "medallion" / "silver",
         hub / "output" / "medallion" / "gold",
         hub / "output" / "medallion" / "dbt",
@@ -895,7 +895,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
     readme_map = {
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
-        "integration/mappings": "integration/mappings",
+        "model/mappings": "model/mappings",
         "integration/sources": "integration/sources",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():

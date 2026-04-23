@@ -98,7 +98,7 @@ The `migrate` command reorganises the hub into three top-level groups:
 | `shapes/` | `model/shapes/` |
 | `*-silver-ext.ttl` | `model/extensions/` |
 | `sources/` | `integration/sources/` |
-| `mappings/` | `integration/mappings/` |
+| `mappings/` | `model/mappings/{system-name}/` |
 | `bronze/` | `integration/sources/{system-name}/` (as `{system-name}.bronze.ttl`) |
 | `output/silver/` | `output/medallion/silver/` |
 | `output/dbt/` | `output/medallion/dbt/` |
@@ -117,7 +117,7 @@ Additionally:
 - [ ] Silver-ext files in `model/extensions/`
 - [ ] SHACL shapes in `model/shapes/`
 - [ ] Sources in `integration/sources/`
-- [ ] Mappings in `integration/mappings/`
+- [ ] Mappings in `model/mappings/{system-name}/`
 - [ ] Bronze vocab in `integration/sources/{system-name}/{system-name}.bronze.ttl`
 - [ ] `kairos-ontology validate` passes
 - [ ] `kairos-ontology project` regenerates successfully

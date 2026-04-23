@@ -29,7 +29,7 @@ Before running this projection, ensure the following artifacts exist in the hub:
 - **Silver canonical schema** should exist — domain ontologies with silver projection
   annotations (`kairos-ext:` / `kairos-silver:` properties). Use the
   `kairos-medallion-silver` skill to design and generate the silver layer schema.
-- **SKOS mappings** must exist in `integration/mappings/` — one `.ttl` file per source-to-domain
+- **SKOS mappings** must exist in `model/mappings/{system-name}/` — one `.ttl` file per source-to-domain
   combination (e.g. `adminpulse-to-party.ttl`) linking bronze columns to silver
   domain properties using SKOS match predicates and `kairos-map:` transforms.
 
@@ -123,7 +123,7 @@ bronze-ap:tblClient_ClientID a kairos-bronze:SourceColumn ;
 
 ### 2a — Create mapping file
 
-In `integration/mappings/`, create `{source}-to-{domain}.ttl`:
+In `model/mappings/{system-name}/`, create `{source}-to-{domain}.ttl`:
 
 ```turtle
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .

@@ -191,7 +191,7 @@ Verify:
 
 After the bronze vocabulary is complete:
 
-1. **Create SKOS mappings** in `integration/mappings/` to link bronze columns to silver domain properties
+1. **Create SKOS mappings** in `model/mappings/{system-name}/` to link bronze columns to silver domain properties
 2. **Run the medallion projection** to generate dbt staging + silver models:
    ```bash
    python -m kairos_ontology project --target dbt

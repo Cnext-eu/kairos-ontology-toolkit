@@ -52,13 +52,27 @@ bronze-ap:tblClient_Country skos:exactMatch party:country ;
     kairos-map:defaultValue "BE" .
 ```
 
+### Folder structure
+
+Organise mapping files by source system:
+
+```
+model/mappings/
+├── adminpulse/
+│   ├── adminpulse-to-party.ttl
+│   └── adminpulse-to-client.ttl
+├── erp-navision/
+│   └── erp-navision-to-order.ttl
+└── README.md
+```
+
 ### Naming convention for bronze-to-silver mappings
 
 ```
-{source-system}-to-{domain}.ttl
+{source-system}/{source-system}-to-{domain}.ttl
 ```
 
-Examples: `adminpulse-to-party.ttl`, `erp-to-client.ttl`
+Examples: `adminpulse/adminpulse-to-party.ttl`, `erp-navision/erp-navision-to-client.ttl`
 
 ### SKOS property semantics
 

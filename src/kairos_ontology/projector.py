@@ -144,7 +144,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
 
     # Look for source system reference docs (with bronze vocab) and SKOS mappings
     sources_dir = hub_root / "integration" / "sources" if hub_root else None
-    mappings_dir = hub_root / "integration" / "mappings" if hub_root else None
+    mappings_dir = hub_root / "model" / "mappings" if hub_root else None
     extensions_dir = hub_root / "model" / "extensions" if hub_root else None
     if sources_dir and sources_dir.exists():
         print(f"  Found source system references: {sources_dir}")
