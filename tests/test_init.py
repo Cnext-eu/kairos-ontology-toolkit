@@ -25,7 +25,7 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/model/extensions").is_dir()
             assert Path("ontology-hub/integration/sources").is_dir()
             assert Path("ontology-hub/model/mappings").is_dir()
-            assert Path("ontology-hub/output/medallion/silver").is_dir()
+            assert Path("ontology-hub/output/medallion/dbt").is_dir()
             assert Path("ontology-hub/output/medallion/gold").is_dir()
             assert Path("ontology-hub/output/medallion/dbt").is_dir()
             assert Path("ontology-hub/output/neo4j").is_dir()
@@ -983,7 +983,7 @@ def test_migrate_moves_files(tmp_path):
     # Output files moved
     assert (hub / "integration" / "sources" / "erp.ttl").is_file()
     assert (hub / "output" / "medallion" / "dbt" / "project.yml").is_file()
-    assert (hub / "output" / "medallion" / "silver" / "ddl.sql").is_file()
+    assert (hub / "output" / "medallion" / "dbt" / "ddl.sql").is_file()
 
     # Old dirs removed
     assert not (hub / "ontologies").exists()

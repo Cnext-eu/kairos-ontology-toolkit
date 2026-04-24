@@ -272,7 +272,6 @@ def init(domain, company_domain, force):
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "output" / "medallion" / "silver",
         hub / "output" / "medallion" / "gold",
         hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
@@ -285,7 +284,7 @@ def init(domain, company_domain, force):
 
     # Place .gitkeep in empty output subdirs so git tracks them
     for target in [
-        "medallion/silver", "medallion/gold", "medallion/dbt",
+        "medallion/gold", "medallion/dbt",
         "neo4j", "azure-search", "a2ui", "prompt", "report",
     ]:
         gitkeep = hub / "output" / target / ".gitkeep"
@@ -578,7 +577,7 @@ _MIGRATE_DIR_MAP = {
 
 # Old output subdirs that move under output/medallion/
 _MIGRATE_OUTPUT_MAP = {
-    "silver": "medallion/silver",
+    "silver": "medallion/dbt",
     "dbt": "medallion/dbt",
 }
 
@@ -636,7 +635,6 @@ def migrate(check, hub_path):
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "output" / "medallion" / "silver",
         hub / "output" / "medallion" / "gold",
         hub / "output" / "medallion" / "dbt",
     ]
@@ -714,7 +712,7 @@ def migrate(check, hub_path):
     app_models = hub.parent / "application-models"
     if app_models.is_dir():
         if check:
-            print(f"  DELETE  application-models/  (ERDs now in output/medallion/silver/)")
+            print(f"  DELETE  application-models/  (ERDs now in output/medallion/dbt/docs/diagrams/)")
         else:
             shutil.rmtree(app_models)
             print("  ✓ Removed application-models/")
@@ -873,7 +871,6 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "output" / "medallion" / "silver",
         hub / "output" / "medallion" / "gold",
         hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
@@ -886,7 +883,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
 
     # Place .gitkeep in output subdirs so git tracks them
     for target in [
-        "medallion/silver", "medallion/gold", "medallion/dbt",
+        "medallion/gold", "medallion/dbt",
         "neo4j", "azure-search", "a2ui", "prompt", "report",
     ]:
         gitkeep = hub / "output" / target / ".gitkeep"

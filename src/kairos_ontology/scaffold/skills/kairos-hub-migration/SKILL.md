@@ -100,7 +100,7 @@ The `migrate` command reorganises the hub into three top-level groups:
 | `sources/` | `integration/sources/` |
 | `mappings/` | `model/mappings/{system-name}/` |
 | `bronze/` | `integration/sources/{system-name}/` (as `{system-name}.vocabulary.ttl`) |
-| `output/silver/` | `output/medallion/silver/` |
+| `output/silver/` | `output/medallion/dbt/` |
 | `output/dbt/` | `output/medallion/dbt/` |
 
 Additionally:
@@ -108,7 +108,7 @@ Additionally:
 - Creates the `model/`, `integration/`, and `output/medallion/` directory
   trees if they do not already exist.
 - Removes the `application-models/` directory (ERDs are now generated into
-  `output/medallion/silver/`).
+  `output/medallion/dbt/docs/diagrams/`).
 - Cleans up any empty old directories after files have been moved.
 
 ## Post-migration checklist
