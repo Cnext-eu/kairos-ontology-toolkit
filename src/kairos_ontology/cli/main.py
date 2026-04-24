@@ -3,6 +3,7 @@
 """Main CLI entry point for kairos-ontology toolkit."""
 
 import re
+import sys
 import click
 import shutil
 import subprocess
@@ -11,6 +12,21 @@ from ..validator import run_validation, run_gdpr_validation
 from ..projector import run_projections
 from ..catalog_test import test_catalog_resolution
 from .. import __version__ as _toolkit_version
+
+
+def _ensure_utf8_stdio() -> None:
+    """Reconfigure stdout/stderr to UTF-8 on Windows.
+
+    The toolkit prints Unicode characters (✓, ✅, 🚀, etc.) which cannot be
+    encoded by the default Windows console code pages (cp1252/cp437).  Calling
+    this early in the process avoids ``UnicodeEncodeError`` at print time.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+_ensure_utf8_stdio()
 
 # Resolve scaffold data directory bundled with the package
 _SCAFFOLD_DIR = Path(__file__).resolve().parent.parent / "scaffold"

@@ -26,3 +26,24 @@ def test_main_module_runs_via_runpy():
         except SystemExit as exc:
             assert exc.code == 0
         mock_cli.assert_called_once()
+
+
+def test_ensure_utf8_stdio():
+    """Verify _ensure_utf8_stdio sets stdout/stderr to UTF-8."""
+    from kairos_ontology.cli.main import _ensure_utf8_stdio
+
+    _ensure_utf8_stdio()
+    if hasattr(sys.stdout, "encoding"):
+        assert sys.stdout.encoding.lower().replace("-", "") == "utf8"
+    if hasattr(sys.stderr, "encoding"):
+        assert sys.stderr.encoding.lower().replace("-", "") == "utf8"
+
+
+def test_unicode_print_does_not_raise(capsys):
+    """Verify Unicode emoji can be printed without UnicodeEncodeError."""
+    from kairos_ontology.cli.main import _ensure_utf8_stdio
+
+    _ensure_utf8_stdio()
+    print("✓ ✅ 🚀 📦 ⚠️ ✗ ❌")
+    captured = capsys.readouterr()
+    assert "✓" in captured.out
