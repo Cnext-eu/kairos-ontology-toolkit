@@ -184,6 +184,8 @@ target-specific modules in `projections/` → renders Jinja2 templates from
 | azure-search | `{domain}/indexes/{domain}-index.json` | `templates/azure-search/` |
 | a2ui | `{domain}/schemas/{domain}-message-schema.json` | `templates/a2ui/` |
 | prompt | `{domain}-context.json` + detailed variant | `templates/prompt/` |
+| silver | DDL + ALTER + Mermaid ERD | *(no template — inline SQL)* |
+| powerbi | Star schema DDL + TMDL + DAX + ERD | *(no template — inline)* |
 
 ## Validation system
 

@@ -64,7 +64,7 @@ ontology-hub/
 | `bronze/` | `integration/sources/{system-name}/` (as `{system-name}.vocabulary.ttl`) |
 | `output/silver/` | `output/medallion/silver/` |
 | `output/dbt/` | `output/medallion/dbt/` |
-| *(none)* | `output/medallion/gold/` |
+| *(none)* | `output/medallion/powerbi/` |
 | `application-models/` | *(removed — ERDs now in `output/medallion/silver/`)* |
 
 ---
@@ -133,7 +133,7 @@ your hub repository.
 mkdir -p model/ontologies model/shapes model/extensions
 mkdir -p integration/sources model/mappings
 mkdir -p output/medallion/silver
-mkdir -p output/medallion/gold output/medallion/dbt
+mkdir -p output/medallion/powerbi output/medallion/dbt
 ```
 
 ### Step 2 — Move domain ontologies (excluding extension files)

@@ -97,7 +97,7 @@ When reviewing or creating a pull request, verify:
 
 ## Projection targets
 
-Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`, `report`.
+Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`, `powerbi`, `report`.
 Each ontology domain produces separate output artifacts per target.
 
 ## Scaffold packaging rules

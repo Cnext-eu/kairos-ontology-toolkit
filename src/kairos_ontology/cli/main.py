@@ -228,7 +228,7 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
 @click.option('--output', type=click.Path(),
               default='ontology-hub/output',
               help='Output directory for projections')
-@click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'gold', 'report']),
+@click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report']),
               default='all', help='Projection target')
 @click.option('--namespace', type=str, default=None,
               help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
@@ -288,7 +288,7 @@ def init(domain, company_domain, force):
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "output" / "medallion" / "gold",
+        hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
         hub / "output" / "azure-search",
@@ -300,7 +300,7 @@ def init(domain, company_domain, force):
 
     # Place .gitkeep in empty output subdirs so git tracks them
     for target in [
-        "medallion/gold", "medallion/dbt",
+        "medallion/powerbi", "medallion/dbt",
         "neo4j", "azure-search", "a2ui", "prompt", "report",
     ]:
         gitkeep = hub / "output" / target / ".gitkeep"
@@ -651,7 +651,7 @@ def migrate(check, hub_path):
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "output" / "medallion" / "gold",
+        hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
     ]
     if not check:
@@ -887,7 +887,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "integration" / "sources",
-        hub / "output" / "medallion" / "gold",
+        hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
         hub / "output" / "azure-search",
@@ -899,7 +899,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
 
     # Place .gitkeep in output subdirs so git tracks them
     for target in [
-        "medallion/gold", "medallion/dbt",
+        "medallion/powerbi", "medallion/dbt",
         "neo4j", "azure-search", "a2ui", "prompt", "report",
     ]:
         gitkeep = hub / "output" / target / ".gitkeep"

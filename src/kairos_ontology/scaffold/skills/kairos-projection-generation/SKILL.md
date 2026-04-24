@@ -26,6 +26,7 @@ You help users generate and understand projection artifacts.
 | **a2ui** | Message schema JSON | UI generation / form scaffolding |
 | **prompt** | Compact + detailed context JSON | LLM prompt context injection |
 | **silver** | DDL + ALTER + Mermaid ERD | MS Fabric / Delta Lake silver layer |
+| **powerbi** | Star schema DDL + TMDL + DAX + ERD | Power BI / MS Fabric gold layer |
 | **report** | HTML mapping reports | Business analyst mapping coverage review |
 
 ## When to use each target
@@ -49,7 +50,7 @@ python -m kairos_ontology project --target prompt
 # Generate silver layer (requires *-silver-ext.ttl in model/extensions/)
 python -m kairos_ontology project --target silver
 
-# Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver
+# Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver, powerbi
 ```
 
 ## Output structure
@@ -66,7 +67,7 @@ ontology-hub/output/
 │   │   ├── customer-ddl.sql               # CREATE TABLE (T-SQL / MS Fabric)
 │   │   ├── customer-alter.sql             # ALTER TABLE (UNIQUE + FK constraints)
 │   │   └── customer-erd.mmd               # Mermaid erDiagram
-│   └── gold/                              # Gold dimensional models
+│   └── powerbi/                             # Power BI star schema artifacts
 ├── neo4j/
 │   └── customer-schema.cypher
 ├── azure-search/customer/indexes/

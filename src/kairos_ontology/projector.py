@@ -13,7 +13,7 @@ from .projections.uri_utils import extract_local_name
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report"]
 
 # Targets that live under output/medallion/ (medallion architecture outputs).
-_MEDALLION_TARGETS = {"dbt", "silver", "gold"}
+_MEDALLION_TARGETS = {"dbt", "silver", "powerbi"}
 
 # Targets processed after the per-domain loop (they span all domains).
 _POST_DOMAIN_TARGETS = {"report"}
@@ -154,7 +154,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     if mappings_dir and mappings_dir.exists():
         print(f"  Found SKOS mappings directory: {mappings_dir}\n")
 
-    targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'gold', 'report'] if target == 'all' else [target]
+    targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report'] if target == 'all' else [target]
 
     # Accumulate per-domain manifest data: {domain_name: {meta, targets: {target: [files]}}}
     manifests: dict[str, dict] = {}
@@ -210,7 +210,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                     if ext_path:
                         print(f"  [{onto_name}] Using projection ext: {ext_path.name}")
 
-                elif target_name == "gold":
+                elif target_name == "powerbi":
                     src_file = onto_info["file"]
                     if extensions_dir and extensions_dir.exists():
                         candidates = list(extensions_dir.glob(f"{onto_name}-gold-ext.ttl"))
@@ -293,21 +293,21 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 total_files += svg_count
                 print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
             else:
-                print("  ℹ Mermaid CLI (mmdc) not found — SVG export skipped."
+                print("  [info] Mermaid CLI (mmdc) not found -- SVG export skipped."
                       " Install: npm install -D @mermaid-js/mermaid-cli")
 
         # After all domains: generate master gold ERD
-        if target_name == "gold" and total_files > 0:
+        if target_name == "powerbi" and total_files > 0:
             from .projections.medallion_gold_projector import generate_master_gold_erd
             from .projections.medallion_silver_projector import render_mermaid_svg
-            gold_output = output_path / "medallion" / "gold"
+            gold_output = output_path / "medallion" / "powerbi"
             hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
             master_mmd = generate_master_gold_erd(gold_output, hub_name=hub_name)
             if master_mmd:
                 master_path = gold_output / "master-gold-erd.mmd"
                 master_path.write_text(master_mmd, encoding="utf-8")
                 total_files += 1
-                print(f"  ✓ Master Gold ERD written: gold/master-gold-erd.mmd")
+                print(f"  ✓ Master Gold ERD written: powerbi/master-gold-erd.mmd")
 
             svg_count = 0
             if gold_output.exists():
@@ -318,6 +318,9 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             if svg_count:
                 total_files += svg_count
                 print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
+            else:
+                print("  [info] Mermaid CLI (mmdc) not found -- SVG export skipped."
+                      " Install: npm install -D @mermaid-js/mermaid-cli")
 
         print(f"  ✓ {target_name} projection completed: {total_files} total files\n")
 
@@ -650,7 +653,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             projection_ext_path=projection_ext_path,
             ontology_metadata=meta,
         )
-    elif target == 'gold':
+    elif target == 'powerbi':
         from .projections.medallion_gold_projector import generate_gold_artifacts
         return generate_gold_artifacts(
             classes=classes,
