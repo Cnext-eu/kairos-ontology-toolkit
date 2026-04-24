@@ -1,0 +1,33 @@
+version: 2
+
+models:
+{%- for model in models %}
+  - name: {{ model.name }}
+    description: "{{ model.description }}"
+    meta:
+      table_type: "{{ model.table_type }}"
+      ontology_class: "{{ model.ontology_class }}"
+      ontology_iri: "{{ model.ontology_iri }}"
+    columns:
+{%- for col in model.columns %}
+      - name: {{ col.name }}
+        description: "{{ col.description }}"
+        meta:
+{%- for key, value in col.meta.items() %}
+          {{ key }}: "{{ value }}"
+{%- endfor %}
+{%- if col.tests %}
+        tests:
+{%- for test in col.tests %}
+{%- if test is mapping %}
+          - {{ test.keys() | list | first }}:
+{%- for k, v in test.values() | list | first | dictsort %}
+              {{ k }}: {{ v }}
+{%- endfor %}
+{%- else %}
+          - {{ test }}
+{%- endif %}
+{%- endfor %}
+{%- endif %}
+{%- endfor %}
+{%- endfor %}

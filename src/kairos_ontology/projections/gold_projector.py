@@ -348,31 +348,33 @@ def _generate_date_dimension(schema: str) -> GoldTableDef:
 
 
 # ---------------------------------------------------------------------------
-# Main projector function
+# Public helper: build gold table definitions (reused by dbt projector)
 # ---------------------------------------------------------------------------
 
-def generate_gold_artifacts(
+def build_gold_tables(
     classes: list[dict],
     graph: Graph,
     namespace: str,
     shapes_dir: Optional[Path] = None,
     ontology_name: str = "domain",
     projection_ext_path: Optional[Path] = None,
-    ontology_metadata: Optional[dict] = None,
-) -> dict[str, str]:
-    """Generate gold layer star-schema DDL, TMDL, DAX measures, and Mermaid ERD.
+) -> list[GoldTableDef]:
+    """Build gold table definitions without rendering output files.
+
+    This is the shared logic used by both the gold projector (DDL/TMDL/DAX)
+    and the dbt projector (gold dbt models).  Returns the ordered list of
+    ``GoldTableDef`` objects ready for rendering.
 
     Args:
         classes: Pre-extracted list of ``{uri, name, label, comment}`` dicts.
         graph: Loaded domain ontology graph.
         namespace: Domain namespace URI string.
         shapes_dir: Optional SHACL shapes directory.
-        ontology_name: Domain name (used for filenames and default schema).
+        ontology_name: Domain name (used for default schema).
         projection_ext_path: Optional path to ``*-gold-ext.ttl`` annotation file.
-        ontology_metadata: Provenance metadata from ``extract_ontology_metadata()``.
 
     Returns:
-        ``{filename: content}`` mapping for all gold artifacts.
+        Ordered list of ``GoldTableDef`` (date dim → dimensions → facts → bridges).
     """
     # Merge projection extension into working graph
     merged = Graph()
@@ -412,7 +414,7 @@ def generate_gold_artifacts(
     class_uris = {c["uri"] for c in domain_classes}
 
     if not domain_classes:
-        return {}
+        return []
 
     # G1 — Classify tables
     classifications = _classify_tables(merged, domain_classes, class_uris)
@@ -433,25 +435,21 @@ def generate_gold_artifacts(
                     existing.append(cls_info["name"])
                 break
 
-    def gold_table_name(cls_uri: URIRef, local: str, table_type: str) -> str:
-        """Derive gold table name with G2 prefix."""
-        override = _str_val(merged, cls_uri, KAIROS_EXT.goldTableName)
+    def gold_table_name(cls_uri_arg: URIRef, local: str, table_type: str) -> str:
+        override = _str_val(merged, cls_uri_arg, KAIROS_EXT.goldTableName)
         base = override or (
             _camel_to_snake(local) if naming_conv == "camel-to-snake" else local.lower()
         )
-        # G2: Apply prefix
         if table_type == "fact" and not base.startswith("fact_"):
             return f"fact_{base}"
         elif table_type == "dimension" and not base.startswith("dim_"):
-            # G6: Reference data keeps dim_ (not ref_ like silver)
             return f"dim_{base}"
         elif table_type == "bridge" and not base.startswith("bridge_"):
             return f"bridge_{base}"
         return base
 
-    def base_table_name(cls_uri: URIRef, local: str) -> str:
-        """Derive base table name without prefix (for FK column naming)."""
-        override = _str_val(merged, cls_uri, KAIROS_EXT.goldTableName)
+    def base_table_name(cls_uri_arg: URIRef, local: str) -> str:
+        override = _str_val(merged, cls_uri_arg, KAIROS_EXT.goldTableName)
         return override or (
             _camel_to_snake(local) if naming_conv == "camel-to-snake" else local.lower()
         )
@@ -464,7 +462,6 @@ def generate_gold_artifacts(
         local = cls_info["name"]
         uri_str = cls_info["uri"]
 
-        # Skip subtypes — their properties get merged into parent (G5)
         if uri_str in subtype_parents:
             continue
 
@@ -485,9 +482,6 @@ def generate_gold_artifacts(
             _str_val(merged, cls_uri, KAIROS_EXT.partitionBy) or None
         ) if table_type == "fact" else None
 
-        # ----------------------------------------------------------
-        # G8: INT surrogate key (not STRING UUID like silver)
-        # ----------------------------------------------------------
         if not is_gdpr:
             base_name = base_table_name(cls_uri, local)
             sk_name = f"{base_name}_sk"
@@ -496,7 +490,6 @@ def generate_gold_artifacts(
                 comment="Surrogate key (INT IDENTITY)"))
             tbl.pk_column = sk_name
         else:
-            # GDPR satellite: PK = FK to parent (G4)
             parent_local = _local_name(str(gdpr_parent))
             parent_base = base_table_name(gdpr_parent, parent_local)
             parent_type = classifications.get(str(gdpr_parent), "dimension")
@@ -511,16 +504,10 @@ def generate_gold_artifacts(
                 (sk_name, f"{schema_name}.{parent_tbl_name}",
                  sk_name, "gdpr_satellite_of"))
 
-        # ----------------------------------------------------------
-        # FK columns from object properties
-        # ----------------------------------------------------------
         _add_gold_fk_columns(
             merged, cls_uri, tbl, class_uris, classifications,
             schema_name, gold_table_name, base_table_name, naming_conv)
 
-        # ----------------------------------------------------------
-        # Discriminator column (G5 — if class has subtypes)
-        # ----------------------------------------------------------
         disc_col = _str_val(merged, cls_uri, KAIROS_EXT.discriminatorColumn)
         if not disc_col and uri_str in folded_subtypes:
             base = base_table_name(cls_uri, local)
@@ -530,15 +517,9 @@ def generate_gold_artifacts(
                 disc_col, "VARCHAR(64)", "String", nullable=False,
                 comment="Type discriminator (G5)"))
 
-        # ----------------------------------------------------------
-        # Data properties (business columns)
-        # ----------------------------------------------------------
         _add_gold_data_properties(
             merged, cls_uri, tbl, shacl_graph, naming_conv)
 
-        # ----------------------------------------------------------
-        # G3: SCD Type 2 columns on dimensions only
-        # ----------------------------------------------------------
         if table_type == "dimension" and scd == "2" and not is_ref:
             tbl.columns.append(GoldColumnDef(
                 "valid_from", "DATE", "DateTime", nullable=False))
@@ -549,14 +530,10 @@ def generate_gold_artifacts(
                 "is_current", "BIT", "Boolean", nullable=False,
                 comment="1 = current record"))
 
-        # Collect hierarchies
         tbl.hierarchies = _collect_hierarchies(merged, cls_uri)
-
         tables[uri_str] = tbl
 
-    # ----------------------------------------------------------
     # G5 post-pass: merge subtype properties into parent
-    # ----------------------------------------------------------
     for parent_uri_str, subtype_names in folded_subtypes.items():
         if parent_uri_str not in tables:
             continue
@@ -573,25 +550,20 @@ def generate_gold_artifacts(
                 schema_name, gold_table_name, base_table_name, naming_conv,
                 comment_prefix=f"from {cls_info['name']}")
 
-    # ----------------------------------------------------------
     # Bridge tables from many-to-many (R13)
-    # ----------------------------------------------------------
     bridge_tables = _build_gold_bridge_tables(
         merged, class_uris, classifications, tables, schema_name,
         gold_table_name, base_table_name, naming_conv)
 
-    # ----------------------------------------------------------
     # Date dimension (G8)
-    # ----------------------------------------------------------
     date_dim: Optional[GoldTableDef] = None
     if gen_date_dim:
         date_dim = _generate_date_dimension(schema_name)
 
-    # Collect all tables
+    # Collect all tables in order
     all_tables: list[GoldTableDef] = []
     if date_dim:
         all_tables.append(date_dim)
-    # Dimensions first, then facts, then bridges
     dims = [t for t in tables.values() if t.table_type == "dimension"]
     facts = [t for t in tables.values() if t.table_type == "fact"]
     bridges = [t for t in tables.values() if t.table_type == "bridge"]
@@ -599,6 +571,56 @@ def generate_gold_artifacts(
     all_tables.extend(sorted(facts, key=lambda t: t.name))
     all_tables.extend(sorted(bridges, key=lambda t: t.name))
     all_tables.extend(bridge_tables)
+
+    return all_tables
+
+
+# ---------------------------------------------------------------------------
+# Main projector function
+# ---------------------------------------------------------------------------
+
+def generate_gold_artifacts(
+    classes: list[dict],
+    graph: Graph,
+    namespace: str,
+    shapes_dir: Optional[Path] = None,
+    ontology_name: str = "domain",
+    projection_ext_path: Optional[Path] = None,
+    ontology_metadata: Optional[dict] = None,
+) -> dict[str, str]:
+    """Generate gold layer star-schema DDL, TMDL, DAX measures, and Mermaid ERD.
+
+    Args:
+        classes: Pre-extracted list of ``{uri, name, label, comment}`` dicts.
+        graph: Loaded domain ontology graph.
+        namespace: Domain namespace URI string.
+        shapes_dir: Optional SHACL shapes directory.
+        ontology_name: Domain name (used for filenames and default schema).
+        projection_ext_path: Optional path to ``*-gold-ext.ttl`` annotation file.
+        ontology_metadata: Provenance metadata from ``extract_ontology_metadata()``.
+
+    Returns:
+        ``{filename: content}`` mapping for all gold artifacts.
+    """
+    # Delegate table building to the shared helper
+    all_tables = build_gold_tables(
+        classes, graph, namespace, shapes_dir, ontology_name, projection_ext_path,
+    )
+    if not all_tables:
+        return {}
+
+    # Re-read schema_name from the merged graph for rendering headers
+    merged = Graph()
+    for triple in graph:
+        merged.add(triple)
+    if projection_ext_path and projection_ext_path.exists():
+        ext_graph = Graph()
+        ext_graph.parse(str(projection_ext_path), format="turtle")
+        for triple in ext_graph:
+            merged.add(triple)
+    onto_uri = _detect_ontology_uri(merged, namespace)
+    schema_name = _str_val(merged, onto_uri, KAIROS_EXT.goldSchema,
+                           f"gold_{ontology_name}")
 
     # ----------------------------------------------------------
     # Build provenance header

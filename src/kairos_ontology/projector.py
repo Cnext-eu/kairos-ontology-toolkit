@@ -154,7 +154,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     if mappings_dir and mappings_dir.exists():
         print(f"  Found SKOS mappings directory: {mappings_dir}\n")
 
-    targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'report'] if target == 'all' else [target]
+    targets_to_run = ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'gold', 'report'] if target == 'all' else [target]
 
     # Accumulate per-domain manifest data: {domain_name: {meta, targets: {target: [files]}}}
     manifests: dict[str, dict] = {}
@@ -194,6 +194,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 # For silver: auto-discover *-silver-ext.ttl in extensions/ directory
                 # For gold: auto-discover *-gold-ext.ttl in extensions/ directory
                 ext_path: Optional[Path] = None
+                gold_ext_path: Optional[Path] = None
                 if target_name == "silver":
                     src_file: Path = onto_info["file"]
                     # Look in model/extensions/ first (new layout)
@@ -222,9 +223,24 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                     if ext_path:
                         print(f"  [{onto_name}] Using projection ext: {ext_path.name}")
 
+                elif target_name == "dbt":
+                    # dbt also needs gold-ext.ttl for gold model generation
+                    src_file = onto_info["file"]
+                    if extensions_dir and extensions_dir.exists():
+                        candidates = list(extensions_dir.glob(f"{onto_name}-gold-ext.ttl"))
+                        candidates += list(extensions_dir.glob("*-gold-ext.ttl"))
+                        gold_ext_path = candidates[0] if candidates else None
+                    if not gold_ext_path:
+                        candidates = list(src_file.parent.glob(f"{onto_name}-gold-ext.ttl"))
+                        candidates += list(src_file.parent.glob("*-gold-ext.ttl"))
+                        gold_ext_path = candidates[0] if candidates else None
+                    if gold_ext_path:
+                        print(f"  [{onto_name}] Using gold ext: {gold_ext_path.name}")
+
                 artifacts = _run_projection(target_name, onto_graph, target_output, template_base,
                                             onto_namespace, shapes_dir, onto_name,
                                             projection_ext_path=ext_path,
+                                            gold_ext_path=gold_ext_path,
                                             ontology_metadata=onto_meta,
                                             sources_dir=sources_dir,
                                             mappings_dir=mappings_dir)
@@ -536,6 +552,7 @@ def _auto_detect_namespace(graph: Graph) -> str:
 def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path,
                     namespace: str, shapes_dir: Path = None, ontology_name: str = None,
                     projection_ext_path: Optional[Path] = None,
+                    gold_ext_path: Optional[Path] = None,
                     ontology_metadata: Optional[dict] = None,
                     sources_dir: Optional[Path] = None,
                     mappings_dir: Optional[Path] = None) -> dict:
@@ -550,6 +567,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         shapes_dir: Optional SHACL shapes directory
         ontology_name: Name of the ontology file (without extension)
         projection_ext_path: Optional path to *-silver-ext.ttl (silver target only)
+        gold_ext_path: Optional path to *-gold-ext.ttl (dbt target — for gold models)
         ontology_metadata: Provenance metadata from extract_ontology_metadata()
         sources_dir: Optional path to integration/sources/ directory (dbt target)
         mappings_dir: Optional path to mappings/ SKOS directory (dbt target)
@@ -595,6 +613,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             classes, graph, template_base / "dbt", namespace, shapes_dir,
             ontology_name, ontology_metadata=meta,
             bronze_dir=sources_dir, sources_dir=sources_dir, mappings_dir=mappings_dir,
+            gold_ext_path=gold_ext_path,
         )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts

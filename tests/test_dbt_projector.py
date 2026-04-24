@@ -431,3 +431,221 @@ class TestGenerateDbtArtifacts:
         assert not any("_sources.yml" in k for k in artifacts)
         # But silver models exist
         assert any("models/silver/" in k for k in artifacts)
+
+
+# ---------------------------------------------------------------------------
+# Gold dbt model generation (thick gold — pre-materialized star schema)
+# ---------------------------------------------------------------------------
+
+# Ontology with fact + dimensions for gold tests
+GOLD_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "Test Ontology" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:Customer a owl:Class ;
+        rdfs:label "Customer" ;
+        rdfs:comment "A customer entity" .
+
+    ex:Product a owl:Class ;
+        rdfs:label "Product" ;
+        rdfs:comment "A product entity" .
+
+    ex:Order a owl:Class ;
+        rdfs:label "Order" ;
+        rdfs:comment "An order entity" .
+
+    ex:customerName a owl:DatatypeProperty ;
+        rdfs:label "customer name" ;
+        rdfs:domain ex:Customer ;
+        rdfs:range xsd:string .
+
+    ex:productName a owl:DatatypeProperty ;
+        rdfs:label "product name" ;
+        rdfs:domain ex:Product ;
+        rdfs:range xsd:string .
+
+    ex:orderDate a owl:DatatypeProperty ;
+        rdfs:label "order date" ;
+        rdfs:domain ex:Order ;
+        rdfs:range xsd:date .
+
+    ex:orderAmount a owl:DatatypeProperty ;
+        rdfs:label "order amount" ;
+        rdfs:domain ex:Order ;
+        rdfs:range xsd:decimal .
+
+    ex:hasCustomer a owl:ObjectProperty, owl:FunctionalProperty ;
+        rdfs:domain ex:Order ;
+        rdfs:range ex:Customer ;
+        rdfs:label "has customer" .
+
+    ex:hasProduct a owl:ObjectProperty, owl:FunctionalProperty ;
+        rdfs:domain ex:Order ;
+        rdfs:range ex:Product ;
+        rdfs:label "has product" .
+""")
+
+GOLD_CLASSES = [
+    {"uri": "http://kairos.example/ontology/Customer",
+     "name": "Customer", "label": "Customer", "comment": "A customer entity"},
+    {"uri": "http://kairos.example/ontology/Product",
+     "name": "Product", "label": "Product", "comment": "A product entity"},
+    {"uri": "http://kairos.example/ontology/Order",
+     "name": "Order", "label": "Order", "comment": "An order entity"},
+]
+
+
+@pytest.fixture
+def gold_ontology_graph():
+    g = Graph()
+    g.parse(data=GOLD_ONTOLOGY_TTL, format="turtle")
+    return g
+
+
+class TestGoldDbtModels:
+    """Tests for gold dbt model generation (thick gold — DirectLake optimized)."""
+
+    def test_gold_models_generated(self, gold_ontology_graph, template_dir, bronze_dir,
+                                   mappings_dir):
+        """Gold models are generated alongside silver when bronze sources exist."""
+        artifacts = generate_dbt_artifacts(
+            classes=GOLD_CLASSES,
+            graph=gold_ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="sales",
+            bronze_dir=bronze_dir,
+            mappings_dir=mappings_dir,
+        )
+        gold_models = [k for k in artifacts if k.startswith("models/gold/")]
+        assert len(gold_models) >= 3  # at least dim_date, dim_customer, fact_order
+        # Check specific gold model paths
+        assert any("dim_customer.sql" in k for k in gold_models)
+        assert any("fact_order.sql" in k for k in gold_models)
+        assert any("dim_date.sql" in k for k in gold_models)
+
+    def test_gold_model_refs_silver(self, gold_ontology_graph, template_dir, bronze_dir,
+                                    mappings_dir):
+        """Gold models use ref() to reference silver models."""
+        artifacts = generate_dbt_artifacts(
+            classes=GOLD_CLASSES,
+            graph=gold_ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="sales",
+            bronze_dir=bronze_dir,
+            mappings_dir=mappings_dir,
+        )
+        dim_key = next(k for k in artifacts if "dim_customer.sql" in k)
+        content = artifacts[dim_key]
+        assert "ref('customer')" in content
+        assert "materialized='table'" in content
+
+    def test_gold_fact_model_content(self, gold_ontology_graph, template_dir, bronze_dir,
+                                     mappings_dir):
+        """Fact table gold model has correct structure."""
+        artifacts = generate_dbt_artifacts(
+            classes=GOLD_CLASSES,
+            graph=gold_ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="sales",
+            bronze_dir=bronze_dir,
+            mappings_dir=mappings_dir,
+        )
+        fact_key = next(k for k in artifacts if "fact_order.sql" in k)
+        content = artifacts[fact_key]
+        assert "materialized='table'" in content
+        assert "gold_sales" in content
+        # Fact table should reference silver model
+        assert "ref(" in content
+        # Should mention it's a fact table
+        assert "Fact table" in content
+
+    def test_gold_dimension_scd2_framing(self, gold_ontology_graph, template_dir, bronze_dir,
+                                         mappings_dir):
+        """SCD2 dimension gold model applies is_current = 1 framing."""
+        artifacts = generate_dbt_artifacts(
+            classes=GOLD_CLASSES,
+            graph=gold_ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="sales",
+            bronze_dir=bronze_dir,
+            mappings_dir=mappings_dir,
+        )
+        dim_key = next(k for k in artifacts if "dim_customer.sql" in k)
+        content = artifacts[dim_key]
+        # SCD2 framing should be applied
+        assert "is_current = 1" in content
+
+    def test_gold_schema_yaml(self, gold_ontology_graph, template_dir, bronze_dir,
+                              mappings_dir):
+        """Gold schema YAML has correct structure with tests."""
+        artifacts = generate_dbt_artifacts(
+            classes=GOLD_CLASSES,
+            graph=gold_ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="sales",
+            bronze_dir=bronze_dir,
+            mappings_dir=mappings_dir,
+        )
+        schema_key = "models/gold/sales/_sales__gold_models.yml"
+        assert schema_key in artifacts
+        content = yaml.safe_load(artifacts[schema_key])
+        models = content["models"]
+        # Should have multiple gold models
+        assert len(models) >= 3
+        # Check that PK SK columns have not_null + unique tests
+        for model in models:
+            # Only the first SK column (PK) should have tests — FK SK cols may be nullable
+            pk_col = next(
+                (c for c in model["columns"]
+                 if c["name"].endswith("_sk") and c.get("tests")),
+                None,
+            )
+            if pk_col:
+                assert "not_null" in pk_col["tests"]
+                assert "unique" in pk_col["tests"]
+
+    def test_dbt_project_yml_has_gold(self, gold_ontology_graph, template_dir, bronze_dir,
+                                      mappings_dir):
+        """dbt_project.yml includes gold section."""
+        artifacts = generate_dbt_artifacts(
+            classes=GOLD_CLASSES,
+            graph=gold_ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="sales",
+            bronze_dir=bronze_dir,
+            mappings_dir=mappings_dir,
+        )
+        proj = yaml.safe_load(artifacts["dbt_project.yml"])
+        assert "gold" in proj["models"]["sales_project"]
+        gold_config = proj["models"]["sales_project"]["gold"]
+        assert "+materialized" in gold_config
+        assert gold_config["+materialized"] == "table"
+
+    def test_gold_dim_date_model(self, gold_ontology_graph, template_dir, bronze_dir,
+                                 mappings_dir):
+        """dim_date is auto-generated as a gold model."""
+        artifacts = generate_dbt_artifacts(
+            classes=GOLD_CLASSES,
+            graph=gold_ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="sales",
+            bronze_dir=bronze_dir,
+            mappings_dir=mappings_dir,
+        )
+        date_key = next(k for k in artifacts if "dim_date.sql" in k)
+        content = artifacts[date_key]
+        assert "materialized='table'" in content
+        assert "date_key" in content

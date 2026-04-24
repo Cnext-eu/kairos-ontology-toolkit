@@ -665,6 +665,7 @@ def _gen_project_config(
     ontology_names: list[str],
     env: Environment,
     project_name: str,
+    gold_domains: list[dict] = None,
 ) -> dict[str, str]:
     """Generate ``dbt_project.yml`` and ``packages.yml``."""
     artifacts: dict[str, str] = {}
@@ -680,10 +681,218 @@ def _gen_project_config(
         project_name=project_name,
         sources=sources,
         domains=domains,
+        gold_domains=gold_domains or [],
     )
 
     pkg_template = env.get_template("packages.yml.jinja2")
     artifacts["packages.yml"] = pkg_template.render()
+
+    return artifacts
+
+
+# ---------------------------------------------------------------------------
+# Gold model generation (thick gold — pre-materialized star schema)
+# ---------------------------------------------------------------------------
+
+def _silver_model_name_for_class(cls_uri: str, classes: list[dict]) -> str:
+    """Derive the silver dbt model name for a given ontology class URI."""
+    for cls in classes:
+        if cls["uri"] == cls_uri:
+            return _camel_to_snake(cls["name"])
+    local = extract_local_name(cls_uri)
+    return _camel_to_snake(local)
+
+
+def _gen_gold_models(
+    classes: list[dict],
+    graph: Graph,
+    namespace: str,
+    shapes_dir: Optional[Path],
+    ontology_name: str,
+    gold_ext_path: Optional[Path],
+    env: Environment,
+    meta: dict,
+) -> dict[str, str]:
+    """Generate gold dbt models from gold table definitions.
+
+    Uses the shared ``build_gold_tables()`` from the gold projector to get
+    ``GoldTableDef`` objects, then renders each as a dbt SQL model that
+    reads from the corresponding silver model via ``ref()``.
+    """
+    from .gold_projector import build_gold_tables, GoldTableDef
+
+    gold_tables = build_gold_tables(
+        classes, graph, namespace, shapes_dir, ontology_name, gold_ext_path,
+    )
+    if not gold_tables:
+        return {}
+
+    artifacts: dict[str, str] = {}
+    template = env.get_template("gold_model.sql.jinja2")
+    schema_name = gold_tables[0].schema if gold_tables else f"gold_{ontology_name}"
+
+    for tbl in gold_tables:
+        # dim_date is auto-generated — no silver ref needed
+        if tbl.name == "dim_date":
+            columns = []
+            for col in tbl.columns:
+                columns.append({
+                    "expression": f"CAST(NULL AS {col.sql_type})",
+                    "target_name": col.name,
+                })
+            content = template.render(
+                model_name=tbl.name,
+                domain_name=ontology_name,
+                schema_name=schema_name,
+                table_type="dimension",
+                scd_type=tbl.scd_type,
+                is_gdpr=False,
+                source_ctes=[{"model": f"seed_dim_date", "alias": "date_seed"}],
+                columns=columns,
+                joins=[],
+                where_clause="",
+                ontology_metadata=meta,
+            )
+            path = f"models/gold/{ontology_name}/{tbl.name}.sql"
+            artifacts[path] = content
+            continue
+
+        # Build silver ref(s)
+        source_ctes = []
+        if tbl.source_class_uri:
+            silver_name = _silver_model_name_for_class(tbl.source_class_uri, classes)
+            source_ctes.append({"model": silver_name, "alias": silver_name})
+
+        # For fact tables with FK constraints, also ref the dimension silver models
+        if tbl.table_type == "fact":
+            seen_models = {c["model"] for c in source_ctes}
+            for fk_col, ref_full, ref_col, label in tbl.fk_constraints:
+                ref_tbl_name = ref_full.split(".")[-1]
+                # Find the silver model for the referenced gold table
+                ref_gold = next(
+                    (t for t in gold_tables if t.name == ref_tbl_name), None)
+                if ref_gold and ref_gold.source_class_uri:
+                    ref_silver = _silver_model_name_for_class(
+                        ref_gold.source_class_uri, classes)
+                    if ref_silver not in seen_models:
+                        source_ctes.append({
+                            "model": ref_silver,
+                            "alias": ref_silver,
+                        })
+                        seen_models.add(ref_silver)
+
+        # GDPR satellite: ref parent dimension's silver model
+        if tbl.is_gdpr and tbl.gdpr_parent_table:
+            parent_gold = next(
+                (t for t in gold_tables if t.name == tbl.gdpr_parent_table), None)
+            if parent_gold and parent_gold.source_class_uri:
+                parent_silver = _silver_model_name_for_class(
+                    parent_gold.source_class_uri, classes)
+                if not any(c["model"] == parent_silver for c in source_ctes):
+                    source_ctes.append({
+                        "model": parent_silver, "alias": parent_silver,
+                    })
+
+        if not source_ctes:
+            logger.info("No silver ref for gold table %s — skipping", tbl.name)
+            continue
+
+        # Build column expressions
+        columns = []
+        for col in tbl.columns:
+            if col.is_measure:
+                continue
+            columns.append({
+                "expression": col.name,
+                "target_name": col.name,
+            })
+
+        # SCD2 framing: filter to current records only
+        where_clause = ""
+        if (tbl.table_type == "dimension" and tbl.scd_type == "2"
+                and not tbl.is_gdpr):
+            where_clause = "is_current = 1"
+
+        content = template.render(
+            model_name=tbl.name,
+            domain_name=ontology_name,
+            schema_name=schema_name,
+            table_type=tbl.table_type,
+            scd_type=tbl.scd_type,
+            is_gdpr=tbl.is_gdpr,
+            source_ctes=source_ctes,
+            columns=columns,
+            joins=[],
+            where_clause=where_clause,
+            ontology_metadata=meta,
+        )
+        path = f"models/gold/{ontology_name}/{tbl.name}.sql"
+        artifacts[path] = content
+
+    return artifacts
+
+
+def _gen_gold_schema_yaml(
+    classes: list[dict],
+    graph: Graph,
+    namespace: str,
+    shapes_dir: Optional[Path],
+    ontology_name: str,
+    gold_ext_path: Optional[Path],
+    env: Environment,
+    meta: dict,
+) -> dict[str, str]:
+    """Generate ``_gold_models.yml`` with column descriptions and tests."""
+    from .gold_projector import build_gold_tables
+
+    gold_tables = build_gold_tables(
+        classes, graph, namespace, shapes_dir, ontology_name, gold_ext_path,
+    )
+    if not gold_tables:
+        return {}
+
+    artifacts: dict[str, str] = {}
+    template = env.get_template("gold_schema.yml.jinja2")
+
+    models_data = []
+    for tbl in gold_tables:
+        # Skip tables that have no corresponding SQL model
+        # (junction bridges have no source_class_uri)
+        if tbl.name != "dim_date" and not tbl.source_class_uri:
+            continue
+
+        cols = []
+        for col in tbl.columns:
+            if col.is_measure:
+                continue
+            tests: list = []
+            if not col.nullable:
+                tests.append("not_null")
+            if col.name == tbl.pk_column:
+                tests.append("unique")
+            col_meta: dict[str, str] = {"sql_type": col.sql_type}
+            if col.comment:
+                col_meta["comment"] = col.comment
+            cols.append({
+                "name": col.name,
+                "description": col.comment or col.name,
+                "meta": col_meta,
+                "tests": tests,
+            })
+
+        models_data.append({
+            "name": tbl.name,
+            "description": tbl.source_class_label or tbl.name,
+            "table_type": tbl.table_type,
+            "ontology_class": tbl.source_class_label or "",
+            "ontology_iri": meta.get("iri", ""),
+            "columns": cols,
+        })
+
+    if models_data:
+        content = template.render(models=models_data)
+        path = f"models/gold/{ontology_name}/_{ontology_name}__gold_models.yml"
+        artifacts[path] = content
 
     return artifacts
 
@@ -703,6 +912,7 @@ def generate_dbt_artifacts(
     bronze_dir: Path = None,
     sources_dir: Path = None,
     mappings_dir: Path = None,
+    gold_ext_path: Path = None,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -720,6 +930,7 @@ def generate_dbt_artifacts(
         sources_dir: Path to ``integration/sources/`` directory.  Vocabulary TTLs
             are discovered recursively under each source system sub-folder.
         mappings_dir: Path to ``mappings/`` directory with SKOS mapping TTLs.
+        gold_ext_path: Optional path to ``*-gold-ext.ttl`` for gold model generation.
 
     Returns:
         Dictionary of ``{file_path: content}`` for all generated artifacts.
@@ -763,8 +974,28 @@ def generate_dbt_artifacts(
     artifacts.update(schema)
 
     # 5. Project config (only once per domain — orchestrator handles multi-domain)
+    has_gold = False
     if systems:
-        project = _gen_project_config(systems, [onto_name], env, f"{onto_name}_project")
+        # 6. Gold entity models (thick gold — pre-materialized star schema)
+        gold = _gen_gold_models(
+            classes, graph, namespace, shapes_dir, onto_name, gold_ext_path, env, meta,
+        )
+        artifacts.update(gold)
+        has_gold = len(gold) > 0
+        if gold:
+            print(f"    ✓ Generated {len(gold)} gold model(s)")
+
+        # 7. Gold schema YAML with tests
+        gold_schema = _gen_gold_schema_yaml(
+            classes, graph, namespace, shapes_dir, onto_name, gold_ext_path, env, meta,
+        )
+        artifacts.update(gold_schema)
+
+        gold_domains = [{"name": onto_name}] if has_gold else []
+        project = _gen_project_config(
+            systems, [onto_name], env, f"{onto_name}_project",
+            gold_domains=gold_domains,
+        )
         artifacts.update(project)
 
     return artifacts
