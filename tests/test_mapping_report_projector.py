@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from rdflib import Graph
 
-from kairos_ontology.projections.mapping_report_projector import (
+from kairos_ontology.projections.report_projector import (
     _build_entity_view,
     _build_report_data,
     _extract_domain_prefix,

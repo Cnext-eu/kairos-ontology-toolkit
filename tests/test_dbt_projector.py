@@ -9,7 +9,7 @@ import pytest
 import yaml
 from rdflib import Graph
 
-from kairos_ontology.projections.dbt_projector import (
+from kairos_ontology.projections.medallion_dbt_projector import (
     _camel_to_snake,
     _parse_bronze,
     _parse_skos_mappings,

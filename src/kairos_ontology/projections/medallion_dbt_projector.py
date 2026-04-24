@@ -719,7 +719,7 @@ def _gen_gold_models(
     ``GoldTableDef`` objects, then renders each as a dbt SQL model that
     reads from the corresponding silver model via ``ref()``.
     """
-    from .gold_projector import build_gold_tables, GoldTableDef
+    from .medallion_gold_projector import build_gold_tables, GoldTableDef
 
     gold_tables = build_gold_tables(
         classes, graph, namespace, shapes_dir, ontology_name, gold_ext_path,
@@ -843,7 +843,7 @@ def _gen_gold_schema_yaml(
     meta: dict,
 ) -> dict[str, str]:
     """Generate ``_gold_models.yml`` with column descriptions and tests."""
-    from .gold_projector import build_gold_tables
+    from .medallion_gold_projector import build_gold_tables
 
     gold_tables = build_gold_tables(
         classes, graph, namespace, shapes_dir, ontology_name, gold_ext_path,

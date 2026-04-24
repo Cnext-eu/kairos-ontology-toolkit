@@ -269,7 +269,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
 
         # After all domains: generate master ERD for silver target
         if target_name == "silver" and total_files > 0:
-            from .projections.silver_projector import generate_master_erd, render_mermaid_svg
+            from .projections.medallion_silver_projector import generate_master_erd, render_mermaid_svg
             dbt_output = output_path / "medallion" / "dbt"
             hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
             master_mmd = generate_master_erd(dbt_output, hub_name=hub_name)
@@ -298,8 +298,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
 
         # After all domains: generate master gold ERD
         if target_name == "gold" and total_files > 0:
-            from .projections.gold_projector import generate_master_gold_erd
-            from .projections.silver_projector import render_mermaid_svg
+            from .projections.medallion_gold_projector import generate_master_gold_erd
+            from .projections.medallion_silver_projector import render_mermaid_svg
             gold_output = output_path / "medallion" / "gold"
             hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
             master_mmd = generate_master_gold_erd(gold_output, hub_name=hub_name)
@@ -332,7 +332,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         for onto_info in ontology_graphs:
             onto_ns = namespace or _auto_detect_namespace(onto_info["graph"])
             if onto_ns:
-                from .projections.mapping_report_projector import (
+                from .projections.report_projector import (
                     _extract_ontology_properties,
                 )
                 domain_classes = _extract_ontology_properties(
@@ -340,7 +340,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 )
                 merged_classes.update(domain_classes)
 
-        from .projections.mapping_report_projector import generate_mapping_report
+        from .projections.report_projector import generate_mapping_report
         report_artifacts = generate_mapping_report(
             ontology_classes=merged_classes,
             sources_dir=sources_dir,
@@ -608,7 +608,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
     # Generate based on target using full-featured projector classes
     # Pass ontology_name so each projector can create domain-specific filenames
     if target == 'dbt':
-        from .projections.dbt_projector import generate_dbt_artifacts
+        from .projections.medallion_dbt_projector import generate_dbt_artifacts
         return generate_dbt_artifacts(
             classes, graph, template_base / "dbt", namespace, shapes_dir,
             ontology_name, ontology_metadata=meta,
@@ -640,7 +640,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             ontology_name, ontology_metadata=meta,
         )
     elif target == 'silver':
-        from .projections.silver_projector import generate_silver_artifacts
+        from .projections.medallion_silver_projector import generate_silver_artifacts
         return generate_silver_artifacts(
             classes=classes,
             graph=graph,
@@ -651,7 +651,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             ontology_metadata=meta,
         )
     elif target == 'gold':
-        from .projections.gold_projector import generate_gold_artifacts
+        from .projections.medallion_gold_projector import generate_gold_artifacts
         return generate_gold_artifacts(
             classes=classes,
             graph=graph,

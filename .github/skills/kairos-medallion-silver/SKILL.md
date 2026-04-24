@@ -20,7 +20,7 @@ The projection is governed by two rule sets:
   `kairos-ext:` annotations in a separate `*-silver-ext.ttl` file (R15 — domain ontologies
   must remain free of physical storage concerns).
 - **S1-S8** — Silver Fabric Warehouse-specific behaviours encoded in the silver projector
-  (`silver_projector.py`). These rules adapt the common annotations for the physical
+  (`medallion_silver_projector.py`). These rules adapt the common annotations for the physical
   constraints and conventions of MS Fabric Warehouse / Spark SQL.
 
 ---
