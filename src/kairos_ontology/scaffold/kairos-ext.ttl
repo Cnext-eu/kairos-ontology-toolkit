@@ -146,3 +146,94 @@ kairos-ext:inlineRefThreshold a owl:AnnotationProperty ;
     rdfs:comment "Maximum number of business columns for a reference table to be inlined into the parent (S4). Default: 3."@en ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:integer .
+
+# ===========================================================================
+# Gold Layer Annotations (G1-G8)
+# ===========================================================================
+# Annotation properties for the gold-layer projection (Power BI star schema).
+# Rules G1-G8 generate dimensional models optimised for DirectLake on Fabric
+# Warehouse.  These annotations belong in a separate gold extension file
+# (e.g. customer-gold-ext.ttl) alongside the silver extension.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Gold — Ontology-level annotations
+# ---------------------------------------------------------------------------
+
+kairos-ext:goldSchema a owl:AnnotationProperty ;
+    rdfs:label "gold schema"@en ;
+    rdfs:comment "Target Fabric Warehouse schema name for the gold layer (G1). Default: gold_{domain}."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
+kairos-ext:generateDateDimension a owl:AnnotationProperty ;
+    rdfs:label "generate date dimension"@en ;
+    rdfs:comment "If true, auto-generate a dim_date table with YYYYMMDD integer key and calendar hierarchy. Default: true."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# Gold — Class-level annotations
+# ---------------------------------------------------------------------------
+
+kairos-ext:goldTableType a owl:AnnotationProperty ;
+    rdfs:label "gold table type"@en ;
+    rdfs:comment "Override automatic star-schema classification (G1). Values: 'fact', 'dimension', 'bridge'."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:goldTableName a owl:AnnotationProperty ;
+    rdfs:label "gold table name"@en ;
+    rdfs:comment "Explicit gold table name override (without dim_/fact_ prefix — prefix is auto-added by G2)."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:goldExclude a owl:AnnotationProperty ;
+    rdfs:label "gold exclude"@en ;
+    rdfs:comment "If true, exclude this class from the gold layer projection entirely."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# Gold — Property-level annotations
+# ---------------------------------------------------------------------------
+
+kairos-ext:goldColumnName a owl:AnnotationProperty ;
+    rdfs:label "gold column name"@en ;
+    rdfs:comment "Column name override in gold table. Bypasses camel-to-snake conversion."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:goldDataType a owl:AnnotationProperty ;
+    rdfs:label "gold data type"@en ;
+    rdfs:comment "SQL data type override for gold layer (G8). E.g. 'INT', 'DECIMAL(18,2)'."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:measureExpression a owl:AnnotationProperty ;
+    rdfs:label "measure expression"@en ;
+    rdfs:comment "DAX measure expression for Power BI (e.g. 'SUM([amount])'). Property becomes a measure, not a column."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:measureFormatString a owl:AnnotationProperty ;
+    rdfs:label "measure format string"@en ;
+    rdfs:comment "DAX format string for the measure (e.g. '$#,##0.00', '0.0%')."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:hierarchyName a owl:AnnotationProperty ;
+    rdfs:label "hierarchy name"@en ;
+    rdfs:comment "Name of the Power BI hierarchy this property belongs to (G5). E.g. 'Geography'."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:hierarchyLevel a owl:AnnotationProperty ;
+    rdfs:label "hierarchy level"@en ;
+    rdfs:comment "Level order within the hierarchy (G5). 1 = top level."@en ;
+    rdfs:range xsd:integer .
+
+kairos-ext:degenerateDimension a owl:AnnotationProperty ;
+    rdfs:label "degenerate dimension"@en ;
+    rdfs:comment "If true, keep this dimension attribute directly on the fact table instead of a separate dimension (G1)."@en ;
+    rdfs:range xsd:boolean .
+
+kairos-ext:rolePlayingAs a owl:AnnotationProperty ;
+    rdfs:label "role playing as"@en ;
+    rdfs:comment "Space-separated role names for role-playing dimension usage (e.g. 'order_date ship_date'). Each role creates a separate relationship in the semantic model."@en ;
+    rdfs:range xsd:string .

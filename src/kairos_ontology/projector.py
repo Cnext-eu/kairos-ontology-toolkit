@@ -10,10 +10,10 @@ from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 from .projections.uri_utils import extract_local_name
 
-VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "report"]
+VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report"]
 
 # Targets that live under output/medallion/ (medallion architecture outputs).
-_MEDALLION_TARGETS = {"dbt", "silver"}
+_MEDALLION_TARGETS = {"dbt", "silver", "gold"}
 
 # Targets processed after the per-domain loop (they span all domains).
 _POST_DOMAIN_TARGETS = {"report"}
@@ -192,6 +192,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             try:
                 # Generate artifacts for this specific ontology
                 # For silver: auto-discover *-silver-ext.ttl in extensions/ directory
+                # For gold: auto-discover *-gold-ext.ttl in extensions/ directory
                 ext_path: Optional[Path] = None
                 if target_name == "silver":
                     src_file: Path = onto_info["file"]
@@ -204,6 +205,19 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                     if not ext_path:
                         candidates = list(src_file.parent.glob(f"{onto_name}-silver-ext.ttl"))
                         candidates += list(src_file.parent.glob("*-silver-ext.ttl"))
+                        ext_path = candidates[0] if candidates else None
+                    if ext_path:
+                        print(f"  [{onto_name}] Using projection ext: {ext_path.name}")
+
+                elif target_name == "gold":
+                    src_file = onto_info["file"]
+                    if extensions_dir and extensions_dir.exists():
+                        candidates = list(extensions_dir.glob(f"{onto_name}-gold-ext.ttl"))
+                        candidates += list(extensions_dir.glob("*-gold-ext.ttl"))
+                        ext_path = candidates[0] if candidates else None
+                    if not ext_path:
+                        candidates = list(src_file.parent.glob(f"{onto_name}-gold-ext.ttl"))
+                        candidates += list(src_file.parent.glob("*-gold-ext.ttl"))
                         ext_path = candidates[0] if candidates else None
                     if ext_path:
                         print(f"  [{onto_name}] Using projection ext: {ext_path.name}")
@@ -265,6 +279,29 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             else:
                 print("  ℹ Mermaid CLI (mmdc) not found — SVG export skipped."
                       " Install: npm install -D @mermaid-js/mermaid-cli")
+
+        # After all domains: generate master gold ERD
+        if target_name == "gold" and total_files > 0:
+            from .projections.gold_projector import generate_master_gold_erd
+            from .projections.silver_projector import render_mermaid_svg
+            gold_output = output_path / "medallion" / "gold"
+            hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
+            master_mmd = generate_master_gold_erd(gold_output, hub_name=hub_name)
+            if master_mmd:
+                master_path = gold_output / "master-gold-erd.mmd"
+                master_path.write_text(master_mmd, encoding="utf-8")
+                total_files += 1
+                print(f"  ✓ Master Gold ERD written: gold/master-gold-erd.mmd")
+
+            svg_count = 0
+            if gold_output.exists():
+                for mmd_file in sorted(gold_output.rglob("*.mmd")):
+                    svg = render_mermaid_svg(mmd_file)
+                    if svg:
+                        svg_count += 1
+            if svg_count:
+                total_files += svg_count
+                print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
 
         print(f"  ✓ {target_name} projection completed: {total_files} total files\n")
 
@@ -586,6 +623,17 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
     elif target == 'silver':
         from .projections.silver_projector import generate_silver_artifacts
         return generate_silver_artifacts(
+            classes=classes,
+            graph=graph,
+            namespace=namespace,
+            shapes_dir=shapes_dir,
+            ontology_name=ontology_name or "domain",
+            projection_ext_path=projection_ext_path,
+            ontology_metadata=meta,
+        )
+    elif target == 'gold':
+        from .projections.gold_projector import generate_gold_artifacts
+        return generate_gold_artifacts(
             classes=classes,
             graph=graph,
             namespace=namespace,
