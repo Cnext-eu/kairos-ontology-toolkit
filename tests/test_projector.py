@@ -496,7 +496,7 @@ class TestProjector:
         output_dir = temp_dir / "output"
         
         # Manually call the DBT projector to avoid emoji encoding issues
-        from kairos_ontology.projections.dbt_projector import generate_dbt_artifacts
+        from kairos_ontology.projections.medallion_dbt_projector import generate_dbt_artifacts
         
         # Load ontology
         graph = Graph()

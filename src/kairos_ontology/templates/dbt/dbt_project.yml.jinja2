@@ -31,3 +31,12 @@ models:
         +schema: 'silver_{{ domain.name }}'
         +tags: ['silver', '{{ domain.name }}']
 {%- endfor %}
+{%- if gold_domains %}
+    gold:
+      +materialized: table
+{%- for domain in gold_domains %}
+      {{ domain.name }}:
+        +schema: 'gold_{{ domain.name }}'
+        +tags: ['gold', '{{ domain.name }}']
+{%- endfor %}
+{%- endif %}

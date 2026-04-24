@@ -55,7 +55,17 @@ This updates:
 - `.github/copilot-instructions.md`
 - `.github/skills/*/SKILL.md`
 
-### Step 3 — Reinstall hub dependencies
+### Step 3 — Restart Copilot to load updated skills
+
+After refreshing managed files, the `.github/skills/` files on disk have
+changed but Copilot's in-memory skill cache is stale.
+
+1. Type `/exit` in the Copilot CLI to quit the current session.
+2. Restart Copilot (`copilot` or your usual launch command).
+
+This ensures new or updated skills are available immediately.
+
+### Step 4 — Reinstall hub dependencies
 
 Since the hub's `pyproject.toml` points to `@main`, reinstalling picks up
 the latest:
@@ -66,7 +76,7 @@ pip install -e . --force-reinstall --no-deps
 
 No `pyproject.toml` edit is needed — it always tracks `main`.
 
-### Step 4 — Commit
+### Step 5 — Commit
 
 ```bash
 git add .github/ pyproject.toml

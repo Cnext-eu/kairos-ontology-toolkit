@@ -9,7 +9,7 @@ import pytest
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
-from kairos_ontology.projections.silver_projector import (
+from kairos_ontology.projections.medallion_silver_projector import (
     ColumnDef,
     TableDef,
     _camel_to_snake,

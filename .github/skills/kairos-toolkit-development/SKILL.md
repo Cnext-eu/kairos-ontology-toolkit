@@ -23,11 +23,14 @@ src/kairos_ontology/
 ├── projector.py             # Orchestrates projection generation
 ├── catalog_utils.py         # OASIS XML catalog import resolution
 ├── projections/             # One module per projection target
-│   ├── dbt_projector.py
+│   ├── medallion_dbt_projector.py
+│   ├── medallion_silver_projector.py
+│   ├── medallion_gold_projector.py
 │   ├── neo4j_projector.py
 │   ├── azure_search_projector.py
 │   ├── a2ui_projector.py
 │   ├── prompt_projector.py
+│   ├── report_projector.py
 │   └── skos_utils.py        # SKOS synonym parsing
 ├── scaffold/                # Templates + static files for init/new-repo
 │   ├── copilot-instructions.md
