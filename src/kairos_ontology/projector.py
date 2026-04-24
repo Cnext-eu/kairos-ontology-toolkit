@@ -165,8 +165,11 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             continue
         print(f"📦 Generating {target_name} projection...")
         # Medallion targets go under output/medallion/; others directly under output/
+        # Silver artifacts are consolidated into the dbt project tree
         if target_name in _MEDALLION_TARGETS:
-            target_output = output_path / "medallion" / target_name
+            target_output = output_path / "medallion" / (
+                "dbt" if target_name == "silver" else target_name
+            )
         else:
             target_output = output_path / target_name
         target_output.mkdir(parents=True, exist_ok=True)
@@ -237,21 +240,25 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         # After all domains: generate master ERD for silver target
         if target_name == "silver" and total_files > 0:
             from .projections.silver_projector import generate_master_erd, render_mermaid_svg
-            silver_output = output_path / "medallion" / "silver"
+            dbt_output = output_path / "medallion" / "dbt"
             hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
-            master_mmd = generate_master_erd(silver_output, hub_name=hub_name)
+            master_mmd = generate_master_erd(dbt_output, hub_name=hub_name)
             if master_mmd:
-                master_path = silver_output / "master-erd.mmd"
+                diagrams_dir = dbt_output / "docs" / "diagrams"
+                diagrams_dir.mkdir(parents=True, exist_ok=True)
+                master_path = diagrams_dir / "master-erd.mmd"
                 master_path.write_text(master_mmd, encoding="utf-8")
                 total_files += 1
-                print(f"  ✓ Master ERD written: silver/master-erd.mmd")
+                print(f"  ✓ Master ERD written: dbt/docs/diagrams/master-erd.mmd")
 
             # Render all .mmd files to SVG via Mermaid CLI (if available)
             svg_count = 0
-            for mmd_file in sorted(silver_output.rglob("*.mmd")):
-                svg = render_mermaid_svg(mmd_file)
-                if svg:
-                    svg_count += 1
+            diagrams_root = dbt_output / "docs" / "diagrams"
+            if diagrams_root.exists():
+                for mmd_file in sorted(diagrams_root.rglob("*.mmd")):
+                    svg = render_mermaid_svg(mmd_file)
+                    if svg:
+                        svg_count += 1
             if svg_count:
                 total_files += svg_count
                 print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")

@@ -375,23 +375,23 @@ def test_junction_table_generated():
 # ---------------------------------------------------------------------------
 
 def test_master_erd_merges_domains(tmp_path):
-    # Simulate two domain ERD files in output/silver/
-    silver_out = tmp_path / "silver"
-    (silver_out / "customer").mkdir(parents=True)
-    (silver_out / "order").mkdir(parents=True)
+    # Simulate two domain ERD files in dbt/docs/diagrams/
+    dbt_out = tmp_path / "dbt"
+    (dbt_out / "docs" / "diagrams" / "customer").mkdir(parents=True)
+    (dbt_out / "docs" / "diagrams" / "order").mkdir(parents=True)
 
-    (silver_out / "customer" / "customer-erd.mmd").write_text(
+    (dbt_out / "docs" / "diagrams" / "customer" / "customer-erd.mmd").write_text(
         "erDiagram\n    %% Silver ERD: silver_customer / customer\n\n"
         "    CUSTOMER {\n        NVARCHAR(36) customer_sk\n    }\n",
         encoding="utf-8",
     )
-    (silver_out / "order" / "order-erd.mmd").write_text(
+    (dbt_out / "docs" / "diagrams" / "order" / "order-erd.mmd").write_text(
         "erDiagram\n    %% Silver ERD: silver_order / order\n\n"
         "    ORDER {\n        NVARCHAR(36) order_sk\n    }\n",
         encoding="utf-8",
     )
 
-    result = generate_master_erd(silver_out, hub_name="test-hub")
+    result = generate_master_erd(dbt_out, hub_name="test-hub")
     assert result is not None
     assert result.startswith("erDiagram")
     assert "CUSTOMER" in result
@@ -402,29 +402,29 @@ def test_master_erd_merges_domains(tmp_path):
 
 
 def test_master_erd_returns_none_when_empty(tmp_path):
-    silver_out = tmp_path / "silver"
-    silver_out.mkdir()
-    assert generate_master_erd(silver_out) is None
+    dbt_out = tmp_path / "dbt"
+    dbt_out.mkdir()
+    assert generate_master_erd(dbt_out) is None
 
 
 def test_master_erd_excludes_own_previous_output(tmp_path):
     """Regression: master-erd.mmd must not be included in its own merge."""
-    silver_out = tmp_path / "silver"
-    (silver_out / "customer").mkdir(parents=True)
-    (silver_out / "customer" / "customer-erd.mmd").write_text(
+    dbt_out = tmp_path / "dbt"
+    (dbt_out / "docs" / "diagrams" / "customer").mkdir(parents=True)
+    (dbt_out / "docs" / "diagrams" / "customer" / "customer-erd.mmd").write_text(
         "erDiagram\n    %% Silver ERD: silver_customer / customer\n\n"
         "    CUSTOMER {\n        NVARCHAR_36 customer_sk\n    }\n",
         encoding="utf-8",
     )
     # Simulate a leftover master from a previous run
-    (silver_out / "master-erd.mmd").write_text(
+    (dbt_out / "docs" / "diagrams" / "master-erd.mmd").write_text(
         "erDiagram\n    %% Master ERD — hub (all domains)\n\n"
         "    %% --- Domain: customer ---\n"
         "    CUSTOMER {\n        NVARCHAR_36 customer_sk\n    }\n",
         encoding="utf-8",
     )
 
-    result = generate_master_erd(silver_out, hub_name="hub")
+    result = generate_master_erd(dbt_out, hub_name="hub")
     assert result is not None
     # CUSTOMER should appear exactly once (not duplicated from the old master)
     assert result.count("CUSTOMER {") == 1

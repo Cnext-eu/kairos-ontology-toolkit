@@ -235,15 +235,19 @@ python -m kairos_ontology project \
 python -m kairos_ontology project --target silver
 ```
 
-Artifacts are written to `output/medallion/silver/{DOMAIN}/`:
+Artifacts are written to the dbt project tree under `output/medallion/dbt/`:
+
+**DDL & constraints** (in `analyses/{DOMAIN}/`):
 - `{DOMAIN}-ddl.sql` — CREATE TABLE statements (Spark SQL / MS Fabric Warehouse compatible)
 - `{DOMAIN}-alter.sql` — ALTER TABLE statements for UNIQUE and FK constraints
+
+**ERD diagrams** (in `docs/diagrams/{DOMAIN}/`):
 - `{DOMAIN}-erd.mmd` — Mermaid `erDiagram` for this domain
 - `{DOMAIN}-erd.svg` — SVG render of the ERD (requires Mermaid CLI)
 
 **Automatically generated after all domains are projected:**
-- `output/medallion/silver/master-erd.mmd` — cross-domain master ERD (all tables + FK relationships)
-- `output/medallion/silver/master-erd.svg` — SVG render of the master ERD
+- `output/medallion/dbt/docs/diagrams/master-erd.mmd` — cross-domain master ERD (all tables + FK relationships)
+- `output/medallion/dbt/docs/diagrams/master-erd.svg` — SVG render of the master ERD
 
 The master ERD merges every `*-erd.mmd` into a single diagram with one section per domain.
 It is the primary artifact to review the full silver layer data model at a glance.
@@ -279,7 +283,7 @@ Key things to verify:
 
 ### Check master ERD
 
-Open `output/medallion/silver/master-erd.mmd` in a
+Open `output/medallion/dbt/docs/diagrams/master-erd.mmd` in a
 Mermaid viewer or the Kairos web UI.
 
 Verify:
@@ -288,13 +292,13 @@ Verify:
 - No orphaned tables
 
 > **Tip**: The master ERD is the best way to review the full silver layer model with
-> a client. Share `output/medallion/silver/master-erd.mmd` for stakeholder review.
+> a client. Share `output/medallion/dbt/docs/diagrams/master-erd.mmd` for stakeholder review.
 
 ### Update master ERD manually (if needed)
 
 The master ERD is auto-generated from per-domain ERDs. If you need to add cross-domain
 relationships that aren't captured by FK annotations, add them directly to
-`output/medallion/silver/master-erd.mmd` after generation:
+`output/medallion/dbt/docs/diagrams/master-erd.mmd` after generation:
 
 ```
 erDiagram

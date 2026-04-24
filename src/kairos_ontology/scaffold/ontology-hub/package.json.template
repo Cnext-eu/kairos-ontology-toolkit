@@ -5,6 +5,6 @@
     "@mermaid-js/mermaid-cli": "^11.4.0"
   },
   "scripts": {
-    "render-erd": "mmdc -i ontology-hub/output/medallion/silver/master-erd.mmd -o ontology-hub/output/medallion/silver/master-erd.svg"
+    "render-erd": "mmdc -i ontology-hub/output/medallion/dbt/docs/diagrams/master-erd.mmd -o ontology-hub/output/medallion/dbt/docs/diagrams/master-erd.svg"
   }
 }

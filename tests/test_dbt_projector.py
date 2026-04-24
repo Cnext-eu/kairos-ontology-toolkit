@@ -415,6 +415,7 @@ class TestGenerateDbtArtifacts:
         assert proj["name"] == "client_project"
         assert "staging" in proj["models"]["client_project"]
         assert "silver" in proj["models"]["client_project"]
+        assert proj.get("docs-paths") == ["docs"]
 
     def test_no_bronze_generates_silver_only(self, classes, ontology_graph, template_dir):
         """Without bronze dir, only silver models + schema are generated."""

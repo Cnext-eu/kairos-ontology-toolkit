@@ -556,11 +556,12 @@ def generate_silver_artifacts(
                 f"    {ref_tbl_name} ||--o{{ {tbl.name.upper()} : \"{label}\""
             )
 
-    domain_dir = f"{ontology_name}/"
+    # DDL/ALTER → analyses/{domain}/ (dbt non-DAG reference SQL)
+    # ERD → docs/diagrams/{domain}/ (dbt supplemental docs)
     return {
-        f"{domain_dir}{ontology_name}-ddl.sql": "\n".join(ddl_lines),
-        f"{domain_dir}{ontology_name}-alter.sql": "\n".join(alter_lines),
-        f"{domain_dir}{ontology_name}-erd.mmd": "\n".join(mmd_lines),
+        f"analyses/{ontology_name}/{ontology_name}-ddl.sql": "\n".join(ddl_lines),
+        f"analyses/{ontology_name}/{ontology_name}-alter.sql": "\n".join(alter_lines),
+        f"docs/diagrams/{ontology_name}/{ontology_name}-erd.mmd": "\n".join(mmd_lines),
     }
 
 
@@ -1014,22 +1015,26 @@ def _sort_tables(tables: list[TableDef]) -> list[TableDef]:
     return sorted(tables, key=lambda t: order.get(t.table_type, 0))
 
 
-def generate_master_erd(silver_output_path: Path, hub_name: str = "master") -> Optional[str]:
+def generate_master_erd(dbt_output_path: Path, hub_name: str = "master") -> Optional[str]:
     """Merge all per-domain ``*-erd.mmd`` files into one cross-domain master ERD.
 
-    Reads every ``<domain>/<domain>-erd.mmd`` file under *silver_output_path*,
-    strips the per-file ``erDiagram`` header and domain comment, then re-emits
-    them under a single ``erDiagram`` block with a section comment per domain.
+    Reads every ``docs/diagrams/<domain>/<domain>-erd.mmd`` file under
+    *dbt_output_path*, strips the per-file ``erDiagram`` header and domain
+    comment, then re-emits them under a single ``erDiagram`` block with a
+    section comment per domain.
 
     Args:
-        silver_output_path: Path to the ``output/silver/`` directory.
+        dbt_output_path: Path to the ``output/medallion/dbt/`` directory.
         hub_name: Label used in the master ERD header comment.
 
     Returns:
         Mermaid ERD string, or ``None`` if no domain ERDs were found.
     """
+    diagrams_dir = dbt_output_path / "docs" / "diagrams"
+    if not diagrams_dir.exists():
+        return None
     domain_erds: list[tuple[str, str]] = []
-    for mmd_file in sorted(silver_output_path.rglob("*-erd.mmd")):
+    for mmd_file in sorted(diagrams_dir.rglob("*-erd.mmd")):
         if mmd_file.name == "master-erd.mmd":
             continue
         domain = mmd_file.parent.name
