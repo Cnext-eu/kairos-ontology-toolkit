@@ -62,13 +62,13 @@ on Microsoft Fabric Warehouse.
 
 ```bash
 # Generate gold artifacts for all domains
-python -m kairos_ontology project --target gold
+python -m kairos_ontology project --target powerbi
 
 # With explicit paths
 python -m kairos_ontology project \
   --ontologies ontology-hub/model/ontologies \
   --output ontology-hub/output \
-  --target gold
+  --target powerbi
 ```
 
 ## Extension File
@@ -139,7 +139,7 @@ domain:hasOrderAmount
 ## Output Artifacts
 
 ```
-output/medallion/gold/{domain}/
+output/medallion/powerbi/{domain}/
 ├── {domain}-gold-ddl.sql              # Star schema CREATE TABLEs
 ├── {domain}-gold-alter.sql            # FK constraint documentation
 ├── {domain}-gold-erd.mmd              # Star schema Mermaid ERD
@@ -163,7 +163,7 @@ output/medallion/gold/{domain}/
 - [ ] Annotate each class with `goldTableType` (or rely on auto-classification)
 - [ ] Add `measureExpression` for DAX measures on numeric properties
 - [ ] Add `hierarchyName` / `hierarchyLevel` for drill-down hierarchies
-- [ ] Run `python -m kairos_ontology project --target gold`
-- [ ] Review star schema ERD in `output/medallion/gold/{domain}/`
+- [ ] Run `python -m kairos_ontology project --target powerbi`
+- [ ] Review star schema ERD in `output/medallion/powerbi/{domain}/`
 - [ ] Import TMDL into Power BI Desktop or deploy to Fabric workspace
 - [ ] Configure RLS roles in Power BI service (if GDPR dimensions exist)

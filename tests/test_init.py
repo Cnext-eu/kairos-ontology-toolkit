@@ -26,7 +26,7 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/integration/sources").is_dir()
             assert Path("ontology-hub/model/mappings").is_dir()
             assert Path("ontology-hub/output/medallion/dbt").is_dir()
-            assert Path("ontology-hub/output/medallion/gold").is_dir()
+            assert Path("ontology-hub/output/medallion/powerbi").is_dir()
             assert Path("ontology-hub/output/medallion/dbt").is_dir()
             assert Path("ontology-hub/output/neo4j").is_dir()
             assert Path("ontology-hub/output/azure-search").is_dir()

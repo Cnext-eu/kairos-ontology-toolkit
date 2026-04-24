@@ -1,4 +1,21 @@
 <p align="center">
+<pre align="center">
+
+    $$\   $$\  $$$$$$\  $$$$$$\ $$$$$$$\   $$$$$$\   $$$$$$\
+    $$ | $$  |$$  __$$\ \_$$  _|$$  __$$\ $$  __$$\ $$  __$$\
+    $$ |$$  / $$ /  $$ |  $$ |  $$ |  $$ |$$ /  $$ |$$ /  \__|
+    $$$$$  /  $$$$$$$$ |  $$ |  $$$$$$$  |$$ |  $$ |\$$$$$$\
+    $$  $$<   $$  __$$ |  $$ |  $$  __$$< $$ |  $$ | \____$$\
+    $$ |\$$\  $$ |  $$ |  $$ |  $$ |  $$ |$$ |  $$ |$$\   $$ |
+    $$ | \$$\ $$ |  $$ |$$$$$$\ $$ |  $$ | $$$$$$  |\$$$$$$  |
+    \__|  \__|\__|  \__|\______|\__|  \__| \______/  \______/
+
+              O N T O L O G Y   T O O L K I T
+
+</pre>
+</p>
+
+<p align="center">
   <strong>Kairos Ontology Toolkit</strong><br>
   <em>Part of the <a href="https://github.com/Cnext-eu">Kairos Community Edition</a> by Cnext.eu</em>
 </p>
@@ -22,7 +39,7 @@ built-in validation and a single CLI command.
 ## ✨ Key Features
 
 - 🔍 **3-Level Validation** — Syntax (RDF/OWL), SHACL constraints, and SPARQL consistency checks
-- 🏗️ **6 Projection Targets** — Generate downstream artifacts from a single ontology source
+- 🏗️ **8 Projection Targets** — Generate downstream artifacts from a single ontology source
 - 🥈 **Silver Layer DDL** — Full CREATE TABLE generation with SCD2, GDPR satellites, junction tables, and ERD diagrams
 - 📦 **Hub Scaffolding** — `kairos init` bootstraps a complete ontology repository in seconds
 - 🤖 **AI Chat Service** — FastAPI + GitHub Copilot SDK for conversational ontology management
@@ -53,11 +70,13 @@ python -m kairos_ontology init my-ontology-hub
 | Target | Output | Use Case |
 |--------|--------|----------|
 | **silver** | `CREATE TABLE` DDL, `ALTER TABLE`, Mermaid ERD + SVG | Data warehouse physical layer |
-| **dbt** | SQL models + `schema.yml` | dbt-based transformation pipelines |
+| **powerbi** | Star schema DDL, TMDL, DAX measures, ERD | Power BI / MS Fabric gold layer |
+| **dbt** | SQL models + `schema.yml` (staging + silver + gold) | dbt-based transformation pipelines |
 | **neo4j** | Cypher `CREATE` statements | Knowledge graph databases |
 | **azure-search** | JSON index definitions | Azure AI Search |
 | **a2ui** | JSON Schema messages | UI generation / form builders |
 | **prompt** | JSON context documents | LLM prompt engineering |
+| **report** | HTML mapping reports | Source-to-domain coverage review |
 
 Each target produces per-domain output — deploy and version domains independently.
 
