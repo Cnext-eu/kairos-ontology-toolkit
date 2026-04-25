@@ -143,6 +143,7 @@ output/medallion/powerbi/{domain}/
 ├── {domain}-gold-ddl.sql              # Star schema CREATE TABLEs
 ├── {domain}-gold-alter.sql            # FK constraint documentation
 ├── {domain}-gold-erd.mmd              # Star schema Mermaid ERD
+├── {domain}-gold-erd.svg              # SVG render (requires Mermaid CLI)
 ├── {domain}-gold-views.sql            # SCD2 framing views (WHERE is_current)
 ├── semantic-model/
 │   ├── definition.tmdl                # Model settings (DirectLake)
@@ -157,6 +158,30 @@ output/medallion/powerbi/{domain}/
     └── {domain}-measures.dax          # DAX measures
 ```
 
+**Automatically generated after all domains are projected:**
+- `output/medallion/powerbi/master-gold-erd.mmd` — cross-domain master gold ERD (all star schema tables + FK relationships)
+- `output/medallion/powerbi/master-gold-erd.svg` — SVG render of the master gold ERD
+
+The master gold ERD merges every `*-gold-erd.mmd` into a single diagram with one
+section per domain. It is the primary artifact to review the full gold layer star
+schema at a glance.
+
+### SVG export setup
+
+SVG rendering requires the Mermaid CLI (`mmdc`). If not installed, `.mmd` files are
+still generated but SVG export is skipped with an info message.
+
+```bash
+# Install in the hub repo (one-time)
+npm install
+
+# Or install globally
+npm install -g @mermaid-js/mermaid-cli
+```
+
+Hub repos scaffolded with `kairos-ontology new-repo` already include a `package.json`
+with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
+
 ## Checklist
 
 - [ ] Create `{domain}-gold-ext.ttl` in `model/extensions/`
@@ -165,5 +190,6 @@ output/medallion/powerbi/{domain}/
 - [ ] Add `hierarchyName` / `hierarchyLevel` for drill-down hierarchies
 - [ ] Run `python -m kairos_ontology project --target powerbi`
 - [ ] Review star schema ERD in `output/medallion/powerbi/{domain}/`
+- [ ] Check SVG renders were created (requires `mmdc` — see SVG export setup)
 - [ ] Import TMDL into Power BI Desktop or deploy to Fabric workspace
 - [ ] Configure RLS roles in Power BI service (if GDPR dimensions exist)
