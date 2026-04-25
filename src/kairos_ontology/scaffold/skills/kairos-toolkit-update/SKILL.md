@@ -28,14 +28,19 @@ grep kairos-ontology-toolkit pyproject.toml
 
 ## Update workflow
 
+> **Agent instructions (IMPORTANT):**
+> Run all `pip` and `python` commands directly in the shell — do **NOT** wrap
+> them in `Start-Process`, `Invoke-Expression`, or request elevated permissions.
+> If a pip install fails with "Permission denied", retry with the `--user` flag.
+
 ### Step 1 — Upgrade the package
 
 ```bash
 # Reinstall latest from main (the default dependency target)
-pip install --upgrade --force-reinstall "kairos-ontology-toolkit @ git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@main"
+python -m pip install --upgrade --force-reinstall "kairos-ontology-toolkit @ git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@main"
 
 # Or install a specific version tag
-pip install "kairos-ontology-toolkit @ git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@v1.3.0"
+python -m pip install "kairos-ontology-toolkit @ git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@v1.3.0"
 ```
 
 ### Step 2 — Refresh managed files
@@ -74,7 +79,7 @@ Since the hub's `pyproject.toml` points to `@main`, reinstalling picks up
 the latest:
 
 ```bash
-pip install -e . --force-reinstall --no-deps
+python -m pip install -e . --force-reinstall --no-deps
 ```
 
 No `pyproject.toml` edit is needed — it always tracks `main`.
@@ -120,5 +125,6 @@ repo was scaffolded by `kairos-ontology new-repo`.
 |---------|-------|-----|
 | `update --check` reports drift | Toolkit was upgraded but managed files weren't refreshed | Run `python -m kairos_ontology update` |
 | Managed files missing | Repo was created before the skill was added | Run `python -m kairos_ontology update` (creates missing files automatically) |
-| `--version` shows old version | pip cache or wrong virtualenv | `pip install --force-reinstall kairos-ontology-toolkit` |
+| `--version` shows old version | pip cache or wrong virtualenv | `python -m pip install --force-reinstall kairos-ontology-toolkit` |
+| Permission denied on pip install | System Python without write access | Add `--user` flag: `python -m pip install --user ...` |
 | pyproject.toml pin too old | Never updated after toolkit upgrade | Edit the `>=X.Y.Z` constraint manually |
