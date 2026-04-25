@@ -59,6 +59,7 @@ Output is generated into `ontology-hub/output/<target>/`:
 
 ```
 ontology-hub/output/
+├── projection-report.json              # run summary (always generated)
 ├── medallion/
 │   ├── dbt/customer/models/silver/
 │   │   ├── customer.sql
@@ -84,6 +85,42 @@ ontology-hub/output/
     ├── customer-context.json              # compact
     └── customer-context-detailed.json     # verbose
 ```
+
+## Projection report (`projection-report.json`)
+
+Every `kairos-ontology project` run writes `output/projection-report.json` with a
+machine-readable summary of everything that happened. Use it for CI/CD gates,
+dashboards, and debugging failed projections.
+
+### Report structure
+
+| Key | Description |
+|-----|-------------|
+| **toolkit_version** | Version of the toolkit that produced the report |
+| **generated_at** | ISO-8601 timestamp of the run |
+| **targets_requested** | List of targets that were run (e.g. `["dbt","silver","prompt"]`) |
+| **summary** | Aggregate counts — `domains_found`, `domains_loaded`, `domains_failed_to_load`, `total_files_generated`, `errors`, `warnings`, `skipped` |
+| **domains** | Per-domain load status: `file`, `triples`, `namespace`, `status` (`ok`/`error`), optional `error` message |
+| **projections** | Per-target × per-domain results: `status` (`ok`/`error`/`skipped`), `files` list on success, `error` + `traceback` on failure |
+| **post_steps** | Status of post-processing steps such as master ERD generation and SVG export |
+| **events** | Structured log entries with `level` (`info`/`warning`/`error`) and optional `domain` and `target` context |
+
+### Using the report in CI/CD
+
+```bash
+# Fail the pipeline if any projection error occurred
+python -c "
+import json, sys
+report = json.load(open('output/projection-report.json'))
+if report['summary']['errors'] > 0:
+    print(f'Projection failed with {report[\"summary\"][\"errors\"]} error(s)')
+    sys.exit(1)
+print('All projections succeeded')
+"
+```
+
+You can also check `summary.warnings` or inspect `projections` entries with
+`status == "skipped"` to enforce stricter quality gates.
 
 ## Property type mapping
 
