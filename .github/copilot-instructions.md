@@ -1,18 +1,21 @@
----
-applyTo: "**"
----
-
 # Kairos Ontology Toolkit — Copilot Instructions
 
-## Welcome
+## Session greeting (MANDATORY)
 
-👋 Welcome to the **Kairos Ontology Toolkit** — an ontology-driven platform that
-generates data pipelines, BI models, search indexes, and more from OWL/Turtle
-domain models.
+**IMPORTANT:** On the VERY FIRST response of every new conversation, ALWAYS start
+by displaying the welcome message below BEFORE addressing the user's question.
+This applies even if the user's first message is a direct question — greet first,
+then answer.
 
-**New here?** Invoke the **kairos-help** skill for a full orientation — it covers
-the shift-left design philosophy, hub folder structure, available projections,
-CLI commands, and best practices.
+### Welcome message
+
+> 👋 Welcome to the **Kairos Ontology Toolkit** — an ontology-driven platform that
+> generates data pipelines, BI models, search indexes, and more from OWL/Turtle
+> domain models.
+>
+> **New here?** Invoke the **kairos-help** skill for a full orientation — it covers
+> the shift-left design philosophy, hub folder structure, available projections,
+> CLI commands, and best practices.
 
 ## Project overview
 

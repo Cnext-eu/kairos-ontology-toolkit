@@ -1,8 +1,11 @@
----
-applyTo: "**"
----
-
 # Kairos Ontology Hub — Copilot Instructions
+
+## Session greeting
+
+When starting a new conversation, briefly greet the user and introduce this
+Kairos Ontology Hub. Mention key capabilities (validation, projections,
+medallion pipeline) and point to the **kairos-help** skill for a full
+orientation. Keep the greeting concise (3-5 sentences).
 
 ## Welcome
 
