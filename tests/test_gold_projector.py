@@ -19,6 +19,7 @@ from kairos_ontology.projections.medallion_gold_projector import (
     _mmd_type,
     _tmdl_guid,
     _to_pascal_case,
+    build_gold_tables,
     generate_gold_artifacts,
     generate_master_gold_erd,
     XSD_TO_GOLD_SQL,
@@ -732,3 +733,158 @@ class TestEdgeCases:
         ddl = result.get("test/test-gold-ddl.sql", "")
         assert "dim_widget" in ddl
         assert "fact_widget" not in ddl
+
+
+# ---------------------------------------------------------------------------
+# G5 — Class-per-table inheritance (default)
+# ---------------------------------------------------------------------------
+
+def _ontology_with_subclasses(extra_onto_annotations: str = "") -> tuple[Graph, list[dict]]:
+    """Ontology with Party (parent) → LegalEntity, SoleProprietorship (subtypes)."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Test"@en ;
+            owl:versionInfo "1.0" {extra_onto_annotations} .
+
+        ex:Party a owl:Class ; rdfs:label "Party"@en ; rdfs:comment "A party."@en .
+        ex:LegalEntity a owl:Class ;
+            rdfs:subClassOf ex:Party ;
+            rdfs:label "Legal Entity"@en ;
+            rdfs:comment "A legal entity."@en .
+        ex:SoleProprietorship a owl:Class ;
+            rdfs:subClassOf ex:Party ;
+            rdfs:label "Sole Proprietorship"@en ;
+            rdfs:comment "A sole proprietorship."@en .
+
+        ex:partyName a owl:DatatypeProperty ;
+            rdfs:domain ex:Party ;
+            rdfs:range xsd:string ;
+            rdfs:label "party name"@en .
+
+        ex:registrationNumber a owl:DatatypeProperty ;
+            rdfs:domain ex:LegalEntity ;
+            rdfs:range xsd:string ;
+            rdfs:label "registration number"@en .
+
+        ex:ownerName a owl:DatatypeProperty ;
+            rdfs:domain ex:SoleProprietorship ;
+            rdfs:range xsd:string ;
+            rdfs:label "owner name"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Party", "name": "Party", "label": "Party", "comment": ""},
+        {"uri": f"{BASE}LegalEntity", "name": "LegalEntity",
+         "label": "Legal Entity", "comment": ""},
+        {"uri": f"{BASE}SoleProprietorship", "name": "SoleProprietorship",
+         "label": "Sole Proprietorship", "comment": ""},
+    ]
+    return g, classes
+
+
+class TestClassPerTable:
+    """G5: Default class-per-table inheritance generates separate subtype tables."""
+
+    def test_subtypes_get_separate_tables(self):
+        """Each subclass produces its own gold table."""
+        g, classes = _ontology_with_subclasses()
+        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
+        table_names = {t.name for t in tables}
+        assert "dim_party" in table_names
+        assert "dim_legal_entity" in table_names
+        assert "dim_sole_proprietorship" in table_names
+
+    def test_subtype_pk_is_parent_sk(self):
+        """Subtype table PK is the parent's surrogate key (shared PK)."""
+        g, classes = _ontology_with_subclasses()
+        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
+        by_name = {t.name: t for t in tables}
+        le = by_name["dim_legal_entity"]
+        assert le.pk_column == "party_sk"
+
+    def test_subtype_has_fk_to_parent(self):
+        """Subtype table has FK constraint referencing parent table."""
+        g, classes = _ontology_with_subclasses()
+        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
+        by_name = {t.name: t for t in tables}
+        le = by_name["dim_legal_entity"]
+        fk_targets = [fk[1] for fk in le.fk_constraints]
+        assert any("dim_party" in t for t in fk_targets)
+
+    def test_subtype_has_own_properties_only(self):
+        """Subtype table contains only its own properties, not inherited ones."""
+        g, classes = _ontology_with_subclasses()
+        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
+        by_name = {t.name: t for t in tables}
+        le = by_name["dim_legal_entity"]
+        col_names = {c.name for c in le.columns}
+        assert "registration_number" in col_names
+        assert "party_name" not in col_names
+
+    def test_parent_has_shared_properties(self):
+        """Parent table retains its own (shared) properties."""
+        g, classes = _ontology_with_subclasses()
+        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
+        by_name = {t.name: t for t in tables}
+        party = by_name["dim_party"]
+        col_names = {c.name for c in party.columns}
+        assert "party_name" in col_names
+
+    def test_parent_has_no_discriminator(self):
+        """Parent table does NOT have a discriminator column in class-per-table mode."""
+        g, classes = _ontology_with_subclasses()
+        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
+        by_name = {t.name: t for t in tables}
+        party = by_name["dim_party"]
+        col_names = {c.name for c in party.columns}
+        assert "party_type" not in col_names
+
+    def test_ddl_contains_subtype_tables(self):
+        """DDL output includes CREATE TABLE for subtype tables."""
+        g, classes = _ontology_with_subclasses()
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        ddl = result.get("test/test-gold-ddl.sql", "")
+        assert "dim_legal_entity" in ddl
+        assert "dim_sole_proprietorship" in ddl
+
+
+class TestDiscriminatorOptIn:
+    """G5: Explicit discriminator strategy preserves old flattening behaviour."""
+
+    def test_discriminator_flattens_subtypes(self):
+        """With goldInheritanceStrategy 'discriminator', subtypes fold into parent."""
+        g, classes = _ontology_with_subclasses(
+            '; kairos-ext:goldInheritanceStrategy "discriminator"')
+        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
+        table_names = {t.name for t in tables}
+        assert "dim_party" in table_names
+        assert "dim_legal_entity" not in table_names
+        assert "dim_sole_proprietorship" not in table_names
+
+    def test_discriminator_adds_discriminator_col(self):
+        """Discriminator strategy adds a type column on the parent."""
+        g, classes = _ontology_with_subclasses(
+            '; kairos-ext:goldInheritanceStrategy "discriminator"')
+        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
+        by_name = {t.name: t for t in tables}
+        party = by_name["dim_party"]
+        col_names = {c.name for c in party.columns}
+        assert "party_type" in col_names
+
+    def test_discriminator_merges_subtype_props(self):
+        """Discriminator strategy merges subtype properties into parent table."""
+        g, classes = _ontology_with_subclasses(
+            '; kairos-ext:goldInheritanceStrategy "discriminator"')
+        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
+        by_name = {t.name: t for t in tables}
+        party = by_name["dim_party"]
+        col_names = {c.name for c in party.columns}
+        assert "registration_number" in col_names
+        assert "owner_name" in col_names

@@ -761,7 +761,13 @@ def _gen_gold_models(
 
         # Build silver ref(s)
         source_ctes = []
-        if tbl.source_class_uri:
+        if tbl.is_subtype_cpt and tbl.parent_class_uri:
+            # Class-per-table subtype: silver uses discriminator, so source
+            # from parent's silver table (subtype is folded into parent in silver)
+            silver_name = _silver_model_name_for_class(
+                tbl.parent_class_uri, classes)
+            source_ctes.append({"model": silver_name, "alias": silver_name})
+        elif tbl.source_class_uri:
             silver_name = _silver_model_name_for_class(tbl.source_class_uri, classes)
             source_ctes.append({"model": silver_name, "alias": silver_name})
 

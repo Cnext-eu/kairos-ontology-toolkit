@@ -11,7 +11,7 @@ Gold Power BI rules G1–G8 control star-schema-specific output behaviour:
   G2 — dim_/fact_/bridge_ prefixes for Power BI naming conventions
   G3 — SCD Type 2 on dimensions (valid_from, valid_to, is_current)
   G4 — GDPR satellite → secured dimension + RLS role
-  G5 — Materialized hierarchies (flatten OWL inheritance into drill-down columns)
+  G5 — Class-per-table inheritance (default: subclasses → separate tables with shared PK/FK)
   G6 — Reference data → shared dimension with dim_ prefix
   G7 — Aggregate tables (deferred — placeholder)
   G8 — Power BI optimised types (BIT, INT date keys, INT surrogate keys)
@@ -186,6 +186,8 @@ class GoldTableDef:
         self.gdpr_parent_table: Optional[str] = None
         self.source_class_uri: Optional[str] = None
         self.source_class_label: str = ""
+        self.is_subtype_cpt: bool = False
+        self.parent_class_uri: Optional[str] = None
         self.measures: list[GoldColumnDef] = []
         self.hierarchies: dict[str, list[GoldColumnDef]] = {}
         self.perspectives: set[str] = set()
@@ -411,6 +413,9 @@ def build_gold_tables(
                              True)
     gen_time_intel = _bool_val(merged, onto_uri,
                                KAIROS_EXT.generateTimeIntelligence, False)
+    default_inheritance = _str_val(merged, onto_uri,
+                                   KAIROS_EXT.goldInheritanceStrategy,
+                                   "class-per-table")
 
     # Filter to domain-owned classes only
     domain_classes = [c for c in classes if c["uri"].startswith(namespace)]
@@ -429,7 +434,7 @@ def build_gold_tables(
     # G1 — Classify tables
     classifications = _classify_tables(merged, domain_classes, class_uris)
 
-    # Track subtype relationships for G5 hierarchy flattening
+    # Track subtype relationships for G5 inheritance handling
     subtype_parents: dict[str, str] = {}
     folded_subtypes: dict[str, list[str]] = {}
     for cls_info in domain_classes:
@@ -444,6 +449,11 @@ def build_gold_tables(
                 if cls_info["name"] not in existing:
                     existing.append(cls_info["name"])
                 break
+
+    def _class_inheritance(cls_uri: URIRef) -> str:
+        """Return inheritance strategy for a class (per-class override or default)."""
+        return _str_val(merged, cls_uri, KAIROS_EXT.goldInheritanceStrategy,
+                        default_inheritance)
 
     def gold_table_name(cls_uri_arg: URIRef, local: str, table_type: str) -> str:
         override = _str_val(merged, cls_uri_arg, KAIROS_EXT.goldTableName)
@@ -467,15 +477,27 @@ def build_gold_tables(
     # Build tables
     tables: dict[str, GoldTableDef] = {}
 
+    # Determine which subtypes use discriminator (fold) vs class-per-table (separate)
+    disc_parents: set[str] = set()  # parents using discriminator strategy
+    for parent_uri_str, subtype_names in folded_subtypes.items():
+        parent_strategy = _class_inheritance(URIRef(parent_uri_str))
+        if parent_strategy == "discriminator":
+            disc_parents.add(parent_uri_str)
+
     for cls_info in domain_classes:
         cls_uri = URIRef(cls_info["uri"])
         local = cls_info["name"]
         uri_str = cls_info["uri"]
 
+        # G5: skip subtypes only when parent uses discriminator strategy
         if uri_str in subtype_parents:
-            continue
+            parent_uri = subtype_parents[uri_str]
+            if parent_uri in disc_parents:
+                continue  # will be merged in post-pass
 
         table_type = classifications.get(uri_str, "dimension")
+        is_subtype_cpt = uri_str in subtype_parents and \
+            subtype_parents[uri_str] not in disc_parents
         tbl_name = gold_table_name(cls_uri, local, table_type)
 
         tbl = GoldTableDef(tbl_name, schema_name, table_type)
@@ -495,7 +517,26 @@ def build_gold_tables(
             _str_val(merged, cls_uri, KAIROS_EXT.incrementalColumn) or None
         )
 
-        if not is_gdpr:
+        if is_subtype_cpt:
+            # G5 class-per-table: PK = parent's SK, also FK to parent table
+            parent_uri_str = subtype_parents[uri_str]
+            parent_cls_uri = URIRef(parent_uri_str)
+            parent_local = _local_name(parent_uri_str)
+            parent_base = base_table_name(parent_cls_uri, parent_local)
+            parent_type = classifications.get(parent_uri_str, "dimension")
+            parent_tbl_name = gold_table_name(parent_cls_uri, parent_local,
+                                              parent_type)
+            sk_name = f"{parent_base}_sk"
+            tbl.columns.append(GoldColumnDef(
+                sk_name, "INT", "Int64", nullable=False,
+                comment=f"PK/FK → {parent_tbl_name} (G5 class-per-table)"))
+            tbl.pk_column = sk_name
+            tbl.fk_constraints.append(
+                (sk_name, f"{schema_name}.{parent_tbl_name}",
+                 sk_name, "subclass_of"))
+            tbl.is_subtype_cpt = True
+            tbl.parent_class_uri = parent_uri_str
+        elif not is_gdpr:
             base_name = base_table_name(cls_uri, local)
             sk_name = f"{base_name}_sk"
             tbl.columns.append(GoldColumnDef(
@@ -521,8 +562,9 @@ def build_gold_tables(
             merged, cls_uri, tbl, class_uris, classifications,
             schema_name, gold_table_name, base_table_name, naming_conv)
 
+        # Discriminator column: only for parents using discriminator strategy
         disc_col = _str_val(merged, cls_uri, KAIROS_EXT.discriminatorColumn)
-        if not disc_col and uri_str in folded_subtypes:
+        if not disc_col and uri_str in folded_subtypes and uri_str in disc_parents:
             base = base_table_name(cls_uri, local)
             disc_col = f"{base}_type"
         if disc_col:
@@ -553,8 +595,10 @@ def build_gold_tables(
 
         tables[uri_str] = tbl
 
-    # G5 post-pass: merge subtype properties into parent
+    # G5 post-pass: merge subtype properties into parent (discriminator only)
     for parent_uri_str, subtype_names in folded_subtypes.items():
+        if parent_uri_str not in disc_parents:
+            continue
         if parent_uri_str not in tables:
             continue
         parent_tbl = tables[parent_uri_str]
