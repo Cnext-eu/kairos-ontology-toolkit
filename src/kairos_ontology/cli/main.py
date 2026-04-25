@@ -471,8 +471,9 @@ def update(check):
     """Update toolkit-managed files to the installed toolkit version.
 
     Scans .github/ for files stamped by kairos-ontology-toolkit and refreshes
-    them from the currently installed package.  Use --check to preview what
-    would change without writing anything.
+    them from the currently installed package.  Missing managed files (e.g.,
+    newly added skills) are created automatically.  Use --check to preview
+    what would change without writing anything.
 
     \b
     Exit codes (with --check):
@@ -490,12 +491,17 @@ def update(check):
     updated: list[tuple[str, str]] = []
     outdated: list[tuple[str, str]] = []
     missing: list[str] = []
+    created: list[str] = []
     current: list[str] = []
 
     for rel_path, scaffold_src in managed_map.items():
         local_file = repo_root / rel_path
         if not local_file.is_file():
-            missing.append(rel_path)
+            if check:
+                missing.append(rel_path)
+            else:
+                _copy_managed(scaffold_src, local_file)
+                created.append(rel_path)
             continue
 
         local_content = local_file.read_text(encoding="utf-8")
@@ -529,16 +535,15 @@ def update(check):
         else:
             raise SystemExit(1)
     else:
+        if created:
+            print(f"✅ Created {len(created)} new file(s) (v{_toolkit_version}):")
+            for path in created:
+                print(f"   {path}")
         if updated:
             print(f"✅ Updated {len(updated)} file(s) to v{_toolkit_version}:")
             for path, ver in updated:
                 print(f"   {path}  ({ver} → {_toolkit_version})")
-        if missing:
-            print(f"⚠  {len(missing)} managed file(s) missing "
-                  f"(run new-repo or init to create them):")
-            for p in missing:
-                print(f"   {p}")
-        if not updated and not missing:
+        if not updated and not created:
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
 
     # --- Migrate .gitignore: remove legacy output/ ignore line ---------------
