@@ -66,8 +66,14 @@ ontology-hub/output/
 │   ├── silver/customer/
 │   │   ├── customer-ddl.sql               # CREATE TABLE (T-SQL / MS Fabric)
 │   │   ├── customer-alter.sql             # ALTER TABLE (UNIQUE + FK constraints)
-│   │   └── customer-erd.mmd               # Mermaid erDiagram
-│   └── powerbi/                             # Power BI star schema artifacts
+│   │   ├── customer-erd.mmd               # Mermaid erDiagram
+│   │   └── customer-erd.svg               # SVG render (requires Mermaid CLI)
+│   └── powerbi/customer/
+│       ├── customer-gold-ddl.sql          # Star schema CREATE TABLEs
+│       ├── customer-gold-alter.sql        # FK constraint documentation
+│       ├── customer-gold-erd.mmd          # Star schema Mermaid ERD
+│       ├── customer-gold-erd.svg          # SVG render (requires Mermaid CLI)
+│       └── semantic-model/                # TMDL + DAX measures
 ├── neo4j/
 │   └── customer-schema.cypher
 ├── azure-search/customer/indexes/
