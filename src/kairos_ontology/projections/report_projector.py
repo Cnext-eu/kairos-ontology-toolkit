@@ -76,7 +76,7 @@ def _parse_source_systems(sources_dir: Path) -> list[dict]:
     for ttl in sorted(sources_dir.rglob("*.ttl")):
         try:
             g.parse(ttl, format="turtle")
-        except Exception as exc:
+        except (SyntaxError, ValueError) as exc:
             logger.warning("Could not parse vocabulary file %s: %s", ttl.name, exc)
 
     systems: list[dict] = []
@@ -170,7 +170,7 @@ def _parse_mappings(mappings_dir: Path) -> dict:
     for ttl in sorted(mappings_dir.rglob("*.ttl")):
         try:
             g.parse(ttl, format="turtle")
-        except Exception as exc:
+        except (SyntaxError, ValueError) as exc:
             logger.warning("Could not parse mapping file %s: %s", ttl.name, exc)
 
     for subj in set(g.subjects()):
@@ -636,7 +636,7 @@ def generate_mapping_report(
     for system in systems:
         # Sanitize label for use as filename — strip path separators and dotdot
         slug = system["system_label"].lower().replace(" ", "-")
-        slug = slug.replace("/", "").replace("\\", "").replace("..", "")
+        slug = Path(slug).name  # robust sanitization: strip any path components
         slug = slug or "unknown-system"
         report_data = _build_report_data(system, mappings, ontology_classes or {})
         html = template.render(**report_data)

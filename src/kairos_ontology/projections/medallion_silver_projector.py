@@ -28,6 +28,8 @@ from typing import Optional
 from rdflib import Graph, Namespace, URIRef, Literal, XSD
 from rdflib.namespace import OWL, RDF, RDFS
 
+from .uri_utils import camel_to_snake, local_name
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -66,8 +68,7 @@ _DEFAULT_AUDIT = (
 
 def _camel_to_snake(name: str) -> str:
     """Convert CamelCase or camelCase to snake_case (R4)."""
-    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+    return camel_to_snake(name)
 
 
 def _mmd_type(sql_type: str) -> str:
@@ -84,9 +85,7 @@ def _mmd_type(sql_type: str) -> str:
 
 def _local_name(uri: str) -> str:
     """Extract local name from a URI."""
-    if "#" in uri:
-        return uri.rsplit("#", 1)[1]
-    return uri.rsplit("/", 1)[1]
+    return local_name(uri)
 
 
 def _str_val(graph: Graph, subject: URIRef, predicate: URIRef, default: str = "") -> str:
@@ -734,7 +733,6 @@ def _parse_audit_envelope(audit_str: str) -> list[ColumnDef]:
 
     Commas inside parentheses (e.g. ``DECIMAL(18, 4)``) are preserved.
     """
-    import re
     cols = []
     for part in re.split(r",\s*(?![^()]*\))", audit_str):
         part = part.strip()

@@ -1377,3 +1377,26 @@ def test_bug4_s4_short_inlined_names():
         "acceptance_status_name"
     # No overlap at all
     assert _s4_inlined_name("country", "iso_alpha3") == "country_iso_alpha3"
+
+
+# ---------------------------------------------------------------------------
+# Edge cases — empty / minimal inputs
+# ---------------------------------------------------------------------------
+
+class TestEdgeCasesEmpty:
+    """Edge-case tests for empty or minimal inputs."""
+
+    def test_generate_silver_artifacts_empty_classes(self):
+        """Empty class list with a valid graph should return a dict with no CREATE TABLE."""
+        ttl = f"""
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+        """
+        g = _make_graph(ttl)
+        result = generate_silver_artifacts(
+            classes=[], graph=g, namespace=BASE, ontology_name="test",
+        )
+        assert isinstance(result, dict)
+        for content in result.values():
+            assert "CREATE TABLE" not in content

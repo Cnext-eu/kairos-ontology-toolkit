@@ -186,7 +186,7 @@ class Neo4jProjector:
         return s2.upper()
 
 
-def main():
+def main() -> None:
     """CLI entry point for Neo4j projector"""
     import argparse
     

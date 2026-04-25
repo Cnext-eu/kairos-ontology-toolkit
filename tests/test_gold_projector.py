@@ -708,6 +708,54 @@ class TestBusinessFriendlyNames:
 # Empty / edge cases
 # ---------------------------------------------------------------------------
 
+class TestEdgeCasesEmpty:
+    """Edge-case tests for empty or minimal inputs."""
+
+    def test_generate_gold_artifacts_empty_classes(self):
+        """Empty class list with a valid graph should return a dict with no CREATE TABLE."""
+        ttl = f"""
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+        """
+        g = _make_graph(ttl)
+        result = generate_gold_artifacts([], g, BASE, ontology_name="test")
+        assert isinstance(result, dict)
+        for content in result.values():
+            assert "CREATE TABLE" not in content
+
+    def test_generate_gold_artifacts_empty_graph(self):
+        """Valid classes with an empty graph should not raise."""
+        g = Graph()
+        classes = [
+            {"uri": f"{BASE}Widget", "name": "Widget", "label": "Widget", "comment": ""},
+        ]
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        assert isinstance(result, dict)
+
+    def test_class_without_rdfs_label(self):
+        """A class with no rdfs:label should fall back to the local name."""
+        ttl = f"""
+            @prefix ex:  <{BASE}> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+            ex:Gadget a owl:Class ; rdfs:comment "A gadget without a label."@en .
+            ex:gadgetCode a owl:DatatypeProperty ;
+                rdfs:domain ex:Gadget ; rdfs:range xsd:string .
+        """
+        g = _make_graph(ttl)
+        classes = [
+            {"uri": f"{BASE}Gadget", "name": "Gadget", "label": "Gadget", "comment": ""},
+        ]
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        assert isinstance(result, dict)
+        ddl = result.get("test/test-gold-ddl.sql", "")
+        assert "gadget" in ddl.lower()
+
+
 class TestEdgeCases:
     def test_empty_classes_returns_empty(self):
         g = Graph()
@@ -1050,3 +1098,85 @@ class TestExplicitFactAggressiveFKs:
         fact_block = ddl[fact_start:ddl.index(";", fact_start)]
         assert "warehouse_sk" not in fact_block, \
             "Non-functional property should NOT produce FK on auto-classified fact"
+
+
+# ---------------------------------------------------------------------------
+# TestMasterGoldErd — generate_master_gold_erd
+# ---------------------------------------------------------------------------
+
+
+class TestMasterGoldErd:
+    """Tests for generate_master_gold_erd merging per-domain ERD files."""
+
+    @staticmethod
+    def _write_domain_erd(base: Path, domain: str, body: str) -> None:
+        """Create ``{domain}/{domain}-gold-erd.mmd`` under *base*."""
+        d = base / domain
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{domain}-gold-erd.mmd").write_text(
+            f"erDiagram\n%% Gold Star Schema ERD: {domain}\n{body}\n",
+            encoding="utf-8",
+        )
+
+    def test_happy_path_two_domains(self, tmp_path: Path) -> None:
+        """Two domain ERDs are merged into one master ERD."""
+        self._write_domain_erd(
+            tmp_path, "sales",
+            '    dim_customer ||--o{ fact_order : "places"',
+        )
+        self._write_domain_erd(
+            tmp_path, "inventory",
+            '    dim_warehouse ||--o{ fact_stock : "holds"',
+        )
+
+        result = generate_master_gold_erd(tmp_path, hub_name="test-hub")
+
+        assert result is not None
+        assert result.startswith("erDiagram")
+        assert "Master Gold Star Schema ERD" in result
+        assert "test-hub" in result
+        # Both domain sections present
+        assert "%% --- Domain: sales ---" in result
+        assert "%% --- Domain: inventory ---" in result
+        # Body content preserved
+        assert "dim_customer" in result
+        assert "dim_warehouse" in result
+
+    def test_empty_directory(self, tmp_path: Path) -> None:
+        """An existing but empty directory returns None."""
+        result = generate_master_gold_erd(tmp_path, hub_name="empty")
+        assert result is None
+
+    def test_nonexistent_path(self, tmp_path: Path) -> None:
+        """A path that does not exist returns None."""
+        result = generate_master_gold_erd(tmp_path / "nonexistent", hub_name="x")
+        assert result is None
+
+    def test_skips_master_file(self, tmp_path: Path) -> None:
+        """The master-gold-erd.mmd file itself is not included."""
+        self._write_domain_erd(tmp_path, "sales", '    dim_customer { string name }')
+        # Plant a master file that should be ignored
+        (tmp_path / "master-gold-erd.mmd").write_text(
+            "erDiagram\n    SHOULD_NOT_APPEAR { string x }\n", encoding="utf-8",
+        )
+
+        result = generate_master_gold_erd(tmp_path, hub_name="h")
+
+        assert result is not None
+        assert "SHOULD_NOT_APPEAR" not in result
+        assert "dim_customer" in result
+
+    def test_strips_per_file_headers(self, tmp_path: Path) -> None:
+        """Per-file 'erDiagram' and '%% Gold Star Schema ERD:' lines are stripped."""
+        self._write_domain_erd(tmp_path, "hr", '    dim_employee { string name }')
+
+        result = generate_master_gold_erd(tmp_path, hub_name="h")
+
+        assert result is not None
+        lines = result.splitlines()
+        # Only one erDiagram header (the master one)
+        assert sum(1 for ln in lines if ln.strip() == "erDiagram") == 1
+        # No per-domain header comment leaked through
+        assert not any(
+            ln.strip().startswith("%% Gold Star Schema ERD:") for ln in lines
+        )
