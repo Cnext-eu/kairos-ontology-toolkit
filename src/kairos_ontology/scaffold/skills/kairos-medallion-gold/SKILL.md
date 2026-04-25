@@ -114,6 +114,7 @@ domain:hasOrderAmount
 |----------|------|---------|-------------|
 | `goldSchema` | string | `gold_{domain}` | Target schema name |
 | `generateDateDimension` | boolean | `true` | Auto-generate dim_date |
+| `generateTimeIntelligence` | boolean | `false` | Generate time-intelligence calculation group (YTD/QTD/MTD/PY/YoY%) |
 
 ### Class-level
 
@@ -122,6 +123,8 @@ domain:hasOrderAmount
 | `goldTableType` | string | Override: `"fact"`, `"dimension"`, `"bridge"` |
 | `goldTableName` | string | Table name override (prefix auto-added) |
 | `goldExclude` | boolean | Exclude from gold projection |
+| `perspective` | string | Space-separated perspective names (table subsets for role-based visibility) |
+| `incrementalColumn` | string | Column for dbt incremental materialisation on gold models |
 
 ### Property-level
 
@@ -135,28 +138,45 @@ domain:hasOrderAmount
 | `hierarchyLevel` | integer | Level in hierarchy (1 = top) |
 | `degenerateDimension` | boolean | Keep on fact table (no separate dim) |
 | `rolePlayingAs` | string | Space-separated role names for role-playing dimension |
+| `olsRestricted` | boolean | Mark column for Object-Level Security restriction |
 
 ## Output Artifacts
 
 ```
 output/medallion/powerbi/{domain}/
-├── {domain}-gold-ddl.sql              # Star schema CREATE TABLEs
-├── {domain}-gold-alter.sql            # FK constraint documentation
-├── {domain}-gold-erd.mmd              # Star schema Mermaid ERD
-├── {domain}-gold-erd.svg              # SVG render (requires Mermaid CLI)
-├── {domain}-gold-views.sql            # SCD2 framing views (WHERE is_current)
-├── semantic-model/
-│   ├── definition.tmdl                # Model settings (DirectLake)
-│   ├── tables/
-│   │   ├── dim_{name}.tmdl            # Dimension definitions
-│   │   └── fact_{name}.tmdl           # Fact definitions
-│   ├── relationships/
-│   │   └── relationships.tmdl         # Star schema relationships
-│   └── roles/
-│       └── rls-roles.tmdl             # RLS roles (G4, GDPR)
+├── {domain}-gold-ddl.sql                              # Star schema CREATE TABLEs
+├── {domain}-gold-alter.sql                            # FK constraint documentation
+├── {domain}-gold-erd.mmd                              # Star schema Mermaid ERD
+├── {domain}-gold-erd.svg                              # SVG render (requires Mermaid CLI)
+├── {domain}-gold-views.sql                            # SCD2 framing views (WHERE is_current)
+├── {Domain}.SemanticModel/
+│   └── definition/
+│       ├── model.tmdl                                 # Model settings (DirectLake)
+│       ├── tables/
+│       │   ├── dim_{name}.tmdl                        # Dimension definitions
+│       │   └── fact_{name}.tmdl                       # Fact definitions
+│       ├── relationships/
+│       │   └── relationships.tmdl                     # Star schema relationships
+│       ├── roles/
+│       │   └── rls-roles.tmdl                         # RLS + OLS roles (G4, GDPR)
+│       ├── perspectives/
+│       │   └── perspectives.tmdl                      # Perspective subsets (optional)
+│       └── calculationGroups/
+│           └── time-intelligence.tmdl                 # Time-intelligence calc group (optional)
 └── measures/
-    └── {domain}-measures.dax          # DAX measures
+    └── {domain}-measures.dax                          # DAX measures
 ```
+
+### Best-practice separation
+
+| Layer | Responsibility | Artifact |
+|-------|---------------|----------|
+| **dbt** | Data logic (staging, joins, facts, dims, SCD, tests) | `models/gold/` SQL models |
+| **Semantic model** | Business metrics (DAX, relationships, hierarchies, RLS/OLS) | `{Domain}.SemanticModel/` TMDL |
+| **Reports** | Visuals only — consume measures from semantic model | (not generated) |
+
+> **Rule:** Don't duplicate business rules in both dbt and DAX. Row-level
+> shaping lives in dbt; reusable KPIs live in the semantic model.
 
 **Automatically generated after all domains are projected:**
 - `output/medallion/powerbi/master-gold-erd.mmd` — cross-domain master gold ERD (all star schema tables + FK relationships)

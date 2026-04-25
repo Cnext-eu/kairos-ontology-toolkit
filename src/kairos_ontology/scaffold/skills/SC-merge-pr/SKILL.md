@@ -235,3 +235,6 @@ When the PR includes `.ttl` file changes, remind the user:
    - Is it in `ontology-hub/model/ontologies/_master.ttl`?
    - Is it in the domain table in `ontology-hub/README.md`?
 4. Are projection outputs committed (if not gitignored)?
+5. If new core functionality was added (projections, annotations, CLI commands):
+   - Is the `kairos-help` skill updated in `.github/skills/kairos-help/SKILL.md`?
+   - Is the scaffold copy updated in `src/kairos_ontology/scaffold/skills/kairos-help/`?

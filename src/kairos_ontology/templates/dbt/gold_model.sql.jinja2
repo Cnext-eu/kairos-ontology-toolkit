@@ -23,7 +23,13 @@
 {%- endif %}
 
 {{ "{{" }} config(
+{%- if incremental_column %}
+    materialized='incremental',
+    unique_key='{{ unique_key }}',
+    incremental_strategy='merge',
+{%- else %}
     materialized='table',
+{%- endif %}
     schema='{{ schema_name }}'
 ) {{ "}}" }}
 {%- for cte in source_ctes %}
@@ -31,6 +37,13 @@
 {% if loop.first %}with {% else %}     {% endif %}{{ cte.alias }} as (
 
     select * from {{ "{{" }} ref('{{ cte.model }}') {{ "}}" }}
+{%- if incremental_column and loop.first %}
+    {% raw %}{% if is_incremental() %}{% endraw %}
+
+    where {{ incremental_column }} > (select max({{ incremental_column }}) from {{ "{{" }} this {{ "}}" }})
+    {% raw %}{% endif %}{% endraw %}
+
+{%- endif %}
 
 ){% if not loop.last %},{% endif %}
 {%- endfor %}

@@ -752,6 +752,8 @@ def _gen_gold_models(
                 joins=[],
                 where_clause="",
                 ontology_metadata=meta,
+                incremental_column="",
+                unique_key="",
             )
             path = f"models/gold/{ontology_name}/{tbl.name}.sql"
             artifacts[path] = content
@@ -825,6 +827,8 @@ def _gen_gold_models(
             joins=[],
             where_clause=where_clause,
             ontology_metadata=meta,
+            incremental_column=tbl.incremental_column or "",
+            unique_key=tbl.pk_column or "",
         )
         path = f"models/gold/{ontology_name}/{tbl.name}.sql"
         artifacts[path] = content

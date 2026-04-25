@@ -18,6 +18,7 @@ from kairos_ontology.projections.medallion_gold_projector import (
     _generate_date_dimension,
     _mmd_type,
     _tmdl_guid,
+    _to_pascal_case,
     generate_gold_artifacts,
     generate_master_gold_erd,
     XSD_TO_GOLD_SQL,
@@ -299,18 +300,21 @@ class TestOutputArtifacts:
     def test_tmdl_definition_generated(self):
         g, classes = _simple_ontology()
         result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        assert "test/semantic-model/definition.tmdl" in result
+        sm = "test/Test.SemanticModel/definition"
+        assert f"{sm}/model.tmdl" in result
 
     def test_tmdl_tables_generated(self):
         g, classes = _simple_ontology()
         result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        tmdl_tables = [k for k in result if k.startswith("test/semantic-model/tables/")]
+        sm = "test/Test.SemanticModel/definition"
+        tmdl_tables = [k for k in result if k.startswith(f"{sm}/tables/")]
         assert len(tmdl_tables) >= 3  # dim_customer, dim_product, fact_order + dim_date
 
     def test_tmdl_relationships_generated(self):
         g, classes = _simple_ontology()
         result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        assert "test/semantic-model/relationships/relationships.tmdl" in result
+        sm = "test/Test.SemanticModel/definition"
+        assert f"{sm}/relationships/relationships.tmdl" in result
 
     def test_views_for_scd2_dimensions(self):
         """SCD2 framing views generated for dimensions with SCD2."""
@@ -331,7 +335,7 @@ class TestTMDLContent:
     def test_tmdl_definition_has_direct_lake(self):
         g, classes = _simple_ontology()
         result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        defn = result["test/semantic-model/definition.tmdl"]
+        defn = result["test/Test.SemanticModel/definition/model.tmdl"]
         assert "model Model" in defn
         assert "culture: en-US" in defn
 
@@ -348,7 +352,8 @@ class TestTMDLContent:
     def test_tmdl_relationships_has_fk(self):
         g, classes = _simple_ontology()
         result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        rels = result["test/semantic-model/relationships/relationships.tmdl"]
+        sm = "test/Test.SemanticModel/definition"
+        rels = result[f"{sm}/relationships/relationships.tmdl"]
         assert "relationship" in rels
         assert "fromColumn:" in rels
         assert "toColumn:" in rels
@@ -394,11 +399,120 @@ class TestGDPR:
             {"uri": f"{BASE}CustomerPII", "name": "CustomerPII", "label": "CustomerPII", "comment": ""},
         ]
         result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        rls_key = "test/semantic-model/roles/rls-roles.tmdl"
+        rls_key = "test/Test.SemanticModel/definition/roles/rls-roles.tmdl"
         assert rls_key in result
         rls = result[rls_key]
         assert "role" in rls
         assert "Restrict_" in rls
+
+    def test_ols_restricted_column_generates_role(self):
+        """OLS: olsRestricted columns generate a RestrictedColumns role."""
+        ttl = f"""
+            @prefix ex:  <{BASE}> .
+            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+            ex:Employee a owl:Class ; rdfs:label "Employee"@en ; rdfs:comment "Employee."@en .
+
+            ex:employeeName a owl:DatatypeProperty ;
+                rdfs:domain ex:Employee ; rdfs:range xsd:string .
+            ex:salary a owl:DatatypeProperty ;
+                rdfs:domain ex:Employee ; rdfs:range xsd:decimal ;
+                kairos-ext:olsRestricted "true"^^xsd:boolean .
+        """
+        g = _make_graph(ttl)
+        classes = [
+            {"uri": f"{BASE}Employee", "name": "Employee", "label": "Employee", "comment": ""},
+        ]
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        rls_key = "test/Test.SemanticModel/definition/roles/rls-roles.tmdl"
+        assert rls_key in result
+        rls = result[rls_key]
+        assert "RestrictedColumns" in rls
+        assert "columnPermission" in rls
+        assert "salary" in rls
+
+
+# ---------------------------------------------------------------------------
+# Perspectives
+# ---------------------------------------------------------------------------
+
+class TestPerspectives:
+    def test_perspective_generates_tmdl(self):
+        """Classes with kairos-ext:perspective generate a perspectives.tmdl file."""
+        ttl = f"""
+            @prefix ex:  <{BASE}> .
+            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+            ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "Customer."@en .
+            ex:Customer kairos-ext:perspective "Sales" .
+
+            ex:Product a owl:Class ; rdfs:label "Product"@en ; rdfs:comment "Product."@en .
+            ex:Product kairos-ext:perspective "Sales" .
+
+            ex:customerName a owl:DatatypeProperty ;
+                rdfs:domain ex:Customer ; rdfs:range xsd:string .
+            ex:productName a owl:DatatypeProperty ;
+                rdfs:domain ex:Product ; rdfs:range xsd:string .
+        """
+        g = _make_graph(ttl)
+        classes = [
+            {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+            {"uri": f"{BASE}Product", "name": "Product", "label": "Product", "comment": ""},
+        ]
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        persp_key = "test/Test.SemanticModel/definition/perspectives/perspectives.tmdl"
+        assert persp_key in result
+        content = result[persp_key]
+        assert "perspective 'Sales'" in content
+        assert "perspectiveTable dim_customer" in content
+
+    def test_no_perspective_no_file(self):
+        """No perspective file generated when no annotations present."""
+        g, classes = _simple_ontology()
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        persp_keys = [k for k in result if "perspectives" in k]
+        assert len(persp_keys) == 0
+
+
+# ---------------------------------------------------------------------------
+# Calculation groups (time intelligence)
+# ---------------------------------------------------------------------------
+
+class TestCalculationGroups:
+    def test_time_intelligence_generates_file(self):
+        """generateTimeIntelligence = true creates a calculation group."""
+        g, classes = _simple_ontology()
+        onto_uri = URIRef(BASE.rstrip("#"))
+        g.add((onto_uri, KAIROS_EXT.generateTimeIntelligence,
+               Literal("true", datatype=XSD.boolean)))
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        cg_key = "test/Test.SemanticModel/definition/calculationGroups/time-intelligence.tmdl"
+        assert cg_key in result
+        content = result[cg_key]
+        assert "calculationGroup" in content
+        assert "YTD" in content
+        assert "QTD" in content
+        assert "MTD" in content
+        assert "SAMEPERIODLASTYEAR" in content
+
+    def test_no_time_intelligence_by_default(self):
+        """No calculation group generated when annotation is absent."""
+        g, classes = _simple_ontology()
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        cg_keys = [k for k in result if "calculationGroups" in k]
+        assert len(cg_keys) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +624,83 @@ class TestUtils:
     def test_camel_to_snake(self):
         assert _camel_to_snake("OrderLine") == "order_line"
         assert _camel_to_snake("hasCustomer") == "has_customer"
+
+    def test_to_pascal_case(self):
+        assert _to_pascal_case("test") == "Test"
+        assert _to_pascal_case("supply_chain") == "SupplyChain"
+        assert _to_pascal_case("supply-chain") == "SupplyChain"
+        assert _to_pascal_case("hr") == "Hr"
+
+
+# ---------------------------------------------------------------------------
+# TMDL folder structure (standard Power BI layout)
+# ---------------------------------------------------------------------------
+
+class TestTMDLFolderStructure:
+    def test_semantic_model_folder_uses_pascal_case(self):
+        """TMDL files live under {Domain}.SemanticModel/definition/."""
+        g, classes = _simple_ontology()
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        sm = "test/Test.SemanticModel/definition"
+        assert f"{sm}/model.tmdl" in result
+        tables = [k for k in result if f"{sm}/tables/" in k]
+        assert len(tables) >= 3
+        rels = [k for k in result if f"{sm}/relationships/" in k]
+        assert len(rels) == 1
+
+    def test_model_tmdl_filename(self):
+        """Root TMDL file is model.tmdl (not definition.tmdl)."""
+        g, classes = _simple_ontology()
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        model_keys = [k for k in result if k.endswith("model.tmdl")]
+        assert len(model_keys) == 1
+        assert "definition.tmdl" not in " ".join(result.keys())
+
+
+# ---------------------------------------------------------------------------
+# Business-friendly display names (PBI_Description)
+# ---------------------------------------------------------------------------
+
+class TestBusinessFriendlyNames:
+    def test_tmdl_column_has_pbi_description(self):
+        """Columns with rdfs:label get PBI_Description annotation."""
+        g, classes = _simple_ontology()
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        cust_key = [k for k in result if "dim_customer" in k and k.endswith(".tmdl")]
+        assert cust_key
+        content = result[cust_key[0]]
+        assert "PBI_Description" in content
+
+    def test_tmdl_measure_has_description(self):
+        """Measures get a description property in TMDL."""
+        ttl = f"""
+            @prefix ex:  <{BASE}> .
+            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+            ex:Order a owl:Class ; rdfs:label "Order"@en ; rdfs:comment "Order."@en .
+            ex:Order kairos-ext:goldTableType "fact" .
+
+            ex:totalSales a owl:DatatypeProperty ;
+                rdfs:domain ex:Order ; rdfs:range xsd:decimal ;
+                rdfs:label "Total Sales"@en ;
+                kairos-ext:measureExpression "SUM([order_amount])" ;
+                kairos-ext:measureFormatString "$#,##0.00" .
+        """
+        g = _make_graph(ttl)
+        classes = [
+            {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        ]
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        fact_key = [k for k in result if "fact_order" in k and k.endswith(".tmdl")]
+        assert fact_key
+        content = result[fact_key[0]]
+        assert 'description:' in content
 
 
 # ---------------------------------------------------------------------------

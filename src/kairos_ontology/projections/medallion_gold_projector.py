@@ -89,6 +89,11 @@ def _camel_to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
+def _to_pascal_case(name: str) -> str:
+    """Convert a domain name (snake_case or kebab-case) to PascalCase."""
+    return "".join(part.capitalize() for part in re.split(r"[-_ ]+", name))
+
+
 def _mmd_type(sql_type: str) -> str:
     """Sanitise SQL type for Mermaid erDiagram attribute."""
     return re.sub(r"[^A-Za-z0-9_]", "_", sql_type).strip("_")
@@ -145,7 +150,7 @@ class GoldColumnDef:
                  nullable: bool = True, comment: str = "",
                  is_measure: bool = False, measure_expr: str = "",
                  measure_format: str = "", hierarchy_name: str = "",
-                 hierarchy_level: int = 0):
+                 hierarchy_level: int = 0, ols_restricted: bool = False):
         self.name = name
         self.sql_type = sql_type
         self.tmdl_type = tmdl_type
@@ -156,6 +161,7 @@ class GoldColumnDef:
         self.measure_format = measure_format
         self.hierarchy_name = hierarchy_name
         self.hierarchy_level = hierarchy_level
+        self.ols_restricted = ols_restricted
 
     def ddl_fragment(self) -> str:
         null_clause = "NULL" if self.nullable else "NOT NULL"
@@ -182,6 +188,8 @@ class GoldTableDef:
         self.source_class_label: str = ""
         self.measures: list[GoldColumnDef] = []
         self.hierarchies: dict[str, list[GoldColumnDef]] = {}
+        self.perspectives: set[str] = set()
+        self.incremental_column: Optional[str] = None
 
     def render_create(self) -> str:
         """Render CREATE TABLE statement (Spark SQL for Fabric Warehouse)."""
@@ -401,6 +409,8 @@ def build_gold_tables(
                            "camel-to-snake")
     gen_date_dim = _bool_val(merged, onto_uri, KAIROS_EXT.generateDateDimension,
                              True)
+    gen_time_intel = _bool_val(merged, onto_uri,
+                               KAIROS_EXT.generateTimeIntelligence, False)
 
     # Filter to domain-owned classes only
     domain_classes = [c for c in classes if c["uri"].startswith(namespace)]
@@ -481,6 +491,9 @@ def build_gold_tables(
         tbl.partition_by = (
             _str_val(merged, cls_uri, KAIROS_EXT.partitionBy) or None
         ) if table_type == "fact" else None
+        tbl.incremental_column = (
+            _str_val(merged, cls_uri, KAIROS_EXT.incrementalColumn) or None
+        )
 
         if not is_gdpr:
             base_name = base_table_name(cls_uri, local)
@@ -531,6 +544,13 @@ def build_gold_tables(
                 comment="1 = current record"))
 
         tbl.hierarchies = _collect_hierarchies(merged, cls_uri)
+
+        # Perspectives: assign table to named perspective groups
+        perspective = _str_val(merged, cls_uri, KAIROS_EXT.perspective)
+        if perspective:
+            for p in perspective.split():
+                tbl.perspectives.add(p)
+
         tables[uri_str] = tbl
 
     # G5 post-pass: merge subtype properties into parent
@@ -621,6 +641,8 @@ def generate_gold_artifacts(
     onto_uri = _detect_ontology_uri(merged, namespace)
     schema_name = _str_val(merged, onto_uri, KAIROS_EXT.goldSchema,
                            f"gold_{ontology_name}")
+    gen_time_intel = _bool_val(merged, onto_uri,
+                               KAIROS_EXT.generateTimeIntelligence, False)
 
     # ----------------------------------------------------------
     # Build provenance header
@@ -748,6 +770,10 @@ def generate_gold_artifacts(
         tmdl_tables[f"tables/{tbl.name}.tmdl"] = _render_tmdl_table(tbl, schema_name)
     tmdl_relationships = _render_tmdl_relationships(all_tables, schema_name)
     tmdl_roles = _render_tmdl_rls_roles(all_tables, schema_name)
+    tmdl_perspectives = _render_tmdl_perspectives(all_tables, schema_name)
+    tmdl_calc_group = (
+        _render_tmdl_calculation_group(schema_name, meta) if gen_time_intel else ""
+    )
 
     # ----------------------------------------------------------
     # Render DAX measures
@@ -757,6 +783,10 @@ def generate_gold_artifacts(
     # ----------------------------------------------------------
     # Assemble output files
     # ----------------------------------------------------------
+    sm_prefix = (
+        f"{ontology_name}/{_to_pascal_case(ontology_name)}.SemanticModel/definition"
+    )
+
     result: dict[str, str] = {
         f"{ontology_name}/{ontology_name}-gold-ddl.sql": "\n".join(ddl_lines),
         f"{ontology_name}/{ontology_name}-gold-alter.sql": "\n".join(alter_lines),
@@ -767,18 +797,29 @@ def generate_gold_artifacts(
         result[f"{ontology_name}/{ontology_name}-gold-views.sql"] = "\n".join(
             view_lines)
 
-    # TMDL files
-    result[f"{ontology_name}/semantic-model/definition.tmdl"] = tmdl_definition
+    # TMDL files — standard Power BI layout:
+    # {Domain}.SemanticModel/definition/model.tmdl
+    result[f"{sm_prefix}/model.tmdl"] = tmdl_definition
     for tmdl_path, tmdl_content in tmdl_tables.items():
-        result[f"{ontology_name}/semantic-model/{tmdl_path}"] = tmdl_content
+        result[f"{sm_prefix}/{tmdl_path}"] = tmdl_content
     result[
-        f"{ontology_name}/semantic-model/relationships/relationships.tmdl"
+        f"{sm_prefix}/relationships/relationships.tmdl"
     ] = tmdl_relationships
 
     if tmdl_roles:
         result[
-            f"{ontology_name}/semantic-model/roles/rls-roles.tmdl"
+            f"{sm_prefix}/roles/rls-roles.tmdl"
         ] = tmdl_roles
+
+    if tmdl_perspectives:
+        result[
+            f"{sm_prefix}/perspectives/perspectives.tmdl"
+        ] = tmdl_perspectives
+
+    if tmdl_calc_group:
+        result[
+            f"{sm_prefix}/calculationGroups/time-intelligence.tmdl"
+        ] = tmdl_calc_group
 
     if dax_lines:
         result[f"{ontology_name}/measures/{ontology_name}-measures.dax"] = dax_lines
@@ -862,6 +903,9 @@ def _add_gold_data_properties(
         # Hierarchy info
         col.hierarchy_name = _str_val(graph, prop, KAIROS_EXT.hierarchyName)
         col.hierarchy_level = _int_val(graph, prop, KAIROS_EXT.hierarchyLevel, 0)
+
+        # OLS: Object-Level Security restriction
+        col.ols_restricted = _bool_val(graph, prop, KAIROS_EXT.olsRestricted, False)
 
         tbl.columns.append(col)
 
@@ -1083,6 +1127,9 @@ def _render_tmdl_table(tbl: GoldTableDef, schema: str) -> str:
             lines.append(f"\t\tisHidden")
         lines.append(f"\t\tsummarizeBy: none")
         lines.append(f"\t\tsourceColumn: {col.name}")
+        if col.comment:
+            safe_desc = col.comment.replace('"', '\\"')
+            lines.append(f'\t\tannotation PBI_Description = "{safe_desc}"')
         lines.append("")
 
     # Measures
@@ -1090,6 +1137,9 @@ def _render_tmdl_table(tbl: GoldTableDef, schema: str) -> str:
         lines.append(f"\tmeasure '{m.comment or m.name}' = {m.measure_expr}")
         lines.append(f"\t\tformatString: {m.measure_format}")
         lines.append(f"\t\tlineageTag: {_tmdl_guid(f'{tbl.name}.m.{m.name}')}")
+        if m.comment:
+            safe_desc = m.comment.replace('"', '\\"')
+            lines.append(f'\t\tdescription: "{safe_desc}"')
         lines.append("")
 
     # Hierarchies
@@ -1140,12 +1190,14 @@ def _render_tmdl_relationships(tables: list[GoldTableDef], schema: str) -> str:
 
 
 def _render_tmdl_rls_roles(tables: list[GoldTableDef], schema: str) -> str:
-    """Render TMDL RLS roles for GDPR dimensions (G4)."""
+    """Render TMDL RLS roles for GDPR dimensions (G4) and OLS column restrictions."""
     lines = [
         f"/// Row-Level Security roles: {schema}",
         "",
     ]
     has_roles = False
+
+    # RLS roles from GDPR satellites (G4)
     for tbl in tables:
         if tbl.is_gdpr and tbl.gdpr_parent_table:
             has_roles = True
@@ -1158,7 +1210,102 @@ def _render_tmdl_rls_roles(tables: list[GoldTableDef], schema: str) -> str:
                 f'\t\tfilterExpression: [is_authorized] = TRUE()')
             lines.append("")
 
+    # OLS roles for columns marked with olsRestricted
+    ols_columns: list[tuple[str, str]] = []
+    for tbl in tables:
+        for col in tbl.columns:
+            if col.ols_restricted:
+                ols_columns.append((tbl.name, col.name))
+
+    if ols_columns:
+        has_roles = True
+        lines.append(f"/// Object-Level Security roles: {schema}")
+        lines.append("")
+        lines.append("role 'RestrictedColumns'")
+        lines.append("\tmodelPermission: read")
+        lines.append("")
+        for tbl_name, col_name in ols_columns:
+            lines.append(f"\tcolumnPermission {tbl_name}.{col_name}")
+            lines.append(f"\t\tmetadataPermission: none")
+            lines.append("")
+
     return "\n".join(lines) if has_roles else ""
+
+
+def _render_tmdl_perspectives(tables: list[GoldTableDef], schema: str) -> str:
+    """Render TMDL perspective blocks from kairos-ext:perspective annotations."""
+    # Collect all perspectives and their associated tables
+    perspective_tables: dict[str, list[str]] = {}
+    for tbl in tables:
+        for p in tbl.perspectives:
+            perspective_tables.setdefault(p, []).append(tbl.name)
+
+    if not perspective_tables:
+        return ""
+
+    lines = [
+        f"/// Perspectives: {schema}",
+        "",
+    ]
+    for name, tbl_names in sorted(perspective_tables.items()):
+        lines.append(f"perspective '{name}'")
+        lines.append("")
+        for tbl_name in sorted(tbl_names):
+            lines.append(f"\tperspectiveTable {tbl_name}")
+            lines.append("")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _render_tmdl_calculation_group(schema: str, meta: dict) -> str:
+    """Render a time-intelligence calculation group scaffold.
+
+    Generated when ``kairos-ext:generateTimeIntelligence = true`` is set on
+    the ontology.  Produces common time-intelligence calculation items (YTD,
+    QTD, MTD, PY, YoY%) that Power BI authors can customize.
+    """
+    lines = [
+        f"/// Time Intelligence calculation group: {schema}",
+    ]
+    if meta.get("toolkit_version"):
+        lines.append(f"/// Toolkit version: {meta['toolkit_version']}")
+    lines.extend([
+        "",
+        "table 'Time Intelligence'",
+        f"\tlineageTag: {_tmdl_guid(f'{schema}.calcgroup.timeintel')}",
+        "",
+        "\tcalculationGroup",
+        "",
+        "\t\tcalculationItem 'Current' = SELECTEDMEASURE()",
+        f"\t\t\tlineageTag: {_tmdl_guid(f'{schema}.ci.current')}",
+        "",
+        "\t\tcalculationItem YTD = CALCULATE(SELECTEDMEASURE(), "
+        "DATESYTD('dim_date'[full_date]))",
+        f"\t\t\tlineageTag: {_tmdl_guid(f'{schema}.ci.ytd')}",
+        "",
+        "\t\tcalculationItem QTD = CALCULATE(SELECTEDMEASURE(), "
+        "DATESQTD('dim_date'[full_date]))",
+        f"\t\t\tlineageTag: {_tmdl_guid(f'{schema}.ci.qtd')}",
+        "",
+        "\t\tcalculationItem MTD = CALCULATE(SELECTEDMEASURE(), "
+        "DATESMTD('dim_date'[full_date]))",
+        f"\t\t\tlineageTag: {_tmdl_guid(f'{schema}.ci.mtd')}",
+        "",
+        "\t\tcalculationItem PY = CALCULATE(SELECTEDMEASURE(), "
+        "SAMEPERIODLASTYEAR('dim_date'[full_date]))",
+        f"\t\t\tlineageTag: {_tmdl_guid(f'{schema}.ci.py')}",
+        "",
+        "\t\tcalculationItem 'YoY %' = ",
+        "\t\t\tVAR _current = SELECTEDMEASURE()",
+        "\t\t\tVAR _py = CALCULATE(SELECTEDMEASURE(), "
+        "SAMEPERIODLASTYEAR('dim_date'[full_date]))",
+        "\t\t\tRETURN IF(NOT ISBLANK(_py), DIVIDE(_current - _py, _py))",
+        f"\t\t\tformatString: 0.0%",
+        f"\t\t\tlineageTag: {_tmdl_guid(f'{schema}.ci.yoy')}",
+        "",
+    ])
+    return "\n".join(lines)
 
 
 def _tmdl_guid(seed: str) -> str:

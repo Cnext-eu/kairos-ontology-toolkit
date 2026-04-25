@@ -4,6 +4,16 @@ applyTo: "**"
 
 # Kairos Ontology Toolkit — Copilot Instructions
 
+## Welcome
+
+👋 Welcome to the **Kairos Ontology Toolkit** — an ontology-driven platform that
+generates data pipelines, BI models, search indexes, and more from OWL/Turtle
+domain models.
+
+**New here?** Invoke the **kairos-help** skill for a full orientation — it covers
+the shift-left design philosophy, hub folder structure, available projections,
+CLI commands, and best practices.
+
 ## Project overview
 
 This is a Python toolkit + FastAPI service for managing OWL/Turtle ontologies.
@@ -111,6 +121,7 @@ also be applied to the corresponding scaffold location:
 | New or updated Copilot skill in `.github/skills/` | `src/kairos_ontology/scaffold/skills/<skill-name>/SKILL.md` |
 | New output target directory | Add to the `for d in [...]` directory lists in `cli/main.py` |
 | New scaffold template / config file | `src/kairos_ontology/scaffold/ontology-hub/` or `src/kairos_ontology/scaffold/` |
+| New core functionality (projections, annotations, CLI commands) | Update `kairos-help` skill in `.github/skills/kairos-help/` + scaffold copy |
 
 **Rule**: After adding or modifying a skill in `.github/skills/`, always copy it to
 `src/kairos_ontology/scaffold/skills/` before committing. Run `py -m pytest` to confirm

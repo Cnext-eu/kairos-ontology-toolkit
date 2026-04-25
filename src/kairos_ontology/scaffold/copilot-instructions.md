@@ -4,6 +4,16 @@ applyTo: "**"
 
 # Kairos Ontology Hub — Copilot Instructions
 
+## Welcome
+
+👋 Welcome to this **Kairos Ontology Hub** — an ontology-driven repository that
+generates data pipelines, BI models, search indexes, and more from OWL/Turtle
+domain models using the **kairos-ontology-toolkit** CLI.
+
+**New here?** Invoke the **kairos-help** skill for a full orientation — it covers
+the shift-left design philosophy, hub folder structure, available projections,
+CLI commands, and best practices.
+
 ## Project overview
 
 This is a Kairos ontology hub repository. It contains OWL/Turtle domain ontologies
