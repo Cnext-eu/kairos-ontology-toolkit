@@ -777,10 +777,11 @@ def generate_gold_artifacts(
         for col in tbl.columns:
             pk_marker = " PK" if col.name == tbl.pk_column else ""
             fk_marker = ""
-            for fk_col, _, _, _ in tbl.fk_constraints:
-                if col.name == fk_col:
-                    fk_marker = " FK"
-                    break
+            if not pk_marker:
+                for fk_col, _, _, _ in tbl.fk_constraints:
+                    if col.name == fk_col:
+                        fk_marker = " FK"
+                        break
             mmd_lines.append(
                 f"        {_mmd_type(col.sql_type)} {col.name}{pk_marker}{fk_marker}")
         mmd_lines.append("    }")

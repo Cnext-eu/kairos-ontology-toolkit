@@ -888,3 +888,50 @@ class TestDiscriminatorOptIn:
         col_names = {c.name for c in party.columns}
         assert "registration_number" in col_names
         assert "owner_name" in col_names
+
+
+# ---------------------------------------------------------------------------
+# ERD — No "PK FK" combined marker (Mermaid parse error)
+# ---------------------------------------------------------------------------
+
+class TestErdNoPkFk:
+    """ERD must never emit 'PK FK' — Mermaid only allows one key marker."""
+
+    def test_erd_no_pk_fk_class_per_table(self):
+        """Class-per-table subtype PK (which is also FK) emits only PK."""
+        g, classes = _ontology_with_subclasses()
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        erd = result.get("test/test-gold-erd.mmd", "")
+        assert "PK FK" not in erd
+        assert " PK" in erd  # PK marker still present
+
+    def test_erd_no_pk_fk_gdpr_satellite(self):
+        """GDPR satellite PK (which is also FK) emits only PK."""
+        ttl = f"""
+            @prefix ex:  <{BASE}> .
+            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+            <{BASE.rstrip('#')}> a owl:Ontology ;
+                rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+            ex:Customer a owl:Class ;
+                rdfs:label "Customer"@en ; rdfs:comment "A customer."@en .
+            ex:CustomerPII a owl:Class ;
+                rdfs:label "Customer PII"@en ; rdfs:comment "GDPR data."@en ;
+                kairos-ext:gdprSatelliteOf ex:Customer .
+            ex:email a owl:DatatypeProperty ;
+                rdfs:domain ex:CustomerPII ; rdfs:range xsd:string ;
+                rdfs:label "email"@en .
+        """
+        g = _make_graph(ttl)
+        classes = [
+            {"uri": f"{BASE}Customer", "name": "Customer",
+             "label": "Customer", "comment": ""},
+            {"uri": f"{BASE}CustomerPII", "name": "CustomerPII",
+             "label": "Customer PII", "comment": ""},
+        ]
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        erd = result.get("test/test-gold-erd.mmd", "")
+        assert "PK FK" not in erd
