@@ -49,6 +49,12 @@ on Microsoft Fabric Warehouse.
 
 **Override:** Set `kairos-ext:goldTableType` to `"fact"`, `"dimension"`, or `"bridge"`.
 
+**Aggressive FK generation:** When `goldTableType "fact"` is set explicitly, the
+projector generates FK columns for **all** object properties — not just those
+marked as `owl:FunctionalProperty` or with `maxCardinality 1`. This is because
+fact tables almost always need FK columns to their related dimensions. Auto-classified
+facts (detected via the ≥2 FK heuristic) still use the standard cardinality filter.
+
 ## G8 — DirectLake Optimised Types
 
 | Silver (S1) | Gold (G8) | Reason |

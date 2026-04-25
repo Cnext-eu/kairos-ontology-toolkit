@@ -935,3 +935,118 @@ class TestErdNoPkFk:
         result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
         erd = result.get("test/test-gold-erd.mmd", "")
         assert "PK FK" not in erd
+
+
+# ---------------------------------------------------------------------------
+# Explicit fact FK aggressiveness
+# ---------------------------------------------------------------------------
+
+class TestExplicitFactAggressiveFKs:
+    """When goldTableType 'fact' is explicit, all object properties get FK columns."""
+
+    def test_explicit_fact_gets_fk_from_non_functional_property(self):
+        """Object property without FunctionalProperty or maxCardinality 1 should
+        still produce a FK column when the owning class has explicit goldTableType 'fact'."""
+        ttl = f"""
+            @prefix ex:  <{BASE}> .
+            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+            <{BASE.rstrip('#')}> a owl:Ontology ;
+                rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+            ex:Customer a owl:Class ;
+                rdfs:label "Customer"@en ; rdfs:comment "A customer."@en .
+            ex:Product a owl:Class ;
+                rdfs:label "Product"@en ; rdfs:comment "A product."@en .
+            ex:Sale a owl:Class ;
+                rdfs:label "Sale"@en ; rdfs:comment "A sale."@en .
+            ex:Sale kairos-ext:goldTableType "fact" .
+
+            ex:soldTo a owl:ObjectProperty ;
+                rdfs:domain ex:Sale ; rdfs:range ex:Customer ;
+                rdfs:label "sold to"@en .
+            ex:soldProduct a owl:ObjectProperty ;
+                rdfs:domain ex:Sale ; rdfs:range ex:Product ;
+                rdfs:label "sold product"@en .
+
+            ex:saleAmount a owl:DatatypeProperty ;
+                rdfs:domain ex:Sale ; rdfs:range xsd:decimal ;
+                rdfs:label "sale amount"@en .
+        """
+        g = _make_graph(ttl)
+        classes = [
+            {"uri": f"{BASE}Customer", "name": "Customer",
+             "label": "Customer", "comment": ""},
+            {"uri": f"{BASE}Product", "name": "Product",
+             "label": "Product", "comment": ""},
+            {"uri": f"{BASE}Sale", "name": "Sale",
+             "label": "Sale", "comment": ""},
+        ]
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        ddl = result["test/test-gold-ddl.sql"]
+        # Both non-functional object properties should produce FK columns
+        assert "customer_sk" in ddl, "Expected FK column for soldTo → Customer"
+        assert "product_sk" in ddl, "Expected FK column for soldProduct → Product"
+
+    def test_auto_classified_fact_does_not_get_non_functional_fks(self):
+        """Auto-classified fact (no explicit goldTableType) should NOT get FK columns
+        from non-functional, non-max-cardinality-1 object properties."""
+        ttl = f"""
+            @prefix ex:  <{BASE}> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+            <{BASE.rstrip('#')}> a owl:Ontology ;
+                rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+            ex:Customer a owl:Class ;
+                rdfs:label "Customer"@en ; rdfs:comment "A customer."@en .
+            ex:Product a owl:Class ;
+                rdfs:label "Product"@en ; rdfs:comment "A product."@en .
+            ex:Warehouse a owl:Class ;
+                rdfs:label "Warehouse"@en ; rdfs:comment "A warehouse."@en .
+            ex:Shipment a owl:Class ;
+                rdfs:label "Shipment"@en ; rdfs:comment "A shipment."@en .
+
+            ex:shipCustomer a owl:ObjectProperty, owl:FunctionalProperty ;
+                rdfs:domain ex:Shipment ; rdfs:range ex:Customer ;
+                rdfs:label "ship customer"@en .
+            ex:shipProduct a owl:ObjectProperty, owl:FunctionalProperty ;
+                rdfs:domain ex:Shipment ; rdfs:range ex:Product ;
+                rdfs:label "ship product"@en .
+            ex:shipWarehouse a owl:ObjectProperty ;
+                rdfs:domain ex:Shipment ; rdfs:range ex:Warehouse ;
+                rdfs:label "ship warehouse"@en .
+
+            ex:shipDate a owl:DatatypeProperty ;
+                rdfs:domain ex:Shipment ; rdfs:range xsd:date ;
+                rdfs:label "ship date"@en .
+        """
+        g = _make_graph(ttl)
+        classes = [
+            {"uri": f"{BASE}Customer", "name": "Customer",
+             "label": "Customer", "comment": ""},
+            {"uri": f"{BASE}Product", "name": "Product",
+             "label": "Product", "comment": ""},
+            {"uri": f"{BASE}Warehouse", "name": "Warehouse",
+             "label": "Warehouse", "comment": ""},
+            {"uri": f"{BASE}Shipment", "name": "Shipment",
+             "label": "Shipment", "comment": ""},
+        ]
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        ddl = result["test/test-gold-ddl.sql"]
+        # Auto-classified as fact (2 functional FKs), but non-functional warehouse
+        # should NOT get an FK column on the fact table
+        assert "customer_sk" in ddl, "Functional FK should still be present"
+        assert "product_sk" in ddl, "Functional FK should still be present"
+        # Extract fact_shipment DDL block only
+        fact_start = ddl.index("fact_shipment")
+        fact_block = ddl[fact_start:ddl.index(";", fact_start)]
+        assert "warehouse_sk" not in fact_block, \
+            "Non-functional property should NOT produce FK on auto-classified fact"

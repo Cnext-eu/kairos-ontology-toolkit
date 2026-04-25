@@ -177,6 +177,7 @@ class GoldTableDef:
         self.schema = schema
         self.full_name = f"{schema}.{name}"
         self.table_type = table_type  # fact | dimension | bridge
+        self.explicit_fact: bool = False  # True when goldTableType "fact" is explicit
         self.columns: list[GoldColumnDef] = []
         self.pk_column: Optional[str] = None
         self.fk_constraints: list[tuple[str, str, str, str]] = []
@@ -501,6 +502,9 @@ def build_gold_tables(
         tbl_name = gold_table_name(cls_uri, local, table_type)
 
         tbl = GoldTableDef(tbl_name, schema_name, table_type)
+        tbl.explicit_fact = (
+            _str_val(merged, cls_uri, KAIROS_EXT.goldTableType) == "fact"
+        )
         tbl.source_class_uri = uri_str
         tbl.source_class_label = cls_info.get("label", local)
         is_ref = _bool_val(merged, cls_uri, KAIROS_EXT.isReferenceData, False)
@@ -994,7 +998,8 @@ def _add_gold_fk_columns(
         has_explicit_col = bool(_str_val(graph, prop, KAIROS_EXT.goldColumnName))
         is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
         if not has_explicit_col and not is_functional \
-                and not _has_max_cardinality_1(graph, cls_uri, prop):
+                and not _has_max_cardinality_1(graph, cls_uri, prop) \
+                and not tbl.explicit_fact:
             continue
 
         range_cls = graph.value(prop, RDFS.range)
