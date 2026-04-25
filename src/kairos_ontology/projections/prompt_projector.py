@@ -221,7 +221,7 @@ class PromptProjector:
             print(f"✅ Generated: {file_path}")
 
 
-def main():
+def main() -> None:
     """CLI entry point for Prompt projector"""
     import argparse
     

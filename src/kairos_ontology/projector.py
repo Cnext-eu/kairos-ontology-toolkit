@@ -264,8 +264,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             except Exception as e:
                 import traceback
                 print(f"  [{onto_name}] ✗ Failed: {e}")
-                if '--verbose' in str(target):  # Simple verbose check
-                    traceback.print_exc()
+                traceback.print_exc()
 
         # After all domains: generate master ERD for silver target
         if target_name == "silver" and total_files > 0:

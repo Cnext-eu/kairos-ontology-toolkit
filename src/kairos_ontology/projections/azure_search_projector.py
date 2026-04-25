@@ -215,7 +215,7 @@ class AzureSearchProjector:
         return parts[0] + ''.join(word.capitalize() for word in parts[1:])
 
 
-def main():
+def main() -> None:
     """CLI entry point for Azure Search projector"""
     import argparse
     

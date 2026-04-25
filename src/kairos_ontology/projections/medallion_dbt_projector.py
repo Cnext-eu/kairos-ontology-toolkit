@@ -29,7 +29,7 @@ from rdflib import Graph, Namespace, URIRef, XSD, RDFS, SKOS
 from rdflib.namespace import OWL, RDF
 from jinja2 import Environment, FileSystemLoader
 
-from .uri_utils import extract_local_name
+from .uri_utils import camel_to_snake, extract_local_name
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +97,7 @@ SH = Namespace("http://www.w3.org/ns/shacl#")
 
 def _camel_to_snake(name: str) -> str:
     """Convert PascalCase / camelCase to snake_case."""
-    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+    return camel_to_snake(name)
 
 
 def _source_type_to_spark(src_type: str) -> str:

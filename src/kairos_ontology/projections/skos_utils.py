@@ -9,7 +9,7 @@ alternative labels (synonyms) for use in projections.
 """
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from rdflib import Graph, Namespace, SKOS
 from .uri_utils import extract_local_name
 
@@ -17,7 +17,7 @@ from .uri_utils import extract_local_name
 class SKOSParser:
     """Parse SKOS mapping files and extract synonyms"""
     
-    def __init__(self, mappings_dir: Path = None):
+    def __init__(self, mappings_dir: Optional[Path] = None):
         self.mappings_dir = mappings_dir or Path("ontology-hub/model/mappings")
         self.SKOS = SKOS
         self.KAIROS = Namespace("urn:kairos:ont:core:")
@@ -32,7 +32,7 @@ class SKOSParser:
         for mapping_file in self.mappings_dir.glob("*.ttl"):
             try:
                 graph.parse(mapping_file, format='turtle')
-            except Exception as e:
+            except (SyntaxError, ValueError) as e:
                 print(f"Warning: Could not parse {mapping_file}: {e}")
         
         return graph

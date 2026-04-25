@@ -29,6 +29,8 @@ from typing import Optional
 from rdflib import Graph, Namespace, URIRef, Literal, XSD
 from rdflib.namespace import OWL, RDF, RDFS
 
+from .uri_utils import camel_to_snake, local_name
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -85,8 +87,7 @@ XSD_TO_TMDL: dict[str, str] = {
 
 def _camel_to_snake(name: str) -> str:
     """Convert CamelCase or camelCase to snake_case (R4)."""
-    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+    return camel_to_snake(name)
 
 
 def _to_pascal_case(name: str) -> str:
@@ -101,9 +102,7 @@ def _mmd_type(sql_type: str) -> str:
 
 def _local_name(uri: str) -> str:
     """Extract local name from a URI."""
-    if "#" in uri:
-        return uri.rsplit("#", 1)[1]
-    return uri.rsplit("/", 1)[1]
+    return local_name(uri)
 
 
 def _str_val(graph: Graph, subject: URIRef, predicate: URIRef,
@@ -1035,7 +1034,7 @@ def _add_gold_fk_columns(
             ext_schema = f"gold_{ns_part}"
             ref_full = f"{ext_schema}.{range_tbl}"
 
-        nullable = True if comment_prefix else True  # FK columns nullable by default
+        nullable = True  # FK columns nullable by default
         prop_label = _camel_to_snake(_local_name(str(prop)))
         comment = comment_prefix or ""
 
