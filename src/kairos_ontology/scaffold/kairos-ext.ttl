@@ -166,6 +166,12 @@ kairos-ext:goldSchema a owl:AnnotationProperty ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
+kairos-ext:goldInheritanceStrategy a owl:AnnotationProperty ;
+    rdfs:label "gold inheritance strategy"@en ;
+    rdfs:comment "OWL subclass projection strategy for gold layer (G5). Values: 'class-per-table' (default) or 'discriminator'. When 'class-per-table', each subclass gets its own table with shared PK/FK to parent. When 'discriminator', subtypes are flattened into the parent table. Can be set at ontology level (default for all classes) or per-class override."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
 kairos-ext:generateDateDimension a owl:AnnotationProperty ;
     rdfs:label "generate date dimension"@en ;
     rdfs:comment "If true, auto-generate a dim_date table with YYYYMMDD integer key and calendar hierarchy. Default: true."@en ;

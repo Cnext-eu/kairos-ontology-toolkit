@@ -34,7 +34,7 @@ on Microsoft Fabric Warehouse.
 | G2 | dim_/fact_/bridge_ prefixes | Gold tables use dimensional naming conventions. |
 | G3 | SCD Type 2 dimensions | Dimensions with `scdType "2"` get valid_from/valid_to/is_current. Facts never get SCD columns. |
 | G4 | GDPR row-level security | GDPR satellite → secured dimension + RLS role in TMDL. |
-| G5 | Materialized hierarchies | OWL subclass hierarchies flattened into dimension columns for drill-down. |
+| G5 | Class-per-table inheritance | OWL subclass hierarchies projected as separate tables with shared PK/FK to parent (default). Opt into discriminator flattening via `goldInheritanceStrategy "discriminator"`. |
 | G6 | Reference → shared dimension | Reference data promoted to `dim_` shared dimension. |
 | G7 | Aggregate tables | (Deferred) Pre-aggregated fact tables. |
 | G8 | Power BI optimised types | INT surrogate keys, BIT for booleans, VARCHAR instead of STRING. |
@@ -113,6 +113,7 @@ domain:hasOrderAmount
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `goldSchema` | string | `gold_{domain}` | Target schema name |
+| `goldInheritanceStrategy` | string | `class-per-table` | Subclass projection strategy: `"class-per-table"` (each subclass → own table with shared PK/FK to parent) or `"discriminator"` (flatten into parent table). Can also be set per-class. |
 | `generateDateDimension` | boolean | `true` | Auto-generate dim_date |
 | `generateTimeIntelligence` | boolean | `false` | Generate time-intelligence calculation group (YTD/QTD/MTD/PY/YoY%) |
 
