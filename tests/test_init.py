@@ -539,14 +539,64 @@ def test_update_noop_when_current(tmp_path):
     assert "up to date" in result.output
 
 
-def test_update_reports_missing_files(tmp_path):
-    """update should warn about managed files that don't exist locally."""
+def test_update_creates_missing_files(tmp_path):
+    """update should create managed files that don't exist locally."""
+    from kairos_ontology import __version__ as ver
     runner = CliRunner()
-    with runner.isolated_filesystem(temp_dir=tmp_path):
+    managed_map = _managed_scaffold_map()
+
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        result = runner.invoke(cli, ["update"])
+
+        assert result.exit_code == 0, result.output
+        assert "Created" in result.output
+
+        # Verify the files were actually created with correct version stamp
+        for rel_path in managed_map:
+            created_file = Path(td) / rel_path
+            assert created_file.is_file(), f"Expected {rel_path} to be created"
+            content = created_file.read_text(encoding="utf-8")
+            assert _get_managed_version(content) == ver
+
+
+def test_update_check_reports_missing_as_drift(tmp_path):
+    """update --check should report missing files as drift (exit 1) without creating."""
+    runner = CliRunner()
+    managed_map = _managed_scaffold_map()
+
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        result = runner.invoke(cli, ["update", "--check"])
+
+        assert result.exit_code != 0
+        assert "missing" in result.output
+
+        # Files should NOT have been created
+        for rel_path in managed_map:
+            assert not (Path(td) / rel_path).is_file()
+
+
+def test_update_creates_new_skill_file(tmp_path):
+    """update should create a newly added skill while leaving existing ones."""
+    from kairos_ontology import __version__ as ver
+    runner = CliRunner()
+    managed_map = _managed_scaffold_map()
+    skill_paths = [p for p in managed_map if "skills/" in p]
+
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        # Pre-populate all but the last skill (simulating a hub missing one)
+        for rel_path, scaffold_src in managed_map.items():
+            if rel_path == skill_paths[-1]:
+                continue  # skip one skill
+            dst = Path(td) / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            content = scaffold_src.read_text(encoding="utf-8")
+            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+
         result = runner.invoke(cli, ["update"])
 
     assert result.exit_code == 0, result.output
-    assert "missing" in result.output
+    assert "Created 1 new file" in result.output
+    assert skill_paths[-1] in result.output
 
 
 # ---------------------------------------------------------------------------

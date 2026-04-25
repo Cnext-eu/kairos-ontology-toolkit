@@ -47,13 +47,16 @@ skill files).  After upgrading, refresh them:
 # Preview what would change
 python -m kairos_ontology update --check
 
-# Apply the updates
+# Apply the updates (refreshes outdated files + creates missing ones)
 python -m kairos_ontology update
 ```
 
 This updates:
 - `.github/copilot-instructions.md`
 - `.github/skills/*/SKILL.md`
+
+New managed files (e.g., skills added in a newer toolkit version) are
+**created automatically** — no need to re-run `init`.
 
 ### Step 3 — Restart Copilot to load updated skills
 
@@ -116,6 +119,6 @@ repo was scaffolded by `kairos-ontology new-repo`.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `update --check` reports drift | Toolkit was upgraded but managed files weren't refreshed | Run `python -m kairos_ontology update` |
-| Managed files missing | Repo was created before the skill was added | Run `python -m kairos_ontology init --company-domain <domain>` |
+| Managed files missing | Repo was created before the skill was added | Run `python -m kairos_ontology update` (creates missing files automatically) |
 | `--version` shows old version | pip cache or wrong virtualenv | `pip install --force-reinstall kairos-ontology-toolkit` |
 | pyproject.toml pin too old | Never updated after toolkit upgrade | Edit the `>=X.Y.Z` constraint manually |
