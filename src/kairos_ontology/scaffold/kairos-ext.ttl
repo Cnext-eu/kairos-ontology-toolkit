@@ -127,6 +127,22 @@ kairos-ext:nullable a owl:AnnotationProperty ;
     rdfs:comment "Explicit nullability override (R11). false = NOT NULL. SHACL sh:minCount 1 also implies NOT NULL."@en ;
     rdfs:range xsd:boolean .
 
+kairos-ext:populationRequirement a owl:AnnotationProperty ;
+    rdfs:label "population requirement"@en ;
+    rdfs:comment "Whether this property must be populated in silver. Values: 'required' (must have source mapping), 'optional' (may be NULL), 'derived' (computed from other properties), 'unmapped' (known to have no source, explicitly deferred). Default: 'optional'."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:derivationFormula a owl:AnnotationProperty ;
+    rdfs:label "derivation formula"@en ;
+    rdfs:comment "SQL expression for computing a derived property. Only used when populationRequirement = 'derived'. May reference other column names from the same entity."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:naturalKey a owl:AnnotationProperty ;
+    rdfs:label "natural key"@en ;
+    rdfs:comment "Space-separated list of property names (camelCase) that form the natural/business key for this class. Used for surrogate key generation and IRI construction in silver."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
 kairos-ext:junctionTableName a owl:AnnotationProperty ;
     rdfs:label "junction table name"@en ;
     rdfs:comment "Name of the junction/bridge table for a many-to-many object property (R13)."@en ;
