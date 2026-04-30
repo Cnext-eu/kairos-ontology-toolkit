@@ -403,7 +403,7 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
         return result
 
     g = Graph()
-    for ttl in sorted(mappings_dir.glob("*.ttl")):
+    for ttl in sorted(mappings_dir.rglob("*.ttl")):
         try:
             g.parse(ttl, format="turtle")
         except Exception as exc:

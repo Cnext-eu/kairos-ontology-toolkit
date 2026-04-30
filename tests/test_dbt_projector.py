@@ -279,6 +279,16 @@ class TestSkosMapping:
         result = _parse_skos_mappings(empty)
         assert result == {"table_maps": {}, "column_maps": {}}
 
+    def test_parse_skos_subdirectory(self, tmp_path):
+        """Mapping files in subdirectories are discovered (rglob)."""
+        d = tmp_path / "mappings"
+        sub = d / "adminpulse"
+        sub.mkdir(parents=True)
+        (sub / "adminpulse-to-client.ttl").write_text(SKOS_MAPPING_TTL, encoding="utf-8")
+        maps = _parse_skos_mappings(d)
+        assert len(maps["table_maps"]) == 1
+        assert len(maps["column_maps"]) == 2
+
 
 # ---------------------------------------------------------------------------
 # Unit tests: SHACL test extraction
