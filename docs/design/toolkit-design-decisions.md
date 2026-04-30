@@ -15,9 +15,9 @@ Kairos Ontology Toolkit. Each decision is recorded as an Architecture Decision R
 |----|-------|--------|------|
 | [DD-001](#dd-001-gold-layer-inheritance--class-per-table) | Gold Layer Inheritance — Class-Per-Table | Proposed | 2026-04-25 |
 | [DD-002](#dd-002-dbt-sql-dialect--platform-specific-generation) | dbt SQL Dialect — Platform-Specific Generation | Accepted | 2026-04-30 |
-| [DD-003](#dd-003-staging--platform-specific-silver--portable) | Staging = Platform-Specific, Silver = Portable | Accepted | 2026-04-30 |
-| [DD-004](#dd-004-keep-staging-naming-not-bronze) | Keep "staging" Naming (Not "bronze") | Accepted | 2026-04-30 |
-| [DD-005](#dd-005-silver-references-staging-directly) | Silver References Staging Directly | Accepted | 2026-04-30 |
+| [DD-003](#dd-003-staging--platform-specific-silver--portable) | Staging = Platform-Specific, Silver = Portable | ~~Superseded by DD-014~~ | 2026-04-30 |
+| [DD-004](#dd-004-keep-staging-naming-not-bronze) | Keep "staging" Naming (Not "bronze") | ~~Superseded by DD-014~~ | 2026-04-30 |
+| [DD-005](#dd-005-silver-references-staging-directly) | Silver References Staging Directly | ~~Superseded by DD-014~~ | 2026-04-30 |
 | [DD-006](#dd-006-column-level-json-not-table-level-physicalstorage) | Column-Level JSON, Not Table-Level physicalStorage | Accepted | 2026-04-30 |
 | [DD-007](#dd-007-extend-kairos-ext-namespace) | Extend kairos-ext Namespace | Accepted | 2026-04-30 |
 | [DD-008](#dd-008-generated-macros-alongside-models) | Generated Macros Alongside Models | Accepted | 2026-04-30 |
@@ -25,6 +25,9 @@ Kairos Ontology Toolkit. Each decision is recorded as an Architecture Decision R
 | [DD-010](#dd-010-branch-protection-on-new-repo) | Branch Protection on new-repo | Accepted | 2026-04-30 |
 | [DD-011](#dd-011-silver-output-inside-dbt-tree) | Silver Output Inside dbt Tree | Accepted | 2026-04-28 |
 | [DD-012](#dd-012-non-fatal-github-operations) | Non-Fatal GitHub Operations | Accepted | 2026-04-30 |
+| [DD-013](#dd-013-pre-release-publishing-via-git-tags--channel-system) | Pre-Release Publishing via Git Tags + Channel System | Accepted | 2026-05-01 |
+| [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly) | Eliminate Staging — Silver Reads Bronze Directly | Accepted | 2026-05-14 |
+| [DD-015](#dd-015-vocabulary-ttl-as-bronze-contract) | Vocabulary TTL as Bronze Contract | Accepted | 2026-05-14 |
 
 ---
 
@@ -77,7 +80,7 @@ dim_legal_entity (party_sk PK+FK, registration_number, ...)
 
 **Status:** Accepted  
 **Date:** 2026-04-30  
-**Affects:** `medallion_dbt_projector.py`, staging templates, type maps  
+**Affects:** `medallion_dbt_projector.py`, silver/gold templates, type maps  
 **Implementation:** Type maps `_SOURCE_TO_FABRIC`, `_SOURCE_TO_DATABRICKS`, `_PLATFORM_TYPE_MAPS`
 
 ### Context
@@ -113,7 +116,7 @@ Generate **platform-specific SQL** controlled by a `target_platform` parameter:
 
 ## DD-003: Staging = Platform-Specific, Silver = Portable
 
-**Status:** Accepted  
+**Status:** ~~Superseded by [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly)~~  
 **Date:** 2026-04-30  
 **Affects:** Template selection logic in `_gen_staging_models()`, silver model generation  
 **Implementation:** `staging_model.sql.jinja2` (Fabric), `staging_model_databricks.sql.jinja2`
@@ -124,27 +127,20 @@ Should we generate one set of models for all platforms or separate per platform?
 
 ### Decision
 
-**Hybrid approach:**
+**Superseded.** The staging layer has been removed entirely (see DD-014).
+Silver now reads directly from bronze and handles all platform-specific logic
+via `dbt_utils` macros and generated platform macros.
 
-| Layer | Strategy | Rationale |
-|-------|----------|-----------|
-| **Staging** | Platform-specific templates | JSON extraction is fundamentally different per platform |
-| **Silver** | `dbt_utils.type_*()` macros (portable) | Domain layer should be platform-independent |
-| **Gold** | `dbt_utils` macros (portable) | Same as silver |
-
-### Consequence
-
-- Changing platforms requires **regenerating staging** only
-- Silver/gold can switch platforms by just changing the dbt profile (no regen)
+Original decision was: Platform-specific staging templates, portable silver via `dbt_utils`.
 
 ---
 
 ## DD-004: Keep "staging" Naming (Not "bronze")
 
-**Status:** Accepted  
+**Status:** ~~Superseded by [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly)~~  
 **Date:** 2026-04-30  
 **Affects:** dbt model naming convention, folder structure  
-**Implementation:** `models/staging/{source}/stg_{source}__{table}.sql`
+**Implementation:** N/A — staging layer removed
 
 ### Context
 
@@ -153,24 +149,18 @@ transform layer.
 
 ### Decision
 
-Keep **"staging"** (`stg_{source}__{table}`).
-
-### Rationale
-
-- "Bronze" = raw data as landed by ingestion (Data Factory). These are Lakehouse tables,
-  NOT dbt models.
-- "Staging" = first dbt transform layer (rename, type cast, JSON extract). This IS a dbt model.
-- Using "bronze" would blur the ingestion ↔ transformation boundary.
-- dbt community convention uses `stg_` universally.
+**Superseded.** There is no staging layer in the dbt project. Bronze is managed by
+the data platform (outside dbt). Silver is the first dbt layer and reads from bronze
+directly via `{{ source() }}`. See DD-014.
 
 ---
 
 ## DD-005: Silver References Staging Directly
 
-**Status:** Accepted  
+**Status:** ~~Superseded by [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly)~~  
 **Date:** 2026-04-30  
 **Affects:** Silver model generation, dbt DAG structure  
-**Implementation:** Silver models use `{{ ref('stg_source__table') }}` directly
+**Implementation:** Silver models use `{{ source('system', 'table') }}` directly
 
 ### Context
 
@@ -178,18 +168,8 @@ Should silver models reference staging directly or go through a bridge layer?
 
 ### Decision
 
-**Direct reference** — no intermediate "domain staging" layer.
-
-```
-stg_erp__orders → silver.order  (direct, chosen)
-stg_erp__orders → stg_domain__order → silver.order  (bridge, rejected)
-```
-
-### Rationale
-
-- Simpler DAG (fewer nodes, less materialization cost)
-- Mapping transforms are lightweight column expressions, not joins
-- Bridge can be added later without breaking silver if needed
+**Superseded.** Silver now references bronze directly via `{{ source() }}` — there
+is no staging layer at all. See DD-014.
 
 ---
 
@@ -457,6 +437,122 @@ Use **git tag-based pre-releases** with a **channel system**:
 - `preview` = explicit opt-in for testing pre-releases
 - Pre-releases skip PyPI publish (avoids polluting the public index)
 - `@main` deprecated in favor of tag pins for reproducibility
+
+---
+
+## DD-014: Eliminate Staging — Silver Reads Bronze Directly
+
+**Status:** Accepted  
+**Date:** 2026-05-14  
+**Affects:** `medallion_dbt_projector.py`, dbt templates, generated project structure  
+**Implementation:** `_gen_silver_models()` uses `{{ source() }}`, `_gen_staging_models()` removed from pipeline  
+**Supersedes:** DD-003, DD-004, DD-005
+
+### Context
+
+The original dbt projector generated a **staging layer** (`stg_*` models) between
+bronze sources and silver entity models. Staging performed rename + type cast as
+materialized views, and silver then referenced staging via `{{ ref('stg_...') }}`.
+
+This created several issues:
+1. **Redundant layer** — the rename/cast logic is simple enough to inline in silver
+2. **Confusing ownership** — staging models were dbt-managed but conceptually part
+   of the source-system world, blurring the platform ↔ dbt boundary
+3. **Double materialization** — views still have execution cost in some platforms
+4. **Maintenance burden** — two template families (Fabric + Databricks staging)
+
+### Decision
+
+**Remove the staging layer entirely.** Silver is the first dbt layer and reads
+directly from bronze tables via `{{ source('system', 'table') }}`.
+
+| Before | After |
+|--------|-------|
+| Bronze → `stg_*` (view) → Silver (table) → Gold | Bronze → Silver (table) → Gold |
+| `models/staging/{source}/stg_{source}__{table}.sql` | ❌ Removed |
+| `_sources.yml` with full column detail | Minimal `_sources.yml` (table refs only) |
+| Silver uses `{{ ref('stg_...') }}` | Silver uses `{{ source('...', '...') }}` |
+
+### What Silver Absorbs
+
+Silver models now handle all transform logic inline:
+- Column renaming (bronze name → domain snake_case name)
+- Type casting via `TRY_CAST` (using original bronze column names)
+- Transform expressions from SKOS mappings (applied directly)
+- Multi-source UNION/JOIN from multiple bronze tables
+
+### Generated Project Structure
+
+```
+models/
+├── silver/
+│   ├── _sources.yml         # Minimal: database + schema + table only
+│   └── {domain}/
+│       ├── {entity}.sql     # Reads from {{ source() }}
+│       └── _models.yml      # Schema + tests
+└── gold/
+    └── {domain}/
+        ├── dim_{entity}.sql
+        └── fact_{entity}.sql
+```
+
+### Breaking Change
+
+Existing hub repos with generated dbt artifacts must **regenerate** after upgrading.
+The `models/staging/` directory and all `stg_*` files should be deleted.
+
+### Rationale
+
+- Simpler DAG (fewer nodes, less materialization cost)
+- Clear boundary: Bronze = platform, Silver = dbt
+- Vocabulary TTL is the authoritative bronze contract (see DD-015)
+- One fewer template family to maintain
+- Silver SQL is still readable — transforms are column expressions, not complex joins
+
+---
+
+## DD-015: Vocabulary TTL as Bronze Contract
+
+**Status:** Accepted  
+**Date:** 2026-05-14  
+**Affects:** `integration/sources/`, `_sources.yml` generation, silver model generation  
+**Implementation:** `_parse_bronze()` reads vocabulary TTL; `_gen_sources()` generates minimal YAML
+
+### Context
+
+With the staging layer removed (DD-014), dbt `_sources.yml` becomes minimal — it only
+declares database, schema, and table names for `{{ source() }}` resolution. But the dbt
+pipeline still needs to know bronze table structure (columns, types, keys) to generate
+correct silver SQL.
+
+### Decision
+
+The **`*.vocabulary.ttl`** files in `integration/sources/{system}/` are the **single
+source of truth** for bronze table structure. This is a foundational contract:
+
+| Artifact | Role | Column detail? |
+|----------|------|----------------|
+| `*.vocabulary.ttl` (kairos-bronze: namespace) | **Authoritative** — tables, columns, types, keys | ✅ Yes |
+| `_sources.yml` (dbt) | **Minimal reference** — connection info only | ❌ No |
+| SKOS mappings (`model/mappings/`) | **Transform rules** — how bronze maps to domain | References vocab URIs |
+
+### Implications
+
+1. **Vocabulary must stay in sync with actual bronze tables** — if the data platform
+   team adds/removes/renames a column, the vocabulary TTL must be updated first.
+2. **Regeneration workflow**: update vocabulary → update mappings → run `kairos-ontology project`
+   → commit generated silver SQL.
+3. **dbt `_sources.yml` is NOT the documentation layer** — use vocabulary TTL for
+   column-level documentation and lineage.
+4. **Silver SQL references original bronze column names** — transforms use actual column
+   names from the vocabulary (e.g., `ClientID`, not `client_id`).
+
+### Rationale
+
+- Single source of truth avoids drift between dbt YAML and actual bronze schema
+- Vocabulary TTL is version-controlled alongside mappings in the ontology hub
+- RDF/OWL tooling can validate vocabulary completeness and consistency
+- Minimal `_sources.yml` reduces noise and maintenance
 
 ---
 

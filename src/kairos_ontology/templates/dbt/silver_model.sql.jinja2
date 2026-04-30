@@ -8,7 +8,7 @@
 -- Ontology: {{ ontology_metadata.iri }}
 {%- endif %}
 --
--- Maps staging models to the silver domain entity.
+-- Maps bronze source tables to the silver domain entity.
 -- Column definitions align with the silver projector DDL output.
 
 {{"{{"}} config(
@@ -20,7 +20,7 @@
 
 {% if loop.first %}with {% else %}     {% endif %}{{ cte.alias }} as (
 
-    select * from {{"{{"}} ref('{{ cte.model }}') {{"}}"}}
+    select * from {{"{{"}} source('{{ cte.source_name }}', '{{ cte.table_name }}') {{"}}"}}
 
 ){% if not loop.last %},{% endif %}
 {%- endfor %}

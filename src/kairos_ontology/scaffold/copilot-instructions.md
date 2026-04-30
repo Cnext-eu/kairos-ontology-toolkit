@@ -102,8 +102,8 @@ a `{domain}-silver-ext.ttl` annotation file in `ontology-hub/model/extensions/` 
 
 For the **dbt** target (medallion bronze-to-silver pipeline), first populate
 `ontology-hub/integration/sources/` with reference docs, generate bronze vocabulary using the
-**kairos-medallion-staging** skill, then create SKOS mappings and run the
-**kairos-medallion-projection** skill.
+**kairos-medallion-staging** skill (which describes bronze table structure), then create
+SKOS mappings and run the **kairos-medallion-projection** skill.
 
 For the **report** target (HTML mapping coverage reports), ensure source vocabularies
 and SKOS mappings exist, then run `project --target report`.  Reports go to

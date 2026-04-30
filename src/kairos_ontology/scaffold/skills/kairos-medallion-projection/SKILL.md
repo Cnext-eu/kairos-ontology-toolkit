@@ -1,7 +1,7 @@
 ---
 name: kairos-medallion-projection
 description: >
-  Expert guide for generating dbt Core staging and silver models as part of the
+  Expert guide for generating dbt Core silver models as part of the
   medallion architecture. Covers the full bronze-to-silver pipeline using source
   vocabulary, source-to-domain column mappings (SKOS + kairos-map:), and
   SHACL-derived dbt tests.
@@ -26,10 +26,9 @@ is driven by:
 Before running this projection, ensure the following artifacts exist in the hub:
 
 - **Source vocabulary** must exist in `integration/sources/{system-name}/` — one `{system-name}.vocabulary.ttl` file per source system
-  describing tables and columns using the `kairos-bronze:` vocabulary. Use the
-  `kairos-medallion-staging` skill to create these from source system documentation
-  found in `integration/sources/`. The dbt projector scans `integration/sources/`
-  recursively for `*.ttl` files with the `kairos-bronze:` namespace.
+  describing tables and columns using the `kairos-bronze:` vocabulary. The dbt
+  projector scans `integration/sources/` recursively for `*.ttl` files with the
+  `kairos-bronze:` namespace.
 - **Silver canonical schema** should exist — domain ontologies with silver projection
   annotations (`kairos-ext:` / `kairos-silver:` properties). Use the
   `kairos-medallion-silver` skill to design and generate the silver layer schema.
@@ -46,16 +45,16 @@ Bronze (source systems)          Silver (domain model)
 │ erp-navision.ttl  │  mappings  │ client.ttl       │
 └───────────────────┘            └──────────────────┘
         ↓                                ↓
-  dbt sources.yml              dbt silver models
-  dbt staging models           dbt schema + tests
+  dbt sources.yml                dbt silver models
+                                 dbt schema + tests
 ```
 
 **dbt layer mapping:**
 
 | Medallion | dbt Layer | Materialization | What |
 |-----------|-----------|----------------|------|
-| Bronze | `sources` + `staging/` | views | Raw tables, rename + cast |
-| Silver | `silver/` | tables | Domain entities, business logic |
+| Bronze | `sources` | — | Raw tables, source definitions only |
+| Silver | `silver/` | tables | Domain entities, rename + cast + business logic |
 
 ---
 
@@ -192,9 +191,8 @@ python -m kairos_ontology project --ontology ontology-hub/model/ontologies/clien
 ```
 output/medallion/dbt/
   models/
-    staging/{source}/
+    silver/{source}/
       _{source}__sources.yml         # dbt source definitions
-      stg_{source}__{table}.sql      # Staging models (views)
     silver/{domain}/
       _{domain}__models.yml          # Schema + SHACL tests
       {entity}.sql                   # Silver entity models (tables)
@@ -205,12 +203,6 @@ output/medallion/dbt/
 ---
 
 ## Phase 4 — Review and validate
-
-### Check staging models
-
-- Each source table should have a `stg_` model
-- Staging models should only rename + cast (no joins, no aggregations)
-- Materialized as views
 
 ### Check silver models
 

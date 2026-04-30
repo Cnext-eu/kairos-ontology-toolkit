@@ -6,7 +6,7 @@
 #
 # Describes source system schemas (tables, columns, types) for the bronze
 # layer of the medallion architecture. Used by the dbt projector to generate
-# staging models from source system metadata.
+# silver models from source system metadata.
 
 @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
 @prefix owl:   <http://www.w3.org/2002/07/owl#> .
@@ -162,7 +162,7 @@ kairos-bronze:scale a owl:DatatypeProperty ;
 
 kairos-bronze:contentType a owl:DatatypeProperty ;
     rdfs:label "content type" ;
-    rdfs:comment "Physical content type of a column. Values: 'scalar' (default, plain value), 'json-array' (JSON array to be expanded), 'json-object' (JSON object to be parsed). When set to a JSON type, the column requires OPENJSON/LATERAL FLATTEN extraction in staging." ;
+    rdfs:comment "Physical content type of a column. Values: 'scalar' (default, plain value), 'json-array' (JSON array to be expanded), 'json-object' (JSON object to be parsed). When set to a JSON type, the column requires OPENJSON/LATERAL FLATTEN extraction in silver." ;
     rdfs:domain kairos-bronze:SourceColumn ;
     rdfs:range xsd:string .
 

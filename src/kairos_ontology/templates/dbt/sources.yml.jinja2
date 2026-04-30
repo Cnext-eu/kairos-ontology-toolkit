@@ -9,17 +9,4 @@ sources:
 {%- for table in tables %}
       - name: {{ table.name }}
         description: "{{ table.label }}"
-{%- if table.columns %}
-        columns:
-{%- for col in table.columns %}
-          - name: {{ col.name }}
-            description: "{{ col.description }}"
-{%- if col.tests %}
-            tests:
-{%- for test in col.tests %}
-              - {{ test }}
-{%- endfor %}
-{%- endif %}
-{%- endfor %}
-{%- endif %}
 {%- endfor %}
