@@ -112,6 +112,35 @@ python -m kairos_ontology --version
 > **Always use `python -m kairos_ontology`** to invoke the CLI. This works
 > regardless of whether the `Scripts/` directory is on your PATH.
 
+### Updating the Toolkit
+
+Hub repos include a `[tool.kairos]` section in `pyproject.toml` that controls
+which toolkit version is installed:
+
+```toml
+[tool.kairos]
+channel = "stable"    # "stable" (default), "preview", or an explicit tag like "v2.16.0"
+```
+
+| Channel | Resolves to | Use case |
+|---------|-------------|----------|
+| `stable` | Latest GA release (e.g. `v2.17.0`) | Production hubs |
+| `preview` | Latest pre-release (e.g. `v2.18.0-rc.1`) | Testing new features |
+| `v2.16.0` | Explicit pinned version | Locked environments |
+
+To upgrade the toolkit and refresh managed files:
+
+```bash
+# Upgrade to the channel's latest version
+python -m kairos_ontology update --upgrade
+
+# Refresh skill files and copilot-instructions
+python -m kairos_ontology update
+```
+
+> **Testing a pre-release:** Set `channel = "preview"` in `pyproject.toml`, run
+> `update --upgrade`, validate your projections, then switch back to `"stable"`.
+
 ---
 
 ## 4. Creating an Ontology Hub

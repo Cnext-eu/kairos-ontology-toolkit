@@ -15,6 +15,9 @@ node_modules/
 .idea/
 *.swp
 
+# Kairos generated outputs (re-generate with: python -m kairos_ontology project)
+ontology-hub/output/
+
 # OS
 .DS_Store
 Thumbs.db

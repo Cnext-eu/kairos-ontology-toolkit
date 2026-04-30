@@ -4,10 +4,17 @@ version = "0.1.0"
 description = "Kairos ontology hub — {description}"
 requires-python = ">=3.12"
 dependencies = [
-    "kairos-ontology-toolkit @ git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@main",
+    "kairos-ontology-toolkit @ git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@{toolkit_ref}",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
 ]
+
+[tool.kairos]
+# Channel controls which toolkit version is installed on `kairos-ontology update --upgrade`.
+#   "stable"  — latest GA release (default)
+#   "preview" — latest pre-release (rc/beta/alpha) for testing new features
+#   "v2.16.0" — explicit pinned version
+channel = "stable"

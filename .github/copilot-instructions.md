@@ -58,6 +58,7 @@ When reviewing or creating a pull request, verify:
 | **SPDX headers** | Every new or modified `.py` file has the `SPDX-License-Identifier` + `Copyright` header |
 | **No secrets** | No API keys, tokens, passwords, or internal URLs in code, config, or comments |
 | **No PII** | No personal data (names, emails, addresses) in ontology labels, test fixtures, or comments |
+| **Design decisions** | If the PR introduces an architectural choice, update `docs/design/toolkit-design-decisions.md` |
 | **Dependency licenses** | New dependencies must be compatible with Apache 2.0 (BSD, MIT, Apache, ISC are OK; GPL is NOT) |
 | **DCO sign-off** | Contributor commits should have `Signed-off-by:` trailer (enforced by convention) |
 | **NOTICE file** | If adding a bundled third-party component, update `NOTICE` with attribution |
@@ -129,3 +130,11 @@ also be applied to the corresponding scaffold location:
 **Rule**: After adding or modifying a skill in `.github/skills/`, always copy it to
 `src/kairos_ontology/scaffold/skills/` before committing. Run `py -m pytest` to confirm
 no packaging tests break.
+
+## Design decisions log
+
+- All significant design decisions are recorded in `docs/design/toolkit-design-decisions.md`.
+- **PR rule:** If a PR introduces or changes an architectural decision, add or update an
+  entry in the design decisions log before merging.
+- Use the ADR template at the bottom of the file for new entries.
+- Increment the DD-NNN number sequentially.

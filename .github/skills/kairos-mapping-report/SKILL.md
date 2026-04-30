@@ -16,7 +16,7 @@ source system concepts align with the domain ontology.
 0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
    at the start of the session.  If it reports outdated files, run
    `python -m kairos_ontology update` and commit the refresh before doing any other work.
-   See the kairos-toolkit-update skill for full upgrade steps.
+   See the kairos-toolkit-ops skill for full upgrade steps.
 
 ## What this report is
 

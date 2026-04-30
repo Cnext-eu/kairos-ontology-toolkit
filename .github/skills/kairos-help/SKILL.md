@@ -152,8 +152,14 @@ kairos-ontology init [--name NAME]
 # Create a new hub repository
 kairos-ontology new-repo [--name NAME]
 
-# Update an existing hub to latest toolkit version
+# Update managed files to installed toolkit version
 kairos-ontology update
+
+# Upgrade toolkit to channel's latest version (stable/preview)
+kairos-ontology update --upgrade
+
+# Preview what update would change
+kairos-ontology update --check
 
 # Migrate flat layout → grouped layout
 kairos-ontology migrate

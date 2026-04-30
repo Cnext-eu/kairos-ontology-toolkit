@@ -34,18 +34,19 @@ if ($gitStatus) {
     exit 1
 }
 
-# Get current version from pyproject.toml
+# Get current version from pyproject.toml (handles pre-release suffixes like 2.17.0rc1)
 $pyprojectContent = Get-Content "pyproject.toml" -Raw
-if ($pyprojectContent -match 'version\s*=\s*"([0-9]+)\.([0-9]+)\.([0-9]+)"') {
+if ($pyprojectContent -match 'version\s*=\s*"([0-9]+)\.([0-9]+)\.([0-9]+)([a-z0-9]*)"') {
     $major = [int]$matches[1]
     $minor = [int]$matches[2]
     $patch = [int]$matches[3]
+    $currentPreSuffix = $matches[4]
 } else {
     Write-Host "❌ Error: Could not parse version from pyproject.toml" -ForegroundColor Red
     exit 1
 }
 
-$currentVersion = "$major.$minor.$patch"
+$currentVersion = "$major.$minor.$patch$currentPreSuffix"
 Write-Host "📦 Current version: $currentVersion" -ForegroundColor Yellow
 Write-Host ""
 
@@ -57,13 +58,16 @@ $majorTarget = "$($major + 1).0.0"
 Write-Host "  [1] Patch `(bug fixes`)         $currentVersion -> $patchTarget" -ForegroundColor White
 Write-Host "  [2] Minor `(new features`)      $currentVersion -> $minorTarget" -ForegroundColor White
 Write-Host "  [3] Major `(breaking changes`)  $currentVersion -> $majorTarget" -ForegroundColor White
+Write-Host "  [4] Pre-release `(rc/beta/alpha`)  for testing before GA" -ForegroundColor White
 Write-Host ""
 
 do {
-    $choice = Read-Host "Enter choice `(1-3`)"
-} while ($choice -notmatch '^[1-3]$')
+    $choice = Read-Host "Enter choice `(1-4`)"
+} while ($choice -notmatch '^[1-4]$')
 
 # Calculate new version
+$preLabel = ""
+$preNum = 0
 switch ($choice) {
     "1" {
         $newMajor = $major
@@ -83,11 +87,80 @@ switch ($choice) {
         $newPatch = 0
         $releaseType = "Major"
     }
+    "4" {
+        # Pre-release: bump target version (defaults to next minor)
+        Write-Host ""
+        Write-Host "Pre-release target version:" -ForegroundColor Cyan
+        Write-Host "  [1] Next patch: $patchTarget" -ForegroundColor White
+        Write-Host "  [2] Next minor: $minorTarget" -ForegroundColor White
+        Write-Host "  [3] Next major: $majorTarget" -ForegroundColor White
+        Write-Host ""
+        do {
+            $targetChoice = Read-Host "Enter target `(1-3, default=2`)"
+            if ([string]::IsNullOrWhiteSpace($targetChoice)) { $targetChoice = "2" }
+        } while ($targetChoice -notmatch '^[1-3]$')
+
+        switch ($targetChoice) {
+            "1" { $newMajor = $major; $newMinor = $minor; $newPatch = $patch + 1 }
+            "2" { $newMajor = $major; $newMinor = $minor + 1; $newPatch = 0 }
+            "3" { $newMajor = $major + 1; $newMinor = 0; $newPatch = 0 }
+        }
+
+        Write-Host ""
+        Write-Host "Pre-release label:" -ForegroundColor Cyan
+        Write-Host "  [1] rc    `(release candidate — feature-complete, final testing`)" -ForegroundColor White
+        Write-Host "  [2] beta  `(feature-complete, may have bugs`)" -ForegroundColor White
+        Write-Host "  [3] alpha `(early preview, unstable`)" -ForegroundColor White
+        Write-Host ""
+        do {
+            $labelChoice = Read-Host "Enter label `(1-3, default=1`)"
+            if ([string]::IsNullOrWhiteSpace($labelChoice)) { $labelChoice = "1" }
+        } while ($labelChoice -notmatch '^[1-3]$')
+
+        switch ($labelChoice) {
+            "1" { $preLabel = "rc" }
+            "2" { $preLabel = "beta" }
+            "3" { $preLabel = "alpha" }
+        }
+
+        # Determine pre-release sequence number
+        $targetBase = "$newMajor.$newMinor.$newPatch"
+        $existingTags = git tag -l "v$targetBase-$preLabel.*" | Sort-Object -Descending
+        if ($existingTags) {
+            $lastTag = $existingTags[0]
+            if ($lastTag -match "\.$preLabel\.(\d+)$") {
+                $preNum = [int]$matches[1] + 1
+            } else {
+                $preNum = 1
+            }
+        } else {
+            $preNum = 1
+        }
+
+        $releaseType = "Pre-release"
+    }
 }
 
-$newVersion = "$newMajor.$newMinor.$newPatch"
+# Build version strings
+$baseVersion = "$newMajor.$newMinor.$newPatch"
+if ($preLabel) {
+    # PEP 440 pre-release suffix (e.g. 2.17.0rc1, 2.17.0b1, 2.17.0a1)
+    $pep440Label = switch ($preLabel) {
+        "rc"    { "rc" }
+        "beta"  { "b" }
+        "alpha" { "a" }
+    }
+    $newVersion = "$baseVersion$pep440Label$preNum"
+    $tagVersion = "v$baseVersion-$preLabel.$preNum"
+} else {
+    $newVersion = $baseVersion
+    $tagVersion = "v$newVersion"
+}
 Write-Host ""
 Write-Host "🚀 Preparing $releaseType release: $currentVersion -> $newVersion" -ForegroundColor Green
+if ($preLabel) {
+    Write-Host "   Git tag: $tagVersion" -ForegroundColor Yellow
+}
 Write-Host ""
 
 # Confirm
@@ -101,13 +174,13 @@ Write-Host ""
 Write-Host "📝 Updating version numbers..." -ForegroundColor Cyan
 
 # Update pyproject.toml
-$pyprojectContent = $pyprojectContent -replace 'version\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"', "version = `"$newVersion`""
+$pyprojectContent = $pyprojectContent -replace 'version\s*=\s*"[^"]+"', "version = `"$newVersion`""
 Set-Content "pyproject.toml" -Value $pyprojectContent -NoNewline
 
 # Update __init__.py
 $initPath = "src\kairos_ontology\__init__.py"
 $initContent = Get-Content $initPath -Raw
-$initContent = $initContent -replace '__version__\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"', "__version__ = `"$newVersion`""
+$initContent = $initContent -replace '__version__\s*=\s*"[^"]+"', "__version__ = `"$newVersion`""
 Set-Content $initPath -Value $initContent -NoNewline
 
 Write-Host "  ✓ Updated pyproject.toml" -ForegroundColor Green
@@ -146,11 +219,11 @@ Write-Host ""
 $releaseNote = Read-Host "Enter release notes `(one line`)"
 
 if ([string]::IsNullOrWhiteSpace($releaseNote)) {
-    $releaseNote = "Release v$newVersion"
+    $releaseNote = "Release $tagVersion"
 }
 
-$commitMessage = "Release v$newVersion"
-$tagMessage = "Release v$newVersion - $releaseType release`n`n$releaseNote"
+$commitMessage = if ($preLabel) { "chore: bump version to $newVersion `($tagVersion`)" } else { "chore: bump version to $newVersion" }
+$tagMessage = "Release $tagVersion - $releaseType release`n`n$releaseNote"
 
 # Commit changes
 Write-Host ""
@@ -161,8 +234,8 @@ Write-Host "  ✓ Changes committed" -ForegroundColor Green
 
 # Create tag
 Write-Host ""
-Write-Host "🏷️  Creating tag v$newVersion..." -ForegroundColor Cyan
-git tag -a "v$newVersion" -m $tagMessage
+Write-Host "🏷️  Creating tag $tagVersion..." -ForegroundColor Cyan
+git tag -a $tagVersion -m $tagMessage
 Write-Host "  ✓ Tag created" -ForegroundColor Green
 
 # Push to GitHub
@@ -174,7 +247,7 @@ Write-Host "  ✓ Pushed to GitHub" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "  ✅ Release v$newVersion completed!" -ForegroundColor Green
+Write-Host "  ✅ Release $tagVersion completed!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "📦 Package files created in dist/:" -ForegroundColor Cyan
@@ -182,8 +255,8 @@ Get-ChildItem dist | Where-Object { $_.Name -like "*$newVersion*" } | ForEach-Ob
     Write-Host "  - $($_.Name)" -ForegroundColor White
 }
 Write-Host ""
-Write-Host "🔗 GitHub: https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/tag/v$newVersion" -ForegroundColor Cyan
+Write-Host "🔗 GitHub: https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/tag/$tagVersion" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "📦 Install with:" -ForegroundColor Cyan
-Write-Host "  pip install git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@v$newVersion" -ForegroundColor White
+Write-Host "  pip install git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@$tagVersion" -ForegroundColor White
 Write-Host ""

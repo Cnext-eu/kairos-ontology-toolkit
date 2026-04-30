@@ -57,7 +57,7 @@ structure and adds domains inside an existing repo.
 │   ├── derived-ontologies/
 │   └── catalog-v001.xml
 ├── .gitignore
-├── pyproject.toml                       # kairos-ontology-toolkit dependency
+├── pyproject.toml                       # kairos-ontology-toolkit dependency + [tool.kairos] channel
 └── README.md
 ```
 

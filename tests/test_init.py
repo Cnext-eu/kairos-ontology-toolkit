@@ -2,6 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Tests for the kairos-ontology init and new-repo CLI commands."""
 
+import subprocess
 from pathlib import Path
 from unittest import mock
 from click.testing import CliRunner
@@ -976,6 +977,100 @@ def test_new_repo_custom_company_domain(tmp_path):
     content = readme.read_text(encoding="utf-8")
     assert "contoso.io" in content
     assert "contoso.com" not in content
+
+
+# ---------------------------------------------------------------------------
+# Branch protection on new-repo
+# ---------------------------------------------------------------------------
+
+
+def test_new_repo_configures_branch_protection(tmp_path):
+    """new-repo should call gh api to configure branch protection on main."""
+    runner = CliRunner()
+
+    call_log = []
+
+    def side_effect(cmd, *args, **kwargs):
+        call_log.append(cmd)
+        result = mock.MagicMock(returncode=0)
+        # For text=True calls (like git rev-parse), return str stdout
+        if kwargs.get("text"):
+            result.stdout = ""
+            result.stderr = ""
+        elif "gh" in cmd and "api" in cmd and "protection" in " ".join(cmd):
+            if "--method" not in cmd:
+                result.stdout = b'{"required_pull_request_reviews": {"required_approving_review_count": 1}}'
+            else:
+                result.stdout = b'{}'
+            result.stderr = b''
+        else:
+            result.stdout = b''
+            result.stderr = b''
+        return result
+
+    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
+        result = runner.invoke(
+            cli,
+            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+        )
+    assert result.exit_code == 0, result.output
+    assert "Branch protection enabled on main" in result.output
+    assert "Require PR with 1 reviewer" in result.output
+
+    # Verify gh api calls were made for protection
+    str_calls = [" ".join(c) for c in call_log if isinstance(c, list)]
+    assert any("PATCH" in c and "/repos/" in c for c in str_calls)
+    assert any("PUT" in c and "protection" in c for c in str_calls)
+
+
+def test_new_repo_skip_protection_flag(tmp_path):
+    """new-repo --skip-protection should skip branch protection configuration."""
+    runner = CliRunner()
+
+    def side_effect(cmd, *args, **kwargs):
+        result = mock.MagicMock(returncode=0)
+        if kwargs.get("text"):
+            result.stdout = ""
+            result.stderr = ""
+        else:
+            result.stdout = b''
+            result.stderr = b''
+        return result
+
+    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
+        result = runner.invoke(
+            cli,
+            ["new-repo", "contoso", "--path", str(tmp_path),
+             "--template", "", "--skip-protection"],
+        )
+    assert result.exit_code == 0, result.output
+    assert "Branch protection" not in result.output
+    assert "Configuring branch protection" not in result.output
+
+
+def test_new_repo_protection_failure_is_non_fatal(tmp_path):
+    """new-repo should warn (not crash) if branch protection fails."""
+    runner = CliRunner()
+
+    def side_effect(cmd, *args, **kwargs):
+        if kwargs.get("text"):
+            return mock.MagicMock(returncode=0, stdout="", stderr="")
+        # Fail on gh api PUT for protection, succeed on everything else
+        if isinstance(cmd, list) and "gh" in cmd and "--method" in cmd:
+            if "PUT" in cmd and "protection" in " ".join(cmd):
+                raise subprocess.CalledProcessError(
+                    1, cmd, stderr=b"Resource not accessible by integration"
+                )
+        return mock.MagicMock(returncode=0, stdout=b'{}', stderr=b'')
+
+    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
+        result = runner.invoke(
+            cli,
+            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+        )
+    assert result.exit_code == 0, result.output
+    assert "Could not set branch protection" in result.output
+    assert "Repository created" in result.output
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,9 @@ final as (
     {{ join.type }} join {{ join.alias }}
         on {{ join.condition }}
 {%- endfor %}
+{%- if where_clause %}
+    where {{ where_clause }}
+{%- endif %}
 
 )
 
@@ -49,4 +52,7 @@ select
     {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}
 {%- endfor %}
 from {{ source_ctes[0].alias }}
+{%- if where_clause %}
+where {{ where_clause }}
+{%- endif %}
 {%- endif %}

@@ -5,6 +5,28 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Pre-release publishing** — `release.ps1` supports rc/beta/alpha pre-releases
+  with auto-incrementing sequence numbers and PEP 440 version format.
+- **Channel system** — hub repos can set `[tool.kairos] channel` in `pyproject.toml`
+  to `"stable"` (default), `"preview"`, or an explicit version tag.
+- **`update --upgrade`** — resolves the channel to a git tag and upgrades the
+  toolkit via pip, updating the `pyproject.toml` dependency pin automatically.
+- **Multi-platform dbt** — Fabric (default) and Databricks staging templates
+  with platform-specific type maps and cross-platform macros.
+- **Branch protection** — `new-repo` auto-configures branch protection on `main`
+  (require PR, 1 reviewer, dismiss stale reviews, block force push).
+- **Design decisions log** — `docs/design/toolkit-design-decisions.md` (ADR format).
+
+### Fixed
+
+- **Jinja2 `loop.parent`** — replaced invalid attribute with `{% set outer_last %}`
+  pattern in staging templates.
+- **Empty columns guard** — `columns[0]` unique_key fallback now handles empty lists.
+
 ## [2.6.1] — 2026-04-23
 
 ### Fixed

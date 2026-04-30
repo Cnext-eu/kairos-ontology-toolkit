@@ -139,12 +139,15 @@ cd contoso-ontology-hub
 pip install -e .
 ```
 
-This installs the `kairos-ontology-toolkit` from GitHub (`main` branch)
-and makes the `kairos-ontology` CLI available.
+This installs the `kairos-ontology-toolkit` from GitHub (pinned to the
+toolkit version tag) and makes the `kairos-ontology` CLI available.
+
+The hub's `pyproject.toml` includes a `[tool.kairos]` section with a
+`channel` setting (default `"stable"`). To test pre-release toolkit
+versions, change it to `"preview"` and run `python -m kairos_ontology update --upgrade`.
 
 > **If pip fails:** Ensure you have `git` installed and can access
-> `github.com/Cnext-eu/kairos-ontology-toolkit`. The toolkit is a private
-> GitHub package, not on PyPI.
+> `github.com/Cnext-eu/kairos-ontology-toolkit`.
 
 ---
 

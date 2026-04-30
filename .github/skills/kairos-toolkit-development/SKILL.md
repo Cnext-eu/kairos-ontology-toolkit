@@ -51,7 +51,7 @@ src/kairos_ontology/
 │       ├── kairos-ontology-modeling/SKILL.md
 │       ├── kairos-ontology-validation/SKILL.md
 │       ├── kairos-projection-generation/SKILL.md
-│       ├── kairos-toolkit-update/SKILL.md
+│       ├── kairos-toolkit-ops/SKILL.md
 │       ├── SC-feature-branch/SKILL.md
 │       └── SC-merge-pr/SKILL.md
 └── templates/               # Jinja2 templates for projections

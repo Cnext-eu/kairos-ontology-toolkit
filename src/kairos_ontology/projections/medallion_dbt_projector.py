@@ -41,9 +41,40 @@ KAIROS_MAP = Namespace("https://kairos.cnext.eu/mapping#")
 KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
 
 # ---------------------------------------------------------------------------
-# Source-type → Spark SQL type mapping (for staging CAST)
+# Source-type → target SQL type mappings (per platform)
 # ---------------------------------------------------------------------------
-_SOURCE_TO_SPARK: dict[str, str] = {
+
+# Microsoft Fabric Warehouse types (VARCHAR-only, no NVARCHAR)
+_SOURCE_TO_FABRIC: dict[str, str] = {
+    "int": "INT",
+    "bigint": "BIGINT",
+    "smallint": "SMALLINT",
+    "tinyint": "SMALLINT",
+    "bit": "BIT",
+    "decimal": "DECIMAL(18,4)",
+    "numeric": "DECIMAL(18,4)",
+    "float": "FLOAT",
+    "real": "REAL",
+    "money": "DECIMAL(18,4)",
+    "datetime": "DATETIME2",
+    "datetime2": "DATETIME2",
+    "date": "DATE",
+    "time": "TIME",
+    "char": "VARCHAR(255)",
+    "varchar": "VARCHAR(8000)",
+    "nchar": "VARCHAR(255)",
+    "nvarchar": "VARCHAR(8000)",
+    "text": "VARCHAR(8000)",
+    "ntext": "VARCHAR(8000)",
+    "uniqueidentifier": "VARCHAR(36)",
+    "binary": "VARBINARY(8000)",
+    "varbinary": "VARBINARY(8000)",
+    "image": "VARBINARY(8000)",
+    "xml": "VARCHAR(8000)",
+}
+
+# Databricks (Spark SQL) types — for dbt-databricks / dbt-spark adapters
+_SOURCE_TO_DATABRICKS: dict[str, str] = {
     "int": "INT",
     "bigint": "BIGINT",
     "smallint": "SMALLINT",
@@ -71,8 +102,28 @@ _SOURCE_TO_SPARK: dict[str, str] = {
     "xml": "STRING",
 }
 
-# XSD → Spark SQL type mapping (for silver columns from ontology)
-_XSD_TO_SPARK: dict[str, str] = {
+# XSD → Fabric Warehouse type mapping (for silver columns from ontology)
+_XSD_TO_FABRIC: dict[str, str] = {
+    str(XSD.string): "VARCHAR(255)",
+    str(XSD.normalizedString): "VARCHAR(255)",
+    str(XSD.token): "VARCHAR(255)",
+    str(XSD.integer): "BIGINT",
+    str(XSD.int): "INT",
+    str(XSD.long): "BIGINT",
+    str(XSD.short): "SMALLINT",
+    str(XSD.decimal): "DECIMAL(18,4)",
+    str(XSD.float): "FLOAT",
+    str(XSD.double): "FLOAT",
+    str(XSD.boolean): "BIT",
+    str(XSD.date): "DATE",
+    str(XSD.dateTime): "DATETIME2",
+    str(XSD.time): "TIME",
+    str(XSD.gYear): "INT",
+    str(XSD.anyURI): "VARCHAR(2048)",
+}
+
+# XSD → Databricks (Spark SQL) types
+_XSD_TO_DATABRICKS: dict[str, str] = {
     str(XSD.string): "STRING",
     str(XSD.normalizedString): "STRING",
     str(XSD.token): "STRING",
@@ -91,6 +142,16 @@ _XSD_TO_SPARK: dict[str, str] = {
     str(XSD.anyURI): "STRING",
 }
 
+# Platform selection: maps platform name to (source_type_map, xsd_type_map)
+_PLATFORM_TYPE_MAPS: dict[str, tuple[dict[str, str], dict[str, str]]] = {
+    "fabric": (_SOURCE_TO_FABRIC, _XSD_TO_FABRIC),
+    "databricks": (_SOURCE_TO_DATABRICKS, _XSD_TO_DATABRICKS),
+    "spark": (_SOURCE_TO_DATABRICKS, _XSD_TO_DATABRICKS),  # alias for backcompat
+}
+
+# Default platform — valid values: "fabric", "databricks"
+DEFAULT_PLATFORM = "fabric"
+
 # SHACL namespace
 SH = Namespace("http://www.w3.org/ns/shacl#")
 
@@ -100,10 +161,54 @@ def _camel_to_snake(name: str) -> str:
     return camel_to_snake(name)
 
 
-def _source_type_to_spark(src_type: str) -> str:
-    """Map a source system data type string to Spark SQL type."""
+def _source_type_to_databricks(src_type: str) -> str:
+    """Map a source system data type string to Databricks (Spark SQL) type."""
     base = re.sub(r"\(.*\)", "", src_type.strip().lower())
-    return _SOURCE_TO_SPARK.get(base, "STRING")
+    return _SOURCE_TO_DATABRICKS.get(base, "STRING")
+
+
+def _source_type_to_target(src_type: str, platform: str = DEFAULT_PLATFORM) -> str:
+    """Map a source system data type string to the target platform SQL type."""
+    base = re.sub(r"\(.*\)", "", src_type.strip().lower())
+    source_map, _ = _PLATFORM_TYPE_MAPS.get(platform, _PLATFORM_TYPE_MAPS[DEFAULT_PLATFORM])
+    return source_map.get(base, "VARCHAR(255)")
+
+
+def _xsd_to_target(range_uri, platform: str = DEFAULT_PLATFORM) -> str:
+    """Map an XSD range URI to the target platform SQL type."""
+    _, xsd_map = _PLATFORM_TYPE_MAPS.get(platform, _PLATFORM_TYPE_MAPS[DEFAULT_PLATFORM])
+    return xsd_map.get(str(range_uri), "VARCHAR(255)") if range_uri else "VARCHAR(255)"
+
+
+# ---------------------------------------------------------------------------
+# dbt_utils macro-based type references (for portable silver/gold models)
+# ---------------------------------------------------------------------------
+
+_XSD_TO_DBT_MACRO: dict[str, str] = {
+    str(XSD.string): "{{ dbt_utils.type_string() }}",
+    str(XSD.normalizedString): "{{ dbt_utils.type_string() }}",
+    str(XSD.token): "{{ dbt_utils.type_string() }}",
+    str(XSD.integer): "{{ dbt_utils.type_int() }}",
+    str(XSD.int): "{{ dbt_utils.type_int() }}",
+    str(XSD.long): "{{ dbt_utils.type_int() }}",
+    str(XSD.short): "{{ dbt_utils.type_int() }}",
+    str(XSD.decimal): "DECIMAL(18,4)",  # no dbt_utils macro for decimal
+    str(XSD.float): "{{ dbt_utils.type_float() }}",
+    str(XSD.double): "{{ dbt_utils.type_float() }}",
+    str(XSD.boolean): "{{ dbt_utils.type_boolean() }}",
+    str(XSD.date): "DATE",  # DATE is universal
+    str(XSD.dateTime): "{{ dbt_utils.type_timestamp() }}",
+    str(XSD.time): "{{ dbt_utils.type_string() }}",
+    str(XSD.gYear): "{{ dbt_utils.type_int() }}",
+    str(XSD.anyURI): "{{ dbt_utils.type_string() }}",
+}
+
+
+def _xsd_to_dbt_macro(range_uri) -> str:
+    """Map an XSD range URI to a dbt_utils macro expression (platform-portable)."""
+    if not range_uri:
+        return "{{ dbt_utils.type_string() }}"
+    return _XSD_TO_DBT_MACRO.get(str(range_uri), "{{ dbt_utils.type_string() }}")
 
 
 # ---------------------------------------------------------------------------
@@ -179,13 +284,65 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
                 is_pk_val = g.value(col_uri, KAIROS_BRONZE.isPrimaryKey)
                 is_pk = str(is_pk_val).lower() == "true" if is_pk_val else col_name in pk_cols
 
+                # JSON content type support
+                content_type = g.value(col_uri, KAIROS_BRONZE.contentType)
+                json_info = None
+                if content_type and str(content_type) in ("json-array", "json-object"):
+                    json_path = str(g.value(col_uri, KAIROS_BRONZE.jsonPath) or "$")
+                    schema_uri = g.value(col_uri, KAIROS_BRONZE.jsonSchema)
+                    json_fields = []
+                    if schema_uri:
+                        for field_node in g.objects(schema_uri, KAIROS_BRONZE.jsonField):
+                            fname = str(g.value(field_node, KAIROS_BRONZE.fieldName) or "")
+                            ftype = str(g.value(field_node, KAIROS_BRONZE.fieldType) or "VARCHAR(255)")
+                            fpath = str(g.value(field_node, KAIROS_BRONZE.fieldPath) or f"$.{fname}")
+                            fmax = g.value(field_node, KAIROS_BRONZE.fieldMaxLength)
+                            json_fields.append({
+                                "name": fname,
+                                "type": ftype,
+                                "path": fpath,
+                                "max_length": int(str(fmax)) if fmax else 255,
+                            })
+                    json_info = {
+                        "content_type": str(content_type),
+                        "json_path": json_path,
+                        "fields": json_fields,
+                    }
+
+                # Enum support
+                enum_uri = g.value(col_uri, KAIROS_BRONZE.enumeration)
+                enum_values = []
+                if enum_uri:
+                    for ev_node in g.objects(enum_uri, KAIROS_BRONZE.enumValue):
+                        ev_code = str(g.value(ev_node, KAIROS_BRONZE.enumCode) or "")
+                        ev_label = str(g.value(ev_node, KAIROS_BRONZE.enumLabel) or "")
+                        if ev_code:
+                            enum_values.append({"code": ev_code, "label": ev_label})
+
                 columns.append({
                     "uri": str(col_uri),
                     "name": col_name,
                     "data_type": col_type,
                     "nullable": nullable,
                     "is_pk": is_pk,
+                    "json_info": json_info,
+                    "enum_values": enum_values if enum_values else None,
                 })
+
+            # Discriminator column support
+            disc_col_uri = g.value(tbl_uri, KAIROS_BRONZE.discriminatorColumn)
+            disc_col_name = None
+            disc_values = []
+            if disc_col_uri:
+                disc_col_name = str(
+                    g.value(disc_col_uri, KAIROS_BRONZE.columnName)
+                    or extract_local_name(str(disc_col_uri))
+                )
+                for dv_node in g.objects(tbl_uri, KAIROS_BRONZE.discriminatorValue):
+                    dv_code = str(g.value(dv_node, KAIROS_BRONZE.discriminatorCode) or "")
+                    dv_label = str(g.value(dv_node, KAIROS_BRONZE.discriminatorLabel) or "")
+                    if dv_code:
+                        disc_values.append({"code": dv_code, "label": dv_label})
 
             tables.append({
                 "uri": str(tbl_uri),
@@ -194,6 +351,8 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
                 "pk_columns": pk_cols,
                 "incremental_column": str(inc_col) if inc_col else None,
                 "columns": columns,
+                "discriminator_column": disc_col_name,
+                "discriminator_values": disc_values if disc_values else None,
             })
 
         systems.append({
@@ -426,15 +585,29 @@ def _gen_sources(systems: list[dict], env: Environment) -> dict[str, str]:
     return artifacts
 
 
+def _build_spark_schema(fields: list[dict]) -> str:
+    """Build Spark schema string for from_json(). E.g. 'array<struct<name:string,age:int>>'."""
+    field_parts = []
+    for f in fields:
+        # Map field length to Spark type (all extracted as string for safety)
+        field_parts.append(f"{f['name']}:string")
+    return f"array<struct<{','.join(field_parts)}>>"
+
+
 def _gen_staging_models(
     systems: list[dict],
     mappings: dict,
     env: Environment,
     meta: dict,
+    platform: str = DEFAULT_PLATFORM,
 ) -> dict[str, str]:
     """Generate ``stg_{source}__{table}.sql`` staging models."""
     artifacts: dict[str, str] = {}
-    template = env.get_template("staging_model.sql.jinja2")
+    # Select template based on platform
+    if platform in ("databricks", "spark"):
+        template = env.get_template("staging_model_databricks.sql.jinja2")
+    else:
+        template = env.get_template("staging_model.sql.jinja2")
 
     for sys in systems:
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
@@ -444,19 +617,47 @@ def _gen_staging_models(
             tbl_map = mappings["table_maps"].get(tbl_uri, {})
 
             columns_data = []
+            json_extractions = []
             for col in tbl["columns"]:
                 col_uri = col["uri"] if "uri" in col else ""
                 col_map = mappings["column_maps"].get(col_uri, {})
+
+                # Check if this is a JSON column requiring extraction
+                json_info = col.get("json_info")
+                if json_info and json_info.get("fields"):
+                    # JSON column: don't include as a regular column,
+                    # instead add to json_extractions
+                    alias = f"j_{_camel_to_snake(col['name'])}"
+                    fields = [
+                        {
+                            "name": _camel_to_snake(f["name"]),
+                            "length": f.get("max_length", 255),
+                            "path": f["path"],
+                        }
+                        for f in json_info["fields"]
+                    ]
+                    extraction = {
+                        "source_column": col["name"],
+                        "alias": alias,
+                        "content_type": json_info["content_type"],
+                        "json_path": json_info["json_path"],
+                        "fields": fields,
+                    }
+                    # For Databricks, add Spark schema string
+                    if platform in ("databricks", "spark"):
+                        extraction["spark_schema"] = _build_spark_schema(fields)
+                    json_extractions.append(extraction)
+                    continue
 
                 # Use explicit transform if available, else default cast
                 if col_map.get("transform"):
                     expr = col_map["transform"].replace("source.", "")
                 else:
-                    spark_type = _source_type_to_spark(col["data_type"])
-                    if spark_type == "STRING":
+                    target_type = _source_type_to_target(col["data_type"], platform)
+                    if target_type.startswith("VARCHAR") or target_type == "STRING":
                         expr = col["name"]
                     else:
-                        expr = f"CAST({col['name']} AS {spark_type})"
+                        expr = f"TRY_CAST({col['name']} AS {target_type})"
 
                 # Target column name: from SKOS mapping or snake_case of source
                 if col_map.get("target_uri"):
@@ -472,16 +673,20 @@ def _gen_staging_models(
                 })
 
             snake_table = _camel_to_snake(tbl["name"])
+            # Determine materialization (incremental if configured)
+            incremental_col = tbl.get("incremental_column")
             content = template.render(
                 source_name=source_name,
                 table_name=snake_table,
                 system_label=sys["system_label"],
                 raw_table_name=tbl["name"],
                 columns=columns_data,
+                json_extractions=json_extractions,
                 filter_condition=tbl_map.get("filter_condition"),
                 dedup_key=tbl_map.get("dedup_key"),
                 dedup_order=tbl_map.get("dedup_order"),
                 ontology_metadata=meta,
+                incremental_column=incremental_col,
             )
             path = f"models/staging/{source_name}/stg_{source_name}__{snake_table}.sql"
             artifacts[path] = content
@@ -498,15 +703,22 @@ def _gen_silver_models(
     env: Environment,
     meta: dict,
     ontology_name: str,
+    platform: str = DEFAULT_PLATFORM,
 ) -> dict[str, str]:
-    """Generate silver entity models that read from staging."""
+    """Generate silver entity models that read from staging.
+
+    Enforces layer contracts:
+    - Silver models may only consume from staging (via ref())
+    - Every ref() must point to an existing staging model
+    - Unmapped classes are skipped with a warning (no broken placeholders)
+    """
     artifacts: dict[str, str] = {}
     template = env.get_template("silver_model.sql.jinja2")
 
     schema_name = f"silver_{ontology_name}"
 
-    # Build reverse map: silver class URI → [(source_name, stg_model_name)]
-    class_to_staging: dict[str, list[tuple[str, str]]] = {}
+    # Build reverse map: silver class URI → [(source_name, stg_model_name, table_uri)]
+    class_to_staging: dict[str, list[tuple[str, str, str]]] = {}
     for sys in systems:
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
         for tbl in sys["tables"]:
@@ -515,7 +727,9 @@ def _gen_silver_models(
             if target:
                 snake_table = _camel_to_snake(tbl["name"])
                 stg_name = f"stg_{source_name}__{snake_table}"
-                class_to_staging.setdefault(target, []).append((source_name, stg_name))
+                class_to_staging.setdefault(target, []).append(
+                    (source_name, stg_name, tbl["uri"])
+                )
 
     for cls in classes:
         cls_uri = cls["uri"]
@@ -524,17 +738,34 @@ def _gen_silver_models(
 
         staging_refs = class_to_staging.get(cls_uri, [])
         if not staging_refs:
-            logger.info("No bronze mapping for %s — generating passthrough model", local)
-            # Still generate a placeholder model
-            staging_refs = [(ontology_name, f"stg_{ontology_name}__{model_name}")]
+            logger.warning(
+                "No bronze mapping for class %s — skipping silver model generation. "
+                "Add a mapping in the mappings TTL to enable this model.",
+                local,
+            )
+            continue
 
-        # Extract properties for column list
-        columns = _extract_silver_columns(graph, cls_uri, namespace, mappings)
+        # Extract properties for column list with platform-aware types
+        columns = _extract_silver_columns(
+            graph, cls_uri, namespace, mappings, platform=platform,
+            staging_refs=staging_refs, systems=systems,
+        )
 
+        # Build filter conditions per staging source (from table-level mappings)
         source_ctes = []
-        for i, (src, stg) in enumerate(staging_refs):
+        filter_conditions = []
+        for i, (src, stg, tbl_uri) in enumerate(staging_refs):
             alias = stg if len(staging_refs) == 1 else f"src_{i + 1}"
             source_ctes.append({"model": stg, "alias": alias})
+            # Collect filter condition for this table mapping
+            tbl_map = mappings["table_maps"].get(tbl_uri, {})
+            if tbl_map.get("filter_condition"):
+                filter_conditions.append(tbl_map["filter_condition"])
+
+        # Determine WHERE clause from filter conditions
+        where_clause = ""
+        if filter_conditions and len(staging_refs) == 1:
+            where_clause = filter_conditions[0].replace("source.", "")
 
         content = template.render(
             model_name=model_name,
@@ -544,6 +775,7 @@ def _gen_silver_models(
             source_ctes=source_ctes,
             columns=columns,
             joins=[],
+            where_clause=where_clause,
             ontology_metadata=meta,
         )
         path = f"models/silver/{ontology_name}/{model_name}.sql"
@@ -557,14 +789,59 @@ def _extract_silver_columns(
     class_uri: str,
     namespace: str,
     mappings: dict,
+    platform: str = DEFAULT_PLATFORM,
+    staging_refs: list[tuple[str, str, str]] | None = None,
+    systems: list[dict] | None = None,
 ) -> list[dict]:
-    """Extract silver-layer columns for a class from the ontology graph."""
-    columns: list[dict] = []
+    """Extract silver-layer columns for a class from the ontology graph.
 
-    # SK column
+    Improvements over previous version:
+    - SK uses dbt_utils.generate_surrogate_key() based on natural key columns
+    - IRI constructs a proper ontology IRI from namespace + natural key
+    - Mapped properties use their transform expressions
+    - Unmapped optional properties use CAST(NULL AS {{ dbt_utils.type_*() }})
+    - Types use dbt_utils macros for portability across platforms
+    - Enum columns generate CASE statements for human-readable labels
+    """
+    columns: list[dict] = []
     model_name = _camel_to_snake(extract_local_name(class_uri))
-    columns.append({"expression": f"CAST(NULL AS STRING)", "target_name": f"{model_name}_sk"})
-    columns.append({"expression": f"CAST(NULL AS STRING)", "target_name": f"{model_name}_iri"})
+
+    # Build a lookup: bronze column URI → enum_values list
+    enum_lookup: dict[str, list[dict]] = {}
+    if systems:
+        for sys in systems:
+            for tbl in sys["tables"]:
+                for col in tbl["columns"]:
+                    if col.get("enum_values"):
+                        enum_lookup[col["uri"]] = col["enum_values"]
+
+    # Determine natural key columns from kairos-ext:naturalKey annotation or PK columns
+    natural_key_cols = _get_natural_key(graph, class_uri)
+
+    # SK column: use surrogate key generation if natural key is known
+    if natural_key_cols:
+        sk_cols_str = "', '".join(natural_key_cols)
+        sk_expr = f"{{{{ dbt_utils.generate_surrogate_key(['{sk_cols_str}']) }}}}"
+    else:
+        # Fallback: hash all non-null columns — will be overridden when natural key is set
+        sk_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
+
+    columns.append({"expression": sk_expr, "target_name": f"{model_name}_sk"})
+
+    # IRI column: construct from namespace + natural key
+    if natural_key_cols:
+        if len(natural_key_cols) == 1:
+            iri_expr = (
+                f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', "
+                f"{natural_key_cols[0]})"
+            )
+        else:
+            parts = ", '/', ".join(natural_key_cols)
+            iri_expr = f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
+    else:
+        iri_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
+
+    columns.append({"expression": iri_expr, "target_name": f"{model_name}_iri"})
 
     # Datatype properties
     for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
@@ -573,19 +850,80 @@ def _extract_silver_columns(
             prop_name = extract_local_name(str(prop))
             col_name = _camel_to_snake(prop_name)
             range_uri = graph.value(prop, RDFS.range)
-            spark_type = _XSD_TO_SPARK.get(str(range_uri), "STRING") if range_uri else "STRING"
+            # Use dbt_utils macros for portable silver types
+            macro_type = _xsd_to_dbt_macro(range_uri)
+
+            # Check population requirement from kairos-ext annotation
+            pop_req = graph.value(URIRef(str(prop)), KAIROS_EXT.populationRequirement)
+            population = str(pop_req) if pop_req else "optional"
 
             # Check if there's a SKOS mapping transform for this property
-            expr = col_name
+            expr = None
+            mapped_col_uri = None
             for col_uri, col_map in mappings.get("column_maps", {}).items():
                 if col_map.get("target_uri") == str(prop):
+                    mapped_col_uri = col_uri
                     if col_map.get("transform"):
                         expr = col_map["transform"].replace("source.", "")
+                    else:
+                        # Direct mapping — use the source column name
+                        source_col_name = extract_local_name(col_uri)
+                        expr = _camel_to_snake(source_col_name)
                     break
+
+            if expr is None:
+                if population == "derived":
+                    # Check for derivation formula
+                    formula = graph.value(
+                        URIRef(str(prop)), KAIROS_EXT.derivationFormula
+                    )
+                    if formula:
+                        expr = str(formula)
+                    else:
+                        expr = f"CAST(NULL AS {macro_type})"
+                else:
+                    # Unmapped: NULL placeholder with portable dbt_utils type
+                    expr = f"CAST(NULL AS {macro_type})"
 
             columns.append({"expression": expr, "target_name": col_name})
 
+            # Generate _label column for enum-typed source columns
+            if mapped_col_uri and mapped_col_uri in enum_lookup:
+                enum_vals = enum_lookup[mapped_col_uri]
+                case_expr = _build_enum_case(expr, enum_vals)
+                columns.append({
+                    "expression": case_expr,
+                    "target_name": f"{col_name}_label",
+                })
+
     return columns
+
+
+def _build_enum_case(source_expr: str, enum_values: list[dict]) -> str:
+    """Build a CASE statement to resolve enum codes to human-readable labels."""
+    parts = [f"CASE CAST({source_expr} AS VARCHAR(50))"]
+    for ev in enum_values:
+        code = ev["code"].replace("'", "''")
+        label = ev["label"].replace("'", "''")
+        parts.append(f"        WHEN '{code}' THEN '{label}'")
+    parts.append(
+        f"        ELSE CONCAT('Unknown (', CAST({source_expr} AS VARCHAR(50)), ')')"
+    )
+    parts.append("    END")
+    return "\n".join(parts)
+
+
+def _get_natural_key(graph: Graph, class_uri: str) -> list[str]:
+    """Get natural key column names for a class from kairos-ext:naturalKey annotation.
+
+    Falls back to checking for properties annotated as primary key in mappings.
+    """
+    # Check kairos-ext:naturalKey on the class
+    nk = graph.value(URIRef(class_uri), KAIROS_EXT.term("naturalKey"))
+    if nk:
+        return [_camel_to_snake(c) for c in str(nk).split()]
+
+    return []
 
 
 def _gen_schema_yaml(
@@ -596,10 +934,28 @@ def _gen_schema_yaml(
     env: Environment,
     ontology_name: str,
     meta: dict,
+    systems: list[dict] | None = None,
+    mappings: dict | None = None,
 ) -> dict[str, str]:
-    """Generate ``_models.yml`` with column descriptions and SHACL tests."""
+    """Generate ``_models.yml`` with column descriptions, tests, and lineage."""
     artifacts: dict[str, str] = {}
     template = env.get_template("schema_models.yml.jinja2")
+
+    # Build enum lookup from source systems for accepted_values tests
+    enum_lookup: dict[str, list[dict]] = {}
+    if systems:
+        for sys in systems:
+            for tbl in sys["tables"]:
+                for col in tbl["columns"]:
+                    if col.get("enum_values"):
+                        enum_lookup[col["uri"]] = col["enum_values"]
+
+    # Build mapping reverse-lookup: property URI → source column URI
+    prop_to_source: dict[str, str] = {}
+    if mappings:
+        for col_uri, col_map in mappings.get("column_maps", {}).items():
+            if col_map.get("target_uri"):
+                prop_to_source[col_map["target_uri"]] = col_uri
 
     models_data = []
     for cls in classes:
@@ -631,13 +987,36 @@ def _gen_schema_yaml(
                 comment = graph.value(prop, RDFS.comment)
                 desc = str(comment) if comment else (str(label) if label else prop_name)
                 range_uri = graph.value(prop, RDFS.range)
-                data_type = _XSD_TO_SPARK.get(str(range_uri), "STRING") if range_uri else "STRING"
+                data_type = _xsd_to_target(range_uri) if range_uri else "VARCHAR(255)"
 
-                tests = shacl_tests.get(col_name, [])
+                # Start with SHACL-derived tests
+                tests = list(shacl_tests.get(col_name, []))
+
+                # Add not_null for required properties (from kairos-ext annotation)
+                pop_req = graph.value(URIRef(str(prop)), KAIROS_EXT.populationRequirement)
+                if pop_req and str(pop_req) == "required" and "not_null" not in tests:
+                    tests.append("not_null")
+
+                # Add accepted_values for enum-typed source columns
+                source_col_uri = prop_to_source.get(str(prop))
+                if source_col_uri and source_col_uri in enum_lookup:
+                    enum_vals = enum_lookup[source_col_uri]
+                    values_list = [ev["code"] for ev in enum_vals]
+                    tests.append({
+                        "accepted_values": {
+                            "values": values_list,
+                        }
+                    })
+
+                # Lineage metadata
+                col_meta = {"data_type": data_type}
+                if source_col_uri:
+                    col_meta["source_iri"] = source_col_uri
+
                 cols.append({
                     "name": col_name,
                     "description": desc,
-                    "meta": {"data_type": data_type},
+                    "meta": col_meta,
                     "tests": tests,
                 })
 
@@ -665,8 +1044,9 @@ def _gen_project_config(
     env: Environment,
     project_name: str,
     gold_domains: list[dict] = None,
+    platform: str = DEFAULT_PLATFORM,
 ) -> dict[str, str]:
-    """Generate ``dbt_project.yml`` and ``packages.yml``."""
+    """Generate ``dbt_project.yml``, ``packages.yml``, and ``README.md``."""
     artifacts: dict[str, str] = {}
 
     sources = [
@@ -685,6 +1065,69 @@ def _gen_project_config(
 
     pkg_template = env.get_template("packages.yml.jinja2")
     artifacts["packages.yml"] = pkg_template.render()
+
+    # Platform-specific README
+    adapter = "dbt-fabric" if platform == "fabric" else "dbt-databricks"
+    adapter_install = f"pip install {adapter}"
+    platform_label = "Microsoft Fabric Warehouse" if platform == "fabric" else "Azure Databricks"
+
+    artifacts["README.md"] = f"""# dbt Project — {project_name}
+
+Generated by **Kairos Ontology Toolkit** (dbt projector).
+
+## Target Platform
+
+| Setting | Value |
+|---------|-------|
+| Platform | {platform_label} |
+| dbt adapter | `{adapter}` |
+| SQL dialect | {'T-SQL' if platform == 'fabric' else 'Spark SQL'} |
+
+## Getting Started
+
+```bash
+# Install dbt and the adapter
+pip install dbt-core
+{adapter_install}
+
+# Install dbt packages (dbt_utils, dbt_expectations)
+dbt deps
+
+# Configure your connection in profiles.yml
+# Then run:
+dbt run
+```
+
+## Project Structure
+
+```
+models/
+├── staging/          # Source-aligned: rename, cast, JSON extraction
+│   └── <source>/    # One folder per source system
+├── silver/           # Domain-aligned: entity models with mapping transforms
+│   └── <domain>/    # One folder per ontology domain
+└── gold/             # Star schema: facts, dimensions, measures
+    └── <domain>/
+
+macros/               # Platform-abstraction macros (kairos_safe_cast, etc.)
+```
+
+## Layer Contracts
+
+| Layer | Materialization | Purpose |
+|-------|----------------|---------|
+| Staging | View | Rename + type cast + JSON extraction from bronze |
+| Silver | Table | Domain entities with surrogate keys and transforms |
+| Gold | Table | Star schema for BI (Power BI DirectLake / Databricks SQL) |
+
+## Platform Macros
+
+The `macros/` folder contains platform-abstraction macros:
+- `kairos_safe_cast(column, type)` — safe casting (TRY_CAST)
+- `kairos_json_value(column, path)` — extract single JSON value
+- `kairos_surrogate_key(columns)` — surrogate key generation
+- `kairos_concat(...)` — string concatenation
+"""
 
     return artifacts
 
@@ -922,6 +1365,7 @@ def generate_dbt_artifacts(
     sources_dir: Path = None,
     mappings_dir: Path = None,
     gold_ext_path: Path = None,
+    target_platform: str = DEFAULT_PLATFORM,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -940,6 +1384,8 @@ def generate_dbt_artifacts(
             are discovered recursively under each source system sub-folder.
         mappings_dir: Path to ``mappings/`` directory with SKOS mapping TTLs.
         gold_ext_path: Optional path to ``*-gold-ext.ttl`` for gold model generation.
+        target_platform: Target SQL platform for type mapping.
+            Options: ``"fabric"`` (default), ``"databricks"``, ``"spark"`` (alias for databricks).
 
     Returns:
         Dictionary of ``{file_path: content}`` for all generated artifacts.
@@ -965,13 +1411,14 @@ def generate_dbt_artifacts(
 
     # 2. Staging models
     if systems:
-        staging = _gen_staging_models(systems, mappings, env, meta)
+        staging = _gen_staging_models(systems, mappings, env, meta, platform=target_platform)
         artifacts.update(staging)
         print(f"    ✓ Generated {len(staging)} staging model(s)")
 
     # 3. Silver entity models
     silver = _gen_silver_models(
         classes, graph, namespace, systems, mappings, env, meta, onto_name,
+        platform=target_platform,
     )
     artifacts.update(silver)
     print(f"    ✓ Generated {len(silver)} silver model(s)")
@@ -979,6 +1426,7 @@ def generate_dbt_artifacts(
     # 4. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(
         classes, graph, namespace, shapes_dir, env, onto_name, meta,
+        systems=systems, mappings=mappings,
     )
     artifacts.update(schema)
 
@@ -1004,7 +1452,163 @@ def generate_dbt_artifacts(
         project = _gen_project_config(
             systems, [onto_name], env, f"{onto_name}_project",
             gold_domains=gold_domains,
+            platform=target_platform,
         )
         artifacts.update(project)
 
+    # 8. Coverage report
+    if systems:
+        coverage = _gen_coverage_report(
+            classes, graph, namespace, systems, mappings, onto_name,
+        )
+        if coverage:
+            artifacts.update(coverage)
+            print("    ✓ Generated coverage report")
+
+    # 9. Platform macros
+    macros = _gen_macros(template_dir)
+    artifacts.update(macros)
+    if macros:
+        print(f"    ✓ Generated {len(macros)} platform macro(s)")
+
     return artifacts
+
+
+# ---------------------------------------------------------------------------
+# Generated macros (platform-abstraction layer for dbt projects)
+# ---------------------------------------------------------------------------
+
+def _gen_macros(template_dir) -> dict[str, str]:
+    """Copy platform-abstraction macros into the generated dbt project.
+
+    Reads macro files from the ``macros/`` subfolder of the templates directory
+    and includes them in the generated artifacts under ``macros/``.
+    """
+    artifacts: dict[str, str] = {}
+    macros_dir = Path(template_dir) / "macros"
+    if not macros_dir.exists():
+        return artifacts
+
+    for macro_file in macros_dir.glob("*.sql"):
+        content = macro_file.read_text(encoding="utf-8")
+        artifacts[f"macros/{macro_file.name}"] = content
+
+    return artifacts
+
+
+# ---------------------------------------------------------------------------
+# Coverage report generation
+# ---------------------------------------------------------------------------
+
+def _gen_coverage_report(
+    classes: list[dict],
+    graph: Graph,
+    namespace: str,
+    systems: list[dict],
+    mappings: dict,
+    ontology_name: str,
+) -> dict[str, str]:
+    """Generate a JSON coverage report showing mapping completeness.
+
+    Reports for each ontology entity:
+    - Total properties vs mapped vs unmapped
+    - Required properties that are missing mappings
+    - Source column utilization (consumed vs unused)
+    """
+    import json
+
+    report: dict = {}
+
+    # Build column_maps reverse: target_uri → source column URI
+    target_to_source: dict[str, str] = {}
+    for col_uri, col_map in mappings.get("column_maps", {}).items():
+        if col_map.get("target_uri"):
+            target_to_source[col_map["target_uri"]] = col_uri
+
+    # Build set of all consumed source column URIs
+    consumed_source_cols = set(mappings.get("column_maps", {}).keys())
+
+    for cls in classes:
+        cls_uri = cls["uri"]
+        local = cls["name"]
+        model_name = _camel_to_snake(local)
+
+        total = 0
+        required_count = 0
+        optional_count = 0
+        derived_count = 0
+        populated = 0
+        always_null = 0
+        null_columns = []
+        missing_required = []
+
+        for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+            domain = graph.value(prop, RDFS.domain)
+            if domain and str(domain) == cls_uri:
+                total += 1
+                prop_str = str(prop)
+                prop_name = extract_local_name(prop_str)
+                col_name = _camel_to_snake(prop_name)
+
+                pop_req = graph.value(URIRef(prop_str), KAIROS_EXT.populationRequirement)
+                population = str(pop_req) if pop_req else "optional"
+
+                if population == "required":
+                    required_count += 1
+                elif population == "derived":
+                    derived_count += 1
+                else:
+                    optional_count += 1
+
+                has_mapping = prop_str in target_to_source
+                if has_mapping:
+                    populated += 1
+                elif population == "derived":
+                    formula = graph.value(URIRef(prop_str), KAIROS_EXT.derivationFormula)
+                    if formula:
+                        populated += 1
+                    else:
+                        always_null += 1
+                        null_columns.append(col_name)
+                else:
+                    always_null += 1
+                    null_columns.append(col_name)
+                    if population == "required":
+                        missing_required.append(col_name)
+
+        # Source coverage per table mapped to this class
+        source_coverage = {}
+        for sys in systems:
+            source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
+            for tbl in sys["tables"]:
+                tbl_map = mappings.get("table_maps", {}).get(tbl["uri"], {})
+                if tbl_map.get("target_uri") == cls_uri:
+                    tbl_cols = {c["uri"] for c in tbl["columns"]}
+                    used = tbl_cols & consumed_source_cols
+                    unused = [
+                        c["name"] for c in tbl["columns"]
+                        if c["uri"] not in consumed_source_cols
+                    ]
+                    key = f"{source_name}__{_camel_to_snake(tbl['name'])}"
+                    source_coverage[key] = {
+                        "available_columns": len(tbl["columns"]),
+                        "consumed_columns": len(used),
+                        "unused_columns": unused,
+                    }
+
+        report[model_name] = {
+            "ontology_properties_total": total,
+            "ontology_properties_required": required_count,
+            "ontology_properties_optional": optional_count,
+            "ontology_properties_derived": derived_count,
+            "populated_from_source": populated,
+            "always_null": always_null,
+            "null_columns": null_columns,
+            "missing_required_mappings": missing_required,
+            "source_coverage": source_coverage,
+        }
+
+    content = json.dumps(
+        {ontology_name: report}, indent=2, ensure_ascii=False,
+    )
+    return {"coverage-report.json": content}
