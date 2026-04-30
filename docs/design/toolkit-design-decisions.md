@@ -669,6 +669,60 @@ and **Copilot coding agent automation** for gap-request implementation:
 
 ---
 
+## DD-018: Silver Model Granularity — Entity-Centric with Future Source-Split Option
+
+**Status:** Accepted (current behaviour) + Proposed (source-split extension)  
+**Date:** 2026-04-30  
+**Affects:** `medallion_dbt_projector.py`, silver model generation, dbt package structure  
+**Implementation:** `src/kairos_ontology/projections/medallion_dbt_projector.py` lines 710-782
+
+### Context
+
+When multiple integration sources map to the same domain class (e.g., `Harmoney.Customers`
+and `AdminPulse.Klanten` both map to `domain:Client`), the dbt projector must decide how
+to structure the silver SQL models:
+
+- **Entity-centric** — one `client.sql` per domain class, with multiple source CTEs inside.
+- **Source-centric** — one model per source-entity combination (`client__harmoney.sql`,
+  `client__adminpulse.sql`), plus a final assembly model.
+
+### Decision
+
+**Current (v2.19):** Entity-centric silver models. Each domain class produces exactly one
+`.sql` file under `models/silver/{domain}/`. Multiple sources feeding the same entity appear
+as CTEs within that single model. Source declarations (`_sources.yml`) are already separated
+per source system.
+
+**Future enhancement (planned):** Add an optional **source-split mode** that generates:
+
+1. Intermediate per-source models: `models/silver/{domain}/_{entity}__{source}.sql`
+2. A final assembly model that UNIONs the intermediates: `models/silver/{domain}/{entity}.sql`
+
+The mode will be controlled via:
+- A CLI flag (`--silver-split-by-source`) or
+- A domain-level annotation in the ontology (`kairos-ext:silverSplitBySource "true"`)
+
+### Rationale
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Entity-centric (current) | Single source of truth for gold; built-in dedup; fewer files | Harder per-source debugging; complex models with many sources |
+| Source-split (future) | Per-source lineage; independent testing; source-team ownership | Extra UNION step; more files; gold must handle assembly |
+
+The entity-centric default aligns with the domain-driven philosophy (silver = domain
+contract). Source-split is valuable for large enterprises with many integration sources
+and dedicated source-team ownership, so it should be available as an opt-in.
+
+### Consequences
+
+- No breaking change — current entity-centric remains the default.
+- When source-split is implemented, the dbt package will contain more models but the
+  gold layer API remains unchanged (it reads from the entity-level model regardless).
+- The `_sources.yml` separation already supports this pattern (one per source system).
+- Test coverage must include both modes once implemented.
+
+---
+
 ## Template for New Decisions
 
 ```markdown
