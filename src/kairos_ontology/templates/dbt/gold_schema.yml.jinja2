@@ -8,6 +8,7 @@ models:
       table_type: "{{ model.table_type }}"
       ontology_class: "{{ model.ontology_class }}"
       ontology_iri: "{{ model.ontology_iri }}"
+      ontology_version: "{{ model.ontology_version }}"
     columns:
 {%- for col in model.columns %}
       - name: {{ col.name }}

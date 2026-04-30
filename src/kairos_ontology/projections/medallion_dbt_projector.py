@@ -1054,6 +1054,7 @@ def _gen_schema_yaml(
             "meta": {
                 "ontology_class": cls["name"],
                 "ontology_iri": meta.get("iri", ""),
+                "ontology_version": meta.get("version", ""),
             },
             "columns": cols,
         })
@@ -1359,6 +1360,7 @@ def _gen_gold_schema_yaml(
             "table_type": tbl.table_type,
             "ontology_class": tbl.source_class_label or "",
             "ontology_iri": meta.get("iri", ""),
+            "ontology_version": meta.get("version", ""),
             "columns": cols,
         })
 
