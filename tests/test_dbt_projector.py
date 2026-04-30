@@ -970,3 +970,183 @@ class TestCrossDomainFK:
         # Multi-source: no FK columns or joins generated
         assert len(fk_columns) == 0
         assert len(joins) == 0
+
+
+# ---------------------------------------------------------------------------
+# Split pattern filter condition tests
+# ---------------------------------------------------------------------------
+
+SPLIT_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "Test Ontology" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:CorporateClient a owl:Class ;
+        rdfs:label "Corporate Client" ;
+        rdfs:comment "Corporate entity" ;
+        kairos-ext:naturalKey "clientId" .
+
+    ex:SoleProprietorClient a owl:Class ;
+        rdfs:label "Sole Proprietor Client" ;
+        rdfs:comment "Sole proprietor entity" ;
+        kairos-ext:naturalKey "clientId" .
+
+    ex:IndividualClient a owl:Class ;
+        rdfs:label "Individual Client" ;
+        rdfs:comment "Individual entity" ;
+        kairos-ext:naturalKey "clientId" .
+
+    ex:clientId a owl:DatatypeProperty ;
+        rdfs:label "client ID" ;
+        rdfs:comment "Unique identifier" ;
+        rdfs:domain ex:CorporateClient ;
+        rdfs:range xsd:string .
+""")
+
+SPLIT_BRONZE_TTL = textwrap.dedent("""\
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+    bronze-ap:AdminPulse a kairos-bronze:SourceSystem ;
+        rdfs:label "AdminPulse" ;
+        kairos-bronze:connectionType "jdbc" ;
+        kairos-bronze:database "AP_Prod" ;
+        kairos-bronze:schema "dbo" .
+
+    bronze-ap:tblClient a kairos-bronze:SourceTable ;
+        rdfs:label "tblClient" ;
+        kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+        kairos-bronze:tableName "tblClient" ;
+        kairos-bronze:primaryKeyColumns "ClientID" .
+
+    bronze-ap:tblClient_ClientID a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblClient ;
+        kairos-bronze:columnName "ClientID" ;
+        kairos-bronze:dataType "int" ;
+        kairos-bronze:nullable "false"^^xsd:boolean .
+
+    bronze-ap:tblClient_type a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblClient ;
+        kairos-bronze:columnName "type" ;
+        kairos-bronze:dataType "int" ;
+        kairos-bronze:nullable "false"^^xsd:boolean .
+""")
+
+SPLIT_MAPPING_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix ex: <http://kairos.example/ontology/> .
+
+    bronze-ap:tblClient skos:exactMatch ex:CorporateClient ;
+        kairos-map:mappingType "split" ;
+        kairos-map:filterCondition "source.type = 0" .
+
+    bronze-ap:tblClient skos:exactMatch ex:SoleProprietorClient ;
+        kairos-map:mappingType "split" ;
+        kairos-map:filterCondition "source.type = 1" .
+
+    bronze-ap:tblClient skos:exactMatch ex:IndividualClient ;
+        kairos-map:mappingType "split" ;
+        kairos-map:filterCondition "source.type = 2" .
+
+    bronze-ap:tblClient_ClientID skos:exactMatch ex:clientId ;
+        kairos-map:transform "CAST(source.ClientID AS STRING)" .
+""")
+
+
+class TestSplitFilterCondition:
+    """Tests for split pattern where each target class has a different filter."""
+
+    @pytest.fixture
+    def split_graph(self):
+        g = Graph()
+        g.parse(data=SPLIT_ONTOLOGY_TTL, format="turtle")
+        return g
+
+    @pytest.fixture
+    def split_bronze_dir(self, tmp_path):
+        d = tmp_path / "sources" / "adminpulse"
+        d.mkdir(parents=True)
+        (d / "adminpulse.vocabulary.ttl").write_text(
+            SPLIT_BRONZE_TTL, encoding="utf-8"
+        )
+        return tmp_path / "sources"
+
+    @pytest.fixture
+    def split_mappings_dir(self, tmp_path):
+        d = tmp_path / "mappings" / "adminpulse"
+        d.mkdir(parents=True)
+        (d / "client-split.ttl").write_text(SPLIT_MAPPING_TTL, encoding="utf-8")
+        return tmp_path / "mappings"
+
+    @pytest.fixture
+    def split_classes(self):
+        return [
+            {"uri": "http://kairos.example/ontology/CorporateClient",
+             "name": "CorporateClient", "label": "Corporate Client",
+             "comment": "Corporate entity"},
+            {"uri": "http://kairos.example/ontology/SoleProprietorClient",
+             "name": "SoleProprietorClient", "label": "Sole Proprietor Client",
+             "comment": "Sole proprietor entity"},
+            {"uri": "http://kairos.example/ontology/IndividualClient",
+             "name": "IndividualClient", "label": "Individual Client",
+             "comment": "Individual entity"},
+        ]
+
+    def test_each_split_model_has_correct_filter(
+        self, split_classes, split_graph, template_dir,
+        split_bronze_dir, split_mappings_dir,
+    ):
+        """Each split model must have its own discriminator filter, not the first."""
+        artifacts = generate_dbt_artifacts(
+            classes=split_classes,
+            graph=split_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="client",
+            bronze_dir=split_bronze_dir,
+            mappings_dir=split_mappings_dir,
+        )
+
+        # Corporate → type = 0
+        corp_key = next(k for k in artifacts if "corporate_client.sql" in k)
+        assert "type = 0" in artifacts[corp_key]
+
+        # Sole proprietor → type = 1
+        sole_key = next(k for k in artifacts if "sole_proprietor_client.sql" in k)
+        assert "type = 1" in artifacts[sole_key]
+
+        # Individual → type = 2
+        indiv_key = next(k for k in artifacts if "individual_client.sql" in k)
+        assert "type = 2" in artifacts[indiv_key]
+
+    def test_split_models_do_not_share_filter(
+        self, split_classes, split_graph, template_dir,
+        split_bronze_dir, split_mappings_dir,
+    ):
+        """No split model should contain another model's filter condition."""
+        artifacts = generate_dbt_artifacts(
+            classes=split_classes,
+            graph=split_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="client",
+            bronze_dir=split_bronze_dir,
+            mappings_dir=split_mappings_dir,
+        )
+
+        sole_key = next(k for k in artifacts if "sole_proprietor_client.sql" in k)
+        content = artifacts[sole_key]
+        # Should NOT have type = 0 (that's CorporateClient's filter)
+        assert "type = 0" not in content
+        # Should have type = 1
+        assert "type = 1" in content

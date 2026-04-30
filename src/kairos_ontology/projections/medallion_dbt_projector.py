@@ -376,6 +376,87 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
 # SKOS mapping parser
 # ---------------------------------------------------------------------------
 
+def _parse_split_annotations(mappings_dir: Path) -> dict[tuple[str, str], dict]:
+    """Pre-parse mapping TTL files by statement block to resolve split ambiguity.
+
+    Standard RDF parsing merges all triples for the same subject, making it
+    impossible to correlate which ``kairos-map:filterCondition`` belongs to which
+    ``skos:exactMatch`` target when multiple split entries share a subject.
+
+    This function parses the raw Turtle text by statement block (terminated by
+    ``'.'``) so each block's annotations stay isolated.
+
+    Returns a dict keyed by ``(subject_uri, target_uri)`` with per-entry
+    annotations::
+
+        {("bronze:tblX", "ex:ClassA"): {"filter_condition": "...", ...}, ...}
+    """
+    result: dict[tuple[str, str], dict] = {}
+    if not mappings_dir or not mappings_dir.is_dir():
+        return result
+
+    skos_match_uris = {
+        str(SKOS.exactMatch), str(SKOS.closeMatch), str(SKOS.narrowMatch),
+        str(SKOS.broadMatch), str(SKOS.relatedMatch),
+    }
+
+    for ttl_path in sorted(mappings_dir.rglob("*.ttl")):
+        try:
+            content = ttl_path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        # Extract prefix lines (needed to parse each block independently)
+        lines = content.split("\n")
+        prefix_lines: list[str] = []
+        body_lines: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("@prefix") or stripped.startswith("@base"):
+                prefix_lines.append(line)
+            else:
+                body_lines.append(line)
+
+        prefix_block = "\n".join(prefix_lines) + "\n"
+        body = "\n".join(body_lines)
+
+        # Split body into statement blocks (each terminated by '.')
+        # Use regex to split on '.' that ends a statement (not inside a string)
+        statements = re.split(r"\.\s*(?=\n|$)", body)
+
+        for stmt in statements:
+            stmt = stmt.strip()
+            if not stmt:
+                continue
+
+            # Parse this single statement block
+            try:
+                block_g = Graph()
+                block_g.parse(data=prefix_block + stmt + " .", format="turtle")
+            except Exception:
+                continue
+
+            # Look for table-level mappings in this block
+            for subj, pred, obj in block_g:
+                pred_str = str(pred)
+                if pred_str not in skos_match_uris:
+                    continue
+                # Found a SKOS match — check if it has mapping annotations
+                mapping_type = block_g.value(subj, KAIROS_MAP.mappingType)
+                if mapping_type is None:
+                    continue
+                filt = block_g.value(subj, KAIROS_MAP.filterCondition)
+                dedup_key = block_g.value(subj, KAIROS_MAP.deduplicationKey)
+                dedup_order = block_g.value(subj, KAIROS_MAP.deduplicationOrder)
+                result[(str(subj), str(obj))] = {
+                    "filter_condition": str(filt) if filt else None,
+                    "dedup_key": str(dedup_key) if dedup_key else None,
+                    "dedup_order": str(dedup_order) if dedup_order else None,
+                }
+
+    return result
+
+
 def _parse_skos_mappings(mappings_dir: Path) -> dict:
     """Parse SKOS + kairos-map: mappings and return structured mapping data.
 
@@ -405,6 +486,9 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
     if not mappings_dir or not mappings_dir.is_dir():
         return result
 
+    # Pre-parse to resolve per-target annotations for split patterns
+    split_annotations = _parse_split_annotations(mappings_dir)
+
     g = Graph()
     for ttl in sorted(mappings_dir.rglob("*.ttl")):
         try:
@@ -433,15 +517,29 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
 
                 if mapping_type is not None:
                     # Table-level mapping (list to support 1:N split pattern)
-                    filt = g.value(subj, KAIROS_MAP.filterCondition)
-                    dedup_key = g.value(subj, KAIROS_MAP.deduplicationKey)
-                    dedup_order = g.value(subj, KAIROS_MAP.deduplicationOrder)
+                    # Use per-block annotations if available (handles split correctly)
+                    annotations = split_annotations.get((subj_str, obj_str), {})
+                    filt = annotations.get("filter_condition")
+                    dedup_key = annotations.get("dedup_key")
+                    dedup_order = annotations.get("dedup_order")
+
+                    # Fall back to g.value() for single-target (non-split) cases
+                    if filt is None:
+                        v = g.value(subj, KAIROS_MAP.filterCondition)
+                        filt = str(v) if v else None
+                    if dedup_key is None:
+                        v = g.value(subj, KAIROS_MAP.deduplicationKey)
+                        dedup_key = str(v) if v else None
+                    if dedup_order is None:
+                        v = g.value(subj, KAIROS_MAP.deduplicationOrder)
+                        dedup_order = str(v) if v else None
+
                     result["table_maps"].setdefault(subj_str, []).append({
                         "target_uri": obj_str,
                         "mapping_type": str(mapping_type),
-                        "filter_condition": str(filt) if filt else None,
-                        "dedup_key": str(dedup_key) if dedup_key else None,
-                        "dedup_order": str(dedup_order) if dedup_order else None,
+                        "filter_condition": filt,
+                        "dedup_key": dedup_key,
+                        "dedup_order": dedup_order,
                     })
                 else:
                     # Column-level mapping
@@ -775,9 +873,9 @@ def _gen_silver_models(
             })
             tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
             for tbl_map in tbl_maps_list:
-                if tbl_map.get("filter_condition"):
+                if tbl_map.get("target_uri") == cls_uri and tbl_map.get("filter_condition"):
                     filter_conditions.append(tbl_map["filter_condition"])
-                    break  # one filter per source table is sufficient
+                    break
 
         # Determine WHERE clause from filter conditions
         where_clause = ""
