@@ -705,7 +705,7 @@ def _gen_silver_models(
     meta: dict,
     ontology_name: str,
     platform: str = DEFAULT_PLATFORM,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], list[str]]:
     """Generate silver entity models that read directly from bronze sources.
 
     Enforces layer contracts:
@@ -713,8 +713,12 @@ def _gen_silver_models(
     - Every source() must point to a declared bronze source table
     - Unmapped classes are skipped with a warning (no broken placeholders)
     - Silver absorbs rename, cast, and transform logic (previously in staging)
+
+    Returns:
+        Tuple of (artifacts dict, warnings list).
     """
     artifacts: dict[str, str] = {}
+    warnings: list[str] = []
     template = env.get_template("silver_model.sql.jinja2")
 
     schema_name = f"silver_{ontology_name}"
@@ -738,11 +742,12 @@ def _gen_silver_models(
 
         source_refs = class_to_sources.get(cls_uri, [])
         if not source_refs:
-            logger.warning(
-                "No bronze mapping for class %s — skipping silver model generation. "
-                "Add a mapping in the mappings TTL to enable this model.",
-                local,
+            msg = (
+                f"No bronze mapping for class '{local}' — skipping silver model. "
+                f"Add a SKOS mapping (skos:exactMatch) in model/mappings/ to enable."
             )
+            logger.warning(msg)
+            warnings.append(msg)
             continue
 
         # Extract properties for column list with platform-aware types
@@ -786,7 +791,7 @@ def _gen_silver_models(
         path = f"models/silver/{ontology_name}/{model_name}.sql"
         artifacts[path] = content
 
-    return artifacts
+    return artifacts, warnings
 
 
 def _extract_silver_columns(
@@ -1433,12 +1438,17 @@ def generate_dbt_artifacts(
         print(f"    ✓ Generated {len(systems)} source definition(s)")
 
     # 2. Silver entity models (read directly from bronze via source())
-    silver = _gen_silver_models(
+    silver, silver_warnings = _gen_silver_models(
         classes, graph, namespace, systems, mappings, env, meta, onto_name,
         platform=target_platform,
     )
     artifacts.update(silver)
     print(f"    ✓ Generated {len(silver)} silver model(s)")
+    if silver_warnings:
+        for w in silver_warnings:
+            print(f"    ⚠️  {w}")
+        print(f"    ℹ️  {len(silver_warnings)} class(es) skipped — "
+              f"see projection-report.json for details")
 
     # 3. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(
