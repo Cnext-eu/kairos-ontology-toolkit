@@ -255,8 +255,8 @@ class TestSkosMapping:
         assert len(table_maps) == 1
         key = "https://example.com/bronze/adminpulse#tblClient"
         assert key in table_maps
-        assert table_maps[key]["mapping_type"] == "direct"
-        assert table_maps[key]["target_uri"] == "http://kairos.example/ontology/Client"
+        assert table_maps[key][0]["mapping_type"] == "direct"
+        assert table_maps[key][0]["target_uri"] == "http://kairos.example/ontology/Client"
 
     def test_parse_skos_column_maps(self, mappings_dir):
         maps = _parse_skos_mappings(mappings_dir)
@@ -288,6 +288,34 @@ class TestSkosMapping:
         maps = _parse_skos_mappings(d)
         assert len(maps["table_maps"]) == 1
         assert len(maps["column_maps"]) == 2
+
+    def test_parse_skos_split_pattern(self, tmp_path):
+        """One bronze table mapping to multiple domain classes (1:N split)."""
+        split_ttl = textwrap.dedent("""\
+            @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+            @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+            @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+            @prefix party: <http://kairos.example/ontology/> .
+
+            bronze-ap:tblContacts skos:exactMatch party:Client ;
+                kairos-map:mappingType "split" ;
+                kairos-map:filterCondition "source.ContactType = 'CLIENT'" .
+
+            bronze-ap:tblContacts skos:exactMatch party:ContactPerson ;
+                kairos-map:mappingType "split" ;
+                kairos-map:filterCondition "source.ContactType = 'CONTACT'" .
+        """)
+        d = tmp_path / "mappings"
+        d.mkdir()
+        (d / "contacts-split.ttl").write_text(split_ttl, encoding="utf-8")
+        maps = _parse_skos_mappings(d)
+        # One key (the bronze table URI), but TWO entries in the list
+        key = "https://example.com/bronze/adminpulse#tblContacts"
+        assert key in maps["table_maps"]
+        assert len(maps["table_maps"][key]) == 2
+        targets = {e["target_uri"] for e in maps["table_maps"][key]}
+        assert "http://kairos.example/ontology/Client" in targets
+        assert "http://kairos.example/ontology/ContactPerson" in targets
 
 
 # ---------------------------------------------------------------------------
