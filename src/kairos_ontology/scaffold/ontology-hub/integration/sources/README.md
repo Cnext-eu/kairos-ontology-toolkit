@@ -50,11 +50,11 @@ sources/
 ## From sources to bronze vocabulary
 
 The bronze vocabulary TTL files in `bronze/` are **derived from** the reference
-docs stored here. Use the **`kairos-medallion-staging`** Copilot skill to
+docs stored here. Use the **`kairos-ontology-medallion-source`** Copilot skill to
 generate or update a bronze vocabulary from source documentation:
 
 1. Place your source reference files in `sources/<system-name>/`.
-2. Invoke the `kairos-medallion-staging` skill.
+2. Invoke the `kairos-ontology-medallion-source` skill.
 3. The skill reads the source docs and produces (or updates) the corresponding
    bronze vocabulary TTL in `bronze/`.
 

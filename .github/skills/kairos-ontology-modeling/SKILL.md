@@ -14,7 +14,7 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
 0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
    at the start of the session.  If it reports outdated files, run
    `python -m kairos_ontology update` and commit the refresh before doing any other work.
-   See the kairos-toolkit-ops skill for full upgrade steps.
+   See the kairos-ontology-toolkit-ops skill for full upgrade steps.
 1. **Create a feature branch** — never work directly on `main`.  Use the
    SC-feature-branch skill (e.g., `ontology/add-order-domain`).
 2. **Read the hub README** — open `ontology-hub/README.md` and note the company

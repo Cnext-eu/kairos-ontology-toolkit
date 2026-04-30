@@ -570,7 +570,7 @@ source of truth** for bronze table structure. This is a foundational contract:
 When the toolkit renames or removes a skill from the scaffold, the `update`
 command previously only added/updated files — it never removed stale skills.
 This left orphaned skill directories in hub repos (e.g., `kairos-toolkit-update`
-persisting when the scaffold renamed it to `kairos-toolkit-ops`).
+persisting when the scaffold renamed it to `kairos-ontology-toolkit-ops`).
 
 ### Decision
 

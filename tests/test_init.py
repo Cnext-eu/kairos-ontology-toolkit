@@ -40,10 +40,10 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/model/mappings/README.md").is_file()
 
             # Check skills installed
-            assert Path(".github/skills/kairos-hub-setup/SKILL.md").is_file()
+            assert Path(".github/skills/kairos-ontology-hub-setup/SKILL.md").is_file()
             assert Path(".github/skills/kairos-ontology-modeling/SKILL.md").is_file()
             assert Path(".github/skills/kairos-ontology-validation/SKILL.md").is_file()
-            assert Path(".github/skills/kairos-projection-generation/SKILL.md").is_file()
+            assert Path(".github/skills/kairos-ontology-projection/SKILL.md").is_file()
 
             # Check copilot instructions
             assert Path(".github/copilot-instructions.md").is_file()
@@ -80,7 +80,7 @@ def test_init_without_domain(tmp_path):
             assert result.exit_code == 0
 
             assert Path("ontology-hub/model/ontologies").is_dir()
-            assert Path(".github/skills/kairos-hub-setup/SKILL.md").is_file()
+            assert Path(".github/skills/kairos-ontology-hub-setup/SKILL.md").is_file()
             # Only _master.ttl should exist (no domain starter)
             ttl_files = sorted(Path("ontology-hub/model/ontologies").glob("*.ttl"))
             assert len(ttl_files) == 1
@@ -175,7 +175,7 @@ def test_new_repo_creates_full_structure(tmp_path):
 
     # Copilot
     assert (repo / ".github" / "copilot-instructions.md").is_file()
-    assert (repo / ".github" / "skills" / "kairos-hub-setup" / "SKILL.md").is_file()
+    assert (repo / ".github" / "skills" / "kairos-ontology-hub-setup" / "SKILL.md").is_file()
 
     # Repo-level files
     assert (repo / "pyproject.toml").is_file()
