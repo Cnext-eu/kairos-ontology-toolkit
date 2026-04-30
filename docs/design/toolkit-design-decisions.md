@@ -28,6 +28,7 @@ Kairos Ontology Toolkit. Each decision is recorded as an Architecture Decision R
 | [DD-013](#dd-013-pre-release-publishing-via-git-tags--channel-system) | Pre-Release Publishing via Git Tags + Channel System | Accepted | 2026-05-01 |
 | [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly) | Eliminate Staging — Silver Reads Bronze Directly | Accepted | 2026-05-14 |
 | [DD-015](#dd-015-vocabulary-ttl-as-bronze-contract) | Vocabulary TTL as Bronze Contract | Accepted | 2026-05-14 |
+| [DD-016](#dd-016-stale-managed-skill-cleanup-during-update) | Stale Managed Skill Cleanup During Update | Accepted | 2026-05-14 |
 
 ---
 
@@ -553,6 +554,45 @@ source of truth** for bronze table structure. This is a foundational contract:
 - Vocabulary TTL is version-controlled alongside mappings in the ontology hub
 - RDF/OWL tooling can validate vocabulary completeness and consistency
 - Minimal `_sources.yml` reduces noise and maintenance
+
+---
+
+## DD-016: Stale Managed Skill Cleanup During Update
+
+**Status:** Accepted  
+**Date:** 2026-05-14  
+**Affects:** `cli/main.py` update command  
+**Implementation:** Stale skill scan after managed-file sync in `update()`
+
+### Context
+
+When the toolkit renames or removes a skill from the scaffold, the `update`
+command previously only added/updated files — it never removed stale skills.
+This left orphaned skill directories in hub repos (e.g., `kairos-toolkit-update`
+persisting when the scaffold renamed it to `kairos-toolkit-ops`).
+
+### Decision
+
+After syncing managed files, `update` scans `.github/skills/` for directories
+whose `SKILL.md` contains the managed marker (`kairos-ontology-toolkit:managed`)
+but whose name is NOT in the current scaffold skills list. These are removed.
+
+| Skill type | Has managed marker? | In scaffold? | Action |
+|------------|-------------------|--------------|--------|
+| Current toolkit skill | ✅ | ✅ | Updated normally |
+| Renamed/removed toolkit skill | ✅ | ❌ | **Deleted** |
+| User custom skill | ❌ | ❌ | Left untouched |
+
+### `--check` Mode
+
+In `--check` mode, stale skills are reported but not removed, and the exit
+code is non-zero (same as outdated/missing files).
+
+### Rationale
+
+- Safe: only removes files the toolkit created (marker-based identification)
+- Automatic: no manual list of removed skills to maintain
+- Consistent: `update` is already the explicit user action for syncing
 
 ---
 

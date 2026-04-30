@@ -217,6 +217,21 @@ Managed files:
 - `.github/copilot-instructions.md`
 - `.github/skills/*/SKILL.md`
 
+#### Stale skill cleanup
+
+When the toolkit renames or removes a skill, `update` automatically removes
+the old skill directory from `.github/skills/` — **but only if** it has the
+toolkit managed marker (`<!-- kairos-ontology-toolkit:managed ... -->`).
+Custom skills you create yourself (without this marker) are never touched.
+
+Example output when a skill was renamed:
+```
+🗑️  Removed 1 stale managed skill(s):
+   .github/skills/kairos-toolkit-update/
+✅ Created 1 new file(s) (v2.18.0):
+   .github/skills/kairos-toolkit-ops/SKILL.md
+```
+
 ### Restart Copilot
 
 After refreshing managed files, restart the Copilot CLI to load updated skills:

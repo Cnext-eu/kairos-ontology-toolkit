@@ -523,8 +523,10 @@ def update(check, upgrade):
 
     Scans .github/ for files stamped by kairos-ontology-toolkit and refreshes
     them from the currently installed package.  Missing managed files (e.g.,
-    newly added skills) are created automatically.  Use --check to preview
-    what would change without writing anything.
+    newly added skills) are created automatically.  Skills that have the
+    managed marker but are no longer in the current scaffold (renamed or
+    removed) are deleted.  Use --check to preview what would change without
+    writing anything.
 
     Use --upgrade to upgrade the toolkit pip dependency based on the channel
     configured in [tool.kairos] of pyproject.toml (stable or preview).
@@ -532,7 +534,7 @@ def update(check, upgrade):
     \b
     Exit codes (with --check):
       0  All managed files are up to date
-      1  One or more files are outdated or missing
+      1  One or more files are outdated, missing, or stale
 
     \b
     Managed files (do not edit manually):
@@ -609,6 +611,33 @@ def update(check, upgrade):
             local_file.write_text(new_content, encoding="utf-8")
             updated.append((rel_path, local_ver or "unmanaged"))
 
+    # --- Stale managed-skill cleanup ----------------------------------------
+    stale: list[str] = []
+    removed: list[str] = []
+    skills_dir = repo_root / ".github" / "skills"
+    scaffold_skills_dir = _SCAFFOLD_DIR / "skills"
+    if skills_dir.is_dir() and scaffold_skills_dir.is_dir():
+        scaffold_skill_names = {
+            d.name for d in scaffold_skills_dir.iterdir()
+            if d.is_dir() and (d / "SKILL.md").is_file()
+        }
+        for skill_dir in sorted(skills_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            skill_file = skill_dir / "SKILL.md"
+            if not skill_file.is_file():
+                continue
+            if skill_dir.name in scaffold_skill_names:
+                continue
+            content = skill_file.read_text(encoding="utf-8")
+            if not _MANAGED_MARKER_RE.search(content):
+                continue
+            if check:
+                stale.append(skill_dir.name)
+            else:
+                shutil.rmtree(skill_dir)
+                removed.append(skill_dir.name)
+
     # --- Report -------------------------------------------------------------
     if check:
         if outdated:
@@ -619,7 +648,11 @@ def update(check, upgrade):
             print(f"⚠  {len(missing)} managed file(s) missing:")
             for p in missing:
                 print(f"   {p}")
-        if not outdated and not missing:
+        if stale:
+            print(f"⚠  {len(stale)} stale managed skill(s) to remove:")
+            for name in stale:
+                print(f"   .github/skills/{name}/")
+        if not outdated and not missing and not stale:
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
         else:
             raise SystemExit(1)
@@ -632,7 +665,11 @@ def update(check, upgrade):
             print(f"✅ Updated {len(updated)} file(s) to v{_toolkit_version}:")
             for path, ver in updated:
                 print(f"   {path}  ({ver} → {_toolkit_version})")
-        if not updated and not created:
+        if removed:
+            print(f"🗑️  Removed {len(removed)} stale managed skill(s):")
+            for name in removed:
+                print(f"   .github/skills/{name}/")
+        if not updated and not created and not removed:
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
 
     # --- Ensure package.json exists (Mermaid CLI for SVG export) -------------

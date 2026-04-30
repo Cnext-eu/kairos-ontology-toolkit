@@ -600,6 +600,93 @@ def test_update_creates_new_skill_file(tmp_path):
     assert skill_paths[-1] in result.output
 
 
+def test_update_removes_stale_managed_skill(tmp_path):
+    """update should remove a managed skill that is no longer in the scaffold."""
+    from kairos_ontology import __version__ as ver
+    runner = CliRunner()
+    managed_map = _managed_scaffold_map()
+
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        # Populate all current managed files at the current version
+        for rel_path, scaffold_src in managed_map.items():
+            dst = Path(td) / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            content = scaffold_src.read_text(encoding="utf-8")
+            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+
+        # Add a stale managed skill (not in scaffold)
+        stale_dir = Path(td) / ".github" / "skills" / "kairos-old-skill"
+        stale_dir.mkdir(parents=True, exist_ok=True)
+        stale_content = _stamp_managed("# Old Skill\nThis is stale.", "1.0.0")
+        (stale_dir / "SKILL.md").write_text(stale_content, encoding="utf-8")
+
+        result = runner.invoke(cli, ["update"])
+
+        # Stale skill directory should be deleted
+        assert not stale_dir.exists()
+
+    assert result.exit_code == 0, result.output
+    assert "Removed 1 stale" in result.output
+    assert "kairos-old-skill" in result.output
+
+
+def test_update_check_reports_stale_managed_skill(tmp_path):
+    """update --check should report stale managed skills without removing them."""
+    from kairos_ontology import __version__ as ver
+    runner = CliRunner()
+    managed_map = _managed_scaffold_map()
+
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        for rel_path, scaffold_src in managed_map.items():
+            dst = Path(td) / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            content = scaffold_src.read_text(encoding="utf-8")
+            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+
+        # Add a stale managed skill
+        stale_dir = Path(td) / ".github" / "skills" / "kairos-old-skill"
+        stale_dir.mkdir(parents=True, exist_ok=True)
+        stale_content = _stamp_managed("# Old Skill\nThis is stale.", "1.0.0")
+        (stale_dir / "SKILL.md").write_text(stale_content, encoding="utf-8")
+
+        result = runner.invoke(cli, ["update", "--check"])
+
+        # Stale skill should NOT be deleted (check mode)
+        assert stale_dir.exists()
+
+    assert result.exit_code != 0  # exit 1 — stale counts as drift
+    assert "stale" in result.output.lower()
+    assert "kairos-old-skill" in result.output
+
+
+def test_update_preserves_custom_unmanaged_skill(tmp_path):
+    """update should NOT remove a custom skill without the managed marker."""
+    from kairos_ontology import __version__ as ver
+    runner = CliRunner()
+    managed_map = _managed_scaffold_map()
+
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        for rel_path, scaffold_src in managed_map.items():
+            dst = Path(td) / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            content = scaffold_src.read_text(encoding="utf-8")
+            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+
+        # Add a custom skill WITHOUT managed marker
+        custom_dir = Path(td) / ".github" / "skills" / "my-custom-skill"
+        custom_dir.mkdir(parents=True, exist_ok=True)
+        (custom_dir / "SKILL.md").write_text("# My Custom Skill\nNo marker.")
+
+        result = runner.invoke(cli, ["update"])
+
+        # Custom skill should still exist
+        assert custom_dir.exists()
+        assert (custom_dir / "SKILL.md").is_file()
+
+    assert result.exit_code == 0, result.output
+    assert "my-custom-skill" not in result.output
+
+
 # ---------------------------------------------------------------------------
 # CI workflow scaffold
 # ---------------------------------------------------------------------------
