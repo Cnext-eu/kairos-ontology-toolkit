@@ -252,12 +252,38 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
                 is_pk_val = g.value(col_uri, KAIROS_BRONZE.isPrimaryKey)
                 is_pk = str(is_pk_val).lower() == "true" if is_pk_val else col_name in pk_cols
 
+                # JSON content type support
+                content_type = g.value(col_uri, KAIROS_BRONZE.contentType)
+                json_info = None
+                if content_type and str(content_type) in ("json-array", "json-object"):
+                    json_path = str(g.value(col_uri, KAIROS_BRONZE.jsonPath) or "$")
+                    schema_uri = g.value(col_uri, KAIROS_BRONZE.jsonSchema)
+                    json_fields = []
+                    if schema_uri:
+                        for field_node in g.objects(schema_uri, KAIROS_BRONZE.jsonField):
+                            fname = str(g.value(field_node, KAIROS_BRONZE.fieldName) or "")
+                            ftype = str(g.value(field_node, KAIROS_BRONZE.fieldType) or "VARCHAR(255)")
+                            fpath = str(g.value(field_node, KAIROS_BRONZE.fieldPath) or f"$.{fname}")
+                            fmax = g.value(field_node, KAIROS_BRONZE.fieldMaxLength)
+                            json_fields.append({
+                                "name": fname,
+                                "type": ftype,
+                                "path": fpath,
+                                "max_length": int(str(fmax)) if fmax else 255,
+                            })
+                    json_info = {
+                        "content_type": str(content_type),
+                        "json_path": json_path,
+                        "fields": json_fields,
+                    }
+
                 columns.append({
                     "uri": str(col_uri),
                     "name": col_name,
                     "data_type": col_type,
                     "nullable": nullable,
                     "is_pk": is_pk,
+                    "json_info": json_info,
                 })
 
             tables.append({
@@ -518,9 +544,32 @@ def _gen_staging_models(
             tbl_map = mappings["table_maps"].get(tbl_uri, {})
 
             columns_data = []
+            json_extractions = []
             for col in tbl["columns"]:
                 col_uri = col["uri"] if "uri" in col else ""
                 col_map = mappings["column_maps"].get(col_uri, {})
+
+                # Check if this is a JSON column requiring extraction
+                json_info = col.get("json_info")
+                if json_info and json_info.get("fields"):
+                    # JSON column: don't include as a regular column,
+                    # instead add to json_extractions for CROSS APPLY
+                    alias = f"j_{_camel_to_snake(col['name'])}"
+                    json_extractions.append({
+                        "source_column": col["name"],
+                        "alias": alias,
+                        "content_type": json_info["content_type"],
+                        "json_path": json_info["json_path"],
+                        "fields": [
+                            {
+                                "name": _camel_to_snake(f["name"]),
+                                "length": f.get("max_length", 255),
+                                "path": f["path"],
+                            }
+                            for f in json_info["fields"]
+                        ],
+                    })
+                    continue
 
                 # Use explicit transform if available, else default cast
                 if col_map.get("transform"):
@@ -552,6 +601,7 @@ def _gen_staging_models(
                 system_label=sys["system_label"],
                 raw_table_name=tbl["name"],
                 columns=columns_data,
+                json_extractions=json_extractions,
                 filter_condition=tbl_map.get("filter_condition"),
                 dedup_key=tbl_map.get("dedup_key"),
                 dedup_order=tbl_map.get("dedup_order"),

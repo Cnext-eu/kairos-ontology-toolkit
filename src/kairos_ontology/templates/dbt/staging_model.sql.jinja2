@@ -7,8 +7,11 @@
 --
 -- This staging model performs light transformations per dbt best practices:
 --   ✅ Renaming (source columns → snake_case)
---   ✅ Type casting (source types → Spark SQL / warehouse types)
+--   ✅ Type casting (source types → warehouse types)
 --   ✅ Basic cleaning (TRIM, COALESCE)
+{%- if json_extractions %}
+--   ✅ JSON extraction (OPENJSON / CROSS APPLY)
+{%- endif %}
 --   ❌ No joins, no aggregations
 
 {{"{{"}} config(
@@ -33,6 +36,32 @@ renamed as (
 {%- endif %}
 
 )
+{%- if json_extractions %}
+,
+
+json_extracted as (
+
+    select
+        renamed.*,
+{%- for je in json_extractions %}
+{%- for f in je.fields %}
+        {{ je.alias }}.{{ f.name }}{% if not loop.last or not loop.parent.last %},{% endif %}
+{%- endfor %}
+{%- endfor %}
+    from renamed
+{%- for je in json_extractions %}
+    cross apply openjson(renamed.{{ je.source_column }}{% if je.json_path != '$' %}, '{{ je.json_path }}'{% endif %}) with (
+{%- for f in je.fields %}
+        {{ f.name }} varchar({{ f.length }}) '{{ f.path }}'{% if not loop.last %},{% endif %}
+{%- endfor %}
+    ) {{ je.alias }}
+{%- endfor %}
+    where {% for je in json_extractions %}renamed.{{ je.source_column }} is not null
+      and isjson(renamed.{{ je.source_column }}) = 1{% if not loop.last %}
+      and {% endif %}{% endfor %}
+
+)
+{%- endif %}
 {%- if dedup_key %}
 
 , deduplicated as (
@@ -43,12 +72,12 @@ renamed as (
             partition by {{ dedup_key }}
             order by {{ dedup_order | default('1') }}
         ) as _row_num
-    from renamed
+    from {% if json_extractions %}json_extracted{% else %}renamed{% endif %}
 
 )
 
 select * from deduplicated where _row_num = 1
 {%- else %}
 
-select * from renamed
+select * from {% if json_extractions %}json_extracted{% else %}renamed{% endif %}
 {%- endif %}
