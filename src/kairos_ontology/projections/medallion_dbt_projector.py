@@ -756,6 +756,13 @@ def _gen_silver_models(
             source_refs=source_refs, systems=systems,
         )
 
+        # Extract FK columns from object properties (cross-domain joins)
+        fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
+            graph, cls_uri, mappings, source_refs, systems=systems,
+        )
+        columns.extend(fk_columns)
+        warnings.extend(fk_warnings)
+
         # Build source CTEs that reference bronze tables directly
         source_ctes = []
         filter_conditions = []
@@ -784,7 +791,7 @@ def _gen_silver_models(
             materialization="table",
             source_ctes=source_ctes,
             columns=columns,
-            joins=[],
+            joins=fk_joins,
             where_clause=where_clause,
             ontology_metadata=meta,
         )
@@ -932,6 +939,156 @@ def _extract_silver_columns(
     return columns
 
 
+def _extract_fk_columns_and_joins(
+    graph: Graph,
+    class_uri: str,
+    mappings: dict,
+    source_refs: list[tuple[str, str, str]],
+    systems: list[dict] | None = None,
+) -> tuple[list[dict], list[dict], list[str]]:
+    """Extract FK columns and joins from object properties.
+
+    For each qualifying object property (functional or max-cardinality-1) on the
+    class, generates a surrogate-key lookup join to the referenced silver model.
+
+    Returns:
+        (fk_columns, joins, warnings) where:
+        - fk_columns: column dicts with expression referencing the join alias
+        - joins: join dicts for the Jinja template
+        - warnings: messages about unsupported FK patterns
+    """
+    fk_columns: list[dict] = []
+    joins: list[dict] = []
+    warnings: list[str] = []
+    existing_aliases: set[str] = set()
+
+    # Only support single-source models for FK joins (multi-source is too complex)
+    if len(source_refs) != 1:
+        return fk_columns, joins, warnings
+
+    source_alias = _camel_to_snake(source_refs[0][1])
+
+    # Build bronze column lookup for resolving source column names
+    bronze_col_lookup: dict[str, dict] = {}
+    if systems:
+        for sys in systems:
+            for tbl in sys["tables"]:
+                for col in tbl["columns"]:
+                    bronze_col_lookup[col["uri"]] = {
+                        "name": col["name"],
+                        "data_type": col["data_type"],
+                    }
+
+    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+        domain = graph.value(prop, RDFS.domain)
+        if domain is None or str(domain) != class_uri:
+            continue
+
+        # Skip junction-table properties (many-to-many)
+        if graph.value(prop, KAIROS_EXT.term("junctionTableName")):
+            continue
+
+        # Qualify: must be functional or have silverColumnName
+        has_explicit_col = graph.value(prop, KAIROS_EXT.term("silverColumnName")) is not None
+        is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
+        if not has_explicit_col and not is_functional:
+            continue
+
+        range_cls = graph.value(prop, RDFS.range)
+        if range_cls is None:
+            continue
+
+        # Determine target model name (dbt naming: camelCase → snake_case)
+        range_local = extract_local_name(str(range_cls))
+        range_model = _camel_to_snake(range_local)
+
+        # Determine FK column name
+        col_override = graph.value(prop, KAIROS_EXT.term("silverColumnName"))
+        fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
+
+        # Disambiguate duplicate FK column names
+        if fk_col_name in existing_aliases:
+            prop_suffix = _camel_to_snake(extract_local_name(str(prop)))
+            fk_col_name = f"{prop_suffix}_sk"
+
+        # Find source column via SKOS mapping to this object property
+        source_col_name = None
+        for col_uri, col_map in mappings.get("column_maps", {}).items():
+            if col_map.get("target_uri") == str(prop):
+                if col_map.get("transform"):
+                    source_col_name = col_map["transform"].replace("source.", "")
+                else:
+                    bronze_col = bronze_col_lookup.get(col_uri)
+                    if bronze_col:
+                        source_col_name = bronze_col["name"]
+                    else:
+                        source_col_name = extract_local_name(col_uri)
+                break
+
+        if source_col_name is None:
+            # No mapping — emit NULL placeholder with warning
+            fk_columns.append({
+                "expression": "CAST(NULL AS {{ dbt_utils.type_string() }})",
+                "target_name": fk_col_name,
+            })
+            msg = (
+                f"FK column '{fk_col_name}' has no SKOS mapping for property "
+                f"'{extract_local_name(str(prop))}' — emitting NULL placeholder."
+            )
+            warnings.append(msg)
+            existing_aliases.add(fk_col_name)
+            continue
+
+        # Get target class natural key for the join condition
+        target_nk = _get_natural_key(graph, str(range_cls))
+
+        if len(target_nk) != 1:
+            # Composite or missing NK — cannot generate join safely
+            fk_columns.append({
+                "expression": "CAST(NULL AS {{ dbt_utils.type_string() }})",
+                "target_name": fk_col_name,
+            })
+            msg = (
+                f"FK column '{fk_col_name}' targets class '{range_local}' which has "
+                f"{'composite' if len(target_nk) > 1 else 'no'} natural key — "
+                f"cannot auto-generate join. Emitting NULL placeholder."
+            )
+            warnings.append(msg)
+            existing_aliases.add(fk_col_name)
+            continue
+
+        # Generate join alias and ref
+        join_alias = f"{range_model}_ref"
+        # Avoid duplicate aliases
+        base_alias = join_alias
+        counter = 2
+        while join_alias in existing_aliases:
+            join_alias = f"{base_alias}_{counter}"
+            counter += 1
+
+        existing_aliases.add(fk_col_name)
+        existing_aliases.add(join_alias)
+
+        # Build join definition
+        joins.append({
+            "type": "left",
+            "ref": f"{{{{ ref('{range_model}') }}}}",
+            "alias": join_alias,
+            "condition": (
+                f"{source_alias}.{source_col_name} = "
+                f"{join_alias}.{target_nk[0]}"
+            ),
+        })
+
+        # FK column references the joined table's SK
+        fk_columns.append({
+            "expression": f"{join_alias}.{range_model}_sk",
+            "target_name": fk_col_name,
+        })
+
+    return fk_columns, joins, warnings
+
+
 def _build_enum_case(source_expr: str, enum_values: list[dict]) -> str:
     """Build a CASE statement to resolve enum codes to human-readable labels."""
     parts = [f"CASE CAST({source_expr} AS VARCHAR(50))"]
@@ -1051,6 +1208,41 @@ def _gen_schema_yaml(
                     "description": desc,
                     "meta": col_meta,
                     "tests": tests,
+                })
+
+        # Object property FK columns
+        for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+            domain = graph.value(prop, RDFS.domain)
+            if domain and str(domain) == cls["uri"]:
+                # Skip junction-table properties
+                if graph.value(prop, KAIROS_EXT.term("junctionTableName")):
+                    continue
+                # Only functional / explicit column
+                has_explicit = graph.value(
+                    prop, KAIROS_EXT.term("silverColumnName")
+                ) is not None
+                is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
+                if not has_explicit and not is_functional:
+                    continue
+                range_cls = graph.value(prop, RDFS.range)
+                if range_cls is None:
+                    continue
+                range_local = extract_local_name(str(range_cls))
+                range_model = _camel_to_snake(range_local)
+                col_override = graph.value(prop, KAIROS_EXT.term("silverColumnName"))
+                fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
+                prop_label = graph.value(prop, RDFS.label)
+                prop_comment = graph.value(prop, RDFS.comment)
+                fk_desc = (
+                    str(prop_comment) if prop_comment
+                    else (str(prop_label) if prop_label
+                          else f"FK to {range_local}")
+                )
+                cols.append({
+                    "name": fk_col_name,
+                    "description": fk_desc,
+                    "meta": {"is_fk": "true", "references": range_model},
+                    "tests": [],
                 })
 
         models_data.append({

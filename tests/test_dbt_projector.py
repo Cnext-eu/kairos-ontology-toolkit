@@ -15,6 +15,7 @@ from kairos_ontology.projections.medallion_dbt_projector import (
     _parse_skos_mappings,
     _extract_shacl_tests,
     _source_type_to_databricks,
+    _extract_fk_columns_and_joins,
     generate_dbt_artifacts,
 )
 
@@ -696,3 +697,276 @@ class TestGoldDbtModels:
         content = artifacts[date_key]
         assert "materialized='table'" in content
         assert "date_key" in content
+
+
+# ---------------------------------------------------------------------------
+# Cross-domain FK projection tests
+# ---------------------------------------------------------------------------
+
+# Ontology with a cross-domain FK: Client has representsParty → Party
+CROSS_DOMAIN_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "Test Ontology" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:Party a owl:Class ;
+        rdfs:label "Party" ;
+        rdfs:comment "A party entity" ;
+        kairos-ext:naturalKey "partyId" .
+
+    ex:partyId a owl:DatatypeProperty ;
+        rdfs:label "party ID" ;
+        rdfs:comment "Party identifier" ;
+        rdfs:domain ex:Party ;
+        rdfs:range xsd:string .
+
+    ex:Client a owl:Class ;
+        rdfs:label "Client" ;
+        rdfs:comment "A client entity" ;
+        kairos-ext:naturalKey "clientId" .
+
+    ex:clientId a owl:DatatypeProperty ;
+        rdfs:label "client ID" ;
+        rdfs:comment "Unique identifier" ;
+        rdfs:domain ex:Client ;
+        rdfs:range xsd:string .
+
+    ex:clientName a owl:DatatypeProperty ;
+        rdfs:label "client name" ;
+        rdfs:comment "Name of the client" ;
+        rdfs:domain ex:Client ;
+        rdfs:range xsd:string .
+
+    ex:representsParty a owl:ObjectProperty, owl:FunctionalProperty ;
+        rdfs:label "represents party" ;
+        rdfs:comment "FK to party entity" ;
+        rdfs:domain ex:Client ;
+        rdfs:range ex:Party .
+""")
+
+# Bronze vocab for the FK source column
+CROSS_DOMAIN_BRONZE_TTL = textwrap.dedent("""\
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+    bronze-ap:AdminPulse a kairos-bronze:SourceSystem ;
+        rdfs:label "AdminPulse" ;
+        kairos-bronze:connectionType "jdbc" ;
+        kairos-bronze:database "AP_Prod" ;
+        kairos-bronze:schema "dbo" .
+
+    bronze-ap:Relation a kairos-bronze:SourceTable ;
+        rdfs:label "Relation" ;
+        kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+        kairos-bronze:tableName "Relation" ;
+        kairos-bronze:primaryKeyColumns "id" .
+
+    bronze-ap:Relation_id a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:Relation ;
+        kairos-bronze:columnName "id" ;
+        kairos-bronze:dataType "int" ;
+        kairos-bronze:nullable "false"^^xsd:boolean ;
+        kairos-bronze:isPrimaryKey "true"^^xsd:boolean .
+
+    bronze-ap:Relation_Name a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:Relation ;
+        kairos-bronze:columnName "Name" ;
+        kairos-bronze:dataType "nvarchar(255)" ;
+        kairos-bronze:nullable "true"^^xsd:boolean .
+""")
+
+# SKOS mapping that maps bronze table → Client and includes an FK mapping
+CROSS_DOMAIN_MAPPING_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix ex: <http://kairos.example/ontology/> .
+
+    bronze-ap:Relation skos:exactMatch ex:Client ;
+        kairos-map:mappingType "direct" .
+
+    bronze-ap:Relation_id skos:exactMatch ex:clientId ;
+        kairos-map:transform "CAST(source.id AS STRING)" .
+
+    bronze-ap:Relation_Name skos:exactMatch ex:clientName ;
+        kairos-map:transform "source.Name" .
+
+    bronze-ap:Relation_id skos:exactMatch ex:representsParty ;
+        kairos-map:transform "source.id" ;
+        rdfs:comment "FK to party — resolved via join" .
+""")
+
+
+class TestCrossDomainFK:
+    """Tests for cross-domain FK column and join generation."""
+
+    @pytest.fixture
+    def cross_domain_graph(self):
+        g = Graph()
+        g.parse(data=CROSS_DOMAIN_ONTOLOGY_TTL, format="turtle")
+        return g
+
+    @pytest.fixture
+    def cross_domain_bronze_dir(self, tmp_path):
+        d = tmp_path / "sources" / "adminpulse"
+        d.mkdir(parents=True)
+        (d / "adminpulse.vocabulary.ttl").write_text(
+            CROSS_DOMAIN_BRONZE_TTL, encoding="utf-8"
+        )
+        return tmp_path / "sources"
+
+    @pytest.fixture
+    def cross_domain_mappings_dir(self, tmp_path):
+        d = tmp_path / "mappings" / "adminpulse"
+        d.mkdir(parents=True)
+        (d / "adminpulse-to-client.ttl").write_text(
+            CROSS_DOMAIN_MAPPING_TTL, encoding="utf-8"
+        )
+        return tmp_path / "mappings"
+
+    @pytest.fixture
+    def cross_domain_classes(self):
+        return [
+            {
+                "uri": "http://kairos.example/ontology/Client",
+                "name": "Client",
+                "label": "Client",
+                "comment": "A client entity",
+            },
+            {
+                "uri": "http://kairos.example/ontology/Party",
+                "name": "Party",
+                "label": "Party",
+                "comment": "A party entity",
+            },
+        ]
+
+    def test_fk_column_generated(
+        self, cross_domain_classes, cross_domain_graph, template_dir,
+        cross_domain_bronze_dir, cross_domain_mappings_dir,
+    ):
+        """Cross-domain FK generates a _sk column with a join."""
+        artifacts = generate_dbt_artifacts(
+            classes=cross_domain_classes,
+            graph=cross_domain_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="client",
+            bronze_dir=cross_domain_bronze_dir,
+            mappings_dir=cross_domain_mappings_dir,
+        )
+        # Find client silver model
+        silver_key = next(
+            k for k in artifacts
+            if "client.sql" in k and "models/silver/" in k
+        )
+        content = artifacts[silver_key]
+
+        # Should contain a party_sk FK column
+        assert "party_sk" in content
+        # Should contain a ref() join to the party model
+        assert "ref('party')" in content
+        # Should have a left join
+        assert "left join" in content
+
+    def test_fk_join_condition(
+        self, cross_domain_classes, cross_domain_graph, template_dir,
+        cross_domain_bronze_dir, cross_domain_mappings_dir,
+    ):
+        """FK join condition references the source column and target NK."""
+        artifacts = generate_dbt_artifacts(
+            classes=cross_domain_classes,
+            graph=cross_domain_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="client",
+            bronze_dir=cross_domain_bronze_dir,
+            mappings_dir=cross_domain_mappings_dir,
+        )
+        silver_key = next(
+            k for k in artifacts
+            if "client.sql" in k and "models/silver/" in k
+        )
+        content = artifacts[silver_key]
+
+        # Join should reference the target natural key (party_id from naturalKey)
+        assert "party_ref" in content
+        assert "party_id" in content
+
+    def test_fk_column_in_schema_yaml(
+        self, cross_domain_classes, cross_domain_graph, template_dir,
+        cross_domain_bronze_dir, cross_domain_mappings_dir,
+    ):
+        """FK column appears in the schema YAML with is_fk metadata."""
+        artifacts = generate_dbt_artifacts(
+            classes=cross_domain_classes,
+            graph=cross_domain_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="client",
+            bronze_dir=cross_domain_bronze_dir,
+            mappings_dir=cross_domain_mappings_dir,
+        )
+        schema_key = next(k for k in artifacts if "_models.yml" in k)
+        schema = yaml.safe_load(artifacts[schema_key])
+        # Find client model columns
+        client_model = next(
+            m for m in schema["models"] if m["name"] == "client"
+        )
+        col_names = [c["name"] for c in client_model["columns"]]
+        assert "party_sk" in col_names
+        fk_col = next(c for c in client_model["columns"] if c["name"] == "party_sk")
+        assert fk_col["meta"]["is_fk"] == "true"
+        assert fk_col["meta"]["references"] == "party"
+
+    def test_fk_no_mapping_emits_null(self, cross_domain_graph, template_dir):
+        """FK with no SKOS mapping emits NULL placeholder."""
+        # Use the graph but empty mappings (no SKOS mapping for the FK)
+        source_refs = [("adminpulse", "Relation", "https://example.com/bronze/adminpulse#Relation")]
+        mappings = {"table_maps": {}, "column_maps": {}}
+
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            cross_domain_graph,
+            "http://kairos.example/ontology/Client",
+            mappings,
+            source_refs,
+            systems=None,
+        )
+
+        # Should still produce a FK column (NULL placeholder)
+        assert len(fk_columns) == 1
+        assert fk_columns[0]["target_name"] == "party_sk"
+        assert "NULL" in fk_columns[0]["expression"]
+        # No joins since no mapping
+        assert len(joins) == 0
+        # Should have a warning
+        assert len(warnings) == 1
+        assert "no skos mapping" in warnings[0].lower()
+
+    def test_fk_multi_source_skipped(self, cross_domain_graph):
+        """FK joins are not generated for multi-source models."""
+        source_refs = [
+            ("sys1", "T1", "uri:t1"),
+            ("sys2", "T2", "uri:t2"),
+        ]
+        mappings = {"table_maps": {}, "column_maps": {}}
+
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            cross_domain_graph,
+            "http://kairos.example/ontology/Client",
+            mappings,
+            source_refs,
+            systems=None,
+        )
+
+        # Multi-source: no FK columns or joins generated
+        assert len(fk_columns) == 0
+        assert len(joins) == 0
