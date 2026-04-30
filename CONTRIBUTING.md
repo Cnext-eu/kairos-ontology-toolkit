@@ -105,6 +105,19 @@ Open a GitHub Issue with the `enhancement` label describing:
 - [ ] DCO sign-off on all commits
 - [ ] No secrets, credentials, or PII in code
 
+### Testing a pre-release
+
+If you want hub-repo users to test your changes before a GA release:
+
+1. Use `release.ps1` option **[4]** to publish a pre-release (e.g. `v2.18.0-rc.1`)
+2. Ask testers to switch their hub `pyproject.toml`:
+   ```toml
+   [tool.kairos]
+   channel = "preview"
+   ```
+3. Testers run `python -m kairos_ontology update --upgrade` to pick up the rc.
+4. After validation, create a GA release and testers switch back to `channel = "stable"`.
+
 ## Code of Conduct
 
 This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).

@@ -635,24 +635,6 @@ def update(check, upgrade):
         if not updated and not created:
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
 
-    # --- Migrate .gitignore: remove legacy output/ ignore line ---------------
-    if not check:
-        gitignore_path = repo_root / ".gitignore"
-        if gitignore_path.is_file():
-            content = gitignore_path.read_text(encoding="utf-8")
-            legacy_line = "ontology-hub/output/"
-            lines = content.splitlines(keepends=True)
-            filtered = [
-                l for l in lines
-                if l.strip() != legacy_line and l.strip() != f"# Generated projection outputs"
-            ]
-            # Also drop a blank line that may have been left behind after the block
-            cleaned = "".join(filtered).lstrip("\n")
-            if cleaned != content:
-                gitignore_path.write_text(cleaned, encoding="utf-8")
-                print(f"  ✓ Removed legacy 'ontology-hub/output/' from .gitignore "
-                      f"(projection outputs are now tracked in git)")
-
     # --- Ensure package.json exists (Mermaid CLI for SVG export) -------------
     if not check:
         pkg_json = repo_root / "package.json"
