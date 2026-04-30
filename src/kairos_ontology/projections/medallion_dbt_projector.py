@@ -1295,4 +1295,131 @@ def generate_dbt_artifacts(
         )
         artifacts.update(project)
 
+    # 8. Coverage report
+    if systems:
+        coverage = _gen_coverage_report(
+            classes, graph, namespace, systems, mappings, onto_name,
+        )
+        if coverage:
+            artifacts.update(coverage)
+            print("    ✓ Generated coverage report")
+
     return artifacts
+
+
+# ---------------------------------------------------------------------------
+# Coverage report generation
+# ---------------------------------------------------------------------------
+
+def _gen_coverage_report(
+    classes: list[dict],
+    graph: Graph,
+    namespace: str,
+    systems: list[dict],
+    mappings: dict,
+    ontology_name: str,
+) -> dict[str, str]:
+    """Generate a JSON coverage report showing mapping completeness.
+
+    Reports for each ontology entity:
+    - Total properties vs mapped vs unmapped
+    - Required properties that are missing mappings
+    - Source column utilization (consumed vs unused)
+    """
+    import json
+
+    report: dict = {}
+
+    # Build column_maps reverse: target_uri → source column URI
+    target_to_source: dict[str, str] = {}
+    for col_uri, col_map in mappings.get("column_maps", {}).items():
+        if col_map.get("target_uri"):
+            target_to_source[col_map["target_uri"]] = col_uri
+
+    # Build set of all consumed source column URIs
+    consumed_source_cols = set(mappings.get("column_maps", {}).keys())
+
+    for cls in classes:
+        cls_uri = cls["uri"]
+        local = cls["name"]
+        model_name = _camel_to_snake(local)
+
+        total = 0
+        required_count = 0
+        optional_count = 0
+        derived_count = 0
+        populated = 0
+        always_null = 0
+        null_columns = []
+        missing_required = []
+
+        for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+            domain = graph.value(prop, RDFS.domain)
+            if domain and str(domain) == cls_uri:
+                total += 1
+                prop_str = str(prop)
+                prop_name = extract_local_name(prop_str)
+                col_name = _camel_to_snake(prop_name)
+
+                pop_req = graph.value(URIRef(prop_str), KAIROS_EXT.populationRequirement)
+                population = str(pop_req) if pop_req else "optional"
+
+                if population == "required":
+                    required_count += 1
+                elif population == "derived":
+                    derived_count += 1
+                else:
+                    optional_count += 1
+
+                has_mapping = prop_str in target_to_source
+                if has_mapping:
+                    populated += 1
+                elif population == "derived":
+                    formula = graph.value(URIRef(prop_str), KAIROS_EXT.derivationFormula)
+                    if formula:
+                        populated += 1
+                    else:
+                        always_null += 1
+                        null_columns.append(col_name)
+                else:
+                    always_null += 1
+                    null_columns.append(col_name)
+                    if population == "required":
+                        missing_required.append(col_name)
+
+        # Source coverage per table mapped to this class
+        source_coverage = {}
+        for sys in systems:
+            source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
+            for tbl in sys["tables"]:
+                tbl_map = mappings.get("table_maps", {}).get(tbl["uri"], {})
+                if tbl_map.get("target_uri") == cls_uri:
+                    tbl_cols = {c["uri"] for c in tbl["columns"]}
+                    used = tbl_cols & consumed_source_cols
+                    unused = [
+                        c["name"] for c in tbl["columns"]
+                        if c["uri"] not in consumed_source_cols
+                    ]
+                    key = f"{source_name}__{_camel_to_snake(tbl['name'])}"
+                    source_coverage[key] = {
+                        "available_columns": len(tbl["columns"]),
+                        "consumed_columns": len(used),
+                        "unused_columns": unused,
+                    }
+
+        report[model_name] = {
+            "ontology_properties_total": total,
+            "ontology_properties_required": required_count,
+            "ontology_properties_optional": optional_count,
+            "ontology_properties_derived": derived_count,
+            "populated_from_source": populated,
+            "always_null": always_null,
+            "null_columns": null_columns,
+            "missing_required_mappings": missing_required,
+            "source_coverage": source_coverage,
+        }
+
+    content = json.dumps(
+        {ontology_name: report}, indent=2, ensure_ascii=False,
+    )
+    return {"coverage-report.json": content}
