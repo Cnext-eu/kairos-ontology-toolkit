@@ -7,6 +7,12 @@
 {%- if ontology_metadata and ontology_metadata.iri %}
 -- Ontology: {{ ontology_metadata.iri }}
 {%- endif %}
+{%- if ontology_metadata and ontology_metadata.version %}
+-- Ontology version: {{ ontology_metadata.version }}
+{%- endif %}
+{%- if ontology_metadata and ontology_metadata.toolkit_version %}
+-- Toolkit version: {{ ontology_metadata.toolkit_version }}
+{%- endif %}
 --
 -- Maps bronze source tables to the silver domain entity.
 -- Column definitions align with the silver projector DDL output.

@@ -150,8 +150,8 @@ All changes go in the **kairos-ontology-toolkit** repository:
 
 ### 5. Update skill documentation
 - **kairos-medallion-silver** skill: update output paths in docs
-- **kairos-medallion-projection** skill: reflect new structure
-- **kairos-mapping-report** skill: no changes needed (reports are separate)
+- **kairos-ontology-medallion-silver** skill: reflect new structure
+- **kairos-ontology-mapping-report** skill: no changes needed (reports are separate)
 
 ## Migration Path for Existing Hubs
 
