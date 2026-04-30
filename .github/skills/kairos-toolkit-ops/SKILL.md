@@ -129,6 +129,65 @@ channel = "stable"    # "stable" (default), "preview", or an explicit tag
 | `preview` | Latest release including pre-releases (e.g. `v2.18.0-rc.1`) | Testing new features |
 | `v2.16.0` | Explicit pinned version | Locked environments |
 
+### Which channel should I use?
+
+| Situation | Recommended channel |
+|-----------|-------------------|
+| Day-to-day ontology work, production pipelines | `stable` |
+| Validating a new toolkit release before rolling out | `preview` |
+| Reproducing a specific issue or locking a CI build | Explicit tag (e.g. `v2.17.0-rc.1`) |
+| Toolkit maintainer asked you to test an RC | `preview` or the specific RC tag |
+
+> **Tip:** Most hub repos should stay on `stable`. Only switch to `preview` when
+> you actively want to test a pre-release — then switch back once satisfied.
+
+### How channels handle pre-releases
+
+There is **no interactive version picker**. The `update --upgrade` command
+automatically resolves the version based on your channel. Here is how it behaves
+when the release list looks like this:
+
+```
+v2.18.0-rc.1   ← newest (pre-release)
+v2.17.0        ← latest stable
+v2.16.0
+```
+
+| Your channel | `--upgrade` installs | Why |
+|--------------|---------------------|-----|
+| `stable` | `v2.17.0` | Skips all pre-releases (rc, beta, alpha) |
+| `preview` | `v2.18.0-rc.1` | Picks the most recent release of any kind |
+| `v2.17.0-rc.1` | `v2.17.0-rc.1` | Explicit pin — always uses that exact tag |
+
+**Key points:**
+- `stable` will **never** install an RC, beta, or alpha — even if it is the newest release.
+- `preview` always picks the **most recent** release, whether it is stable or pre-release.
+- An explicit tag pin is never resolved — it is used as-is.
+
+### Pinning to a specific pre-release
+
+If you want to test a specific RC without using the `preview` channel (which would
+auto-advance to newer pre-releases), pin the exact tag:
+
+```toml
+[tool.kairos]
+channel = "v2.18.0-rc.1"
+```
+
+Then run:
+
+```bash
+python -m kairos_ontology update --upgrade
+python -m kairos_ontology update
+```
+
+When testing is complete, switch back to stable:
+
+```toml
+[tool.kairos]
+channel = "stable"
+```
+
 ### Upgrading the toolkit
 
 ```bash
