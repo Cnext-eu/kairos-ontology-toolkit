@@ -73,8 +73,8 @@ _SOURCE_TO_FABRIC: dict[str, str] = {
     "xml": "VARCHAR(8000)",
 }
 
-# Spark SQL types (legacy — kept for backward compatibility / non-Fabric targets)
-_SOURCE_TO_SPARK: dict[str, str] = {
+# Databricks (Spark SQL) types — for dbt-databricks / dbt-spark adapters
+_SOURCE_TO_DATABRICKS: dict[str, str] = {
     "int": "INT",
     "bigint": "BIGINT",
     "smallint": "SMALLINT",
@@ -122,8 +122,8 @@ _XSD_TO_FABRIC: dict[str, str] = {
     str(XSD.anyURI): "VARCHAR(2048)",
 }
 
-# XSD → Spark SQL types (legacy)
-_XSD_TO_SPARK: dict[str, str] = {
+# XSD → Databricks (Spark SQL) types
+_XSD_TO_DATABRICKS: dict[str, str] = {
     str(XSD.string): "STRING",
     str(XSD.normalizedString): "STRING",
     str(XSD.token): "STRING",
@@ -145,10 +145,11 @@ _XSD_TO_SPARK: dict[str, str] = {
 # Platform selection: maps platform name to (source_type_map, xsd_type_map)
 _PLATFORM_TYPE_MAPS: dict[str, tuple[dict[str, str], dict[str, str]]] = {
     "fabric": (_SOURCE_TO_FABRIC, _XSD_TO_FABRIC),
-    "spark": (_SOURCE_TO_SPARK, _XSD_TO_SPARK),
+    "databricks": (_SOURCE_TO_DATABRICKS, _XSD_TO_DATABRICKS),
+    "spark": (_SOURCE_TO_DATABRICKS, _XSD_TO_DATABRICKS),  # alias for backcompat
 }
 
-# Default platform
+# Default platform — valid values: "fabric", "databricks"
 DEFAULT_PLATFORM = "fabric"
 
 # SHACL namespace
@@ -160,10 +161,10 @@ def _camel_to_snake(name: str) -> str:
     return camel_to_snake(name)
 
 
-def _source_type_to_spark(src_type: str) -> str:
-    """Map a source system data type string to Spark SQL type (legacy)."""
+def _source_type_to_databricks(src_type: str) -> str:
+    """Map a source system data type string to Databricks (Spark SQL) type."""
     base = re.sub(r"\(.*\)", "", src_type.strip().lower())
-    return _SOURCE_TO_SPARK.get(base, "STRING")
+    return _SOURCE_TO_DATABRICKS.get(base, "STRING")
 
 
 def _source_type_to_target(src_type: str, platform: str = DEFAULT_PLATFORM) -> str:
@@ -177,6 +178,37 @@ def _xsd_to_target(range_uri, platform: str = DEFAULT_PLATFORM) -> str:
     """Map an XSD range URI to the target platform SQL type."""
     _, xsd_map = _PLATFORM_TYPE_MAPS.get(platform, _PLATFORM_TYPE_MAPS[DEFAULT_PLATFORM])
     return xsd_map.get(str(range_uri), "VARCHAR(255)") if range_uri else "VARCHAR(255)"
+
+
+# ---------------------------------------------------------------------------
+# dbt_utils macro-based type references (for portable silver/gold models)
+# ---------------------------------------------------------------------------
+
+_XSD_TO_DBT_MACRO: dict[str, str] = {
+    str(XSD.string): "{{ dbt_utils.type_string() }}",
+    str(XSD.normalizedString): "{{ dbt_utils.type_string() }}",
+    str(XSD.token): "{{ dbt_utils.type_string() }}",
+    str(XSD.integer): "{{ dbt_utils.type_int() }}",
+    str(XSD.int): "{{ dbt_utils.type_int() }}",
+    str(XSD.long): "{{ dbt_utils.type_int() }}",
+    str(XSD.short): "{{ dbt_utils.type_int() }}",
+    str(XSD.decimal): "DECIMAL(18,4)",  # no dbt_utils macro for decimal
+    str(XSD.float): "{{ dbt_utils.type_float() }}",
+    str(XSD.double): "{{ dbt_utils.type_float() }}",
+    str(XSD.boolean): "{{ dbt_utils.type_boolean() }}",
+    str(XSD.date): "DATE",  # DATE is universal
+    str(XSD.dateTime): "{{ dbt_utils.type_timestamp() }}",
+    str(XSD.time): "{{ dbt_utils.type_string() }}",
+    str(XSD.gYear): "{{ dbt_utils.type_int() }}",
+    str(XSD.anyURI): "{{ dbt_utils.type_string() }}",
+}
+
+
+def _xsd_to_dbt_macro(range_uri) -> str:
+    """Map an XSD range URI to a dbt_utils macro expression (platform-portable)."""
+    if not range_uri:
+        return "{{ dbt_utils.type_string() }}"
+    return _XSD_TO_DBT_MACRO.get(str(range_uri), "{{ dbt_utils.type_string() }}")
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +585,15 @@ def _gen_sources(systems: list[dict], env: Environment) -> dict[str, str]:
     return artifacts
 
 
+def _build_spark_schema(fields: list[dict]) -> str:
+    """Build Spark schema string for from_json(). E.g. 'array<struct<name:string,age:int>>'."""
+    field_parts = []
+    for f in fields:
+        # Map field length to Spark type (all extracted as string for safety)
+        field_parts.append(f"{f['name']}:string")
+    return f"array<struct<{','.join(field_parts)}>>"
+
+
 def _gen_staging_models(
     systems: list[dict],
     mappings: dict,
@@ -562,7 +603,11 @@ def _gen_staging_models(
 ) -> dict[str, str]:
     """Generate ``stg_{source}__{table}.sql`` staging models."""
     artifacts: dict[str, str] = {}
-    template = env.get_template("staging_model.sql.jinja2")
+    # Select template based on platform
+    if platform in ("databricks", "spark"):
+        template = env.get_template("staging_model_databricks.sql.jinja2")
+    else:
+        template = env.get_template("staging_model.sql.jinja2")
 
     for sys in systems:
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
@@ -581,22 +626,27 @@ def _gen_staging_models(
                 json_info = col.get("json_info")
                 if json_info and json_info.get("fields"):
                     # JSON column: don't include as a regular column,
-                    # instead add to json_extractions for CROSS APPLY
+                    # instead add to json_extractions
                     alias = f"j_{_camel_to_snake(col['name'])}"
-                    json_extractions.append({
+                    fields = [
+                        {
+                            "name": _camel_to_snake(f["name"]),
+                            "length": f.get("max_length", 255),
+                            "path": f["path"],
+                        }
+                        for f in json_info["fields"]
+                    ]
+                    extraction = {
                         "source_column": col["name"],
                         "alias": alias,
                         "content_type": json_info["content_type"],
                         "json_path": json_info["json_path"],
-                        "fields": [
-                            {
-                                "name": _camel_to_snake(f["name"]),
-                                "length": f.get("max_length", 255),
-                                "path": f["path"],
-                            }
-                            for f in json_info["fields"]
-                        ],
-                    })
+                        "fields": fields,
+                    }
+                    # For Databricks, add Spark schema string
+                    if platform in ("databricks", "spark"):
+                        extraction["spark_schema"] = _build_spark_schema(fields)
+                    json_extractions.append(extraction)
                     continue
 
                 # Use explicit transform if available, else default cast
@@ -604,7 +654,7 @@ def _gen_staging_models(
                     expr = col_map["transform"].replace("source.", "")
                 else:
                     target_type = _source_type_to_target(col["data_type"], platform)
-                    if target_type.startswith("VARCHAR"):
+                    if target_type.startswith("VARCHAR") or target_type == "STRING":
                         expr = col["name"]
                     else:
                         expr = f"TRY_CAST({col['name']} AS {target_type})"
@@ -623,6 +673,8 @@ def _gen_staging_models(
                 })
 
             snake_table = _camel_to_snake(tbl["name"])
+            # Determine materialization (incremental if configured)
+            incremental_col = tbl.get("incremental_column")
             content = template.render(
                 source_name=source_name,
                 table_name=snake_table,
@@ -634,6 +686,7 @@ def _gen_staging_models(
                 dedup_key=tbl_map.get("dedup_key"),
                 dedup_order=tbl_map.get("dedup_order"),
                 ontology_metadata=meta,
+                incremental_column=incremental_col,
             )
             path = f"models/staging/{source_name}/stg_{source_name}__{snake_table}.sql"
             artifacts[path] = content
@@ -746,8 +799,8 @@ def _extract_silver_columns(
     - SK uses dbt_utils.generate_surrogate_key() based on natural key columns
     - IRI constructs a proper ontology IRI from namespace + natural key
     - Mapped properties use their transform expressions
-    - Unmapped optional properties use TRY_CAST(NULL AS <type>)
-    - Types use the target platform type system
+    - Unmapped optional properties use CAST(NULL AS {{ dbt_utils.type_*() }})
+    - Types use dbt_utils macros for portability across platforms
     - Enum columns generate CASE statements for human-readable labels
     """
     columns: list[dict] = []
@@ -771,7 +824,7 @@ def _extract_silver_columns(
         sk_expr = f"{{{{ dbt_utils.generate_surrogate_key(['{sk_cols_str}']) }}}}"
     else:
         # Fallback: hash all non-null columns — will be overridden when natural key is set
-        sk_expr = f"CAST(NULL AS VARCHAR(64))"
+        sk_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
 
     columns.append({"expression": sk_expr, "target_name": f"{model_name}_sk"})
 
@@ -786,7 +839,7 @@ def _extract_silver_columns(
             parts = ", '/', ".join(natural_key_cols)
             iri_expr = f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
     else:
-        iri_expr = f"CAST(NULL AS VARCHAR(2048))"
+        iri_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
 
     columns.append({"expression": iri_expr, "target_name": f"{model_name}_iri"})
 
@@ -797,7 +850,8 @@ def _extract_silver_columns(
             prop_name = extract_local_name(str(prop))
             col_name = _camel_to_snake(prop_name)
             range_uri = graph.value(prop, RDFS.range)
-            target_type = _xsd_to_target(range_uri, platform)
+            # Use dbt_utils macros for portable silver types
+            macro_type = _xsd_to_dbt_macro(range_uri)
 
             # Check population requirement from kairos-ext annotation
             pop_req = graph.value(URIRef(str(prop)), KAIROS_EXT.populationRequirement)
@@ -826,10 +880,10 @@ def _extract_silver_columns(
                     if formula:
                         expr = str(formula)
                     else:
-                        expr = f"CAST(NULL AS {target_type})"
+                        expr = f"CAST(NULL AS {macro_type})"
                 else:
-                    # Unmapped: NULL placeholder with correct type
-                    expr = f"CAST(NULL AS {target_type})"
+                    # Unmapped: NULL placeholder with portable dbt_utils type
+                    expr = f"CAST(NULL AS {macro_type})"
 
             columns.append({"expression": expr, "target_name": col_name})
 
@@ -880,10 +934,28 @@ def _gen_schema_yaml(
     env: Environment,
     ontology_name: str,
     meta: dict,
+    systems: list[dict] | None = None,
+    mappings: dict | None = None,
 ) -> dict[str, str]:
-    """Generate ``_models.yml`` with column descriptions and SHACL tests."""
+    """Generate ``_models.yml`` with column descriptions, tests, and lineage."""
     artifacts: dict[str, str] = {}
     template = env.get_template("schema_models.yml.jinja2")
+
+    # Build enum lookup from source systems for accepted_values tests
+    enum_lookup: dict[str, list[dict]] = {}
+    if systems:
+        for sys in systems:
+            for tbl in sys["tables"]:
+                for col in tbl["columns"]:
+                    if col.get("enum_values"):
+                        enum_lookup[col["uri"]] = col["enum_values"]
+
+    # Build mapping reverse-lookup: property URI → source column URI
+    prop_to_source: dict[str, str] = {}
+    if mappings:
+        for col_uri, col_map in mappings.get("column_maps", {}).items():
+            if col_map.get("target_uri"):
+                prop_to_source[col_map["target_uri"]] = col_uri
 
     models_data = []
     for cls in classes:
@@ -917,11 +989,34 @@ def _gen_schema_yaml(
                 range_uri = graph.value(prop, RDFS.range)
                 data_type = _xsd_to_target(range_uri) if range_uri else "VARCHAR(255)"
 
-                tests = shacl_tests.get(col_name, [])
+                # Start with SHACL-derived tests
+                tests = list(shacl_tests.get(col_name, []))
+
+                # Add not_null for required properties (from kairos-ext annotation)
+                pop_req = graph.value(URIRef(str(prop)), KAIROS_EXT.populationRequirement)
+                if pop_req and str(pop_req) == "required" and "not_null" not in tests:
+                    tests.append("not_null")
+
+                # Add accepted_values for enum-typed source columns
+                source_col_uri = prop_to_source.get(str(prop))
+                if source_col_uri and source_col_uri in enum_lookup:
+                    enum_vals = enum_lookup[source_col_uri]
+                    values_list = [ev["code"] for ev in enum_vals]
+                    tests.append({
+                        "accepted_values": {
+                            "values": values_list,
+                        }
+                    })
+
+                # Lineage metadata
+                col_meta = {"data_type": data_type}
+                if source_col_uri:
+                    col_meta["source_iri"] = source_col_uri
+
                 cols.append({
                     "name": col_name,
                     "description": desc,
-                    "meta": {"data_type": data_type},
+                    "meta": col_meta,
                     "tests": tests,
                 })
 
@@ -949,8 +1044,9 @@ def _gen_project_config(
     env: Environment,
     project_name: str,
     gold_domains: list[dict] = None,
+    platform: str = DEFAULT_PLATFORM,
 ) -> dict[str, str]:
-    """Generate ``dbt_project.yml`` and ``packages.yml``."""
+    """Generate ``dbt_project.yml``, ``packages.yml``, and ``README.md``."""
     artifacts: dict[str, str] = {}
 
     sources = [
@@ -969,6 +1065,69 @@ def _gen_project_config(
 
     pkg_template = env.get_template("packages.yml.jinja2")
     artifacts["packages.yml"] = pkg_template.render()
+
+    # Platform-specific README
+    adapter = "dbt-fabric" if platform == "fabric" else "dbt-databricks"
+    adapter_install = f"pip install {adapter}"
+    platform_label = "Microsoft Fabric Warehouse" if platform == "fabric" else "Azure Databricks"
+
+    artifacts["README.md"] = f"""# dbt Project — {project_name}
+
+Generated by **Kairos Ontology Toolkit** (dbt projector).
+
+## Target Platform
+
+| Setting | Value |
+|---------|-------|
+| Platform | {platform_label} |
+| dbt adapter | `{adapter}` |
+| SQL dialect | {'T-SQL' if platform == 'fabric' else 'Spark SQL'} |
+
+## Getting Started
+
+```bash
+# Install dbt and the adapter
+pip install dbt-core
+{adapter_install}
+
+# Install dbt packages (dbt_utils, dbt_expectations)
+dbt deps
+
+# Configure your connection in profiles.yml
+# Then run:
+dbt run
+```
+
+## Project Structure
+
+```
+models/
+├── staging/          # Source-aligned: rename, cast, JSON extraction
+│   └── <source>/    # One folder per source system
+├── silver/           # Domain-aligned: entity models with mapping transforms
+│   └── <domain>/    # One folder per ontology domain
+└── gold/             # Star schema: facts, dimensions, measures
+    └── <domain>/
+
+macros/               # Platform-abstraction macros (kairos_safe_cast, etc.)
+```
+
+## Layer Contracts
+
+| Layer | Materialization | Purpose |
+|-------|----------------|---------|
+| Staging | View | Rename + type cast + JSON extraction from bronze |
+| Silver | Table | Domain entities with surrogate keys and transforms |
+| Gold | Table | Star schema for BI (Power BI DirectLake / Databricks SQL) |
+
+## Platform Macros
+
+The `macros/` folder contains platform-abstraction macros:
+- `kairos_safe_cast(column, type)` — safe casting (TRY_CAST)
+- `kairos_json_value(column, path)` — extract single JSON value
+- `kairos_surrogate_key(columns)` — surrogate key generation
+- `kairos_concat(...)` — string concatenation
+"""
 
     return artifacts
 
@@ -1226,7 +1385,7 @@ def generate_dbt_artifacts(
         mappings_dir: Path to ``mappings/`` directory with SKOS mapping TTLs.
         gold_ext_path: Optional path to ``*-gold-ext.ttl`` for gold model generation.
         target_platform: Target SQL platform for type mapping.
-            Options: ``"fabric"`` (default), ``"spark"``.
+            Options: ``"fabric"`` (default), ``"databricks"``, ``"spark"`` (alias for databricks).
 
     Returns:
         Dictionary of ``{file_path: content}`` for all generated artifacts.
@@ -1267,6 +1426,7 @@ def generate_dbt_artifacts(
     # 4. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(
         classes, graph, namespace, shapes_dir, env, onto_name, meta,
+        systems=systems, mappings=mappings,
     )
     artifacts.update(schema)
 
@@ -1292,6 +1452,7 @@ def generate_dbt_artifacts(
         project = _gen_project_config(
             systems, [onto_name], env, f"{onto_name}_project",
             gold_domains=gold_domains,
+            platform=target_platform,
         )
         artifacts.update(project)
 
@@ -1303,6 +1464,34 @@ def generate_dbt_artifacts(
         if coverage:
             artifacts.update(coverage)
             print("    ✓ Generated coverage report")
+
+    # 9. Platform macros
+    macros = _gen_macros(template_dir)
+    artifacts.update(macros)
+    if macros:
+        print(f"    ✓ Generated {len(macros)} platform macro(s)")
+
+    return artifacts
+
+
+# ---------------------------------------------------------------------------
+# Generated macros (platform-abstraction layer for dbt projects)
+# ---------------------------------------------------------------------------
+
+def _gen_macros(template_dir) -> dict[str, str]:
+    """Copy platform-abstraction macros into the generated dbt project.
+
+    Reads macro files from the ``macros/`` subfolder of the templates directory
+    and includes them in the generated artifacts under ``macros/``.
+    """
+    artifacts: dict[str, str] = {}
+    macros_dir = Path(template_dir) / "macros"
+    if not macros_dir.exists():
+        return artifacts
+
+    for macro_file in macros_dir.glob("*.sql"):
+        content = macro_file.read_text(encoding="utf-8")
+        artifacts[f"macros/{macro_file.name}"] = content
 
     return artifacts
 

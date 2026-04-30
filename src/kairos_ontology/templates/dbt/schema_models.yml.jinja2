@@ -23,7 +23,14 @@ models:
 {%- if column.tests %}
         tests:
 {%- for test in column.tests %}
+{%- if test is mapping %}
+          - {{ test.keys() | first }}:
+{%- for key, value in test[test.keys() | first].items() %}
+              {{ key }}: {{ value }}
+{%- endfor %}
+{%- else %}
           - {{ test }}
+{%- endif %}
 {%- endfor %}
 {%- endif %}
 {%- endfor %}
