@@ -30,6 +30,8 @@ Kairos Ontology Toolkit. Each decision is recorded as an Architecture Decision R
 | [DD-015](#dd-015-vocabulary-ttl-as-bronze-contract) | Vocabulary TTL as Bronze Contract | Accepted | 2026-05-14 |
 | [DD-016](#dd-016-stale-managed-skill-cleanup-during-update) | Stale Managed Skill Cleanup During Update | Accepted | 2026-05-14 |
 | [DD-017](#dd-017-dataplatform-integration--two-deliverable-packages--copilot-agent) | Dataplatform Integration — Two Deliverable Packages + Copilot Agent | Accepted | 2026-04-30 |
+| [DD-018](#dd-018-silver-model-granularity--entity-centric-with-future-source-split-option) | Silver Model Granularity — Entity-Centric with Future Source-Split Option | Accepted | 2026-04-30 |
+| [DD-019](#dd-019-cross-domain-fk-resolution-via-surrogate-key-joins) | Cross-Domain FK Resolution via Surrogate Key Joins | Accepted | 2026-05-01 |
 
 ---
 
@@ -720,6 +722,56 @@ and dedicated source-team ownership, so it should be available as an opt-in.
   gold layer API remains unchanged (it reads from the entity-level model regardless).
 - The `_sources.yml` separation already supports this pattern (one per source system).
 - Test coverage must include both modes once implemented.
+
+---
+
+## DD-019: Cross-Domain FK Resolution via Surrogate Key Joins
+
+**Status:** Accepted  
+**Date:** 2026-05-01  
+**Affects:** `medallion_dbt_projector.py`, silver model SQL generation, schema YAML  
+**Implementation:** `src/kairos_ontology/projections/medallion_dbt_projector.py` `_extract_fk_columns_and_joins()`
+
+### Context
+
+When an `owl:ObjectProperty` maps a source column to a class in another domain (e.g.,
+`Relation.id` maps to `client:representsParty` → `Party`), the silver model needs a
+surrogate key column (`party_sk`) that resolves the source natural key to the target
+table's SK via a lookup join. Previously, the dbt projector only processed
+`DatatypeProperty` — object properties were silently skipped.
+
+### Decision
+
+Generate cross-domain FK columns as `left join {{ ref('{target_model}') }}` lookups
+in the silver SQL model. The join condition uses the source column (from SKOS mapping)
+matched against the target class's `kairos-ext:naturalKey` column.
+
+**Guards (safe first cut):**
+- Only for single-source models (multi-source models are skipped — too complex)
+- Only when the target class has a single-column natural key (composite NK → NULL + warning)
+- Only for qualifying properties: `owl:FunctionalProperty` or explicit `silverColumnName`
+- Missing SKOS mapping → NULL placeholder + warning
+
+### Rationale
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Pass-through natural key | Simple | Misleading column name (`_sk` but contains NK) |
+| **Join to ref() (chosen)** | Correct semantics; silver is self-consistent | Requires target model to exist; join overhead |
+| Gold-layer only | Clean separation | Silver schema doesn't match DDL projector output |
+
+The join approach was chosen because:
+1. The DDL silver projector already declares these as `_sk STRING` FK columns
+2. The dbt template already supports `joins` (just wasn't being used)
+3. Makes silver layer self-consistent: all `_sk` columns are surrogate keys
+
+### Consequences
+
+- FK columns now appear in generated SQL and schema YAML
+- Target silver models must exist (dbt will error on dangling `ref()` if target ontology
+  is not projected) — this is correct behaviour (surface missing dependencies early)
+- Multi-source and composite-NK cases degrade gracefully (NULL + warning)
+- Future work: support composite natural keys via multi-column join conditions
 
 ---
 
