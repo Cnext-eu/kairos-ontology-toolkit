@@ -17,7 +17,7 @@
 {{"{{"}} config(
 {%- if incremental_column %}
     materialized='incremental',
-    unique_key='{{ dedup_key | default(columns[0].target_name) }}'
+    unique_key='{{ dedup_key | default(columns[0].target_name if columns else "id") }}'
 {%- else %}
     materialized='view'
 {%- endif %}
@@ -49,8 +49,9 @@ json_extracted as (
     select
         renamed.*,
 {%- for je in json_extractions %}
+{%- set outer_last = loop.last %}
 {%- for f in je.fields %}
-        {{ je.alias }}.{{ f.name }}{% if not loop.last or not loop.parent.last %},{% endif %}
+        {{ je.alias }}.{{ f.name }}{% if not loop.last or not outer_last %},{% endif %}
 {%- endfor %}
 {%- endfor %}
     from renamed
