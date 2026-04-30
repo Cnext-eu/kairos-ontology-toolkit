@@ -41,7 +41,7 @@ final as (
 {%- endfor %}
     from {{ source_ctes[0].alias }}
 {%- for join in joins %}
-    {{ join.type }} join {{ join.alias }}
+    {{ join.type }} join {{ join.ref }} as {{ join.alias }}
         on {{ join.condition }}
 {%- endfor %}
 {%- if where_clause %}
@@ -58,6 +58,10 @@ select
     {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}
 {%- endfor %}
 from {{ source_ctes[0].alias }}
+{%- for join in joins %}
+    {{ join.type }} join {{ join.ref }} as {{ join.alias }}
+        on {{ join.condition }}
+{%- endfor %}
 {%- if where_clause %}
 where {{ where_clause }}
 {%- endif %}
