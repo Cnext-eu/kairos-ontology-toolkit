@@ -2,6 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Main CLI entry point for kairos-ontology toolkit."""
 
+import json
 import re
 import sys
 import click
@@ -815,7 +816,10 @@ def _slugify(name: str) -> str:
 @click.option("--company-domain", "company_domain", type=str, default=None,
               help="Company internet domain (e.g., \"contoso.com\"). "
                    "Defaults to <name>.com if not provided.")
-def new_repo(name, desc, dest, org, is_private, ref_models_version, template, company_domain):
+@click.option("--skip-protection", "skip_protection", is_flag=True, default=False,
+              help="Skip configuring branch protection on main (useful if no admin rights).")
+def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
+             company_domain, skip_protection):
     """Create a new ontology hub GitHub repository.
 
     NAME is the client or project identifier (e.g., "contoso" or
@@ -1075,6 +1079,12 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template, co
     # --- Populate reference models -------------------------------------------
     _run_reference_models_update(repo_dir, ref_models_version)
 
+    # --- Configure branch protection on main ---------------------------------
+    if not skip_protection:
+        full_name = f"{org}/{repo_slug}"
+        print("\n🔒 Configuring branch protection on main...")
+        _configure_branch_protection(repo_dir, full_name)
+
     print(f"\n✅ Repository created: {repo_slug}")
     print(f"   GitHub: https://github.com/{org}/{repo_slug}")
     print("\nNext steps:")
@@ -1224,6 +1234,87 @@ def _add_reference_models(repo_dir: Path, version: str | None = None):
         print("     You can add it manually:")
         print(f"       cd {repo_dir.name}")
         print(f"       git submodule add {_REF_MODELS_REPO} {_REF_MODELS_PATH}")
+
+
+def _configure_branch_protection(repo_dir: Path, full_name: str):
+    """Configure branch protection on main after GitHub repo creation.
+
+    Uses ``gh api`` to:
+    1. Enable delete_branch_on_merge (auto-cleanup after PR merge).
+    2. Create branch protection on main with PR requirements.
+    3. Verify protection is active.
+
+    Non-fatal: prints warnings if protection cannot be applied (e.g., free plan).
+    """
+    owner, repo = full_name.split("/", 1)
+
+    # 1. Enable delete_branch_on_merge
+    try:
+        subprocess.run(
+            ["gh", "api", "--method", "PATCH", f"/repos/{full_name}",
+             "-f", "delete_branch_on_merge=true"],
+            cwd=repo_dir, capture_output=True, check=True,
+        )
+        print("  ✓ Enabled delete_branch_on_merge")
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode().strip() if exc.stderr else str(exc)
+        print(f"  ⚠ Could not enable delete_branch_on_merge: {stderr}")
+
+    # 2. Create branch protection on main
+    protection_payload = json.dumps({
+        "required_status_checks": {
+            "strict": True,
+            "contexts": [],
+        },
+        "enforce_admins": False,
+        "required_pull_request_reviews": {
+            "required_approving_review_count": 1,
+            "dismiss_stale_reviews": True,
+            "require_code_owner_reviews": False,
+        },
+        "restrictions": None,
+        "allow_force_pushes": False,
+        "allow_deletions": False,
+        "required_linear_history": False,
+        "required_conversation_resolution": False,
+    })
+
+    try:
+        subprocess.run(
+            ["gh", "api", "--method", "PUT",
+             f"/repos/{full_name}/branches/main/protection",
+             "--input", "-"],
+            input=protection_payload.encode(),
+            cwd=repo_dir, capture_output=True, check=True,
+        )
+        print("  ✓ Branch protection enabled on main:")
+        print("      • Require PR with 1 reviewer")
+        print("      • Dismiss stale reviews on new commits")
+        print("      • Require branch up-to-date before merge")
+        print("      • Block force push & branch deletion")
+        print("      • Admin bypass allowed for emergencies")
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode().strip() if exc.stderr else str(exc)
+        print(f"  ⚠ Could not set branch protection on main: {stderr}")
+        print("    (This may require a GitHub Pro/Team/Enterprise plan)")
+        return
+
+    # 3. Verify protection is active
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"/repos/{full_name}/branches/main/protection"],
+            cwd=repo_dir, capture_output=True, check=True,
+        )
+        raw = result.stdout
+        text = raw.decode() if isinstance(raw, bytes) else str(raw)
+        protection = json.loads(text)
+        if protection.get("required_pull_request_reviews"):
+            print("  ✓ Protection verified: main branch is protected")
+        else:
+            print("  ⚠ Protection set but could not verify PR requirement")
+    except (subprocess.CalledProcessError, json.JSONDecodeError, TypeError,
+            UnicodeDecodeError, AttributeError):
+        print("  ⚠ Could not verify branch protection (may still be active)")
 
 
 def _create_github_repo(repo_dir: Path, repo_slug: str, org: str,

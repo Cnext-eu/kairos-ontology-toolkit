@@ -14,7 +14,7 @@ from kairos_ontology.projections.medallion_dbt_projector import (
     _parse_bronze,
     _parse_skos_mappings,
     _extract_shacl_tests,
-    _source_type_to_spark,
+    _source_type_to_databricks,
     generate_dbt_artifacts,
 )
 
@@ -191,13 +191,13 @@ class TestHelpers:
         assert _camel_to_snake("HTMLParser") == "html_parser"
         assert _camel_to_snake("already_snake") == "already_snake"
 
-    def test_source_type_to_spark(self):
-        assert _source_type_to_spark("int") == "INT"
-        assert _source_type_to_spark("nvarchar(255)") == "STRING"
-        assert _source_type_to_spark("bit") == "BOOLEAN"
-        assert _source_type_to_spark("datetime2") == "TIMESTAMP"
-        assert _source_type_to_spark("decimal(18,4)") == "DECIMAL(18,4)"
-        assert _source_type_to_spark("unknown_type") == "STRING"
+    def test_source_type_to_databricks(self):
+        assert _source_type_to_databricks("int") == "INT"
+        assert _source_type_to_databricks("nvarchar(255)") == "STRING"
+        assert _source_type_to_databricks("bit") == "BOOLEAN"
+        assert _source_type_to_databricks("datetime2") == "TIMESTAMP"
+        assert _source_type_to_databricks("decimal(18,4)") == "DECIMAL(18,4)"
+        assert _source_type_to_databricks("unknown_type") == "STRING"
 
 
 # ---------------------------------------------------------------------------
@@ -312,14 +312,17 @@ class TestShaclTests:
 # ---------------------------------------------------------------------------
 
 class TestGenerateDbtArtifacts:
-    def test_silver_models_generated(self, classes, ontology_graph, template_dir):
-        """Silver entity models are generated even without bronze."""
+    def test_silver_models_generated(self, classes, ontology_graph, template_dir,
+                                       bronze_dir, mappings_dir):
+        """Silver entity models are generated when bronze + mappings exist."""
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=ontology_graph,
             template_dir=template_dir,
             namespace="http://kairos.example/ontology/",
             ontology_name="client",
+            bronze_dir=bronze_dir,
+            mappings_dir=mappings_dir,
         )
         silver_models = [k for k in artifacts if k.startswith("models/silver/")]
         assert len(silver_models) >= 1
@@ -395,7 +398,7 @@ class TestGenerateDbtArtifacts:
         # Find the staging model
         stg_key = next(k for k in artifacts if "stg_" in k and k.endswith(".sql"))
         content = artifacts[stg_key]
-        assert "materialized='view'" in content
+        assert "materialized='incremental'" in content
         assert "source(" in content
 
     def test_dbt_project_yml(
