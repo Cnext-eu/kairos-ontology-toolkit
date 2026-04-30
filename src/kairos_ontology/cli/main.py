@@ -38,6 +38,54 @@ _REF_MODELS_REPO = (
 )
 _REF_MODELS_PATH = "ontology-reference-models"
 
+# Toolkit GitHub repo for channel resolution
+_TOOLKIT_REPO = "Cnext-eu/kairos-ontology-toolkit"
+
+
+def _resolve_channel(channel: str) -> str | None:
+    """Resolve a channel name to a git ref (tag) using GitHub releases.
+
+    Returns the tag name (e.g. 'v2.17.0') or None if resolution fails.
+    Channels:
+      - "stable"  → latest non-prerelease tag
+      - "preview" → latest tag (including pre-releases)
+      - anything else → treated as an explicit ref (returned as-is)
+    """
+    if channel not in ("stable", "preview"):
+        return channel  # explicit ref like "v2.16.0" or "main"
+
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"/repos/{_TOOLKIT_REPO}/releases",
+             "--jq", ".[].tag_name"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return None
+        tags = [t.strip() for t in result.stdout.strip().splitlines() if t.strip()]
+        if not tags:
+            return None
+        if channel == "preview":
+            return tags[0]  # most recent release (may be pre-release)
+        # stable: skip pre-release tags
+        for tag in tags:
+            if not any(label in tag for label in ("-rc.", "-beta.", "-alpha.")):
+                return tag
+        return tags[0]  # fallback if all are pre-releases
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def _read_hub_channel() -> str:
+    """Read the [tool.kairos] channel from the current directory's pyproject.toml."""
+    pyproject = Path.cwd() / "pyproject.toml"
+    if not pyproject.is_file():
+        return "stable"
+    content = pyproject.read_text(encoding="utf-8")
+    # Simple TOML parsing for channel value (avoid tomllib dependency)
+    match = re.search(r'\[tool\.kairos\].*?channel\s*=\s*"([^"]+)"', content, re.DOTALL)
+    return match.group(1) if match else "stable"
+
 # ---------------------------------------------------------------------------
 # Managed-file stamping — toolkit-owned files carry a version marker so
 # ``kairos-ontology update`` can refresh them without manual diffing.
@@ -468,13 +516,18 @@ def init(domain, company_domain, force):
 @cli.command()
 @click.option("--check", is_flag=True,
               help="Report outdated files without modifying anything (exit 1 on drift).")
-def update(check):
+@click.option("--upgrade", is_flag=True,
+              help="Upgrade the toolkit pip dependency to the channel's latest version.")
+def update(check, upgrade):
     """Update toolkit-managed files to the installed toolkit version.
 
     Scans .github/ for files stamped by kairos-ontology-toolkit and refreshes
     them from the currently installed package.  Missing managed files (e.g.,
     newly added skills) are created automatically.  Use --check to preview
     what would change without writing anything.
+
+    Use --upgrade to upgrade the toolkit pip dependency based on the channel
+    configured in [tool.kairos] of pyproject.toml (stable or preview).
 
     \b
     Exit codes (with --check):
@@ -486,6 +539,41 @@ def update(check):
       .github/copilot-instructions.md
       .github/skills/*/SKILL.md
     """
+    # --- Upgrade toolkit dependency via pip -----------------------------------
+    if upgrade:
+        channel = _read_hub_channel()
+        ref = _resolve_channel(channel)
+        if ref is None:
+            print(f"⚠  Could not resolve channel '{channel}' — is 'gh' installed and "
+                  f"authenticated?")
+            raise SystemExit(1)
+        print(f"📦 Channel: {channel} → {ref}")
+        pip_url = (f"git+https://github.com/{_TOOLKIT_REPO}.git@{ref}"
+                   f"#egg=kairos-ontology-toolkit")
+        print(f"   Installing kairos-ontology-toolkit @ {ref} ...")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", pip_url],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"❌ pip install failed:\n{result.stderr}")
+            raise SystemExit(1)
+        print(f"   ✓ Upgraded to {ref}")
+        # Update the pyproject.toml dependency pin
+        pyproject = Path.cwd() / "pyproject.toml"
+        if pyproject.is_file():
+            content = pyproject.read_text(encoding="utf-8")
+            new_content = re.sub(
+                r'kairos-ontology-toolkit\s*@\s*git\+https://github\.com/'
+                r'Cnext-eu/kairos-ontology-toolkit\.git@[^\s"]+',
+                f'kairos-ontology-toolkit @ git+https://github.com/'
+                f'{_TOOLKIT_REPO}.git@{ref}',
+                content,
+            )
+            if new_content != content:
+                pyproject.write_text(new_content, encoding="utf-8")
+                print(f"   ✓ Updated pyproject.toml pin to @{ref}")
+        return
     managed_map = _managed_scaffold_map()
     repo_root = Path.cwd()
 
@@ -1002,7 +1090,8 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         content = (content
                    .replace("{repo_name}", repo_slug)
                    .replace("{description}", description)
-                   .replace("{toolkit_version}", _toolkit_version))
+                   .replace("{toolkit_version}", _toolkit_version)
+                   .replace("{toolkit_ref}", f"v{_toolkit_version}"))
         (repo_dir / "pyproject.toml").write_text(content, encoding="utf-8")
         print("  ✓ pyproject.toml")
 
