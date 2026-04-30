@@ -1,0 +1,93 @@
+name: Ontology Gap Request
+description: Request a new or modified concept in the domain ontology (class, property, annotation, mapping).
+title: "[Gap] "
+labels: ["ontology-gap"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to request changes to the domain ontology — whether
+        it's a missing class, property, annotation, or mapping needed by a
+        downstream consumer (e.g., dataplatform, Power BI, search index).
+
+  - type: dropdown
+    id: domain
+    attributes:
+      label: Domain affected
+      description: Which ontology domain does this gap belong to?
+      options:
+        - party
+        - client
+        - engagement
+        - product
+        - finance
+        - other (specify below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Layer affected
+      description: What type of change is needed?
+      multiple: true
+      options:
+        - Ontology class (new or modified owl:Class)
+        - Ontology property (new or modified owl:ObjectProperty / owl:DatatypeProperty)
+        - SHACL shape (new or modified constraint)
+        - Silver extension (silver-ext annotation)
+        - Gold extension (gold-ext annotation)
+        - Bronze vocabulary (source description)
+        - Mapping (source-to-domain column mapping)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Missing concept description
+      description: Describe what is missing or needs to change.
+      placeholder: |
+        e.g., "We need a `billingFrequency` property on `ServiceEngagement`
+        to represent how often a client is billed (monthly, quarterly, annually)."
+    validations:
+      required: true
+
+  - type: textarea
+    id: justification
+    attributes:
+      label: Business justification / use case
+      description: Why is this needed? What downstream system or report requires it?
+      placeholder: |
+        e.g., "The Logic App integration needs billingFrequency to route
+        invoices to the correct processing queue. Without it, we cannot
+        automate billing dispatch."
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggested-change
+    attributes:
+      label: Suggested change (optional)
+      description: If you have a specific proposal, describe it here (Turtle snippet, property name, etc.)
+      placeholder: |
+        e.g., Add to engagement.ttl:
+        :billingFrequency a owl:DatatypeProperty ;
+            rdfs:domain :ServiceEngagement ;
+            rdfs:range xsd:string ;
+            rdfs:label "billing frequency" .
+
+  - type: input
+    id: source-reference
+    attributes:
+      label: Source reference
+      description: Link to the dataplatform PR, issue, or documentation that surfaced this gap.
+      placeholder: "https://github.com/Cnext-eu/dataplatform/issues/42"
+
+  - type: checkboxes
+    id: copilot-implement
+    attributes:
+      label: Copilot implementation
+      description: Should the Copilot coding agent attempt to implement this automatically?
+      options:
+        - label: "Yes — assign to @copilot for automated implementation"

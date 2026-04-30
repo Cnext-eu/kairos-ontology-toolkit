@@ -418,6 +418,53 @@ def init(domain, company_domain, force):
             shutil.copy2(workflow_src, workflow_dst)
             print("  ✓ Installed .github/workflows/managed-check.yml")
 
+    # 4b-ii. Copy release-projections workflow
+    release_wf_src = _SCAFFOLD_DIR / "github-workflows" / "release-projections.yml"
+    release_wf_dst = cwd / ".github" / "workflows" / "release-projections.yml"
+    if release_wf_src.is_file():
+        if release_wf_dst.exists() and not force:
+            print("  ⏭  .github/workflows/release-projections.yml already exists (use --force)")
+        else:
+            release_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(release_wf_src, release_wf_dst)
+            print("  ✓ Installed .github/workflows/release-projections.yml")
+
+    # 4b-iii. Copy assign-copilot workflow
+    copilot_wf_src = _SCAFFOLD_DIR / "github-workflows" / "assign-copilot.yml"
+    copilot_wf_dst = cwd / ".github" / "workflows" / "assign-copilot.yml"
+    if copilot_wf_src.is_file():
+        if copilot_wf_dst.exists() and not force:
+            print("  ⏭  .github/workflows/assign-copilot.yml already exists (use --force)")
+        else:
+            copilot_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(copilot_wf_src, copilot_wf_dst)
+            print("  ✓ Installed .github/workflows/assign-copilot.yml")
+
+    # 4b-v. Copy copilot-setup-steps workflow
+    setup_wf_src = _SCAFFOLD_DIR / "github-workflows" / "copilot-setup-steps.yml"
+    setup_wf_dst = cwd / ".github" / "workflows" / "copilot-setup-steps.yml"
+    if setup_wf_src.is_file():
+        if setup_wf_dst.exists() and not force:
+            print("  ⏭  .github/workflows/copilot-setup-steps.yml already exists (use --force)")
+        else:
+            setup_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(setup_wf_src, setup_wf_dst)
+            print("  ✓ Installed .github/workflows/copilot-setup-steps.yml")
+
+    # 4b-vi. Copy issue templates
+    issue_tpl_src = _SCAFFOLD_DIR / "github-issue-templates"
+    issue_tpl_dst = cwd / ".github" / "ISSUE_TEMPLATE"
+    if issue_tpl_src.is_dir():
+        issue_tpl_dst.mkdir(parents=True, exist_ok=True)
+        for tpl_file in issue_tpl_src.iterdir():
+            if tpl_file.is_file():
+                dst_file = issue_tpl_dst / tpl_file.name
+                if dst_file.exists() and not force:
+                    print(f"  ⏭  .github/ISSUE_TEMPLATE/{tpl_file.name} already exists (use --force)")
+                else:
+                    shutil.copy2(tpl_file, dst_file)
+                    print(f"  ✓ Installed .github/ISSUE_TEMPLATE/{tpl_file.name}")
+
     # 4c. Copy update-referencemodels.ps1
     refscript_src = _SCAFFOLD_DIR / "update-referencemodels.ps1"
     refscript_dst = cwd / "update-referencemodels.ps1"
@@ -1100,6 +1147,37 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         workflow_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(workflow_src, workflow_dst)
         print("  ✓ .github/workflows/managed-check.yml")
+
+    # Release-projections workflow
+    release_wf_src = _SCAFFOLD_DIR / "github-workflows" / "release-projections.yml"
+    release_wf_dst = repo_dir / ".github" / "workflows" / "release-projections.yml"
+    if release_wf_src.is_file():
+        shutil.copy2(release_wf_src, release_wf_dst)
+        print("  ✓ .github/workflows/release-projections.yml")
+
+    # Assign-copilot workflow
+    copilot_wf_src = _SCAFFOLD_DIR / "github-workflows" / "assign-copilot.yml"
+    copilot_wf_dst = repo_dir / ".github" / "workflows" / "assign-copilot.yml"
+    if copilot_wf_src.is_file():
+        shutil.copy2(copilot_wf_src, copilot_wf_dst)
+        print("  ✓ .github/workflows/assign-copilot.yml")
+
+    # Copilot setup-steps workflow (agent environment)
+    setup_wf_src = _SCAFFOLD_DIR / "github-workflows" / "copilot-setup-steps.yml"
+    setup_wf_dst = repo_dir / ".github" / "workflows" / "copilot-setup-steps.yml"
+    if setup_wf_src.is_file():
+        shutil.copy2(setup_wf_src, setup_wf_dst)
+        print("  ✓ .github/workflows/copilot-setup-steps.yml")
+
+    # Issue templates
+    issue_tpl_src = _SCAFFOLD_DIR / "github-issue-templates"
+    issue_tpl_dst = repo_dir / ".github" / "ISSUE_TEMPLATE"
+    if issue_tpl_src.is_dir():
+        issue_tpl_dst.mkdir(parents=True, exist_ok=True)
+        for tpl_file in issue_tpl_src.iterdir():
+            if tpl_file.is_file():
+                shutil.copy2(tpl_file, issue_tpl_dst / tpl_file.name)
+                print(f"  ✓ .github/ISSUE_TEMPLATE/{tpl_file.name}")
 
     # --- Repo-level files ---------------------------------------------------
     # pyproject.toml
