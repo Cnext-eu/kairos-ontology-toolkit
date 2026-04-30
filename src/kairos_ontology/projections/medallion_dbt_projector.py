@@ -277,6 +277,16 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
                         "fields": json_fields,
                     }
 
+                # Enum support
+                enum_uri = g.value(col_uri, KAIROS_BRONZE.enumeration)
+                enum_values = []
+                if enum_uri:
+                    for ev_node in g.objects(enum_uri, KAIROS_BRONZE.enumValue):
+                        ev_code = str(g.value(ev_node, KAIROS_BRONZE.enumCode) or "")
+                        ev_label = str(g.value(ev_node, KAIROS_BRONZE.enumLabel) or "")
+                        if ev_code:
+                            enum_values.append({"code": ev_code, "label": ev_label})
+
                 columns.append({
                     "uri": str(col_uri),
                     "name": col_name,
@@ -284,7 +294,23 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
                     "nullable": nullable,
                     "is_pk": is_pk,
                     "json_info": json_info,
+                    "enum_values": enum_values if enum_values else None,
                 })
+
+            # Discriminator column support
+            disc_col_uri = g.value(tbl_uri, KAIROS_BRONZE.discriminatorColumn)
+            disc_col_name = None
+            disc_values = []
+            if disc_col_uri:
+                disc_col_name = str(
+                    g.value(disc_col_uri, KAIROS_BRONZE.columnName)
+                    or extract_local_name(str(disc_col_uri))
+                )
+                for dv_node in g.objects(tbl_uri, KAIROS_BRONZE.discriminatorValue):
+                    dv_code = str(g.value(dv_node, KAIROS_BRONZE.discriminatorCode) or "")
+                    dv_label = str(g.value(dv_node, KAIROS_BRONZE.discriminatorLabel) or "")
+                    if dv_code:
+                        disc_values.append({"code": dv_code, "label": dv_label})
 
             tables.append({
                 "uri": str(tbl_uri),
@@ -293,6 +319,8 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
                 "pk_columns": pk_cols,
                 "incremental_column": str(inc_col) if inc_col else None,
                 "columns": columns,
+                "discriminator_column": disc_col_name,
+                "discriminator_values": disc_values if disc_values else None,
             })
 
         systems.append({
@@ -667,7 +695,7 @@ def _gen_silver_models(
         # Extract properties for column list with platform-aware types
         columns = _extract_silver_columns(
             graph, cls_uri, namespace, mappings, platform=platform,
-            staging_refs=staging_refs,
+            staging_refs=staging_refs, systems=systems,
         )
 
         # Build filter conditions per staging source (from table-level mappings)
@@ -710,6 +738,7 @@ def _extract_silver_columns(
     mappings: dict,
     platform: str = DEFAULT_PLATFORM,
     staging_refs: list[tuple[str, str, str]] | None = None,
+    systems: list[dict] | None = None,
 ) -> list[dict]:
     """Extract silver-layer columns for a class from the ontology graph.
 
@@ -719,9 +748,19 @@ def _extract_silver_columns(
     - Mapped properties use their transform expressions
     - Unmapped optional properties use TRY_CAST(NULL AS <type>)
     - Types use the target platform type system
+    - Enum columns generate CASE statements for human-readable labels
     """
     columns: list[dict] = []
     model_name = _camel_to_snake(extract_local_name(class_uri))
+
+    # Build a lookup: bronze column URI → enum_values list
+    enum_lookup: dict[str, list[dict]] = {}
+    if systems:
+        for sys in systems:
+            for tbl in sys["tables"]:
+                for col in tbl["columns"]:
+                    if col.get("enum_values"):
+                        enum_lookup[col["uri"]] = col["enum_values"]
 
     # Determine natural key columns from kairos-ext:naturalKey annotation or PK columns
     natural_key_cols = _get_natural_key(graph, class_uri)
@@ -766,8 +805,10 @@ def _extract_silver_columns(
 
             # Check if there's a SKOS mapping transform for this property
             expr = None
+            mapped_col_uri = None
             for col_uri, col_map in mappings.get("column_maps", {}).items():
                 if col_map.get("target_uri") == str(prop):
+                    mapped_col_uri = col_uri
                     if col_map.get("transform"):
                         expr = col_map["transform"].replace("source.", "")
                     else:
@@ -792,7 +833,30 @@ def _extract_silver_columns(
 
             columns.append({"expression": expr, "target_name": col_name})
 
+            # Generate _label column for enum-typed source columns
+            if mapped_col_uri and mapped_col_uri in enum_lookup:
+                enum_vals = enum_lookup[mapped_col_uri]
+                case_expr = _build_enum_case(expr, enum_vals)
+                columns.append({
+                    "expression": case_expr,
+                    "target_name": f"{col_name}_label",
+                })
+
     return columns
+
+
+def _build_enum_case(source_expr: str, enum_values: list[dict]) -> str:
+    """Build a CASE statement to resolve enum codes to human-readable labels."""
+    parts = [f"CASE CAST({source_expr} AS VARCHAR(50))"]
+    for ev in enum_values:
+        code = ev["code"].replace("'", "''")
+        label = ev["label"].replace("'", "''")
+        parts.append(f"        WHEN '{code}' THEN '{label}'")
+    parts.append(
+        f"        ELSE CONCAT('Unknown (', CAST({source_expr} AS VARCHAR(50)), ')')"
+    )
+    parts.append("    END")
+    return "\n".join(parts)
 
 
 def _get_natural_key(graph: Graph, class_uri: str) -> list[str]:
