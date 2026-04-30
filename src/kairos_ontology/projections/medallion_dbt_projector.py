@@ -382,13 +382,13 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
     Returns::
 
         {
-            "table_maps": {bronze_table_uri: {
+            "table_maps": {bronze_table_uri: [{
                 "target_uri": silver_class_uri,
                 "mapping_type": "direct" | "split" | "merge",
                 "filter_condition": str | None,
                 "dedup_key": str | None,
                 "dedup_order": str | None,
-            }},
+            }, ...]},
             "column_maps": {bronze_col_uri: {
                 "target_uri": silver_property_uri,
                 "match_type": "exactMatch" | "closeMatch" | "narrowMatch" | ...,
@@ -397,6 +397,9 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
                 "default_value": str | None,
             }}
         }
+
+    Note: ``table_maps`` values are **lists** to support the split pattern where
+    one bronze table maps to multiple domain classes.
     """
     result: dict = {"table_maps": {}, "column_maps": {}}
     if not mappings_dir or not mappings_dir.is_dir():
@@ -429,17 +432,17 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
                 transform = g.value(subj, KAIROS_MAP.transform)
 
                 if mapping_type is not None:
-                    # Table-level mapping
+                    # Table-level mapping (list to support 1:N split pattern)
                     filt = g.value(subj, KAIROS_MAP.filterCondition)
                     dedup_key = g.value(subj, KAIROS_MAP.deduplicationKey)
                     dedup_order = g.value(subj, KAIROS_MAP.deduplicationOrder)
-                    result["table_maps"][subj_str] = {
+                    result["table_maps"].setdefault(subj_str, []).append({
                         "target_uri": obj_str,
                         "mapping_type": str(mapping_type),
                         "filter_condition": str(filt) if filt else None,
                         "dedup_key": str(dedup_key) if dedup_key else None,
                         "dedup_order": str(dedup_order) if dedup_order else None,
-                    }
+                    })
                 else:
                     # Column-level mapping
                     src_cols = g.value(subj, KAIROS_MAP.sourceColumns)
@@ -610,7 +613,9 @@ def _gen_staging_models(
 
         for tbl in sys["tables"]:
             tbl_uri = tbl["uri"]
-            tbl_map = mappings["table_maps"].get(tbl_uri, {})
+            tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
+            # Use first entry for per-source-table properties (filter, dedup)
+            tbl_map = tbl_maps_list[0] if tbl_maps_list else {}
 
             columns_data = []
             json_extractions = []
@@ -719,10 +724,10 @@ def _gen_silver_models(
     for sys in systems:
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
         for tbl in sys["tables"]:
-            tbl_map = mappings["table_maps"].get(tbl["uri"], {})
-            target = tbl_map.get("target_uri")
-            if target:
-                class_to_sources.setdefault(target, []).append(
+            for tbl_map in mappings["table_maps"].get(tbl["uri"], []):
+                target = tbl_map.get("target_uri")
+                if target:
+                    class_to_sources.setdefault(target, []).append(
                     (source_name, tbl["name"], tbl["uri"])
                 )
 
@@ -756,9 +761,11 @@ def _gen_silver_models(
                 "table_name": raw_tbl,
                 "alias": alias,
             })
-            tbl_map = mappings["table_maps"].get(tbl_uri, {})
-            if tbl_map.get("filter_condition"):
-                filter_conditions.append(tbl_map["filter_condition"])
+            tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
+            for tbl_map in tbl_maps_list:
+                if tbl_map.get("filter_condition"):
+                    filter_conditions.append(tbl_map["filter_condition"])
+                    break  # one filter per source table is sufficient
 
         # Determine WHERE clause from filter conditions
         where_clause = ""
@@ -1589,20 +1596,20 @@ def _gen_coverage_report(
         for sys in systems:
             source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
             for tbl in sys["tables"]:
-                tbl_map = mappings.get("table_maps", {}).get(tbl["uri"], {})
-                if tbl_map.get("target_uri") == cls_uri:
-                    tbl_cols = {c["uri"] for c in tbl["columns"]}
-                    used = tbl_cols & consumed_source_cols
-                    unused = [
-                        c["name"] for c in tbl["columns"]
-                        if c["uri"] not in consumed_source_cols
-                    ]
-                    key = f"{source_name}__{_camel_to_snake(tbl['name'])}"
-                    source_coverage[key] = {
-                        "available_columns": len(tbl["columns"]),
-                        "consumed_columns": len(used),
-                        "unused_columns": unused,
-                    }
+                for tbl_map in mappings.get("table_maps", {}).get(tbl["uri"], []):
+                    if tbl_map.get("target_uri") == cls_uri:
+                        tbl_cols = {c["uri"] for c in tbl["columns"]}
+                        used = tbl_cols & consumed_source_cols
+                        unused = [
+                            c["name"] for c in tbl["columns"]
+                            if c["uri"] not in consumed_source_cols
+                        ]
+                        key = f"{source_name}__{_camel_to_snake(tbl['name'])}"
+                        source_coverage[key] = {
+                            "available_columns": len(tbl["columns"]),
+                            "consumed_columns": len(used),
+                            "unused_columns": unused,
+                        }
 
         report[model_name] = {
             "ontology_properties_total": total,
