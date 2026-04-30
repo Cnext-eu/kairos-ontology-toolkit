@@ -354,7 +354,7 @@ class TestGenerateDbtArtifacts:
     def test_with_bronze_and_mappings(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
     ):
-        """Full pipeline: bronze + SKOS mappings + ontology → sources + staging + silver."""
+        """Full pipeline: bronze + SKOS mappings + ontology → sources + silver."""
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=ontology_graph,
@@ -368,9 +368,9 @@ class TestGenerateDbtArtifacts:
         source_files = [k for k in artifacts if "_sources.yml" in k]
         assert len(source_files) >= 1
 
-        # Should have staging model
+        # No staging models (staging layer removed — silver reads bronze directly)
         staging_files = [k for k in artifacts if "stg_" in k]
-        assert len(staging_files) >= 1
+        assert len(staging_files) == 0
 
         # Should have silver model
         silver_files = [k for k in artifacts if "models/silver/" in k and k.endswith(".sql")]
@@ -382,10 +382,10 @@ class TestGenerateDbtArtifacts:
         # Should have packages.yml
         assert "packages.yml" in artifacts
 
-    def test_staging_model_content(
+    def test_silver_model_uses_source(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
     ):
-        """Staging model uses SKOS transform expressions."""
+        """Silver model uses source() to read from bronze (no staging ref)."""
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=ontology_graph,
@@ -395,16 +395,21 @@ class TestGenerateDbtArtifacts:
             bronze_dir=bronze_dir,
             mappings_dir=mappings_dir,
         )
-        # Find the staging model
-        stg_key = next(k for k in artifacts if "stg_" in k and k.endswith(".sql"))
-        content = artifacts[stg_key]
-        assert "materialized='incremental'" in content
+        # Find the silver model
+        silver_key = next(
+            k for k in artifacts
+            if "models/silver/" in k and k.endswith(".sql") and "_sources" not in k
+        )
+        content = artifacts[silver_key]
+        # Silver reads from bronze via source()
         assert "source(" in content
+        # No ref to staging models
+        assert "stg_" not in content
 
     def test_dbt_project_yml(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
     ):
-        """dbt_project.yml has correct structure."""
+        """dbt_project.yml has correct structure (no staging section)."""
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=ontology_graph,
@@ -416,7 +421,8 @@ class TestGenerateDbtArtifacts:
         )
         proj = yaml.safe_load(artifacts["dbt_project.yml"])
         assert proj["name"] == "client_project"
-        assert "staging" in proj["models"]["client_project"]
+        # No staging section in the new architecture
+        assert "staging" not in proj["models"]["client_project"]
         assert "silver" in proj["models"]["client_project"]
         assert proj.get("docs-paths") == ["docs"]
 

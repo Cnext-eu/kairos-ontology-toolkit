@@ -11,7 +11,7 @@ description: >
 You are helping the user create a **bronze vocabulary description** for a source
 system. The bronze vocabulary uses the `kairos-bronze:` namespace to describe
 tables, columns, and data types from the source system — enabling downstream
-dbt staging model generation.
+dbt silver model generation.
 
 ## Prerequisites
 
@@ -192,7 +192,7 @@ Verify:
 After the bronze vocabulary is complete:
 
 1. **Create SKOS mappings** in `model/mappings/{system-name}/` to link source columns to domain ontology properties
-2. **Run the medallion projection** to generate dbt staging + silver models:
+2. **Run the medallion projection** to generate dbt silver models:
    ```bash
    python -m kairos_ontology project --target dbt
    ```

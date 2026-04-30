@@ -4,11 +4,16 @@
 
 Generates a complete dbt project with:
 
-1. **Sources** — ``_sources.yml`` per source system (from source vocabulary TTL)
-2. **Staging models** — ``stg_{source}__{table}.sql`` (rename + cast, materialized as views)
-3. **Silver models** — ``{entity}.sql`` per domain class (staging → silver, matches silver DDL)
-4. **Schema YAML** — ``_models.yml`` with column descriptions + SHACL-derived tests
-5. **Project config** — ``dbt_project.yml`` + ``packages.yml``
+1. **Sources** — minimal ``_sources.yml`` per source system (under ``models/silver/``)
+2. **Silver models** — ``{entity}.sql`` per domain class (reads directly from bronze
+   via ``{{ source() }}``, applies mapping transforms inline)
+3. **Schema YAML** — ``_models.yml`` with column descriptions + SHACL-derived tests
+4. **Project config** — ``dbt_project.yml`` + ``packages.yml``
+5. **Gold models** — ``dim_{entity}.sql`` / ``fact_{entity}.sql`` (optional)
+
+There is **no staging layer** — silver is the first dbt layer and reads directly
+from bronze tables managed by the data platform.  The vocabulary TTL in
+``integration/sources/`` is the authoritative contract for bronze table structure.
 
 Bronze source systems are described using the ``kairos-bronze:`` vocabulary.
 Column mappings use SKOS (``skos:exactMatch``, ``skos:closeMatch``, etc.)
@@ -544,7 +549,13 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str) -> dict[str, list]:
 # ---------------------------------------------------------------------------
 
 def _gen_sources(systems: list[dict], env: Environment) -> dict[str, str]:
-    """Generate ``_sources.yml`` per source system."""
+    """Generate a single minimal ``_sources.yml`` under ``models/silver/``.
+
+    The sources YAML is intentionally minimal — it declares only database,
+    schema, and table names so dbt can generate ``{{ source() }}`` references.
+    Column-level documentation lives in the vocabulary TTL (the authoritative
+    source of bronze table structure), not in the dbt sources YAML.
+    """
     artifacts: dict[str, str] = {}
     template = env.get_template("sources.yml.jinja2")
 
@@ -552,24 +563,9 @@ def _gen_sources(systems: list[dict], env: Environment) -> dict[str, str]:
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
         tables_data = []
         for tbl in sys["tables"]:
-            cols_data = []
-            for col in tbl["columns"]:
-                col_tests = []
-                if not col["nullable"]:
-                    col_tests.append("not_null")
-                if col["is_pk"]:
-                    col_tests.append("unique")
-                cols_data.append({
-                    "name": col["name"],
-                    "description": f"{col['data_type']}"
-                                   + (" NOT NULL" if not col["nullable"] else "")
-                                   + (" (PK)" if col["is_pk"] else ""),
-                    "tests": col_tests,
-                })
             tables_data.append({
                 "name": tbl["name"],
                 "label": tbl["label"],
-                "columns": cols_data,
             })
 
         content = template.render(
@@ -579,7 +575,7 @@ def _gen_sources(systems: list[dict], env: Environment) -> dict[str, str]:
             schema=sys["schema"],
             tables=tables_data,
         )
-        path = f"models/staging/{source_name}/_{source_name}__sources.yml"
+        path = f"models/silver/_{source_name}__sources.yml"
         artifacts[path] = content
 
     return artifacts
@@ -705,30 +701,29 @@ def _gen_silver_models(
     ontology_name: str,
     platform: str = DEFAULT_PLATFORM,
 ) -> dict[str, str]:
-    """Generate silver entity models that read from staging.
+    """Generate silver entity models that read directly from bronze sources.
 
     Enforces layer contracts:
-    - Silver models may only consume from staging (via ref())
-    - Every ref() must point to an existing staging model
+    - Silver models consume bronze tables via source() — no staging layer
+    - Every source() must point to a declared bronze source table
     - Unmapped classes are skipped with a warning (no broken placeholders)
+    - Silver absorbs rename, cast, and transform logic (previously in staging)
     """
     artifacts: dict[str, str] = {}
     template = env.get_template("silver_model.sql.jinja2")
 
     schema_name = f"silver_{ontology_name}"
 
-    # Build reverse map: silver class URI → [(source_name, stg_model_name, table_uri)]
-    class_to_staging: dict[str, list[tuple[str, str, str]]] = {}
+    # Build reverse map: silver class URI → [(source_name, raw_table_name, table_uri)]
+    class_to_sources: dict[str, list[tuple[str, str, str]]] = {}
     for sys in systems:
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
         for tbl in sys["tables"]:
             tbl_map = mappings["table_maps"].get(tbl["uri"], {})
             target = tbl_map.get("target_uri")
             if target:
-                snake_table = _camel_to_snake(tbl["name"])
-                stg_name = f"stg_{source_name}__{snake_table}"
-                class_to_staging.setdefault(target, []).append(
-                    (source_name, stg_name, tbl["uri"])
+                class_to_sources.setdefault(target, []).append(
+                    (source_name, tbl["name"], tbl["uri"])
                 )
 
     for cls in classes:
@@ -736,8 +731,8 @@ def _gen_silver_models(
         local = cls["name"]
         model_name = _camel_to_snake(local)
 
-        staging_refs = class_to_staging.get(cls_uri, [])
-        if not staging_refs:
+        source_refs = class_to_sources.get(cls_uri, [])
+        if not source_refs:
             logger.warning(
                 "No bronze mapping for class %s — skipping silver model generation. "
                 "Add a mapping in the mappings TTL to enable this model.",
@@ -748,23 +743,26 @@ def _gen_silver_models(
         # Extract properties for column list with platform-aware types
         columns = _extract_silver_columns(
             graph, cls_uri, namespace, mappings, platform=platform,
-            staging_refs=staging_refs, systems=systems,
+            source_refs=source_refs, systems=systems,
         )
 
-        # Build filter conditions per staging source (from table-level mappings)
+        # Build source CTEs that reference bronze tables directly
         source_ctes = []
         filter_conditions = []
-        for i, (src, stg, tbl_uri) in enumerate(staging_refs):
-            alias = stg if len(staging_refs) == 1 else f"src_{i + 1}"
-            source_ctes.append({"model": stg, "alias": alias})
-            # Collect filter condition for this table mapping
+        for i, (src, raw_tbl, tbl_uri) in enumerate(source_refs):
+            alias = _camel_to_snake(raw_tbl) if len(source_refs) == 1 else f"src_{i + 1}"
+            source_ctes.append({
+                "source_name": src,
+                "table_name": raw_tbl,
+                "alias": alias,
+            })
             tbl_map = mappings["table_maps"].get(tbl_uri, {})
             if tbl_map.get("filter_condition"):
                 filter_conditions.append(tbl_map["filter_condition"])
 
         # Determine WHERE clause from filter conditions
         where_clause = ""
-        if filter_conditions and len(staging_refs) == 1:
+        if filter_conditions and len(source_refs) == 1:
             where_clause = filter_conditions[0].replace("source.", "")
 
         content = template.render(
@@ -790,15 +788,21 @@ def _extract_silver_columns(
     namespace: str,
     mappings: dict,
     platform: str = DEFAULT_PLATFORM,
-    staging_refs: list[tuple[str, str, str]] | None = None,
+    source_refs: list[tuple[str, str, str]] | None = None,
     systems: list[dict] | None = None,
 ) -> list[dict]:
     """Extract silver-layer columns for a class from the ontology graph.
 
-    Improvements over previous version:
+    Since silver reads directly from bronze (no staging layer), column
+    expressions reference original bronze column names and apply casts/transforms
+    inline.  Transform expressions from SKOS mappings are used as-is; direct
+    mappings reference the original bronze column name with appropriate casting.
+
+    Features:
     - SK uses dbt_utils.generate_surrogate_key() based on natural key columns
     - IRI constructs a proper ontology IRI from namespace + natural key
-    - Mapped properties use their transform expressions
+    - Mapped properties use their transform expressions (referencing bronze cols)
+    - Direct mappings use original bronze column name with TRY_CAST
     - Unmapped optional properties use CAST(NULL AS {{ dbt_utils.type_*() }})
     - Types use dbt_utils macros for portability across platforms
     - Enum columns generate CASE statements for human-readable labels
@@ -806,12 +810,17 @@ def _extract_silver_columns(
     columns: list[dict] = []
     model_name = _camel_to_snake(extract_local_name(class_uri))
 
-    # Build a lookup: bronze column URI → enum_values list
+    # Build lookups from bronze column URI → original column name / data type / enums
+    bronze_col_lookup: dict[str, dict] = {}
     enum_lookup: dict[str, list[dict]] = {}
     if systems:
         for sys in systems:
             for tbl in sys["tables"]:
                 for col in tbl["columns"]:
+                    bronze_col_lookup[col["uri"]] = {
+                        "name": col["name"],
+                        "data_type": col["data_type"],
+                    }
                     if col.get("enum_values"):
                         enum_lookup[col["uri"]] = col["enum_values"]
 
@@ -866,9 +875,21 @@ def _extract_silver_columns(
                     if col_map.get("transform"):
                         expr = col_map["transform"].replace("source.", "")
                     else:
-                        # Direct mapping — use the source column name
-                        source_col_name = extract_local_name(col_uri)
-                        expr = _camel_to_snake(source_col_name)
+                        # Direct mapping — use the original bronze column name
+                        # with a TRY_CAST to the target type
+                        bronze_col = bronze_col_lookup.get(col_uri)
+                        if bronze_col:
+                            src_type = bronze_col["data_type"]
+                            target_type = _source_type_to_target(src_type, platform)
+                            bronze_name = bronze_col["name"]
+                            if target_type.startswith("VARCHAR") or target_type == "STRING":
+                                expr = bronze_name
+                            else:
+                                expr = f"TRY_CAST({bronze_name} AS {target_type})"
+                        else:
+                            # Fallback: use URI local name
+                            source_col_name = extract_local_name(col_uri)
+                            expr = source_col_name
                     break
 
             if expr is None:
@@ -1049,16 +1070,11 @@ def _gen_project_config(
     """Generate ``dbt_project.yml``, ``packages.yml``, and ``README.md``."""
     artifacts: dict[str, str] = {}
 
-    sources = [
-        {"name": _camel_to_snake(s["system_label"]).replace(" ", "_")}
-        for s in systems
-    ]
     domains = [{"name": n} for n in ontology_names]
 
     proj_template = env.get_template("dbt_project.yml.jinja2")
     artifacts["dbt_project.yml"] = proj_template.render(
         project_name=project_name,
-        sources=sources,
         domains=domains,
         gold_domains=gold_domains or [],
     )
@@ -1102,9 +1118,7 @@ dbt run
 
 ```
 models/
-├── staging/          # Source-aligned: rename, cast, JSON extraction
-│   └── <source>/    # One folder per source system
-├── silver/           # Domain-aligned: entity models with mapping transforms
+├── silver/           # Domain-aligned: maps bronze → canonical entities
 │   └── <domain>/    # One folder per ontology domain
 └── gold/             # Star schema: facts, dimensions, measures
     └── <domain>/
@@ -1116,8 +1130,8 @@ macros/               # Platform-abstraction macros (kairos_safe_cast, etc.)
 
 | Layer | Materialization | Purpose |
 |-------|----------------|---------|
-| Staging | View | Rename + type cast + JSON extraction from bronze |
-| Silver | Table | Domain entities with surrogate keys and transforms |
+| Bronze | (platform-managed) | Raw source tables — outside dbt |
+| Silver | Table | Domain entities mapped from bronze via `{{{{ source() }}}}` |
 | Gold | Table | Star schema for BI (Power BI DirectLake / Databricks SQL) |
 
 ## Platform Macros
@@ -1404,18 +1418,12 @@ def generate_dbt_artifacts(
     if not systems:
         logger.info("No source systems found — generating silver models only")
 
-    # 1. Sources YAML
+    # 1. Sources YAML (minimal — under models/silver/)
     if systems:
         artifacts.update(_gen_sources(systems, env))
         print(f"    ✓ Generated {len(systems)} source definition(s)")
 
-    # 2. Staging models
-    if systems:
-        staging = _gen_staging_models(systems, mappings, env, meta, platform=target_platform)
-        artifacts.update(staging)
-        print(f"    ✓ Generated {len(staging)} staging model(s)")
-
-    # 3. Silver entity models
+    # 2. Silver entity models (read directly from bronze via source())
     silver = _gen_silver_models(
         classes, graph, namespace, systems, mappings, env, meta, onto_name,
         platform=target_platform,
@@ -1423,17 +1431,17 @@ def generate_dbt_artifacts(
     artifacts.update(silver)
     print(f"    ✓ Generated {len(silver)} silver model(s)")
 
-    # 4. Schema YAML with SHACL tests
+    # 3. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(
         classes, graph, namespace, shapes_dir, env, onto_name, meta,
         systems=systems, mappings=mappings,
     )
     artifacts.update(schema)
 
-    # 5. Project config (only once per domain — orchestrator handles multi-domain)
+    # 4. Project config (only once per domain — orchestrator handles multi-domain)
     has_gold = False
     if systems:
-        # 6. Gold entity models (thick gold — pre-materialized star schema)
+        # 5. Gold entity models (thick gold — pre-materialized star schema)
         gold = _gen_gold_models(
             classes, graph, namespace, shapes_dir, onto_name, gold_ext_path, env, meta,
         )
@@ -1442,7 +1450,7 @@ def generate_dbt_artifacts(
         if gold:
             print(f"    ✓ Generated {len(gold)} gold model(s)")
 
-        # 7. Gold schema YAML with tests
+        # 6. Gold schema YAML with tests
         gold_schema = _gen_gold_schema_yaml(
             classes, graph, namespace, shapes_dir, onto_name, gold_ext_path, env, meta,
         )
@@ -1456,7 +1464,7 @@ def generate_dbt_artifacts(
         )
         artifacts.update(project)
 
-    # 8. Coverage report
+    # 7. Coverage report
     if systems:
         coverage = _gen_coverage_report(
             classes, graph, namespace, systems, mappings, onto_name,
@@ -1465,7 +1473,7 @@ def generate_dbt_artifacts(
             artifacts.update(coverage)
             print("    ✓ Generated coverage report")
 
-    # 9. Platform macros
+    # 8. Platform macros
     macros = _gen_macros(template_dir)
     artifacts.update(macros)
     if macros:

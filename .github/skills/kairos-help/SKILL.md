@@ -56,7 +56,7 @@ The toolkit enforces clean boundaries:
 
 For the medallion gold layer, follow this rule:
 
-- **dbt = data logic** — staging, cleansing, joins, conformed dimensions, fact tables, surrogate keys, incremental loads, data quality tests, documentation, lineage
+- **dbt = data logic** — cleansing, joins, conformed dimensions, fact tables, surrogate keys, incremental loads, data quality tests, documentation, lineage
 - **Semantic model = business metrics** — DAX measures, relationships, hierarchies, RLS/OLS, perspectives, calculation groups, business-friendly names
 - **Reports = visuals only** — consume semantic model measures; no business logic in reports
 
@@ -90,7 +90,7 @@ ontology-hub/
 │           └── schema.sql
 ├── output/                         # Generated artifacts (DO NOT EDIT)
 │   ├── medallion/                  # Medallion architecture outputs
-│   │   ├── dbt/                    # dbt Core project (staging + silver + gold)
+│   │   ├── dbt/                    # dbt Core project (silver + gold)
 │   │   │   ├── models/
 │   │   │   ├── analyses/
 │   │   │   └── docs/
@@ -118,7 +118,7 @@ ontology-hub/
 
 - **`model/`** is the source of truth. All changes start here.
 - **`output/`** is generated. Never edit files here — regenerate with `kairos-ontology project`.
-- **`integration/`** holds source system reference docs used by the staging skill.
+- **`integration/`** holds source system reference docs used by the bronze vocabulary skill.
 - **`_master.ttl`** must import every domain ontology.
 
 ## 3  Available Projections
@@ -127,7 +127,7 @@ The toolkit supports 8 projection targets:
 
 | Target | Command flag | What it generates | When to use |
 |---|---|---|---|
-| `dbt` | `--target dbt` | dbt Core project (staging → silver → gold SQL models, schema YAML, docs) | Data warehouse / lakehouse pipeline |
+| `dbt` | `--target dbt` | dbt Core project (silver → gold SQL models, schema YAML, docs) | Data warehouse / lakehouse pipeline |
 | `silver` | `--target silver` | Spark SQL DDL, Mermaid ERD, ALTER TABLE FK scripts for MS Fabric Warehouse | Silver-layer physical schema |
 | `powerbi` | `--target powerbi` | Power BI TMDL semantic model (tables, measures, relationships, RLS, perspectives) | BI semantic layer |
 | `neo4j` | `--target neo4j` | Cypher constraints, indexes, and import scripts | Graph database |

@@ -18,12 +18,6 @@ clean-targets:
 
 models:
   {{ project_name }}:
-    staging:
-      +materialized: view
-{%- for source in sources %}
-      {{ source.name }}:
-        +tags: ['staging', '{{ source.name }}']
-{%- endfor %}
     silver:
       +materialized: table
 {%- for domain in domains %}

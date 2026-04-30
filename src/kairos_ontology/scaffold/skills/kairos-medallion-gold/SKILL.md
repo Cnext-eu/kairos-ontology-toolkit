@@ -178,7 +178,7 @@ output/medallion/powerbi/{domain}/
 
 | Layer | Responsibility | Artifact |
 |-------|---------------|----------|
-| **dbt** | Data logic (staging, joins, facts, dims, SCD, tests) | `models/gold/` SQL models |
+| **dbt** | Data logic (joins, facts, dims, SCD, tests) | `models/gold/` SQL models |
 | **Semantic model** | Business metrics (DAX, relationships, hierarchies, RLS/OLS) | `{Domain}.SemanticModel/` TMDL |
 | **Reports** | Visuals only — consume measures from semantic model | (not generated) |
 
