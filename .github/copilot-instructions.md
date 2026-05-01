@@ -93,6 +93,25 @@ When reviewing or creating a pull request, verify:
 - Run tests with `py -m pytest` (Windows) or `python -m pytest` (Unix).
 - Aim for coverage of: happy path, auth failure (401), and at least one edge/error case per endpoint.
 
+### Scenario testing rules
+
+The `tests/scenarios/` directory contains an **acme-hub** — a synthetic ontology hub with
+two domains (`client`, `invoice`), two source systems, silver/gold extensions, and SKOS
+mappings that exercise the full projection pipeline.
+
+**When to update scenario tests:**
+
+| What changed | What to update in `tests/scenarios/` |
+|---|---|
+| New `kairos-ext:` annotation in a projector | Add the annotation to the relevant `acme-hub/model/extensions/*.ttl` file and add/update a test in `test_scenario_silver.py` or `test_scenario_gold.py` |
+| New `kairos-map:` annotation in dbt projector | Add the annotation to a mapping file in `acme-hub/model/mappings/` and add/update a test in `test_scenario_dbt.py` |
+| Changed projection logic (SQL generation, column selection, joins) | Verify existing scenario tests still pass; add a new test case if the change covers a pattern not yet tested |
+| New extension file type (e.g., a new `*-ext.ttl` convention) | Add the file to `acme-hub/model/extensions/` and add scenario coverage |
+| Bug fix for a projection edge case | Add a regression test in the appropriate `test_scenario_*.py` that would have caught the bug |
+
+**Rule**: PRs that add or change projection logic or extension annotations MUST include
+corresponding scenario test updates. Run `py -m pytest tests/scenarios/ -v` to verify.
+
 ## Ontology conventions
 
 - All ontology files use Turtle (.ttl) syntax.

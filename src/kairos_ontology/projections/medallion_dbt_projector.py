@@ -758,6 +758,10 @@ def _gen_staging_models(
                     else:
                         expr = f"TRY_CAST({col['name']} AS {target_type})"
 
+                # Wrap in COALESCE if defaultValue is declared
+                if col_map.get("default_value"):
+                    expr = f"COALESCE({expr}, {col_map['default_value']})"
+
                 # Target column name: from SKOS mapping or snake_case of source
                 if col_map.get("target_uri"):
                     target_name = _camel_to_snake(
@@ -866,21 +870,24 @@ def _gen_silver_models(
         filter_conditions = []
         for i, (src, raw_tbl, tbl_uri) in enumerate(source_refs):
             alias = _camel_to_snake(raw_tbl) if len(source_refs) == 1 else f"src_{i + 1}"
+            # Resolve per-CTE filter condition
+            cte_filter = ""
+            tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
+            for tbl_map in tbl_maps_list:
+                if tbl_map.get("target_uri") == cls_uri and tbl_map.get("filter_condition"):
+                    cte_filter = tbl_map["filter_condition"].replace("source.", "")
+                    filter_conditions.append(cte_filter)
+                    break
             source_ctes.append({
                 "source_name": src,
                 "table_name": raw_tbl,
                 "alias": alias,
+                "filter": cte_filter,
             })
-            tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
-            for tbl_map in tbl_maps_list:
-                if tbl_map.get("target_uri") == cls_uri and tbl_map.get("filter_condition"):
-                    filter_conditions.append(tbl_map["filter_condition"])
-                    break
 
-        # Determine WHERE clause from filter conditions
+        # Filter conditions are embedded in each CTE via cte.filter.
+        # No top-level WHERE needed — all filtering happens at the CTE level.
         where_clause = ""
-        if filter_conditions and len(source_refs) == 1:
-            where_clause = filter_conditions[0].replace("source.", "")
 
         content = template.render(
             model_name=model_name,
@@ -897,6 +904,29 @@ def _gen_silver_models(
         artifacts[path] = content
 
     return artifacts, warnings
+
+
+def _get_class_and_parents(graph: Graph, class_uri: str) -> set[str]:
+    """Return the set of class URIs including the given class and all ancestors.
+
+    Walks the rdfs:subClassOf chain upward, collecting all parent class URIs.
+    This enables inheritance: properties defined on a parent class are included
+    when generating models for a subclass.
+    """
+    result = {class_uri}
+    current = URIRef(class_uri)
+    visited = set()
+    while current not in visited:
+        visited.add(current)
+        parent = graph.value(current, RDFS.subClassOf)
+        if parent is None or str(parent) in result:
+            break
+        # Skip owl:Thing and other top-level classes
+        if str(parent).startswith("http://www.w3.org/"):
+            break
+        result.add(str(parent))
+        current = parent
+    return result
 
 
 def _extract_silver_columns(
@@ -969,12 +999,20 @@ def _extract_silver_columns(
 
     columns.append({"expression": iri_expr, "target_name": f"{model_name}_iri"})
 
-    # Datatype properties
+    # Collect domain classes: self + parent classes (for inheritance in split patterns)
+    domain_classes = _get_class_and_parents(graph, class_uri)
+
+    # Datatype properties (including inherited from parent classes)
+    seen_col_names: set[str] = set()
     for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
         domain = graph.value(prop, RDFS.domain)
-        if domain and str(domain) == class_uri:
+        if domain and str(domain) in domain_classes:
             prop_name = extract_local_name(str(prop))
             col_name = _camel_to_snake(prop_name)
+            # Deduplicate: skip if column already added (child overrides parent)
+            if col_name in seen_col_names:
+                continue
+            seen_col_names.add(col_name)
             range_uri = graph.value(prop, RDFS.range)
             # Use dbt_utils macros for portable silver types
             macro_type = _xsd_to_dbt_macro(range_uri)
@@ -1008,6 +1046,12 @@ def _extract_silver_columns(
                             source_col_name = extract_local_name(col_uri)
                             expr = source_col_name
                     break
+
+            # Wrap in COALESCE if a default value is declared in the mapping
+            if expr and mapped_col_uri:
+                col_map = mappings.get("column_maps", {}).get(mapped_col_uri, {})
+                if col_map.get("default_value"):
+                    expr = f"COALESCE({expr}, {col_map['default_value']})"
 
             if expr is None:
                 if population == "derived":
@@ -1077,9 +1121,12 @@ def _extract_fk_columns_and_joins(
                         "data_type": col["data_type"],
                     }
 
+    # Collect domain classes: self + parent classes (for inheritance)
+    domain_classes = _get_class_and_parents(graph, class_uri)
+
     for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
         domain = graph.value(prop, RDFS.domain)
-        if domain is None or str(domain) != class_uri:
+        if domain is None or str(domain) not in domain_classes:
             continue
 
         # Skip junction-table properties (many-to-many)
@@ -1109,10 +1156,13 @@ def _extract_fk_columns_and_joins(
             prop_suffix = _camel_to_snake(extract_local_name(str(prop)))
             fk_col_name = f"{prop_suffix}_sk"
 
-        # Find source column via SKOS mapping to this object property
+        # Find source column(s) via SKOS mapping to this object property
         source_col_name = None
+        source_columns: list[str] | None = None
         for col_uri, col_map in mappings.get("column_maps", {}).items():
             if col_map.get("target_uri") == str(prop):
+                if col_map.get("source_columns"):
+                    source_columns = col_map["source_columns"]
                 if col_map.get("transform"):
                     source_col_name = col_map["transform"].replace("source.", "")
                 else:
@@ -1140,16 +1190,15 @@ def _extract_fk_columns_and_joins(
         # Get target class natural key for the join condition
         target_nk = _get_natural_key(graph, str(range_cls))
 
-        if len(target_nk) != 1:
-            # Composite or missing NK — cannot generate join safely
+        if len(target_nk) == 0:
+            # No natural key — cannot generate join
             fk_columns.append({
                 "expression": "CAST(NULL AS {{ dbt_utils.type_string() }})",
                 "target_name": fk_col_name,
             })
             msg = (
                 f"FK column '{fk_col_name}' targets class '{range_local}' which has "
-                f"{'composite' if len(target_nk) > 1 else 'no'} natural key — "
-                f"cannot auto-generate join. Emitting NULL placeholder."
+                f"no natural key — cannot auto-generate join. Emitting NULL placeholder."
             )
             warnings.append(msg)
             existing_aliases.add(fk_col_name)
@@ -1167,15 +1216,38 @@ def _extract_fk_columns_and_joins(
         existing_aliases.add(fk_col_name)
         existing_aliases.add(join_alias)
 
+        # Build join condition — single or composite NK
+        if len(target_nk) == 1:
+            join_condition = (
+                f"{source_alias}.{source_col_name} = "
+                f"{join_alias}.{target_nk[0]}"
+            )
+        elif source_columns and len(source_columns) == len(target_nk):
+            # Composite NK: match source columns to target NK columns in order
+            parts = [
+                f"{source_alias}.{sc} = {join_alias}.{nk}"
+                for sc, nk in zip(source_columns, target_nk)
+            ]
+            join_condition = " AND ".join(parts)
+        else:
+            # Composite NK but no matching sourceColumns — single col match + warning
+            join_condition = (
+                f"{source_alias}.{source_col_name} = "
+                f"{join_alias}.{target_nk[0]}"
+            )
+            msg = (
+                f"FK column '{fk_col_name}' targets class '{range_local}' with "
+                f"composite natural key ({', '.join(target_nk)}) but mapping has "
+                f"only 1 source column — join may be incomplete."
+            )
+            warnings.append(msg)
+
         # Build join definition
         joins.append({
             "type": "left",
             "ref": f"{{{{ ref('{range_model}') }}}}",
             "alias": join_alias,
-            "condition": (
-                f"{source_alias}.{source_col_name} = "
-                f"{join_alias}.{target_nk[0]}"
-            ),
+            "condition": join_condition,
         })
 
         # FK column references the joined table's SK
@@ -1265,12 +1337,17 @@ def _gen_schema_yaml(
             "tests": ["not_null", "unique"],
         })
 
-        # Datatype properties
+        # Datatype properties (including inherited from parent classes)
+        domain_classes = _get_class_and_parents(graph, cls["uri"])
+        seen_schema_cols: set[str] = set()
         for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
             domain = graph.value(prop, RDFS.domain)
-            if domain and str(domain) == cls["uri"]:
+            if domain and str(domain) in domain_classes:
                 prop_name = extract_local_name(str(prop))
                 col_name = _camel_to_snake(prop_name)
+                if col_name in seen_schema_cols:
+                    continue
+                seen_schema_cols.add(col_name)
                 label = graph.value(prop, RDFS.label)
                 comment = graph.value(prop, RDFS.comment)
                 desc = str(comment) if comment else (str(label) if label else prop_name)
@@ -1308,10 +1385,10 @@ def _gen_schema_yaml(
                     "tests": tests,
                 })
 
-        # Object property FK columns
+        # Object property FK columns (including inherited from parent classes)
         for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
             domain = graph.value(prop, RDFS.domain)
-            if domain and str(domain) == cls["uri"]:
+            if domain and str(domain) in domain_classes:
                 # Skip junction-table properties
                 if graph.value(prop, KAIROS_EXT.term("junctionTableName")):
                     continue
@@ -1564,6 +1641,37 @@ def _gen_gold_models(
             logger.info("No silver ref for gold table %s — skipping", tbl.name)
             continue
 
+        # Build joins for fact table FK lookups
+        joins: list[dict] = []
+        if tbl.table_type == "fact":
+            seen_join_aliases: set[str] = set()
+            source_alias = source_ctes[0]["alias"] if source_ctes else ""
+            for fk_col, ref_full, ref_col, label in tbl.fk_constraints:
+                ref_tbl_name = ref_full.split(".")[-1]
+                ref_gold = next(
+                    (t for t in gold_tables if t.name == ref_tbl_name), None)
+                if ref_gold and ref_gold.source_class_uri:
+                    ref_silver = _silver_model_name_for_class(
+                        ref_gold.source_class_uri, classes)
+                    alias = ref_silver
+                    # Disambiguate aliases
+                    base_alias = alias
+                    counter = 2
+                    while alias in seen_join_aliases:
+                        alias = f"{base_alias}_{counter}"
+                        counter += 1
+                    seen_join_aliases.add(alias)
+
+                    # FK column references the _sk of the referenced dimension
+                    # ref_col is the PK column in the gold table
+                    joins.append({
+                        "type": "left",
+                        "alias": alias,
+                        "condition": (
+                            f"{source_alias}.{fk_col} = {alias}.{ref_col}"
+                        ),
+                    })
+
         # Build column expressions
         columns = []
         for col in tbl.columns:
@@ -1589,7 +1697,7 @@ def _gen_gold_models(
             is_gdpr=tbl.is_gdpr,
             source_ctes=source_ctes,
             columns=columns,
-            joins=[],
+            joins=joins,
             where_clause=where_clause,
             ontology_metadata=meta,
             incremental_column=tbl.incremental_column or "",

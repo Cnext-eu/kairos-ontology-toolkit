@@ -75,18 +75,14 @@ class TestCrossDomainFK:
 # ---------------------------------------------------------------------------
 
 class TestDefaultValues:
-    """Columns with kairos-map:defaultValue should use COALESCE or fallback.
+    """Columns with kairos-map:defaultValue should use COALESCE or fallback."""
 
-    NOTE: This is a known gap — the dbt projector does not yet apply
-    kairos-map:defaultValue as COALESCE in generated SQL. This test documents
-    the expected behaviour and will start passing when the feature is added.
-    """
-
-    @pytest.mark.xfail(reason="defaultValue not yet applied in dbt projector")
     def test_email_has_default(self, client_dbt_artifacts):
-        """Email mapping has defaultValue 'unknown@acme.example'."""
-        # Check any of the split models — they all map email
-        key = _find_artifact(client_dbt_artifacts, "corporate_client.sql")
+        """Email mapping has defaultValue 'unknown@acme.example' — should COALESCE."""
+        # email has domain=Client, so it appears in client.sql (base model)
+        key = _find_artifact(client_dbt_artifacts, "/client.sql")
+        if key is None:
+            key = _find_artifact(client_dbt_artifacts, "corporate_client.sql")
         sql = client_dbt_artifacts[key]
         has_coalesce = "COALESCE" in sql.upper() or "coalesce" in sql
         has_default = "unknown@acme.example" in sql
@@ -174,16 +170,15 @@ class TestColumnMappings:
         sql = client_dbt_artifacts[key].lower()
         assert "vat_number" in sql, "Missing vat_number mapped column"
 
-    @pytest.mark.xfail(
-        reason="dbt projector uses raw column names; CAST transforms "
-               "from kairos-map:transform not yet emitted in SQL"
-    )
     def test_cast_transform_applied(self, client_dbt_artifacts):
-        """clientId mapping has CAST(source.ClientID AS STRING)."""
-        key = _find_artifact(client_dbt_artifacts, "corporate_client.sql")
+        """clientId mapping has CAST(source.ClientID AS STRING) — appears in base model."""
+        # clientId has domain=Client, so CAST appears in client.sql
+        key = _find_artifact(client_dbt_artifacts, "/client.sql")
+        if key is None:
+            key = _find_artifact(client_dbt_artifacts, "corporate_client.sql")
         sql = client_dbt_artifacts[key].upper()
         assert "CAST" in sql and "STRING" in sql, (
-            "Missing CAST transform in corporate_client model"
+            "Missing CAST transform in client model"
         )
 
 

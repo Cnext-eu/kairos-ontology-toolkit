@@ -319,6 +319,30 @@ class TestSkosMapping:
         assert "http://kairos.example/ontology/ContactPerson" in targets
 
 
+    def test_parse_skos_default_value(self, tmp_path):
+        """kairos-map:defaultValue is captured in column_maps."""
+        default_ttl = textwrap.dedent("""\
+            @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+            @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+            @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+            @prefix party: <http://kairos.example/ontology/> .
+
+            bronze-ap:tblClient skos:exactMatch party:Client ;
+                kairos-map:mappingType "direct" .
+
+            bronze-ap:tblClient_Email skos:exactMatch party:email ;
+                kairos-map:transform "source.Email" ;
+                kairos-map:defaultValue "'unknown@example.com'" .
+        """)
+        d = tmp_path / "mappings"
+        d.mkdir()
+        (d / "default-val.ttl").write_text(default_ttl, encoding="utf-8")
+        maps = _parse_skos_mappings(d)
+        col = maps["column_maps"]["https://example.com/bronze/adminpulse#tblClient_Email"]
+        assert col["default_value"] == "'unknown@example.com'"
+        assert col["transform"] == "source.Email"
+
+
 # ---------------------------------------------------------------------------
 # Unit tests: SHACL test extraction
 # ---------------------------------------------------------------------------
