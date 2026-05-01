@@ -204,7 +204,7 @@ This is where most "it generated wrong output" bugs originate.
 
 | Check | What to verify |
 |-------|---------------|
-| `naturalKey` set on non-reference classes | 🐛 Without NK, surrogate key generation may produce duplicates |
+| `naturalKey` set on non-reference classes | 🐛 Without NK, surrogate key (SK) and IRI generation will produce NULL placeholders. **The dbt projector now emits a warning** when a class with bronze mappings lacks `naturalKey`. |
 | `scdType` is `"1"` or `"2"` | 🐛 Other values are unsupported |
 | `discriminatorColumn` + subclass `conditionalOnType` | If parent has discriminator, each subclass MUST have `conditionalOnType` |
 | `isReferenceData` on enum/lookup classes | 💡 Ensures correct table materialization |

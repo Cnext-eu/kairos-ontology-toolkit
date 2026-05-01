@@ -828,3 +828,35 @@ class TestShaclToDbtTests:
             f"Invoice SHACL sh:minCount 1 not reflected as not_null:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
+
+
+# ===========================================================================
+# Natural-key completeness — acme-hub entities should all have naturalKey
+# ===========================================================================
+
+class TestNaturalKeyCompleteness:
+    """Verify that all acme-hub silver models have naturalKey annotations.
+
+    If any class is missing kairos-ext:naturalKey, the projector emits a
+    warning and the resulting SK / IRI columns become NULL placeholders.
+    """
+
+    def test_no_nk_warnings_in_projection(self, projected_hub, capsys):
+        """Re-run projection and confirm no 'SK and IRI will be NULL' warnings."""
+        hub = projected_hub
+        from kairos_ontology.projector import run_projections
+
+        run_projections(
+            ontologies_path=hub / "model" / "ontologies",
+            catalog_path=hub / "catalog-v001.xml",
+            output_path=hub / "output",
+            target="dbt",
+        )
+        captured = capsys.readouterr()
+        # The projector-level warning specifically says "SK and IRI columns will be NULL"
+        # (distinct from the FK-level warning about cross-domain naturalKey)
+        assert "SK and IRI columns will be NULL" not in captured.out, (
+            "One or more acme-hub classes are missing naturalKey — "
+            "all entity classes must have kairos-ext:naturalKey in their "
+            "domain ontology or silver extension file."
+        )

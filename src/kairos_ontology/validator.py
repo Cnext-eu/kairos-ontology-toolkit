@@ -321,6 +321,12 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
     if do_consistency:
         print("🔗 Level 3: Consistency Validation")
         print("-" * 50)
+        # TODO: Implement naturalKey completeness check once the validator
+        # loads extension files (silver-ext.ttl). Currently, naturalKey
+        # annotations may live in extensions rather than the domain ontology,
+        # so checking here would produce false positives. The dbt projector
+        # already emits warnings for missing naturalKey at projection time
+        # (when the merged graph is available).
         print("  (Custom SPARQL queries for consistency checks)")
         print("  Not implemented yet - future enhancement\n")
     

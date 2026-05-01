@@ -926,6 +926,18 @@ def _gen_silver_models(
             warnings.append(msg)
             continue
 
+        # Check for missing naturalKey — critical for SK and IRI generation
+        natural_key_cols = _get_natural_key(graph, cls_uri)
+        if not natural_key_cols:
+            msg = (
+                f"Class '{local}' has no kairos-ext:naturalKey — "
+                f"SK and IRI columns will be NULL. Add "
+                f"'kairos-ext:naturalKey \"<propertyName>\"' to the class "
+                f"definition or its silver extension file."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
         # ----- Multi-source: generate per-source views + union model -----
         if len(source_refs) > 1:
             source_model_names: list[str] = []
