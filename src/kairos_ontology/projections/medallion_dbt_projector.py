@@ -570,80 +570,135 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str) -> dict[str, list]:
         return {}
 
     class_name = extract_local_name(class_uri)
-    shape_file = shapes_dir / f"{class_name.lower()}.shacl.ttl"
-    if not shape_file.exists():
-        return {}
+    target_class = URIRef(class_uri)
 
-    try:
-        sg = Graph()
-        sg.parse(shape_file, format="turtle")
-    except Exception:
+    # Try multiple naming conventions for shape files
+    candidates = [
+        shapes_dir / f"{class_name.lower()}.shacl.ttl",
+        shapes_dir / f"{class_name.lower()}-shapes.ttl",
+    ]
+    # Also search all .ttl files for shapes that target this class
+    all_shapes = list(shapes_dir.glob("*.ttl"))
+
+    sg = Graph()
+    loaded = False
+
+    # Try specific file first
+    for candidate in candidates:
+        if candidate.exists():
+            try:
+                sg.parse(candidate, format="turtle")
+                loaded = True
+            except Exception:
+                pass
+            break
+
+    # Fallback: load all shape files and filter by sh:targetClass
+    if not loaded:
+        for sf in all_shapes:
+            try:
+                sg.parse(sf, format="turtle")
+                loaded = True
+            except Exception:
+                continue
+
+    if not loaded:
         return {}
 
     tests_by_col: dict[str, list] = {}
 
+    # Find property shapes that target this class (directly or via NodeShape)
+    for node_shape in sg.subjects(RDF.type, SH.NodeShape):
+        shape_target = sg.value(node_shape, SH.targetClass)
+        if shape_target and str(shape_target) != str(target_class):
+            continue
+        for ps in sg.objects(node_shape, SH.property):
+            _extract_property_shape_tests(sg, ps, tests_by_col)
+
+    # Also handle property shapes attached via sh:property without NodeShape typing
     for ps in sg.objects(predicate=SH.property):
         path = sg.value(ps, SH.path)
         if not path:
             continue
         col_name = _camel_to_snake(extract_local_name(str(path)))
-        tests: list = []
-
-        min_count = sg.value(ps, SH.minCount)
-        if min_count and int(min_count) > 0:
-            tests.append("not_null")
-
-        max_count = sg.value(ps, SH.maxCount)
-        if max_count and int(max_count) == 1 and min_count and int(min_count) == 1:
-            tests.append("unique")
-
-        pattern = sg.value(ps, SH.pattern)
-        if pattern:
-            p = str(pattern).replace("'", "\\'")
-            tests.append(
-                f"dbt_expectations.expect_column_values_to_match_regex:\n"
-                f"            regex: '{p}'"
-            )
-
-        in_list = sg.value(ps, SH["in"])
-        if in_list:
-            values = [f"'{str(v)}'" for v in sg.items(in_list)]
-            if values:
-                tests.append(
-                    f"accepted_values:\n"
-                    f"            values: [{', '.join(values)}]"
-                )
-
-        min_len = sg.value(ps, SH.minLength)
-        max_len = sg.value(ps, SH.maxLength)
-        if min_len or max_len:
-            parts = []
-            if min_len:
-                parts.append(f"min_value: {int(min_len)}")
-            if max_len:
-                parts.append(f"max_value: {int(max_len)}")
-            tests.append(
-                f"dbt_expectations.expect_column_value_lengths_to_be_between:\n"
-                f"            {'\n            '.join(parts)}"
-            )
-
-        min_inc = sg.value(ps, SH.minInclusive)
-        max_inc = sg.value(ps, SH.maxInclusive)
-        if min_inc or max_inc:
-            parts = []
-            if min_inc:
-                parts.append(f"min_value: {min_inc}")
-            if max_inc:
-                parts.append(f"max_value: {max_inc}")
-            tests.append(
-                f"dbt_expectations.expect_column_values_to_be_between:\n"
-                f"            {'\n            '.join(parts)}"
-            )
-
-        if tests:
-            tests_by_col[col_name] = tests
+        if col_name in tests_by_col:
+            continue  # already extracted via NodeShape path
+        # Check if this property shape belongs to a shape targeting our class
+        for subj in sg.subjects(SH.property, ps):
+            shape_target = sg.value(subj, SH.targetClass)
+            if shape_target and str(shape_target) == str(target_class):
+                _extract_property_shape_tests(sg, ps, tests_by_col)
+                break
 
     return tests_by_col
+
+
+def _extract_property_shape_tests(
+    sg: Graph, ps, tests_by_col: dict[str, list]
+) -> None:
+    """Extract dbt tests from a single SHACL property shape node."""
+    path = sg.value(ps, SH.path)
+    if not path:
+        return
+    col_name = _camel_to_snake(extract_local_name(str(path)))
+    if col_name in tests_by_col:
+        return  # already processed
+
+    tests: list = []
+
+    min_count = sg.value(ps, SH.minCount)
+    if min_count and int(min_count) > 0:
+        tests.append("not_null")
+
+    max_count = sg.value(ps, SH.maxCount)
+    if max_count and int(max_count) == 1 and min_count and int(min_count) == 1:
+        tests.append("unique")
+
+    pattern = sg.value(ps, SH.pattern)
+    if pattern:
+        p = str(pattern).replace("'", "\\'")
+        tests.append(
+            f"dbt_expectations.expect_column_values_to_match_regex:\n"
+            f"            regex: '{p}'"
+        )
+
+    in_list = sg.value(ps, SH["in"])
+    if in_list:
+        values = [f"'{str(v)}'" for v in sg.items(in_list)]
+        if values:
+            tests.append(
+                f"accepted_values:\n"
+                f"            values: [{', '.join(values)}]"
+            )
+
+    min_len = sg.value(ps, SH.minLength)
+    max_len = sg.value(ps, SH.maxLength)
+    if min_len or max_len:
+        parts = []
+        if min_len:
+            parts.append(f"min_value: {int(min_len)}")
+        if max_len:
+            parts.append(f"max_value: {int(max_len)}")
+        tests.append(
+            f"dbt_expectations.expect_column_value_lengths_to_be_between:\n"
+            f"            {'\n            '.join(parts)}"
+        )
+
+    min_inc = sg.value(ps, SH.minInclusive)
+    max_inc = sg.value(ps, SH.maxInclusive)
+    if min_inc or max_inc:
+        parts = []
+        if min_inc:
+            parts.append(f"min_value: {min_inc}")
+        if max_inc:
+            parts.append(f"max_value: {max_inc}")
+        tests.append(
+            f"dbt_expectations.expect_column_values_to_be_between:\n"
+            f"            {'\n            '.join(parts)}"
+        )
+
+    if tests:
+        tests_by_col[col_name] = tests
 
 
 # ---------------------------------------------------------------------------

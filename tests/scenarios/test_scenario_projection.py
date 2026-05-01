@@ -15,7 +15,7 @@ import pytest
 import yaml
 from rdflib import Graph, Namespace
 
-from .conftest import HUB_ROOT, MAPPINGS_DIR
+from .conftest import HUB_ROOT, MAPPINGS_DIR, SHAPES_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -500,5 +500,277 @@ class TestMappingToSqlConsistency:
 
         assert not missing, (
             f"Mapped columns missing from _models.yml:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+        )
+
+
+# ===========================================================================
+# SHACL cross-validation — shapes constraints ↔ dbt tests in _models.yml
+# ===========================================================================
+
+def _parse_shacl_constraints(shapes_file: Path) -> dict[str, dict]:
+    """Parse a SHACL shapes TTL and return expected constraints per property.
+
+    Returns:
+        {
+            (target_class_local, property_local): {
+                "min_count": int | None,
+                "max_count": int | None,
+                "pattern": str | None,
+                "min_length": int | None,
+                "min_inclusive": int | None,
+            }
+        }
+    """
+    from kairos_ontology.projections.uri_utils import extract_local_name
+
+    g = Graph()
+    g.parse(shapes_file, format="turtle")
+
+    SH = Namespace("http://www.w3.org/ns/shacl#")
+    RDF_NS = Namespace("http://www.w3.org/1999/02/22-rdf-syntax-ns#")
+
+    constraints = {}
+
+    for node_shape in g.subjects(RDF_NS.type, SH.NodeShape):
+        target_class = g.value(node_shape, SH.targetClass)
+        if not target_class:
+            continue
+        class_local = extract_local_name(str(target_class))
+
+        for ps in g.objects(node_shape, SH.property):
+            path = g.value(ps, SH.path)
+            if not path:
+                continue
+            prop_local = extract_local_name(str(path))
+
+            constraint = {
+                "min_count": None,
+                "max_count": None,
+                "pattern": None,
+                "min_length": None,
+                "min_inclusive": None,
+            }
+
+            mc = g.value(ps, SH.minCount)
+            if mc:
+                constraint["min_count"] = int(mc)
+            xc = g.value(ps, SH.maxCount)
+            if xc:
+                constraint["max_count"] = int(xc)
+            pat = g.value(ps, SH.pattern)
+            if pat:
+                constraint["pattern"] = str(pat)
+            ml = g.value(ps, SH.minLength)
+            if ml:
+                constraint["min_length"] = int(ml)
+            mi = g.value(ps, SH.minInclusive)
+            if mi:
+                constraint["min_inclusive"] = int(mi)
+
+            constraints[(class_local, prop_local)] = constraint
+
+    return constraints
+
+
+class TestShaclToDbtTests:
+    """Cross-validate: SHACL constraints → dbt tests in _models.yml."""
+
+    def test_client_not_null_from_min_count(self, projected_hub):
+        """sh:minCount 1 → not_null test on column."""
+        constraints = _parse_shacl_constraints(SHAPES_DIR / "client-shapes.ttl")
+        models_yml = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "client" / "_client__models.yml"
+        )
+        data = yaml.safe_load(models_yml.read_text(encoding="utf-8"))
+
+        # Find columns that should be not_null per SHACL
+        expected_not_null = [
+            (cls, prop)
+            for (cls, prop), c in constraints.items()
+            if c["min_count"] and c["min_count"] > 0
+        ]
+        assert expected_not_null, "No minCount constraints found in SHACL"
+
+        # Build lookup: model_name → {col_name: tests}
+        tests_lookup = {}
+        for model in data.get("models", []):
+            model_tests = {}
+            for col in model.get("columns", []):
+                model_tests[col["name"]] = col.get("tests", [])
+            tests_lookup[model["name"]] = model_tests
+
+        missing = []
+        for cls, prop in expected_not_null:
+            col_name = _to_snake_case(prop)
+            model_name = _to_snake_case(cls)
+            model_tests = tests_lookup.get(model_name, {})
+            col_tests = model_tests.get(col_name, [])
+            # Tests can be strings or dicts
+            test_names = [t if isinstance(t, str) else list(t.keys())[0] for t in col_tests]
+            if "not_null" not in test_names:
+                missing.append(f"{cls}.{prop} ({model_name}.{col_name})")
+
+        assert not missing, (
+            f"SHACL sh:minCount 1 not reflected as not_null in dbt tests:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+        )
+
+    def test_client_unique_from_min_max_count_1(self, projected_hub):
+        """sh:minCount 1 + sh:maxCount 1 → unique test on column."""
+        constraints = _parse_shacl_constraints(SHAPES_DIR / "client-shapes.ttl")
+        models_yml = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "client" / "_client__models.yml"
+        )
+        data = yaml.safe_load(models_yml.read_text(encoding="utf-8"))
+
+        expected_unique = [
+            (cls, prop)
+            for (cls, prop), c in constraints.items()
+            if c["min_count"] == 1 and c["max_count"] == 1
+        ]
+        assert expected_unique, "No minCount+maxCount=1 constraints found"
+
+        tests_lookup = {}
+        for model in data.get("models", []):
+            model_tests = {}
+            for col in model.get("columns", []):
+                model_tests[col["name"]] = col.get("tests", [])
+            tests_lookup[model["name"]] = model_tests
+
+        missing = []
+        for cls, prop in expected_unique:
+            col_name = _to_snake_case(prop)
+            model_name = _to_snake_case(cls)
+            model_tests = tests_lookup.get(model_name, {})
+            col_tests = model_tests.get(col_name, [])
+            test_names = [t if isinstance(t, str) else list(t.keys())[0] for t in col_tests]
+            if "unique" not in test_names:
+                missing.append(f"{cls}.{prop} ({model_name}.{col_name})")
+
+        assert not missing, (
+            f"SHACL sh:minCount+maxCount=1 not reflected as unique in dbt:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+        )
+
+    def test_client_regex_from_pattern(self, projected_hub):
+        """sh:pattern → dbt_expectations regex test."""
+        constraints = _parse_shacl_constraints(SHAPES_DIR / "client-shapes.ttl")
+        models_yml = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "client" / "_client__models.yml"
+        )
+        data = yaml.safe_load(models_yml.read_text(encoding="utf-8"))
+
+        expected_patterns = [
+            (cls, prop, c["pattern"])
+            for (cls, prop), c in constraints.items()
+            if c["pattern"]
+        ]
+        assert expected_patterns, "No sh:pattern constraints found"
+
+        tests_lookup = {}
+        for model in data.get("models", []):
+            model_tests = {}
+            for col in model.get("columns", []):
+                model_tests[col["name"]] = col.get("tests", [])
+            tests_lookup[model["name"]] = model_tests
+
+        missing = []
+        for cls, prop, pattern in expected_patterns:
+            col_name = _to_snake_case(prop)
+            model_name = _to_snake_case(cls)
+            model_tests = tests_lookup.get(model_name, {})
+            col_tests = model_tests.get(col_name, [])
+            # Look for regex test (can be dict with nested structure)
+            has_regex = any(
+                "expect_column_values_to_match_regex" in str(t)
+                for t in col_tests
+            )
+            if not has_regex:
+                missing.append(f"{cls}.{prop} pattern='{pattern}'")
+
+        assert not missing, (
+            f"SHACL sh:pattern not reflected as regex test in dbt:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+        )
+
+    def test_invoice_min_inclusive_from_shacl(self, projected_hub):
+        """sh:minInclusive → dbt_expectations between test."""
+        constraints = _parse_shacl_constraints(SHAPES_DIR / "invoice-shapes.ttl")
+        models_yml = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "invoice" / "_invoice__models.yml"
+        )
+        data = yaml.safe_load(models_yml.read_text(encoding="utf-8"))
+
+        expected_min = [
+            (cls, prop, c["min_inclusive"])
+            for (cls, prop), c in constraints.items()
+            if c["min_inclusive"] is not None
+        ]
+        assert expected_min, "No sh:minInclusive constraints found"
+
+        tests_lookup = {}
+        for model in data.get("models", []):
+            model_tests = {}
+            for col in model.get("columns", []):
+                model_tests[col["name"]] = col.get("tests", [])
+            tests_lookup[model["name"]] = model_tests
+
+        missing = []
+        for cls, prop, min_val in expected_min:
+            col_name = _to_snake_case(prop)
+            model_name = _to_snake_case(cls)
+            model_tests = tests_lookup.get(model_name, {})
+            col_tests = model_tests.get(col_name, [])
+            has_between = any(
+                "expect_column_values_to_be_between" in str(t)
+                for t in col_tests
+            )
+            if not has_between:
+                missing.append(f"{cls}.{prop} minInclusive={min_val}")
+
+        assert not missing, (
+            f"SHACL sh:minInclusive not reflected as between test in dbt:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+        )
+
+    def test_invoice_not_null_constraints(self, projected_hub):
+        """Invoice SHACL sh:minCount 1 → not_null in _models.yml."""
+        constraints = _parse_shacl_constraints(SHAPES_DIR / "invoice-shapes.ttl")
+        models_yml = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "invoice" / "_invoice__models.yml"
+        )
+        data = yaml.safe_load(models_yml.read_text(encoding="utf-8"))
+
+        expected_not_null = [
+            (cls, prop)
+            for (cls, prop), c in constraints.items()
+            if c["min_count"] and c["min_count"] > 0
+        ]
+
+        tests_lookup = {}
+        for model in data.get("models", []):
+            model_tests = {}
+            for col in model.get("columns", []):
+                model_tests[col["name"]] = col.get("tests", [])
+            tests_lookup[model["name"]] = model_tests
+
+        missing = []
+        for cls, prop in expected_not_null:
+            col_name = _to_snake_case(prop)
+            model_name = _to_snake_case(cls)
+            model_tests = tests_lookup.get(model_name, {})
+            col_tests = model_tests.get(col_name, [])
+            test_names = [t if isinstance(t, str) else list(t.keys())[0] for t in col_tests]
+            if "not_null" not in test_names:
+                missing.append(f"{cls}.{prop} ({model_name}.{col_name})")
+
+        assert not missing, (
+            f"Invoice SHACL sh:minCount 1 not reflected as not_null:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
