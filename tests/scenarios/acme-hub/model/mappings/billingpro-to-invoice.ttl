@@ -56,7 +56,7 @@ bronze-bp:tblInvoiceLine_InvoiceID skos:exactMatch acme-inv:belongsToInvoice ;
     rdfs:comment "FK to invoice.invoice_number — resolved as intra-domain SK join." .
 
 # Derived column using sourceColumns (multi-source column mapping)
-bronze-bp:tblInvoiceLine_LineID skos:closeMatch acme-inv:lineTotal ;
+bronze-bp:tblInvoiceLine_DerivedLineTotal skos:closeMatch acme-inv:lineTotal ;
     kairos-map:sourceColumns "Quantity UnitPrice" ;
     kairos-map:transform "source.Quantity * source.UnitPrice" .
 
