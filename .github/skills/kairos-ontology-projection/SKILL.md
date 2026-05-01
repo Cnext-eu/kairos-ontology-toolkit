@@ -50,8 +50,87 @@ python -m kairos_ontology project --target prompt
 # Generate silver layer (requires *-silver-ext.ttl in model/extensions/)
 python -m kairos_ontology project --target silver
 
-# Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver, powerbi
+# Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver, powerbi, report
 ```
+
+## Medallion pipeline
+
+The **medallion targets** (`silver`, `dbt`, `powerbi`) together produce a complete
+data platform from ontology → warehouse → BI layer.  They all write to
+`output/medallion/` and share annotations from `model/extensions/`.
+
+### What each medallion target generates
+
+| Target | What it does | Key inputs | Key outputs |
+|--------|-------------|------------|-------------|
+| **silver** | Generates the **physical schema** for the silver warehouse layer | `*-silver-ext.ttl` | DDL (`CREATE TABLE`), FK/UNIQUE constraints (`ALTER TABLE`), Mermaid ERD + SVG |
+| **dbt** | Generates a **dbt Core project** with transformation models that populate the silver schema from bronze sources | `*-silver-ext.ttl` + bronze vocabularies + SKOS mappings | SQL models, `schema.yml` with tests, `dbt_project.yml`, macros |
+| **powerbi** | Generates the **gold layer** star schema + Power BI semantic model | `*-gold-ext.ttl` | Gold DDL, TMDL semantic model, DAX measures, star-schema ERD |
+
+### How they relate (execution order)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Ontology (.ttl)  +  Extensions  +  Sources/Mappings                │
+└────────────┬────────────────┬────────────────┬──────────────────────┘
+             │                │                │
+             ▼                ▼                ▼
+      ┌─────────────┐  ┌──────────┐  ┌──────────────┐
+      │   silver    │  │   dbt    │  │   powerbi    │
+      │  (schema)   │  │ (models) │  │ (star schema)│
+      └──────┬──────┘  └────┬─────┘  └──────┬───────┘
+             │               │               │
+             ▼               ▼               ▼
+      DDL + ALTER      dbt project      TMDL + DAX
+      + ERD            (silver SQL)     + gold DDL + ERD
+```
+
+### Running the full medallion pipeline
+
+There is no `--target medallion` shorthand — run `--target all` (default) or
+run the three targets individually:
+
+```bash
+# All three medallion targets (plus neo4j, prompt, etc.)
+python -m kairos_ontology project
+
+# Just the medallion pipeline (run separately)
+python -m kairos_ontology project --target silver
+python -m kairos_ontology project --target dbt
+python -m kairos_ontology project --target powerbi
+```
+
+### Prerequisites for each medallion target
+
+| Target | Required files | Skill for guidance |
+|--------|---------------|-------------------|
+| **silver** | `model/extensions/<domain>-silver-ext.ttl` with `kairos-ext:` annotations (naturalKey, silverSchema, scdType, etc.) | `kairos-ontology-medallion-silver` |
+| **dbt** | All silver prerequisites PLUS `integration/sources/<system>/*.vocabulary.ttl` (bronze) AND `model/mappings/<system>-to-<domain>.ttl` (SKOS mappings) | `kairos-ontology-medallion-silver` |
+| **powerbi** | `model/extensions/<domain>-gold-ext.ttl` with gold annotations (goldTableType, goldSchema, measureExpression, etc.) | `kairos-ontology-medallion-gold` |
+
+### What gets generated in detail
+
+**Silver target** — physical schema definition:
+- `CREATE TABLE` with typed columns, SK, IRI, audit envelope columns
+- `ALTER TABLE` for UNIQUE constraints (from SHACL) and FK relationships
+- Mermaid ERD showing entity relationships
+- Master ERD combining all domains
+
+**dbt target** — transformation logic:
+- One `.sql` model per entity per source system (e.g., `silver_client__crmsystem.sql`)
+- `schema.yml` with column descriptions + SHACL-derived dbt tests (not_null, unique, regex)
+- `dbt_project.yml` with materialisation config
+- Macros for surrogate key generation (`generate_sk.sql`)
+- Handles split patterns (one source → multiple entity subtypes)
+- Handles merge patterns (multiple sources → one entity)
+- Cross-domain FK joins via surrogate keys
+
+**Power BI target** — analytical layer:
+- Star-schema DDL (dimension + fact + bridge tables)
+- TMDL semantic model (`.tmdl` files for Power BI Desktop / Fabric)
+- DAX measures from `measureExpression` annotations
+- Hierarchies, perspectives, calculation groups
+- Gold-layer Mermaid ERD
 
 ## Output structure
 
