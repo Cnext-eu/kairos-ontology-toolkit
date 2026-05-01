@@ -17,11 +17,22 @@ mapping best practices.
 
 1. Identify the hub root (look for `model/ontologies/`, `model/extensions/`,
    `model/mappings/`).
-2. Run the CLI syntax check first:
+2. **Ask the user which review mode** they want:
+
+   | Mode | What it covers | When to use |
+   |------|---------------|-------------|
+   | **Quick** (default) | Level 1 (syntax) + Level 2 (SHACL) | Fast check after small edits |
+   | **Detailed** | All 4 levels including modeling + extensions/mappings | Before PR, after major changes, or first-time review |
+
+3. Run the CLI syntax check first:
    ```bash
    python -m kairos_ontology validate
    ```
-3. Then perform the 4-level review below on each domain.
+   **Important**: Capture the full CLI output — it includes GDPR/PII scan
+   results that feed into the Level 4 report.
+
+4. For **Quick** mode: report Level 1 + 2 results and stop.
+   For **Detailed** mode: continue through all 4 levels below.
 
 ---
 
@@ -90,9 +101,15 @@ sh:property [
 
 ## Level 3 — Modeling best practices
 
-Review every domain ontology `.ttl` file against the Kairos modeling
-conventions.  These are design rules — they won't cause parse errors but
-will lead to poor projection output or downstream issues.
+> **Reference**: The full modeling rule set is defined in the
+> **kairos-ontology-modeling** skill.  Invoke that skill for detailed
+> guidance on class design, property design, naming conventions, and
+> common patterns.  This level provides a **summary checklist** — do
+> NOT duplicate the modeling skill's full content here.
+
+Review every domain ontology `.ttl` file against this checklist.  These
+are design rules — they won't cause parse errors but will lead to poor
+projection output or downstream issues.
 
 ### Ontology declaration
 
@@ -125,6 +142,14 @@ will lead to poor projection output or downstream issues.
 | `owl:ObjectProperty` range is `owl:Class` | 🐛 Range must be a declared class for FK generation |
 | No orphan properties (domain class not declared) | 🐛 Property domain references a non-existent class |
 
+### Property type correctness
+
+| Check | Rule |
+|-------|------|
+| ObjectProperty not declared as DatatypeProperty | 🐛 A property with `rdfs:range` pointing to an `owl:Class` MUST be `owl:ObjectProperty`, not `owl:DatatypeProperty` — mistyped properties generate wrong SQL types and missing FK joins |
+| DatatypeProperty not declared as ObjectProperty | 🐛 A property with `rdfs:range` of `xsd:*` MUST be `owl:DatatypeProperty` — mistyped properties generate spurious FK lookups |
+| Single-valued object properties have `owl:FunctionalProperty` | 💡 Without `owl:FunctionalProperty`, the projector may not generate FK columns — add it for 1:1 and N:1 relationships (e.g., `service:belongsToCategory`) |
+
 ### Naming conventions
 
 | Check | Rule |
@@ -132,6 +157,13 @@ will lead to poor projection output or downstream issues.
 | Classes use PascalCase | `Customer` ✅, `customer` ❌, `CUSTOMER` ❌ |
 | Properties use camelCase | `customerName` ✅, `CustomerName` ❌, `customer_name` ❌ |
 | No underscores in local names | OWL uses camelCase; snake_case is for SQL output |
+
+### Controlled vocabulary consistency
+
+| Check | Rule |
+|-------|------|
+| Enum classes use consistent modelling pattern | 💡 Pick ONE pattern and use it everywhere: either named individuals (`owl:NamedIndividual` members of a class) OR `kairos-ext:isReferenceData "true"` with a discriminator. Mixing patterns (some enums as individuals, others as string columns) causes inconsistent projection output |
+| Reference data classes have `isReferenceData` annotation | 💡 If a class represents a controlled vocabulary/code list, annotate it in the silver extension |
 
 ### Cross-domain references
 
@@ -228,12 +260,56 @@ This is where most "it generated wrong output" bugs originate.
 | Bronze vocabulary exists for referenced source | `integration/sources/<system>/<system>.vocabulary.ttl` | 🐛 Missing bronze = column lookups fail |
 | Mapped column URIs match bronze vocabulary | Column URIs in mapping must exist in bronze `.ttl` | 🐛 Typo in URI = silently unmapped |
 
+### Target-URI cross-validation (critical)
+
+This is the **highest-impact check** — missing target property URIs cause broken
+dbt models that compile but produce wrong output.
+
+| Check | What to verify | Severity |
+|-------|---------------|----------|
+| Target property URIs exist in domain ontology | Every `skos:exactMatch` target (the object of the mapping triple) must resolve to an existing `owl:DatatypeProperty` or `owl:ObjectProperty` in the domain ontology graph | 🐛 Non-existent target = column silently missing from generated SQL |
+| Target class URIs exist in domain ontology | Every `skos:narrowMatch` / `skos:exactMatch` table-level target must resolve to an existing `owl:Class` | 🐛 Non-existent class = entire model generation fails silently |
+| Target URIs use correct namespace | Target URIs must use the domain's namespace (e.g., `client:clientName`), not a typo'd or wrong namespace | 🐛 Wrong namespace = property treated as non-existent |
+
+**How to check**: For each mapping file, load both the mapping graph and the
+domain ontology graph. For every `skos:exactMatch` / `skos:narrowMatch` object URI,
+verify it exists as a subject in the ontology with the expected `rdf:type`.
+
+### Cross-domain analysis
+
+These checks require analysing **all domains together**, not independently.
+
+| Check | What to verify | Severity |
+|-------|---------------|----------|
+| Property name collisions across namespaces | If two domains define properties with the same local name (e.g., `client:status` and `invoice:status`), flag for review — may cause confusion in downstream SQL where snake_case names collide | 💡 Not always a bug, but worth flagging for explicit acknowledgement |
+| Cross-domain FK targets are importable | If an `owl:ObjectProperty` range points to a class in another domain, that domain's ontology must be importable (present in `_master.ttl` or `owl:imports`) | 🐛 Broken cross-domain FK = NULL placeholder in dbt model |
+| Cross-domain `skos:exactMatch` targets resolve | If a mapping targets a property in a different domain namespace, that property must exist in the other domain's ontology | 🐛 Same as target-URI issue but across domain boundaries |
+
+### CLI output incorporation
+
+Incorporate results from the `python -m kairos_ontology validate` CLI output
+that was run in the "Before you start" step.
+
+| Check | What to incorporate | Severity |
+|-------|--------------------|----------|
+| GDPR/PII warnings | If the CLI reports unprotected PII properties (names, emails, addresses, phone numbers), list them with count | 💡 Flag properties that should have `gdprSatelliteOf` protection or `olsRestricted` annotation |
+| Projection warnings | If the CLI emits projection warnings (missing NK, unsupported FK, etc.), include them in the report | 🐛 Projection warnings indicate generation issues |
+
+### Hub documentation completeness
+
+| Check | What to verify | Severity |
+|-------|---------------|----------|
+| Hub README exists and has content | `README.md` at hub root should not be empty | 💡 Empty README = no project documentation |
+| Domain model overview table populated | README should have a table listing all domains with name, description, and status | 💡 Empty table = discoverability problem |
+| Every ontology file has a README row | Each `.ttl` in `model/ontologies/` (except `_master.ttl`) should appear in the domain table | 💡 Missing rows = undocumented domains |
+| Section headings are consistent | TTL files with section-separator comments should use consistent patterns (e.g., `# --- Classes ---`) | 💡 Cosmetic but aids readability |
+
 ---
 
 ## Output format
 
-After completing all 4 levels, produce a **structured review report** for each
-domain.  Group findings by severity:
+After completing the applicable levels, produce a **structured review report**
+for each domain.  Group findings by severity:
 
 ```
 ## Validation Report: <domain>
@@ -244,22 +320,26 @@ domain.  Group findings by severity:
 - Silver extension correctly references ontology URI
 - 3 mapping files found for 3 source systems
 - All split patterns have distinct filterCondition values
+- All mapping target URIs resolve to existing properties
 
 ### 🐛 Issues (N findings) — must fix before projection
 1. **Property `orderDate` missing `rdfs:range`** — projector cannot determine SQL type
    → Add `rdfs:range xsd:date`
 2. **`IndividualClient` missing `conditionalOnType`** — split pattern will include all rows
    → Add `kairos-ext:conditionalOnType "2"`
-3. **Mapping `erp-to-order.ttl` references bronze column `tblOrder_Status` not in vocabulary**
-   → Check URI spelling in bronze vocabulary file
+3. **Mapping target `kyc:acceptedBy` does not exist** — property not declared in kyc.ttl
+   → Either add the property to kyc.ttl or fix the URI in the mapping
+4. **`belongsToCategory` is ObjectProperty but missing `owl:FunctionalProperty`**
+   → Add `a owl:FunctionalProperty` to generate FK column
 
 ### 💡 Suggestions (N findings) — recommended improvements
 1. **Class `AuditableEntity` has no `naturalKey`** — SK generation may produce duplicates
    → Add `kairos-ext:naturalKey "entityId"`
-2. **Gold extension missing `measureExpression` on `fact_order`** — no aggregatable measures
-   → Add DAX measure expressions for revenue, quantity
-3. **3 properties missing `rdfs:comment`** — schema YAML will have empty descriptions
-   → Add descriptive comments for downstream documentation
+2. **Property name collision**: `client:status` and `order:status` both become `status` in SQL
+   → Consider renaming to `clientStatus` / `orderStatus` for clarity
+3. **26 properties flagged as PII** by CLI scan — consider GDPR satellite protection
+   → Review `gdprSatelliteOf` and `olsRestricted` annotations
+4. **README domain table is empty** — add rows for each domain
 ```
 
 ### Summary table
@@ -271,9 +351,9 @@ End with a summary:
 |-------|--------|--------|-------------|
 | Syntax | ✅ | 0 | 0 |
 | SHACL | ✅ | 0 | 0 |
-| Modeling | ✅ | 1 | 3 |
-| Extensions & Mappings | ⚠️ | 2 | 2 |
-| **Total** | — | **3** | **5** |
+| Modeling | ✅ | 2 | 1 |
+| Extensions & Mappings | ⚠️ | 3 | 4 |
+| **Total** | — | **5** | **5** |
 ```
 
 ---
