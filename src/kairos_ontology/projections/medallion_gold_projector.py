@@ -325,6 +325,244 @@ def _generate_date_dimension(schema: str) -> GoldTableDef:
 
 
 # ---------------------------------------------------------------------------
+# Sub-functions for build_gold_tables
+# ---------------------------------------------------------------------------
+
+
+def _resolve_subtype_relationships(
+    graph: Graph,
+    domain_classes: list[dict],
+    class_uris: set[str],
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Resolve G5 subtype relationships among domain classes.
+
+    Returns:
+        (subtype_parents, folded_subtypes) where subtype_parents maps child URI
+        to parent URI, and folded_subtypes maps parent URI to list of child names.
+    """
+    subtype_parents: dict[str, str] = {}
+    folded_subtypes: dict[str, list[str]] = {}
+    for cls_info in domain_classes:
+        cls_uri = URIRef(cls_info["uri"])
+        gdpr_parent = graph.value(cls_uri, KAIROS_EXT.gdprSatelliteOf)
+        if gdpr_parent is not None:
+            continue
+        for parent in graph.objects(cls_uri, RDFS.subClassOf):
+            if isinstance(parent, URIRef) and str(parent) in class_uris:
+                subtype_parents[cls_info["uri"]] = str(parent)
+                existing = folded_subtypes.setdefault(str(parent), [])
+                if cls_info["name"] not in existing:
+                    existing.append(cls_info["name"])
+                break
+    return subtype_parents, folded_subtypes
+
+
+def _build_class_table(
+    merged: Graph,
+    cls_info: dict,
+    classifications: dict[str, str],
+    subtype_parents: dict[str, str],
+    disc_parents: set[str],
+    folded_subtypes: dict[str, list[str]],
+    schema_name: str,
+    shacl_graph: Optional[Graph],
+    class_uris: set[str],
+    naming_conv: str,
+    gold_table_name_fn,
+    base_table_name_fn,
+) -> Optional[GoldTableDef]:
+    """Build a single GoldTableDef for one OWL class, or None if skipped."""
+    cls_uri = URIRef(cls_info["uri"])
+    local = cls_info["name"]
+    uri_str = cls_info["uri"]
+
+    # G5: skip subtypes only when parent uses discriminator strategy
+    if uri_str in subtype_parents:
+        parent_uri = subtype_parents[uri_str]
+        if parent_uri in disc_parents:
+            return None  # will be merged in post-pass
+
+    table_type = classifications.get(uri_str, "dimension")
+    is_subtype_cpt = uri_str in subtype_parents and \
+        subtype_parents[uri_str] not in disc_parents
+    tbl_name = gold_table_name_fn(cls_uri, local, table_type)
+
+    tbl = GoldTableDef(tbl_name, schema_name, table_type)
+    tbl.explicit_fact = (
+        _str_val(merged, cls_uri, KAIROS_EXT.goldTableType) == "fact"
+    )
+    tbl.source_class_uri = uri_str
+    tbl.source_class_label = cls_info.get("label", local)
+    is_ref = _bool_val(merged, cls_uri, KAIROS_EXT.isReferenceData, False)
+    gdpr_parent = merged.value(cls_uri, KAIROS_EXT.gdprSatelliteOf)
+    is_gdpr = gdpr_parent is not None
+    scd = _str_val(merged, cls_uri, KAIROS_EXT.scdType,
+                    "1" if is_ref else "2")
+    tbl.scd_type = scd
+    tbl.is_gdpr = is_gdpr
+    tbl.partition_by = (
+        _str_val(merged, cls_uri, KAIROS_EXT.partitionBy) or None
+    ) if table_type == "fact" else None
+    tbl.incremental_column = (
+        _str_val(merged, cls_uri, KAIROS_EXT.incrementalColumn) or None
+    )
+
+    _add_pk_column(
+        merged, tbl, cls_uri, local, uri_str, is_subtype_cpt, is_gdpr,
+        gdpr_parent, subtype_parents, classifications, schema_name,
+        gold_table_name_fn, base_table_name_fn)
+
+    _add_gold_fk_columns(
+        merged, cls_uri, tbl, class_uris, classifications,
+        schema_name, gold_table_name_fn, base_table_name_fn, naming_conv)
+
+    # Discriminator column: only for parents using discriminator strategy
+    disc_col = _str_val(merged, cls_uri, KAIROS_EXT.discriminatorColumn)
+    if not disc_col and uri_str in folded_subtypes and uri_str in disc_parents:
+        base = base_table_name_fn(cls_uri, local)
+        disc_col = f"{base}_type"
+    if disc_col:
+        tbl.columns.append(GoldColumnDef(
+            disc_col, "VARCHAR(64)", "String", nullable=False,
+            comment="Type discriminator (G5)"))
+
+    _add_gold_data_properties(
+        merged, cls_uri, tbl, shacl_graph, naming_conv)
+
+    if table_type == "dimension" and scd == "2" and not is_ref:
+        tbl.columns.append(GoldColumnDef(
+            "valid_from", "DATE", "DateTime", nullable=False))
+        tbl.columns.append(GoldColumnDef(
+            "valid_to", "DATE", "DateTime", nullable=True,
+            comment="NULL = current record"))
+        tbl.columns.append(GoldColumnDef(
+            "is_current", "BIT", "Boolean", nullable=False,
+            comment="1 = current record"))
+
+    tbl.hierarchies = _collect_hierarchies(merged, cls_uri)
+
+    # Perspectives: assign table to named perspective groups
+    perspective = _str_val(merged, cls_uri, KAIROS_EXT.perspective)
+    if perspective:
+        for p in perspective.split():
+            tbl.perspectives.add(p)
+
+    return tbl
+
+
+def _add_pk_column(
+    merged: Graph,
+    tbl: GoldTableDef,
+    cls_uri: URIRef,
+    local: str,
+    uri_str: str,
+    is_subtype_cpt: bool,
+    is_gdpr: bool,
+    gdpr_parent,
+    subtype_parents: dict[str, str],
+    classifications: dict[str, str],
+    schema_name: str,
+    gold_table_name_fn,
+    base_table_name_fn,
+) -> None:
+    """Add PK/SK column to a gold table based on its inheritance role."""
+    if is_subtype_cpt:
+        # G5 class-per-table: PK = parent's SK, also FK to parent table
+        parent_uri_str = subtype_parents[uri_str]
+        parent_cls_uri = URIRef(parent_uri_str)
+        parent_local = _local_name(parent_uri_str)
+        parent_base = base_table_name_fn(parent_cls_uri, parent_local)
+        parent_type = classifications.get(parent_uri_str, "dimension")
+        parent_tbl_name = gold_table_name_fn(parent_cls_uri, parent_local,
+                                             parent_type)
+        sk_name = f"{parent_base}_sk"
+        tbl.columns.append(GoldColumnDef(
+            sk_name, "INT", "Int64", nullable=False,
+            comment=f"PK/FK → {parent_tbl_name} (G5 class-per-table)"))
+        tbl.pk_column = sk_name
+        tbl.fk_constraints.append(
+            (sk_name, f"{schema_name}.{parent_tbl_name}",
+             sk_name, "subclass_of"))
+        tbl.is_subtype_cpt = True
+        tbl.parent_class_uri = parent_uri_str
+    elif not is_gdpr:
+        base_name = base_table_name_fn(cls_uri, local)
+        sk_name = f"{base_name}_sk"
+        tbl.columns.append(GoldColumnDef(
+            sk_name, "INT", "Int64", nullable=False,
+            comment="Surrogate key (INT IDENTITY)"))
+        tbl.pk_column = sk_name
+    else:
+        parent_local = _local_name(str(gdpr_parent))
+        parent_base = base_table_name_fn(gdpr_parent, parent_local)
+        parent_type = classifications.get(str(gdpr_parent), "dimension")
+        parent_tbl_name = gold_table_name_fn(gdpr_parent, parent_local, parent_type)
+        sk_name = f"{parent_base}_sk"
+        tbl.columns.append(GoldColumnDef(
+            sk_name, "INT", "Int64", nullable=False,
+            comment=f"PK/FK → {parent_tbl_name} (GDPR satellite)"))
+        tbl.pk_column = sk_name
+        tbl.gdpr_parent_table = parent_tbl_name
+        tbl.fk_constraints.append(
+            (sk_name, f"{schema_name}.{parent_tbl_name}",
+             sk_name, "gdpr_satellite_of"))
+
+
+def _merge_discriminator_subtypes(
+    merged: Graph,
+    folded_subtypes: dict[str, list[str]],
+    disc_parents: set[str],
+    tables: dict[str, GoldTableDef],
+    domain_classes: list[dict],
+    shacl_graph: Optional[Graph],
+    naming_conv: str,
+    class_uris: set[str],
+    classifications: dict[str, str],
+    schema_name: str,
+    gold_table_name_fn,
+    base_table_name_fn,
+) -> None:
+    """G5 post-pass: merge subtype properties into parent table (discriminator only)."""
+    for parent_uri_str, subtype_names in folded_subtypes.items():
+        if parent_uri_str not in disc_parents:
+            continue
+        if parent_uri_str not in tables:
+            continue
+        parent_tbl = tables[parent_uri_str]
+        for cls_info in domain_classes:
+            if cls_info["name"] not in subtype_names:
+                continue
+            sub_uri = URIRef(cls_info["uri"])
+            _add_gold_data_properties(
+                merged, sub_uri, parent_tbl, shacl_graph, naming_conv,
+                comment_prefix=f"from {cls_info['name']}")
+            _add_gold_fk_columns(
+                merged, sub_uri, parent_tbl, class_uris, classifications,
+                schema_name, gold_table_name_fn, base_table_name_fn, naming_conv,
+                comment_prefix=f"from {cls_info['name']}")
+
+
+def _assemble_ordered_tables(
+    tables: dict[str, GoldTableDef],
+    bridge_tables: list[GoldTableDef],
+    schema_name: str,
+    gen_date_dim: bool,
+) -> list[GoldTableDef]:
+    """Assemble final ordered list: date dim → dimensions → facts → bridges."""
+    all_tables: list[GoldTableDef] = []
+    if gen_date_dim:
+        all_tables.append(_generate_date_dimension(schema_name))
+    dims = [t for t in tables.values() if t.table_type == "dimension"]
+    facts = [t for t in tables.values() if t.table_type == "fact"]
+    bridges = [t for t in tables.values() if t.table_type == "bridge"]
+    all_tables.extend(sorted(dims, key=lambda t: t.name))
+    all_tables.extend(sorted(facts, key=lambda t: t.name))
+    all_tables.extend(sorted(bridges, key=lambda t: t.name))
+    all_tables.extend(bridge_tables)
+    return all_tables
+
+
+# ---------------------------------------------------------------------------
 # Public helper: build gold table definitions (reused by dbt projector)
 # ---------------------------------------------------------------------------
 
@@ -395,20 +633,8 @@ def build_gold_tables(
     classifications = _classify_tables(merged, domain_classes, class_uris)
 
     # Track subtype relationships for G5 inheritance handling
-    subtype_parents: dict[str, str] = {}
-    folded_subtypes: dict[str, list[str]] = {}
-    for cls_info in domain_classes:
-        cls_uri = URIRef(cls_info["uri"])
-        gdpr_parent = merged.value(cls_uri, KAIROS_EXT.gdprSatelliteOf)
-        if gdpr_parent is not None:
-            continue
-        for parent in merged.objects(cls_uri, RDFS.subClassOf):
-            if isinstance(parent, URIRef) and str(parent) in class_uris:
-                subtype_parents[cls_info["uri"]] = str(parent)
-                existing = folded_subtypes.setdefault(str(parent), [])
-                if cls_info["name"] not in existing:
-                    existing.append(cls_info["name"])
-                break
+    subtype_parents, folded_subtypes = _resolve_subtype_relationships(
+        merged, domain_classes, class_uris)
 
     def _class_inheritance(cls_uri: URIRef) -> str:
         """Return inheritance strategy for a class (per-class override or default)."""
@@ -434,172 +660,37 @@ def build_gold_tables(
             _camel_to_snake(local) if naming_conv == "camel-to-snake" else local.lower()
         )
 
-    # Build tables
-    tables: dict[str, GoldTableDef] = {}
-
     # Determine which subtypes use discriminator (fold) vs class-per-table (separate)
-    disc_parents: set[str] = set()  # parents using discriminator strategy
-    for parent_uri_str, subtype_names in folded_subtypes.items():
+    disc_parents: set[str] = set()
+    for parent_uri_str in folded_subtypes:
         parent_strategy = _class_inheritance(URIRef(parent_uri_str))
         if parent_strategy == "discriminator":
             disc_parents.add(parent_uri_str)
 
+    # Build tables
+    tables: dict[str, GoldTableDef] = {}
     for cls_info in domain_classes:
-        cls_uri = URIRef(cls_info["uri"])
-        local = cls_info["name"]
-        uri_str = cls_info["uri"]
-
-        # G5: skip subtypes only when parent uses discriminator strategy
-        if uri_str in subtype_parents:
-            parent_uri = subtype_parents[uri_str]
-            if parent_uri in disc_parents:
-                continue  # will be merged in post-pass
-
-        table_type = classifications.get(uri_str, "dimension")
-        is_subtype_cpt = uri_str in subtype_parents and \
-            subtype_parents[uri_str] not in disc_parents
-        tbl_name = gold_table_name(cls_uri, local, table_type)
-
-        tbl = GoldTableDef(tbl_name, schema_name, table_type)
-        tbl.explicit_fact = (
-            _str_val(merged, cls_uri, KAIROS_EXT.goldTableType) == "fact"
-        )
-        tbl.source_class_uri = uri_str
-        tbl.source_class_label = cls_info.get("label", local)
-        is_ref = _bool_val(merged, cls_uri, KAIROS_EXT.isReferenceData, False)
-        gdpr_parent = merged.value(cls_uri, KAIROS_EXT.gdprSatelliteOf)
-        is_gdpr = gdpr_parent is not None
-        scd = _str_val(merged, cls_uri, KAIROS_EXT.scdType,
-                        "1" if is_ref else "2")
-        tbl.scd_type = scd
-        tbl.is_gdpr = is_gdpr
-        tbl.partition_by = (
-            _str_val(merged, cls_uri, KAIROS_EXT.partitionBy) or None
-        ) if table_type == "fact" else None
-        tbl.incremental_column = (
-            _str_val(merged, cls_uri, KAIROS_EXT.incrementalColumn) or None
-        )
-
-        if is_subtype_cpt:
-            # G5 class-per-table: PK = parent's SK, also FK to parent table
-            parent_uri_str = subtype_parents[uri_str]
-            parent_cls_uri = URIRef(parent_uri_str)
-            parent_local = _local_name(parent_uri_str)
-            parent_base = base_table_name(parent_cls_uri, parent_local)
-            parent_type = classifications.get(parent_uri_str, "dimension")
-            parent_tbl_name = gold_table_name(parent_cls_uri, parent_local,
-                                              parent_type)
-            sk_name = f"{parent_base}_sk"
-            tbl.columns.append(GoldColumnDef(
-                sk_name, "INT", "Int64", nullable=False,
-                comment=f"PK/FK → {parent_tbl_name} (G5 class-per-table)"))
-            tbl.pk_column = sk_name
-            tbl.fk_constraints.append(
-                (sk_name, f"{schema_name}.{parent_tbl_name}",
-                 sk_name, "subclass_of"))
-            tbl.is_subtype_cpt = True
-            tbl.parent_class_uri = parent_uri_str
-        elif not is_gdpr:
-            base_name = base_table_name(cls_uri, local)
-            sk_name = f"{base_name}_sk"
-            tbl.columns.append(GoldColumnDef(
-                sk_name, "INT", "Int64", nullable=False,
-                comment="Surrogate key (INT IDENTITY)"))
-            tbl.pk_column = sk_name
-        else:
-            parent_local = _local_name(str(gdpr_parent))
-            parent_base = base_table_name(gdpr_parent, parent_local)
-            parent_type = classifications.get(str(gdpr_parent), "dimension")
-            parent_tbl_name = gold_table_name(gdpr_parent, parent_local, parent_type)
-            sk_name = f"{parent_base}_sk"
-            tbl.columns.append(GoldColumnDef(
-                sk_name, "INT", "Int64", nullable=False,
-                comment=f"PK/FK → {parent_tbl_name} (GDPR satellite)"))
-            tbl.pk_column = sk_name
-            tbl.gdpr_parent_table = parent_tbl_name
-            tbl.fk_constraints.append(
-                (sk_name, f"{schema_name}.{parent_tbl_name}",
-                 sk_name, "gdpr_satellite_of"))
-
-        _add_gold_fk_columns(
-            merged, cls_uri, tbl, class_uris, classifications,
-            schema_name, gold_table_name, base_table_name, naming_conv)
-
-        # Discriminator column: only for parents using discriminator strategy
-        disc_col = _str_val(merged, cls_uri, KAIROS_EXT.discriminatorColumn)
-        if not disc_col and uri_str in folded_subtypes and uri_str in disc_parents:
-            base = base_table_name(cls_uri, local)
-            disc_col = f"{base}_type"
-        if disc_col:
-            tbl.columns.append(GoldColumnDef(
-                disc_col, "VARCHAR(64)", "String", nullable=False,
-                comment="Type discriminator (G5)"))
-
-        _add_gold_data_properties(
-            merged, cls_uri, tbl, shacl_graph, naming_conv)
-
-        if table_type == "dimension" and scd == "2" and not is_ref:
-            tbl.columns.append(GoldColumnDef(
-                "valid_from", "DATE", "DateTime", nullable=False))
-            tbl.columns.append(GoldColumnDef(
-                "valid_to", "DATE", "DateTime", nullable=True,
-                comment="NULL = current record"))
-            tbl.columns.append(GoldColumnDef(
-                "is_current", "BIT", "Boolean", nullable=False,
-                comment="1 = current record"))
-
-        tbl.hierarchies = _collect_hierarchies(merged, cls_uri)
-
-        # Perspectives: assign table to named perspective groups
-        perspective = _str_val(merged, cls_uri, KAIROS_EXT.perspective)
-        if perspective:
-            for p in perspective.split():
-                tbl.perspectives.add(p)
-
-        tables[uri_str] = tbl
+        tbl = _build_class_table(
+            merged, cls_info, classifications, subtype_parents, disc_parents,
+            folded_subtypes, schema_name, shacl_graph, class_uris, naming_conv,
+            gold_table_name, base_table_name)
+        if tbl is not None:
+            tables[cls_info["uri"]] = tbl
 
     # G5 post-pass: merge subtype properties into parent (discriminator only)
-    for parent_uri_str, subtype_names in folded_subtypes.items():
-        if parent_uri_str not in disc_parents:
-            continue
-        if parent_uri_str not in tables:
-            continue
-        parent_tbl = tables[parent_uri_str]
-        for cls_info in domain_classes:
-            if cls_info["name"] not in subtype_names:
-                continue
-            sub_uri = URIRef(cls_info["uri"])
-            _add_gold_data_properties(
-                merged, sub_uri, parent_tbl, shacl_graph, naming_conv,
-                comment_prefix=f"from {cls_info['name']}")
-            _add_gold_fk_columns(
-                merged, sub_uri, parent_tbl, class_uris, classifications,
-                schema_name, gold_table_name, base_table_name, naming_conv,
-                comment_prefix=f"from {cls_info['name']}")
+    _merge_discriminator_subtypes(
+        merged, folded_subtypes, disc_parents, tables, domain_classes,
+        shacl_graph, naming_conv, class_uris, classifications, schema_name,
+        gold_table_name, base_table_name)
 
     # Bridge tables from many-to-many (R13)
     bridge_tables = _build_gold_bridge_tables(
         merged, class_uris, classifications, tables, schema_name,
         gold_table_name, base_table_name, naming_conv)
 
-    # Date dimension (G8)
-    date_dim: Optional[GoldTableDef] = None
-    if gen_date_dim:
-        date_dim = _generate_date_dimension(schema_name)
-
-    # Collect all tables in order
-    all_tables: list[GoldTableDef] = []
-    if date_dim:
-        all_tables.append(date_dim)
-    dims = [t for t in tables.values() if t.table_type == "dimension"]
-    facts = [t for t in tables.values() if t.table_type == "fact"]
-    bridges = [t for t in tables.values() if t.table_type == "bridge"]
-    all_tables.extend(sorted(dims, key=lambda t: t.name))
-    all_tables.extend(sorted(facts, key=lambda t: t.name))
-    all_tables.extend(sorted(bridges, key=lambda t: t.name))
-    all_tables.extend(bridge_tables)
-
-    return all_tables
+    # Date dimension (G8) + final ordering
+    return _assemble_ordered_tables(
+        tables, bridge_tables, schema_name, gen_date_dim)
 
 
 # ---------------------------------------------------------------------------
