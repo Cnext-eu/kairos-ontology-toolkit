@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "kairos-ontology-toolkit"
-version = "2.23.1"
+version = "2.24.0"
 description = "Validation and projection tools for OWL/Turtle ontologies in the Kairos platform"
 authors = ["Cnext <info@cnext.eu>"]
 license = "Apache-2.0"
@@ -41,12 +41,12 @@ optional = true
 
 [tool.poetry.group.service.dependencies]
 fastapi = ">=0.115.0,<1.0.0"
-uvicorn = {version = "2.17.0", extras = ["standard"]}
+uvicorn = {version = ">=0.29.0,<1.0.0", extras = ["standard"]}
 httpx = ">=0.27.0,<1.0.0"
 pydantic-settings = ">=2.0.0,<3.0.0"
 sse-starlette = ">=2.0.0,<3.0.0"
 openai = ">=1.0.0,<3.0.0"
-PyJWT = {version = "2.17.0", extras = ["crypto"]}
+PyJWT = {version = ">=2.8.0,<3.0.0", extras = ["crypto"]}
 
 [tool.poetry.scripts]
 kairos-ontology = "kairos_ontology.cli.main:cli"
@@ -61,7 +61,7 @@ target-version = ['py312']
 
 [tool.ruff]
 line-length = 100
-target-version = "2.17.0"
+target-version = "py312"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
