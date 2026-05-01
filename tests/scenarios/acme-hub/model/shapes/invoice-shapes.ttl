@@ -39,3 +39,17 @@ acme-inv:InvoiceLineShape a sh:NodeShape ;
         sh:minCount 1 ;
         sh:minInclusive 1 ;
     ] .
+
+acme-inv:InvoiceTagShape a sh:NodeShape ;
+    sh:targetClass acme-inv:InvoiceTag ;
+    sh:property [
+        sh:path acme-inv:tagCode ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path acme-inv:tagLabel ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+    ] .

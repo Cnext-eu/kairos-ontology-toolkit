@@ -58,6 +58,12 @@ bronze-bp:tblInvoice_Status a kairos-bronze:SourceColumn ;
     kairos-bronze:dataType "nvarchar(20)" ;
     kairos-bronze:nullable "true"^^xsd:boolean .
 
+bronze-bp:tblInvoice_Currency a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoice ;
+    kairos-bronze:columnName "Currency" ;
+    kairos-bronze:dataType "nvarchar(3)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
 bronze-bp:tblInvoice_LastModified a kairos-bronze:SourceColumn ;
     kairos-bronze:sourceTable bronze-bp:tblInvoice ;
     kairos-bronze:columnName "LastModified" ;
@@ -102,3 +108,30 @@ bronze-bp:tblInvoiceLine_UnitPrice a kairos-bronze:SourceColumn ;
     kairos-bronze:columnName "UnitPrice" ;
     kairos-bronze:dataType "decimal(18,2)" ;
     kairos-bronze:nullable "false"^^xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# tblInvoiceTag — bridge/junction for many-to-many
+# ---------------------------------------------------------------------------
+bronze-bp:tblInvoiceTag a kairos-bronze:SourceTable ;
+    rdfs:label "tblInvoiceTag" ;
+    kairos-bronze:sourceSystem bronze-bp:BillingPro ;
+    kairos-bronze:tableName "tblInvoiceTag" ;
+    kairos-bronze:primaryKeyColumns "TagID" .
+
+bronze-bp:tblInvoiceTag_TagID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceTag ;
+    kairos-bronze:columnName "TagID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblInvoiceTag_TagCode a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceTag ;
+    kairos-bronze:columnName "TagCode" ;
+    kairos-bronze:dataType "nvarchar(20)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblInvoiceTag_Label a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceTag ;
+    kairos-bronze:columnName "Label" ;
+    kairos-bronze:dataType "nvarchar(100)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .

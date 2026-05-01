@@ -27,6 +27,12 @@ acme-inv:InvoiceLine a owl:Class ;
     rdfs:comment "A single line item on an invoice." ;
     kairos-ext:naturalKey "lineId" .
 
+# Many-to-many bridge — exercises junctionTableName
+acme-inv:InvoiceTag a owl:Class ;
+    rdfs:label "Invoice Tag" ;
+    rdfs:comment "Tag/label applied to invoices (many-to-many bridge)." ;
+    kairos-ext:naturalKey "tagCode" .
+
 # ---------------------------------------------------------------------------
 # Datatype properties
 # ---------------------------------------------------------------------------
@@ -47,6 +53,12 @@ acme-inv:totalAmount a owl:DatatypeProperty ;
     rdfs:comment "Total invoice amount including tax." ;
     rdfs:domain acme-inv:Invoice ;
     rdfs:range xsd:decimal .
+
+acme-inv:currency a owl:DatatypeProperty ;
+    rdfs:label "currency" ;
+    rdfs:comment "ISO currency code (e.g. EUR, USD)." ;
+    rdfs:domain acme-inv:Invoice ;
+    rdfs:range xsd:string .
 
 acme-inv:lineId a owl:DatatypeProperty ;
     rdfs:label "line ID" ;
@@ -72,6 +84,27 @@ acme-inv:unitPrice a owl:DatatypeProperty ;
     rdfs:domain acme-inv:InvoiceLine ;
     rdfs:range xsd:decimal .
 
+# Derived property — exercises derivationFormula
+acme-inv:lineTotal a owl:DatatypeProperty ;
+    rdfs:label "line total" ;
+    rdfs:comment "Computed total for this line (quantity × unitPrice)." ;
+    rdfs:domain acme-inv:InvoiceLine ;
+    rdfs:range xsd:decimal ;
+    kairos-ext:derivationFormula "source.Quantity * source.UnitPrice" .
+
+# InvoiceTag properties
+acme-inv:tagCode a owl:DatatypeProperty ;
+    rdfs:label "tag code" ;
+    rdfs:comment "Short code for the tag." ;
+    rdfs:domain acme-inv:InvoiceTag ;
+    rdfs:range xsd:string .
+
+acme-inv:tagLabel a owl:DatatypeProperty ;
+    rdfs:label "tag label" ;
+    rdfs:comment "Human-readable label for the tag." ;
+    rdfs:domain acme-inv:InvoiceTag ;
+    rdfs:range xsd:string .
+
 # ---------------------------------------------------------------------------
 # Object properties — cross-domain FK
 # ---------------------------------------------------------------------------
@@ -86,3 +119,11 @@ acme-inv:belongsToInvoice a owl:ObjectProperty, owl:FunctionalProperty ;
     rdfs:comment "The invoice this line item belongs to." ;
     rdfs:domain acme-inv:InvoiceLine ;
     rdfs:range acme-inv:Invoice .
+
+# Many-to-many — exercises junctionTableName
+acme-inv:hasTag a owl:ObjectProperty ;
+    rdfs:label "has tag" ;
+    rdfs:comment "Tags applied to this invoice (many-to-many via junction table)." ;
+    rdfs:domain acme-inv:Invoice ;
+    rdfs:range acme-inv:InvoiceTag ;
+    kairos-ext:junctionTableName "invoice_tag_bridge" .

@@ -188,6 +188,80 @@ class TestColumnMappings:
 
 
 # ---------------------------------------------------------------------------
+# Reference data tests — ClientType isReferenceData
+# ---------------------------------------------------------------------------
+
+class TestReferenceData:
+    """Reference data classes (isReferenceData=true) should produce models."""
+
+    def test_client_type_model_generated(self, client_dbt_artifacts):
+        """ClientType with isReferenceData=true should still get a dbt model."""
+        sql_keys = [k for k in client_dbt_artifacts if k.endswith(".sql")]
+        model_names = {k.split("/")[-1].replace(".sql", "") for k in sql_keys}
+        assert "client_type" in model_names, (
+            "Missing client_type model for reference data class"
+        )
+
+    def test_invoice_tag_model_generated(self, invoice_dbt_artifacts):
+        """InvoiceTag with isReferenceData=true should produce a dbt model."""
+        sql_keys = [k for k in invoice_dbt_artifacts if k.endswith(".sql")]
+        model_names = {k.split("/")[-1].replace(".sql", "") for k in sql_keys}
+        assert "invoice_tag" in model_names, (
+            "Missing invoice_tag model for reference data class"
+        )
+
+
+# ---------------------------------------------------------------------------
+# GDPR satellite tests — ClientPII gdprSatelliteOf
+# ---------------------------------------------------------------------------
+
+class TestGDPRSatellite:
+    """ClientPII marked as gdprSatelliteOf=Client should produce a model."""
+
+    def test_client_pii_model_generated(self, client_dbt_artifacts):
+        """GDPR satellite should get its own dbt model."""
+        sql_keys = [k for k in client_dbt_artifacts if k.endswith(".sql")]
+        model_names = {k.split("/")[-1].replace(".sql", "") for k in sql_keys}
+        assert "client_pii" in model_names, (
+            "Missing client_pii model for GDPR satellite"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Derived formula tests — lineTotal derivationFormula
+# ---------------------------------------------------------------------------
+
+class TestDerivedFormula:
+    """Properties with derivationFormula should appear in generated SQL."""
+
+    def test_line_total_derived(self, invoice_dbt_artifacts):
+        """lineTotal = Quantity * UnitPrice should appear as expression."""
+        key = _find_artifact(invoice_dbt_artifacts, "invoice_line.sql")
+        sql = invoice_dbt_artifacts[key].lower()
+        assert "quantity" in sql and "unitprice" in sql, (
+            f"lineTotal derived expression missing from invoice_line SQL:\n{sql}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Junction table tests — hasTag junctionTableName
+# ---------------------------------------------------------------------------
+
+class TestJunctionTable:
+    """Many-to-many properties with junctionTableName should be handled."""
+
+    def test_has_tag_not_in_invoice_columns(self, invoice_dbt_artifacts):
+        """hasTag (M:N object property) should NOT appear as a column in invoice.sql."""
+        key = _find_artifact(invoice_dbt_artifacts, "invoice.sql")
+        if key is None:
+            pytest.skip("No invoice.sql generated")
+        sql = invoice_dbt_artifacts[key].lower()
+        assert "has_tag" not in sql, (
+            "Junction table property hasTag should not appear as a column in invoice.sql"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
 

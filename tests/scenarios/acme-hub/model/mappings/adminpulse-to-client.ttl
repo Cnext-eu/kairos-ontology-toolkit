@@ -52,3 +52,39 @@ bronze-ap:tblRelation skos:narrowMatch acme:Client ;
 # Column-level: tblRelation columns
 bronze-ap:tblRelation_ClientID skos:exactMatch acme:clientId ;
     kairos-map:transform "CAST(source.ClientID AS STRING)" .
+
+# ---------------------------------------------------------------------------
+# Column-level: new city/country columns
+# ---------------------------------------------------------------------------
+bronze-ap:tblClient_City skos:exactMatch acme:clientCity ;
+    kairos-map:transform "source.City" .
+
+bronze-ap:tblClient_Country skos:exactMatch acme:clientCountry ;
+    kairos-map:transform "source.Country" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblClientPII → ClientPII (GDPR satellite)
+# ---------------------------------------------------------------------------
+bronze-ap:tblClientPII skos:exactMatch acme:ClientPII ;
+    kairos-map:mappingType "direct" .
+
+bronze-ap:tblClientPII_ClientID skos:exactMatch acme:clientId ;
+    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+
+bronze-ap:tblClientPII_NationalID skos:exactMatch acme:nationalId ;
+    kairos-map:transform "UPPER(TRIM(source.NationalID))" .
+
+bronze-ap:tblClientPII_DateOfBirth skos:exactMatch acme:dateOfBirth ;
+    kairos-map:transform "CAST(source.DateOfBirth AS DATE)" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblClientType → ClientType (reference data)
+# ---------------------------------------------------------------------------
+bronze-ap:tblClientType skos:exactMatch acme:ClientType ;
+    kairos-map:mappingType "direct" .
+
+bronze-ap:tblClientType_TypeCode skos:exactMatch acme:typeCode ;
+    kairos-map:transform "source.TypeCode" .
+
+bronze-ap:tblClientType_Label skos:exactMatch acme:typeLabel ;
+    kairos-map:transform "source.Label" .

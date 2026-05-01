@@ -26,6 +26,10 @@ bronze-bp:tblInvoice_ClientRef skos:exactMatch acme-inv:issuedTo ;
     kairos-map:transform "source.ClientRef" ;
     rdfs:comment "FK to client.client_id — resolved as cross-domain SK join." .
 
+bronze-bp:tblInvoice_Currency skos:exactMatch acme-inv:currency ;
+    kairos-map:transform "source.Currency" ;
+    kairos-map:defaultValue "'EUR'" .
+
 # ---------------------------------------------------------------------------
 # Table-level: tblInvoiceLine → InvoiceLine (direct 1:1)
 # ---------------------------------------------------------------------------
@@ -50,3 +54,20 @@ bronze-bp:tblInvoiceLine_UnitPrice skos:exactMatch acme-inv:unitPrice ;
 bronze-bp:tblInvoiceLine_InvoiceID skos:exactMatch acme-inv:belongsToInvoice ;
     kairos-map:transform "source.InvoiceID" ;
     rdfs:comment "FK to invoice.invoice_number — resolved as intra-domain SK join." .
+
+# Derived column using sourceColumns (multi-source column mapping)
+bronze-bp:tblInvoiceLine_LineID skos:closeMatch acme-inv:lineTotal ;
+    kairos-map:sourceColumns "Quantity UnitPrice" ;
+    kairos-map:transform "source.Quantity * source.UnitPrice" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblInvoiceTag → InvoiceTag (reference/bridge)
+# ---------------------------------------------------------------------------
+bronze-bp:tblInvoiceTag skos:exactMatch acme-inv:InvoiceTag ;
+    kairos-map:mappingType "direct" .
+
+bronze-bp:tblInvoiceTag_TagCode skos:exactMatch acme-inv:tagCode ;
+    kairos-map:transform "source.TagCode" .
+
+bronze-bp:tblInvoiceTag_Label skos:exactMatch acme-inv:tagLabel ;
+    kairos-map:transform "source.Label" .

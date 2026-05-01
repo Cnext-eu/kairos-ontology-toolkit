@@ -9,15 +9,23 @@
 # Ontology-level
 <https://acme.example/ontology/invoice>
     kairos-ext:silverSchema "silver" ;
-    kairos-ext:auditEnvelope "true" .
+    kairos-ext:auditEnvelope "true" ;
+    kairos-ext:namingConvention "camel-to-snake" .
 
 # Class-level
 acme-inv:Invoice
     kairos-ext:silverTableName "invoice" ;
-    kairos-ext:scdType "1" .
+    kairos-ext:scdType "1" ;
+    kairos-ext:partitionBy "invoice_date" ;
+    kairos-ext:clusterBy "client_sk" .
 
 acme-inv:InvoiceLine
     kairos-ext:silverTableName "invoice_line" ;
+    kairos-ext:scdType "1" .
+
+acme-inv:InvoiceTag
+    kairos-ext:silverTableName "invoice_tag" ;
+    kairos-ext:isReferenceData "true" ;
     kairos-ext:scdType "1" .
 
 # Property-level
@@ -35,6 +43,10 @@ acme-inv:totalAmount
     kairos-ext:silverColumnName "total_amount" ;
     kairos-ext:silverDataType "DECIMAL(18,2)" ;
     kairos-ext:nullable "false" .
+
+acme-inv:currency
+    kairos-ext:silverColumnName "currency" ;
+    kairos-ext:silverDataType "STRING" .
 
 acme-inv:lineId
     kairos-ext:silverColumnName "line_id" ;
@@ -55,8 +67,22 @@ acme-inv:unitPrice
     kairos-ext:silverDataType "DECIMAL(18,2)" ;
     kairos-ext:nullable "false" .
 
+acme-inv:lineTotal
+    kairos-ext:silverColumnName "line_total" ;
+    kairos-ext:silverDataType "DECIMAL(18,2)" ;
+    kairos-ext:derivationFormula "source.Quantity * source.UnitPrice" .
+
 acme-inv:issuedTo
     kairos-ext:silverColumnName "client_sk" .
 
 acme-inv:belongsToInvoice
     kairos-ext:silverColumnName "invoice_sk" .
+
+acme-inv:tagCode
+    kairos-ext:silverColumnName "tag_code" ;
+    kairos-ext:silverDataType "STRING" ;
+    kairos-ext:nullable "false" .
+
+acme-inv:tagLabel
+    kairos-ext:silverColumnName "tag_label" ;
+    kairos-ext:silverDataType "STRING" .

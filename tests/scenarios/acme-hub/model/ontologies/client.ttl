@@ -39,6 +39,22 @@ acme:IndividualClient a owl:Class ;
     kairos-ext:naturalKey "clientId" .
 
 # ---------------------------------------------------------------------------
+# Reference data class — exercises isReferenceData, inlineRefThreshold
+# ---------------------------------------------------------------------------
+acme:ClientType a owl:Class ;
+    rdfs:label "Client Type" ;
+    rdfs:comment "Reference table of client type codes (corporate, sole-prop, individual)." ;
+    kairos-ext:naturalKey "typeCode" .
+
+# ---------------------------------------------------------------------------
+# GDPR satellite — exercises gdprSatelliteOf
+# ---------------------------------------------------------------------------
+acme:ClientPII a owl:Class ;
+    rdfs:label "Client PII" ;
+    rdfs:comment "GDPR-sensitive personal data satellite of Client." ;
+    kairos-ext:naturalKey "clientId" .
+
+# ---------------------------------------------------------------------------
 # Datatype properties
 # ---------------------------------------------------------------------------
 acme:clientId a owl:DatatypeProperty ;
@@ -76,3 +92,53 @@ acme:createdAt a owl:DatatypeProperty ;
     rdfs:comment "Timestamp when the client record was created." ;
     rdfs:domain acme:Client ;
     rdfs:range xsd:dateTime .
+
+# City/country — exercises hierarchyName/hierarchyLevel in gold
+acme:clientCity a owl:DatatypeProperty ;
+    rdfs:label "city" ;
+    rdfs:comment "City where the client is located." ;
+    rdfs:domain acme:Client ;
+    rdfs:range xsd:string .
+
+acme:clientCountry a owl:DatatypeProperty ;
+    rdfs:label "country" ;
+    rdfs:comment "Country where the client is located." ;
+    rdfs:domain acme:Client ;
+    rdfs:range xsd:string .
+
+# ClientType properties
+acme:typeCode a owl:DatatypeProperty ;
+    rdfs:label "type code" ;
+    rdfs:comment "Numeric code for the client type." ;
+    rdfs:domain acme:ClientType ;
+    rdfs:range xsd:integer .
+
+acme:typeLabel a owl:DatatypeProperty ;
+    rdfs:label "type label" ;
+    rdfs:comment "Human-readable label for the client type." ;
+    rdfs:domain acme:ClientType ;
+    rdfs:range xsd:string .
+
+# ClientPII properties
+acme:nationalId a owl:DatatypeProperty ;
+    rdfs:label "national ID" ;
+    rdfs:comment "Government-issued identification number (GDPR sensitive)." ;
+    rdfs:domain acme:ClientPII ;
+    rdfs:range xsd:string ;
+    kairos-ext:populationRequirement "conditional" ;
+    kairos-ext:derivationFormula "UPPER(TRIM(source.NationalID))" .
+
+acme:dateOfBirth a owl:DatatypeProperty ;
+    rdfs:label "date of birth" ;
+    rdfs:comment "Client date of birth (GDPR sensitive)." ;
+    rdfs:domain acme:ClientPII ;
+    rdfs:range xsd:date .
+
+# ---------------------------------------------------------------------------
+# Object properties
+# ---------------------------------------------------------------------------
+acme:hasType a owl:ObjectProperty, owl:FunctionalProperty ;
+    rdfs:label "has type" ;
+    rdfs:comment "The type classification of this client." ;
+    rdfs:domain acme:Client ;
+    rdfs:range acme:ClientType .
