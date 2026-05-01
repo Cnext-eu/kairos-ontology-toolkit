@@ -1,0 +1,25 @@
+@prefix acme-inv: <https://acme.example/ontology/invoice#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+# ---------------------------------------------------------------------------
+# Gold-layer annotations for Invoice domain
+# ---------------------------------------------------------------------------
+
+# Ontology-level
+<https://acme.example/ontology/invoice>
+    kairos-ext:goldSchema "gold" ;
+    kairos-ext:generateDateDimension "true" .
+
+# Class-level
+acme-inv:Invoice
+    kairos-ext:goldTableType "fact" ;
+    kairos-ext:goldTableName "fact_invoice" .
+
+acme-inv:InvoiceLine
+    kairos-ext:goldTableType "fact" ;
+    kairos-ext:goldTableName "fact_invoice_line" .
+
+# Measure
+acme-inv:totalAmount
+    kairos-ext:measureExpression "SUM([total_amount])" ;
+    kairos-ext:measureFormatString "#,##0.00" .

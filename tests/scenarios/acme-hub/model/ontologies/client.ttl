@@ -1,0 +1,78 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix acme: <https://acme.example/ontology/client#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+# ---------------------------------------------------------------------------
+# Ontology declaration
+# ---------------------------------------------------------------------------
+<https://acme.example/ontology/client> a owl:Ontology ;
+    rdfs:label "Acme Client Domain" ;
+    owl:versionInfo "1.0.0" ;
+    rdfs:comment "Synthetic client domain for scenario testing." .
+
+# ---------------------------------------------------------------------------
+# Classes — split pattern: 3 subtypes from a single source table
+# ---------------------------------------------------------------------------
+acme:Client a owl:Class ;
+    rdfs:label "Client" ;
+    rdfs:comment "Abstract base client entity." ;
+    kairos-ext:naturalKey "clientId" .
+
+acme:CorporateClient a owl:Class ;
+    rdfs:subClassOf acme:Client ;
+    rdfs:label "Corporate Client" ;
+    rdfs:comment "A corporate/legal-entity client (type=0)." ;
+    kairos-ext:naturalKey "clientId" .
+
+acme:SoleProprietorClient a owl:Class ;
+    rdfs:subClassOf acme:Client ;
+    rdfs:label "Sole Proprietor Client" ;
+    rdfs:comment "A sole-proprietor client (type=1)." ;
+    kairos-ext:naturalKey "clientId" .
+
+acme:IndividualClient a owl:Class ;
+    rdfs:subClassOf acme:Client ;
+    rdfs:label "Individual Client" ;
+    rdfs:comment "An individual/natural-person client (type=2)." ;
+    kairos-ext:naturalKey "clientId" .
+
+# ---------------------------------------------------------------------------
+# Datatype properties
+# ---------------------------------------------------------------------------
+acme:clientId a owl:DatatypeProperty ;
+    rdfs:label "client ID" ;
+    rdfs:comment "Unique business identifier for the client." ;
+    rdfs:domain acme:Client ;
+    rdfs:range xsd:string .
+
+acme:clientName a owl:DatatypeProperty ;
+    rdfs:label "client name" ;
+    rdfs:comment "Display name of the client." ;
+    rdfs:domain acme:Client ;
+    rdfs:range xsd:string .
+
+acme:vatNumber a owl:DatatypeProperty ;
+    rdfs:label "VAT number" ;
+    rdfs:comment "VAT registration number (corporate/sole-prop only)." ;
+    rdfs:domain acme:CorporateClient ;
+    rdfs:range xsd:string .
+
+acme:email a owl:DatatypeProperty ;
+    rdfs:label "email" ;
+    rdfs:comment "Primary email address." ;
+    rdfs:domain acme:Client ;
+    rdfs:range xsd:string .
+
+acme:isActive a owl:DatatypeProperty ;
+    rdfs:label "is active" ;
+    rdfs:comment "Whether the client account is currently active." ;
+    rdfs:domain acme:Client ;
+    rdfs:range xsd:boolean .
+
+acme:createdAt a owl:DatatypeProperty ;
+    rdfs:label "created at" ;
+    rdfs:comment "Timestamp when the client record was created." ;
+    rdfs:domain acme:Client ;
+    rdfs:range xsd:dateTime .

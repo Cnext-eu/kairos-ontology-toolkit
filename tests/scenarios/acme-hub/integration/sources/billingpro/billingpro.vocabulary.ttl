@@ -1,0 +1,104 @@
+@prefix bronze-bp: <https://acme.example/bronze/billingpro#> .
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+# ---------------------------------------------------------------------------
+# Source system
+# ---------------------------------------------------------------------------
+bronze-bp:BillingPro a kairos-bronze:SourceSystem ;
+    rdfs:label "BillingPro" ;
+    kairos-bronze:connectionType "jdbc" ;
+    kairos-bronze:database "BP_Prod" ;
+    kairos-bronze:schema "billing" .
+
+# ---------------------------------------------------------------------------
+# tblInvoice
+# ---------------------------------------------------------------------------
+bronze-bp:tblInvoice a kairos-bronze:SourceTable ;
+    rdfs:label "tblInvoice" ;
+    kairos-bronze:sourceSystem bronze-bp:BillingPro ;
+    kairos-bronze:tableName "tblInvoice" ;
+    kairos-bronze:primaryKeyColumns "InvoiceID" ;
+    kairos-bronze:incrementalColumn "LastModified" .
+
+bronze-bp:tblInvoice_InvoiceID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoice ;
+    kairos-bronze:columnName "InvoiceID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblInvoice_InvoiceNumber a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoice ;
+    kairos-bronze:columnName "InvoiceNumber" ;
+    kairos-bronze:dataType "nvarchar(50)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblInvoice_InvoiceDate a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoice ;
+    kairos-bronze:columnName "InvoiceDate" ;
+    kairos-bronze:dataType "date" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblInvoice_TotalAmount a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoice ;
+    kairos-bronze:columnName "TotalAmount" ;
+    kairos-bronze:dataType "decimal(18,2)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblInvoice_ClientRef a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoice ;
+    kairos-bronze:columnName "ClientRef" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblInvoice_Status a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoice ;
+    kairos-bronze:columnName "Status" ;
+    kairos-bronze:dataType "nvarchar(20)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+bronze-bp:tblInvoice_LastModified a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoice ;
+    kairos-bronze:columnName "LastModified" ;
+    kairos-bronze:dataType "datetime" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# tblInvoiceLine
+# ---------------------------------------------------------------------------
+bronze-bp:tblInvoiceLine a kairos-bronze:SourceTable ;
+    rdfs:label "tblInvoiceLine" ;
+    kairos-bronze:sourceSystem bronze-bp:BillingPro ;
+    kairos-bronze:tableName "tblInvoiceLine" ;
+    kairos-bronze:primaryKeyColumns "LineID" .
+
+bronze-bp:tblInvoiceLine_LineID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceLine ;
+    kairos-bronze:columnName "LineID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblInvoiceLine_InvoiceID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceLine ;
+    kairos-bronze:columnName "InvoiceID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblInvoiceLine_Description a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceLine ;
+    kairos-bronze:columnName "Description" ;
+    kairos-bronze:dataType "nvarchar(500)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+bronze-bp:tblInvoiceLine_Quantity a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceLine ;
+    kairos-bronze:columnName "Quantity" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblInvoiceLine_UnitPrice a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceLine ;
+    kairos-bronze:columnName "UnitPrice" ;
+    kairos-bronze:dataType "decimal(18,2)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .

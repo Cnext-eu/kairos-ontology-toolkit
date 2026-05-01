@@ -1,0 +1,23 @@
+@prefix acme: <https://acme.example/ontology/client#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+# ---------------------------------------------------------------------------
+# Gold-layer annotations for Client domain
+# ---------------------------------------------------------------------------
+
+# Ontology-level
+<https://acme.example/ontology/client>
+    kairos-ext:goldSchema "gold" .
+
+# Class-level — dimension tables
+acme:CorporateClient
+    kairos-ext:goldTableType "dimension" ;
+    kairos-ext:goldTableName "dim_corporate_client" .
+
+acme:SoleProprietorClient
+    kairos-ext:goldTableType "dimension" ;
+    kairos-ext:goldTableName "dim_sole_proprietor_client" .
+
+acme:IndividualClient
+    kairos-ext:goldTableType "dimension" ;
+    kairos-ext:goldTableName "dim_individual_client" .

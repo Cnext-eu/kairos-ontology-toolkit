@@ -1,0 +1,53 @@
+@prefix acme: <https://acme.example/ontology/client#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# ---------------------------------------------------------------------------
+# Silver-layer annotations for Client domain
+# ---------------------------------------------------------------------------
+
+# Ontology-level
+<https://acme.example/ontology/client>
+    kairos-ext:silverSchema "silver" ;
+    kairos-ext:auditEnvelope "true" .
+
+# Class-level
+acme:CorporateClient
+    kairos-ext:silverTableName "corporate_client" ;
+    kairos-ext:scdType "2" ;
+    kairos-ext:discriminatorColumn "client_type" .
+
+acme:SoleProprietorClient
+    kairos-ext:silverTableName "sole_proprietor_client" ;
+    kairos-ext:scdType "1" .
+
+acme:IndividualClient
+    kairos-ext:silverTableName "individual_client" ;
+    kairos-ext:scdType "1" .
+
+# Property-level
+acme:clientId
+    kairos-ext:silverColumnName "client_id" ;
+    kairos-ext:silverDataType "STRING" ;
+    kairos-ext:nullable "false" .
+
+acme:clientName
+    kairos-ext:silverColumnName "client_name" ;
+    kairos-ext:silverDataType "STRING" ;
+    kairos-ext:nullable "false" .
+
+acme:vatNumber
+    kairos-ext:silverColumnName "vat_number" ;
+    kairos-ext:silverDataType "STRING" .
+
+acme:email
+    kairos-ext:silverColumnName "email" ;
+    kairos-ext:silverDataType "STRING" .
+
+acme:isActive
+    kairos-ext:silverColumnName "is_active" ;
+    kairos-ext:silverDataType "BOOLEAN" .
+
+acme:createdAt
+    kairos-ext:silverColumnName "created_at" ;
+    kairos-ext:silverDataType "TIMESTAMP" .

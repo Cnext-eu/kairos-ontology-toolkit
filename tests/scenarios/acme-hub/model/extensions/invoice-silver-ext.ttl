@@ -1,0 +1,62 @@
+@prefix acme-inv: <https://acme.example/ontology/invoice#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# ---------------------------------------------------------------------------
+# Silver-layer annotations for Invoice domain
+# ---------------------------------------------------------------------------
+
+# Ontology-level
+<https://acme.example/ontology/invoice>
+    kairos-ext:silverSchema "silver" ;
+    kairos-ext:auditEnvelope "true" .
+
+# Class-level
+acme-inv:Invoice
+    kairos-ext:silverTableName "invoice" ;
+    kairos-ext:scdType "1" .
+
+acme-inv:InvoiceLine
+    kairos-ext:silverTableName "invoice_line" ;
+    kairos-ext:scdType "1" .
+
+# Property-level
+acme-inv:invoiceNumber
+    kairos-ext:silverColumnName "invoice_number" ;
+    kairos-ext:silverDataType "STRING" ;
+    kairos-ext:nullable "false" .
+
+acme-inv:invoiceDate
+    kairos-ext:silverColumnName "invoice_date" ;
+    kairos-ext:silverDataType "DATE" ;
+    kairos-ext:nullable "false" .
+
+acme-inv:totalAmount
+    kairos-ext:silverColumnName "total_amount" ;
+    kairos-ext:silverDataType "DECIMAL(18,2)" ;
+    kairos-ext:nullable "false" .
+
+acme-inv:lineId
+    kairos-ext:silverColumnName "line_id" ;
+    kairos-ext:silverDataType "STRING" ;
+    kairos-ext:nullable "false" .
+
+acme-inv:description
+    kairos-ext:silverColumnName "description" ;
+    kairos-ext:silverDataType "STRING" .
+
+acme-inv:quantity
+    kairos-ext:silverColumnName "quantity" ;
+    kairos-ext:silverDataType "INT" ;
+    kairos-ext:nullable "false" .
+
+acme-inv:unitPrice
+    kairos-ext:silverColumnName "unit_price" ;
+    kairos-ext:silverDataType "DECIMAL(18,2)" ;
+    kairos-ext:nullable "false" .
+
+acme-inv:issuedTo
+    kairos-ext:silverColumnName "client_sk" .
+
+acme-inv:belongsToInvoice
+    kairos-ext:silverColumnName "invoice_sk" .
