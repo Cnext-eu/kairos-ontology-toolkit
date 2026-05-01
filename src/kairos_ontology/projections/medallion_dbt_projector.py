@@ -1156,10 +1156,13 @@ def _extract_fk_columns_and_joins(
             prop_suffix = _camel_to_snake(extract_local_name(str(prop)))
             fk_col_name = f"{prop_suffix}_sk"
 
-        # Find source column via SKOS mapping to this object property
+        # Find source column(s) via SKOS mapping to this object property
         source_col_name = None
+        source_columns: list[str] | None = None
         for col_uri, col_map in mappings.get("column_maps", {}).items():
             if col_map.get("target_uri") == str(prop):
+                if col_map.get("source_columns"):
+                    source_columns = col_map["source_columns"]
                 if col_map.get("transform"):
                     source_col_name = col_map["transform"].replace("source.", "")
                 else:
@@ -1187,16 +1190,15 @@ def _extract_fk_columns_and_joins(
         # Get target class natural key for the join condition
         target_nk = _get_natural_key(graph, str(range_cls))
 
-        if len(target_nk) != 1:
-            # Composite or missing NK — cannot generate join safely
+        if len(target_nk) == 0:
+            # No natural key — cannot generate join
             fk_columns.append({
                 "expression": "CAST(NULL AS {{ dbt_utils.type_string() }})",
                 "target_name": fk_col_name,
             })
             msg = (
                 f"FK column '{fk_col_name}' targets class '{range_local}' which has "
-                f"{'composite' if len(target_nk) > 1 else 'no'} natural key — "
-                f"cannot auto-generate join. Emitting NULL placeholder."
+                f"no natural key — cannot auto-generate join. Emitting NULL placeholder."
             )
             warnings.append(msg)
             existing_aliases.add(fk_col_name)
@@ -1214,15 +1216,38 @@ def _extract_fk_columns_and_joins(
         existing_aliases.add(fk_col_name)
         existing_aliases.add(join_alias)
 
+        # Build join condition — single or composite NK
+        if len(target_nk) == 1:
+            join_condition = (
+                f"{source_alias}.{source_col_name} = "
+                f"{join_alias}.{target_nk[0]}"
+            )
+        elif source_columns and len(source_columns) == len(target_nk):
+            # Composite NK: match source columns to target NK columns in order
+            parts = [
+                f"{source_alias}.{sc} = {join_alias}.{nk}"
+                for sc, nk in zip(source_columns, target_nk)
+            ]
+            join_condition = " AND ".join(parts)
+        else:
+            # Composite NK but no matching sourceColumns — single col match + warning
+            join_condition = (
+                f"{source_alias}.{source_col_name} = "
+                f"{join_alias}.{target_nk[0]}"
+            )
+            msg = (
+                f"FK column '{fk_col_name}' targets class '{range_local}' with "
+                f"composite natural key ({', '.join(target_nk)}) but mapping has "
+                f"only 1 source column — join may be incomplete."
+            )
+            warnings.append(msg)
+
         # Build join definition
         joins.append({
             "type": "left",
             "ref": f"{{{{ ref('{range_model}') }}}}",
             "alias": join_alias,
-            "condition": (
-                f"{source_alias}.{source_col_name} = "
-                f"{join_alias}.{target_nk[0]}"
-            ),
+            "condition": join_condition,
         })
 
         # FK column references the joined table's SK
@@ -1616,6 +1641,37 @@ def _gen_gold_models(
             logger.info("No silver ref for gold table %s — skipping", tbl.name)
             continue
 
+        # Build joins for fact table FK lookups
+        joins: list[dict] = []
+        if tbl.table_type == "fact":
+            seen_join_aliases: set[str] = set()
+            source_alias = source_ctes[0]["alias"] if source_ctes else ""
+            for fk_col, ref_full, ref_col, label in tbl.fk_constraints:
+                ref_tbl_name = ref_full.split(".")[-1]
+                ref_gold = next(
+                    (t for t in gold_tables if t.name == ref_tbl_name), None)
+                if ref_gold and ref_gold.source_class_uri:
+                    ref_silver = _silver_model_name_for_class(
+                        ref_gold.source_class_uri, classes)
+                    alias = ref_silver
+                    # Disambiguate aliases
+                    base_alias = alias
+                    counter = 2
+                    while alias in seen_join_aliases:
+                        alias = f"{base_alias}_{counter}"
+                        counter += 1
+                    seen_join_aliases.add(alias)
+
+                    # FK column references the _sk of the referenced dimension
+                    # ref_col is the PK column in the gold table
+                    joins.append({
+                        "type": "left",
+                        "alias": alias,
+                        "condition": (
+                            f"{source_alias}.{fk_col} = {alias}.{ref_col}"
+                        ),
+                    })
+
         # Build column expressions
         columns = []
         for col in tbl.columns:
@@ -1641,7 +1697,7 @@ def _gen_gold_models(
             is_gdpr=tbl.is_gdpr,
             source_ctes=source_ctes,
             columns=columns,
-            joins=[],
+            joins=joins,
             where_clause=where_clause,
             ontology_metadata=meta,
             incremental_column=tbl.incremental_column or "",

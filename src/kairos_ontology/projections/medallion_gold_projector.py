@@ -676,15 +676,16 @@ def generate_gold_artifacts(
     if not all_tables:
         return {}
 
-    # Re-read schema_name from the merged graph for rendering headers
+    # Re-read ontology-level annotations from merged graph.
+    # NOTE: build_gold_tables already merges graph+extension; we read from the
+    # extension file only once more for the 2 annotations below that are NOT
+    # exposed on GoldTableDef.  A future refactor could return them from
+    # build_gold_tables directly.
     merged = Graph()
     for triple in graph:
         merged.add(triple)
     if projection_ext_path and projection_ext_path.exists():
-        ext_graph = Graph()
-        ext_graph.parse(str(projection_ext_path), format="turtle")
-        for triple in ext_graph:
-            merged.add(triple)
+        merged.parse(str(projection_ext_path), format="turtle")
     onto_uri = _detect_ontology_uri(merged, namespace)
     schema_name = _str_val(merged, onto_uri, KAIROS_EXT.goldSchema,
                            f"gold_{ontology_name}")
