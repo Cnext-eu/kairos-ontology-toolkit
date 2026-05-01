@@ -758,6 +758,10 @@ def _gen_staging_models(
                     else:
                         expr = f"TRY_CAST({col['name']} AS {target_type})"
 
+                # Wrap in COALESCE if defaultValue is declared
+                if col_map.get("default_value"):
+                    expr = f"COALESCE({expr}, {col_map['default_value']})"
+
                 # Target column name: from SKOS mapping or snake_case of source
                 if col_map.get("target_uri"):
                     target_name = _camel_to_snake(
@@ -1008,6 +1012,12 @@ def _extract_silver_columns(
                             source_col_name = extract_local_name(col_uri)
                             expr = source_col_name
                     break
+
+            # Wrap in COALESCE if a default value is declared in the mapping
+            if expr and mapped_col_uri:
+                col_map = mappings.get("column_maps", {}).get(mapped_col_uri, {})
+                if col_map.get("default_value"):
+                    expr = f"COALESCE({expr}, {col_map['default_value']})"
 
             if expr is None:
                 if population == "derived":
