@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 from .projections.uri_utils import extract_local_name
+from .projections.shared import OntologyClassInfo
 
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report"]
 
@@ -272,6 +273,83 @@ def project_graph(
     return results
 
 
+def _discover_extensions(
+    target_name: str,
+    onto_name: str,
+    onto_info: dict,
+    extensions_dir: Optional[Path],
+) -> tuple[Optional[Path], Optional[Path]]:
+    """Discover extension files for a given target and ontology domain.
+
+    Returns:
+        (ext_path, gold_ext_path) tuple. Either may be None.
+    """
+    ext_path: Optional[Path] = None
+    gold_ext_path: Optional[Path] = None
+    src_file: Path = onto_info["file"]
+
+    if target_name == "silver":
+        # Look in model/extensions/ first (new layout)
+        if extensions_dir and extensions_dir.exists():
+            candidates = list(extensions_dir.glob(f"{onto_name}-silver-ext.ttl"))
+            candidates += list(extensions_dir.glob("*-silver-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+        # Fallback: check alongside the ontology file (legacy layout)
+        if not ext_path:
+            candidates = list(src_file.parent.glob(f"{onto_name}-silver-ext.ttl"))
+            candidates += list(src_file.parent.glob("*-silver-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+
+    elif target_name == "powerbi":
+        if extensions_dir and extensions_dir.exists():
+            candidates = list(extensions_dir.glob(f"{onto_name}-gold-ext.ttl"))
+            candidates += list(extensions_dir.glob("*-gold-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+        if not ext_path:
+            candidates = list(src_file.parent.glob(f"{onto_name}-gold-ext.ttl"))
+            candidates += list(src_file.parent.glob("*-gold-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+
+    elif target_name == "dbt":
+        # dbt needs silver-ext.ttl for naturalKey/silver annotations
+        if extensions_dir and extensions_dir.exists():
+            candidates = list(extensions_dir.glob(f"{onto_name}-silver-ext.ttl"))
+            candidates += list(extensions_dir.glob("*-silver-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+        if not ext_path:
+            candidates = list(src_file.parent.glob(f"{onto_name}-silver-ext.ttl"))
+            candidates += list(src_file.parent.glob("*-silver-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+        # dbt also needs gold-ext.ttl for gold model generation
+        if extensions_dir and extensions_dir.exists():
+            candidates = list(extensions_dir.glob(f"{onto_name}-gold-ext.ttl"))
+            candidates += list(extensions_dir.glob("*-gold-ext.ttl"))
+            gold_ext_path = candidates[0] if candidates else None
+        if not gold_ext_path:
+            candidates = list(src_file.parent.glob(f"{onto_name}-gold-ext.ttl"))
+            candidates += list(src_file.parent.glob("*-gold-ext.ttl"))
+            gold_ext_path = candidates[0] if candidates else None
+
+    return ext_path, gold_ext_path
+
+
+def _write_artifacts(artifacts: dict[str, str], target_output: Path) -> int:
+    """Write projection artifacts to disk.
+
+    Args:
+        artifacts: Mapping of relative file path to content.
+        target_output: Base output directory.
+
+    Returns:
+        Number of files written.
+    """
+    for file_path, content in artifacts.items():
+        output_file = target_output / file_path
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_text(content, encoding='utf-8')
+    return len(artifacts)
+
+
 def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path, target: str, namespace: str = None):
     """Run projection generation.
     
@@ -419,58 +497,19 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 report.domains[onto_name]["namespace"] = onto_namespace
             
             try:
-                # Generate artifacts for this specific ontology
-                # For silver: auto-discover *-silver-ext.ttl in extensions/ directory
-                # For gold: auto-discover *-gold-ext.ttl in extensions/ directory
-                ext_path: Optional[Path] = None
-                gold_ext_path: Optional[Path] = None
-                if target_name == "silver":
-                    src_file: Path = onto_info["file"]
-                    # Look in model/extensions/ first (new layout)
-                    if extensions_dir and extensions_dir.exists():
-                        candidates = list(extensions_dir.glob(f"{onto_name}-silver-ext.ttl"))
-                        candidates += list(extensions_dir.glob("*-silver-ext.ttl"))
-                        ext_path = candidates[0] if candidates else None
-                    # Fallback: check alongside the ontology file (legacy layout)
-                    if not ext_path:
-                        candidates = list(src_file.parent.glob(f"{onto_name}-silver-ext.ttl"))
-                        candidates += list(src_file.parent.glob("*-silver-ext.ttl"))
-                        ext_path = candidates[0] if candidates else None
-                    if ext_path:
-                        print(f"  [{onto_name}] Using projection ext: {ext_path.name}")
-                        report.record("info", f"Using projection ext: {ext_path.name}",
-                                      domain=onto_name, target=target_name)
-
-                elif target_name == "powerbi":
-                    src_file = onto_info["file"]
-                    if extensions_dir and extensions_dir.exists():
-                        candidates = list(extensions_dir.glob(f"{onto_name}-gold-ext.ttl"))
-                        candidates += list(extensions_dir.glob("*-gold-ext.ttl"))
-                        ext_path = candidates[0] if candidates else None
-                    if not ext_path:
-                        candidates = list(src_file.parent.glob(f"{onto_name}-gold-ext.ttl"))
-                        candidates += list(src_file.parent.glob("*-gold-ext.ttl"))
-                        ext_path = candidates[0] if candidates else None
-                    if ext_path:
-                        print(f"  [{onto_name}] Using projection ext: {ext_path.name}")
-                        report.record("info", f"Using projection ext: {ext_path.name}",
-                                      domain=onto_name, target=target_name)
-
-                elif target_name == "dbt":
-                    # dbt also needs gold-ext.ttl for gold model generation
-                    src_file = onto_info["file"]
-                    if extensions_dir and extensions_dir.exists():
-                        candidates = list(extensions_dir.glob(f"{onto_name}-gold-ext.ttl"))
-                        candidates += list(extensions_dir.glob("*-gold-ext.ttl"))
-                        gold_ext_path = candidates[0] if candidates else None
-                    if not gold_ext_path:
-                        candidates = list(src_file.parent.glob(f"{onto_name}-gold-ext.ttl"))
-                        candidates += list(src_file.parent.glob("*-gold-ext.ttl"))
-                        gold_ext_path = candidates[0] if candidates else None
-                    if gold_ext_path:
-                        print(f"  [{onto_name}] Using gold ext: {gold_ext_path.name}")
-                        report.record("info", f"Using gold ext: {gold_ext_path.name}",
-                                      domain=onto_name, target=target_name)
+                # Discover extension files for this target/domain
+                ext_path, gold_ext_path = _discover_extensions(
+                    target_name, onto_name, onto_info, extensions_dir
+                )
+                if ext_path:
+                    label = "silver ext" if target_name == "dbt" else "projection ext"
+                    print(f"  [{onto_name}] Using {label}: {ext_path.name}")
+                    report.record("info", f"Using {label}: {ext_path.name}",
+                                  domain=onto_name, target=target_name)
+                if gold_ext_path:
+                    print(f"  [{onto_name}] Using gold ext: {gold_ext_path.name}")
+                    report.record("info", f"Using gold ext: {gold_ext_path.name}",
+                                  domain=onto_name, target=target_name)
 
                 artifacts = _run_projection(target_name, onto_graph, target_output, template_base,
                                             onto_namespace, shapes_dir, onto_name,
@@ -480,13 +519,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                                             sources_dir=sources_dir,
                                             mappings_dir=mappings_dir)
                 if artifacts:
-                    # Save artifacts
-                    for file_path, content in artifacts.items():
-                        output_file = target_output / file_path
-                        output_file.parent.mkdir(parents=True, exist_ok=True)
-                        output_file.write_text(content, encoding='utf-8')
-                    
-                    total_files += len(artifacts)
+                    total_files += _write_artifacts(artifacts, target_output)
                     print(f"  [{onto_name}] ✓ Generated {len(artifacts)} file(s)")
                     report.record_projection(
                         target_name, onto_name,
@@ -870,12 +903,12 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             continue
         
         class_name = extract_local_name(class_uri)
-        classes.append({
-            'uri': class_uri,
-            'name': class_name,
-            'label': str(row.label) if row.label else class_name,
-            'comment': str(row.comment) if row.comment else f"{class_name} entity"
-        })
+        classes.append(OntologyClassInfo(
+            uri=class_uri,
+            name=class_name,
+            label=str(row.label) if row.label else class_name,
+            comment=str(row.comment) if row.comment else f"{class_name} entity",
+        ).to_dict())
     
     if not classes:
         return {}
@@ -891,6 +924,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             ontology_name, ontology_metadata=meta,
             bronze_dir=sources_dir, sources_dir=sources_dir, mappings_dir=mappings_dir,
             gold_ext_path=gold_ext_path,
+            silver_ext_path=projection_ext_path,
         )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts

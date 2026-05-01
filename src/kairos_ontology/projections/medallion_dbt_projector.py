@@ -35,6 +35,7 @@ from rdflib.namespace import OWL, RDF
 from jinja2 import Environment, FileSystemLoader
 
 from .uri_utils import camel_to_snake, extract_local_name
+from .shared import KAIROS_EXT, merge_ext_graph
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 KAIROS_MAP = Namespace("https://kairos.cnext.eu/mapping#")
-KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
 
 # ---------------------------------------------------------------------------
 # Source-type → target SQL type mappings (per platform)
@@ -256,8 +256,9 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
     for ttl in sorted(sources_dir.rglob("*.ttl")):
         try:
             g.parse(ttl, format="turtle")
-        except Exception as exc:
+        except (SyntaxError, Exception) as exc:
             logger.warning("Could not parse vocabulary file %s: %s", ttl.name, exc)
+            continue
 
     systems: list[dict] = []
     for sys_uri in g.subjects(RDF.type, KAIROS_BRONZE.SourceSystem):
@@ -403,7 +404,8 @@ def _parse_split_annotations(mappings_dir: Path) -> dict[tuple[str, str], dict]:
     for ttl_path in sorted(mappings_dir.rglob("*.ttl")):
         try:
             content = ttl_path.read_text(encoding="utf-8")
-        except Exception:
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning("Could not read mapping file %s: %s", ttl_path.name, exc)
             continue
 
         # Extract prefix lines (needed to parse each block independently)
@@ -433,7 +435,9 @@ def _parse_split_annotations(mappings_dir: Path) -> dict[tuple[str, str], dict]:
             try:
                 block_g = Graph()
                 block_g.parse(data=prefix_block + stmt + " .", format="turtle")
-            except Exception:
+            except Exception as exc:
+                logger.debug("Skipping unparseable mapping block in %s: %s",
+                             ttl_path.name, exc)
                 continue
 
             # Look for table-level mappings in this block
@@ -589,8 +593,8 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str) -> dict[str, list]:
             try:
                 sg.parse(candidate, format="turtle")
                 loaded = True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Could not parse SHACL file %s: %s", candidate.name, exc)
             break
 
     # Fallback: load all shape files and filter by sh:targetClass
@@ -599,7 +603,8 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str) -> dict[str, list]:
             try:
                 sg.parse(sf, format="turtle")
                 loaded = True
-            except Exception:
+            except Exception as exc:
+                logger.debug("Could not parse SHACL file %s: %s", sf.name, exc)
                 continue
 
     if not loaded:
@@ -1137,86 +1142,59 @@ def _build_iri_expression(
     return "CAST(NULL AS {{ dbt_utils.type_string() }})"
 
 
-def _extract_silver_columns(
+def _build_sk_iri_columns(
     graph: Graph,
     class_uri: str,
     namespace: str,
-    mappings: dict,
-    platform: str = DEFAULT_PLATFORM,
-    source_refs: list[tuple[str, str, str]] | None = None,
-    systems: list[dict] | None = None,
-    table_column_uris: set[str] | None = None,
-    include_sk_iri: bool = True,
+    natural_key_cols: list[str],
 ) -> list[dict]:
-    """Extract silver-layer columns for a class from the ontology graph.
-
-    Since silver reads directly from bronze (no staging layer), column
-    expressions reference original bronze column names and apply casts/transforms
-    inline.  Transform expressions from SKOS mappings are used as-is; direct
-    mappings reference the original bronze column name with appropriate casting.
-
-    Args:
-        table_column_uris: When provided, only column_maps whose source column
-            URI is in this set are considered.  Used for per-source column
-            extraction in multi-source scenarios.
-        include_sk_iri: When False, SK and IRI columns are omitted.  Used for
-            per-source models where SK/IRI are computed in the parent union model.
-
-    Features:
-    - SK uses dbt_utils.generate_surrogate_key() based on natural key columns
-    - IRI constructs a proper ontology IRI from namespace + natural key
-    - Mapped properties use their transform expressions (referencing bronze cols)
-    - Direct mappings use original bronze column name with TRY_CAST
-    - Unmapped optional properties use CAST(NULL AS {{ dbt_utils.type_*() }})
-    - Types use dbt_utils macros for portability across platforms
-    - Enum columns generate CASE statements for human-readable labels
-    """
+    """Build the SK and IRI column dicts for a silver model."""
     columns: list[dict] = []
     model_name = _camel_to_snake(extract_local_name(class_uri))
 
-    # Build lookups from bronze column URI → original column name / data type / enums
-    bronze_col_lookup: dict[str, dict] = {}
-    enum_lookup: dict[str, list[dict]] = {}
-    if systems:
-        for sys in systems:
-            for tbl in sys["tables"]:
-                for col in tbl["columns"]:
-                    bronze_col_lookup[col["uri"]] = {
-                        "name": col["name"],
-                        "data_type": col["data_type"],
-                    }
-                    if col.get("enum_values"):
-                        enum_lookup[col["uri"]] = col["enum_values"]
+    # SK column: use surrogate key generation if natural key is known
+    if natural_key_cols:
+        sk_cols_str = "', '".join(natural_key_cols)
+        sk_expr = f"{{{{ dbt_utils.generate_surrogate_key(['{sk_cols_str}']) }}}}"
+    else:
+        sk_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
 
-    # Determine natural key columns from kairos-ext:naturalKey annotation or PK columns
-    natural_key_cols = _get_natural_key(graph, class_uri)
+    columns.append({"expression": sk_expr, "target_name": f"{model_name}_sk"})
 
-    if include_sk_iri:
-        # SK column: use surrogate key generation if natural key is known
-        if natural_key_cols:
-            sk_cols_str = "', '".join(natural_key_cols)
-            sk_expr = f"{{{{ dbt_utils.generate_surrogate_key(['{sk_cols_str}']) }}}}"
+    # IRI column: construct from namespace + natural key
+    if natural_key_cols:
+        if len(natural_key_cols) == 1:
+            iri_expr = (
+                f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', "
+                f"{natural_key_cols[0]})"
+            )
         else:
-            sk_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
+            parts = ", '/', ".join(natural_key_cols)
+            iri_expr = (
+                f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
+            )
+    else:
+        iri_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
 
-        columns.append({"expression": sk_expr, "target_name": f"{model_name}_sk"})
+    columns.append({"expression": iri_expr, "target_name": f"{model_name}_iri"})
+    return columns
 
-        # IRI column: construct from namespace + natural key
-        if natural_key_cols:
-            if len(natural_key_cols) == 1:
-                iri_expr = (
-                    f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', "
-                    f"{natural_key_cols[0]})"
-                )
-            else:
-                parts = ", '/', ".join(natural_key_cols)
-                iri_expr = (
-                    f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
-                )
-        else:
-            iri_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
 
-        columns.append({"expression": iri_expr, "target_name": f"{model_name}_iri"})
+def _resolve_mapped_columns(
+    graph: Graph,
+    class_uri: str,
+    mappings: dict,
+    platform: str,
+    bronze_col_lookup: dict[str, dict],
+    enum_lookup: dict[str, list[dict]],
+    table_column_uris: set[str] | None = None,
+) -> list[dict]:
+    """Resolve data columns from source mappings for a silver model.
+
+    Iterates over datatype properties of the class, finds matching SKOS column
+    mappings, applies type casting and defaults, and generates enum label columns.
+    """
+    columns: list[dict] = []
 
     # Collect domain classes: self + parent classes (for inheritance in split patterns)
     domain_classes = _get_class_and_parents(graph, class_uri)
@@ -1307,6 +1285,276 @@ def _extract_silver_columns(
     return columns
 
 
+def _extract_silver_columns(
+    graph: Graph,
+    class_uri: str,
+    namespace: str,
+    mappings: dict,
+    platform: str = DEFAULT_PLATFORM,
+    source_refs: list[tuple[str, str, str]] | None = None,
+    systems: list[dict] | None = None,
+    table_column_uris: set[str] | None = None,
+    include_sk_iri: bool = True,
+) -> list[dict]:
+    """Extract silver-layer columns for a class from the ontology graph.
+
+    Since silver reads directly from bronze (no staging layer), column
+    expressions reference original bronze column names and apply casts/transforms
+    inline.  Transform expressions from SKOS mappings are used as-is; direct
+    mappings reference the original bronze column name with appropriate casting.
+
+    Args:
+        table_column_uris: When provided, only column_maps whose source column
+            URI is in this set are considered.  Used for per-source column
+            extraction in multi-source scenarios.
+        include_sk_iri: When False, SK and IRI columns are omitted.  Used for
+            per-source models where SK/IRI are computed in the parent union model.
+
+    Features:
+    - SK uses dbt_utils.generate_surrogate_key() based on natural key columns
+    - IRI constructs a proper ontology IRI from namespace + natural key
+    - Mapped properties use their transform expressions (referencing bronze cols)
+    - Direct mappings use original bronze column name with TRY_CAST
+    - Unmapped optional properties use CAST(NULL AS {{ dbt_utils.type_*() }})
+    - Types use dbt_utils macros for portability across platforms
+    - Enum columns generate CASE statements for human-readable labels
+    """
+    columns: list[dict] = []
+
+    # Build lookups from bronze column URI → original column name / data type / enums
+    bronze_col_lookup: dict[str, dict] = {}
+    enum_lookup: dict[str, list[dict]] = {}
+    if systems:
+        for sys in systems:
+            for tbl in sys["tables"]:
+                for col in tbl["columns"]:
+                    bronze_col_lookup[col["uri"]] = {
+                        "name": col["name"],
+                        "data_type": col["data_type"],
+                    }
+                    if col.get("enum_values"):
+                        enum_lookup[col["uri"]] = col["enum_values"]
+
+    # Determine natural key columns from kairos-ext:naturalKey annotation or PK columns
+    natural_key_cols = _get_natural_key(graph, class_uri)
+
+    if include_sk_iri:
+        columns.extend(
+            _build_sk_iri_columns(graph, class_uri, namespace, natural_key_cols)
+        )
+
+    # Resolve mapped data columns
+    columns.extend(
+        _resolve_mapped_columns(
+            graph, class_uri, mappings, platform,
+            bronze_col_lookup, enum_lookup, table_column_uris,
+        )
+    )
+
+    return columns
+
+
+def _infer_fk_targets(
+    graph: Graph,
+    class_uri: str,
+) -> list[dict]:
+    """Identify qualifying FK object properties for a class.
+
+    Returns a list of dicts with keys: prop, range_cls, range_local, range_model,
+    fk_col_name_base.
+    """
+    domain_classes = _get_class_and_parents(graph, class_uri)
+    targets: list[dict] = []
+
+    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+        domain = graph.value(prop, RDFS.domain)
+        if domain is None or str(domain) not in domain_classes:
+            continue
+
+        # Skip junction-table properties (many-to-many)
+        if graph.value(prop, KAIROS_EXT.term("junctionTableName")):
+            continue
+
+        # Qualify: must be functional or have silverColumnName
+        has_explicit_col = graph.value(prop, KAIROS_EXT.term("silverColumnName")) is not None
+        is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
+        if not has_explicit_col and not is_functional:
+            continue
+
+        range_cls = graph.value(prop, RDFS.range)
+        if range_cls is None:
+            continue
+
+        range_local = extract_local_name(str(range_cls))
+        range_model = _camel_to_snake(range_local)
+
+        # Determine FK column name
+        col_override = graph.value(prop, KAIROS_EXT.term("silverColumnName"))
+        fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
+
+        targets.append({
+            "prop": prop,
+            "range_cls": range_cls,
+            "range_local": range_local,
+            "range_model": range_model,
+            "fk_col_name": fk_col_name,
+        })
+
+    return targets
+
+
+def _resolve_fk_source_column(
+    prop,
+    mappings: dict,
+    bronze_col_lookup: dict[str, dict],
+    graph: Graph,
+    range_cls,
+    source_refs: list[tuple[str, str, str]],
+    systems: list[dict] | None,
+    fk_col_name: str,
+    range_local: str,
+) -> tuple[str | None, list[str] | None]:
+    """Resolve the source column(s) for an FK property via mappings or auto-inference.
+
+    Returns (source_col_name, source_columns) or (None, None) if unresolved.
+    """
+    source_col_name = None
+    source_columns: list[str] | None = None
+
+    # Try explicit SKOS mapping first
+    for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
+        for col_map in col_maps_list:
+            if col_map.get("target_uri") == str(prop):
+                if col_map.get("source_columns"):
+                    source_columns = col_map["source_columns"]
+                if col_map.get("transform"):
+                    source_col_name = col_map["transform"].replace("source.", "")
+                else:
+                    bronze_col = bronze_col_lookup.get(col_uri)
+                    if bronze_col:
+                        source_col_name = bronze_col["name"]
+                    else:
+                        source_col_name = extract_local_name(col_uri)
+                break
+        if source_col_name:
+            break
+
+    if source_col_name is not None:
+        return source_col_name, source_columns
+
+    # Auto-inference: find source column mapped to NK of range class
+    current_table_col_uris: set[str] = set()
+    if systems:
+        for (_, _, tbl_uri_ref) in source_refs:
+            current_table_col_uris.update(
+                _get_table_column_uris(systems, tbl_uri_ref)
+            )
+
+    nk_prop_uris = _get_nk_property_uris(graph, str(range_cls))
+
+    if not nk_prop_uris or not current_table_col_uris:
+        return None, None
+
+    # Collect all candidates per NK property — require exactly one
+    # unambiguous candidate per NK component
+    nk_candidates: list[tuple[str, str | None, list[str] | None]] = []
+    all_resolved = True
+    for nk_uri in nk_prop_uris:
+        matches: list[tuple[str, str | None]] = []
+        for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
+            if col_uri not in current_table_col_uris:
+                continue
+            for col_map in col_maps_list:
+                if col_map.get("target_uri") == nk_uri:
+                    if col_map.get("transform"):
+                        resolved = col_map["transform"].replace("source.", "")
+                    else:
+                        bronze_col = bronze_col_lookup.get(col_uri)
+                        if bronze_col:
+                            resolved = bronze_col["name"]
+                        else:
+                            resolved = extract_local_name(col_uri)
+                    sc = col_map.get("source_columns")
+                    matches.append((resolved, sc))
+        if len(matches) == 1:
+            nk_candidates.append((matches[0][0], None, matches[0][1]))
+        else:
+            all_resolved = False
+            break
+
+    if all_resolved and len(nk_candidates) == len(nk_prop_uris):
+        if len(nk_candidates) == 1:
+            source_col_name = nk_candidates[0][0]
+            source_columns = nk_candidates[0][2]
+        else:
+            # Composite NK: build ordered source column list
+            source_col_name = nk_candidates[0][0]
+            source_columns = [c[0] for c in nk_candidates]
+        msg = (
+            f"FK column '{fk_col_name}': auto-inferred join via "
+            f"natural key of '{range_local}'."
+        )
+        logger.info(msg)
+
+    return source_col_name, source_columns
+
+
+def _build_fk_join_clause(
+    source_alias: str,
+    source_col_name: str,
+    source_columns: list[str] | None,
+    range_model: str,
+    range_local: str,
+    fk_col_name: str,
+    target_nk: list[str],
+    join_alias: str,
+) -> tuple[dict, dict, str | None]:
+    """Build the join dict and FK column dict for one FK relationship.
+
+    Returns (fk_column_dict, join_dict, warning_or_None).
+    """
+    warning = None
+
+    # Build join condition — single or composite NK
+    if len(target_nk) == 1:
+        join_condition = (
+            f"{source_alias}.{source_col_name} = "
+            f"{join_alias}.{target_nk[0]}"
+        )
+    elif source_columns and len(source_columns) == len(target_nk):
+        # Composite NK: match source columns to target NK columns in order
+        parts = [
+            f"{source_alias}.{sc} = {join_alias}.{nk}"
+            for sc, nk in zip(source_columns, target_nk)
+        ]
+        join_condition = " AND ".join(parts)
+    else:
+        # Composite NK but no matching sourceColumns — single col match + warning
+        join_condition = (
+            f"{source_alias}.{source_col_name} = "
+            f"{join_alias}.{target_nk[0]}"
+        )
+        warning = (
+            f"FK column '{fk_col_name}' targets class '{range_local}' with "
+            f"composite natural key ({', '.join(target_nk)}) but mapping has "
+            f"only 1 source column — join may be incomplete."
+        )
+
+    join_dict = {
+        "type": "left",
+        "ref": f"{{{{ ref('{range_model}') }}}}",
+        "alias": join_alias,
+        "condition": join_condition,
+    }
+
+    fk_col_dict = {
+        "expression": f"{join_alias}.{range_model}_sk",
+        "target_name": fk_col_name,
+    }
+
+    return fk_col_dict, join_dict, warning
+
+
 def _extract_fk_columns_and_joins(
     graph: Graph,
     class_uri: str,
@@ -1347,120 +1595,26 @@ def _extract_fk_columns_and_joins(
                         "data_type": col["data_type"],
                     }
 
-    # Collect domain classes: self + parent classes (for inheritance)
-    domain_classes = _get_class_and_parents(graph, class_uri)
+    # Identify qualifying FK targets
+    fk_targets = _infer_fk_targets(graph, class_uri)
 
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
-        domain = graph.value(prop, RDFS.domain)
-        if domain is None or str(domain) not in domain_classes:
-            continue
-
-        # Skip junction-table properties (many-to-many)
-        if graph.value(prop, KAIROS_EXT.term("junctionTableName")):
-            continue
-
-        # Qualify: must be functional or have silverColumnName
-        has_explicit_col = graph.value(prop, KAIROS_EXT.term("silverColumnName")) is not None
-        is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
-        if not has_explicit_col and not is_functional:
-            continue
-
-        range_cls = graph.value(prop, RDFS.range)
-        if range_cls is None:
-            continue
-
-        # Determine target model name (dbt naming: camelCase → snake_case)
-        range_local = extract_local_name(str(range_cls))
-        range_model = _camel_to_snake(range_local)
-
-        # Determine FK column name
-        col_override = graph.value(prop, KAIROS_EXT.term("silverColumnName"))
-        fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
+    for target_info in fk_targets:
+        prop = target_info["prop"]
+        range_cls = target_info["range_cls"]
+        range_local = target_info["range_local"]
+        range_model = target_info["range_model"]
+        fk_col_name = target_info["fk_col_name"]
 
         # Disambiguate duplicate FK column names
         if fk_col_name in existing_aliases:
             prop_suffix = _camel_to_snake(extract_local_name(str(prop)))
             fk_col_name = f"{prop_suffix}_sk"
 
-        # Find source column(s) via SKOS mapping to this object property
-        source_col_name = None
-        source_columns: list[str] | None = None
-        for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
-            for col_map in col_maps_list:
-                if col_map.get("target_uri") == str(prop):
-                    if col_map.get("source_columns"):
-                        source_columns = col_map["source_columns"]
-                    if col_map.get("transform"):
-                        source_col_name = col_map["transform"].replace("source.", "")
-                    else:
-                        bronze_col = bronze_col_lookup.get(col_uri)
-                        if bronze_col:
-                            source_col_name = bronze_col["name"]
-                        else:
-                            source_col_name = extract_local_name(col_uri)
-                    break
-            if source_col_name:
-                break
-
-        if source_col_name is None:
-            # --- Auto-inference: find source column mapped to NK of range class ---
-            # Build set of column URIs from the current source table(s)
-            current_table_col_uris: set[str] = set()
-            if systems:
-                for (_, _, tbl_uri_ref) in source_refs:
-                    current_table_col_uris.update(
-                        _get_table_column_uris(systems, tbl_uri_ref)
-                    )
-
-            nk_prop_uris = _get_nk_property_uris(graph, str(range_cls))
-
-            if nk_prop_uris and current_table_col_uris:
-                # Collect all candidates per NK property — require exactly one
-                # unambiguous candidate per NK component
-                nk_candidates: list[tuple[str, str | None, list[str] | None]] = []
-                all_resolved = True
-                for nk_uri in nk_prop_uris:
-                    matches: list[tuple[str, str | None]] = []
-                    for col_uri, col_maps_list in mappings.get(
-                        "column_maps", {}
-                    ).items():
-                        if col_uri not in current_table_col_uris:
-                            continue
-                        for col_map in col_maps_list:
-                            if col_map.get("target_uri") == nk_uri:
-                                if col_map.get("transform"):
-                                    resolved = col_map["transform"].replace(
-                                        "source.", ""
-                                    )
-                                else:
-                                    bronze_col = bronze_col_lookup.get(col_uri)
-                                    if bronze_col:
-                                        resolved = bronze_col["name"]
-                                    else:
-                                        resolved = extract_local_name(col_uri)
-                                sc = col_map.get("source_columns")
-                                matches.append((resolved, sc))
-                    if len(matches) == 1:
-                        nk_candidates.append(
-                            (matches[0][0], None, matches[0][1])
-                        )
-                    else:
-                        all_resolved = False
-                        break
-
-                if all_resolved and len(nk_candidates) == len(nk_prop_uris):
-                    if len(nk_candidates) == 1:
-                        source_col_name = nk_candidates[0][0]
-                        source_columns = nk_candidates[0][2]
-                    else:
-                        # Composite NK: build ordered source column list
-                        source_col_name = nk_candidates[0][0]
-                        source_columns = [c[0] for c in nk_candidates]
-                    msg = (
-                        f"FK column '{fk_col_name}': auto-inferred join via "
-                        f"natural key of '{range_local}'."
-                    )
-                    logger.info(msg)
+        # Resolve source column via mapping or auto-inference
+        source_col_name, source_columns = _resolve_fk_source_column(
+            prop, mappings, bronze_col_lookup, graph, range_cls,
+            source_refs, systems, fk_col_name, range_local,
+        )
 
         if source_col_name is None:
             # No explicit mapping and auto-inference failed — emit NULL placeholder
@@ -1504,7 +1658,6 @@ def _extract_fk_columns_and_joins(
 
         # Generate join alias and ref
         join_alias = f"{range_model}_ref"
-        # Avoid duplicate aliases
         base_alias = join_alias
         counter = 2
         while join_alias in existing_aliases:
@@ -1514,45 +1667,16 @@ def _extract_fk_columns_and_joins(
         existing_aliases.add(fk_col_name)
         existing_aliases.add(join_alias)
 
-        # Build join condition — single or composite NK
-        if len(target_nk) == 1:
-            join_condition = (
-                f"{source_alias}.{source_col_name} = "
-                f"{join_alias}.{target_nk[0]}"
-            )
-        elif source_columns and len(source_columns) == len(target_nk):
-            # Composite NK: match source columns to target NK columns in order
-            parts = [
-                f"{source_alias}.{sc} = {join_alias}.{nk}"
-                for sc, nk in zip(source_columns, target_nk)
-            ]
-            join_condition = " AND ".join(parts)
-        else:
-            # Composite NK but no matching sourceColumns — single col match + warning
-            join_condition = (
-                f"{source_alias}.{source_col_name} = "
-                f"{join_alias}.{target_nk[0]}"
-            )
-            msg = (
-                f"FK column '{fk_col_name}' targets class '{range_local}' with "
-                f"composite natural key ({', '.join(target_nk)}) but mapping has "
-                f"only 1 source column — join may be incomplete."
-            )
-            warnings.append(msg)
+        # Build join clause
+        fk_col_dict, join_dict, join_warning = _build_fk_join_clause(
+            source_alias, source_col_name, source_columns,
+            range_model, range_local, fk_col_name, target_nk, join_alias,
+        )
 
-        # Build join definition
-        joins.append({
-            "type": "left",
-            "ref": f"{{{{ ref('{range_model}') }}}}",
-            "alias": join_alias,
-            "condition": join_condition,
-        })
-
-        # FK column references the joined table's SK
-        fk_columns.append({
-            "expression": f"{join_alias}.{range_model}_sk",
-            "target_name": fk_col_name,
-        })
+        joins.append(join_dict)
+        fk_columns.append(fk_col_dict)
+        if join_warning:
+            warnings.append(join_warning)
 
     return fk_columns, joins, warnings
 
@@ -2136,6 +2260,7 @@ def generate_dbt_artifacts(
     mappings_dir: Path = None,
     gold_ext_path: Path = None,
     target_platform: str = DEFAULT_PLATFORM,
+    silver_ext_path: Path = None,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -2156,6 +2281,8 @@ def generate_dbt_artifacts(
         gold_ext_path: Optional path to ``*-gold-ext.ttl`` for gold model generation.
         target_platform: Target SQL platform for type mapping.
             Options: ``"fabric"`` (default), ``"databricks"``, ``"spark"`` (alias for databricks).
+        silver_ext_path: Optional path to ``*-silver-ext.ttl`` for naturalKey and
+            other silver annotations used by the dbt silver layer.
 
     Returns:
         Dictionary of ``{file_path: content}`` for all generated artifacts.
@@ -2164,6 +2291,10 @@ def generate_dbt_artifacts(
     meta = ontology_metadata or {}
     onto_name = ontology_name or "domain"
     env = Environment(loader=FileSystemLoader(str(template_dir)))
+
+    # Merge silver-ext triples into a working copy of the graph so naturalKey
+    # and other silver annotations are visible during dbt silver model generation.
+    graph = merge_ext_graph(graph, silver_ext_path)
 
     # Parse source vocabulary — prefer sources_dir, fall back to bronze_dir
     systems = _parse_bronze(sources_dir or bronze_dir)
@@ -2177,7 +2308,7 @@ def generate_dbt_artifacts(
     # 1. Sources YAML (minimal — under models/silver/)
     if systems:
         artifacts.update(_gen_sources(systems, env))
-        print(f"    ✓ Generated {len(systems)} source definition(s)")
+        logger.info("Generated %d source definition(s)", len(systems))
 
     # 2. Silver entity models (read directly from bronze via source())
     silver, silver_warnings = _gen_silver_models(
@@ -2185,12 +2316,14 @@ def generate_dbt_artifacts(
         platform=target_platform,
     )
     artifacts.update(silver)
-    print(f"    ✓ Generated {len(silver)} silver model(s)")
+    logger.info("Generated %d silver model(s)", len(silver))
     if silver_warnings:
         for w in silver_warnings:
-            print(f"    ⚠️  {w}")
-        print(f"    ℹ️  {len(silver_warnings)} class(es) skipped — "
-              f"see projection-report.json for details")
+            logger.warning("%s", w)
+        logger.info(
+            "%d class(es) skipped — see projection-report.json for details",
+            len(silver_warnings),
+        )
 
     # 3. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(
@@ -2209,7 +2342,7 @@ def generate_dbt_artifacts(
         artifacts.update(gold)
         has_gold = len(gold) > 0
         if gold:
-            print(f"    ✓ Generated {len(gold)} gold model(s)")
+            logger.info("Generated %d gold model(s)", len(gold))
 
         # 6. Gold schema YAML with tests
         gold_schema = _gen_gold_schema_yaml(
@@ -2232,13 +2365,13 @@ def generate_dbt_artifacts(
         )
         if coverage:
             artifacts.update(coverage)
-            print("    ✓ Generated coverage report")
+            logger.info("Generated coverage report")
 
     # 8. Platform macros
     macros = _gen_macros(template_dir)
     artifacts.update(macros)
     if macros:
-        print(f"    ✓ Generated {len(macros)} platform macro(s)")
+        logger.info("Generated %d platform macro(s)", len(macros))
 
     return artifacts
 

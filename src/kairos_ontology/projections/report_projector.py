@@ -382,6 +382,58 @@ def _find_entity_for_property(prop_uri: str, ontology_classes: dict) -> str | No
     return None
 
 
+def _calculate_coverage(
+    ontology_classes: dict,
+    all_mapped_properties: set[str],
+    total_columns: int,
+    total_mapped: int,
+) -> dict:
+    """Calculate reverse coverage metrics for domain properties.
+
+    Returns a dict with uncovered_properties list, domain_coverage_pct,
+    total_domain_properties, covered_domain_properties, and overall_pct.
+    """
+    uncovered_properties: list[dict] = []
+    total_domain_properties = 0
+    for cls_uri, cls_info in ontology_classes.items():
+        for prop_uri, prop_info in cls_info["properties"].items():
+            total_domain_properties += 1
+            if prop_uri not in all_mapped_properties:
+                uncovered_properties.append({
+                    "entity": cls_info["name"],
+                    "property": prop_info["name"],
+                    "label": prop_info["label"],
+                })
+
+    domain_coverage_pct = (
+        round(
+            (total_domain_properties - len(uncovered_properties))
+            / total_domain_properties * 100
+        )
+        if total_domain_properties > 0 else 0
+    )
+
+    overall_pct = round(total_mapped / total_columns * 100) if total_columns > 0 else 0
+
+    return {
+        "uncovered_properties": uncovered_properties,
+        "domain_coverage_pct": domain_coverage_pct,
+        "total_domain_properties": total_domain_properties,
+        "covered_domain_properties": total_domain_properties - len(uncovered_properties),
+        "overall_pct": overall_pct,
+    }
+
+
+def _generate_action_items(action_items: list[dict]) -> list[dict]:
+    """Sort action items by severity (error > warning > info), then by table name.
+
+    Returns a new sorted list (mutates in-place for consistency with original).
+    """
+    severity_order = {"error": 0, "warning": 1, "info": 2}
+    action_items.sort(key=lambda a: (severity_order.get(a["severity"], 9), a["table"]))
+    return action_items
+
+
 def _build_report_data(
     system: dict,
     mappings: dict,
@@ -540,58 +592,32 @@ def _build_report_data(
             "coverage_pct": coverage_pct,
         })
 
-    # Reverse coverage: domain properties not covered by this source
-    uncovered_properties: list[dict] = []
-    total_domain_properties = 0
-    for cls_uri, cls_info in ontology_classes.items():
-        for prop_uri, prop_info in cls_info["properties"].items():
-            total_domain_properties += 1
-            if prop_uri not in all_mapped_properties:
-                uncovered_properties.append({
-                    "entity": cls_info["name"],
-                    "property": prop_info["name"],
-                    "label": prop_info["label"],
-                })
-
-    domain_coverage_pct = (
-        round(
-            (total_domain_properties - len(uncovered_properties))
-            / total_domain_properties * 100
-        )
-        if total_domain_properties > 0 else 0
+    coverage = _calculate_coverage(
+        ontology_classes, all_mapped_properties, total_columns, total_mapped
     )
 
-    overall_pct = round(total_mapped / total_columns * 100) if total_columns > 0 else 0
-
-    # Sort action items: errors first, then warnings, then info
-    severity_order = {"error": 0, "warning": 1, "info": 2}
-    action_items.sort(key=lambda a: (severity_order.get(a["severity"], 9), a["table"]))
+    action_items = _generate_action_items(action_items)
 
     # Entity-centric view
     entity_view = _build_entity_view(system, mappings, ontology_classes)
-
-    # Count action items by severity
-    error_count = sum(1 for a in action_items if a["severity"] == "error")
-    warning_count = sum(1 for a in action_items if a["severity"] == "warning")
-    info_count = sum(1 for a in action_items if a["severity"] == "info")
 
     return {
         "system": system,
         "tables": table_reports,
         "total_columns": total_columns,
         "total_mapped": total_mapped,
-        "overall_coverage_pct": overall_pct,
-        "domain_coverage_pct": domain_coverage_pct,
-        "total_domain_properties": total_domain_properties,
-        "covered_domain_properties": total_domain_properties - len(uncovered_properties),
+        "overall_coverage_pct": coverage["overall_pct"],
+        "domain_coverage_pct": coverage["domain_coverage_pct"],
+        "total_domain_properties": coverage["total_domain_properties"],
+        "covered_domain_properties": coverage["covered_domain_properties"],
         "match_distribution": match_distribution,
-        "uncovered_properties": uncovered_properties,
+        "uncovered_properties": coverage["uncovered_properties"],
         "out_of_scope_tables": out_of_scope_tables,
         "entity_view": entity_view,
         "action_items": action_items,
-        "error_count": error_count,
-        "warning_count": warning_count,
-        "info_count": info_count,
+        "error_count": sum(1 for a in action_items if a["severity"] == "error"),
+        "warning_count": sum(1 for a in action_items if a["severity"] == "warning"),
+        "info_count": sum(1 for a in action_items if a["severity"] == "info"),
     }
 
 
