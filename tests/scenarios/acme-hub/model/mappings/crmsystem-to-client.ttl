@@ -1,0 +1,32 @@
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix bronze-crm: <https://acme.example/bronze/crmsystem#> .
+@prefix acme: <https://acme.example/ontology/client#> .
+
+# ---------------------------------------------------------------------------
+# Table-level: Customers → CorporateClient (multi-source scenario)
+#
+# This exercises the multi-source pattern: AdminPulse.tblClient AND
+# CrmSystem.Customers both map to CorporateClient.  The projector must
+# generate per-source view models and a UNION ALL parent model.
+# ---------------------------------------------------------------------------
+bronze-crm:Customers skos:exactMatch acme:CorporateClient ;
+    kairos-map:mappingType "merge" .
+
+# ---------------------------------------------------------------------------
+# Column-level: Customers columns → Client properties
+# Uses different source column names than AdminPulse to verify per-source
+# column extraction.
+# ---------------------------------------------------------------------------
+bronze-crm:Customers_CustCode skos:exactMatch acme:clientId ;
+    kairos-map:transform "source.CustCode" .
+
+bronze-crm:Customers_CustName skos:exactMatch acme:clientName ;
+    kairos-map:transform "source.CustName" .
+
+bronze-crm:Customers_CustEmail skos:exactMatch acme:email ;
+    kairos-map:transform "source.CustEmail" .
+
+# Note: No VATNumber, City, Country mappings — these should appear as
+# CAST(NULL AS ...) in the CRM per-source model.
