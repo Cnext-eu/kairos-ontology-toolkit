@@ -28,14 +28,18 @@ from typing import Optional
 from rdflib import Graph, Namespace, URIRef, Literal, XSD
 from rdflib.namespace import OWL, RDF, RDFS
 
-from .uri_utils import camel_to_snake, local_name
+from .shared import (
+    KAIROS_EXT,
+    camel_to_snake,
+    local_name,
+    str_val as _str_val,
+    bool_val as _bool_val,
+    detect_ontology_uri as _detect_ontology_uri,
+    mmd_type as _mmd_type,
+    merge_ext_graph,
+)
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# kairos-ext namespace
-# ---------------------------------------------------------------------------
-KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
 
 # ---------------------------------------------------------------------------
 # XSD → SQL type mapping (S1 — Spark SQL types for MS Fabric Warehouse)
@@ -71,33 +75,9 @@ def _camel_to_snake(name: str) -> str:
     return camel_to_snake(name)
 
 
-def _mmd_type(sql_type: str) -> str:
-    """Sanitize a SQL type for use in a Mermaid erDiagram attribute.
-
-    Mermaid ATTRIBUTE_WORD only allows ``[A-Za-z0-9_]``.
-    Examples:
-      DECIMAL(18,4)   → DECIMAL_18_4
-      STRING          → STRING   (unchanged)
-      BOOLEAN         → BOOLEAN  (unchanged)
-    """
-    return re.sub(r"[^A-Za-z0-9_]", "_", sql_type).strip("_")
-
-
 def _local_name(uri: str) -> str:
     """Extract local name from a URI."""
     return local_name(uri)
-
-
-def _str_val(graph: Graph, subject: URIRef, predicate: URIRef, default: str = "") -> str:
-    val = graph.value(subject, predicate)
-    return str(val) if val is not None else default
-
-
-def _bool_val(graph: Graph, subject: URIRef, predicate: URIRef, default: bool = False) -> bool:
-    val = graph.value(subject, predicate)
-    if val is None:
-        return default
-    return str(val).lower() in ("true", "1", "yes")
 
 
 # PII keywords for projection-time GDPR warning (mirrors validator.PII_KEYWORDS)
@@ -249,14 +229,7 @@ def generate_silver_artifacts(
         ``{filename: content}`` mapping for DDL, ALTER, and .mmd files.
     """
     # Merge projection extension into working graph (R15)
-    merged = Graph()
-    for triple in graph:
-        merged.add(triple)
-    if projection_ext_path and projection_ext_path.exists():
-        ext_graph = Graph()
-        ext_graph.parse(str(projection_ext_path), format="turtle")
-        for triple in ext_graph:
-            merged.add(triple)
+    merged = merge_ext_graph(graph, projection_ext_path)
 
     # Merge SHACL shapes for NOT NULL inference (R11)
     shacl_graph: Optional[Graph] = None
@@ -567,14 +540,6 @@ def generate_silver_artifacts(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _detect_ontology_uri(graph: Graph, namespace: str) -> URIRef:
-    """Return the owl:Ontology URI for the given namespace, or a synthetic one."""
-    for s in graph.subjects(RDF.type, OWL.Ontology):
-        if str(s).startswith(namespace.rstrip("#/")):
-            return s
-    return URIRef(namespace.rstrip("#/"))
-
 
 def _resolve_external_table(
     graph: Graph, range_cls: URIRef, naming_conv: str,

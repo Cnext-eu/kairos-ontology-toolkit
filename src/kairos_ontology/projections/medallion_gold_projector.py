@@ -29,14 +29,19 @@ from typing import Optional
 from rdflib import Graph, Namespace, URIRef, Literal, XSD
 from rdflib.namespace import OWL, RDF, RDFS
 
-from .uri_utils import camel_to_snake, local_name
+from .shared import (
+    KAIROS_EXT,
+    camel_to_snake,
+    local_name,
+    str_val as _str_val,
+    bool_val as _bool_val,
+    int_val as _int_val,
+    detect_ontology_uri as _detect_ontology_uri,
+    mmd_type as _mmd_type,
+    merge_ext_graph,
+)
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# kairos-ext namespace
-# ---------------------------------------------------------------------------
-KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
 
 # ---------------------------------------------------------------------------
 # XSD → SQL type mapping (G8 — Power BI / DirectLake optimised types)
@@ -82,7 +87,7 @@ XSD_TO_TMDL: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Helpers (shared with silver but gold-specific overrides)
+# Helpers (gold-specific; shared helpers imported from .shared)
 # ---------------------------------------------------------------------------
 
 def _camel_to_snake(name: str) -> str:
@@ -95,47 +100,9 @@ def _to_pascal_case(name: str) -> str:
     return "".join(part.capitalize() for part in re.split(r"[-_ ]+", name))
 
 
-def _mmd_type(sql_type: str) -> str:
-    """Sanitise SQL type for Mermaid erDiagram attribute."""
-    return re.sub(r"[^A-Za-z0-9_]", "_", sql_type).strip("_")
-
-
 def _local_name(uri: str) -> str:
     """Extract local name from a URI."""
     return local_name(uri)
-
-
-def _str_val(graph: Graph, subject: URIRef, predicate: URIRef,
-             default: str = "") -> str:
-    val = graph.value(subject, predicate)
-    return str(val) if val is not None else default
-
-
-def _bool_val(graph: Graph, subject: URIRef, predicate: URIRef,
-              default: bool = False) -> bool:
-    val = graph.value(subject, predicate)
-    if val is None:
-        return default
-    return str(val).lower() in ("true", "1", "yes")
-
-
-def _int_val(graph: Graph, subject: URIRef, predicate: URIRef,
-             default: int = 0) -> int:
-    val = graph.value(subject, predicate)
-    if val is None:
-        return default
-    try:
-        return int(str(val))
-    except ValueError:
-        return default
-
-
-def _detect_ontology_uri(graph: Graph, namespace: str) -> URIRef:
-    """Return the owl:Ontology URI for the given namespace."""
-    for s in graph.subjects(RDF.type, OWL.Ontology):
-        if str(s).startswith(namespace.rstrip("#/")):
-            return s
-    return URIRef(namespace.rstrip("#/"))
 
 
 # ---------------------------------------------------------------------------
@@ -387,14 +354,7 @@ def build_gold_tables(
         Ordered list of ``GoldTableDef`` (date dim → dimensions → facts → bridges).
     """
     # Merge projection extension into working graph
-    merged = Graph()
-    for triple in graph:
-        merged.add(triple)
-    if projection_ext_path and projection_ext_path.exists():
-        ext_graph = Graph()
-        ext_graph.parse(str(projection_ext_path), format="turtle")
-        for triple in ext_graph:
-            merged.add(triple)
+    merged = merge_ext_graph(graph, projection_ext_path)
 
     # Merge SHACL shapes
     shacl_graph: Optional[Graph] = None
@@ -681,11 +641,7 @@ def generate_gold_artifacts(
     # extension file only once more for the 2 annotations below that are NOT
     # exposed on GoldTableDef.  A future refactor could return them from
     # build_gold_tables directly.
-    merged = Graph()
-    for triple in graph:
-        merged.add(triple)
-    if projection_ext_path and projection_ext_path.exists():
-        merged.parse(str(projection_ext_path), format="turtle")
+    merged = merge_ext_graph(graph, projection_ext_path)
     onto_uri = _detect_ontology_uri(merged, namespace)
     schema_name = _str_val(merged, onto_uri, KAIROS_EXT.goldSchema,
                            f"gold_{ontology_name}")

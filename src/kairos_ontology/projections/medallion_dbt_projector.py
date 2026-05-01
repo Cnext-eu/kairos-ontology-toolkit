@@ -35,6 +35,7 @@ from rdflib.namespace import OWL, RDF
 from jinja2 import Environment, FileSystemLoader
 
 from .uri_utils import camel_to_snake, extract_local_name
+from .shared import KAIROS_EXT, merge_ext_graph
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 KAIROS_MAP = Namespace("https://kairos.cnext.eu/mapping#")
-KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
 
 # ---------------------------------------------------------------------------
 # Source-type → target SQL type mappings (per platform)
@@ -2170,16 +2170,7 @@ def generate_dbt_artifacts(
 
     # Merge silver-ext triples into a working copy of the graph so naturalKey
     # and other silver annotations are visible during dbt silver model generation.
-    # Always work on a copy to avoid mutating the caller's shared graph object.
-    merged = Graph()
-    for triple in graph:
-        merged.add(triple)
-    if silver_ext_path and Path(silver_ext_path).exists():
-        ext_graph = Graph()
-        ext_graph.parse(str(silver_ext_path), format="turtle")
-        for triple in ext_graph:
-            merged.add(triple)
-    graph = merged
+    graph = merge_ext_graph(graph, silver_ext_path)
 
     # Parse source vocabulary — prefer sources_dir, fall back to bronze_dir
     systems = _parse_bronze(sources_dir or bronze_dir)
