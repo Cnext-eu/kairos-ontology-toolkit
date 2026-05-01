@@ -152,6 +152,60 @@ class TestDbtContent:
 
 
 # ===========================================================================
+# FK auto-inference via natural key matching
+# ===========================================================================
+
+class TestFKAutoInference:
+    """Verify FK auto-inference generates proper joins in E2E projection."""
+
+    def test_split_subclass_fk_join_generated(self, projected_hub):
+        """Split subclass models should auto-infer FK join to ClientType."""
+        client_dir = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "client"
+        )
+        # Check IndividualClient and SoleProprietorClient (split subclasses)
+        for model_name in ("individual_client", "sole_proprietor_client"):
+            sql_file = client_dir / f"{model_name}.sql"
+            if not sql_file.exists():
+                pytest.skip(f"{model_name}.sql not found")
+            content = sql_file.read_text(encoding="utf-8")
+            assert "client_type_ref" in content, (
+                f"{model_name} missing client_type_ref join alias"
+            )
+            assert "ref('client_type')" in content, (
+                f"{model_name} missing ref to client_type model"
+            )
+            assert "client_type_sk" in content, (
+                f"{model_name} missing client_type_sk FK column"
+            )
+            # Should NOT have NULL for client_type_sk
+            lines = content.split("\n")
+            sk_lines = [l for l in lines if "client_type_sk" in l]
+            for line in sk_lines:
+                assert "NULL" not in line, (
+                    f"{model_name}: client_type_sk is NULL, "
+                    f"auto-inference should have resolved it: {line}"
+                )
+
+    def test_fk_join_condition_uses_nk(self, projected_hub):
+        """FK join should reference the NK column of the target class."""
+        client_dir = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "client"
+        )
+        # Pick any split subclass
+        sql_file = client_dir / "individual_client.sql"
+        if not sql_file.exists():
+            pytest.skip("individual_client.sql not found")
+        content = sql_file.read_text(encoding="utf-8")
+        # Should join on type_code (ClientType's naturalKey)
+        assert "type_code" in content, (
+            "FK join missing type_code (ClientType NK) in join condition"
+        )
+
+
+# ===========================================================================
 # Gold / Power BI output tree
 # ===========================================================================
 

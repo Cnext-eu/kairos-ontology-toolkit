@@ -82,6 +82,12 @@ bronze-ap:tblClient_Country a kairos-bronze:SourceColumn ;
     kairos-bronze:dataType "nvarchar(50)" ;
     kairos-bronze:nullable "true"^^xsd:boolean .
 
+bronze-ap:tblClient_TypeCode a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "TypeCode" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
 # ---------------------------------------------------------------------------
 # tblClientPII — GDPR-sensitive data (separate source table)
 # ---------------------------------------------------------------------------

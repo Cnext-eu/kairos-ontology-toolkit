@@ -1391,14 +1391,81 @@ def _extract_fk_columns_and_joins(
                 break
 
         if source_col_name is None:
-            # No mapping — emit NULL placeholder with warning
+            # --- Auto-inference: find source column mapped to NK of range class ---
+            # Build set of column URIs from the current source table(s)
+            current_table_col_uris: set[str] = set()
+            if systems:
+                for (_, _, tbl_uri_ref) in source_refs:
+                    current_table_col_uris.update(
+                        _get_table_column_uris(systems, tbl_uri_ref)
+                    )
+
+            nk_prop_uris = _get_nk_property_uris(graph, str(range_cls))
+
+            if nk_prop_uris and current_table_col_uris:
+                # Collect all candidates per NK property — require exactly one
+                # unambiguous candidate per NK component
+                nk_candidates: list[tuple[str, str | None, list[str] | None]] = []
+                all_resolved = True
+                for nk_uri in nk_prop_uris:
+                    matches: list[tuple[str, str | None]] = []
+                    for col_uri, col_maps_list in mappings.get(
+                        "column_maps", {}
+                    ).items():
+                        if col_uri not in current_table_col_uris:
+                            continue
+                        for col_map in col_maps_list:
+                            if col_map.get("target_uri") == nk_uri:
+                                if col_map.get("transform"):
+                                    resolved = col_map["transform"].replace(
+                                        "source.", ""
+                                    )
+                                else:
+                                    bronze_col = bronze_col_lookup.get(col_uri)
+                                    if bronze_col:
+                                        resolved = bronze_col["name"]
+                                    else:
+                                        resolved = extract_local_name(col_uri)
+                                sc = col_map.get("source_columns")
+                                matches.append((resolved, sc))
+                    if len(matches) == 1:
+                        nk_candidates.append(
+                            (matches[0][0], None, matches[0][1])
+                        )
+                    else:
+                        all_resolved = False
+                        break
+
+                if all_resolved and len(nk_candidates) == len(nk_prop_uris):
+                    if len(nk_candidates) == 1:
+                        source_col_name = nk_candidates[0][0]
+                        source_columns = nk_candidates[0][2]
+                    else:
+                        # Composite NK: build ordered source column list
+                        source_col_name = nk_candidates[0][0]
+                        source_columns = [c[0] for c in nk_candidates]
+                    msg = (
+                        f"FK column '{fk_col_name}': auto-inferred join via "
+                        f"natural key of '{range_local}'."
+                    )
+                    logger.info(msg)
+
+        if source_col_name is None:
+            # No explicit mapping and auto-inference failed — emit NULL placeholder
+            prop_local = extract_local_name(str(prop))
             fk_columns.append({
                 "expression": "CAST(NULL AS {{ dbt_utils.type_string() }})",
                 "target_name": fk_col_name,
             })
+            remediation = (
+                f"Add 'bronze:<col> skos:exactMatch <{prop}>' to your mapping "
+                f"file, or map a source column to the natural key of "
+                f"'{range_local}'."
+            )
             msg = (
-                f"FK column '{fk_col_name}' has no SKOS mapping for property "
-                f"'{extract_local_name(str(prop))}' — emitting NULL placeholder."
+                f"FK column '{fk_col_name}' has no mapping for property "
+                f"'{prop_local}' and auto-inference found no match — "
+                f"emitting NULL placeholder. {remediation}"
             )
             warnings.append(msg)
             existing_aliases.add(fk_col_name)
@@ -1414,8 +1481,10 @@ def _extract_fk_columns_and_joins(
                 "target_name": fk_col_name,
             })
             msg = (
-                f"FK column '{fk_col_name}' targets class '{range_local}' which has "
-                f"no natural key — cannot auto-generate join. Emitting NULL placeholder."
+                f"FK column '{fk_col_name}' targets class '{range_local}' which "
+                f"has no kairos-ext:naturalKey — cannot generate join. "
+                f"Add 'kairos-ext:naturalKey \"<propertyName>\"' to the "
+                f"'{range_local}' class definition."
             )
             warnings.append(msg)
             existing_aliases.add(fk_col_name)
@@ -1501,6 +1570,36 @@ def _get_natural_key(graph: Graph, class_uri: str) -> list[str]:
         return [_camel_to_snake(c) for c in str(nk).split()]
 
     return []
+
+
+def _get_nk_property_uris(graph: Graph, class_uri: str) -> list[str]:
+    """Get the full URIs of properties that form the natural key of a class.
+
+    Resolves NK column names (from ``kairos-ext:naturalKey``) back to property URIs
+    by matching the camelCase name against ``rdfs:domain`` on the class and its parents.
+    """
+    nk = graph.value(URIRef(class_uri), KAIROS_EXT.term("naturalKey"))
+    if not nk:
+        return []
+
+    nk_names = str(nk).split()  # camelCase as declared in the annotation
+    cls_ref = URIRef(class_uri)
+
+    # Collect all domain classes (self + parents) for property lookup
+    domain_classes = _get_class_and_parents(graph, class_uri)
+
+    uris: list[str] = []
+    for name in nk_names:
+        found = False
+        for domain_cls in domain_classes:
+            for prop in graph.subjects(RDFS.domain, URIRef(domain_cls)):
+                if extract_local_name(str(prop)) == name:
+                    uris.append(str(prop))
+                    found = True
+                    break
+            if found:
+                break
+    return uris
 
 
 def _gen_schema_yaml(
