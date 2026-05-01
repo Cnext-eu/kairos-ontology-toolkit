@@ -1,0 +1,73 @@
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix bronze-bp: <https://acme.example/bronze/billingpro#> .
+@prefix acme-inv: <https://acme.example/ontology/invoice#> .
+@prefix acme:     <https://acme.example/ontology/client#> .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblInvoice → Invoice (direct 1:1)
+# ---------------------------------------------------------------------------
+bronze-bp:tblInvoice skos:exactMatch acme-inv:Invoice ;
+    kairos-map:mappingType "direct" .
+
+# Column-level: tblInvoice columns → Invoice properties
+bronze-bp:tblInvoice_InvoiceNumber skos:exactMatch acme-inv:invoiceNumber ;
+    kairos-map:transform "source.InvoiceNumber" .
+
+bronze-bp:tblInvoice_InvoiceDate skos:exactMatch acme-inv:invoiceDate ;
+    kairos-map:transform "CAST(source.InvoiceDate AS DATE)" .
+
+bronze-bp:tblInvoice_TotalAmount skos:exactMatch acme-inv:totalAmount ;
+    kairos-map:transform "CAST(source.TotalAmount AS DECIMAL(18,2))" .
+
+# Cross-domain FK: ClientRef → issuedTo (resolves to client_sk join)
+bronze-bp:tblInvoice_ClientRef skos:exactMatch acme-inv:issuedTo ;
+    kairos-map:transform "source.ClientRef" ;
+    rdfs:comment "FK to client.client_id — resolved as cross-domain SK join." .
+
+bronze-bp:tblInvoice_Currency skos:exactMatch acme-inv:currency ;
+    kairos-map:transform "source.Currency" ;
+    kairos-map:defaultValue "'EUR'" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblInvoiceLine → InvoiceLine (direct 1:1)
+# ---------------------------------------------------------------------------
+bronze-bp:tblInvoiceLine skos:exactMatch acme-inv:InvoiceLine ;
+    kairos-map:mappingType "direct" .
+
+# Column-level: tblInvoiceLine columns → InvoiceLine properties
+bronze-bp:tblInvoiceLine_LineID skos:exactMatch acme-inv:lineId ;
+    kairos-map:transform "CAST(source.LineID AS STRING)" .
+
+bronze-bp:tblInvoiceLine_Description skos:exactMatch acme-inv:description ;
+    kairos-map:transform "source.Description" ;
+    kairos-map:defaultValue "'No description'" .
+
+bronze-bp:tblInvoiceLine_Quantity skos:exactMatch acme-inv:quantity ;
+    kairos-map:transform "source.Quantity" .
+
+bronze-bp:tblInvoiceLine_UnitPrice skos:exactMatch acme-inv:unitPrice ;
+    kairos-map:transform "CAST(source.UnitPrice AS DECIMAL(18,2))" .
+
+# FK: InvoiceID → belongsToInvoice (intra-domain FK)
+bronze-bp:tblInvoiceLine_InvoiceID skos:exactMatch acme-inv:belongsToInvoice ;
+    kairos-map:transform "source.InvoiceID" ;
+    rdfs:comment "FK to invoice.invoice_number — resolved as intra-domain SK join." .
+
+# Derived column using sourceColumns (multi-source column mapping)
+bronze-bp:tblInvoiceLine_LineID skos:closeMatch acme-inv:lineTotal ;
+    kairos-map:sourceColumns "Quantity UnitPrice" ;
+    kairos-map:transform "source.Quantity * source.UnitPrice" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblInvoiceTag → InvoiceTag (reference/bridge)
+# ---------------------------------------------------------------------------
+bronze-bp:tblInvoiceTag skos:exactMatch acme-inv:InvoiceTag ;
+    kairos-map:mappingType "direct" .
+
+bronze-bp:tblInvoiceTag_TagCode skos:exactMatch acme-inv:tagCode ;
+    kairos-map:transform "source.TagCode" .
+
+bronze-bp:tblInvoiceTag_Label skos:exactMatch acme-inv:tagLabel ;
+    kairos-map:transform "source.Label" .

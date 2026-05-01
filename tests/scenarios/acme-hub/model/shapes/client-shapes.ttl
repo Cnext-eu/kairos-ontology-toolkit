@@ -1,0 +1,64 @@
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix acme: <https://acme.example/ontology/client#> .
+
+# ---------------------------------------------------------------------------
+# SHACL shapes for Client domain
+# ---------------------------------------------------------------------------
+
+acme:ClientShape a sh:NodeShape ;
+    sh:targetClass acme:Client ;
+    sh:property [
+        sh:path acme:clientId ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:minLength 1 ;
+    ] ;
+    sh:property [
+        sh:path acme:clientName ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:minLength 1 ;
+    ] ;
+    sh:property [
+        sh:path acme:email ;
+        sh:datatype xsd:string ;
+        sh:pattern "^[^@]+@[^@]+\\.[^@]+$" ;
+    ] .
+
+acme:CorporateClientShape a sh:NodeShape ;
+    sh:targetClass acme:CorporateClient ;
+    sh:property [
+        sh:path acme:vatNumber ;
+        sh:datatype xsd:string ;
+        sh:pattern "^[A-Z]{2}[0-9]+" ;
+    ] .
+
+acme:ClientTypeShape a sh:NodeShape ;
+    sh:targetClass acme:ClientType ;
+    sh:property [
+        sh:path acme:typeCode ;
+        sh:datatype xsd:integer ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path acme:typeLabel ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:minLength 1 ;
+    ] .
+
+acme:ClientPIIShape a sh:NodeShape ;
+    sh:targetClass acme:ClientPII ;
+    sh:property [
+        sh:path acme:nationalId ;
+        sh:datatype xsd:string ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path acme:dateOfBirth ;
+        sh:datatype xsd:date ;
+        sh:maxCount 1 ;
+    ] .

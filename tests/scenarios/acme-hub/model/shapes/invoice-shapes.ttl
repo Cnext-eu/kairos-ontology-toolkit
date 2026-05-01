@@ -1,0 +1,55 @@
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix acme-inv: <https://acme.example/ontology/invoice#> .
+
+# ---------------------------------------------------------------------------
+# SHACL shapes for Invoice domain
+# ---------------------------------------------------------------------------
+
+acme-inv:InvoiceShape a sh:NodeShape ;
+    sh:targetClass acme-inv:Invoice ;
+    sh:property [
+        sh:path acme-inv:invoiceNumber ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path acme-inv:invoiceDate ;
+        sh:datatype xsd:date ;
+        sh:minCount 1 ;
+    ] ;
+    sh:property [
+        sh:path acme-inv:totalAmount ;
+        sh:datatype xsd:decimal ;
+        sh:minCount 1 ;
+    ] .
+
+acme-inv:InvoiceLineShape a sh:NodeShape ;
+    sh:targetClass acme-inv:InvoiceLine ;
+    sh:property [
+        sh:path acme-inv:lineId ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path acme-inv:quantity ;
+        sh:datatype xsd:integer ;
+        sh:minCount 1 ;
+        sh:minInclusive 1 ;
+    ] .
+
+acme-inv:InvoiceTagShape a sh:NodeShape ;
+    sh:targetClass acme-inv:InvoiceTag ;
+    sh:property [
+        sh:path acme-inv:tagCode ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path acme-inv:tagLabel ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+    ] .

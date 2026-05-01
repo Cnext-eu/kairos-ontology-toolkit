@@ -1,0 +1,164 @@
+@prefix bronze-ap: <https://acme.example/bronze/adminpulse#> .
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+# ---------------------------------------------------------------------------
+# Source system
+# ---------------------------------------------------------------------------
+bronze-ap:AdminPulse a kairos-bronze:SourceSystem ;
+    rdfs:label "AdminPulse" ;
+    kairos-bronze:connectionType "jdbc" ;
+    kairos-bronze:database "AP_Prod" ;
+    kairos-bronze:schema "dbo" .
+
+# ---------------------------------------------------------------------------
+# tblClient — source for split pattern (CorporateClient / SoleProp / Individual)
+# ---------------------------------------------------------------------------
+bronze-ap:tblClient a kairos-bronze:SourceTable ;
+    rdfs:label "tblClient" ;
+    kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+    kairos-bronze:tableName "tblClient" ;
+    kairos-bronze:primaryKeyColumns "ClientID" ;
+    kairos-bronze:incrementalColumn "ModifiedDate" .
+
+bronze-ap:tblClient_ClientID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "ClientID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblClient_Name a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "Name" ;
+    kairos-bronze:dataType "nvarchar(200)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblClient_VATNumber a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "VATNumber" ;
+    kairos-bronze:dataType "nvarchar(50)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+bronze-ap:tblClient_Email a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "Email" ;
+    kairos-bronze:dataType "nvarchar(100)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+bronze-ap:tblClient_Type a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "Type" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblClient_IsActive a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "IsActive" ;
+    kairos-bronze:dataType "bit" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblClient_CreatedDate a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "CreatedDate" ;
+    kairos-bronze:dataType "datetime" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblClient_ModifiedDate a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "ModifiedDate" ;
+    kairos-bronze:dataType "datetime" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblClient_City a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "City" ;
+    kairos-bronze:dataType "nvarchar(100)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+bronze-ap:tblClient_Country a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClient ;
+    kairos-bronze:columnName "Country" ;
+    kairos-bronze:dataType "nvarchar(50)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# tblClientPII — GDPR-sensitive data (separate source table)
+# ---------------------------------------------------------------------------
+bronze-ap:tblClientPII a kairos-bronze:SourceTable ;
+    rdfs:label "tblClientPII" ;
+    kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+    kairos-bronze:tableName "tblClientPII" ;
+    kairos-bronze:primaryKeyColumns "ClientID" .
+
+bronze-ap:tblClientPII_ClientID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClientPII ;
+    kairos-bronze:columnName "ClientID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblClientPII_NationalID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClientPII ;
+    kairos-bronze:columnName "NationalID" ;
+    kairos-bronze:dataType "nvarchar(30)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+bronze-ap:tblClientPII_DateOfBirth a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClientPII ;
+    kairos-bronze:columnName "DateOfBirth" ;
+    kairos-bronze:dataType "date" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# tblClientType — reference data
+# ---------------------------------------------------------------------------
+bronze-ap:tblClientType a kairos-bronze:SourceTable ;
+    rdfs:label "tblClientType" ;
+    kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+    kairos-bronze:tableName "tblClientType" ;
+    kairos-bronze:primaryKeyColumns "TypeCode" .
+
+bronze-ap:tblClientType_TypeCode a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClientType ;
+    kairos-bronze:columnName "TypeCode" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblClientType_Label a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblClientType ;
+    kairos-bronze:columnName "Label" ;
+    kairos-bronze:dataType "nvarchar(50)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# tblRelation — source for deduplication scenario
+# ---------------------------------------------------------------------------
+bronze-ap:tblRelation a kairos-bronze:SourceTable ;
+    rdfs:label "tblRelation" ;
+    kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+    kairos-bronze:tableName "tblRelation" ;
+    kairos-bronze:primaryKeyColumns "RelationID" .
+
+bronze-ap:tblRelation_RelationID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblRelation ;
+    kairos-bronze:columnName "RelationID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblRelation_ClientID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblRelation ;
+    kairos-bronze:columnName "ClientID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblRelation_Type a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblRelation ;
+    kairos-bronze:columnName "Type" ;
+    kairos-bronze:dataType "nvarchar(20)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+bronze-ap:tblRelation_ModifiedDate a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblRelation ;
+    kairos-bronze:columnName "ModifiedDate" ;
+    kairos-bronze:dataType "datetime" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .

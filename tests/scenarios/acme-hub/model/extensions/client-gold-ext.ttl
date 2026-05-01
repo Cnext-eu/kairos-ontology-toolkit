@@ -1,0 +1,53 @@
+@prefix acme: <https://acme.example/ontology/client#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+# ---------------------------------------------------------------------------
+# Gold-layer annotations for Client domain
+# ---------------------------------------------------------------------------
+
+# Ontology-level
+<https://acme.example/ontology/client>
+    kairos-ext:goldSchema "gold" ;
+    kairos-ext:goldInheritanceStrategy "class-per-table" ;
+    kairos-ext:namingConvention "camel-to-snake" .
+
+# Class-level — dimension tables
+acme:CorporateClient
+    kairos-ext:goldTableType "dimension" ;
+    kairos-ext:goldTableName "dim_corporate_client" ;
+    kairos-ext:scdType "2" ;
+    kairos-ext:discriminatorColumn "client_type" .
+
+acme:SoleProprietorClient
+    kairos-ext:goldTableType "dimension" ;
+    kairos-ext:goldTableName "dim_sole_proprietor_client" .
+
+acme:IndividualClient
+    kairos-ext:goldTableType "dimension" ;
+    kairos-ext:goldTableName "dim_individual_client" .
+
+acme:ClientType
+    kairos-ext:goldTableType "dimension" ;
+    kairos-ext:goldTableName "dim_client_type" ;
+    kairos-ext:isReferenceData "true" .
+
+# Exclude GDPR satellite from gold layer
+acme:ClientPII
+    kairos-ext:goldExclude "true" ;
+    kairos-ext:gdprSatelliteOf acme:Client .
+
+# Property-level — column overrides + hierarchy + role-playing
+acme:clientCity
+    kairos-ext:goldColumnName "city" ;
+    kairos-ext:goldDataType "VARCHAR(100)" ;
+    kairos-ext:hierarchyName "ClientGeography" ;
+    kairos-ext:hierarchyLevel "2" .
+
+acme:clientCountry
+    kairos-ext:goldColumnName "country" ;
+    kairos-ext:goldDataType "VARCHAR(50)" ;
+    kairos-ext:hierarchyName "ClientGeography" ;
+    kairos-ext:hierarchyLevel "1" .
+
+acme:nationalId
+    kairos-ext:olsRestricted "true" .

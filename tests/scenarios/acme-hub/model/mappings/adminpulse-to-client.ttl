@@ -1,0 +1,90 @@
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix bronze-ap: <https://acme.example/bronze/adminpulse#> .
+@prefix acme: <https://acme.example/ontology/client#> .
+
+# ---------------------------------------------------------------------------
+# Table-level: split pattern — tblClient → 3 subclasses by Type discriminator
+# ---------------------------------------------------------------------------
+bronze-ap:tblClient skos:exactMatch acme:CorporateClient ;
+    kairos-map:mappingType "split" ;
+    kairos-map:filterCondition "source.Type = 0" .
+
+bronze-ap:tblClient skos:exactMatch acme:SoleProprietorClient ;
+    kairos-map:mappingType "split" ;
+    kairos-map:filterCondition "source.Type = 1" .
+
+bronze-ap:tblClient skos:exactMatch acme:IndividualClient ;
+    kairos-map:mappingType "split" ;
+    kairos-map:filterCondition "source.Type = 2" .
+
+# ---------------------------------------------------------------------------
+# Column-level: tblClient columns → Client properties
+# ---------------------------------------------------------------------------
+bronze-ap:tblClient_ClientID skos:exactMatch acme:clientId ;
+    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+
+bronze-ap:tblClient_Name skos:exactMatch acme:clientName ;
+    kairos-map:transform "source.Name" .
+
+bronze-ap:tblClient_VATNumber skos:exactMatch acme:vatNumber ;
+    kairos-map:transform "source.VATNumber" .
+
+bronze-ap:tblClient_Email skos:exactMatch acme:email ;
+    kairos-map:transform "source.Email" ;
+    kairos-map:defaultValue "'unknown@acme.example'" .
+
+bronze-ap:tblClient_IsActive skos:exactMatch acme:isActive ;
+    kairos-map:transform "CAST(source.IsActive AS BOOLEAN)" .
+
+bronze-ap:tblClient_CreatedDate skos:exactMatch acme:createdAt ;
+    kairos-map:transform "CAST(source.CreatedDate AS TIMESTAMP)" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblRelation → Client with dedup (many relations per client)
+# ---------------------------------------------------------------------------
+bronze-ap:tblRelation skos:narrowMatch acme:Client ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:deduplicationKey "ClientID" ;
+    kairos-map:deduplicationOrder "ModifiedDate DESC" .
+
+# Column-level: tblRelation columns
+bronze-ap:tblRelation_ClientID skos:exactMatch acme:clientId ;
+    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+
+# ---------------------------------------------------------------------------
+# Column-level: new city/country columns
+# ---------------------------------------------------------------------------
+bronze-ap:tblClient_City skos:exactMatch acme:clientCity ;
+    kairos-map:transform "source.City" .
+
+bronze-ap:tblClient_Country skos:exactMatch acme:clientCountry ;
+    kairos-map:transform "source.Country" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblClientPII → ClientPII (GDPR satellite)
+# ---------------------------------------------------------------------------
+bronze-ap:tblClientPII skos:exactMatch acme:ClientPII ;
+    kairos-map:mappingType "direct" .
+
+bronze-ap:tblClientPII_ClientID skos:exactMatch acme:clientId ;
+    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+
+bronze-ap:tblClientPII_NationalID skos:exactMatch acme:nationalId ;
+    kairos-map:transform "UPPER(TRIM(source.NationalID))" .
+
+bronze-ap:tblClientPII_DateOfBirth skos:exactMatch acme:dateOfBirth ;
+    kairos-map:transform "CAST(source.DateOfBirth AS DATE)" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblClientType → ClientType (reference data)
+# ---------------------------------------------------------------------------
+bronze-ap:tblClientType skos:exactMatch acme:ClientType ;
+    kairos-map:mappingType "direct" .
+
+bronze-ap:tblClientType_TypeCode skos:exactMatch acme:typeCode ;
+    kairos-map:transform "source.TypeCode" .
+
+bronze-ap:tblClientType_Label skos:exactMatch acme:typeLabel ;
+    kairos-map:transform "source.Label" .

@@ -1,0 +1,55 @@
+@prefix acme-inv: <https://acme.example/ontology/invoice#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+# ---------------------------------------------------------------------------
+# Gold-layer annotations for Invoice domain
+# ---------------------------------------------------------------------------
+
+# Ontology-level
+<https://acme.example/ontology/invoice>
+    kairos-ext:goldSchema "gold" ;
+    kairos-ext:generateDateDimension "true" ;
+    kairos-ext:generateTimeIntelligence "true" ;
+    kairos-ext:namingConvention "camel-to-snake" .
+
+# Class-level
+acme-inv:Invoice
+    kairos-ext:goldTableType "fact" ;
+    kairos-ext:goldTableName "fact_invoice" ;
+    kairos-ext:partitionBy "invoice_date" ;
+    kairos-ext:incrementalColumn "invoice_date" ;
+    kairos-ext:perspective "Finance" .
+
+acme-inv:InvoiceLine
+    kairos-ext:goldTableType "fact" ;
+    kairos-ext:goldTableName "fact_invoice_line" .
+
+acme-inv:InvoiceTag
+    kairos-ext:goldTableType "dimension" ;
+    kairos-ext:goldTableName "dim_invoice_tag" ;
+    kairos-ext:isReferenceData "true" .
+
+# Property-level — degenerate dimension, role-playing, column overrides
+acme-inv:invoiceNumber
+    kairos-ext:degenerateDimension "true" ;
+    kairos-ext:goldColumnName "invoice_number" ;
+    kairos-ext:goldDataType "VARCHAR(50)" .
+
+acme-inv:invoiceDate
+    kairos-ext:goldColumnName "invoice_date" ;
+    kairos-ext:goldDataType "DATE" ;
+    kairos-ext:rolePlayingAs "OrderDate" .
+
+acme-inv:totalAmount
+    kairos-ext:measureExpression "SUM([total_amount])" ;
+    kairos-ext:measureFormatString "#,##0.00" ;
+    kairos-ext:goldDataType "DECIMAL(18,2)" ;
+    kairos-ext:nullable "false" .
+
+acme-inv:lineTotal
+    kairos-ext:measureExpression "SUM([line_total])" ;
+    kairos-ext:measureFormatString "#,##0.00" .
+
+# Junction table — exercises junctionTableName in gold
+acme-inv:hasTag
+    kairos-ext:junctionTableName "invoice_tag_bridge" .
