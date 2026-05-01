@@ -28,6 +28,10 @@ bronze-ap:tblClient_ClientID skos:exactMatch acme:clientId ;
 bronze-ap:tblClient_Name skos:exactMatch acme:clientName ;
     kairos-map:transform "source.Name" .
 
+# Multi-target: same source column → second target property
+bronze-ap:tblClient_Name skos:exactMatch acme:displayName ;
+    kairos-map:transform "source.Name" .
+
 bronze-ap:tblClient_VATNumber skos:exactMatch acme:vatNumber ;
     kairos-map:transform "source.VATNumber" .
 

@@ -266,13 +266,13 @@ class TestSkosMapping:
 
         id_key = "https://example.com/bronze/adminpulse#tblClient_ClientID"
         assert id_key in col_maps
-        assert col_maps[id_key]["transform"] == "CAST(source.ClientID AS STRING)"
-        assert col_maps[id_key]["match_type"] == "exactMatch"
+        assert col_maps[id_key][0]["transform"] == "CAST(source.ClientID AS STRING)"
+        assert col_maps[id_key][0]["match_type"] == "exactMatch"
 
         name_key = "https://example.com/bronze/adminpulse#tblClient_Name"
         assert name_key in col_maps
-        assert col_maps[name_key]["transform"] == "TRIM(source.Name)"
-        assert col_maps[name_key]["match_type"] == "closeMatch"
+        assert col_maps[name_key][0]["transform"] == "TRIM(source.Name)"
+        assert col_maps[name_key][0]["match_type"] == "closeMatch"
 
     def test_parse_skos_empty_dir(self, tmp_path):
         empty = tmp_path / "empty_map"
@@ -338,9 +338,38 @@ class TestSkosMapping:
         d.mkdir()
         (d / "default-val.ttl").write_text(default_ttl, encoding="utf-8")
         maps = _parse_skos_mappings(d)
-        col = maps["column_maps"]["https://example.com/bronze/adminpulse#tblClient_Email"]
+        col = maps["column_maps"]["https://example.com/bronze/adminpulse#tblClient_Email"][0]
         assert col["default_value"] == "'unknown@example.com'"
         assert col["transform"] == "source.Email"
+
+    def test_parse_multi_target_column(self, tmp_path):
+        """One source column → two target properties produces two entries."""
+        multi_ttl = textwrap.dedent("""\
+            @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+            @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+            @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+            @prefix party: <http://kairos.example/ontology/> .
+
+            bronze-ap:tblClient skos:exactMatch party:Client ;
+                kairos-map:mappingType "direct" .
+
+            bronze-ap:tblClient_Name skos:exactMatch party:clientName ;
+                kairos-map:transform "source.Name" .
+
+            bronze-ap:tblClient_Name skos:exactMatch party:displayName ;
+                kairos-map:transform "source.Name" .
+        """)
+        d = tmp_path / "mappings"
+        d.mkdir()
+        (d / "multi-target.ttl").write_text(multi_ttl, encoding="utf-8")
+        maps = _parse_skos_mappings(d)
+        col_key = "https://example.com/bronze/adminpulse#tblClient_Name"
+        assert col_key in maps["column_maps"]
+        targets = maps["column_maps"][col_key]
+        assert len(targets) == 2, f"Expected 2 targets, got {len(targets)}"
+        target_uris = {t["target_uri"] for t in targets}
+        assert "http://kairos.example/ontology/clientName" in target_uris
+        assert "http://kairos.example/ontology/displayName" in target_uris
 
 
 # ---------------------------------------------------------------------------

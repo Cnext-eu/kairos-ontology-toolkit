@@ -69,6 +69,12 @@ acme:clientName a owl:DatatypeProperty ;
     rdfs:domain acme:Client ;
     rdfs:range xsd:string .
 
+acme:displayName a owl:DatatypeProperty ;
+    rdfs:label "display name" ;
+    rdfs:comment "Short display name (may duplicate clientName from same source column)." ;
+    rdfs:domain acme:Client ;
+    rdfs:range xsd:string .
+
 acme:vatNumber a owl:DatatypeProperty ;
     rdfs:label "VAT number" ;
     rdfs:comment "VAT registration number (corporate/sole-prop only)." ;

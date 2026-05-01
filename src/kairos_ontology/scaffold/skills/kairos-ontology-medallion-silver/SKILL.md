@@ -560,25 +560,31 @@ output/medallion/dbt/
 
 ### SKOS mapping reference
 
-| SKOS Property | Meaning |
-|---------------|---------|
-| `skos:exactMatch` | 1:1, same semantics |
-| `skos:closeMatch` | 1:1 but needs transformation |
-| `skos:narrowMatch` | Source more specific -> domain broader |
-| `skos:broadMatch` | Source broader -> filter/split required |
-| `skos:relatedMatch` | Indirect - business logic / lookup |
+| SKOS Property | Meaning | dbt Behaviour |
+|---------------|---------|---------------|
+| `skos:exactMatch` | 1:1, same semantics | Direct column mapping (default) |
+| `skos:closeMatch` | 1:1 but needs transformation | Same SQL; annotated in `_models.yml` |
+| `skos:narrowMatch` | Source more specific → domain broader | Same SQL; annotated in `_models.yml` |
+| `skos:broadMatch` | Source broader → filter/split required | Same SQL; annotated in `_models.yml` |
+| `skos:relatedMatch` | Indirect — business logic / lookup | Same SQL; annotated in `_models.yml` |
+
+> **Multi-target columns:** One source column can map to multiple target properties
+> using separate SKOS match statements. All mappings are generated.
 
 ### kairos-map: properties
 
 | Property | Level | Description |
 |----------|-------|-------------|
-| `kairos-map:mappingType` | Table | `direct`, `split`, `merge`, `pivot`, `lookup` |
+| `kairos-map:mappingType` | Table | `direct`, `split`, `merge` (supported); `pivot`, `lookup` (planned — emits warning) |
 | `kairos-map:transform` | Column | SQL expression (`source.` prefix for columns) |
 | `kairos-map:sourceColumns` | Column | Space-separated source columns used |
 | `kairos-map:defaultValue` | Column | Default when source is NULL |
 | `kairos-map:filterCondition` | Table | SQL WHERE fragment |
 | `kairos-map:deduplicationKey` | Table | Columns for ROW_NUMBER() dedup |
 | `kairos-map:deduplicationOrder` | Table | ORDER BY for dedup |
+
+> **Warning:** Using `pivot` or `lookup` as `mappingType` will emit a warning
+> and skip that table mapping. These patterns require manual dbt model authoring.
 
 ### dbt test mapping from SHACL
 

@@ -383,6 +383,78 @@ class TestMultiSource:
 
 
 # ---------------------------------------------------------------------------
+# Multi-target column mapping tests — one source column → multiple targets
+# ---------------------------------------------------------------------------
+
+class TestMultiTargetColumn:
+    """When one source column maps to multiple target properties, all should appear."""
+
+    def test_display_name_in_per_source_view(self, client_dbt_artifacts):
+        """tblClient_Name maps to both clientName and displayName."""
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_admin_pulse.sql"
+        )
+        sql = client_dbt_artifacts[key]
+        assert "display_name" in sql, (
+            "Multi-target: displayName should appear in per-source view"
+        )
+        assert "client_name" in sql, (
+            "Multi-target: clientName should also appear"
+        )
+
+    def test_display_name_in_union_model(self, client_dbt_artifacts):
+        """Union model should include both client_name and display_name."""
+        key = _find_artifact(client_dbt_artifacts, "/corporate_client.sql")
+        sql = client_dbt_artifacts[key]
+        assert "display_name" in sql, (
+            "Multi-target: displayName missing from union model"
+        )
+
+    def test_display_name_in_schema_yaml(self, client_dbt_artifacts):
+        """Schema YAML should document the displayName column."""
+        key = _find_artifact(client_dbt_artifacts, "_models.yml")
+        if key is None:
+            pytest.skip("No _models.yml generated")
+        yaml_content = client_dbt_artifacts[key]
+        assert "display_name" in yaml_content, (
+            "Multi-target: displayName missing from schema YAML"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Match type in schema YAML tests
+# ---------------------------------------------------------------------------
+
+class TestMatchTypeInSchema:
+    """Non-exactMatch columns should have match type annotation in schema YAML."""
+
+    def test_close_match_annotation_in_schema(self, invoice_dbt_artifacts):
+        """lineTotal uses closeMatch — should appear in schema YAML description."""
+        key = _find_artifact(invoice_dbt_artifacts, "_models.yml")
+        if key is None:
+            pytest.skip("No _models.yml generated")
+        yaml_content = invoice_dbt_artifacts[key]
+        assert "closeMatch" in yaml_content, (
+            "closeMatch annotation missing from schema YAML for lineTotal"
+        )
+
+    def test_exact_match_not_annotated(self, invoice_dbt_artifacts):
+        """exactMatch columns should NOT get match type annotation."""
+        key = _find_artifact(invoice_dbt_artifacts, "_models.yml")
+        if key is None:
+            pytest.skip("No _models.yml generated")
+        yaml_content = invoice_dbt_artifacts[key]
+        # invoice_number uses exactMatch — should NOT have annotation
+        lines = yaml_content.split("\n")
+        for line in lines:
+            if "invoice_number" in line:
+                assert "exactMatch" not in line, (
+                    "exactMatch should not be annotated in schema YAML"
+                )
+                break
+
+
+# ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
 
