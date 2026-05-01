@@ -173,9 +173,18 @@ if ($confirm -ne 'y') {
 Write-Host ""
 Write-Host "📝 Updating version numbers..." -ForegroundColor Cyan
 
-# Update pyproject.toml
-$pyprojectContent = $pyprojectContent -replace 'version\s*=\s*"[^"]+"', "version = `"$newVersion`""
-Set-Content "pyproject.toml" -Value $pyprojectContent -NoNewline
+# Update pyproject.toml — only the [tool.poetry] version line (first occurrence)
+$pyprojectLines = Get-Content "pyproject.toml"
+$replaced = $false
+$updatedLines = $pyprojectLines | ForEach-Object {
+    if (-not $replaced -and $_ -match '^\s*version\s*=\s*"[^"]+"') {
+        $replaced = $true
+        $_ -replace 'version\s*=\s*"[^"]+"', "version = `"$newVersion`""
+    } else {
+        $_
+    }
+}
+Set-Content "pyproject.toml" -Value ($updatedLines -join "`n") -NoNewline
 
 # Update __init__.py
 $initPath = "src\kairos_ontology\__init__.py"
