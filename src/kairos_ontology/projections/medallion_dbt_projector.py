@@ -906,6 +906,29 @@ def _gen_silver_models(
     return artifacts, warnings
 
 
+def _get_class_and_parents(graph: Graph, class_uri: str) -> set[str]:
+    """Return the set of class URIs including the given class and all ancestors.
+
+    Walks the rdfs:subClassOf chain upward, collecting all parent class URIs.
+    This enables inheritance: properties defined on a parent class are included
+    when generating models for a subclass.
+    """
+    result = {class_uri}
+    current = URIRef(class_uri)
+    visited = set()
+    while current not in visited:
+        visited.add(current)
+        parent = graph.value(current, RDFS.subClassOf)
+        if parent is None or str(parent) in result:
+            break
+        # Skip owl:Thing and other top-level classes
+        if str(parent).startswith("http://www.w3.org/"):
+            break
+        result.add(str(parent))
+        current = parent
+    return result
+
+
 def _extract_silver_columns(
     graph: Graph,
     class_uri: str,
@@ -976,12 +999,20 @@ def _extract_silver_columns(
 
     columns.append({"expression": iri_expr, "target_name": f"{model_name}_iri"})
 
-    # Datatype properties
+    # Collect domain classes: self + parent classes (for inheritance in split patterns)
+    domain_classes = _get_class_and_parents(graph, class_uri)
+
+    # Datatype properties (including inherited from parent classes)
+    seen_col_names: set[str] = set()
     for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
         domain = graph.value(prop, RDFS.domain)
-        if domain and str(domain) == class_uri:
+        if domain and str(domain) in domain_classes:
             prop_name = extract_local_name(str(prop))
             col_name = _camel_to_snake(prop_name)
+            # Deduplicate: skip if column already added (child overrides parent)
+            if col_name in seen_col_names:
+                continue
+            seen_col_names.add(col_name)
             range_uri = graph.value(prop, RDFS.range)
             # Use dbt_utils macros for portable silver types
             macro_type = _xsd_to_dbt_macro(range_uri)
@@ -1090,9 +1121,12 @@ def _extract_fk_columns_and_joins(
                         "data_type": col["data_type"],
                     }
 
+    # Collect domain classes: self + parent classes (for inheritance)
+    domain_classes = _get_class_and_parents(graph, class_uri)
+
     for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
         domain = graph.value(prop, RDFS.domain)
-        if domain is None or str(domain) != class_uri:
+        if domain is None or str(domain) not in domain_classes:
             continue
 
         # Skip junction-table properties (many-to-many)
@@ -1278,12 +1312,17 @@ def _gen_schema_yaml(
             "tests": ["not_null", "unique"],
         })
 
-        # Datatype properties
+        # Datatype properties (including inherited from parent classes)
+        domain_classes = _get_class_and_parents(graph, cls["uri"])
+        seen_schema_cols: set[str] = set()
         for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
             domain = graph.value(prop, RDFS.domain)
-            if domain and str(domain) == cls["uri"]:
+            if domain and str(domain) in domain_classes:
                 prop_name = extract_local_name(str(prop))
                 col_name = _camel_to_snake(prop_name)
+                if col_name in seen_schema_cols:
+                    continue
+                seen_schema_cols.add(col_name)
                 label = graph.value(prop, RDFS.label)
                 comment = graph.value(prop, RDFS.comment)
                 desc = str(comment) if comment else (str(label) if label else prop_name)
@@ -1321,10 +1360,10 @@ def _gen_schema_yaml(
                     "tests": tests,
                 })
 
-        # Object property FK columns
+        # Object property FK columns (including inherited from parent classes)
         for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
             domain = graph.value(prop, RDFS.domain)
-            if domain and str(domain) == cls["uri"]:
+            if domain and str(domain) in domain_classes:
                 # Skip junction-table properties
                 if graph.value(prop, KAIROS_EXT.term("junctionTableName")):
                     continue
