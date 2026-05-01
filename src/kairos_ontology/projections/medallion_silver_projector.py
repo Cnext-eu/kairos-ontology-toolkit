@@ -799,6 +799,10 @@ def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
         )
         # Skip if a column with the same name already exists (e.g. discriminator)
         if col_name in existing_col_names:
+            logger.debug(
+                "S3 flattening: skipping duplicate column '%s' from %s",
+                col_name, _local_name(str(cls_uri)),
+            )
             continue
         existing_col_names.add(col_name)
         # Nullability: S3 subtype columns are always nullable on parent
@@ -850,7 +854,7 @@ def _add_object_property_fk_cols(
         if graph.value(prop, KAIROS_EXT.junctionTableName):
             continue
         # Determine if this is a many-to-one FK column
-        has_explicit_col = _str_val(graph, prop, KAIROS_EXT.silverColumnName) is not None
+        has_explicit_col = bool(_str_val(graph, prop, KAIROS_EXT.silverColumnName))
         is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
         if not has_explicit_col and not is_functional \
                 and not _has_max_cardinality_1(graph, cls_uri, prop):

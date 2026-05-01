@@ -3,7 +3,7 @@ version: 2
 models:
 {%- for model in models %}
   - name: {{ model.name }}
-    description: "{{ model.description }}"
+    description: {{ model.description | tojson }}
 {%- if model.meta %}
     meta:
 {%- for key, value in model.meta.items() %}
@@ -13,7 +13,7 @@ models:
     columns:
 {%- for column in model.columns %}
       - name: {{ column.name }}
-        description: "{{ column.description }}"
+        description: {{ column.description | tojson }}
 {%- if column.meta %}
         meta:
 {%- for key, value in column.meta.items() %}

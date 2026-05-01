@@ -1038,8 +1038,8 @@ def _add_gold_fk_columns(
         prop_label = _camel_to_snake(_local_name(str(prop)))
         comment = comment_prefix or ""
 
-        # Role-playing dimension support
-        role_playing = _str_val(graph, prop, KAIROS_EXT.rolePlayingAs)
+        # Role-playing dimension support (planned — not yet implemented)
+        # role_playing = _str_val(graph, prop, KAIROS_EXT.rolePlayingAs)
 
         tbl.columns.append(GoldColumnDef(
             col_name, "INT", "Int64", nullable=nullable, comment=comment))
