@@ -424,7 +424,11 @@ def generate_silver_artifacts(
     inline_threshold = 3  # default: inline ref tables with ≤3 business columns
     onto_threshold = merged.value(onto_uri, KAIROS_EXT.inlineRefThreshold)
     if onto_threshold is not None:
-        inline_threshold = int(str(onto_threshold))
+        try:
+            inline_threshold = int(str(onto_threshold))
+        except ValueError:
+            logger.warning("Invalid inlineRefThreshold value '%s' — using default %d",
+                           onto_threshold, inline_threshold)
     _inline_small_ref_tables(tables, inline_threshold)
 
     # ----------------------------------------------------------------
@@ -731,8 +735,12 @@ def _not_null_from_shacl(shacl_graph: Optional[Graph], prop_uri: URIRef,
             path = shacl_graph.value(prop_shape, SH.path)
             if path == prop_uri:
                 min_count = shacl_graph.value(prop_shape, SH.minCount)
-                if min_count is not None and int(str(min_count)) >= 1:
-                    return True
+                if min_count is not None:
+                    try:
+                        if int(str(min_count)) >= 1:
+                            return True
+                    except ValueError:
+                        pass
     return False
 
 
@@ -1071,6 +1079,10 @@ def render_mermaid_svg(mmd_path: Path) -> Optional[Path]:
             timeout=60,
         )
         return svg_path
-    except (subprocess.CalledProcessError, FileNotFoundError,
-            subprocess.TimeoutExpired):
+    except subprocess.CalledProcessError as exc:
+        logger.warning("Mermaid render failed for %s: %s",
+                       mmd_path.name, exc.stderr.decode(errors="replace").strip())
+        return None
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Mermaid render error for %s: %s", mmd_path.name, exc)
         return None

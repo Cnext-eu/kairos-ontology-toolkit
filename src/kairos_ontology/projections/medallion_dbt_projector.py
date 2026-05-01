@@ -256,8 +256,9 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
     for ttl in sorted(sources_dir.rglob("*.ttl")):
         try:
             g.parse(ttl, format="turtle")
-        except Exception as exc:
+        except (SyntaxError, Exception) as exc:
             logger.warning("Could not parse vocabulary file %s: %s", ttl.name, exc)
+            continue
 
     systems: list[dict] = []
     for sys_uri in g.subjects(RDF.type, KAIROS_BRONZE.SourceSystem):
@@ -403,7 +404,8 @@ def _parse_split_annotations(mappings_dir: Path) -> dict[tuple[str, str], dict]:
     for ttl_path in sorted(mappings_dir.rglob("*.ttl")):
         try:
             content = ttl_path.read_text(encoding="utf-8")
-        except Exception:
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning("Could not read mapping file %s: %s", ttl_path.name, exc)
             continue
 
         # Extract prefix lines (needed to parse each block independently)
@@ -433,7 +435,9 @@ def _parse_split_annotations(mappings_dir: Path) -> dict[tuple[str, str], dict]:
             try:
                 block_g = Graph()
                 block_g.parse(data=prefix_block + stmt + " .", format="turtle")
-            except Exception:
+            except Exception as exc:
+                logger.debug("Skipping unparseable mapping block in %s: %s",
+                             ttl_path.name, exc)
                 continue
 
             # Look for table-level mappings in this block
@@ -589,8 +593,8 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str) -> dict[str, list]:
             try:
                 sg.parse(candidate, format="turtle")
                 loaded = True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Could not parse SHACL file %s: %s", candidate.name, exc)
             break
 
     # Fallback: load all shape files and filter by sh:targetClass
@@ -599,7 +603,8 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str) -> dict[str, list]:
             try:
                 sg.parse(sf, format="turtle")
                 loaded = True
-            except Exception:
+            except Exception as exc:
+                logger.debug("Could not parse SHACL file %s: %s", sf.name, exc)
                 continue
 
     if not loaded:

@@ -926,8 +926,12 @@ def _not_null_from_shacl(shacl_graph: Optional[Graph], prop_uri: URIRef,
             path = shacl_graph.value(prop_shape, SH.path)
             if path == prop_uri:
                 min_count = shacl_graph.value(prop_shape, SH.minCount)
-                if min_count is not None and int(str(min_count)) >= 1:
-                    return True
+                if min_count is not None:
+                    try:
+                        if int(str(min_count)) >= 1:
+                            return True
+                    except ValueError:
+                        pass
     return False
 
 
