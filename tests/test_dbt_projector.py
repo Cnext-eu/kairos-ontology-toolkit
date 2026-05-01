@@ -1448,3 +1448,210 @@ class TestSplitFilterCondition:
         assert "type = 0" not in content
         # Should have type = 1
         assert "type = 1" in content
+
+
+# ---------------------------------------------------------------------------
+# Natural-key warning tests
+# ---------------------------------------------------------------------------
+
+NK_ONTOLOGY_WITH_KEY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "NK Test Ontology" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:Account a owl:Class ;
+        rdfs:label "Account" ;
+        rdfs:comment "An account entity" ;
+        kairos-ext:naturalKey "accountCode" .
+
+    ex:accountCode a owl:DatatypeProperty ;
+        rdfs:label "account code" ;
+        rdfs:domain ex:Account ;
+        rdfs:range xsd:string .
+""")
+
+NK_ONTOLOGY_WITHOUT_KEY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "NK Test Ontology" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:Widget a owl:Class ;
+        rdfs:label "Widget" ;
+        rdfs:comment "A widget entity" .
+
+    ex:widgetCode a owl:DatatypeProperty ;
+        rdfs:label "widget code" ;
+        rdfs:domain ex:Widget ;
+        rdfs:range xsd:string .
+""")
+
+NK_BRONZE_TTL = textwrap.dedent("""\
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+    bronze-ap:AdminPulse a kairos-bronze:SourceSystem ;
+        rdfs:label "AdminPulse" ;
+        kairos-bronze:connectionType "jdbc" ;
+        kairos-bronze:database "AP_Prod" ;
+        kairos-bronze:schema "dbo" .
+
+    bronze-ap:tblAccount a kairos-bronze:SourceTable ;
+        rdfs:label "tblAccount" ;
+        kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+        kairos-bronze:tableName "tblAccount" ;
+        kairos-bronze:primaryKeyColumns "Code" .
+
+    bronze-ap:tblAccount_Code a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblAccount ;
+        kairos-bronze:columnName "Code" ;
+        kairos-bronze:dataType "nvarchar" ;
+        kairos-bronze:nullable "false"^^xsd:boolean ;
+        kairos-bronze:isPrimaryKey "true"^^xsd:boolean .
+
+    bronze-ap:tblWidget a kairos-bronze:SourceTable ;
+        rdfs:label "tblWidget" ;
+        kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+        kairos-bronze:tableName "tblWidget" ;
+        kairos-bronze:primaryKeyColumns "Code" .
+
+    bronze-ap:tblWidget_Code a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblWidget ;
+        kairos-bronze:columnName "Code" ;
+        kairos-bronze:dataType "nvarchar" ;
+        kairos-bronze:nullable "false"^^xsd:boolean ;
+        kairos-bronze:isPrimaryKey "true"^^xsd:boolean .
+""")
+
+NK_MAPPING_ACCOUNT_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix ex: <http://kairos.example/ontology/> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+
+    bronze-ap:tblAccount skos:exactMatch ex:Account ;
+        kairos-map:mappingType "direct" .
+
+    bronze-ap:tblAccount_Code skos:exactMatch ex:accountCode ;
+        kairos-map:transform "source.Code" .
+""")
+
+NK_MAPPING_WIDGET_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix ex: <http://kairos.example/ontology/> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+
+    bronze-ap:tblWidget skos:exactMatch ex:Widget ;
+        kairos-map:mappingType "direct" .
+
+    bronze-ap:tblWidget_Code skos:exactMatch ex:widgetCode ;
+        kairos-map:transform "source.Code" .
+""")
+
+
+class TestNaturalKeyWarning:
+    """Tests that missing kairos-ext:naturalKey emits a warning."""
+
+    @pytest.fixture
+    def nk_sources_dir(self, tmp_path):
+        d = tmp_path / "sources" / "adminpulse"
+        d.mkdir(parents=True)
+        (d / "adminpulse.vocabulary.ttl").write_text(
+            NK_BRONZE_TTL, encoding="utf-8"
+        )
+        return tmp_path / "sources"
+
+    @pytest.fixture
+    def nk_mappings_account(self, tmp_path):
+        d = tmp_path / "mappings"
+        d.mkdir(parents=True)
+        (d / "account.ttl").write_text(NK_MAPPING_ACCOUNT_TTL, encoding="utf-8")
+        return d
+
+    @pytest.fixture
+    def nk_mappings_widget(self, tmp_path):
+        d = tmp_path / "mappings"
+        d.mkdir(parents=True)
+        (d / "widget.ttl").write_text(NK_MAPPING_WIDGET_TTL, encoding="utf-8")
+        return d
+
+    def test_no_warning_when_natural_key_present(
+        self, template_dir, nk_sources_dir, nk_mappings_account, capsys,
+    ):
+        """Class WITH naturalKey annotation should NOT produce a warning."""
+        g = Graph()
+        g.parse(data=NK_ONTOLOGY_WITH_KEY_TTL, format="turtle")
+        classes = [{"uri": "http://kairos.example/ontology/Account",
+                     "name": "Account", "label": "Account",
+                     "comment": "An account entity"}]
+
+        generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="account",
+            sources_dir=nk_sources_dir,
+            mappings_dir=nk_mappings_account,
+        )
+        captured = capsys.readouterr()
+        assert "no kairos-ext:naturalKey" not in captured.out
+
+    def test_warning_when_natural_key_missing(
+        self, template_dir, nk_sources_dir, nk_mappings_widget, capsys,
+    ):
+        """Class WITHOUT naturalKey annotation should produce a warning."""
+        g = Graph()
+        g.parse(data=NK_ONTOLOGY_WITHOUT_KEY_TTL, format="turtle")
+        classes = [{"uri": "http://kairos.example/ontology/Widget",
+                     "name": "Widget", "label": "Widget",
+                     "comment": "A widget entity"}]
+
+        generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="widget",
+            sources_dir=nk_sources_dir,
+            mappings_dir=nk_mappings_widget,
+        )
+        captured = capsys.readouterr()
+        assert "no kairos-ext:naturalKey" in captured.out
+        assert "Widget" in captured.out
+
+    def test_warning_includes_remediation_guidance(
+        self, template_dir, nk_sources_dir, nk_mappings_widget, capsys,
+    ):
+        """Warning message should include actionable remediation guidance."""
+        g = Graph()
+        g.parse(data=NK_ONTOLOGY_WITHOUT_KEY_TTL, format="turtle")
+        classes = [{"uri": "http://kairos.example/ontology/Widget",
+                     "name": "Widget", "label": "Widget",
+                     "comment": "A widget entity"}]
+
+        generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="widget",
+            sources_dir=nk_sources_dir,
+            mappings_dir=nk_mappings_widget,
+        )
+        captured = capsys.readouterr()
+        # Warning should guide user to add naturalKey annotation
+        assert "silver extension file" in captured.out
