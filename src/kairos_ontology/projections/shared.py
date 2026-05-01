@@ -10,11 +10,47 @@ import from here rather than maintaining local copies.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF
+
+# ---------------------------------------------------------------------------
+# Typed dataclasses for structured projection data
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class OntologyClassInfo:
+    """Typed representation of an ontology class passed to projectors."""
+
+    uri: str
+    name: str
+    label: str
+    comment: str
+
+    def to_dict(self) -> dict[str, str]:
+        """Convert to the legacy dict format expected by projectors."""
+        return {
+            "uri": self.uri,
+            "name": self.name,
+            "label": self.label,
+            "comment": self.comment,
+        }
+
+
+@dataclass
+class OntologyMetadata:
+    """Provenance metadata extracted from an owl:Ontology declaration."""
+
+    label: str = ""
+    version: str = ""
+    namespace: str = ""
+    file_name: str = ""
+    description: str = ""
+
 
 # ---------------------------------------------------------------------------
 # kairos-ext namespace (shared across all medallion projectors)

@@ -2,6 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Tests for the dbt projector — bronze parsing, SKOS mappings, and artifact generation."""
 
+import logging
 import textwrap
 from pathlib import Path
 
@@ -1589,7 +1590,7 @@ class TestNaturalKeyWarning:
         return d
 
     def test_no_warning_when_natural_key_present(
-        self, template_dir, nk_sources_dir, nk_mappings_account, capsys,
+        self, template_dir, nk_sources_dir, nk_mappings_account, caplog,
     ):
         """Class WITH naturalKey annotation should NOT produce a warning."""
         g = Graph()
@@ -1598,20 +1599,20 @@ class TestNaturalKeyWarning:
                      "name": "Account", "label": "Account",
                      "comment": "An account entity"}]
 
-        generate_dbt_artifacts(
-            classes=classes,
-            graph=g,
-            template_dir=template_dir,
-            namespace="http://kairos.example/ontology/",
-            ontology_name="account",
-            sources_dir=nk_sources_dir,
-            mappings_dir=nk_mappings_account,
-        )
-        captured = capsys.readouterr()
-        assert "no kairos-ext:naturalKey" not in captured.out
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.projections.medallion_dbt_projector"):
+            generate_dbt_artifacts(
+                classes=classes,
+                graph=g,
+                template_dir=template_dir,
+                namespace="http://kairos.example/ontology/",
+                ontology_name="account",
+                sources_dir=nk_sources_dir,
+                mappings_dir=nk_mappings_account,
+            )
+        assert "no kairos-ext:naturalKey" not in caplog.text
 
     def test_warning_when_natural_key_missing(
-        self, template_dir, nk_sources_dir, nk_mappings_widget, capsys,
+        self, template_dir, nk_sources_dir, nk_mappings_widget, caplog,
     ):
         """Class WITHOUT naturalKey annotation should produce a warning."""
         g = Graph()
@@ -1620,21 +1621,21 @@ class TestNaturalKeyWarning:
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        generate_dbt_artifacts(
-            classes=classes,
-            graph=g,
-            template_dir=template_dir,
-            namespace="http://kairos.example/ontology/",
-            ontology_name="widget",
-            sources_dir=nk_sources_dir,
-            mappings_dir=nk_mappings_widget,
-        )
-        captured = capsys.readouterr()
-        assert "no kairos-ext:naturalKey" in captured.out
-        assert "Widget" in captured.out
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.projections.medallion_dbt_projector"):
+            generate_dbt_artifacts(
+                classes=classes,
+                graph=g,
+                template_dir=template_dir,
+                namespace="http://kairos.example/ontology/",
+                ontology_name="widget",
+                sources_dir=nk_sources_dir,
+                mappings_dir=nk_mappings_widget,
+            )
+        assert "no kairos-ext:naturalKey" in caplog.text
+        assert "Widget" in caplog.text
 
     def test_warning_includes_remediation_guidance(
-        self, template_dir, nk_sources_dir, nk_mappings_widget, capsys,
+        self, template_dir, nk_sources_dir, nk_mappings_widget, caplog,
     ):
         """Warning message should include actionable remediation guidance."""
         g = Graph()
@@ -1643,15 +1644,15 @@ class TestNaturalKeyWarning:
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        generate_dbt_artifacts(
-            classes=classes,
-            graph=g,
-            template_dir=template_dir,
-            namespace="http://kairos.example/ontology/",
-            ontology_name="widget",
-            sources_dir=nk_sources_dir,
-            mappings_dir=nk_mappings_widget,
-        )
-        captured = capsys.readouterr()
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.projections.medallion_dbt_projector"):
+            generate_dbt_artifacts(
+                classes=classes,
+                graph=g,
+                template_dir=template_dir,
+                namespace="http://kairos.example/ontology/",
+                ontology_name="widget",
+                sources_dir=nk_sources_dir,
+                mappings_dir=nk_mappings_widget,
+            )
         # Warning should guide user to add naturalKey annotation
-        assert "silver extension file" in captured.out
+        assert "silver extension file" in caplog.text

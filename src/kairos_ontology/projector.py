@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 from .projections.uri_utils import extract_local_name
+from .projections.shared import OntologyClassInfo
 
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report"]
 
@@ -902,12 +903,12 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             continue
         
         class_name = extract_local_name(class_uri)
-        classes.append({
-            'uri': class_uri,
-            'name': class_name,
-            'label': str(row.label) if row.label else class_name,
-            'comment': str(row.comment) if row.comment else f"{class_name} entity"
-        })
+        classes.append(OntologyClassInfo(
+            uri=class_uri,
+            name=class_name,
+            label=str(row.label) if row.label else class_name,
+            comment=str(row.comment) if row.comment else f"{class_name} entity",
+        ).to_dict())
     
     if not classes:
         return {}

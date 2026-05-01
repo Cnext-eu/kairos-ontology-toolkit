@@ -841,21 +841,22 @@ class TestNaturalKeyCompleteness:
     warning and the resulting SK / IRI columns become NULL placeholders.
     """
 
-    def test_no_nk_warnings_in_projection(self, projected_hub, capsys):
+    def test_no_nk_warnings_in_projection(self, projected_hub, caplog):
         """Re-run projection and confirm no 'SK and IRI will be NULL' warnings."""
         hub = projected_hub
         from kairos_ontology.projector import run_projections
 
-        run_projections(
-            ontologies_path=hub / "model" / "ontologies",
-            catalog_path=hub / "catalog-v001.xml",
-            output_path=hub / "output",
-            target="dbt",
-        )
-        captured = capsys.readouterr()
+        import logging
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.projections.medallion_dbt_projector"):
+            run_projections(
+                ontologies_path=hub / "model" / "ontologies",
+                catalog_path=hub / "catalog-v001.xml",
+                output_path=hub / "output",
+                target="dbt",
+            )
         # The projector-level warning specifically says "SK and IRI columns will be NULL"
         # (distinct from the FK-level warning about cross-domain naturalKey)
-        assert "SK and IRI columns will be NULL" not in captured.out, (
+        assert "SK and IRI columns will be NULL" not in caplog.text, (
             "One or more acme-hub classes are missing naturalKey — "
             "all entity classes must have kairos-ext:naturalKey in their "
             "domain ontology or silver extension file."

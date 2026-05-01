@@ -2308,7 +2308,7 @@ def generate_dbt_artifacts(
     # 1. Sources YAML (minimal — under models/silver/)
     if systems:
         artifacts.update(_gen_sources(systems, env))
-        print(f"    ✓ Generated {len(systems)} source definition(s)")
+        logger.info("Generated %d source definition(s)", len(systems))
 
     # 2. Silver entity models (read directly from bronze via source())
     silver, silver_warnings = _gen_silver_models(
@@ -2316,12 +2316,14 @@ def generate_dbt_artifacts(
         platform=target_platform,
     )
     artifacts.update(silver)
-    print(f"    ✓ Generated {len(silver)} silver model(s)")
+    logger.info("Generated %d silver model(s)", len(silver))
     if silver_warnings:
         for w in silver_warnings:
-            print(f"    ⚠️  {w}")
-        print(f"    ℹ️  {len(silver_warnings)} class(es) skipped — "
-              f"see projection-report.json for details")
+            logger.warning("%s", w)
+        logger.info(
+            "%d class(es) skipped — see projection-report.json for details",
+            len(silver_warnings),
+        )
 
     # 3. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(
@@ -2340,7 +2342,7 @@ def generate_dbt_artifacts(
         artifacts.update(gold)
         has_gold = len(gold) > 0
         if gold:
-            print(f"    ✓ Generated {len(gold)} gold model(s)")
+            logger.info("Generated %d gold model(s)", len(gold))
 
         # 6. Gold schema YAML with tests
         gold_schema = _gen_gold_schema_yaml(
@@ -2363,13 +2365,13 @@ def generate_dbt_artifacts(
         )
         if coverage:
             artifacts.update(coverage)
-            print("    ✓ Generated coverage report")
+            logger.info("Generated coverage report")
 
     # 8. Platform macros
     macros = _gen_macros(template_dir)
     artifacts.update(macros)
     if macros:
-        print(f"    ✓ Generated {len(macros)} platform macro(s)")
+        logger.info("Generated %d platform macro(s)", len(macros))
 
     return artifacts
 
