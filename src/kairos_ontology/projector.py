@@ -457,8 +457,21 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                                       domain=onto_name, target=target_name)
 
                 elif target_name == "dbt":
-                    # dbt also needs gold-ext.ttl for gold model generation
+                    # dbt needs silver-ext.ttl for naturalKey/silver annotations
                     src_file = onto_info["file"]
+                    if extensions_dir and extensions_dir.exists():
+                        candidates = list(extensions_dir.glob(f"{onto_name}-silver-ext.ttl"))
+                        candidates += list(extensions_dir.glob("*-silver-ext.ttl"))
+                        ext_path = candidates[0] if candidates else None
+                    if not ext_path:
+                        candidates = list(src_file.parent.glob(f"{onto_name}-silver-ext.ttl"))
+                        candidates += list(src_file.parent.glob("*-silver-ext.ttl"))
+                        ext_path = candidates[0] if candidates else None
+                    if ext_path:
+                        print(f"  [{onto_name}] Using silver ext: {ext_path.name}")
+                        report.record("info", f"Using silver ext: {ext_path.name}",
+                                      domain=onto_name, target=target_name)
+                    # dbt also needs gold-ext.ttl for gold model generation
                     if extensions_dir and extensions_dir.exists():
                         candidates = list(extensions_dir.glob(f"{onto_name}-gold-ext.ttl"))
                         candidates += list(extensions_dir.glob("*-gold-ext.ttl"))
@@ -891,6 +904,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             ontology_name, ontology_metadata=meta,
             bronze_dir=sources_dir, sources_dir=sources_dir, mappings_dir=mappings_dir,
             gold_ext_path=gold_ext_path,
+            silver_ext_path=projection_ext_path,
         )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts

@@ -2136,6 +2136,7 @@ def generate_dbt_artifacts(
     mappings_dir: Path = None,
     gold_ext_path: Path = None,
     target_platform: str = DEFAULT_PLATFORM,
+    silver_ext_path: Path = None,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -2156,6 +2157,8 @@ def generate_dbt_artifacts(
         gold_ext_path: Optional path to ``*-gold-ext.ttl`` for gold model generation.
         target_platform: Target SQL platform for type mapping.
             Options: ``"fabric"`` (default), ``"databricks"``, ``"spark"`` (alias for databricks).
+        silver_ext_path: Optional path to ``*-silver-ext.ttl`` for naturalKey and
+            other silver annotations used by the dbt silver layer.
 
     Returns:
         Dictionary of ``{file_path: content}`` for all generated artifacts.
@@ -2164,6 +2167,19 @@ def generate_dbt_artifacts(
     meta = ontology_metadata or {}
     onto_name = ontology_name or "domain"
     env = Environment(loader=FileSystemLoader(str(template_dir)))
+
+    # Merge silver-ext triples into a working copy of the graph so naturalKey
+    # and other silver annotations are visible during dbt silver model generation.
+    # Always work on a copy to avoid mutating the caller's shared graph object.
+    merged = Graph()
+    for triple in graph:
+        merged.add(triple)
+    if silver_ext_path and Path(silver_ext_path).exists():
+        ext_graph = Graph()
+        ext_graph.parse(str(silver_ext_path), format="turtle")
+        for triple in ext_graph:
+            merged.add(triple)
+    graph = merged
 
     # Parse source vocabulary — prefer sources_dir, fall back to bronze_dir
     systems = _parse_bronze(sources_dir or bronze_dir)
