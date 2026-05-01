@@ -870,21 +870,24 @@ def _gen_silver_models(
         filter_conditions = []
         for i, (src, raw_tbl, tbl_uri) in enumerate(source_refs):
             alias = _camel_to_snake(raw_tbl) if len(source_refs) == 1 else f"src_{i + 1}"
+            # Resolve per-CTE filter condition
+            cte_filter = ""
+            tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
+            for tbl_map in tbl_maps_list:
+                if tbl_map.get("target_uri") == cls_uri and tbl_map.get("filter_condition"):
+                    cte_filter = tbl_map["filter_condition"].replace("source.", "")
+                    filter_conditions.append(cte_filter)
+                    break
             source_ctes.append({
                 "source_name": src,
                 "table_name": raw_tbl,
                 "alias": alias,
+                "filter": cte_filter,
             })
-            tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
-            for tbl_map in tbl_maps_list:
-                if tbl_map.get("target_uri") == cls_uri and tbl_map.get("filter_condition"):
-                    filter_conditions.append(tbl_map["filter_condition"])
-                    break
 
-        # Determine WHERE clause from filter conditions
+        # Filter conditions are embedded in each CTE via cte.filter.
+        # No top-level WHERE needed — all filtering happens at the CTE level.
         where_clause = ""
-        if filter_conditions and len(source_refs) == 1:
-            where_clause = filter_conditions[0].replace("source.", "")
 
         content = template.render(
             model_name=model_name,

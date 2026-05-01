@@ -27,6 +27,9 @@
 {% if loop.first %}with {% else %}     {% endif %}{{ cte.alias }} as (
 
     select * from {{"{{"}} source('{{ cte.source_name }}', '{{ cte.table_name }}') {{"}}"}}
+{%- if cte.filter %}
+    where {{ cte.filter }}
+{%- endif %}
 
 ){% if not loop.last %},{% endif %}
 {%- endfor %}
