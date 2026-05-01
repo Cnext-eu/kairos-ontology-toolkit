@@ -13,8 +13,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from rdflib import Graph, Namespace
 
-from .conftest import HUB_ROOT
+from .conftest import HUB_ROOT, MAPPINGS_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -260,4 +261,244 @@ class TestCrossDomainConsistency:
         manifests = list(output.glob("*-projection-manifest.json"))
         assert len(manifests) >= 2, (
             f"Expected manifests for client + invoice, found: {[m.name for m in manifests]}"
+        )
+
+
+# ===========================================================================
+# Mapping cross-validation — RDF mappings ↔ dbt SQL output
+# ===========================================================================
+
+def _parse_expected_mappings(mapping_file: Path) -> dict:
+    """Parse a SKOS mapping TTL and return structured expectations.
+
+    Returns:
+        {
+            "table_mappings": [(bronze_table_local, target_class_local, mapping_type)],
+            "column_mappings": [(bronze_col_local, target_prop_local, transform)],
+            "fk_mappings": [(bronze_col_local, target_prop_local, transform)],
+        }
+
+    FK mappings (ObjectProperties that resolve to joins) are separated from
+    regular column mappings because they produce SK join columns, not direct
+    target-named columns in the SQL output.
+    """
+    from kairos_ontology.projections.uri_utils import extract_local_name
+
+    g = Graph()
+    g.parse(mapping_file, format="turtle")
+
+    SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
+    KAIROS_MAP = Namespace("https://kairos.cnext.eu/mapping#")
+    RDFS = Namespace("http://www.w3.org/2000/01/rdf-schema#")
+
+    match_preds = [
+        SKOS.exactMatch, SKOS.closeMatch, SKOS.narrowMatch,
+        SKOS.broadMatch, SKOS.relatedMatch,
+    ]
+
+    table_mappings = []
+    column_mappings = []
+    fk_mappings = []
+
+    for pred in match_preds:
+        for subj, obj in g.subject_objects(pred):
+            subj_local = extract_local_name(str(subj))
+            obj_local = extract_local_name(str(obj))
+            mapping_type = str(g.value(subj, KAIROS_MAP.mappingType) or "direct")
+            transform = str(g.value(subj, KAIROS_MAP.transform) or "")
+            comment = str(g.value(subj, RDFS.comment) or "")
+
+            # Heuristic: table-level mappings have PascalCase targets (classes)
+            # column-level have camelCase targets (properties)
+            if obj_local and obj_local[0].isupper():
+                table_mappings.append((subj_local, obj_local, mapping_type))
+            elif "FK" in comment or "join" in comment.lower():
+                # FK mappings produce SK join columns, not direct columns
+                fk_mappings.append((subj_local, obj_local, transform))
+            else:
+                column_mappings.append((subj_local, obj_local, transform))
+
+    return {
+        "table_mappings": table_mappings,
+        "column_mappings": column_mappings,
+        "fk_mappings": fk_mappings,
+    }
+
+
+def _to_snake_case(name: str) -> str:
+    """Convert camelCase/PascalCase to snake_case."""
+    import re
+    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+
+
+class TestMappingToSqlConsistency:
+    """Cross-validate: every column mapping in TTL → column in dbt SQL output."""
+
+    def test_adminpulse_column_mappings_in_sql(self, projected_hub):
+        """All AdminPulse column mappings should produce columns in dbt SQL."""
+        mapping_file = MAPPINGS_DIR / "adminpulse-to-client.ttl"
+        expected = _parse_expected_mappings(mapping_file)
+
+        client_dir = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "client"
+        )
+        # Collect all SQL content from client models
+        all_sql = ""
+        for f in client_dir.rglob("*.sql"):
+            all_sql += f.read_text(encoding="utf-8") + "\n"
+        all_sql_lower = all_sql.lower()
+
+        missing = []
+        for _bronze_col, target_prop, transform in expected["column_mappings"]:
+            # The target property should appear as a snake_case column alias
+            snake_col = _to_snake_case(target_prop)
+            if snake_col not in all_sql_lower:
+                missing.append(f"{target_prop} → {snake_col}")
+
+        assert not missing, (
+            f"Mapping columns not found in dbt SQL output:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+        )
+
+    def test_billingpro_column_mappings_in_sql(self, projected_hub):
+        """All BillingPro column mappings should produce columns in dbt SQL."""
+        mapping_file = MAPPINGS_DIR / "billingpro-to-invoice.ttl"
+        expected = _parse_expected_mappings(mapping_file)
+
+        invoice_dir = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "invoice"
+        )
+        all_sql = ""
+        for f in invoice_dir.rglob("*.sql"):
+            all_sql += f.read_text(encoding="utf-8") + "\n"
+        all_sql_lower = all_sql.lower()
+
+        missing = []
+        for _bronze_col, target_prop, transform in expected["column_mappings"]:
+            snake_col = _to_snake_case(target_prop)
+            if snake_col not in all_sql_lower:
+                missing.append(f"{target_prop} → {snake_col}")
+
+        assert not missing, (
+            f"Mapping columns not found in dbt SQL output:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+        )
+
+    def test_crmsystem_column_mappings_in_sql(self, projected_hub):
+        """All CRM system column mappings should produce columns in dbt SQL."""
+        mapping_file = MAPPINGS_DIR / "crmsystem-to-client.ttl"
+        expected = _parse_expected_mappings(mapping_file)
+
+        client_dir = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "client"
+        )
+        all_sql = ""
+        for f in client_dir.rglob("*.sql"):
+            all_sql += f.read_text(encoding="utf-8") + "\n"
+        all_sql_lower = all_sql.lower()
+
+        missing = []
+        for _bronze_col, target_prop, transform in expected["column_mappings"]:
+            snake_col = _to_snake_case(target_prop)
+            if snake_col not in all_sql_lower:
+                missing.append(f"{target_prop} → {snake_col}")
+
+        assert not missing, (
+            f"Mapping columns not found in dbt SQL output:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+        )
+
+    def test_transforms_in_sql(self, projected_hub):
+        """Transform expressions from mapping files should appear in SQL."""
+        mapping_file = MAPPINGS_DIR / "billingpro-to-invoice.ttl"
+        expected = _parse_expected_mappings(mapping_file)
+
+        invoice_dir = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "invoice"
+        )
+        all_sql = ""
+        for f in invoice_dir.rglob("*.sql"):
+            all_sql += f.read_text(encoding="utf-8") + "\n"
+
+        # Check that non-trivial transforms (CAST, expressions) appear in SQL
+        transforms_found = 0
+        transforms_expected = 0
+        for _bronze_col, _target_prop, transform in expected["column_mappings"]:
+            if not transform or transform.startswith("source."):
+                continue  # simple column rename, won't appear verbatim
+            transforms_expected += 1
+            # The transform with "source." prefix stripped should be in SQL
+            # (projector replaces source.X with the actual ref)
+            # Check for the function/expression keyword
+            keywords = []
+            if "CAST(" in transform.upper():
+                keywords.append("CAST(")
+            if "*" in transform:
+                keywords.append("*")
+            if keywords and any(kw in all_sql.upper() for kw in keywords):
+                transforms_found += 1
+
+        assert transforms_found > 0, (
+            f"No transform expressions found in SQL "
+            f"(expected {transforms_expected} non-trivial transforms)"
+        )
+
+    def test_table_mappings_produce_models(self, projected_hub):
+        """Each table-level mapping should produce at least one .sql model file."""
+        mapping_file = MAPPINGS_DIR / "billingpro-to-invoice.ttl"
+        expected = _parse_expected_mappings(mapping_file)
+
+        invoice_dir = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "invoice"
+        )
+        sql_files = {f.stem.lower() for f in invoice_dir.rglob("*.sql")}
+
+        missing = []
+        for _bronze_tbl, target_class, _mtype in expected["table_mappings"]:
+            snake_model = _to_snake_case(target_class)
+            # The model file should match the target class name
+            if not any(snake_model in f for f in sql_files):
+                missing.append(f"{target_class} → {snake_model}.sql")
+
+        assert not missing, (
+            f"Table mappings without corresponding dbt model:\n"
+            + "\n".join(f"  - {m}" for m in missing)
+        )
+
+    def test_schema_yaml_columns_match_mappings(self, projected_hub):
+        """Columns in _models.yml should include all mapped properties."""
+        mapping_file = MAPPINGS_DIR / "billingpro-to-invoice.ttl"
+        expected = _parse_expected_mappings(mapping_file)
+
+        invoice_dir = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "invoice"
+        )
+        models_files = list(invoice_dir.glob("_*__models.yml"))
+        assert models_files, "No _models.yml found for invoice"
+
+        # Collect all column names from schema YAML
+        all_yaml_columns = set()
+        for mf in models_files:
+            content = yaml.safe_load(mf.read_text(encoding="utf-8"))
+            for model in content.get("models", []):
+                for col in model.get("columns", []):
+                    all_yaml_columns.add(col["name"].lower())
+
+        # Check that mapped properties appear as columns
+        missing = []
+        for _bronze_col, target_prop, _transform in expected["column_mappings"]:
+            snake_col = _to_snake_case(target_prop)
+            if snake_col not in all_yaml_columns:
+                missing.append(f"{target_prop} → {snake_col}")
+
+        assert not missing, (
+            f"Mapped columns missing from _models.yml:\n"
+            + "\n".join(f"  - {m}" for m in missing)
         )
