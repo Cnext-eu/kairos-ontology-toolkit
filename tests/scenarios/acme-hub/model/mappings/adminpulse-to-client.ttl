@@ -66,6 +66,10 @@ bronze-ap:tblClient_City skos:exactMatch acme:clientCity ;
 bronze-ap:tblClient_Country skos:exactMatch acme:clientCountry ;
     kairos-map:transform "source.Country" .
 
+# FK inference: tblClient.TypeCode → ClientType.typeCode (natural key)
+bronze-ap:tblClient_TypeCode skos:exactMatch acme:typeCode ;
+    kairos-map:transform "source.TypeCode" .
+
 # ---------------------------------------------------------------------------
 # Table-level: tblClientPII → ClientPII (GDPR satellite)
 # ---------------------------------------------------------------------------

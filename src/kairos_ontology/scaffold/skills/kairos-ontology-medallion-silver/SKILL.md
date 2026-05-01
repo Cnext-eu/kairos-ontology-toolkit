@@ -212,7 +212,27 @@ ex:{PropertyName}
     kairos-ext:junctionTableName "{domain}_{property}_link" .
 ```
 
-### 3b — Nullability overrides (R11)
+### 3b — FK auto-inference from natural key
+
+When no explicit SKOS mapping targets the `owl:ObjectProperty` URI, the dbt
+projector can **auto-infer** the FK join by matching source columns to the
+target class's natural key:
+
+1. The range class has `kairos-ext:naturalKey` (e.g., `"typeCode"`)
+2. A source column in the **current table** maps to that NK property (e.g.,
+   `bronze:tblClient_TypeCode skos:exactMatch ex:typeCode`)
+3. → The projector generates `LEFT JOIN {{ ref('target_model') }}` using the
+   NK column in the join condition
+
+This eliminates the need for redundant explicit FK mappings. The auto-inference
+only activates when exactly one unambiguous candidate exists per NK component.
+
+> **Tip**: If the FK join shows `CAST(NULL ...)`, check that:
+> - The target class has `kairos-ext:naturalKey`
+> - A source column from the current table maps to the NK property of the target
+> - Or add an explicit `skos:exactMatch` targeting the ObjectProperty URI
+
+### 3c — Nullability overrides (R11)
 
 By default, columns are nullable unless SHACL `sh:minCount 1` is set.
 To force NOT NULL:
@@ -220,7 +240,7 @@ To force NOT NULL:
 ex:{PropertyName}    kairos-ext:nullable "false"^^xsd:boolean .
 ```
 
-### 3c — Conditional FK (R14)
+### 3d — Conditional FK (R14)
 
 For FK columns only meaningful for certain discriminator subtypes:
 ```turtle

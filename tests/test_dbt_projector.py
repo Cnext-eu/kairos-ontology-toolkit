@@ -16,6 +16,7 @@ from kairos_ontology.projections.medallion_dbt_projector import (
     _extract_shacl_tests,
     _source_type_to_databricks,
     _extract_fk_columns_and_joins,
+    _get_nk_property_uris,
     generate_dbt_artifacts,
 )
 
@@ -1000,9 +1001,10 @@ class TestCrossDomainFK:
         assert "NULL" in fk_columns[0]["expression"]
         # No joins since no mapping
         assert len(joins) == 0
-        # Should have a warning
+        # Should have a warning with remediation guidance
         assert len(warnings) == 1
-        assert "no skos mapping" in warnings[0].lower()
+        assert "no mapping" in warnings[0].lower()
+        assert "auto-inference" in warnings[0].lower() or "natural key" in warnings[0].lower()
 
     def test_fk_multi_source_skipped(self, cross_domain_graph):
         """FK joins are not generated for multi-source models."""
@@ -1023,6 +1025,249 @@ class TestCrossDomainFK:
         # Multi-source: no FK columns or joins generated
         assert len(fk_columns) == 0
         assert len(joins) == 0
+
+
+# ---------------------------------------------------------------------------
+# FK auto-inference via natural key matching
+# ---------------------------------------------------------------------------
+
+FK_AUTOINFER_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "Test FK Inference" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:Client a owl:Class ;
+        rdfs:label "Client" ;
+        rdfs:comment "A client entity" ;
+        kairos-ext:naturalKey "clientId" .
+
+    ex:clientId a owl:DatatypeProperty ;
+        rdfs:domain ex:Client ;
+        rdfs:range xsd:string .
+
+    ex:clientName a owl:DatatypeProperty ;
+        rdfs:domain ex:Client ;
+        rdfs:range xsd:string .
+
+    ex:ClientType a owl:Class ;
+        rdfs:label "Client Type" ;
+        rdfs:comment "Reference data for type classification" ;
+        kairos-ext:naturalKey "typeCode" .
+
+    ex:typeCode a owl:DatatypeProperty ;
+        rdfs:domain ex:ClientType ;
+        rdfs:range xsd:string .
+
+    ex:typeLabel a owl:DatatypeProperty ;
+        rdfs:domain ex:ClientType ;
+        rdfs:range xsd:string .
+
+    ex:hasType a owl:ObjectProperty, owl:FunctionalProperty ;
+        rdfs:label "has type" ;
+        rdfs:domain ex:Client ;
+        rdfs:range ex:ClientType .
+""")
+
+
+class TestFKAutoInference:
+    """Tests for FK auto-inference from natural key matching."""
+
+    @pytest.fixture
+    def autoinfer_graph(self):
+        g = Graph()
+        g.parse(data=FK_AUTOINFER_ONTOLOGY_TTL, format="turtle")
+        return g
+
+    @pytest.fixture
+    def systems_with_fk_column(self):
+        """Bronze systems with a TypeCode column on tblClient."""
+        return [{
+            "system_label": "AdminPulse",
+            "tables": [{
+                "uri": "https://example.com/bronze/adminpulse#tblClient",
+                "name": "tblClient",
+                "columns": [
+                    {
+                        "uri": "https://example.com/bronze/adminpulse#tblClient_ClientID",
+                        "name": "ClientID",
+                        "data_type": "int",
+                    },
+                    {
+                        "uri": "https://example.com/bronze/adminpulse#tblClient_TypeCode",
+                        "name": "TypeCode",
+                        "data_type": "int",
+                    },
+                ],
+            }],
+        }]
+
+    @pytest.fixture
+    def mappings_with_nk_column(self):
+        """Mappings where tblClient_TypeCode → typeCode (NK of ClientType)."""
+        return {
+            "table_maps": {
+                "https://example.com/bronze/adminpulse#tblClient": [{
+                    "target_uri": "http://kairos.example/ontology/Client",
+                    "mapping_type": "direct",
+                }],
+            },
+            "column_maps": {
+                "https://example.com/bronze/adminpulse#tblClient_ClientID": [{
+                    "target_uri": "http://kairos.example/ontology/clientId",
+                    "transform": "CAST(source.ClientID AS STRING)",
+                    "match_type": "exactMatch",
+                }],
+                "https://example.com/bronze/adminpulse#tblClient_TypeCode": [{
+                    "target_uri": "http://kairos.example/ontology/typeCode",
+                    "transform": "source.TypeCode",
+                    "match_type": "exactMatch",
+                }],
+            },
+        }
+
+    def test_auto_infer_fk_from_nk(
+        self, autoinfer_graph, systems_with_fk_column, mappings_with_nk_column
+    ):
+        """Auto-infer FK join when source column maps to NK of range class."""
+        source_refs = [(
+            "adminpulse", "tblClient",
+            "https://example.com/bronze/adminpulse#tblClient",
+        )]
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            autoinfer_graph,
+            "http://kairos.example/ontology/Client",
+            mappings_with_nk_column,
+            source_refs,
+            systems=systems_with_fk_column,
+        )
+
+        # Should generate a proper FK join, not NULL
+        assert len(fk_columns) == 1
+        assert fk_columns[0]["target_name"] == "client_type_sk"
+        assert "NULL" not in fk_columns[0]["expression"]
+        assert "client_type_ref" in fk_columns[0]["expression"]
+
+        # Should have a join
+        assert len(joins) == 1
+        assert "ref('client_type')" in joins[0]["ref"]
+        assert "TypeCode" in joins[0]["condition"]
+        assert "type_code" in joins[0]["condition"]
+
+        # No warnings for auto-inferred FK
+        assert len(warnings) == 0
+
+    def test_auto_infer_ignores_other_tables(
+        self, autoinfer_graph
+    ):
+        """Auto-inference only considers columns from the current source table."""
+        # tblClientType has TypeCode, but it's a different table — should NOT
+        # be used for auto-inference when building the Client model from tblClient
+        systems = [{
+            "system_label": "AdminPulse",
+            "tables": [
+                {
+                    "uri": "https://example.com/bronze/adminpulse#tblClient",
+                    "name": "tblClient",
+                    "columns": [{
+                        "uri": "https://example.com/bronze/adminpulse#tblClient_ClientID",
+                        "name": "ClientID",
+                        "data_type": "int",
+                    }],
+                },
+                {
+                    "uri": "https://example.com/bronze/adminpulse#tblClientType",
+                    "name": "tblClientType",
+                    "columns": [{
+                        "uri": "https://example.com/bronze/adminpulse#tblClientType_TypeCode",
+                        "name": "TypeCode",
+                        "data_type": "int",
+                    }],
+                },
+            ],
+        }]
+        # Mapping: tblClientType_TypeCode → typeCode (wrong table)
+        mappings = {
+            "table_maps": {},
+            "column_maps": {
+                "https://example.com/bronze/adminpulse#tblClientType_TypeCode": [{
+                    "target_uri": "http://kairos.example/ontology/typeCode",
+                    "transform": "source.TypeCode",
+                    "match_type": "exactMatch",
+                }],
+            },
+        }
+        source_refs = [(
+            "adminpulse", "tblClient",
+            "https://example.com/bronze/adminpulse#tblClient",
+        )]
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            autoinfer_graph,
+            "http://kairos.example/ontology/Client",
+            mappings,
+            source_refs,
+            systems=systems,
+        )
+
+        # Should NOT infer — the TypeCode mapping is from tblClientType, not tblClient
+        assert len(fk_columns) == 1
+        assert "NULL" in fk_columns[0]["expression"]
+        assert len(joins) == 0
+        assert len(warnings) == 1
+
+    def test_auto_infer_no_systems_emits_null(self, autoinfer_graph):
+        """Auto-inference gracefully degrades to NULL when systems is None."""
+        mappings = {
+            "table_maps": {},
+            "column_maps": {
+                "https://example.com/bronze/adminpulse#tblClient_TypeCode": [{
+                    "target_uri": "http://kairos.example/ontology/typeCode",
+                    "transform": "source.TypeCode",
+                    "match_type": "exactMatch",
+                }],
+            },
+        }
+        source_refs = [(
+            "adminpulse", "tblClient",
+            "https://example.com/bronze/adminpulse#tblClient",
+        )]
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            autoinfer_graph,
+            "http://kairos.example/ontology/Client",
+            mappings,
+            source_refs,
+            systems=None,
+        )
+
+        # Without systems we cannot scope columns → should emit NULL
+        assert len(fk_columns) == 1
+        assert "NULL" in fk_columns[0]["expression"]
+        assert len(warnings) == 1
+
+    def test_improved_warning_includes_remediation(self, autoinfer_graph):
+        """Warning message includes actionable remediation guidance."""
+        mappings = {"table_maps": {}, "column_maps": {}}
+        source_refs = [(
+            "adminpulse", "tblClient",
+            "https://example.com/bronze/adminpulse#tblClient",
+        )]
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            autoinfer_graph,
+            "http://kairos.example/ontology/Client",
+            mappings,
+            source_refs,
+            systems=None,
+        )
+
+        assert len(warnings) == 1
+        # Warning should include remediation guidance
+        assert "natural key" in warnings[0].lower() or "mapping" in warnings[0].lower()
+        assert "ClientType" in warnings[0] or "client_type" in warnings[0]
 
 
 # ---------------------------------------------------------------------------
