@@ -470,17 +470,18 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
                 "dedup_key": str | None,
                 "dedup_order": str | None,
             }, ...]},
-            "column_maps": {bronze_col_uri: {
+            "column_maps": {bronze_col_uri: [{
                 "target_uri": silver_property_uri,
                 "match_type": "exactMatch" | "closeMatch" | "narrowMatch" | ...,
                 "transform": str | None,
                 "source_columns": [str] | None,
                 "default_value": str | None,
-            }}
+            }, ...]}
         }
 
-    Note: ``table_maps`` values are **lists** to support the split pattern where
-    one bronze table maps to multiple domain classes.
+    Note: Both ``table_maps`` and ``column_maps`` values are **lists** to support
+    one-to-many patterns (split: one table → multiple classes; multi-target: one
+    column → multiple properties).
     """
     result: dict = {"table_maps": {}, "column_maps": {}}
     if not mappings_dir or not mappings_dir.is_dir():
@@ -542,16 +543,16 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
                         "dedup_order": dedup_order,
                     })
                 else:
-                    # Column-level mapping
+                    # Column-level mapping (list to support 1:N multi-target)
                     src_cols = g.value(subj, KAIROS_MAP.sourceColumns)
                     default = g.value(subj, KAIROS_MAP.defaultValue)
-                    result["column_maps"][subj_str] = {
+                    result["column_maps"].setdefault(subj_str, []).append({
                         "target_uri": obj_str,
                         "match_type": match_name,
                         "transform": str(transform) if transform else None,
                         "source_columns": str(src_cols).split() if src_cols else None,
                         "default_value": str(default) if default else None,
-                    }
+                    })
 
     return result
 
@@ -569,80 +570,135 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str) -> dict[str, list]:
         return {}
 
     class_name = extract_local_name(class_uri)
-    shape_file = shapes_dir / f"{class_name.lower()}.shacl.ttl"
-    if not shape_file.exists():
-        return {}
+    target_class = URIRef(class_uri)
 
-    try:
-        sg = Graph()
-        sg.parse(shape_file, format="turtle")
-    except Exception:
+    # Try multiple naming conventions for shape files
+    candidates = [
+        shapes_dir / f"{class_name.lower()}.shacl.ttl",
+        shapes_dir / f"{class_name.lower()}-shapes.ttl",
+    ]
+    # Also search all .ttl files for shapes that target this class
+    all_shapes = list(shapes_dir.glob("*.ttl"))
+
+    sg = Graph()
+    loaded = False
+
+    # Try specific file first
+    for candidate in candidates:
+        if candidate.exists():
+            try:
+                sg.parse(candidate, format="turtle")
+                loaded = True
+            except Exception:
+                pass
+            break
+
+    # Fallback: load all shape files and filter by sh:targetClass
+    if not loaded:
+        for sf in all_shapes:
+            try:
+                sg.parse(sf, format="turtle")
+                loaded = True
+            except Exception:
+                continue
+
+    if not loaded:
         return {}
 
     tests_by_col: dict[str, list] = {}
 
+    # Find property shapes that target this class (directly or via NodeShape)
+    for node_shape in sg.subjects(RDF.type, SH.NodeShape):
+        shape_target = sg.value(node_shape, SH.targetClass)
+        if shape_target and str(shape_target) != str(target_class):
+            continue
+        for ps in sg.objects(node_shape, SH.property):
+            _extract_property_shape_tests(sg, ps, tests_by_col)
+
+    # Also handle property shapes attached via sh:property without NodeShape typing
     for ps in sg.objects(predicate=SH.property):
         path = sg.value(ps, SH.path)
         if not path:
             continue
         col_name = _camel_to_snake(extract_local_name(str(path)))
-        tests: list = []
-
-        min_count = sg.value(ps, SH.minCount)
-        if min_count and int(min_count) > 0:
-            tests.append("not_null")
-
-        max_count = sg.value(ps, SH.maxCount)
-        if max_count and int(max_count) == 1 and min_count and int(min_count) == 1:
-            tests.append("unique")
-
-        pattern = sg.value(ps, SH.pattern)
-        if pattern:
-            p = str(pattern).replace("'", "\\'")
-            tests.append(
-                f"dbt_expectations.expect_column_values_to_match_regex:\n"
-                f"            regex: '{p}'"
-            )
-
-        in_list = sg.value(ps, SH["in"])
-        if in_list:
-            values = [f"'{str(v)}'" for v in sg.items(in_list)]
-            if values:
-                tests.append(
-                    f"accepted_values:\n"
-                    f"            values: [{', '.join(values)}]"
-                )
-
-        min_len = sg.value(ps, SH.minLength)
-        max_len = sg.value(ps, SH.maxLength)
-        if min_len or max_len:
-            parts = []
-            if min_len:
-                parts.append(f"min_value: {int(min_len)}")
-            if max_len:
-                parts.append(f"max_value: {int(max_len)}")
-            tests.append(
-                f"dbt_expectations.expect_column_value_lengths_to_be_between:\n"
-                f"            {'\n            '.join(parts)}"
-            )
-
-        min_inc = sg.value(ps, SH.minInclusive)
-        max_inc = sg.value(ps, SH.maxInclusive)
-        if min_inc or max_inc:
-            parts = []
-            if min_inc:
-                parts.append(f"min_value: {min_inc}")
-            if max_inc:
-                parts.append(f"max_value: {max_inc}")
-            tests.append(
-                f"dbt_expectations.expect_column_values_to_be_between:\n"
-                f"            {'\n            '.join(parts)}"
-            )
-
-        if tests:
-            tests_by_col[col_name] = tests
+        if col_name in tests_by_col:
+            continue  # already extracted via NodeShape path
+        # Check if this property shape belongs to a shape targeting our class
+        for subj in sg.subjects(SH.property, ps):
+            shape_target = sg.value(subj, SH.targetClass)
+            if shape_target and str(shape_target) == str(target_class):
+                _extract_property_shape_tests(sg, ps, tests_by_col)
+                break
 
     return tests_by_col
+
+
+def _extract_property_shape_tests(
+    sg: Graph, ps, tests_by_col: dict[str, list]
+) -> None:
+    """Extract dbt tests from a single SHACL property shape node."""
+    path = sg.value(ps, SH.path)
+    if not path:
+        return
+    col_name = _camel_to_snake(extract_local_name(str(path)))
+    if col_name in tests_by_col:
+        return  # already processed
+
+    tests: list = []
+
+    min_count = sg.value(ps, SH.minCount)
+    if min_count and int(min_count) > 0:
+        tests.append("not_null")
+
+    max_count = sg.value(ps, SH.maxCount)
+    if max_count and int(max_count) == 1 and min_count and int(min_count) == 1:
+        tests.append("unique")
+
+    pattern = sg.value(ps, SH.pattern)
+    if pattern:
+        p = str(pattern).replace("'", "\\'")
+        tests.append(
+            f"dbt_expectations.expect_column_values_to_match_regex:\n"
+            f"            regex: '{p}'"
+        )
+
+    in_list = sg.value(ps, SH["in"])
+    if in_list:
+        values = [f"'{str(v)}'" for v in sg.items(in_list)]
+        if values:
+            tests.append(
+                f"accepted_values:\n"
+                f"            values: [{', '.join(values)}]"
+            )
+
+    min_len = sg.value(ps, SH.minLength)
+    max_len = sg.value(ps, SH.maxLength)
+    if min_len or max_len:
+        parts = []
+        if min_len:
+            parts.append(f"min_value: {int(min_len)}")
+        if max_len:
+            parts.append(f"max_value: {int(max_len)}")
+        tests.append(
+            f"dbt_expectations.expect_column_value_lengths_to_be_between:\n"
+            f"            {'\n            '.join(parts)}"
+        )
+
+    min_inc = sg.value(ps, SH.minInclusive)
+    max_inc = sg.value(ps, SH.maxInclusive)
+    if min_inc or max_inc:
+        parts = []
+        if min_inc:
+            parts.append(f"min_value: {min_inc}")
+        if max_inc:
+            parts.append(f"max_value: {max_inc}")
+        tests.append(
+            f"dbt_expectations.expect_column_values_to_be_between:\n"
+            f"            {'\n            '.join(parts)}"
+        )
+
+    if tests:
+        tests_by_col[col_name] = tests
 
 
 # ---------------------------------------------------------------------------
@@ -719,7 +775,7 @@ def _gen_staging_models(
             json_extractions = []
             for col in tbl["columns"]:
                 col_uri = col["uri"] if "uri" in col else ""
-                col_map = mappings["column_maps"].get(col_uri, {})
+                col_maps_list = mappings["column_maps"].get(col_uri, [])
 
                 # Check if this is a JSON column requiring extraction
                 json_info = col.get("json_info")
@@ -748,25 +804,29 @@ def _gen_staging_models(
                     json_extractions.append(extraction)
                     continue
 
-                # Use explicit transform if available, else default cast
-                if col_map.get("transform"):
-                    expr = col_map["transform"].replace("source.", "")
-                else:
-                    target_type = _source_type_to_target(col["data_type"], platform)
-                    if target_type.startswith("VARCHAR") or target_type == "STRING":
-                        expr = col["name"]
+                # Generate one output column per mapping target (supports 1:N)
+                if not col_maps_list:
+                    col_maps_list = [{}]  # unmapped column — single pass
+                for col_map in col_maps_list:
+                    # Use explicit transform if available, else default cast
+                    if col_map.get("transform"):
+                        expr = col_map["transform"].replace("source.", "")
                     else:
-                        expr = f"TRY_CAST({col['name']} AS {target_type})"
+                        target_type = _source_type_to_target(col["data_type"], platform)
+                        if target_type.startswith("VARCHAR") or target_type == "STRING":
+                            expr = col["name"]
+                        else:
+                            expr = f"TRY_CAST({col['name']} AS {target_type})"
 
-                # Wrap in COALESCE if defaultValue is declared
-                if col_map.get("default_value"):
-                    expr = f"COALESCE({expr}, {col_map['default_value']})"
+                    # Wrap in COALESCE if defaultValue is declared
+                    if col_map.get("default_value"):
+                        expr = f"COALESCE({expr}, {col_map['default_value']})"
 
-                # Target column name: from SKOS mapping or snake_case of source
-                if col_map.get("target_uri"):
-                    target_name = _camel_to_snake(
-                        extract_local_name(col_map["target_uri"])
-                    )
+                    # Target column name: from SKOS mapping or snake_case of source
+                    if col_map.get("target_uri"):
+                        target_name = _camel_to_snake(
+                            extract_local_name(col_map["target_uri"])
+                        )
                 else:
                     target_name = _camel_to_snake(col["name"])
 
@@ -826,14 +886,28 @@ def _gen_silver_models(
     schema_name = f"silver_{ontology_name}"
 
     # Build reverse map: silver class URI → [(source_name, raw_table_name, table_uri)]
+    SUPPORTED_MAPPING_TYPES = {"direct", "split", "merge"}
     class_to_sources: dict[str, list[tuple[str, str, str]]] = {}
     for sys in systems:
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
         for tbl in sys["tables"]:
             for tbl_map in mappings["table_maps"].get(tbl["uri"], []):
                 target = tbl_map.get("target_uri")
-                if target:
-                    class_to_sources.setdefault(target, []).append(
+                if not target:
+                    continue
+                mtype = tbl_map.get("mapping_type", "direct")
+                if mtype not in SUPPORTED_MAPPING_TYPES:
+                    tbl_local = extract_local_name(tbl["uri"])
+                    target_local = extract_local_name(target)
+                    msg = (
+                        f"Unsupported mappingType '{mtype}' on "
+                        f"'{tbl_local}' → '{target_local}' — skipping. "
+                        f"Supported types: {', '.join(sorted(SUPPORTED_MAPPING_TYPES))}."
+                    )
+                    logger.warning(msg)
+                    warnings.append(msg)
+                    continue
+                class_to_sources.setdefault(target, []).append(
                     (source_name, tbl["name"], tbl["uri"])
                 )
 
@@ -1157,37 +1231,41 @@ def _extract_silver_columns(
             # Check if there's a SKOS mapping transform for this property
             expr = None
             mapped_col_uri = None
-            for col_uri, col_map in mappings.get("column_maps", {}).items():
-                if col_map.get("target_uri") == str(prop):
-                    # If scoped to a specific source, skip column maps from other sources
-                    if table_column_uris is not None and col_uri not in table_column_uris:
-                        continue
-                    mapped_col_uri = col_uri
-                    if col_map.get("transform"):
-                        expr = col_map["transform"].replace("source.", "")
-                    else:
-                        # Direct mapping — use the original bronze column name
-                        # with a TRY_CAST to the target type
-                        bronze_col = bronze_col_lookup.get(col_uri)
-                        if bronze_col:
-                            src_type = bronze_col["data_type"]
-                            target_type = _source_type_to_target(src_type, platform)
-                            bronze_name = bronze_col["name"]
-                            if target_type.startswith("VARCHAR") or target_type == "STRING":
-                                expr = bronze_name
-                            else:
-                                expr = f"TRY_CAST({bronze_name} AS {target_type})"
+            matched_col_map = None
+            for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
+                for col_map in col_maps_list:
+                    if col_map.get("target_uri") == str(prop):
+                        # If scoped to a specific source, skip column maps from other sources
+                        if table_column_uris is not None and col_uri not in table_column_uris:
+                            continue
+                        mapped_col_uri = col_uri
+                        matched_col_map = col_map
+                        if col_map.get("transform"):
+                            expr = col_map["transform"].replace("source.", "")
                         else:
-                            # Fallback: use URI local name
-                            source_col_name = extract_local_name(col_uri)
-                            expr = source_col_name
+                            # Direct mapping — use the original bronze column name
+                            # with a TRY_CAST to the target type
+                            bronze_col = bronze_col_lookup.get(col_uri)
+                            if bronze_col:
+                                src_type = bronze_col["data_type"]
+                                target_type = _source_type_to_target(src_type, platform)
+                                bronze_name = bronze_col["name"]
+                                if target_type.startswith("VARCHAR") or target_type == "STRING":
+                                    expr = bronze_name
+                                else:
+                                    expr = f"TRY_CAST({bronze_name} AS {target_type})"
+                            else:
+                                # Fallback: use URI local name
+                                source_col_name = extract_local_name(col_uri)
+                                expr = source_col_name
+                        break
+                if mapped_col_uri:
                     break
 
             # Wrap in COALESCE if a default value is declared in the mapping
-            if expr and mapped_col_uri:
-                col_map = mappings.get("column_maps", {}).get(mapped_col_uri, {})
-                if col_map.get("default_value"):
-                    expr = f"COALESCE({expr}, {col_map['default_value']})"
+            if expr and matched_col_map:
+                if matched_col_map.get("default_value"):
+                    expr = f"COALESCE({expr}, {matched_col_map['default_value']})"
 
             if expr is None:
                 if population == "derived":
@@ -1295,18 +1373,21 @@ def _extract_fk_columns_and_joins(
         # Find source column(s) via SKOS mapping to this object property
         source_col_name = None
         source_columns: list[str] | None = None
-        for col_uri, col_map in mappings.get("column_maps", {}).items():
-            if col_map.get("target_uri") == str(prop):
-                if col_map.get("source_columns"):
-                    source_columns = col_map["source_columns"]
-                if col_map.get("transform"):
-                    source_col_name = col_map["transform"].replace("source.", "")
-                else:
-                    bronze_col = bronze_col_lookup.get(col_uri)
-                    if bronze_col:
-                        source_col_name = bronze_col["name"]
+        for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
+            for col_map in col_maps_list:
+                if col_map.get("target_uri") == str(prop):
+                    if col_map.get("source_columns"):
+                        source_columns = col_map["source_columns"]
+                    if col_map.get("transform"):
+                        source_col_name = col_map["transform"].replace("source.", "")
                     else:
-                        source_col_name = extract_local_name(col_uri)
+                        bronze_col = bronze_col_lookup.get(col_uri)
+                        if bronze_col:
+                            source_col_name = bronze_col["name"]
+                        else:
+                            source_col_name = extract_local_name(col_uri)
+                    break
+            if source_col_name:
                 break
 
         if source_col_name is None:
@@ -1446,12 +1527,16 @@ def _gen_schema_yaml(
                     if col.get("enum_values"):
                         enum_lookup[col["uri"]] = col["enum_values"]
 
-    # Build mapping reverse-lookup: property URI → source column URI
+    # Build mapping reverse-lookup: property URI → source column URI + match type
     prop_to_source: dict[str, str] = {}
+    prop_to_match_type: dict[str, str] = {}
     if mappings:
-        for col_uri, col_map in mappings.get("column_maps", {}).items():
-            if col_map.get("target_uri"):
-                prop_to_source[col_map["target_uri"]] = col_uri
+        for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
+            for col_map in col_maps_list:
+                if col_map.get("target_uri"):
+                    prop_to_source[col_map["target_uri"]] = col_uri
+                    if col_map.get("match_type"):
+                        prop_to_match_type[col_map["target_uri"]] = col_map["match_type"]
 
     models_data = []
     for cls in classes:
@@ -1487,6 +1572,18 @@ def _gen_schema_yaml(
                 label = graph.value(prop, RDFS.label)
                 comment = graph.value(prop, RDFS.comment)
                 desc = str(comment) if comment else (str(label) if label else prop_name)
+
+                # Append SKOS match type for non-exactMatch columns
+                match_type = prop_to_match_type.get(str(prop))
+                if match_type and match_type != "exactMatch":
+                    match_labels = {
+                        "closeMatch": "computed/derived",
+                        "narrowMatch": "subset mapping",
+                        "broadMatch": "broad mapping",
+                        "relatedMatch": "related mapping",
+                    }
+                    label_hint = match_labels.get(match_type, match_type)
+                    desc = f"{desc} ({match_type} — {label_hint})"
                 range_uri = graph.value(prop, RDFS.range)
                 data_type = _xsd_to_target(range_uri) if range_uri else "VARCHAR(255)"
 
@@ -2082,9 +2179,10 @@ def _gen_coverage_report(
 
     # Build column_maps reverse: target_uri → source column URI
     target_to_source: dict[str, str] = {}
-    for col_uri, col_map in mappings.get("column_maps", {}).items():
-        if col_map.get("target_uri"):
-            target_to_source[col_map["target_uri"]] = col_uri
+    for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
+        for col_map in col_maps_list:
+            if col_map.get("target_uri"):
+                target_to_source[col_map["target_uri"]] = col_uri
 
     # Build set of all consumed source column URIs
     consumed_source_cols = set(mappings.get("column_maps", {}).keys())
