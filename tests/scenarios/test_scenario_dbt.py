@@ -18,8 +18,13 @@ class TestSplitPattern:
     """Each split model must have its own WHERE clause with the correct filter."""
 
     def test_corporate_has_type_0_filter(self, client_dbt_artifacts):
-        key = _find_artifact(client_dbt_artifacts, "corporate_client.sql")
-        sql = client_dbt_artifacts[key]
+        # Multi-source: filter is in the per-source view, not the union model
+        key = _find_artifact(client_dbt_artifacts, "from_admin_pulse.sql")
+        if key and "corporate" in key:
+            sql = client_dbt_artifacts[key]
+        else:
+            key = _find_artifact(client_dbt_artifacts, "corporate_client.sql")
+            sql = client_dbt_artifacts[key]
         assert "Type = 0" in sql or "type = 0" in sql.lower(), (
             f"CorporateClient model missing 'Type = 0' filter:\n{sql}"
         )
@@ -79,11 +84,15 @@ class TestDefaultValues:
 
     def test_email_has_default(self, client_dbt_artifacts):
         """Email mapping has defaultValue 'unknown@acme.example' — should COALESCE."""
-        # email has domain=Client, so it appears in client.sql (base model)
-        key = _find_artifact(client_dbt_artifacts, "/client.sql")
-        if key is None:
-            key = _find_artifact(client_dbt_artifacts, "corporate_client.sql")
-        sql = client_dbt_artifacts[key]
+        # email has domain=Client; for multi-source it's in per-source views
+        key = _find_artifact(client_dbt_artifacts, "from_admin_pulse.sql")
+        if key and "corporate" in key:
+            sql = client_dbt_artifacts[key]
+        else:
+            key = _find_artifact(client_dbt_artifacts, "/client.sql")
+            if key is None:
+                key = _find_artifact(client_dbt_artifacts, "corporate_client.sql")
+            sql = client_dbt_artifacts[key]
         has_coalesce = "COALESCE" in sql.upper() or "coalesce" in sql
         has_default = "unknown@acme.example" in sql
         assert has_coalesce or has_default, (
@@ -253,6 +262,123 @@ class TestJunctionTable:
         sql = invoice_dbt_artifacts[key].lower()
         assert "has_tag" not in sql, (
             "Junction table property hasTag should not appear as a column in invoice.sql"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Multi-source tests — CorporateClient from AdminPulse + CrmSystem
+# ---------------------------------------------------------------------------
+
+class TestMultiSource:
+    """When multiple sources map to the same entity, generate per-source views + union."""
+
+    def test_per_source_views_generated(self, client_dbt_artifacts):
+        """Should have per-source view models for CorporateClient."""
+        sql_keys = [k for k in client_dbt_artifacts if k.endswith(".sql")]
+        model_names = {k.split("/")[-1].replace(".sql", "") for k in sql_keys}
+
+        assert "corporate_client__from_admin_pulse" in model_names, (
+            "Missing per-source view for AdminPulse"
+        )
+        assert "corporate_client__from_crm_system" in model_names, (
+            "Missing per-source view for CrmSystem"
+        )
+
+    def test_union_model_generated(self, client_dbt_artifacts):
+        """The union model should reference both per-source views."""
+        key = _find_artifact(client_dbt_artifacts, "/corporate_client.sql")
+        assert key is not None, "corporate_client.sql union model not generated"
+        sql = client_dbt_artifacts[key]
+        assert "union all" in sql.lower(), "Union model missing UNION ALL"
+        assert "corporate_client__from_admin_pulse" in sql, (
+            "Union model missing ref to AdminPulse source"
+        )
+        assert "corporate_client__from_crm_system" in sql, (
+            "Union model missing ref to CrmSystem source"
+        )
+
+    def test_union_model_has_sk_iri(self, client_dbt_artifacts):
+        """SK and IRI should be computed in the union model, not per-source."""
+        key = _find_artifact(client_dbt_artifacts, "/corporate_client.sql")
+        sql = client_dbt_artifacts[key]
+        assert "corporate_client_sk" in sql, "Union model missing SK column"
+        assert "corporate_client_iri" in sql, "Union model missing IRI column"
+
+    def test_per_source_no_sk_iri(self, client_dbt_artifacts):
+        """Per-source views should NOT have SK/IRI columns."""
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_admin_pulse.sql"
+        )
+        sql = client_dbt_artifacts[key]
+        assert "corporate_client_sk" not in sql, (
+            "Per-source view should not have SK"
+        )
+        assert "corporate_client_iri" not in sql, (
+            "Per-source view should not have IRI"
+        )
+
+    def test_per_source_view_materialization(self, client_dbt_artifacts):
+        """Per-source models should be materialized as views."""
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_admin_pulse.sql"
+        )
+        sql = client_dbt_artifacts[key]
+        assert "materialized='view'" in sql, (
+            "Per-source model should be materialized as view"
+        )
+
+    def test_crm_source_has_null_for_unmapped(self, client_dbt_artifacts):
+        """CRM source lacks VATNumber mapping — should emit CAST(NULL ...)."""
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_crm_system.sql"
+        )
+        sql = client_dbt_artifacts[key]
+        assert "CAST(NULL" in sql, (
+            "CRM source missing NULL placeholder for unmapped columns"
+        )
+        assert "vat_number" in sql, (
+            "CRM source should still have vat_number column (as NULL)"
+        )
+
+    def test_admin_pulse_source_has_filter(self, client_dbt_artifacts):
+        """AdminPulse per-source view should have Type = 0 filter."""
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_admin_pulse.sql"
+        )
+        sql = client_dbt_artifacts[key]
+        assert "Type = 0" in sql, (
+            "AdminPulse per-source view missing filter condition"
+        )
+
+    def test_crm_source_different_column_names(self, client_dbt_artifacts):
+        """CRM source uses CustCode/CustName — different from AdminPulse."""
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_crm_system.sql"
+        )
+        sql = client_dbt_artifacts[key]
+        assert "CustCode" in sql, "CRM source should reference CustCode"
+        assert "CustName" in sql, "CRM source should reference CustName"
+
+    def test_sources_yaml_includes_crm(self, client_dbt_artifacts):
+        """_sources.yml should include the CRM source system."""
+        sources_keys = [
+            k for k in client_dbt_artifacts if k.endswith("_sources.yml")
+        ]
+        all_content = " ".join(
+            client_dbt_artifacts[k].lower() for k in sources_keys
+        )
+        assert "crm" in all_content, (
+            "_sources.yml missing CrmSystem source"
+        )
+
+    def test_single_source_unchanged(self, client_dbt_artifacts):
+        """Single-source entities (e.g. ClientType) should NOT get per-source views."""
+        sql_keys = [k for k in client_dbt_artifacts if k.endswith(".sql")]
+        model_names = {k.split("/")[-1].replace(".sql", "") for k in sql_keys}
+        # ClientType has only one source — should be a direct silver model
+        assert "client_type" in model_names, "Missing client_type model"
+        assert "client_type__from_admin_pulse" not in model_names, (
+            "Single-source entity should not get per-source views"
         )
 
 

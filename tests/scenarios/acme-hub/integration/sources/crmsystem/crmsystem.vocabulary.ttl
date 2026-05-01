@@ -1,0 +1,43 @@
+@prefix bronze-crm: <https://acme.example/bronze/crmsystem#> .
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+# ---------------------------------------------------------------------------
+# Source system — CRM (second source for Client domain, multi-source scenario)
+# ---------------------------------------------------------------------------
+bronze-crm:CrmSystem a kairos-bronze:SourceSystem ;
+    rdfs:label "CrmSystem" ;
+    kairos-bronze:connectionType "jdbc" ;
+    kairos-bronze:database "CRM_Prod" ;
+    kairos-bronze:schema "dbo" .
+
+# ---------------------------------------------------------------------------
+# Customers — maps to same Client entity as AdminPulse.tblClient
+# Different column names exercise the per-source column mapping logic.
+# ---------------------------------------------------------------------------
+bronze-crm:Customers a kairos-bronze:SourceTable ;
+    rdfs:label "Customers" ;
+    kairos-bronze:sourceSystem bronze-crm:CrmSystem ;
+    kairos-bronze:tableName "Customers" ;
+    kairos-bronze:primaryKeyColumns "CustCode" .
+
+bronze-crm:Customers_CustCode a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-crm:Customers ;
+    kairos-bronze:columnName "CustCode" ;
+    kairos-bronze:dataType "nvarchar(20)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-crm:Customers_CustName a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-crm:Customers ;
+    kairos-bronze:columnName "CustName" ;
+    kairos-bronze:dataType "nvarchar(200)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-crm:Customers_CustEmail a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-crm:Customers ;
+    kairos-bronze:columnName "CustEmail" ;
+    kairos-bronze:dataType "nvarchar(100)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+# Note: CRM source does NOT have VATNumber, City, Country — tests unmapped optional cols

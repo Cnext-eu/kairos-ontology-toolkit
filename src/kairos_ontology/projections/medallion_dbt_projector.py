@@ -852,6 +852,88 @@ def _gen_silver_models(
             warnings.append(msg)
             continue
 
+        # ----- Multi-source: generate per-source views + union model -----
+        if len(source_refs) > 1:
+            source_model_names: list[str] = []
+            source_template = env.get_template("silver_source_model.sql.jinja2")
+            union_template = env.get_template("silver_union_model.sql.jinja2")
+
+            for i, (src, raw_tbl, tbl_uri) in enumerate(source_refs):
+                src_suffix = _camel_to_snake(src)
+                src_model_name = f"{model_name}__from_{src_suffix}"
+                source_model_names.append(src_model_name)
+
+                # Get the set of column URIs for this specific source table
+                tbl_col_uris = _get_table_column_uris(systems, tbl_uri)
+
+                # Extract columns scoped to this source (no SK/IRI)
+                src_columns = _extract_silver_columns(
+                    graph, cls_uri, namespace, mappings, platform=platform,
+                    source_refs=source_refs, systems=systems,
+                    table_column_uris=tbl_col_uris, include_sk_iri=False,
+                )
+
+                # Resolve filter condition
+                cte_filter = ""
+                tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
+                for tbl_map in tbl_maps_list:
+                    if (tbl_map.get("target_uri") == cls_uri
+                            and tbl_map.get("filter_condition")):
+                        cte_filter = tbl_map["filter_condition"].replace("source.", "")
+                        break
+
+                content = source_template.render(
+                    model_name=src_model_name,
+                    domain_name=ontology_name,
+                    schema_name=schema_name,
+                    source_name=src,
+                    raw_table_name=raw_tbl,
+                    columns=src_columns,
+                    filter_condition=cte_filter,
+                    parent_model=model_name,
+                    ontology_metadata=meta,
+                )
+                path = f"models/silver/{ontology_name}/{src_model_name}.sql"
+                artifacts[path] = content
+
+            # Build SK/IRI expressions for the union model (uses normalised cols)
+            sk_expr = _build_sk_expression(graph, cls_uri)
+            iri_expr = _build_iri_expression(graph, cls_uri, namespace)
+
+            # Collect the normalised target column names (without SK/IRI)
+            # Use the first source's columns as the canonical list of target names
+            first_tbl_col_uris = _get_table_column_uris(
+                systems, source_refs[0][2]
+            )
+            canonical_columns = _extract_silver_columns(
+                graph, cls_uri, namespace, mappings, platform=platform,
+                source_refs=source_refs, systems=systems,
+                table_column_uris=first_tbl_col_uris, include_sk_iri=False,
+            )
+
+            # FK joins in union model (applied on normalised column names)
+            fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
+                graph, cls_uri, mappings, source_refs, systems=systems,
+            )
+            warnings.extend(fk_warnings)
+
+            content = union_template.render(
+                model_name=model_name,
+                domain_name=ontology_name,
+                schema_name=schema_name,
+                materialization="table",
+                source_models=source_model_names,
+                columns=canonical_columns,
+                sk_expression=sk_expr,
+                iri_expression=iri_expr,
+                joins=fk_columns,
+                ontology_metadata=meta,
+            )
+            path = f"models/silver/{ontology_name}/{model_name}.sql"
+            artifacts[path] = content
+            continue
+
+        # ----- Single source: existing inline model -----
         # Extract properties for column list with platform-aware types
         columns = _extract_silver_columns(
             graph, cls_uri, namespace, mappings, platform=platform,
@@ -929,6 +1011,46 @@ def _get_class_and_parents(graph: Graph, class_uri: str) -> set[str]:
     return result
 
 
+def _get_table_column_uris(systems: list[dict], table_uri: str) -> set[str]:
+    """Return the set of column URIs belonging to a specific bronze table."""
+    result: set[str] = set()
+    for sys in systems:
+        for tbl in sys["tables"]:
+            if tbl["uri"] == table_uri:
+                for col in tbl["columns"]:
+                    result.add(col["uri"])
+    return result
+
+
+def _build_sk_expression(
+    graph: Graph, class_uri: str
+) -> str:
+    """Build the SK expression for a class, using normalised target column names."""
+    natural_key_cols = _get_natural_key(graph, class_uri)
+    if natural_key_cols:
+        sk_cols_str = "', '".join(natural_key_cols)
+        return f"{{{{ dbt_utils.generate_surrogate_key(['{sk_cols_str}']) }}}}"
+    return "CAST(NULL AS {{ dbt_utils.type_string() }})"
+
+
+def _build_iri_expression(
+    graph: Graph, class_uri: str, namespace: str
+) -> str:
+    """Build the IRI expression for a class, using normalised target column names."""
+    natural_key_cols = _get_natural_key(graph, class_uri)
+    if natural_key_cols:
+        if len(natural_key_cols) == 1:
+            return (
+                f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', "
+                f"{natural_key_cols[0]})"
+            )
+        parts = ", '/', ".join(natural_key_cols)
+        return (
+            f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
+        )
+    return "CAST(NULL AS {{ dbt_utils.type_string() }})"
+
+
 def _extract_silver_columns(
     graph: Graph,
     class_uri: str,
@@ -937,6 +1059,8 @@ def _extract_silver_columns(
     platform: str = DEFAULT_PLATFORM,
     source_refs: list[tuple[str, str, str]] | None = None,
     systems: list[dict] | None = None,
+    table_column_uris: set[str] | None = None,
+    include_sk_iri: bool = True,
 ) -> list[dict]:
     """Extract silver-layer columns for a class from the ontology graph.
 
@@ -944,6 +1068,13 @@ def _extract_silver_columns(
     expressions reference original bronze column names and apply casts/transforms
     inline.  Transform expressions from SKOS mappings are used as-is; direct
     mappings reference the original bronze column name with appropriate casting.
+
+    Args:
+        table_column_uris: When provided, only column_maps whose source column
+            URI is in this set are considered.  Used for per-source column
+            extraction in multi-source scenarios.
+        include_sk_iri: When False, SK and IRI columns are omitted.  Used for
+            per-source models where SK/IRI are computed in the parent union model.
 
     Features:
     - SK uses dbt_utils.generate_surrogate_key() based on natural key columns
@@ -974,30 +1105,32 @@ def _extract_silver_columns(
     # Determine natural key columns from kairos-ext:naturalKey annotation or PK columns
     natural_key_cols = _get_natural_key(graph, class_uri)
 
-    # SK column: use surrogate key generation if natural key is known
-    if natural_key_cols:
-        sk_cols_str = "', '".join(natural_key_cols)
-        sk_expr = f"{{{{ dbt_utils.generate_surrogate_key(['{sk_cols_str}']) }}}}"
-    else:
-        # Fallback: hash all non-null columns — will be overridden when natural key is set
-        sk_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
-
-    columns.append({"expression": sk_expr, "target_name": f"{model_name}_sk"})
-
-    # IRI column: construct from namespace + natural key
-    if natural_key_cols:
-        if len(natural_key_cols) == 1:
-            iri_expr = (
-                f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', "
-                f"{natural_key_cols[0]})"
-            )
+    if include_sk_iri:
+        # SK column: use surrogate key generation if natural key is known
+        if natural_key_cols:
+            sk_cols_str = "', '".join(natural_key_cols)
+            sk_expr = f"{{{{ dbt_utils.generate_surrogate_key(['{sk_cols_str}']) }}}}"
         else:
-            parts = ", '/', ".join(natural_key_cols)
-            iri_expr = f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
-    else:
-        iri_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
+            sk_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
 
-    columns.append({"expression": iri_expr, "target_name": f"{model_name}_iri"})
+        columns.append({"expression": sk_expr, "target_name": f"{model_name}_sk"})
+
+        # IRI column: construct from namespace + natural key
+        if natural_key_cols:
+            if len(natural_key_cols) == 1:
+                iri_expr = (
+                    f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', "
+                    f"{natural_key_cols[0]})"
+                )
+            else:
+                parts = ", '/', ".join(natural_key_cols)
+                iri_expr = (
+                    f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
+                )
+        else:
+            iri_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
+
+        columns.append({"expression": iri_expr, "target_name": f"{model_name}_iri"})
 
     # Collect domain classes: self + parent classes (for inheritance in split patterns)
     domain_classes = _get_class_and_parents(graph, class_uri)
@@ -1026,6 +1159,9 @@ def _extract_silver_columns(
             mapped_col_uri = None
             for col_uri, col_map in mappings.get("column_maps", {}).items():
                 if col_map.get("target_uri") == str(prop):
+                    # If scoped to a specific source, skip column maps from other sources
+                    if table_column_uris is not None and col_uri not in table_column_uris:
+                        continue
                     mapped_col_uri = col_uri
                     if col_map.get("transform"):
                         expr = col_map["transform"].replace("source.", "")
