@@ -43,7 +43,8 @@ htmlcov/
 *.whl
 *.tar.gz
 
-# Service secrets
+# Secrets and environment config
+.env
 service/.env
 *.pem
 
