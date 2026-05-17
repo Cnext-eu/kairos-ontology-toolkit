@@ -634,6 +634,8 @@ These go in `<domain>-silver-ext.ttl`.
 | `nullable` | boolean | `true` | Whether column allows NULL |
 | `derivationFormula` | string | — | SQL expression for a computed column |
 | `populationRequirement` | `"required"` / `"optional"` | `"optional"` | Maps to NOT NULL constraint |
+| `silverForeignKey` | boolean | `false` | Mark object property as FK column (DD-022) |
+| `silverForeignKeyOn` | class URI | — | Override FK placement to specified class (DD-022) |
 
 ### `kairos-ext:` — Gold annotations (on ontology or class or property)
 

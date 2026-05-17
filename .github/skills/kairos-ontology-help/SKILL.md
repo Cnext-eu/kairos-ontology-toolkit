@@ -143,6 +143,12 @@ The toolkit supports 8 projection targets:
 > `kairos-ext:silverIncludeImports` / `kairos-ext:goldIncludeImports` on the
 > ontology to explicitly claim imported classes for projection.  See the
 > silver and gold medallion skills for details.
+>
+> **Simplified FK annotations (DD-022):** Use `kairos-ext:silverForeignKey true`
+> on an object property to generate a FK column without OWL cardinality
+> restrictions.  Use `kairos-ext:silverForeignKeyOn <Class>` to control which
+> table receives the FK (useful for parent→child relationships on imported
+> properties).
 
 ## 4  CLI Commands
 

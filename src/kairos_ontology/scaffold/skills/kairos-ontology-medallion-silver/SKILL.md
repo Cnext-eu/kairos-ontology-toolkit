@@ -175,6 +175,8 @@ class in the domain MUST have at minimum:
 | `kairos-ext:inlineRefThreshold` | Ontology-level | `"3"` |
 | `kairos-ext:silverIncludeImports` | Ontology-level (only if uses `owl:imports`) | `"false"` |
 | `kairos-ext:silverInclude` | Only on imported classes | `"false"` |
+| `kairos-ext:silverForeignKey` | On ObjectProperty (imported props lacking cardinality) | `"false"` |
+| `kairos-ext:silverForeignKeyOn` | On ObjectProperty (reversal pattern) | _(none)_ |
 
 Run a quick scan:
 ```bash
@@ -249,6 +251,71 @@ For FK columns only meaningful for certain discriminator subtypes:
 ex:{PropertyName}
     kairos-ext:conditionalOnType "SubtypeA SubtypeB" .
 ```
+
+### 3e — DD-022: Simplified FK annotations
+
+The standard FK detection (section 3a) relies on `owl:maxQualifiedCardinality 1`
+or `owl:FunctionalProperty` to distinguish many-to-one from many-to-many. This
+works well for classes defined inside the hub, but **imported reference model
+properties** often lack OWL cardinality restrictions — they arrive as plain
+`owl:ObjectProperty` with no restrictions in the hub's extension file.
+
+Two extension annotations solve this without requiring changes to the imported
+ontology:
+
+#### `kairos-ext:silverForeignKey` (boolean)
+
+Marks an object property as a FK column. Equivalent to declaring
+`owl:FunctionalProperty` but works in extension files on imported properties
+that cannot be modified.
+
+```turtle
+@prefix ref:       <https://referencemodels.kairos.cnext.eu/logistics#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix xsd:       <http://www.w3.org/2001/XMLSchema#> .
+
+# Mark an imported property as FK (many-to-one)
+ref:hasShipperParty
+    kairos-ext:silverForeignKey "true"^^xsd:boolean .
+```
+
+The FK column is placed on the **domain** table (the class that "has" the
+property) by default, just like a standard cardinality-1 relationship.
+
+#### `kairos-ext:silverForeignKeyOn` (class URI)
+
+Overrides **which table** receives the FK column. Set the value to the
+**range class** to reverse the FK direction — the range table gets a column
+pointing back to the domain table. This is the standard parent→child pattern
+(e.g., `Consignment hasConsignmentItem ConsignmentItem` where the FK lives on
+`ConsignmentItem`).
+
+```turtle
+@prefix ref:       <https://referencemodels.kairos.cnext.eu/logistics#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+# Parent → child: FK lives on the child (range) table
+ref:hasConsignmentItem
+    kairos-ext:silverForeignKeyOn ref:ConsignmentItem .
+```
+
+> **Note:** `silverForeignKeyOn` implies `silverForeignKey "true"` — there is no
+> need to set both annotations on the same property.
+
+#### Interaction with other annotations
+
+- **`silverColumnName`** — fully compatible. Use it alongside either annotation
+  to control the physical column name:
+  ```turtle
+  ref:hasShipperParty
+      kairos-ext:silverForeignKey "true"^^xsd:boolean ;
+      kairos-ext:silverColumnName "shipper_party_sk" .
+  ```
+- **`silverDataType`** — compatible, overrides the FK column's SQL type.
+- **`conditionalOnType`** — compatible, restricts the FK to specific discriminator
+  subtypes.
+- **`junctionTableName`** — mutually exclusive. Do not combine FK annotations
+  with junction-table annotations on the same property.
 
 ---
 
@@ -519,6 +586,19 @@ ex:hasLegalForm
 ```turtle
 ex:hasEngagementMember
     kairos-ext:junctionTableName "engagement_team_member" .
+```
+
+### FK on imported property (DD-022)
+
+```turtle
+# Simple FK — imported property with no OWL cardinality
+ref:hasShipperParty
+    kairos-ext:silverForeignKey "true"^^xsd:boolean ;
+    kairos-ext:silverColumnName "shipper_party_sk" .
+
+# Reversed FK — parent→child, FK lives on the child table
+ref:hasConsignmentItem
+    kairos-ext:silverForeignKeyOn ref:ConsignmentItem .
 ```
 
 ### Working with imported classes (DD-021)
