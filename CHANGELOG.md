@@ -27,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pattern in staging templates.
 - **Empty columns guard** — `columns[0]` unique_key fallback now handles empty lists.
 
+## [2.26.0] — 2026-05-17
+
+### Added
+
+- **Modeling configurator skill** (`kairos-ontology-modelling-config`) — interactive
+  modeling workflow with business alignment checkpoints, session persistence
+  (`.modeling-sessions/`), and structured validation gates.
+- **Reference-model-first workflow** — updated `kairos-ontology-modeling` skill with
+  accelerator pack selection, domain mapping tables, OWL catalog imports, and
+  business validation steps before any custom modeling.
+- **`.modeling-sessions/` folder** — added to scaffold and CLI `init`/`new-repo`
+  commands for persisting modeling session state across conversations.
+
 ## [2.6.1] — 2026-04-23
 
 ### Fixed
