@@ -1347,3 +1347,57 @@ class TestDD021ImportWhitelisting:
         assert any(ns.startswith("http://refmodel.example.com") for ns in ref_nss)
         # Peer hub NS should NOT
         assert not any(ns.startswith("http://hub.example.com/ont/other") for ns in ref_nss)
+
+    def test_slash_namespace_bulk_include(self):
+        """Bulk include works with slash-terminated namespaces (both hub and ref)."""
+        import textwrap
+        SLASH_HUB = "http://hub.example.com/ont/mydom/"
+        SLASH_REF = "http://refmodel.example.com/ont/party/"
+        ttl = textwrap.dedent(f"""\
+            @prefix hub: <{SLASH_HUB}> .
+            @prefix ref: <{SLASH_REF}> .
+            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+
+            <http://hub.example.com/ont/mydom/> a owl:Ontology ;
+                rdfs:label "My Domain"@en ; owl:versionInfo "1.0" ;
+                owl:imports <http://refmodel.example.com/ont/party> ;
+                kairos-ext:silverIncludeImports true .
+
+            hub:LocalClass a owl:Class ;
+                rdfs:label "Local"@en ; rdfs:comment "."@en .
+            ref:SlashParty a owl:Class ;
+                rdfs:label "Slash Party"@en ; rdfs:comment "."@en .
+        """)
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        rows = [(str(row['class']), row) for row in g.query("""
+            PREFIX owl: <http://www.w3.org/2002/07/owl#>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            SELECT ?class ?label ?comment WHERE {
+                ?class a owl:Class .
+                OPTIONAL { ?class rdfs:label ?label }
+                OPTIONAL { ?class rdfs:comment ?comment }
+                FILTER(isIRI(?class))
+            }
+        """)]
+        result = _discover_whitelisted_imports(
+            g, SLASH_HUB, rows,
+            projection_ext_path=None, gold_ext_path=None,
+            target="silver", hub_domain_namespaces=set(),
+        )
+        uris = {c["uri"] for c in result}
+        assert f"{SLASH_REF}SlashParty" in uris
+
+    def test_import_iri_without_separator_matches_both_conventions(self):
+        """Import IRI without # or / still matches classes in both conventions."""
+        ref_nss = _get_reference_model_namespaces(
+            self._build_graph(with_bulk=True),
+            self.HUB_NS,
+            set(),
+        )
+        # The import IRI is <http://refmodel.example.com/ont/party> (no suffix)
+        # Should produce both # and / variants
+        assert "http://refmodel.example.com/ont/party#" in ref_nss
+        assert "http://refmodel.example.com/ont/party/" in ref_nss

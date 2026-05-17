@@ -882,23 +882,40 @@ def _get_reference_model_namespaces(
 
     Only first-level ``owl:imports`` are considered — transitive imports are not
     included to avoid pulling in large upstream dependency trees.
+
+    For each import, both ``#`` and ``/`` namespace variants are returned so
+    that class URI matching works regardless of separator convention.
     """
-    onto_iri = URIRef(domain_namespace.rstrip("#/"))
+    # Find the actual owl:Ontology subject in the graph
+    onto_iri = _find_ontology_subject(graph, domain_namespace)
     imported = []
     for obj in graph.objects(onto_iri, OWL.imports):
         ns = str(obj)
-        # Normalise: ensure ends with # or /
-        if not ns.endswith(("#", "/")):
-            ns += "#"
+        bare = ns.rstrip("#/")
         # Skip peer domain imports (other hub .ttl files)
+        if bare in hub_domain_namespaces:
+            continue
+        if (bare + "#") in hub_domain_namespaces or (bare + "/") in hub_domain_namespaces:
+            continue
         if ns in hub_domain_namespaces:
             continue
-        # Also check without trailing separator (namespace detection may vary)
-        bare = ns.rstrip("#/")
-        if bare in hub_domain_namespaces or (bare + "/") in hub_domain_namespaces:
-            continue
-        imported.append(ns)
+        # Add both separator variants for robust class URI matching
+        imported.append(bare + "#")
+        imported.append(bare + "/")
     return imported
+
+
+def _find_ontology_subject(graph: Graph, namespace: str) -> URIRef:
+    """Find the owl:Ontology subject in *graph* that matches *namespace*.
+
+    Handles both ``#`` and ``/`` namespace conventions. Falls back to
+    stripping the separator from the provided namespace.
+    """
+    bare = namespace.rstrip("#/")
+    for s in graph.subjects(RDF.type, OWL.Ontology):
+        if str(s).startswith(bare):
+            return s
+    return URIRef(bare)
 
 
 def _discover_whitelisted_imports(
@@ -934,8 +951,8 @@ def _discover_whitelisted_imports(
     # Build merged graph with extension (annotations live there)
     merged = merge_ext_graph(graph, ext_path)
 
-    # Detect ontology URI for bulk flag check
-    onto_iri = URIRef(namespace.rstrip("#/"))
+    # Detect ontology URI for bulk flag check (handles both # and / conventions)
+    onto_iri = _find_ontology_subject(merged, namespace)
 
     # Check bulk flag
     bulk_val = merged.value(onto_iri, bulk_prop)
@@ -1052,6 +1069,21 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             hub_domain_namespaces=hub_domain_namespaces or set(),
         )
         classes.extend(imported_classes)
+        # dbt generates both silver AND gold models — also discover gold claims
+        # so that goldInclude-only imports are available for gold model generation.
+        if target == 'dbt' and gold_ext_path:
+            gold_imported = _discover_whitelisted_imports(
+                graph, namespace, all_class_rows,
+                projection_ext_path=projection_ext_path,
+                gold_ext_path=gold_ext_path,
+                target='powerbi',
+                hub_domain_namespaces=hub_domain_namespaces or set(),
+            )
+            # Add gold-only claims (avoid duplicates)
+            existing_uris = {c["uri"] for c in classes}
+            for cls in gold_imported:
+                if cls["uri"] not in existing_uris:
+                    classes.append(cls)
     
     if not classes:
         return {}
