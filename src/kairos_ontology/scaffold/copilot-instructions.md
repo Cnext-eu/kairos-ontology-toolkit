@@ -28,6 +28,7 @@ that are validated and projected into downstream artifacts using the
 ```
 ├── ontology-hub/                        # Main ontology workspace
 │   ├── catalog-v001.xml                 # Local URI → file catalog (auto-chains to reference-models)
+│   ├── .modeling-sessions/              # Saved modeling configurator sessions
 │   ├── model/                           # Domain model (ontology-centric)
 │   │   ├── ontologies/                  # Domain ontologies (Turtle/RDF)
 │   │   ├── shapes/                      # SHACL validation constraints
@@ -83,6 +84,19 @@ python -m kairos_ontology catalog-test --catalog ontology-reference-models/catal
 - Every property must have `rdfs:domain`, `rdfs:range`, and `rdfs:label`.
 - Naming: PascalCase for classes, camelCase for properties.
 - One domain per .ttl file (e.g., `customer.ttl`, `order.ttl`).
+
+### Modeling skills
+
+When designing or modifying ontologies, two skills are available:
+
+- **kairos-ontology-modeling** — core modeling skill covering class hierarchies,
+  property design, naming conventions, reference-model-first workflow, and
+  standard model alignment. Use for all ontology design work.
+- **kairos-ontology-modelling-config** — interactive configurator that extends the
+  core skill with business alignment checkpoints, session persistence
+  (`ontology-hub/.modeling-sessions/`), and structured validation gates. Use
+  instead of the core skill when modeling a new domain from scratch or when
+  step-by-step stakeholder validation is required.
 
 ## Validation rules
 

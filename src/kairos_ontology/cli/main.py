@@ -344,6 +344,7 @@ def init(domain, company_domain, force):
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
         hub / "output" / "report",
+        hub / ".modeling-sessions",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -355,6 +356,12 @@ def init(domain, company_domain, force):
         gitkeep = hub / "output" / target / ".gitkeep"
         if not gitkeep.exists():
             gitkeep.touch()
+
+    # Place .gitkeep in .modeling-sessions so git tracks the folder
+    ms_gitkeep = hub / ".modeling-sessions" / ".gitkeep"
+    if not ms_gitkeep.exists():
+        ms_gitkeep.touch()
+
     # 2. Copy README files for each directory
     readme_map = {
         "model/ontologies": "model/ontologies",
@@ -1057,6 +1064,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
         hub / "output" / "report",
+        hub / ".modeling-sessions",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -1068,6 +1076,11 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         gitkeep = hub / "output" / target / ".gitkeep"
         if not gitkeep.exists():
             gitkeep.touch()
+
+    # Place .gitkeep in .modeling-sessions so git tracks the folder
+    ms_gitkeep = hub / ".modeling-sessions" / ".gitkeep"
+    if not ms_gitkeep.exists():
+        ms_gitkeep.touch()
 
     # README files
     readme_map = {
