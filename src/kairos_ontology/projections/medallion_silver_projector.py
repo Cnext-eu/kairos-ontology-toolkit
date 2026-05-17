@@ -122,6 +122,43 @@ def _warn_unprotected_pii(
                     break
 
 
+def _warn_unclaimed_parents(
+    graph: Graph,
+    domain_classes: list[dict],
+) -> list[str]:
+    """Warn when a claimed imported class has an unclaimed parent (DD-021).
+
+    If a class has ``rdfs:subClassOf`` pointing to a class that is NOT in the
+    projected set, inherited properties from that parent will be missing from
+    the generated DDL.
+
+    Returns a list of warning messages (also logged) for inclusion in reports.
+    """
+    class_uris = {c["uri"] for c in domain_classes}
+    warnings: list[str] = []
+    for cls_info in domain_classes:
+        cls_uri = URIRef(cls_info["uri"])
+        for parent in graph.objects(cls_uri, RDFS.subClassOf):
+            if not isinstance(parent, URIRef):
+                continue
+            parent_str = str(parent)
+            # Skip W3C base classes (owl:Thing, etc.)
+            if parent_str.startswith("http://www.w3.org/"):
+                continue
+            if parent_str not in class_uris:
+                parent_local = _local_name(parent_str)
+                msg = (
+                    f"DD-021: {cls_info['name']} is a subclass of "
+                    f"{parent_local} which is not claimed for projection. "
+                    f"Inherited properties from {parent_local} will be "
+                    f"missing. Add kairos-ext:silverInclude true to "
+                    f"<{parent_str}> or claim it via silverIncludeImports."
+                )
+                logger.warning(msg)
+                warnings.append(msg)
+    return warnings
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -273,6 +310,9 @@ def generate_silver_artifacts(
 
     # GDPR PII warning: scan for PII-like properties on unprotected classes
     _warn_unprotected_pii(merged, domain_classes, namespace)
+
+    # DD-021: Warn about claimed classes with unclaimed parents
+    _warn_unclaimed_parents(merged, domain_classes)
 
     # S3: Track all subtypes to flatten into parent tables
     folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype names]

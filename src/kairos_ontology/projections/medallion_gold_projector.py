@@ -105,6 +105,35 @@ def _local_name(uri: str) -> str:
     return local_name(uri)
 
 
+def _warn_unclaimed_parents_gold(
+    graph: Graph,
+    domain_classes: list[dict],
+) -> list[str]:
+    """Warn when a claimed imported class has an unclaimed parent (DD-021, gold)."""
+    class_uris = {c["uri"] for c in domain_classes}
+    warnings: list[str] = []
+    for cls_info in domain_classes:
+        cls_uri = URIRef(cls_info["uri"])
+        for parent in graph.objects(cls_uri, RDFS.subClassOf):
+            if not isinstance(parent, URIRef):
+                continue
+            parent_str = str(parent)
+            if parent_str.startswith("http://www.w3.org/"):
+                continue
+            if parent_str not in class_uris:
+                parent_local = _local_name(parent_str)
+                msg = (
+                    f"DD-021: {cls_info['name']} is a subclass of "
+                    f"{parent_local} which is not claimed for gold projection. "
+                    f"Inherited properties from {parent_local} will be "
+                    f"missing. Add kairos-ext:goldInclude true to "
+                    f"<{parent_str}> or claim it via goldIncludeImports."
+                )
+                logger.warning(msg)
+                warnings.append(msg)
+    return warnings
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -628,6 +657,9 @@ def build_gold_tables(
 
     if not domain_classes:
         return []
+
+    # DD-021: Warn about claimed classes with unclaimed parents
+    _warn_unclaimed_parents_gold(merged, domain_classes)
 
     # G1 — Classify tables
     classifications = _classify_tables(merged, domain_classes, class_uris)

@@ -1563,3 +1563,44 @@ def test_dd021_extension_overrides_on_claimed_imports():
     # SCD Type 2 → valid_from / valid_to columns
     assert "valid_from" in ddl.lower()
     assert "valid_to" in ddl.lower()
+
+
+def test_dd021_warn_unclaimed_parent(caplog):
+    """DD-021: Warning emitted when a claimed subclass has an unclaimed parent."""
+    import logging
+
+    REF_NS = "http://refmodel.example.com/ont/party#"
+    HUB_NS = "http://hub.example.com/ont/party#"
+    ttl = f"""
+        @prefix ref: <{REF_NS}> .
+        @prefix hub: <{HUB_NS}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <http://hub.example.com/ont/party> a owl:Ontology ;
+            rdfs:label "Party"@en ; owl:versionInfo "1.0" .
+
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ; rdfs:comment "."@en .
+        ref:partyName a owl:DatatypeProperty ;
+            rdfs:domain ref:TradeParty ; rdfs:range xsd:string ;
+            rdfs:label "party name"@en .
+
+        ref:Buyer a owl:Class ;
+            rdfs:subClassOf ref:TradeParty ;
+            rdfs:label "Buyer"@en ; rdfs:comment "."@en .
+    """
+    g = _make_graph(ttl)
+    # Only Buyer is claimed — TradeParty is NOT
+    classes = [
+        {"uri": f"{REF_NS}Buyer", "name": "Buyer"},
+    ]
+    with caplog.at_level(logging.WARNING):
+        result = generate_silver_artifacts(
+            classes, g, HUB_NS, ontology_name="party"
+        )
+    # Warning about unclaimed parent should be emitted
+    assert any("DD-021" in msg and "TradeParty" in msg and "not claimed" in msg
+               for msg in caplog.messages)
