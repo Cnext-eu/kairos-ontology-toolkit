@@ -189,6 +189,12 @@ grep -c "kairos-ext:scdType" ontology-hub/model/extensions/{DOMAIN}-silver-ext.t
 
 ## Phase 3 — Gather per-property design decisions
 
+> ⚠️ **Imported reference model properties** (from `owl:imports`) typically define
+> `owl:ObjectProperty` without cardinality constraints. These will **NOT** generate
+> FK columns automatically. You MUST annotate each many-to-one relationship with
+> `kairos-ext:silverForeignKey "true"` or `kairos-ext:silverForeignKeyOn` in the
+> extension file. See [§3e](#3e--dd-022-simplified-fk-annotations) below.
+
 For each `owl:ObjectProperty` in the domain:
 
 ### 3a — FK column vs junction table (R12 / R13)
@@ -209,6 +215,11 @@ ex:{PropertyName}
     kairos-ext:silverColumnName "fk_column_name" ;
     kairos-ext:silverDataType   "NVARCHAR(16)" .
 ```
+
+> 💡 **For imported properties** that you cannot modify, use the simpler
+> `kairos-ext:silverForeignKey "true"` annotation instead of OWL restrictions.
+> For parent→child relationships, use `kairos-ext:silverForeignKeyOn` to place
+> the FK on the child table. See [§3e](#3e--dd-022-simplified-fk-annotations).
 
 **Many-to-many** → junction table (R13):
 ```turtle
