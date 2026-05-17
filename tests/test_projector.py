@@ -1198,3 +1198,152 @@ class TestAutoDetectNamespace:
 
         ns = _auto_detect_namespace(g)
         assert ns == "http://example.org/onto#"
+
+
+# ---------------------------------------------------------------------------
+# DD-021 — Import whitelisting at the projector level
+# ---------------------------------------------------------------------------
+
+try:
+    from kairos_ontology.projector import (
+        _discover_whitelisted_imports,
+        _get_reference_model_namespaces,
+    )
+    _HAS_DD021 = True
+except ImportError:
+    _HAS_DD021 = False
+
+
+@pytest.mark.skipif(not _HAS_DD021, reason="DD-021 helpers not in installed package")
+class TestDD021ImportWhitelisting:
+    """Tests for the extension-as-whitelist import resolution (DD-021)."""
+
+    REF_NS = "http://refmodel.example.com/ont/party#"
+    HUB_NS = "http://hub.example.com/ont/mydom#"
+    PEER_NS = "http://hub.example.com/ont/other#"
+
+    def _build_graph(self, *, with_silver_include=False, with_bulk=False,
+                     with_peer_import=False):
+        """Build a test graph with optional import whitelisting annotations."""
+        import textwrap
+        ttl = textwrap.dedent(f"""\
+            @prefix ref: <{self.REF_NS}> .
+            @prefix hub: <{self.HUB_NS}> .
+            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+            <http://hub.example.com/ont/mydom> a owl:Ontology ;
+                rdfs:label "My Domain"@en ; owl:versionInfo "1.0" ;
+                owl:imports <http://refmodel.example.com/ont/party> .
+
+            hub:LocalClass a owl:Class ;
+                rdfs:label "Local Class"@en ; rdfs:comment "."@en .
+
+            ref:TradeParty a owl:Class ;
+                rdfs:label "Trade Party"@en ; rdfs:comment "."@en .
+            ref:Buyer a owl:Class ;
+                rdfs:label "Buyer"@en ; rdfs:comment "."@en .
+        """)
+        if with_peer_import:
+            ttl += textwrap.dedent(f"""\
+                <http://hub.example.com/ont/mydom> owl:imports <http://hub.example.com/ont/other> .
+                <{self.PEER_NS}PeerClass> a owl:Class ;
+                    rdfs:label "Peer Class"@en ; rdfs:comment "."@en .
+            """)
+        if with_silver_include:
+            ttl += textwrap.dedent(f"""\
+                ref:TradeParty kairos-ext:silverInclude true .
+            """)
+        if with_bulk:
+            ttl += textwrap.dedent(f"""\
+                <http://hub.example.com/ont/mydom> kairos-ext:silverIncludeImports true .
+            """)
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        return g
+
+    def _all_class_rows(self, g):
+        """Extract all class rows (mimicking _run_projection query)."""
+        query = """
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        SELECT ?class ?label ?comment
+        WHERE {
+            ?class a owl:Class .
+            OPTIONAL { ?class rdfs:label ?label }
+            OPTIONAL { ?class rdfs:comment ?comment }
+            FILTER(isIRI(?class))
+        }
+        """
+        return [(str(row['class']), row) for row in g.query(query)]
+
+    def test_no_whitelist_no_imports(self):
+        """Without any whitelist annotations, no imported classes returned."""
+        g = self._build_graph()
+        rows = self._all_class_rows(g)
+        result = _discover_whitelisted_imports(
+            g, self.HUB_NS, rows,
+            projection_ext_path=None, gold_ext_path=None,
+            target="silver", hub_domain_namespaces=set(),
+        )
+        assert len(result) == 0
+
+    def test_silver_include_per_class(self):
+        """silverInclude true on a class → that class is whitelisted."""
+        g = self._build_graph(with_silver_include=True)
+        rows = self._all_class_rows(g)
+        result = _discover_whitelisted_imports(
+            g, self.HUB_NS, rows,
+            projection_ext_path=None, gold_ext_path=None,
+            target="silver", hub_domain_namespaces=set(),
+        )
+        uris = {c["uri"] for c in result}
+        assert f"{self.REF_NS}TradeParty" in uris
+        # Buyer was NOT claimed
+        assert f"{self.REF_NS}Buyer" not in uris
+
+    def test_silver_include_imports_bulk(self):
+        """silverIncludeImports true → all ref-model imported classes included."""
+        g = self._build_graph(with_bulk=True)
+        rows = self._all_class_rows(g)
+        result = _discover_whitelisted_imports(
+            g, self.HUB_NS, rows,
+            projection_ext_path=None, gold_ext_path=None,
+            target="silver", hub_domain_namespaces=set(),
+        )
+        uris = {c["uri"] for c in result}
+        assert f"{self.REF_NS}TradeParty" in uris
+        assert f"{self.REF_NS}Buyer" in uris
+        # Local class not in result (it's filtered by namespace upstream)
+        assert f"{self.HUB_NS}LocalClass" not in uris
+
+    def test_bulk_excludes_peer_hub_domains(self):
+        """silverIncludeImports bulk flag excludes peer hub domain classes."""
+        g = self._build_graph(with_bulk=True, with_peer_import=True)
+        rows = self._all_class_rows(g)
+        hub_ns = {self.HUB_NS, self.PEER_NS,
+                  self.HUB_NS.rstrip("#"), self.PEER_NS.rstrip("#")}
+        result = _discover_whitelisted_imports(
+            g, self.HUB_NS, rows,
+            projection_ext_path=None, gold_ext_path=None,
+            target="silver", hub_domain_namespaces=hub_ns,
+        )
+        uris = {c["uri"] for c in result}
+        # Reference model classes included
+        assert f"{self.REF_NS}TradeParty" in uris
+        assert f"{self.REF_NS}Buyer" in uris
+        # Peer hub class excluded
+        assert f"{self.PEER_NS}PeerClass" not in uris
+
+    def test_get_reference_model_namespaces_excludes_peers(self):
+        """_get_reference_model_namespaces excludes peer hub domains."""
+        g = self._build_graph(with_peer_import=True)
+        hub_ns = {self.HUB_NS, self.PEER_NS,
+                  self.HUB_NS.rstrip("#"), self.PEER_NS.rstrip("#")}
+        ref_nss = _get_reference_model_namespaces(g, self.HUB_NS, hub_ns)
+        # Reference model NS should be present
+        assert any(ns.startswith("http://refmodel.example.com") for ns in ref_nss)
+        # Peer hub NS should NOT
+        assert not any(ns.startswith("http://hub.example.com/ont/other") for ns in ref_nss)

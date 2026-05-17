@@ -615,8 +615,8 @@ def build_gold_tables(
                                    KAIROS_EXT.goldInheritanceStrategy,
                                    "class-per-table")
 
-    # Filter to domain-owned classes only
-    domain_classes = [c for c in classes if c["uri"].startswith(namespace)]
+    # DD-021: Accept all classes passed by the caller (local + whitelisted imports).
+    domain_classes = list(classes)
     class_uris = {c["uri"] for c in domain_classes}
 
     # Filter out excluded classes

@@ -1,0 +1,16 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix acme-log: <https://acme.example/ontology/logistics#> .
+
+# ---------------------------------------------------------------------------
+# Ontology declaration — import-only domain for DD-021 testing
+# ---------------------------------------------------------------------------
+<https://acme.example/ontology/logistics> a owl:Ontology ;
+    rdfs:label "Acme Logistics Domain" ;
+    owl:versionInfo "1.0.0" ;
+    rdfs:comment "Import-only domain that delegates to a reference model (DD-021)." ;
+    owl:imports <https://refmodel.example/ontology/party> .
+
+# No local classes — all content comes from the imported reference model.
+# The silver-ext file claims specific imported classes for projection.

@@ -432,6 +432,15 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     
     print()
     
+    # DD-021: Collect hub domain namespaces (for import whitelisting).
+    # Used to distinguish peer hub imports from external reference models.
+    hub_domain_namespaces: set = set()
+    for info in ontology_graphs:
+        ns = _auto_detect_namespace(info['graph'])
+        if ns:
+            hub_domain_namespaces.add(ns)
+            # Also add without trailing separator for robust matching
+            hub_domain_namespaces.add(ns.rstrip("#/"))
     # Create output directories
     output_path.mkdir(parents=True, exist_ok=True)
     
@@ -517,7 +526,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                                             gold_ext_path=gold_ext_path,
                                             ontology_metadata=onto_meta,
                                             sources_dir=sources_dir,
-                                            mappings_dir=mappings_dir)
+                                            mappings_dir=mappings_dir,
+                                            hub_domain_namespaces=hub_domain_namespaces)
                 if artifacts:
                     total_files += _write_artifacts(artifacts, target_output)
                     print(f"  [{onto_name}] ✓ Generated {len(artifacts)} file(s)")
@@ -859,13 +869,125 @@ def _auto_detect_namespace(graph: Graph) -> str:
     return "urn:kairos:ont:core:"
 
 
+# ---------------------------------------------------------------------------
+# DD-021: Import whitelisting helpers
+# ---------------------------------------------------------------------------
+
+def _get_reference_model_namespaces(
+    graph: Graph,
+    domain_namespace: str,
+    hub_domain_namespaces: set,
+) -> list:
+    """Return namespace bases of reference model imports (excluding peer hub domains).
+
+    Only first-level ``owl:imports`` are considered — transitive imports are not
+    included to avoid pulling in large upstream dependency trees.
+    """
+    onto_iri = URIRef(domain_namespace.rstrip("#/"))
+    imported = []
+    for obj in graph.objects(onto_iri, OWL.imports):
+        ns = str(obj)
+        # Normalise: ensure ends with # or /
+        if not ns.endswith(("#", "/")):
+            ns += "#"
+        # Skip peer domain imports (other hub .ttl files)
+        if ns in hub_domain_namespaces:
+            continue
+        # Also check without trailing separator (namespace detection may vary)
+        bare = ns.rstrip("#/")
+        if bare in hub_domain_namespaces or (bare + "/") in hub_domain_namespaces:
+            continue
+        imported.append(ns)
+    return imported
+
+
+def _discover_whitelisted_imports(
+    graph: Graph,
+    namespace: str,
+    all_class_rows: list,
+    *,
+    projection_ext_path: Optional[Path],
+    gold_ext_path: Optional[Path],
+    target: str,
+    hub_domain_namespaces: set,
+) -> list:
+    """Return imported classes that are whitelisted for projection (DD-021).
+
+    Two mechanisms:
+    1. Per-class: ``kairos-ext:silverInclude true`` (or ``goldInclude``)
+    2. Bulk:      ``kairos-ext:silverIncludeImports true`` (or ``goldIncludeImports``)
+       on the ``owl:Ontology`` resource — includes all first-level reference model
+       imports (peer hub domains are excluded).
+    """
+    from .projections.shared import KAIROS_EXT, merge_ext_graph
+
+    # Determine which annotations to check based on target
+    if target in ('silver', 'dbt'):
+        include_prop = KAIROS_EXT.silverInclude
+        bulk_prop = KAIROS_EXT.silverIncludeImports
+        ext_path = projection_ext_path
+    else:  # powerbi / gold
+        include_prop = KAIROS_EXT.goldInclude
+        bulk_prop = KAIROS_EXT.goldIncludeImports
+        ext_path = gold_ext_path or projection_ext_path
+
+    # Build merged graph with extension (annotations live there)
+    merged = merge_ext_graph(graph, ext_path)
+
+    # Detect ontology URI for bulk flag check
+    onto_iri = URIRef(namespace.rstrip("#/"))
+
+    # Check bulk flag
+    bulk_val = merged.value(onto_iri, bulk_prop)
+    bulk_include = bulk_val is not None and str(bulk_val).lower() in ("true", "1")
+
+    # Collect whitelisted imported class URIs
+    whitelisted_uris: set = set()
+
+    if bulk_include:
+        # Include all classes from first-level reference model imports
+        ref_namespaces = _get_reference_model_namespaces(
+            graph, namespace, hub_domain_namespaces
+        )
+        for class_uri, _row in all_class_rows:
+            if class_uri.startswith(namespace):
+                continue  # skip local classes (already collected)
+            if any(class_uri.startswith(ns) for ns in ref_namespaces):
+                whitelisted_uris.add(class_uri)
+
+    # Per-class silverInclude / goldInclude (additive to bulk)
+    for class_uri, _row in all_class_rows:
+        if class_uri.startswith(namespace):
+            continue
+        cls_ref = URIRef(class_uri)
+        val = merged.value(cls_ref, include_prop)
+        if val is not None and str(val).lower() in ("true", "1"):
+            whitelisted_uris.add(class_uri)
+
+    # Build class info dicts for whitelisted imports
+    imported_classes = []
+    for class_uri, row in all_class_rows:
+        if class_uri not in whitelisted_uris:
+            continue
+        class_name = extract_local_name(class_uri)
+        imported_classes.append(OntologyClassInfo(
+            uri=class_uri,
+            name=class_name,
+            label=str(row.label) if row.label else class_name,
+            comment=str(row.comment) if row.comment else f"{class_name} entity",
+        ).to_dict())
+
+    return imported_classes
+
+
 def _run_projection(target: str, graph: Graph, output_path: Path, template_base: Path,
                     namespace: str, shapes_dir: Path = None, ontology_name: str = None,
                     projection_ext_path: Optional[Path] = None,
                     gold_ext_path: Optional[Path] = None,
                     ontology_metadata: Optional[dict] = None,
                     sources_dir: Optional[Path] = None,
-                    mappings_dir: Optional[Path] = None) -> dict:
+                    mappings_dir: Optional[Path] = None,
+                    hub_domain_namespaces: Optional[set] = None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
@@ -881,7 +1003,10 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         ontology_metadata: Provenance metadata from extract_ontology_metadata()
         sources_dir: Optional path to integration/sources/ directory (dbt target)
         mappings_dir: Optional path to mappings/ SKOS directory (dbt target)
+        hub_domain_namespaces: Set of namespaces for all hub domains (for import
+            whitelisting — distinguishes peer hub imports from reference model imports)
     """
+    from .projections.shared import KAIROS_EXT, merge_ext_graph
     
     query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
@@ -896,12 +1021,17 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
     }
     """
     
-    classes = []
+    # Collect ALL classes from the graph (local + imported)
+    all_class_rows = []
     for row in graph.query(query):
         class_uri = str(row['class'])
+        all_class_rows.append((class_uri, row))
+    
+    # Local classes: those in the domain namespace
+    classes = []
+    for class_uri, row in all_class_rows:
         if not class_uri.startswith(namespace):
             continue
-        
         class_name = extract_local_name(class_uri)
         classes.append(OntologyClassInfo(
             uri=class_uri,
@@ -909,6 +1039,19 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             label=str(row.label) if row.label else class_name,
             comment=str(row.comment) if row.comment else f"{class_name} entity",
         ).to_dict())
+    
+    # DD-021: Import whitelisting — include claimed imported classes
+    # For silver/gold/dbt targets, check extension files for silverInclude/goldInclude
+    # and the bulk silverIncludeImports/goldIncludeImports flags
+    if target in ('silver', 'powerbi', 'dbt'):
+        imported_classes = _discover_whitelisted_imports(
+            graph, namespace, all_class_rows,
+            projection_ext_path=projection_ext_path,
+            gold_ext_path=gold_ext_path,
+            target=target,
+            hub_domain_namespaces=hub_domain_namespaces or set(),
+        )
+        classes.extend(imported_classes)
     
     if not classes:
         return {}

@@ -201,3 +201,74 @@ def _find_artifact(artifacts: dict, suffix: str) -> str | None:
         if key.endswith(suffix):
             return key
     return None
+
+
+# ---------------------------------------------------------------------------
+# DD-021: Import-only domain — logistics (imported classes via silverInclude)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def logistics_silver_artifacts(logistics_ontology):
+    """Generate silver DDL/ERD for the logistics domain (import-only, DD-021)."""
+    graph, namespace, classes = logistics_ontology
+    ext_path = EXTENSIONS_DIR / "logistics-silver-ext.ttl"
+    return generate_silver_artifacts(
+        classes=classes,
+        graph=graph,
+        namespace=namespace,
+        shapes_dir=SHAPES_DIR,
+        ontology_name="logistics",
+        projection_ext_path=ext_path if ext_path.exists() else None,
+    )
+
+
+class TestDD021LogisticsDomain:
+    """DD-021: Import-only domain should produce DDL for whitelisted classes."""
+
+    def test_ddl_generated(self, logistics_silver_artifacts):
+        """Import-only domain produces DDL when silverInclude claims exist."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        assert ddl_key is not None, "No DDL artifact generated for logistics domain"
+        ddl = logistics_silver_artifacts[ddl_key]
+        assert "CREATE TABLE" in ddl
+
+    def test_claimed_classes_projected(self, logistics_silver_artifacts):
+        """Only classes claimed via silverInclude appear in DDL."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        ddl = logistics_silver_artifacts[ddl_key].lower()
+        # TradeParty and Carrier are claimed in logistics-silver-ext.ttl
+        assert "silver_logistics.trade_party" in ddl
+        assert "silver_logistics.carrier" in ddl
+
+    def test_hub_schema_used(self, logistics_silver_artifacts):
+        """Adopted imported classes use the hub domain schema, not the reference model's."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        ddl = logistics_silver_artifacts[ddl_key]
+        # Schema should be silver_logistics (from hub domain name)
+        assert "silver_logistics" in ddl
+        # NOT the reference model namespace
+        assert "silver_refmodel" not in ddl
+        assert "silver_party" not in ddl
+
+    def test_scd_type_override(self, logistics_silver_artifacts):
+        """Extension annotations (scdType) apply to claimed imported classes."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        ddl = logistics_silver_artifacts[ddl_key].lower()
+        # TradeParty is SCD Type 2 → should have valid_from/valid_to
+        assert "valid_from" in ddl
+        assert "valid_to" in ddl
+
+    def test_erd_generated(self, logistics_silver_artifacts):
+        """ERD diagram is generated for import-only domain."""
+        erd_key = _find_artifact(logistics_silver_artifacts, "-erd.mmd")
+        assert erd_key is not None, "No ERD artifact generated for logistics domain"
+        erd = logistics_silver_artifacts[erd_key]
+        assert "trade_party" in erd.lower()
+
+    def test_imported_properties_discovered(self, logistics_silver_artifacts):
+        """Properties from the reference model are discovered for claimed classes."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        ddl = logistics_silver_artifacts[ddl_key].lower()
+        # partyName and partyCode are properties of TradeParty in the ref model
+        assert "party_name" in ddl
+        assert "party_code" in ddl

@@ -263,11 +263,12 @@ def generate_silver_artifacts(
 
     # Build class map: uri → TableDef
     tables: dict[str, TableDef] = {}
-    # IMP-1 / BUG-3: Filter to domain-owned classes only.
-    # Classes whose URI doesn't start with this domain's namespace are imported
-    # copies — they should NOT be materialized. Cross-domain FK references are
-    # resolved via _resolve_external_table to point at the canonical schema.
-    domain_classes = [c for c in classes if c["uri"].startswith(namespace)]
+    # IMP-1 / BUG-3 + DD-021: Accept all classes passed by the caller.
+    # The caller (_run_projection) already applies namespace filtering for local
+    # classes AND import whitelisting for claimed imported classes (DD-021).
+    # Imported classes claimed via kairos-ext:silverInclude are materialized in
+    # this domain's schema; unclaimed imports are excluded upstream.
+    domain_classes = list(classes)
     class_uris = {c["uri"] for c in domain_classes}
 
     # GDPR PII warning: scan for PII-like properties on unprotected classes

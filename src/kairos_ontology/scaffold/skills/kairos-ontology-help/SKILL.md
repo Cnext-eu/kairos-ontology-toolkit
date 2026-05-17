@@ -137,6 +137,13 @@ The toolkit supports 8 projection targets:
 | `report` | `--target report` | HTML mapping report with data flow diagrams and coverage dashboards | Documentation / governance |
 | `all` | `--target all` | All of the above | Full regeneration |
 
+> **Import whitelisting (DD-021):** When a domain ontology uses `owl:imports`
+> to reference external models, imported classes are NOT projected by default.
+> Use `kairos-ext:silverInclude` / `kairos-ext:goldInclude` per class or
+> `kairos-ext:silverIncludeImports` / `kairos-ext:goldIncludeImports` on the
+> ontology to explicitly claim imported classes for projection.  See the
+> silver and gold medallion skills for details.
+
 ## 4  CLI Commands
 
 ```bash
