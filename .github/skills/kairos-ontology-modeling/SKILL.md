@@ -1,16 +1,111 @@
 ---
 name: kairos-ontology-modeling
 description: >
-  Expert knowledge for designing and modifying OWL/Turtle ontologies.
-  Covers class hierarchies, property design, naming, and common patterns.
+  Expert ontology modeling skill with interactive business alignment checkpoints,
+  session persistence, reference-model workflow, TTL patterns, and extension
+  annotations. Covers the full lifecycle from design through validation.
 ---
-<!-- kairos-ontology-toolkit:managed v2.25.1 -->
 
 # Ontology Modeling Skill
 
-You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
+You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax. This
+skill combines core modeling knowledge with an interactive configurator workflow
+that ensures naming decisions and design choices are validated with stakeholders
+before generating TTL files.
 
-## Before you start
+---
+
+## Session Management
+
+### On start — Check for existing session
+
+At the beginning of every modeling session, look for saved configuration files:
+
+```
+ontology-hub/.modeling-sessions/
+  └── {domain}-config-{YYYY-MM-DD-HHmm}.md    # Saved session state
+```
+
+**Ask the user:**
+
+> "I found a saved modeling session for `{domain}` from `{date}`.
+> Would you like to:
+> 1. **Continue** from that session (pick up where we left off)
+> 2. **Start fresh** (new session, previous one archived)
+> 3. **Review** the saved session first"
+
+If no session exists, start fresh and create one immediately.
+
+### Session file format
+
+Save progress to `ontology-hub/.modeling-sessions/{domain}-config-{timestamp}.md`:
+
+```markdown
+# Modeling Session: {Domain Name}
+
+**Started:** {datetime}
+**Last updated:** {datetime}
+**Status:** IN_PROGRESS | PAUSED | COMPLETED
+
+## Domain Scope
+
+| Decision | Choice | Confirmed? |
+|----------|--------|-----------|
+| Domain name | {value} | ✅/❓ |
+| Namespace | {value} | ✅/❓ |
+| Reference model imports | {list} | ✅/❓ |
+| Subclass vs extend strategy | {choice} | ✅/❓ |
+
+## Classes Confirmed
+
+| # | Class Name | Business Term | Subclass of | Status |
+|---|-----------|---------------|-------------|--------|
+| 1 | {OWL name} | {what users call it} | {parent or none} | ✅ Confirmed / ❓ Open |
+
+## Properties Confirmed
+
+| # | Property | Domain | Range | Business Term | Status |
+|---|----------|--------|-------|---------------|--------|
+| 1 | {name} | {class} | {type} | {what users call it} | ✅/❓ |
+
+## Open Questions
+
+- [ ] {question 1}
+- [ ] {question 2}
+
+## Design Decisions Log
+
+| # | Question | Decision | Rationale |
+|---|----------|----------|-----------|
+| 1 | {question} | {choice made} | {why} |
+```
+
+### Saving and pausing
+
+- **Auto-save** the session file after each confirmed decision
+- When the user says "pause", "stop", "save", or "continue later":
+  1. Update the session file with current state
+  2. List remaining open questions
+  3. Confirm: "Session saved. You have N open questions remaining."
+
+### Quick-edit mode
+
+When the user is making **minor changes** to an existing ontology (adding a
+property, fixing a label, adjusting a range), skip session management and
+business checkpoints. Just apply the modeling patterns directly.
+
+Indicators of quick-edit mode:
+- "Add a property X to class Y"
+- "Change the range of X from string to integer"
+- "Fix the label on class Z"
+- "Add rdfs:comment to these properties"
+
+For anything involving **new classes, renaming, or structural changes**, use the
+full configurator workflow with checkpoints.
+
+---
+
+## Before you start (full modeling workflow)
 
 0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
    at the start of the session.  If it reports outdated files, run
@@ -21,16 +116,10 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
 2. **Read the hub README** — open `ontology-hub/README.md` and note the company
    name, company domain, namespace base, and the domain model overview table.
    All new ontologies MUST use the namespace pattern documented there.
-3. **Check accelerator packs (MANDATORY)** — before designing any classes or
-   properties, list the available accelerator packs in
-   `ontology-reference-models/accelerator-packs/` and **ask the user** which
-   accelerator pack (if any) they want to base the domain on.  Accelerator
-   packs contain curated industry standards and blueprint ontologies that should
-   be adopted as alignment targets.  If the user selects an accelerator pack,
-   read its README and constituent ontologies to understand the classes,
-   properties, and patterns already defined — then design the domain ontology
-   as a specialisation/extension of those standard concepts rather than
-   reinventing them.
+3. **Ask: Are we starting from a reference model?** — this is the FIRST question
+   to ask the user before any modeling work.  See the
+   [Reference-model-first workflow](#reference-model-first-workflow) section
+   below.  If the user answers yes, follow that workflow before proceeding.
 4. **Check the domain model overview** — before creating a new `.ttl` file,
    verify that a row for the intended domain exists in the overview table.
    If it doesn't, add the domain to the table first and get agreement from the
@@ -41,6 +130,165 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
    domain on an industry standard (e.g. FIBO, DCSA, GS1, PROV-O, schema.org),
    follow the steps in the [Standard model alignment](#standard-model-alignment)
    section below before designing any classes or properties.
+
+---
+
+## Reference-model-first workflow
+
+The recommended approach for new modeling projects is to **start from reference
+models** rather than inventing entities from scratch.  Reference models are
+curated, industry-aligned OWL ontologies bundled into **accelerator packs** —
+sector-specific collections of ontologies (e.g., Financial Services, Supply
+Chain, Healthcare) that provide a proven starting point.
+
+### Step 0 — Ask the user
+
+At the **very start** of any modeling session, ask:
+
+> "Are we starting from a reference model / accelerator pack?  If so, have you
+> already imported the reference models into this hub by running
+> `update-referencemodels.ps1`?"
+
+- If the user has **not yet imported** reference models, instruct them to run:
+  ```powershell
+  .\update-referencemodels.ps1          # from ontology-hub root
+  # or specify a version tag:
+  .\update-referencemodels.ps1 -Ref v1.2.1
+  ```
+  This fetches the `ontology-reference-models/` folder from the central repo
+  (`Cnext-eu/kairos-ontology-referencemodels`) via a sparse shallow clone.
+  The user must run this **before** any modeling work begins.
+
+- If the user says **no reference model** is needed, skip to the standard
+  modeling workflow (class design, property design, etc.).
+
+### Step 1 — Select the accelerator pack
+
+Once reference models are imported, explore the available accelerator packs:
+
+```bash
+ls ontology-reference-models/accelerator-packs/
+```
+
+Each pack bundles ontologies for a business sector.  Ask the user:
+
+> "Which accelerator pack / sector is closest to your business?  We will use
+> this as a starting point and later trim what is not relevant."
+
+### Step 1b — Review the blueprint and data-domains registry
+
+Each accelerator pack includes a **client-hub-blueprint/** folder with:
+
+- `BLUEPRINT.md` — recommended folder structure, import guidance, medallion
+  architecture relationship, domain priority order, and "extend vs import"
+  decision table.
+- `data-domains.yaml` — structured registry of every domain with:
+  - `owns` / `does_not_own` boundaries (used by Checkpoint 4)
+  - exact `owl:imports` URIs for each domain
+  - aligned reference model modules and standards
+
+**Read both files** before starting any domain modeling:
+
+```bash
+cat ontology-reference-models/accelerator-packs/{pack}/client-hub-blueprint/BLUEPRINT.md
+cat ontology-reference-models/accelerator-packs/{pack}/client-hub-blueprint/data-domains.yaml
+```
+
+Use the blueprint's **recommended sequence** (e.g., for logistics:
+Party → MDM → Commercial → Booking → Consignment → ...) to guide which
+domain to model first.
+
+Use `data-domains.yaml` entries to:
+- Pre-populate the correct `owl:imports` URIs for each domain TTL file
+- Answer Checkpoint 4 ("does this class belong to this domain?") using the
+  `owns` / `does_not_own` fields
+- Identify which reference model modules provide parent classes for subclassing
+
+### Step 2 — Map business data domains to reference ontologies
+
+Before creating any files, build a **domain mapping table** together with the
+user.  The goal is to create a complete map of all relevant data domains for the
+business and align each one to a corresponding ontology from the reference
+models.
+
+| Business Data Domain | Reference Ontology | Status |
+|---|---|---|
+| Customer management | `ref:party.ttl` | ✅ Direct match |
+| Invoicing | `ref:billing.ttl` | ✅ Direct match |
+| Fleet management | — | ⚠️ No reference; model later |
+
+**Rules for the mapping:**
+
+1. **Avoid overlaps** — each business domain maps to exactly one reference
+   ontology.  If two reference ontologies cover overlapping territory, choose
+   one and note the exclusion.
+2. **Do not invent new entities yet** — at this stage, stick strictly to what
+   the reference models provide.  Custom entities come later, after the
+   reference baseline is established.
+3. **Flag gaps** — if a business domain has no matching reference ontology, mark
+   it for later custom modeling.  Do not attempt to fill gaps with invented
+   classes at this point.
+
+### Step 3 — Validate with the business
+
+Before proceeding to implementation, **suggest that the user validates the
+domain mapping with business stakeholders**:
+
+> "Before we start building, I recommend reviewing this domain mapping table
+> with your business stakeholders.  This ensures we've selected the right data
+> domain models and avoids rework later.  Do you want to finalize this mapping
+> first, or proceed with what we have?"
+
+This is a critical governance step — getting business sign-off on which
+reference domains are in scope prevents scope creep and misalignment.
+
+### Step 4 — Import via OWL catalog (do NOT copy TTL)
+
+When incorporating reference model ontologies into the hub, **always use
+`owl:imports` via the catalog** — never copy or recreate the reference model
+TTL files inside the hub.
+
+The reference models ship with a `catalog-v001.xml` that maps logical URIs to
+local file paths.  Your domain ontology imports the reference model by URI:
+
+```turtle
+@prefix : <https://contoso.com/ont/customer#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+<https://contoso.com/ont/customer> a owl:Ontology ;
+    rdfs:label "Customer Domain"@en ;
+    owl:versionInfo "1.0.0" ;
+    owl:imports <https://referencemodels.kairos.cnext.eu/party> .
+```
+
+**Rules:**
+
+- ✅ **DO** use `owl:imports` referencing the catalog URI for the reference
+  ontology.
+- ✅ **DO** extend reference classes via `rdfs:subClassOf` when specialization
+  is needed.
+- ❌ **DO NOT** copy reference model `.ttl` files into `model/ontologies/`.
+- ❌ **DO NOT** re-create reference model classes or properties in your domain
+  files — reference them, don't duplicate them.
+- ❌ **DO NOT** add new entities that aren't in the reference model until the
+  reference baseline is validated and the user explicitly requests additions.
+
+### Step 5 — Trim and specialize
+
+After the reference baseline is imported and validated:
+
+1. **Remove what's not needed** — if a reference ontology contains classes that
+   are out of scope, do NOT import them.  Import only the reference ontologies
+   that match your domain mapping table.
+2. **Specialize where needed** — extend reference classes with domain-specific
+   subclasses or additional properties.
+3. **Fill gaps** — for business domains with no reference model match (flagged
+   in Step 2), now create custom ontology files following the standard modeling
+   patterns below.
+
+> **Principle:** Start broad with the accelerator pack, validate with the
+> business, then narrow down.  It is easier to remove what you don't need than
+> to discover missing domains later.
 
 ---
 
@@ -133,6 +381,116 @@ ls ontology-reference-models/
 
 ---
 
+## Business Alignment Checkpoints
+
+These checkpoints are **mandatory** when modeling new domains or creating new
+classes. They ensure business alignment before any TTL is generated. Skip them
+only in [Quick-edit mode](#quick-edit-mode).
+
+### Checkpoint 1: Naming Alignment (MANDATORY before creating any class)
+
+For every new class, **explicitly ask**:
+
+> "I'm proposing the OWL class name `:{ProposedName}`.
+>
+> **Business context check:**
+> - What do your users/business call this? (e.g., 'cargo line', 'shipment item', 'goods entry')
+> - Will this name be clear on a Power BI dashboard or report?
+> - Does any source system already use a term for this?
+>
+> **Reference model context:**
+> - The reference model calls this `{refmodel:ClassName}` — our class will extend it via `rdfs:subClassOf`.
+> - Inherited properties from the reference model: {list key ones}
+>
+> Proposed name: `:{ProposedName}` — would you like to keep this or rename?"
+
+**Naming decision table** (present for each class):
+
+| Consideration | Guideline |
+|---|---|
+| **Matches business language?** | Use the term people say in meetings |
+| **Distinct from reference model parent?** | Only subclass if there's real semantic difference |
+| **Clear in BI/reports?** | Would a business user understand `dim_{snake_case_name}`? |
+| **Consistent across domains?** | Same pattern as other domain classes |
+
+### Checkpoint 2: Subclass Justification (MANDATORY when extending reference model)
+
+Before creating any `rdfs:subClassOf` relationship, validate:
+
+> "You want `:{YourClass} rdfs:subClassOf {ref:ParentClass}`.
+>
+> **Subclass vs. direct use — which applies?**
+>
+> | Create subclass when... | Use parent class directly when... |
+> |---|---|
+> | You need a discriminator in silver | It's the same concept, just with more properties |
+> | Multiple variants exist (e.g., AirCargo, SeaCargo) | Only one kind in practice |
+> | Different lifecycle or natural key | Same lifecycle as parent |
+> | Business has a distinct name for it | Just adding fields to the standard class |
+>
+> **Does `:{YourClass}` pass at least one 'create subclass' criterion?**"
+
+If the user cannot justify the subclass, suggest:
+```turtle
+# Instead of subclassing, extend the parent directly:
+:myNewProperty rdfs:domain ref:ParentClass ;
+    rdfs:range xsd:string .
+```
+
+### Checkpoint 3: Property Design — Flat vs. Structured
+
+When a property could be modeled as either flat columns or a structured object:
+
+> "The reference model uses a **structured** pattern:
+> ```
+> CargoItem → hasWeight → Weight (weightValue + weightUnit)
+> ```
+>
+> For your use case, I can model this as:
+>
+> | Option | Pattern | Silver result | Pros | Cons |
+> |---|---|---|---|---|
+> | A: Flat | `grossWeightKg : xsd:decimal` | Single column, unit in name | Simple, no joins | Loses unit flexibility |
+> | B: Structured | `hasWeight → Weight` | Extra table or inlined | Flexible, multi-unit | More complex |
+> | C: Hybrid | Flat + `originalWeightUnit` | Two columns | Audit trail + simple | Slight redundancy |
+>
+> Which approach fits your business needs?"
+
+### Checkpoint 4: Domain Boundary Verification
+
+Before modeling any class, verify it belongs to this domain by checking the
+`data-domains.yaml` entry for the current domain (found in the accelerator pack's
+`client-hub-blueprint/` folder):
+
+> "Before I add `:{ClassName}` to `{domain}.ttl`:
+> - ✅ This domain **owns**: _{`owns` field from data-domains.yaml}_
+> - 🚫 This domain **does not own**: _{`does_not_own` field from data-domains.yaml}_
+>
+> Does `:{ClassName}` fall within the `owns` scope?"
+
+### Checkpoint 5: Inheritance Impact Review
+
+After every 3-5 classes are confirmed, pause and show:
+
+> "**Inheritance summary so far:**
+>
+> ```
+> ref:ParentA
+>   └── your:ChildA (inherits: prop1, prop2, prop3)
+>       └── adds: newProp1, newProp2
+>
+> ref:ParentB
+>   └── your:ChildB (inherits: propX, propY)
+>       └── adds: newPropZ
+> ```
+>
+> **Silver projection preview:**
+> These will become tables: `silver_{domain}.{table1}`, `silver_{domain}.{table2}`
+>
+> Does this structure make sense from a data warehouse perspective?"
+
+---
+
 ## Class design
 
 - Every class is declared as `owl:Class` with `rdfs:label` and `rdfs:comment`.
@@ -201,17 +559,6 @@ Every .ttl file MUST start with an ontology declaration:
     rdfs:comment "Description of this domain"@en ;
     owl:versionInfo "1.0.0" .
 ```
-
-## Anti-patterns to avoid
-
-- Do NOT create classes without labels or comments.
-- Do NOT use `xsd:string` for everything — use appropriate types (`xsd:dateTime`, `xsd:integer`, etc.).
-- Do NOT create circular subclass hierarchies.
-- Do NOT mix domains in a single .ttl file — one domain per file.
-- Do NOT use `http://` in namespace URIs — always use `https://`.
-- Do NOT forget to add new domains to `_master.ttl` and the hub README table.
-- Do NOT put projection annotations directly in the domain ontology `.ttl` —
-  use separate extension files (see below).
 
 ---
 
@@ -359,3 +706,81 @@ These go in `model/mappings/<source>-to-<domain>.ttl` alongside SKOS mappings.
    extension file parses correctly.
 7. **Test the projection**: run `kairos-ontology project --target silver` (or `dbt`,
    `gold`) and inspect the generated output to verify annotations took effect.
+
+---
+
+## Completion: Final Configuration Report
+
+When the user confirms all classes and properties for a domain, generate a final
+report. Save to `ontology-hub/.modeling-sessions/{domain}-config-FINAL-{timestamp}.md`:
+
+```markdown
+# Modeling Configuration Report: {Domain Name}
+
+**Completed:** {datetime}
+**Domain file:** `model/ontologies/{domain}/{domain}.ttl`
+**Ontology version:** 1.0.0
+
+## Summary
+
+| Metric | Count |
+|--------|-------|
+| Classes defined | N |
+| Properties defined | N |
+| Reference model imports | N |
+| Subclass relationships | N |
+| Design decisions made | N |
+
+## Naming Map (Business ↔ Technical)
+
+| Business Term | OWL Class/Property | Reference Parent | Silver Table/Column |
+|---|---|---|---|
+| {what users say} | :{TechnicalName} | ref:{Parent} | silver_{domain}.{table} |
+
+## Inheritance Tree
+
+{full tree showing all classes and their parents}
+
+## Design Decisions Audit Trail
+
+| # | Decision | Choice | Rationale | Stakeholder |
+|---|----------|--------|-----------|-------------|
+| 1 | {question} | {choice} | {reason} | {who confirmed} |
+
+## Open Items for Follow-up
+
+- {any deferred decisions}
+- {any items that need silver extension work}
+
+## Next Steps
+
+- [ ] Create silver extension (`model/extensions/{domain}-silver-ext.ttl`)
+- [ ] Create source mappings (`model/mappings/{source}/{source}-to-{domain}.ttl`)
+- [ ] Run `python -m kairos_ontology validate`
+- [ ] Run `python -m kairos_ontology project --target silver`
+```
+
+---
+
+## Anti-patterns to avoid
+
+- Do NOT create classes without labels or comments.
+- Do NOT use `xsd:string` for everything — use appropriate types.
+- Do NOT create circular subclass hierarchies.
+- Do NOT mix domains in a single .ttl file — one domain per file.
+- Do NOT use `http://` in namespace URIs — always use `https://`.
+- Do NOT forget to add new domains to `_master.ttl` and the hub README table.
+- Do NOT put projection annotations directly in the domain ontology `.ttl` —
+  use separate extension files.
+
+### Anti-patterns this skill's checkpoints prevent
+
+| Problem | How prevented |
+|---|---|
+| Naming mismatch (CargoLine vs GoodsItem vs CargoItem) | Checkpoint 1 forces explicit naming discussion |
+| Unnecessary subclassing | Checkpoint 2 requires justification |
+| Flat vs structured confusion | Checkpoint 3 shows trade-offs explicitly |
+| Modeling concepts outside domain boundary | Checkpoint 4 verifies ownership |
+| Silver layer surprises | Checkpoint 5 previews projection impact |
+| Lost context between sessions | Session files persist all decisions |
+| No audit trail for design choices | Final report captures everything |
