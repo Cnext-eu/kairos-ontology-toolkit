@@ -122,11 +122,13 @@ domain:hasOrderAmount
 | `goldInheritanceStrategy` | string | `class-per-table` | Subclass projection strategy: `"class-per-table"` (each subclass → own table with shared PK/FK to parent) or `"discriminator"` (flatten into parent table). Can also be set per-class. |
 | `generateDateDimension` | boolean | `true` | Auto-generate dim_date |
 | `generateTimeIntelligence` | boolean | `false` | Generate time-intelligence calculation group (YTD/QTD/MTD/PY/YoY%) |
+| `goldIncludeImports` | boolean | `false` | Bulk-claim all first-level imported classes for gold projection (DD-021) |
 
 ### Class-level
 
 | Property | Type | Description |
 |----------|------|-------------|
+| `goldInclude` | boolean | Claim an imported class for gold projection (DD-021) |
 | `goldTableType` | string | Override: `"fact"`, `"dimension"`, `"bridge"` |
 | `goldTableName` | string | Table name override (prefix auto-added) |
 | `goldExclude` | boolean | Exclude from gold projection |
@@ -146,6 +148,49 @@ domain:hasOrderAmount
 | `degenerateDimension` | boolean | Keep on fact table (no separate dim) |
 | `rolePlayingAs` | string | Space-separated role names for role-playing dimension |
 | `olsRestricted` | boolean | Mark column for Object-Level Security restriction |
+
+### Working with imported classes (DD-021)
+
+When a domain ontology uses `owl:imports` to reference external models (e.g.,
+reference models), imported classes are **NOT projected** to gold by default.
+Hub authors must explicitly claim them.
+
+**Per-class claiming:**
+```turtle
+@prefix ref: <https://referencemodels.kairos.cnext.eu/party#> .
+ref:TradeParty kairos-ext:goldInclude "true"^^xsd:boolean .
+```
+
+**Bulk claiming (all first-level imported classes):**
+```turtle
+<https://contoso.com/ont/customer> kairos-ext:goldIncludeImports "true"^^xsd:boolean .
+```
+
+**Rules:**
+- Bulk mode (`goldIncludeImports`) claims all classes from directly imported
+  ontologies (first-level `owl:imports` only).
+- Peer hub domains (other domains in the same hub) are **excluded** from bulk
+  claiming — they have their own extension files.
+- The gold schema comes from the **hub domain name** (e.g., `gold_customer`),
+  not from the reference model namespace.
+- Per-class `goldInclude` overrides bulk mode for individual classes.
+
+**Example extension file** (`customer-gold-ext.ttl`):
+```turtle
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix ref: <https://referencemodels.kairos.cnext.eu/party#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# Bulk-claim all imported reference model classes
+<https://contoso.com/ont/customer>
+    kairos-ext:goldSchema "gold_customer" ;
+    kairos-ext:goldIncludeImports "true"^^xsd:boolean .
+
+# Or claim individual classes
+ref:TradeParty
+    kairos-ext:goldInclude "true"^^xsd:boolean ;
+    kairos-ext:goldTableType "dimension" .
+```
 
 ## Output Artifacts
 
@@ -212,6 +257,7 @@ with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
 ## Checklist
 
 - [ ] Create `{domain}-gold-ext.ttl` in `model/extensions/`
+- [ ] Claim any imported classes with `goldInclude` or `goldIncludeImports` (DD-021)
 - [ ] Annotate each class with `goldTableType` (or rely on auto-classification)
 - [ ] Add `measureExpression` for DAX measures on numeric properties
 - [ ] Add `hierarchyName` / `hierarchyLevel` for drill-down hierarchies

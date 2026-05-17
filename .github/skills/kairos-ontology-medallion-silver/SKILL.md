@@ -173,6 +173,8 @@ class in the domain MUST have at minimum:
 | `kairos-ext:namingConvention` | Ontology-level | `"camel-to-snake"` |
 | `kairos-ext:includeNaturalKeyColumn` | Ontology-level | `"true"` |
 | `kairos-ext:inlineRefThreshold` | Ontology-level | `"3"` |
+| `kairos-ext:silverIncludeImports` | Ontology-level (only if uses `owl:imports`) | `"false"` |
+| `kairos-ext:silverInclude` | Only on imported classes | `"false"` |
 
 Run a quick scan:
 ```bash
@@ -517,6 +519,49 @@ ex:hasLegalForm
 ```turtle
 ex:hasEngagementMember
     kairos-ext:junctionTableName "engagement_team_member" .
+```
+
+### Working with imported classes (DD-021)
+
+When a domain ontology uses `owl:imports` to reference external models (e.g.,
+reference models), imported classes are **NOT projected** to silver by default.
+Hub authors must explicitly claim them.
+
+**Per-class claiming:**
+```turtle
+@prefix ref: <https://referencemodels.kairos.cnext.eu/party#> .
+ref:TradeParty kairos-ext:silverInclude "true"^^xsd:boolean .
+```
+
+**Bulk claiming (all first-level imported classes):**
+```turtle
+<https://contoso.com/ont/customer> kairos-ext:silverIncludeImports "true"^^xsd:boolean .
+```
+
+**Rules:**
+- Bulk mode (`silverIncludeImports`) claims all classes from directly imported
+  ontologies (first-level `owl:imports` only).
+- Peer hub domains (other domains in the same hub) are **excluded** from bulk
+  claiming — they have their own extension files.
+- The silver schema comes from the **hub domain name** (e.g., `silver_customer`),
+  not from the reference model namespace.
+- Per-class `silverInclude` overrides bulk mode for individual classes.
+
+**Example extension file** (`customer-silver-ext.ttl`):
+```turtle
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix ref: <https://referencemodels.kairos.cnext.eu/party#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# Bulk-claim all imported reference model classes
+<https://contoso.com/ont/customer>
+    kairos-ext:silverSchema "silver_customer" ;
+    kairos-ext:silverIncludeImports "true"^^xsd:boolean .
+
+# Or claim individual classes
+ref:TradeParty
+    kairos-ext:silverInclude "true"^^xsd:boolean ;
+    kairos-ext:scdType "2" .
 ```
 
 ---

@@ -259,3 +259,43 @@ kairos-ext:rolePlayingAs a owl:AnnotationProperty ;
     rdfs:label "role playing as"@en ;
     rdfs:comment "Space-separated role names for role-playing dimension usage (e.g. 'order_date ship_date'). Each role creates a separate relationship in the semantic model."@en ;
     rdfs:range xsd:string .
+
+# ===========================================================================
+# Import Whitelisting Annotations (DD-021)
+# ===========================================================================
+# When a domain ontology uses owl:imports to reference external models (BSP,
+# MMT, DCSA, FIBO), the imported classes are NOT projected by default.
+# These annotations explicitly claim imported classes for projection.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Import whitelisting — Silver layer
+# ---------------------------------------------------------------------------
+
+kairos-ext:silverInclude a owl:AnnotationProperty ;
+    rdfs:label "silver include"@en ;
+    rdfs:comment "Claim an imported class for silver projection (DD-021). Set to true on individual imported classes to include them in DDL generation."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:boolean .
+
+kairos-ext:silverIncludeImports a owl:AnnotationProperty ;
+    rdfs:label "silver include imports"@en ;
+    rdfs:comment "Bulk-claim all first-level imported classes for silver projection (DD-021). Set on the owl:Ontology resource. Peer hub domain imports are excluded."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# Import whitelisting — Gold layer
+# ---------------------------------------------------------------------------
+
+kairos-ext:goldInclude a owl:AnnotationProperty ;
+    rdfs:label "gold include"@en ;
+    rdfs:comment "Claim an imported class for gold projection (DD-021). Set to true on individual imported classes to include them in gold DDL/TMDL generation."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:boolean .
+
+kairos-ext:goldIncludeImports a owl:AnnotationProperty ;
+    rdfs:label "gold include imports"@en ;
+    rdfs:comment "Bulk-claim all first-level imported classes for gold projection (DD-021). Set on the owl:Ontology resource. Peer hub domain imports are excluded."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:boolean .

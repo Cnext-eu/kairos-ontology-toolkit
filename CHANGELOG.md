@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Import whitelisting (DD-021)** — Silver and gold projectors now support
+  projecting imported classes from reference models (BSP, MMT, DCSA).
+  Imported classes require explicit claiming via `kairos-ext:silverInclude` /
+  `goldInclude` (per-class) or `silverIncludeImports` / `goldIncludeImports`
+  (bulk, ontology-level). Peer hub domain imports are automatically excluded
+  from bulk inclusion. See DD-021 in `docs/design/toolkit-design-decisions.md`.
+- **4 new `kairos-ext:` annotations** — `silverInclude`, `silverIncludeImports`,
+  `goldInclude`, `goldIncludeImports` added to the extension vocabulary.
 - **Pre-release publishing** — `release.ps1` supports rc/beta/alpha pre-releases
   with auto-incrementing sequence numbers and PEP 440 version format.
 - **Channel system** — hub repos can set `[tool.kairos] channel` in `pyproject.toml`

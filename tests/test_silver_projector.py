@@ -1314,8 +1314,13 @@ def test_bug2_no_duplicate_subtype_names():
 
 
 def test_bug3_imp1_imported_classes_not_materialized():
-    """BUG-3/IMP-1: Classes from another namespace should NOT produce tables.
-    Cross-domain FK references should point to the canonical schema."""
+    """BUG-3/IMP-1: Classes from another namespace should NOT produce tables
+    when not claimed via silverInclude.
+
+    Post DD-021 the namespace filter lives in ``_run_projection()`` — the caller
+    now only passes classes that belong to the domain *or* are whitelisted.
+    This test simulates that contract: only the local class is passed.
+    """
     PARTY_NS = "http://example.com/ont/party#"
     CLIENT_NS = "http://example.com/ont/client#"
     ttl = f"""
@@ -1341,9 +1346,9 @@ def test_bug3_imp1_imported_classes_not_materialized():
             rdfs:label "represents party"@en .
     """
     g = _make_graph(ttl)
-    # Caller passes both imported and local classes
+    # DD-021: Caller (_run_projection) only passes domain + whitelisted classes.
+    # Party is not whitelisted, so only Client is passed.
     classes = [
-        {"uri": f"{PARTY_NS}Party", "name": "Party"},
         {"uri": f"{CLIENT_NS}Client", "name": "Client"},
     ]
     result = generate_silver_artifacts(
@@ -1352,7 +1357,7 @@ def test_bug3_imp1_imported_classes_not_materialized():
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
     # Client table should exist
     assert "silver_client.client" in ddl.lower()
-    # Party table should NOT be materialized (different namespace)
+    # Party table should NOT be materialized (not whitelisted)
     assert "CREATE TABLE silver_client.party" not in ddl
     # FK should point to canonical silver_party schema
     assert "silver_party.party" in ddl.lower()
@@ -1400,3 +1405,202 @@ class TestEdgeCasesEmpty:
         assert isinstance(result, dict)
         for content in result.values():
             assert "CREATE TABLE" not in content
+
+
+# ---------------------------------------------------------------------------
+# DD-021 — Import whitelisting for silver projection
+# ---------------------------------------------------------------------------
+
+
+def test_dd021_silver_include_claims_imported_class():
+    """DD-021: silverInclude true on an imported class → DDL generated."""
+    REF_NS = "http://refmodel.example.com/ont/party#"
+    HUB_NS = "http://hub.example.com/ont/party#"
+    ttl = f"""
+        @prefix ref: <{REF_NS}> .
+        @prefix hub: <{HUB_NS}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <http://hub.example.com/ont/party> a owl:Ontology ;
+            rdfs:label "Party"@en ; owl:versionInfo "1.0" ;
+            owl:imports <http://refmodel.example.com/ont/party> .
+
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ; rdfs:comment "."@en .
+        ref:partyName a owl:DatatypeProperty ;
+            rdfs:domain ref:TradeParty ;
+            rdfs:range xsd:string ;
+            rdfs:label "party name"@en .
+    """
+    g = _make_graph(ttl)
+    # Caller (_run_projection) passes whitelisted imported class
+    classes = [
+        {"uri": f"{REF_NS}TradeParty", "name": "TradeParty"},
+    ]
+    result = generate_silver_artifacts(
+        classes, g, HUB_NS, ontology_name="party"
+    )
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Imported class should produce a table in the hub domain schema
+    assert "silver_party.trade_party" in ddl.lower()
+    assert "party_name" in ddl.lower()
+
+
+def test_dd021_no_silver_include_no_import_ddl():
+    """DD-021: Without silverInclude, imported classes produce no DDL.
+
+    This validates that the default behavior (no extension) leaves imports
+    excluded.  The filtering happens in _run_projection; the silver projector
+    trusts its input, so we simply don't pass the imported class.
+    """
+    REF_NS = "http://refmodel.example.com/ont/party#"
+    HUB_NS = "http://hub.example.com/ont/party#"
+    ttl = f"""
+        @prefix ref: <{REF_NS}> .
+        @prefix hub: <{HUB_NS}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+
+        <http://hub.example.com/ont/party> a owl:Ontology ;
+            rdfs:label "Party"@en ; owl:versionInfo "1.0" ;
+            owl:imports <http://refmodel.example.com/ont/party> .
+
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ; rdfs:comment "."@en .
+    """
+    g = _make_graph(ttl)
+    # No classes passed → no DDL
+    result = generate_silver_artifacts(
+        classes=[], graph=g, namespace=HUB_NS, ontology_name="party"
+    )
+    for content in result.values():
+        assert "CREATE TABLE" not in content
+
+
+def test_dd021_mixed_domain_local_plus_claimed():
+    """DD-021: Mixed domain — local classes + claimed imports both produce DDL."""
+    REF_NS = "http://refmodel.example.com/ont/party#"
+    HUB_NS = "http://hub.example.com/ont/booking#"
+    ttl = f"""
+        @prefix ref: <{REF_NS}> .
+        @prefix hub: <{HUB_NS}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <http://hub.example.com/ont/booking> a owl:Ontology ;
+            rdfs:label "Booking"@en ; owl:versionInfo "1.0" ;
+            owl:imports <http://refmodel.example.com/ont/party> .
+
+        hub:Booking a owl:Class ;
+            rdfs:label "Booking"@en ; rdfs:comment "."@en .
+        hub:bookingRef a owl:DatatypeProperty ;
+            rdfs:domain hub:Booking ; rdfs:range xsd:string ;
+            rdfs:label "booking ref"@en .
+
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ; rdfs:comment "."@en .
+        ref:partyName a owl:DatatypeProperty ;
+            rdfs:domain ref:TradeParty ; rdfs:range xsd:string ;
+            rdfs:label "party name"@en .
+    """
+    g = _make_graph(ttl)
+    # Both local and whitelisted imported class passed by caller
+    classes = [
+        {"uri": f"{HUB_NS}Booking", "name": "Booking"},
+        {"uri": f"{REF_NS}TradeParty", "name": "TradeParty"},
+    ]
+    result = generate_silver_artifacts(
+        classes, g, HUB_NS, ontology_name="booking"
+    )
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Both tables should be in the hub domain schema
+    assert "silver_booking.booking" in ddl.lower()
+    assert "silver_booking.trade_party" in ddl.lower()
+
+
+def test_dd021_extension_overrides_on_claimed_imports():
+    """DD-021: Extension annotations (scdType, naturalKey) apply to claimed imports."""
+    REF_NS = "http://refmodel.example.com/ont/party#"
+    HUB_NS = "http://hub.example.com/ont/party#"
+    ttl = f"""
+        @prefix ref: <{REF_NS}> .
+        @prefix hub: <{HUB_NS}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <http://hub.example.com/ont/party> a owl:Ontology ;
+            rdfs:label "Party"@en ; owl:versionInfo "1.0" ;
+            owl:imports <http://refmodel.example.com/ont/party> .
+
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ; rdfs:comment "."@en .
+        ref:partyCode a owl:DatatypeProperty ;
+            rdfs:domain ref:TradeParty ;
+            rdfs:range xsd:string ;
+            rdfs:label "party code"@en .
+
+        # Extension annotations on the imported class
+        ref:TradeParty kairos-ext:silverInclude true ;
+            kairos-ext:scdType "2" ;
+            kairos-ext:naturalKey "party_code" .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{REF_NS}TradeParty", "name": "TradeParty"},
+    ]
+    result = generate_silver_artifacts(
+        classes, g, HUB_NS, ontology_name="party"
+    )
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "silver_party.trade_party" in ddl.lower()
+    # SCD Type 2 → valid_from / valid_to columns
+    assert "valid_from" in ddl.lower()
+    assert "valid_to" in ddl.lower()
+
+
+def test_dd021_warn_unclaimed_parent(caplog):
+    """DD-021: Warning emitted when a claimed subclass has an unclaimed parent."""
+    import logging
+
+    REF_NS = "http://refmodel.example.com/ont/party#"
+    HUB_NS = "http://hub.example.com/ont/party#"
+    ttl = f"""
+        @prefix ref: <{REF_NS}> .
+        @prefix hub: <{HUB_NS}> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <http://hub.example.com/ont/party> a owl:Ontology ;
+            rdfs:label "Party"@en ; owl:versionInfo "1.0" .
+
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ; rdfs:comment "."@en .
+        ref:partyName a owl:DatatypeProperty ;
+            rdfs:domain ref:TradeParty ; rdfs:range xsd:string ;
+            rdfs:label "party name"@en .
+
+        ref:Buyer a owl:Class ;
+            rdfs:subClassOf ref:TradeParty ;
+            rdfs:label "Buyer"@en ; rdfs:comment "."@en .
+    """
+    g = _make_graph(ttl)
+    # Only Buyer is claimed — TradeParty is NOT
+    classes = [
+        {"uri": f"{REF_NS}Buyer", "name": "Buyer"},
+    ]
+    with caplog.at_level(logging.WARNING):
+        result = generate_silver_artifacts(
+            classes, g, HUB_NS, ontology_name="party"
+        )
+    # Warning about unclaimed parent should be emitted
+    assert any("DD-021" in msg and "TradeParty" in msg and "not claimed" in msg
+               for msg in caplog.messages)

@@ -285,6 +285,12 @@ After the reference baseline is imported and validated:
 3. **Fill gaps** — for business domains with no reference model match (flagged
    in Step 2), now create custom ontology files following the standard modeling
    patterns below.
+4. **Claim imported classes for projection (DD-021)** — by default, imported
+   classes are NOT projected to silver or gold. To include them, add
+   `kairos-ext:silverInclude true` / `kairos-ext:goldInclude true` per class
+   in the appropriate extension file, or use `kairos-ext:silverIncludeImports true` /
+   `kairos-ext:goldIncludeImports true` on the ontology URI to bulk-claim all
+   first-level imported classes.
 
 > **Principle:** Start broad with the accelerator pack, validate with the
 > business, then narrow down.  It is easier to remove what you don't need than
@@ -601,12 +607,14 @@ These go in `<domain>-silver-ext.ttl`.
 | `includeNaturalKeyColumn` | boolean | `true` | Include NK columns alongside SK |
 | `auditEnvelope` | boolean | `true` | Add `_loaded_at`, `_source_file` audit columns |
 | `inlineRefThreshold` | integer | `5` | Max enum members before creating a separate ref table |
+| `silverIncludeImports` | boolean | `false` | Bulk-claim all first-level imported classes for silver projection (DD-021) |
 
 #### Class-level (applied to an `owl:Class`)
 
 | Annotation | Type | Default | Purpose |
 |---|---|---|---|
 | `silverTableName` | string | auto (snake_case of class name) | Override the generated table name |
+| `silverInclude` | boolean | `false` | Claim an imported class for silver projection (DD-021) |
 | `scdType` | `"1"` or `"2"` | `"1"` | Slowly Changing Dimension type |
 | `isReferenceData` | boolean | `false` | Mark as reference/enum table |
 | `gdprSatelliteOf` | URI | — | Link a GDPR satellite to its parent class |
@@ -639,12 +647,14 @@ These go in `<domain>-gold-ext.ttl`.
 | `goldInheritanceStrategy` | `"class-per-table"` / `"single-table"` | `"single-table"` | How subclasses map to gold tables |
 | `generateDateDimension` | boolean | `true` | Auto-generate `dim_date` |
 | `generateTimeIntelligence` | boolean | `false` | Add DAX time-intelligence measures |
+| `goldIncludeImports` | boolean | `false` | Bulk-claim all first-level imported classes for gold projection (DD-021) |
 
 #### Class-level
 
 | Annotation | Type | Default | Purpose |
 |---|---|---|---|
 | `goldTableType` | `"dimension"` / `"fact"` / `"bridge"` | auto-detected | Force table type |
+| `goldInclude` | boolean | `false` | Claim an imported class for gold projection (DD-021) |
 | `goldTableName` | string | auto (`dim_` / `fact_` prefix) | Override gold table name |
 | `goldExclude` | boolean | `false` | Exclude class from gold layer |
 | `perspective` | string | — | Power BI perspective membership |

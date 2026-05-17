@@ -1,0 +1,40 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix refp: <https://refmodel.example/ontology/party#> .
+
+# ---------------------------------------------------------------------------
+# Reference model — simulates an external party ontology (BSP-like)
+# Used by the "logistics" domain via owl:imports for DD-021 testing.
+# Prefixed with _ to exclude from domain ontology discovery.
+# ---------------------------------------------------------------------------
+<https://refmodel.example/ontology/party> a owl:Ontology ;
+    rdfs:label "Reference Party Model" ;
+    owl:versionInfo "1.0.0" ;
+    rdfs:comment "External reference model for scenario testing (DD-021)." .
+
+refp:TradeParty a owl:Class ;
+    rdfs:label "Trade Party" ;
+    rdfs:comment "A party involved in trade transactions." .
+
+refp:Carrier a owl:Class ;
+    rdfs:label "Carrier" ;
+    rdfs:comment "A transport carrier." .
+
+refp:partyCode a owl:DatatypeProperty ;
+    rdfs:label "party code" ;
+    rdfs:comment "Unique business identifier for the trade party." ;
+    rdfs:domain refp:TradeParty ;
+    rdfs:range xsd:string .
+
+refp:partyName a owl:DatatypeProperty ;
+    rdfs:label "party name" ;
+    rdfs:comment "Display name of the trade party." ;
+    rdfs:domain refp:TradeParty ;
+    rdfs:range xsd:string .
+
+refp:carrierCode a owl:DatatypeProperty ;
+    rdfs:label "carrier code" ;
+    rdfs:comment "SCAC or similar carrier identification code." ;
+    rdfs:domain refp:Carrier ;
+    rdfs:range xsd:string .

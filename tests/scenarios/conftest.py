@@ -81,6 +81,97 @@ def _load_ontology(name: str) -> tuple[Graph, str, list[dict]]:
     return g, namespace, classes
 
 
+def _load_ontology_with_imports(name: str) -> tuple[Graph, str, list[dict]]:
+    """Load a domain ontology, merge reference model imports, and apply DD-021 whitelisting.
+
+    Simulates what ``_run_projection()`` does: loads the domain .ttl, parses
+    any ``_refmodel-*.ttl`` files into the same graph (mimicking catalog-based
+    import resolution), then uses ``_discover_whitelisted_imports()`` to build
+    the class list that includes both local and whitelisted imported classes.
+    """
+    from rdflib.namespace import OWL, RDF, RDFS
+
+    ttl_path = ONTOLOGIES_DIR / f"{name}.ttl"
+    g = Graph()
+    g.parse(ttl_path, format="turtle")
+
+    # Simulate catalog import resolution: parse _refmodel-*.ttl files
+    for ref_file in sorted(ONTOLOGIES_DIR.glob("_refmodel-*.ttl")):
+        g.parse(ref_file, format="turtle")
+
+    # Merge silver extension if present
+    ext_path = EXTENSIONS_DIR / f"{name}-silver-ext.ttl"
+    if ext_path.exists():
+        g.parse(ext_path, format="turtle")
+
+    # Detect namespace from owl:Ontology declaration
+    namespace = None
+    for onto in g.subjects(RDF.type, OWL.Ontology):
+        uri = str(onto)
+        # Pick the ontology that matches the domain name
+        if name in uri:
+            namespace = uri + "#" if "#" not in uri else uri.rsplit("#", 1)[0] + "#"
+            break
+    assert namespace, f"No owl:Ontology for domain '{name}' found in {ttl_path}"
+
+    # Extract local classes (domain namespace)
+    from kairos_ontology.projections.uri_utils import extract_local_name
+    classes = []
+    for cls in g.subjects(RDF.type, OWL.Class):
+        cls_uri = str(cls)
+        if not cls_uri.startswith(namespace):
+            continue
+        local = extract_local_name(cls_uri)
+        label = str(g.value(cls, RDFS.label) or local)
+        comment = str(g.value(cls, RDFS.comment) or f"{local} entity")
+        classes.append({
+            "uri": cls_uri, "name": local, "label": label, "comment": comment,
+        })
+
+    # DD-021: Discover whitelisted imports
+    from kairos_ontology.projector import _discover_whitelisted_imports
+
+    # Build all_class_rows (mimics _run_projection SPARQL query)
+    all_class_rows = []
+    query = """
+    PREFIX owl: <http://www.w3.org/2002/07/owl#>
+    PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    SELECT ?class ?label ?comment
+    WHERE {
+        ?class a owl:Class .
+        OPTIONAL { ?class rdfs:label ?label }
+        OPTIONAL { ?class rdfs:comment ?comment }
+        FILTER(isIRI(?class))
+    }
+    """
+    for row in g.query(query):
+        all_class_rows.append((str(row['class']), row))
+
+    # Collect hub domain namespaces (peer exclusion)
+    hub_ns = set()
+    for onto_file in ONTOLOGIES_DIR.glob("*.ttl"):
+        if onto_file.name.startswith("_"):
+            continue
+        tmp = Graph()
+        tmp.parse(onto_file, format="turtle")
+        for onto in tmp.subjects(RDF.type, OWL.Ontology):
+            uri = str(onto)
+            ns = uri + "#" if "#" not in uri else uri.rsplit("#", 1)[0] + "#"
+            hub_ns.add(ns)
+            hub_ns.add(ns.rstrip("#"))
+
+    imported = _discover_whitelisted_imports(
+        g, namespace, all_class_rows,
+        projection_ext_path=ext_path if ext_path.exists() else None,
+        gold_ext_path=None,
+        target="silver",
+        hub_domain_namespaces=hub_ns,
+    )
+    classes.extend(imported)
+
+    return g, namespace, classes
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -141,3 +232,9 @@ def invoice_dbt_artifacts(invoice_ontology):
         mappings_dir=MAPPINGS_DIR,
         gold_ext_path=gold_ext if gold_ext.exists() else None,
     )
+
+
+@pytest.fixture(scope="module")
+def logistics_ontology():
+    """Load the logistics domain (import-only, DD-021) with whitelisted imports."""
+    return _load_ontology_with_imports("logistics")

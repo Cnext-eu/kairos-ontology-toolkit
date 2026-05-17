@@ -1,0 +1,14 @@
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix refp:       <https://refmodel.example/ontology/party#> .
+
+# ---------------------------------------------------------------------------
+# DD-021: Claim imported reference model classes for silver projection
+# ---------------------------------------------------------------------------
+
+# Per-class claiming — only TradeParty and Carrier are projected
+refp:TradeParty kairos-ext:silverInclude true ;
+    kairos-ext:scdType "2" ;
+    kairos-ext:naturalKey "party_code" .
+
+refp:Carrier kairos-ext:silverInclude true ;
+    kairos-ext:naturalKey "carrier_code" .
