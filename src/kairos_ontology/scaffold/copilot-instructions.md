@@ -85,18 +85,15 @@ python -m kairos_ontology catalog-test --catalog ontology-reference-models/catal
 - Naming: PascalCase for classes, camelCase for properties.
 - One domain per .ttl file (e.g., `customer.ttl`, `order.ttl`).
 
-### Modeling skills
+### Modeling skill
 
-When designing or modifying ontologies, two skills are available:
-
-- **kairos-ontology-modeling** — core modeling skill covering class hierarchies,
-  property design, naming conventions, reference-model-first workflow, and
-  standard model alignment. Use for all ontology design work.
-- **kairos-ontology-modeling-config** — interactive configurator that extends the
-  core skill with business alignment checkpoints, session persistence
-  (`ontology-hub/.modeling-sessions/`), and structured validation gates. Use
-  instead of the core skill when modeling a new domain from scratch or when
-  step-by-step stakeholder validation is required.
+When designing or modifying ontologies, use the **kairos-ontology-modeling** skill.
+It combines core modeling knowledge (class hierarchies, property design, naming
+conventions, reference-model-first workflow, extension annotations) with an
+interactive configurator (business alignment checkpoints, session persistence in
+`ontology-hub/.modeling-sessions/`, and structured validation gates). For minor
+edits (adding a property, fixing a label) it supports a quick-edit mode that
+skips checkpoints.
 
 ## Validation rules
 
