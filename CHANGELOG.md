@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Modeling configurator skill** (`kairos-ontology-modelling-config`) — interactive
+- **Modeling configurator skill** (`kairos-ontology-modeling-config`) — interactive
   modeling workflow with business alignment checkpoints, session persistence
   (`.modeling-sessions/`), and structured validation gates.
 - **Reference-model-first workflow** — updated `kairos-ontology-modeling` skill with
