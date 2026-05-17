@@ -299,3 +299,24 @@ kairos-ext:goldIncludeImports a owl:AnnotationProperty ;
     rdfs:comment "Bulk-claim all first-level imported classes for gold projection (DD-021). Set on the owl:Ontology resource. Peer hub domain imports are excluded."@en ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:boolean .
+
+# ===========================================================================
+# Foreign Key Annotations (DD-022)
+# ===========================================================================
+# Simplified FK declaration for object properties — eliminates the need for
+# OWL cardinality restrictions (owl:FunctionalProperty, owl:maxCardinality)
+# when the relationship is many-to-one.  Especially useful for imported
+# reference-model properties that lack cardinality declarations.
+# ===========================================================================
+
+kairos-ext:silverForeignKey a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key"@en ;
+    rdfs:comment "Marks an object property as a FK column in silver DDL (DD-022). Set to true to generate a FK column on the domain class's table pointing to the range class. Equivalent to declaring owl:FunctionalProperty but works in extension files on imported properties."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:boolean .
+
+kairos-ext:silverForeignKeyOn a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key on"@en ;
+    rdfs:comment "Overrides which class receives the FK column (DD-022). Must be either the domain or range of the annotated object property. When set to the range class, the FK column is placed on the range table pointing back to the domain table. Implies silverForeignKey true."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range owl:Class .

@@ -460,6 +460,12 @@ def generate_silver_artifacts(
             )
 
     # ----------------------------------------------------------------
+    # DD-022 post-pass: inject redirected FK columns (silverForeignKeyOn)
+    # ----------------------------------------------------------------
+    _add_redirected_fk_cols(merged, tables, table_name_for, schema_name,
+                            class_uris, naming_conv)
+
+    # ----------------------------------------------------------------
     # S4 post-pass: inline small reference tables into parent
     # ----------------------------------------------------------------
     inline_threshold = 3  # default: inline ref tables with ≤3 business columns
@@ -846,7 +852,11 @@ def _add_object_property_fk_cols(
       - it has an explicit ``kairos-ext:silverColumnName`` annotation,
       - it is declared ``owl:FunctionalProperty``,
       - the domain class has an ``owl:maxQualifiedCardinality 1`` or
-        ``owl:maxCardinality 1`` restriction on the property.
+        ``owl:maxCardinality 1`` restriction on the property,
+      - it has ``kairos-ext:silverForeignKey true`` (DD-022).
+
+    Properties with ``kairos-ext:silverForeignKeyOn`` are skipped here and
+    handled by :func:`_add_redirected_fk_cols` after the main pass.
 
     Junction-table properties (R13) are always skipped.
 
@@ -867,10 +877,17 @@ def _add_object_property_fk_cols(
         # Skip if this property has a junctionTableName (R13)
         if graph.value(prop, KAIROS_EXT.junctionTableName):
             continue
+        # Skip if silverForeignKeyOn redirects this FK to another table (DD-022)
+        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
+        if fk_on is not None:
+            continue
         # Determine if this is a many-to-one FK column
         has_explicit_col = bool(_str_val(graph, prop, KAIROS_EXT.silverColumnName))
         is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
-        if not has_explicit_col and not is_functional \
+        has_fk_annotation = _bool_val(
+            graph, prop, KAIROS_EXT.silverForeignKey, False,
+        )
+        if not has_explicit_col and not is_functional and not has_fk_annotation \
                 and not _has_max_cardinality_1(graph, cls_uri, prop):
             continue
         range_cls = graph.value(prop, RDFS.range)
@@ -943,6 +960,123 @@ def _has_max_cardinality_1(graph: Graph, cls_uri: URIRef, prop: URIRef) -> bool:
                 if parent == restriction:
                     return True
     return False
+
+
+def _add_redirected_fk_cols(
+    graph: Graph,
+    tables: dict[str, TableDef],
+    table_name_for,
+    schema_name: str,
+    class_uris: set[str],
+    naming_conv: str,
+) -> None:
+    """Inject FK columns for properties with ``silverForeignKeyOn`` (DD-022).
+
+    When ``silverForeignKeyOn`` is set to the **range** class, the FK column is
+    placed on the range class's table pointing back to the domain class (reverse
+    placement).  When set to the **domain** class, it behaves like a normal FK.
+
+    ``silverForeignKeyOn`` implies ``silverForeignKey true`` — both annotations
+    need not be present.
+
+    Called after the main per-class pass and S3 subtype folding so that all
+    target tables already exist.
+    """
+    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
+        if fk_on is None:
+            continue
+
+        domain_cls = graph.value(prop, RDFS.domain)
+        range_cls = graph.value(prop, RDFS.range)
+        prop_local = _local_name(str(prop))
+
+        # Validate domain and range exist
+        if domain_cls is None or range_cls is None:
+            logger.warning(
+                "silverForeignKeyOn on %s skipped — missing rdfs:domain or rdfs:range.",
+                prop_local,
+            )
+            continue
+
+        # Validate silverForeignKeyOn is either domain or range
+        if fk_on != domain_cls and fk_on != range_cls:
+            logger.warning(
+                "silverForeignKeyOn on %s specifies %s which is neither domain (%s) "
+                "nor range (%s) — skipped.",
+                prop_local, _local_name(str(fk_on)),
+                _local_name(str(domain_cls)), _local_name(str(range_cls)),
+            )
+            continue
+
+        # Determine FK holder and referenced class
+        if fk_on == range_cls:
+            # Reverse: FK on range table pointing to domain table
+            fk_holder_uri = range_cls
+            referenced_uri = domain_cls
+        else:
+            # Normal: FK on domain table pointing to range table
+            fk_holder_uri = domain_cls
+            referenced_uri = range_cls
+
+        # Find the holder table
+        fk_holder_uri_str = str(fk_holder_uri)
+        holder_tbl = tables.get(fk_holder_uri_str)
+        if holder_tbl is None:
+            # Holder may have been folded into a parent (S3)
+            logger.warning(
+                "silverForeignKeyOn on %s — target table for %s not found "
+                "(possibly folded by S3). Skipped.",
+                prop_local, _local_name(fk_holder_uri_str),
+            )
+            continue
+
+        # Resolve referenced table
+        ref_uri_str = str(referenced_uri)
+        if ref_uri_str in class_uris:
+            ref_local = _local_name(ref_uri_str)
+            ref_tbl = table_name_for(referenced_uri, ref_local)
+            ref_full = f"{schema_name}.{ref_tbl}"
+        else:
+            ref_schema, ref_tbl = _resolve_external_table(
+                graph, referenced_uri, naming_conv,
+            )
+            ref_full = f"{ref_schema}.{ref_tbl}"
+
+        # Column name: use silverColumnName override or default to {ref_tbl}_sk
+        col_name_override = _str_val(graph, prop, KAIROS_EXT.silverColumnName)
+        col_name = col_name_override or f"{ref_tbl}_sk"
+
+        # Disambiguate if column already exists
+        existing_cols = {col.name for col in holder_tbl.columns}
+        if col_name in existing_cols:
+            prop_suffix = _camel_to_snake(prop_local)
+            col_name = f"{prop_suffix}_sk"
+            if col_name in existing_cols:
+                col_name = f"{ref_tbl}_{prop_suffix}_sk"
+
+        # Nullability
+        nullable_ann = graph.value(prop, KAIROS_EXT.nullable)
+        if nullable_ann is not None:
+            nullable = str(nullable_ann).lower() not in ("false", "0")
+        else:
+            nullable = True
+
+        cond_on = _str_val(graph, prop, KAIROS_EXT.conditionalOnType)
+        direction = "reverse" if fk_on == range_cls else "normal"
+        comment_parts = [p for p in [
+            f"DD-022 {direction} FK via silverForeignKeyOn",
+            f"nullable: active when type IN ({cond_on})" if cond_on else "",
+        ] if p]
+        comment = "; ".join(comment_parts)
+
+        holder_tbl.columns.append(
+            ColumnDef(col_name, "STRING", nullable=nullable, comment=comment)
+        )
+        holder_tbl.fk_constraints.append(
+            (col_name, ref_full, f"{ref_tbl}_sk",
+             _camel_to_snake(prop_local))
+        )
 
 
 def _build_junction_tables(

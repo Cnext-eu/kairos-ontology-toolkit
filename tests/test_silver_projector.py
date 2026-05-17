@@ -1604,3 +1604,254 @@ def test_dd021_warn_unclaimed_parent(caplog):
     # Warning about unclaimed parent should be emitted
     assert any("DD-021" in msg and "TradeParty" in msg and "not claimed" in msg
                for msg in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# DD-022: silverForeignKey / silverForeignKeyOn
+# ---------------------------------------------------------------------------
+
+def test_dd022_silver_foreign_key_generates_fk():
+    """silverForeignKey true must produce a FK column like FunctionalProperty."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order    a owl:Class ; rdfs:label "Order"@en    ; rdfs:comment "."@en .
+        ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "."@en .
+
+        ex:placedBy a owl:ObjectProperty ;
+            rdfs:domain ex:Order ;
+            rdfs:range ex:Customer ;
+            rdfs:label "placed by"@en ;
+            kairos-ext:silverForeignKey true .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "customer_sk" in ddl
+
+
+def test_dd022_silver_foreign_key_on_reverse():
+    """silverForeignKeyOn range class should place FK on the range table."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Consignment     a owl:Class ; rdfs:label "Consignment"@en     ; rdfs:comment "."@en .
+        ex:ConsignmentItem a owl:Class ; rdfs:label "ConsignmentItem"@en ; rdfs:comment "."@en .
+
+        ex:hasConsignmentItem a owl:ObjectProperty ;
+            rdfs:domain ex:Consignment ;
+            rdfs:range ex:ConsignmentItem ;
+            rdfs:label "has consignment item"@en ;
+            kairos-ext:silverForeignKeyOn ex:ConsignmentItem .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Consignment", "name": "Consignment", "label": "Consignment",
+         "comment": ""},
+        {"uri": f"{BASE}ConsignmentItem", "name": "ConsignmentItem",
+         "label": "ConsignmentItem", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # FK should be on ConsignmentItem table pointing to Consignment
+    assert "consignment_sk" in ddl
+    # Verify it's on the ConsignmentItem table, not Consignment table
+    lines = ddl.split("\n")
+    in_consignment_item = False
+    found_fk_on_item = False
+    for line in lines:
+        if "CREATE TABLE" in line and "consignment_item" in line:
+            in_consignment_item = True
+        elif "CREATE TABLE" in line:
+            in_consignment_item = False
+        if in_consignment_item and "consignment_sk" in line and "STRING" in line:
+            found_fk_on_item = True
+    assert found_fk_on_item, "FK column should be on ConsignmentItem table"
+
+
+def test_dd022_silver_foreign_key_on_implies_silver_foreign_key():
+    """silverForeignKeyOn should work without explicit silverForeignKey true."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order     a owl:Class ; rdfs:label "Order"@en     ; rdfs:comment "."@en .
+        ex:OrderLine a owl:Class ; rdfs:label "OrderLine"@en ; rdfs:comment "."@en .
+
+        ex:hasLine a owl:ObjectProperty ;
+            rdfs:domain ex:Order ;
+            rdfs:range ex:OrderLine ;
+            rdfs:label "has line"@en ;
+            kairos-ext:silverForeignKeyOn ex:OrderLine .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        {"uri": f"{BASE}OrderLine", "name": "OrderLine", "label": "OrderLine", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "order_sk" in ddl
+
+
+def test_dd022_silver_foreign_key_on_domain_is_normal():
+    """silverForeignKeyOn set to domain class behaves like normal FK."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order    a owl:Class ; rdfs:label "Order"@en    ; rdfs:comment "."@en .
+        ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "."@en .
+
+        ex:placedBy a owl:ObjectProperty ;
+            rdfs:domain ex:Order ;
+            rdfs:range ex:Customer ;
+            rdfs:label "placed by"@en ;
+            kairos-ext:silverForeignKeyOn ex:Order .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # FK should be on Order table (normal direction)
+    lines = ddl.split("\n")
+    in_order = False
+    found_fk = False
+    for line in lines:
+        if "CREATE TABLE" in line and "silver_test.order" in line.lower():
+            in_order = True
+        elif "CREATE TABLE" in line:
+            in_order = False
+        if in_order and "customer_sk" in line:
+            found_fk = True
+    assert found_fk, "FK column should be on Order table"
+
+
+def test_dd022_invalid_fk_on_warns(caplog):
+    """silverForeignKeyOn with class not in domain/range should warn."""
+    import logging
+
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order    a owl:Class ; rdfs:label "Order"@en    ; rdfs:comment "."@en .
+        ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "."@en .
+        ex:Product  a owl:Class ; rdfs:label "Product"@en  ; rdfs:comment "."@en .
+
+        ex:placedBy a owl:ObjectProperty ;
+            rdfs:domain ex:Order ;
+            rdfs:range ex:Customer ;
+            rdfs:label "placed by"@en ;
+            kairos-ext:silverForeignKeyOn ex:Product .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+        {"uri": f"{BASE}Product", "name": "Product", "label": "Product", "comment": ""},
+    ]
+    with caplog.at_level(logging.WARNING):
+        result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    assert any("silverForeignKeyOn" in msg and "neither domain" in msg
+               for msg in caplog.messages)
+
+
+def test_dd022_backward_compat_functional_property_still_works():
+    """Existing owl:FunctionalProperty FK generation must not be broken by DD-022."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order    a owl:Class ; rdfs:label "Order"@en    ; rdfs:comment "."@en .
+        ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "."@en .
+
+        ex:placedBy a owl:ObjectProperty , owl:FunctionalProperty ;
+            rdfs:domain ex:Order ;
+            rdfs:range ex:Customer ;
+            rdfs:label "placed by"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "customer_sk" in ddl
+
+
+def test_dd022_silver_foreign_key_with_column_name_override():
+    """silverForeignKey + silverColumnName should use the explicit column name."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order    a owl:Class ; rdfs:label "Order"@en    ; rdfs:comment "."@en .
+        ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "."@en .
+
+        ex:placedBy a owl:ObjectProperty ;
+            rdfs:domain ex:Order ;
+            rdfs:range ex:Customer ;
+            rdfs:label "placed by"@en ;
+            kairos-ext:silverForeignKey true ;
+            kairos-ext:silverColumnName "buyer_sk" .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    assert "buyer_sk" in ddl
