@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pattern in staging templates.
 - **Empty columns guard** — `columns[0]` unique_key fallback now handles empty lists.
 
+## [2.27.0] — 2026-05-17
+
+### Changed
+
+- **Consolidated modeling skill** — removed separate `kairos-ontology-modeling-config`
+  skill; its logic (business alignment checkpoints, session persistence, validation
+  gates) is now embedded in the unified `kairos-ontology-modeling` skill with a
+  quick-edit mode for minor changes.
+
 ## [2.26.1] — 2026-05-17
 
 ### Fixed
