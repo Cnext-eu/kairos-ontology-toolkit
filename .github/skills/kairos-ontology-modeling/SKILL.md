@@ -5,6 +5,7 @@ description: >
   session persistence, reference-model workflow, TTL patterns, and extension
   annotations. Covers the full lifecycle from design through validation.
 ---
+<!-- kairos-ontology-toolkit:managed v2.29.1 -->
 
 # Ontology Modeling Skill
 
@@ -12,6 +13,74 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax. This
 skill combines core modeling knowledge with an interactive configurator workflow
 that ensures naming decisions and design choices are validated with stakeholders
 before generating TTL files.
+
+---
+
+## Hard Gates (BLOCKING — must not be bypassed)
+
+These rules are **non-negotiable enforcement constraints**. Violating any of
+them means the modeling process has failed, regardless of output quality.
+
+### Gate 1: Session file prerequisite
+
+> **You MUST create a `.modeling-sessions/{domain}-config-*.md` file BEFORE
+> writing any domain `.ttl` file.**
+
+If no session file exists for the domain being modeled, you are NOT permitted
+to create or modify its `.ttl` file. Create the session file first, even if
+it's initially sparse.
+
+### Gate 2: No TTL without confirmed naming
+
+> **You MUST NOT write a class definition to a `.ttl` file until the user has
+> explicitly confirmed the class name via Checkpoint 1 (Naming Alignment).**
+
+This means: propose names → wait for user response → only then write TTL.
+Generating "draft" TTL files without checkpoint confirmation is a violation.
+
+### Gate 3: One domain per turn
+
+> **Never model more than 1 domain per user turn.**
+
+If the user requests multiple domains (e.g., "create all 21 domains"), you MUST:
+1. Acknowledge the request
+2. Propose a priority sequence
+3. Start with the first domain using full checkpoints
+4. Only proceed to the next domain after the current one is confirmed
+
+Bulk-generating multiple domain files in a single response is **always a
+violation**, even if the user says "just do it all."
+
+### Gate 4: Quick-edit scope limit
+
+Quick-edit mode (skipping checkpoints) applies ONLY when ALL of these are true:
+- The domain `.ttl` file **already exists** with confirmed classes
+- The change involves **≤ 3 properties** being added/modified
+- **No new classes** are being introduced
+- **No structural changes** (inheritance, imports, domain boundaries)
+
+If any condition is false, use the full checkpoint workflow.
+
+### Gate 5: Explicit user confirmation required
+
+> **Every design decision requires an explicit user response before proceeding.**
+
+You must NOT:
+- Assume silence means approval
+- Batch multiple unconfirmed decisions into one TTL generation
+- Generate TTL "for review" without prior checkpoint confirmation
+- Proceed with "reasonable defaults" without asking
+
+### What to do when the user says "just do it" or "skip checkpoints"
+
+If the user explicitly requests skipping governance:
+1. Acknowledge their request
+2. Explain what will be skipped and the risks (no audit trail, naming may not
+   match business language, harder to validate later)
+3. Ask: "Would you like me to proceed with minimal checkpoints (namespace +
+   class names only) or full skip?"
+4. If they confirm full skip, document this in the session file as a conscious
+   decision with the user's rationale
 
 ---
 
@@ -94,18 +163,29 @@ When the user is making **minor changes** to an existing ontology (adding a
 property, fixing a label, adjusting a range), skip session management and
 business checkpoints. Just apply the modeling patterns directly.
 
+**Scope limit (see Gate 4):** Quick-edit ONLY applies when:
+- The domain `.ttl` already exists with confirmed classes
+- ≤ 3 properties are being added/modified
+- No new classes are introduced
+- No structural changes (inheritance, imports, domain boundaries)
+
 Indicators of quick-edit mode:
 - "Add a property X to class Y"
 - "Change the range of X from string to integer"
 - "Fix the label on class Z"
 - "Add rdfs:comment to these properties"
 
-For anything involving **new classes, renaming, or structural changes**, use the
-full configurator workflow with checkpoints.
+For anything involving **new classes, renaming, structural changes, or new
+domains**, use the full configurator workflow with checkpoints. See Gate 2
+and Gate 3 — these are non-negotiable.
 
 ---
 
 ## Before you start (full modeling workflow)
+
+> ⚠️ **Reminder:** Gates 1–5 above are BLOCKING. Before creating any `.ttl` file,
+> verify you have: (1) a session file, (2) confirmed class names, (3) only one
+> domain in scope for this turn.
 
 0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
    at the start of the session.  If it reports outdated files, run
