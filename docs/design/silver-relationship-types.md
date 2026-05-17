@@ -1,219 +1,124 @@
 # Silver Layer: Relationship Types (FK Columns)
 
-> **Resolved in DD-022.** The `kairos-ext:silverForeignKey` and
-> `kairos-ext:silverForeignKeyOn` annotations (v2.29.0+) provide a simplified
-> way to declare FK columns in extension files without OWL cardinality
-> restrictions. See [DD-022](toolkit-design-decisions.md#dd-022-simplified-fk-annotations-for-silver-projection)
-> and the silver skill for usage details.
->
-> **Quick fix for the problem described below:**
-> ```turtle
-> # Instead of 5+ lines of OWL restrictions, use one annotation:
-> mmt:hasConsignmentItem kairos-ext:silverForeignKeyOn mmt:ConsignmentItem .
-> ```
+## Overview
 
-## Problem
+When running the silver projection (`project --target silver`), FK columns are
+generated only when the projector can detect that an `owl:ObjectProperty`
+represents a **many-to-one** relationship.  Without an explicit signal, the
+projector cannot distinguish many-to-one from many-to-many or one-to-many.
 
-When running the silver projection (`project --target silver`), the generated DDL
-produces tables with **no FK columns** — every table is an isolated island containing
-only its surrogate key, IRI, business columns, and audit envelope. The ERD shows
-entities but no relationship lines between them.
+## Recommended approach: `kairos-ext:` annotations (DD-022)
 
-**Example — expected vs actual:**
+Use the DD-022 FK annotations in your `*-silver-ext.ttl` file.  These work on
+any property — local or imported — and require only one line per FK.
 
-```sql
--- EXPECTED: consignment_item has FK to parent consignment
-CREATE TABLE silver_consignment.consignment_item (
-    consignment_item_sk    STRING NOT NULL,
-    consignment_item_iri   STRING NOT NULL,
-    consignment_sk         STRING NULL,        -- ← FK to parent (MISSING!)
-    item_sequence_number   BIGINT NULL,
-    ...
-);
+### Simple FK (domain class holds the FK)
 
--- ACTUAL: no FK column generated
-CREATE TABLE silver_consignment.consignment_item (
-    consignment_item_sk    STRING NOT NULL,
-    consignment_item_iri   STRING NOT NULL,
-    item_sequence_number   BIGINT NULL,
-    ...
-);
-```
-
-## Root Cause
-
-The silver projector uses **R12** to determine which `owl:ObjectProperty` values
-become FK columns. R12 requires an explicit `owl:maxQualifiedCardinality 1`
-restriction on the class to signal "this class points to at most one instance of
-the target class" — i.e., the relationship is **many-to-one** and should become a
-FK column.
-
-Without this restriction, the projector cannot distinguish:
-- Many-to-one relationships (→ FK column on this table)
-- Many-to-many relationships (→ junction table)
-- One-to-many "has" relationships (→ FK belongs on the OTHER table)
-
-Most reference models define `owl:ObjectProperty` declarations but **do not include
-cardinality restrictions**, leaving the projector unable to generate FKs.
-
-## Solution
-
-### Step 1 — Define inverse properties in the domain ontology
-
-Reference models typically define "parent → child" properties (e.g.
-`hasConsignmentItem` from Consignment to ConsignmentItem). But the FK column belongs
-on the **child** table. OWL cardinality restrictions apply to the **domain class** of
-the property. Therefore, we need an **inverse property** with the child as domain:
+When the `rdfs:domain` class is the FK holder (e.g. `Order.placedBy → Customer`):
 
 ```turtle
-# In the hub's domain ontology file (e.g. consignment.ttl)
-:belongsToConsignment a owl:ObjectProperty ;
-    rdfs:domain mmt-consignment:ConsignmentItem ;
-    rdfs:range  mmt-consignment:Consignment ;
-    rdfs:label  "belongs to consignment"@en ;
-    rdfs:comment "Links a consignment item to its parent consignment."@en ;
-    owl:inverseOf mmt-consignment:hasConsignmentItem .
+ex:placedBy kairos-ext:silverForeignKey "true"^^xsd:boolean .
+# → order table gets customer_sk column
 ```
 
-> **Why not modify the reference model?** Reference models are shared/upstream
-> ontologies. Hub-specific inverse properties belong in the hub's domain ontology
-> file — which already imports the reference model.
+### Reverse FK (range class holds the FK)
 
-### Step 2 — Add cardinality restrictions in the silver extension file
-
-In the `*-silver-ext.ttl`, add the max-cardinality-1 restriction on the child class:
+When the FK belongs on the child/range class (e.g. `Consignment.hasItem → Item`):
 
 ```turtle
-# In consignment-silver-ext.ttl
-mmt-consignment:ConsignmentItem rdfs:subClassOf [
-    a owl:Restriction ;
-    owl:onProperty :belongsToConsignment ;
-    owl:maxQualifiedCardinality "1"^^xsd:nonNegativeInteger ;
-    owl:onClass mmt-consignment:Consignment
-] .
+mmt:hasConsignmentItem kairos-ext:silverForeignKeyOn mmt:ConsignmentItem .
+# → consignment_item table gets consignment_sk column
 ```
 
-This tells the projector: "ConsignmentItem points to **at most one** Consignment"
-→ generate a FK column `consignment_sk` on the `consignment_item` table.
+> `silverForeignKeyOn` implies `silverForeignKey "true"` — no need to set both.
 
-### Step 3 — For existing many-to-one properties (already correct direction)
-
-Some properties already have the FK-holding class as their domain (e.g.
-`operatedBy` with domain InlandLeg, range InlandCarrier). For these, just add the
-restriction directly — no inverse property needed:
+### Junction table (many-to-many)
 
 ```turtle
-# In intermodal-silver-ext.ttl
-mmt-inland:InlandLeg rdfs:subClassOf [
-    a owl:Restriction ;
-    owl:onProperty mmt-inland:operatedBy ;
-    owl:maxQualifiedCardinality "1"^^xsd:nonNegativeInteger ;
-    owl:onClass mmt-inland:InlandCarrier
-] .
+ex:usedSurvivorshipRule kairos-ext:junctionTableName "merge_survivorship_rule" .
 ```
 
-### Step 4 — For many-to-many relationships (junction tables)
+## Decision framework
 
-If a relationship is genuinely many-to-many (e.g. a merge event can use multiple
-survivorship rules, and a rule can be used in multiple merges), annotate with a
-junction table:
-
-```turtle
-# In mdm-silver-ext.ttl
-:usedSurvivorshipRule
-    kairos-ext:junctionTableName "merge_event_survivorship_rule" .
-```
-
-### Step 5 — Re-run the projection
-
-```bash
-python -m kairos_ontology project --target silver
-```
-
-## Decision Framework
-
-Use this decision tree for each `owl:ObjectProperty`:
+For each `owl:ObjectProperty`:
 
 ```
-Is the property direction FROM the FK-holding class?
-├── YES (e.g. operatedBy: InlandLeg → InlandCarrier)
-│   └── Add max-1 restriction on the domain class → FK column generated
+Is the relationship many-to-one from the domain class's perspective?
+├── YES (e.g. Order → Customer via placedBy)
+│   └── kairos-ext:silverForeignKey "true"  → FK on domain table
 │
-├── NO — property goes FROM parent TO child (e.g. hasOrderLine: PO → OrderLine)
-│   └── Is it many-to-one from child's perspective?
-│       ├── YES → Define inverse property on child + add max-1 restriction
-│       └── NO (many-to-many) → Add kairos-ext:junctionTableName
+├── YES, but FK belongs on the OTHER side (parent → child)
+│   └── kairos-ext:silverForeignKeyOn <ChildClass>  → FK on child table
 │
-└── UNCLEAR / cross-domain connector (no explicit domain)
-    └── Skip — handle in cross-domain FK pass later
+├── NO — it is many-to-many
+│   └── kairos-ext:junctionTableName "..."  → junction/bridge table
+│
+└── UNSURE / cross-domain connector
+    └── Ask the domain expert; check cardinality in business rules
 ```
 
-## Common Patterns in Freight/Logistics Ontologies
-
-| Pattern | Example | FK Location |
-|---------|---------|-------------|
-| Parent → Child (composition) | Consignment → ConsignmentItem | Child table |
-| Entity → Reference data | Crosswalk → SourceSystem | Entity table |
-| Entity → Entity (association) | InlandLeg → InlandCarrier | The "many" side |
-| Self-referential | GoldenRecord → GoldenRecord (mergedInto) | Same table |
-| Cross-domain | Consignment → Party (hasConsignor) | Consignment table (later pass) |
-
-## What the Extension File Should Look Like (Complete Example)
+## Complete extension file example
 
 ```turtle
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 @prefix xsd:        <http://www.w3.org/2001/XMLSchema#> .
-@prefix :           <https://frachtgroup.com/ont/consignment#> .
 @prefix mmt:        <https://www.kairosflow.ai/ont/mmt/consignment#> .
 
-# --- Ontology-level annotations ---
-<https://frachtgroup.com/ont/consignment>
+# --- Ontology-level ---
+<https://example.com/ont/consignment>
     kairos-ext:silverSchema            "silver_consignment" ;
     kairos-ext:silverIncludeImports    "true"^^xsd:boolean ;
     kairos-ext:namingConvention        "camel-to-snake" ;
-    kairos-ext:includeNaturalKeyColumn "true"^^xsd:boolean ;
-    kairos-ext:inlineRefThreshold      "3"^^xsd:integer .
+    kairos-ext:includeNaturalKeyColumn "true"^^xsd:boolean .
 
 # --- Class annotations ---
-mmt:Consignment
-    kairos-ext:scdType              "2" ;
-    kairos-ext:isReferenceData      "false"^^xsd:boolean ;
-    kairos-ext:inheritanceStrategy  "class-per-table" ;
-    kairos-ext:partitionBy          "_load_date" ;
-    kairos-ext:clusterBy            "is_current" .
+mmt:Consignment     kairos-ext:silverInclude "true"^^xsd:boolean ;
+                    kairos-ext:scdType "2" .
+mmt:ConsignmentItem kairos-ext:silverInclude "true"^^xsd:boolean ;
+                    kairos-ext:scdType "2" .
 
-mmt:ConsignmentItem
-    kairos-ext:scdType              "2" ;
-    kairos-ext:isReferenceData      "false"^^xsd:boolean .
+# --- FK annotations (DD-022) ---
+mmt:hasConsignmentItem kairos-ext:silverForeignKeyOn mmt:ConsignmentItem .
+# → consignment_item table gets consignment_sk FK column
 
-# --- Cardinality restrictions (FK generation) ---
+mmt:operatedBy kairos-ext:silverForeignKey "true"^^xsd:boolean .
+# → inland_leg table gets inland_carrier_sk FK column
+```
+
+## Alternative: OWL cardinality restrictions
+
+For ontological purity, you can use standard OWL restrictions instead of
+`kairos-ext:` annotations.  This approach requires more lines but keeps the
+extension file purely ontological:
+
+```turtle
+# Define inverse property (child → parent direction)
+:belongsToConsignment a owl:ObjectProperty ;
+    rdfs:domain mmt:ConsignmentItem ;
+    rdfs:range  mmt:Consignment ;
+    owl:inverseOf mmt:hasConsignmentItem .
+
+# Add cardinality restriction
 mmt:ConsignmentItem rdfs:subClassOf [
     a owl:Restriction ;
     owl:onProperty :belongsToConsignment ;
     owl:maxQualifiedCardinality "1"^^xsd:nonNegativeInteger ;
     owl:onClass mmt:Consignment
 ] .
+```
 
-mmt:GoodsItem rdfs:subClassOf [
-    a owl:Restriction ;
-    owl:onProperty :belongsToConsignmentItem ;
-    owl:maxQualifiedCardinality "1"^^xsd:nonNegativeInteger ;
-    owl:onClass mmt:ConsignmentItem
-] .
+The projector also accepts `owl:FunctionalProperty` as a FK signal:
+
+```turtle
+ex:placedBy a owl:ObjectProperty , owl:FunctionalProperty ;
+    rdfs:domain ex:Order ; rdfs:range ex:Customer .
 ```
 
 ## Notes
 
-- **Cross-domain FKs** (e.g. Consignment → Party for consignor/consignee) require
-  the target domain to already be projected. These use schema-qualified FK comments
-  per S7 (e.g. `-- FK: consignor_sk -> silver_party.trade_party(trade_party_sk)`).
-  Handle in a separate pass after all within-domain FKs are established.
-
-- **S3 flattening:** Subtypes (e.g. MasterConsignment, HouseConsignment) are
-  flattened into the parent table. FKs between subtypes (hasHouseConsignment:
-  Master → House) become self-referential FKs on the flattened table via the
-  discriminator column.
-
-- **Reference data inlining (S4):** If a referenced class has ≤3 business columns
-  and is marked `isReferenceData "true"`, it gets inlined (no separate table, no FK
-  column). The `inlineRefThreshold` annotation controls this.
+- **Cross-domain FKs** (e.g. Consignment → Party) use schema-qualified FK
+  references per S7.  Both domains must be projected.
+- **S3 flattening:** Subtypes are folded into parent tables.  FKs between
+  subtypes become self-referential FKs via the discriminator column.
+- **S4 inlining:** Small reference tables (≤ `inlineRefThreshold` columns)
+  are inlined — no separate table, no FK column generated.

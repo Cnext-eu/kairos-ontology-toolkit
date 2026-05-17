@@ -143,6 +143,12 @@ skips checkpoints.
 Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`, `powerbi`, `report`.
 Each ontology domain produces separate output artifacts per target.
 
+> **Silver FK annotations:** When a domain ontology imports reference models via
+> `owl:imports`, imported object properties lack cardinality restrictions and will
+> not generate FK columns automatically.  Use `kairos-ext:silverForeignKey` /
+> `silverForeignKeyOn` in the silver extension file to declare FK relationships.
+> See the **kairos-ontology-medallion-silver** skill §3e for details.
+
 ## Scaffold packaging rules
 
 The scaffold folder `src/kairos_ontology/scaffold/` is what gets distributed to hub repos
