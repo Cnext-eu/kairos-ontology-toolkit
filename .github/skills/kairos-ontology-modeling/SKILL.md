@@ -4,6 +4,7 @@ description: >
   Expert knowledge for designing and modifying OWL/Turtle ontologies.
   Covers class hierarchies, property design, naming, and common patterns.
 ---
+<!-- kairos-ontology-toolkit:managed v2.25.1 -->
 
 # Ontology Modeling Skill
 
@@ -20,13 +21,23 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
 2. **Read the hub README** — open `ontology-hub/README.md` and note the company
    name, company domain, namespace base, and the domain model overview table.
    All new ontologies MUST use the namespace pattern documented there.
-3. **Check the domain model overview** — before creating a new `.ttl` file,
+3. **Check accelerator packs (MANDATORY)** — before designing any classes or
+   properties, list the available accelerator packs in
+   `ontology-reference-models/accelerator-packs/` and **ask the user** which
+   accelerator pack (if any) they want to base the domain on.  Accelerator
+   packs contain curated industry standards and blueprint ontologies that should
+   be adopted as alignment targets.  If the user selects an accelerator pack,
+   read its README and constituent ontologies to understand the classes,
+   properties, and patterns already defined — then design the domain ontology
+   as a specialisation/extension of those standard concepts rather than
+   reinventing them.
+4. **Check the domain model overview** — before creating a new `.ttl` file,
    verify that a row for the intended domain exists in the overview table.
    If it doesn't, add the domain to the table first and get agreement from the
    user.  This avoids fragmented, overlapping ontology files.
-4. **Check the master ontology** — after creating a new domain file, add an
+5. **Check the master ontology** — after creating a new domain file, add an
    `owl:imports` line for it in `ontology-hub/model/ontologies/_master.ttl`.
-5. **Check for standard model alignment** — if the user mentions basing the
+6. **Check for standard model alignment** — if the user mentions basing the
    domain on an industry standard (e.g. FIBO, DCSA, GS1, PROV-O, schema.org),
    follow the steps in the [Standard model alignment](#standard-model-alignment)
    section below before designing any classes or properties.

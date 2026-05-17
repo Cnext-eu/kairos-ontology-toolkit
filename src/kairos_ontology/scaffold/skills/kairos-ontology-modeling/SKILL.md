@@ -20,16 +20,150 @@ You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax.
 2. **Read the hub README** — open `ontology-hub/README.md` and note the company
    name, company domain, namespace base, and the domain model overview table.
    All new ontologies MUST use the namespace pattern documented there.
-3. **Check the domain model overview** — before creating a new `.ttl` file,
+3. **Ask: Are we starting from a reference model?** — this is the FIRST question
+   to ask the user before any modeling work.  See the
+   [Reference-model-first workflow](#reference-model-first-workflow) section
+   below.  If the user answers yes, follow that workflow before proceeding.
+4. **Check the domain model overview** — before creating a new `.ttl` file,
    verify that a row for the intended domain exists in the overview table.
    If it doesn't, add the domain to the table first and get agreement from the
    user.  This avoids fragmented, overlapping ontology files.
-4. **Check the master ontology** — after creating a new domain file, add an
+5. **Check the master ontology** — after creating a new domain file, add an
    `owl:imports` line for it in `ontology-hub/model/ontologies/_master.ttl`.
-5. **Check for standard model alignment** — if the user mentions basing the
+6. **Check for standard model alignment** — if the user mentions basing the
    domain on an industry standard (e.g. FIBO, DCSA, GS1, PROV-O, schema.org),
    follow the steps in the [Standard model alignment](#standard-model-alignment)
    section below before designing any classes or properties.
+
+---
+
+## Reference-model-first workflow
+
+The recommended approach for new modeling projects is to **start from reference
+models** rather than inventing entities from scratch.  Reference models are
+curated, industry-aligned OWL ontologies bundled into **accelerator packs** —
+sector-specific collections of ontologies (e.g., Financial Services, Supply
+Chain, Healthcare) that provide a proven starting point.
+
+### Step 0 — Ask the user
+
+At the **very start** of any modeling session, ask:
+
+> "Are we starting from a reference model / accelerator pack?  If so, have you
+> already imported the reference models into this hub by running
+> `update-referencemodels.ps1`?"
+
+- If the user has **not yet imported** reference models, instruct them to run:
+  ```powershell
+  .\update-referencemodels.ps1          # from ontology-hub root
+  # or specify a version tag:
+  .\update-referencemodels.ps1 -Ref v1.2.1
+  ```
+  This fetches the `ontology-reference-models/` folder from the central repo
+  (`Cnext-eu/kairos-ontology-referencemodels`) via a sparse shallow clone.
+  The user must run this **before** any modeling work begins.
+
+- If the user says **no reference model** is needed, skip to the standard
+  modeling workflow (class design, property design, etc.).
+
+### Step 1 — Select the accelerator pack
+
+Once reference models are imported, explore the available accelerator packs:
+
+```bash
+ls ontology-reference-models/
+```
+
+Each pack bundles ontologies for a business sector.  Ask the user:
+
+> "Which accelerator pack / sector is closest to your business?  We will use
+> this as a starting point and later trim what is not relevant."
+
+### Step 2 — Map business data domains to reference ontologies
+
+Before creating any files, build a **domain mapping table** together with the
+user.  The goal is to create a complete map of all relevant data domains for the
+business and align each one to a corresponding ontology from the reference
+models.
+
+| Business Data Domain | Reference Ontology | Status |
+|---|---|---|
+| Customer management | `ref:party.ttl` | ✅ Direct match |
+| Invoicing | `ref:billing.ttl` | ✅ Direct match |
+| Fleet management | — | ⚠️ No reference; model later |
+
+**Rules for the mapping:**
+
+1. **Avoid overlaps** — each business domain maps to exactly one reference
+   ontology.  If two reference ontologies cover overlapping territory, choose
+   one and note the exclusion.
+2. **Do not invent new entities yet** — at this stage, stick strictly to what
+   the reference models provide.  Custom entities come later, after the
+   reference baseline is established.
+3. **Flag gaps** — if a business domain has no matching reference ontology, mark
+   it for later custom modeling.  Do not attempt to fill gaps with invented
+   classes at this point.
+
+### Step 3 — Validate with the business
+
+Before proceeding to implementation, **suggest that the user validates the
+domain mapping with business stakeholders**:
+
+> "Before we start building, I recommend reviewing this domain mapping table
+> with your business stakeholders.  This ensures we've selected the right data
+> domain models and avoids rework later.  Do you want to finalize this mapping
+> first, or proceed with what we have?"
+
+This is a critical governance step — getting business sign-off on which
+reference domains are in scope prevents scope creep and misalignment.
+
+### Step 4 — Import via OWL catalog (do NOT copy TTL)
+
+When incorporating reference model ontologies into the hub, **always use
+`owl:imports` via the catalog** — never copy or recreate the reference model
+TTL files inside the hub.
+
+The reference models ship with a `catalog-v001.xml` that maps logical URIs to
+local file paths.  Your domain ontology imports the reference model by URI:
+
+```turtle
+@prefix : <https://contoso.com/ont/customer#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+<https://contoso.com/ont/customer> a owl:Ontology ;
+    rdfs:label "Customer Domain"@en ;
+    owl:versionInfo "1.0.0" ;
+    owl:imports <https://referencemodels.kairos.cnext.eu/party> .
+```
+
+**Rules:**
+
+- ✅ **DO** use `owl:imports` referencing the catalog URI for the reference
+  ontology.
+- ✅ **DO** extend reference classes via `rdfs:subClassOf` when specialization
+  is needed.
+- ❌ **DO NOT** copy reference model `.ttl` files into `model/ontologies/`.
+- ❌ **DO NOT** re-create reference model classes or properties in your domain
+  files — reference them, don't duplicate them.
+- ❌ **DO NOT** add new entities that aren't in the reference model until the
+  reference baseline is validated and the user explicitly requests additions.
+
+### Step 5 — Trim and specialize
+
+After the reference baseline is imported and validated:
+
+1. **Remove what's not needed** — if a reference ontology contains classes that
+   are out of scope, do NOT import them.  Import only the reference ontologies
+   that match your domain mapping table.
+2. **Specialize where needed** — extend reference classes with domain-specific
+   subclasses or additional properties.
+3. **Fill gaps** — for business domains with no reference model match (flagged
+   in Step 2), now create custom ontology files following the standard modeling
+   patterns below.
+
+> **Principle:** Start broad with the accelerator pack, validate with the
+> business, then narrow down.  It is easier to remove what you don't need than
+> to discover missing domains later.
 
 ---
 
