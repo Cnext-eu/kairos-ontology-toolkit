@@ -92,7 +92,7 @@ When designing or modifying ontologies, two skills are available:
 - **kairos-ontology-modeling** — core modeling skill covering class hierarchies,
   property design, naming conventions, reference-model-first workflow, and
   standard model alignment. Use for all ontology design work.
-- **kairos-ontology-modelling-config** — interactive configurator that extends the
+- **kairos-ontology-modeling-config** — interactive configurator that extends the
   core skill with business alignment checkpoints, session persistence
   (`ontology-hub/.modeling-sessions/`), and structured validation gates. Use
   instead of the core skill when modeling a new domain from scratch or when
