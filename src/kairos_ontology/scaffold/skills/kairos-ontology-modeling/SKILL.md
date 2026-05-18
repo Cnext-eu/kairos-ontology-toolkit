@@ -309,6 +309,84 @@ models.
    it for later custom modeling.  Do not attempt to fill gaps with invented
    classes at this point.
 
+### Step 2b — Overlap Resolution (MANDATORY when using multiple reference models)
+
+When an accelerator pack imports from multiple reference model modules, the
+**same concept** (class) may exist in more than one module. Before proceeding to
+domain modeling, you MUST detect and resolve these overlaps.
+
+**Step 2b.1 — Detect overlaps:**
+
+Scan the imported reference models for classes that represent the same real-world
+concept but appear in different modules. Present an overlap table:
+
+> "I found the following concept overlaps across your imported reference models:
+>
+> | # | Concept | Candidate A | Candidate B | Recommended source |
+> |---|---------|------------|------------|-------------------|
+> | 1 | Shipment Event | BSP/Commercial | DCSA/Events | DCSA/Events |
+> | 2 | Dimension (measurement) | BSP/Reference | MMT/Cargo | MMT/Cargo |
+> | 3 | Weight | BSP/Reference | MMT/Cargo | MMT/Cargo |
+> | 4 | Tariff Classification | BSP/Compliance | WCO/Customs | WCO/Customs |
+> | … | … | … | … | … |
+>
+> Each concept must have exactly **one canonical source**. Do you agree with
+> my recommendations, or would you like to override any?"
+
+**Step 2b.2 — Apply resolution principles:**
+
+Use these default principles to determine the recommended source. The user may
+override with client-specific priorities:
+
+| Principle | Application |
+|-----------|-------------|
+| **Authority first** | Use the most authoritative standard for the concept (IMO for vessels, WCO for customs, DCSA for shipping docs) |
+| **Domain-centric** | Prefer the reference model closest to the client's core business (e.g., transport operator → prefer operational models over generic) |
+| **Domain ownership** | Each class is "owned" by one reference module; others may reference it via imports |
+| **No duplication** | Never subclass the same concept from two different parents — pick one canonical source |
+| **Equivalence later** | Add `owl:equivalentClass` links between overlapping URIs only if cross-model querying is needed later |
+
+**Step 2b.3 — Document in data-domains.yaml:**
+
+Record overlap resolutions in the client hub blueprint's `data-domains.yaml`
+under a new `overlaps` field per domain:
+
+```yaml
+domains:
+  cargo:
+    owns: [CargoItem, CargoLine, Dimension, Weight]
+    does_not_own: [Vessel, Port, Container]
+    imports:
+      - https://referencemodels.kairos.cnext.eu/mmt/cargo
+    overlaps:
+      - class: Dimension
+        candidates: [BSP/Reference, MMT/Cargo]
+        resolved_to: MMT/Cargo
+        rationale: "Physical dimensions relate to cargo handling in transport"
+      - class: Weight
+        candidates: [BSP/Reference, MMT/Cargo]
+        resolved_to: MMT/Cargo
+        rationale: "Weight is cargo-operational context"
+
+  events:
+    owns: [ShipmentEvent, MilestoneEvent]
+    imports:
+      - https://referencemodels.kairos.cnext.eu/dcsa/events
+    overlaps:
+      - class: ShipmentEvent
+        candidates: [BSP/Commercial, DCSA/Events]
+        resolved_to: DCSA/Events
+        rationale: "DCSA event model is authoritative for shipping milestones"
+```
+
+**Rules:**
+- Every overlap MUST be resolved before any domain modeling begins.
+- Resolutions are recorded with a rationale so future modelers understand WHY.
+- If the user cannot decide, flag it as `resolved_to: TBD` and revisit in Step 3
+  (validate with business).
+- During domain modeling (Step 5+), if a class is referenced that has an overlap
+  resolution, always import from the `resolved_to` module.
+
 ### Step 3 — Validate with the business
 
 Before proceeding to implementation, **suggest that the user validates the
@@ -964,6 +1042,7 @@ report. Save to `ontology-hub/.modeling-sessions/{domain}-config-FINAL-{timestam
 | Unnecessary subclassing | Checkpoint 2 requires justification |
 | Flat vs structured confusion | Checkpoint 3 shows trade-offs explicitly |
 | Redundant property (e.g., `customerName` when `partyName` is inherited) | Checkpoint 3b forces property reuse check before defining new properties |
+| Same concept imported from two reference models | Step 2b overlap resolution picks one canonical source |
 | Modeling concepts outside domain boundary | Checkpoint 4 verifies ownership |
 | Silver layer surprises | Checkpoint 5 previews projection impact |
 | Lost context between sessions | Session files persist all decisions |
