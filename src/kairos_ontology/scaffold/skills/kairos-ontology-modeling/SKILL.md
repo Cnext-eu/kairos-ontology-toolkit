@@ -552,7 +552,8 @@ When a property could be modeled as either flat columns or a structured object:
 
 Before defining **any** new datatype or object property on a class that extends
 a reference model class, you MUST resolve the full inheritance chain and present
-all available inherited properties.
+all available inherited properties. This check also applies to **named
+individuals** (enumerations) and **sub-property relationships**.
 
 **Step 1 — Resolve the inheritance chain:**
 
@@ -575,6 +576,22 @@ parent chain:
 > | 3 | `ref:contactEmail` | `ref:Party` | `xsd:string` | Primary contact email address |
 > | … | … | … | … | … |
 
+**Step 2b — List all named individuals (enumerations) from imports:**
+
+If the reference model defines named individuals (e.g., status values,
+type codes), list them before allowing new enum creation:
+
+> "The reference model already defines these named individuals relevant to
+> `:{YourClass}`:
+>
+> | # | Individual | Class | Semantic meaning |
+> |---|-----------|-------|-----------------|
+> | 1 | `ref:StatusActive` | `ref:PartyStatus` | Party is active and tradeable |
+> | 2 | `ref:StatusInactive` | `ref:PartyStatus` | Party is suspended |
+> | … | … | … | … |
+>
+> Do any of your proposed status/type values duplicate these?"
+
 **Step 3 — Gate new property creation:**
 
 > "You proposed these new properties: `{list}`.
@@ -590,11 +607,30 @@ parent chain:
 > I recommend reusing the inherited properties where marked. Do you agree,
 > or do you need a separate property with different semantics?"
 
+**Step 3b — Check for sub-property relationships:**
+
+When a new property is genuinely needed but *narrows* an existing inherited
+property, use `rdfs:subPropertyOf` instead of creating an unrelated property:
+
+> "Your proposed property `customerLegalName` is a specialization of the
+> inherited `ref:partyName`. Should I model it as:
+>
+> | Option | Pattern | Implication |
+> |---|---|---|
+> | A: Sub-property | `customerLegalName rdfs:subPropertyOf ref:partyName` | Inherits domain/range semantics; reasoners link them |
+> | B: Independent | `customerLegalName` (standalone) | No link to `partyName`; may cause confusion |
+>
+> **Recommendation:** Use sub-property (Option A) when the new property
+> represents a *narrower meaning* of the parent property."
+
 **Rules:**
 - If an inherited property covers the same semantic meaning, default to REUSE.
 - Only create a new property if the user explicitly confirms it has **different
   semantics** from all inherited properties (e.g., different cardinality,
   different business context, or more specific meaning).
+- If a new property *narrows* an inherited one, use `rdfs:subPropertyOf`.
+- If named individuals already exist for a concept, reuse them rather than
+  creating domain-specific duplicates.
 - Document the reuse decision in the session file under "Design Decisions."
 
 ### Checkpoint 4: Domain Boundary Verification
