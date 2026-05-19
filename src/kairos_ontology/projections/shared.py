@@ -161,18 +161,52 @@ def mmd_type(sql_type: str) -> str:
 # Graph merge utility
 # ---------------------------------------------------------------------------
 
-def merge_ext_graph(base_graph: Graph, ext_path: Optional[Path]) -> Graph:
+def merge_ext_graph(
+    base_graph: Graph,
+    ext_path: Optional[Path],
+    fallback_paths: Optional[list] = None,
+) -> Graph:
     """Create a working copy of *base_graph* with extension triples merged in.
 
     Always returns a new Graph instance to avoid mutating the caller's graph.
-    If *ext_path* is None or doesn't exist, returns a plain copy.
+
+    Merge order (DD-023):
+      1. base_graph triples (the domain ontology)
+      2. fallback_paths triples (reference model defaults) — only added if the
+         subject+predicate pair is not already declared in the domain extension
+         (*ext_path*).  This ensures hub-local annotations always take priority.
+      3. ext_path triples (hub domain extension) — highest priority, always added.
+
+    If *ext_path* is None or doesn't exist, returns base + fallbacks.
+    If *fallback_paths* is None or empty, behaves identically to the original
+    signature (backward-compatible).
     """
     merged = Graph()
     for triple in base_graph:
         merged.add(triple)
+
+    # Load domain extension into a separate graph for priority checking
+    ext_graph = Graph()
     if ext_path and Path(ext_path).exists():
-        ext_graph = Graph()
         ext_graph.parse(str(ext_path), format="turtle")
-        for triple in ext_graph:
-            merged.add(triple)
+
+    # Collect subject+predicate pairs from domain extension for override check
+    ext_sp_pairs: set = set()
+    for s, p, _o in ext_graph:
+        ext_sp_pairs.add((s, p))
+
+    # Add fallback triples (skip if domain extension already defines s+p)
+    if fallback_paths:
+        for fb_path in fallback_paths:
+            if fb_path and Path(fb_path).exists():
+                fb_graph = Graph()
+                fb_graph.parse(str(fb_path), format="turtle")
+                for s, p, o in fb_graph:
+                    if (s, p) not in ext_sp_pairs:
+                        merged.add((s, p, o))
+
+    # Add domain extension triples last (always wins)
+    for triple in ext_graph:
+        merged.add(triple)
+
     return merged

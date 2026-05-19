@@ -520,6 +520,17 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                     report.record("info", f"Using gold ext: {gold_ext_path.name}",
                                   domain=onto_name, target=target_name)
 
+                # DD-023: Discover reference model default extensions
+                ref_defaults = _discover_ref_model_defaults(
+                    onto_info["file"], catalog_path,
+                    target="gold" if target_name == "powerbi" else "silver",
+                )
+                if ref_defaults:
+                    names = ", ".join(p.name for p in ref_defaults)
+                    print(f"  [{onto_name}] Using ref-model defaults: {names}")
+                    report.record("info", f"Using ref-model defaults: {names}",
+                                  domain=onto_name, target=target_name)
+
                 artifacts = _run_projection(target_name, onto_graph, target_output, template_base,
                                             onto_namespace, shapes_dir, onto_name,
                                             projection_ext_path=ext_path,
@@ -527,7 +538,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                                             ontology_metadata=onto_meta,
                                             sources_dir=sources_dir,
                                             mappings_dir=mappings_dir,
-                                            hub_domain_namespaces=hub_domain_namespaces)
+                                            hub_domain_namespaces=hub_domain_namespaces,
+                                            ref_model_defaults=ref_defaults)
                 if artifacts:
                     total_files += _write_artifacts(artifacts, target_output)
                     print(f"  [{onto_name}] ✓ Generated {len(artifacts)} file(s)")
@@ -870,6 +882,64 @@ def _auto_detect_namespace(graph: Graph) -> str:
 
 
 # ---------------------------------------------------------------------------
+# DD-023: Reference model extension defaults discovery
+# ---------------------------------------------------------------------------
+
+_DEFAULTS_SUFFIXES = {
+    "silver": "-silver-defaults.ttl",
+    "gold": "-gold-defaults.ttl",
+}
+
+
+def _discover_ref_model_defaults(
+    ontology_file: Path,
+    catalog_path: Optional[Path],
+    target: str,
+) -> list[Path]:
+    """Discover extension default files shipped alongside imported reference models.
+
+    For each ``owl:imports`` resolved via the catalog, looks for a sibling file
+    matching ``{stem}-{target}-defaults.ttl`` (e.g., ``bsp-party-silver-defaults.ttl``).
+    Also checks a sibling ``extensions/`` directory.
+
+    Args:
+        ontology_file: Path to the domain ontology file being projected.
+        catalog_path: Path to catalog-v001.xml (may be None).
+        target: Projection target — ``"silver"`` or ``"gold"``.
+
+    Returns:
+        List of Paths to discovered defaults files (may be empty).
+    """
+    if not catalog_path or not catalog_path.exists():
+        return []
+
+    suffix = _DEFAULTS_SUFFIXES.get(target)
+    if not suffix:
+        return []
+
+    from .catalog_utils import resolve_import_paths
+
+    resolved = resolve_import_paths(ontology_file, catalog_path)
+    defaults: list[Path] = []
+
+    for _uri, local_path in resolved.items():
+        stem = local_path.stem
+        # Check alongside the resolved ontology file
+        candidate = local_path.parent / f"{stem}{suffix}"
+        if candidate.exists():
+            defaults.append(candidate)
+            continue
+        # Check in a sibling extensions/ directory
+        ext_dir = local_path.parent / "extensions"
+        if ext_dir.is_dir():
+            candidate = ext_dir / f"{stem}{suffix}"
+            if candidate.exists():
+                defaults.append(candidate)
+
+    return defaults
+
+
+# ---------------------------------------------------------------------------
 # DD-021: Import whitelisting helpers
 # ---------------------------------------------------------------------------
 
@@ -927,6 +997,7 @@ def _discover_whitelisted_imports(
     gold_ext_path: Optional[Path],
     target: str,
     hub_domain_namespaces: set,
+    ref_model_defaults: Optional[list] = None,
 ) -> list:
     """Return imported classes that are whitelisted for projection (DD-021).
 
@@ -935,6 +1006,9 @@ def _discover_whitelisted_imports(
     2. Bulk:      ``kairos-ext:silverIncludeImports true`` (or ``goldIncludeImports``)
        on the ``owl:Ontology`` resource — includes all first-level reference model
        imports (peer hub domains are excluded).
+
+    DD-023: ``silverInclude`` may also be declared in reference model default
+    extension files, which are passed as *ref_model_defaults* fallback paths.
     """
     from .projections.shared import KAIROS_EXT, merge_ext_graph
 
@@ -948,8 +1022,8 @@ def _discover_whitelisted_imports(
         bulk_prop = KAIROS_EXT.goldIncludeImports
         ext_path = gold_ext_path or projection_ext_path
 
-    # Build merged graph with extension (annotations live there)
-    merged = merge_ext_graph(graph, ext_path)
+    # Build merged graph with extension + fallback defaults (DD-023)
+    merged = merge_ext_graph(graph, ext_path, fallback_paths=ref_model_defaults)
 
     # Detect ontology URI for bulk flag check (handles both # and / conventions)
     onto_iri = _find_ontology_subject(merged, namespace)
@@ -1004,7 +1078,8 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
                     ontology_metadata: Optional[dict] = None,
                     sources_dir: Optional[Path] = None,
                     mappings_dir: Optional[Path] = None,
-                    hub_domain_namespaces: Optional[set] = None) -> dict:
+                    hub_domain_namespaces: Optional[set] = None,
+                    ref_model_defaults: Optional[list] = None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
@@ -1022,6 +1097,8 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         mappings_dir: Optional path to mappings/ SKOS directory (dbt target)
         hub_domain_namespaces: Set of namespaces for all hub domains (for import
             whitelisting — distinguishes peer hub imports from reference model imports)
+        ref_model_defaults: Optional list of Paths to reference model default
+            extension files (DD-023). Loaded as fallback beneath domain extension.
     """
     from .projections.shared import KAIROS_EXT, merge_ext_graph
     
@@ -1067,6 +1144,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             gold_ext_path=gold_ext_path,
             target=target,
             hub_domain_namespaces=hub_domain_namespaces or set(),
+            ref_model_defaults=ref_model_defaults,
         )
         classes.extend(imported_classes)
         # dbt generates both silver AND gold models — also discover gold claims
@@ -1078,6 +1156,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
                 gold_ext_path=gold_ext_path,
                 target='powerbi',
                 hub_domain_namespaces=hub_domain_namespaces or set(),
+                ref_model_defaults=ref_model_defaults,
             )
             # Add gold-only claims (avoid duplicates)
             existing_uris = {c["uri"] for c in classes}
@@ -1100,6 +1179,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             bronze_dir=sources_dir, sources_dir=sources_dir, mappings_dir=mappings_dir,
             gold_ext_path=gold_ext_path,
             silver_ext_path=projection_ext_path,
+            ref_model_defaults=ref_model_defaults,
         )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts
@@ -1135,6 +1215,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             ontology_name=ontology_name or "domain",
             projection_ext_path=projection_ext_path,
             ontology_metadata=meta,
+            ref_model_defaults=ref_model_defaults,
         )
     elif target == 'powerbi':
         from .projections.medallion_gold_projector import generate_gold_artifacts
@@ -1146,6 +1227,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             ontology_name=ontology_name or "domain",
             projection_ext_path=projection_ext_path,
             ontology_metadata=meta,
+            ref_model_defaults=ref_model_defaults,
         )
     
     return {}

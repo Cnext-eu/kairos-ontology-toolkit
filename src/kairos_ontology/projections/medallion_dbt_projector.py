@@ -2261,6 +2261,7 @@ def generate_dbt_artifacts(
     gold_ext_path: Path = None,
     target_platform: str = DEFAULT_PLATFORM,
     silver_ext_path: Path = None,
+    ref_model_defaults: list = None,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -2294,7 +2295,8 @@ def generate_dbt_artifacts(
 
     # Merge silver-ext triples into a working copy of the graph so naturalKey
     # and other silver annotations are visible during dbt silver model generation.
-    graph = merge_ext_graph(graph, silver_ext_path)
+    # DD-023: Include ref-model defaults as fallback layer.
+    graph = merge_ext_graph(graph, silver_ext_path, fallback_paths=ref_model_defaults)
 
     # Parse source vocabulary — prefer sources_dir, fall back to bronze_dir
     systems = _parse_bronze(sources_dir or bronze_dir)

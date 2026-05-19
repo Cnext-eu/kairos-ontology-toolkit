@@ -282,6 +282,7 @@ def generate_silver_artifacts(
     ontology_name: str = "domain",
     projection_ext_path: Optional[Path] = None,
     ontology_metadata: Optional[dict] = None,
+    ref_model_defaults: Optional[list] = None,
 ) -> dict[str, str]:
     """Generate silver layer DDL, ALTER script, and Mermaid ERD.
 
@@ -293,12 +294,14 @@ def generate_silver_artifacts(
         ontology_name: Domain name (used for filenames and default schema).
         projection_ext_path: Optional path to ``*-silver-ext.ttl`` annotation file.
         ontology_metadata: Provenance metadata from ``extract_ontology_metadata()``.
+        ref_model_defaults: Optional list of Paths to reference model default
+            extension files (DD-023). Loaded as fallback beneath domain extension.
 
     Returns:
         ``{filename: content}`` mapping for DDL, ALTER, and .mmd files.
     """
-    # Merge projection extension into working graph (R15)
-    merged = merge_ext_graph(graph, projection_ext_path)
+    # Merge projection extension into working graph (R15) with fallback defaults (DD-023)
+    merged = merge_ext_graph(graph, projection_ext_path, fallback_paths=ref_model_defaults)
 
     # Merge SHACL shapes for NOT NULL inference (R11)
     shacl_graph: Optional[Graph] = None

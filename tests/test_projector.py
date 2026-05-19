@@ -1401,3 +1401,231 @@ class TestDD021ImportWhitelisting:
         # Should produce both # and / variants
         assert "http://refmodel.example.com/ont/party#" in ref_nss
         assert "http://refmodel.example.com/ont/party/" in ref_nss
+
+
+# ---------------------------------------------------------------------------
+# DD-023: Reference model defaults tests
+# ---------------------------------------------------------------------------
+
+class TestDiscoverRefModelDefaults:
+    """Tests for _discover_ref_model_defaults (DD-023)."""
+
+    def test_discovers_silver_defaults_beside_ontology(self, tmp_path):
+        """Finds *-silver-defaults.ttl alongside the resolved import file."""
+        from kairos_ontology.projector import _discover_ref_model_defaults
+
+        # Create reference model file + defaults
+        ref_file = tmp_path / "bsp-party.ttl"
+        ref_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://bsp.2024.org/party> a owl:Ontology .\n",
+            encoding="utf-8",
+        )
+        defaults_file = tmp_path / "bsp-party-silver-defaults.ttl"
+        defaults_file.write_text(
+            "@prefix kairos-ext: <https://kairos.community/ns/ext#> .\n",
+            encoding="utf-8",
+        )
+
+        # Create domain ontology
+        onto_file = tmp_path / "booking.ttl"
+        onto_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/booking> a owl:Ontology ;\n"
+            "    owl:imports <https://bsp.2024.org/party> .\n",
+            encoding="utf-8",
+        )
+
+        # Create catalog
+        catalog = tmp_path / "catalog-v001.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            f'  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        result = _discover_ref_model_defaults(onto_file, catalog, target="silver")
+        assert len(result) == 1
+        assert result[0].name == "bsp-party-silver-defaults.ttl"
+
+    def test_discovers_defaults_in_extensions_subdir(self, tmp_path):
+        """Finds defaults in a sibling extensions/ directory."""
+        from kairos_ontology.projector import _discover_ref_model_defaults
+
+        # Create reference model file
+        ref_file = tmp_path / "bsp-party.ttl"
+        ref_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://bsp.2024.org/party> a owl:Ontology .\n",
+            encoding="utf-8",
+        )
+        # Defaults in extensions/ subdir
+        ext_dir = tmp_path / "extensions"
+        ext_dir.mkdir()
+        defaults_file = ext_dir / "bsp-party-silver-defaults.ttl"
+        defaults_file.write_text(
+            "@prefix kairos-ext: <https://kairos.community/ns/ext#> .\n",
+            encoding="utf-8",
+        )
+
+        onto_file = tmp_path / "booking.ttl"
+        onto_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/booking> a owl:Ontology ;\n"
+            "    owl:imports <https://bsp.2024.org/party> .\n",
+            encoding="utf-8",
+        )
+
+        catalog = tmp_path / "catalog-v001.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            f'  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        result = _discover_ref_model_defaults(onto_file, catalog, target="silver")
+        assert len(result) == 1
+        assert result[0].name == "bsp-party-silver-defaults.ttl"
+
+    def test_returns_empty_without_catalog(self, tmp_path):
+        """Returns empty list when catalog_path is None."""
+        from kairos_ontology.projector import _discover_ref_model_defaults
+
+        onto_file = tmp_path / "domain.ttl"
+        onto_file.write_text("@prefix owl: <http://www.w3.org/2002/07/owl#> .\n")
+        result = _discover_ref_model_defaults(onto_file, None, target="silver")
+        assert result == []
+
+    def test_returns_empty_for_unsupported_target(self, tmp_path):
+        """Returns empty list for targets other than silver/gold."""
+        from kairos_ontology.projector import _discover_ref_model_defaults
+
+        onto_file = tmp_path / "domain.ttl"
+        onto_file.write_text("@prefix owl: <http://www.w3.org/2002/07/owl#> .\n")
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        result = _discover_ref_model_defaults(onto_file, catalog, target="neo4j")
+        assert result == []
+
+    def test_gold_defaults_discovery(self, tmp_path):
+        """Finds *-gold-defaults.ttl for gold target."""
+        from kairos_ontology.projector import _discover_ref_model_defaults
+
+        ref_file = tmp_path / "bsp-party.ttl"
+        ref_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://bsp.2024.org/party> a owl:Ontology .\n",
+            encoding="utf-8",
+        )
+        defaults_file = tmp_path / "bsp-party-gold-defaults.ttl"
+        defaults_file.write_text(
+            "@prefix kairos-ext: <https://kairos.community/ns/ext#> .\n",
+            encoding="utf-8",
+        )
+
+        onto_file = tmp_path / "booking.ttl"
+        onto_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/booking> a owl:Ontology ;\n"
+            "    owl:imports <https://bsp.2024.org/party> .\n",
+            encoding="utf-8",
+        )
+        catalog = tmp_path / "catalog-v001.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            f'  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        result = _discover_ref_model_defaults(onto_file, catalog, target="gold")
+        assert len(result) == 1
+        assert result[0].name == "bsp-party-gold-defaults.ttl"
+
+
+class TestMergeExtGraphWithFallbacks:
+    """Tests for merge_ext_graph fallback_paths (DD-023)."""
+
+    def test_fallback_triples_added_when_no_domain_ext(self):
+        """Fallback triples are added when ext_path is None."""
+        from kairos_ontology.projections.shared import merge_ext_graph
+        from rdflib import Graph, URIRef, Literal, Namespace
+
+        KAIROS_EXT = Namespace("https://kairos.community/ns/ext#")
+        base = Graph()
+        cls = URIRef("https://bsp.2024.org/party#TradeParty")
+        base.add((cls, URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+                  URIRef("http://www.w3.org/2002/07/owl#Class")))
+
+        # Create fallback file
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".ttl", delete=False) as f:
+            f.write(
+                '@prefix kairos-ext: <https://kairos.community/ns/ext#> .\n'
+                '<https://bsp.2024.org/party#TradeParty>\n'
+                '    kairos-ext:scdType "1" ;\n'
+                '    kairos-ext:naturalKey "partyCode" .\n'
+            )
+            fb_path = Path(f.name)
+
+        try:
+            merged = merge_ext_graph(base, None, fallback_paths=[fb_path])
+            val = merged.value(cls, KAIROS_EXT.scdType)
+            assert str(val) == "1"
+            nk = merged.value(cls, KAIROS_EXT.naturalKey)
+            assert str(nk) == "partyCode"
+        finally:
+            fb_path.unlink()
+
+    def test_domain_ext_overrides_fallback(self):
+        """Domain extension wins over fallback for same subject+predicate."""
+        from kairos_ontology.projections.shared import merge_ext_graph
+        from rdflib import Graph, URIRef, Namespace
+
+        KAIROS_EXT = Namespace("https://kairos.community/ns/ext#")
+        base = Graph()
+        cls = URIRef("https://bsp.2024.org/party#TradeParty")
+        base.add((cls, URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+                  URIRef("http://www.w3.org/2002/07/owl#Class")))
+
+        import tempfile
+        # Fallback: scdType "1" AND naturalKey "partyCode"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".ttl", delete=False) as f:
+            f.write(
+                '@prefix kairos-ext: <https://kairos.community/ns/ext#> .\n'
+                '<https://bsp.2024.org/party#TradeParty>\n'
+                '    kairos-ext:scdType "1" ;\n'
+                '    kairos-ext:naturalKey "partyCode" .\n'
+            )
+            fb_path = Path(f.name)
+
+        # Domain ext: only overrides scdType to "2"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".ttl", delete=False) as f:
+            f.write(
+                '@prefix kairos-ext: <https://kairos.community/ns/ext#> .\n'
+                '<https://bsp.2024.org/party#TradeParty>\n'
+                '    kairos-ext:scdType "2" .\n'
+            )
+            ext_path = Path(f.name)
+
+        try:
+            merged = merge_ext_graph(base, ext_path, fallback_paths=[fb_path])
+            # scdType should be "2" (domain ext wins — fallback's scdType skipped)
+            val = merged.value(cls, KAIROS_EXT.scdType)
+            assert str(val) == "2"
+            # naturalKey should be "partyCode" (from fallback — no conflict)
+            nk = merged.value(cls, KAIROS_EXT.naturalKey)
+            assert str(nk) == "partyCode"
+        finally:
+            fb_path.unlink()
+            ext_path.unlink()
