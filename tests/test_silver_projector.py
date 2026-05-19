@@ -1855,3 +1855,155 @@ def test_dd022_silver_foreign_key_with_column_name_override():
     result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
     assert "buyer_sk" in ddl
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — Property Inheritance from Unprojected Parents
+# ---------------------------------------------------------------------------
+
+
+def test_inheritance_data_properties_from_unprojected_parent():
+    """Child class inherits datatype properties from parent NOT in class_uris."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Vehicle a owl:Class ; rdfs:label "Vehicle"@en ; rdfs:comment "."@en .
+        ex:Truck a owl:Class ;
+            rdfs:label "Truck"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ex:Vehicle .
+
+        ex:registrationNumber a owl:DatatypeProperty ;
+            rdfs:domain ex:Vehicle ;
+            rdfs:range xsd:string ;
+            rdfs:label "registration number"@en .
+
+        ex:payload a owl:DatatypeProperty ;
+            rdfs:domain ex:Truck ;
+            rdfs:range xsd:decimal ;
+            rdfs:label "payload"@en .
+    """
+    g = _make_graph(ttl)
+    # Only Truck is projected — Vehicle is NOT claimed
+    classes = [
+        {"uri": f"{BASE}Truck", "name": "Truck", "label": "Truck", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Truck should have its own property AND inherited Vehicle property
+    assert "payload" in ddl
+    assert "registration_number" in ddl
+
+
+def test_inheritance_fk_from_unprojected_parent():
+    """Child class inherits FK object property from parent NOT in class_uris."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Asset a owl:Class ; rdfs:label "Asset"@en ; rdfs:comment "."@en .
+        ex:Vehicle a owl:Class ;
+            rdfs:label "Vehicle"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ex:Asset .
+        ex:Location a owl:Class ; rdfs:label "Location"@en ; rdfs:comment "."@en .
+
+        ex:locatedAt a owl:ObjectProperty, owl:FunctionalProperty ;
+            rdfs:domain ex:Asset ;
+            rdfs:range ex:Location ;
+            rdfs:label "located at"@en .
+    """
+    g = _make_graph(ttl)
+    # Vehicle and Location projected, Asset is NOT
+    classes = [
+        {"uri": f"{BASE}Vehicle", "name": "Vehicle", "label": "Vehicle", "comment": ""},
+        {"uri": f"{BASE}Location", "name": "Location", "label": "Location", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Vehicle should have the FK column inherited from Asset
+    assert "location_sk" in ddl
+
+
+def test_no_duplicate_when_parent_is_projected():
+    """When parent IS projected (S3 flattening), no double columns on parent."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Vehicle a owl:Class ; rdfs:label "Vehicle"@en ; rdfs:comment "."@en .
+        ex:Truck a owl:Class ;
+            rdfs:label "Truck"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ex:Vehicle .
+
+        ex:registrationNumber a owl:DatatypeProperty ;
+            rdfs:domain ex:Vehicle ;
+            rdfs:range xsd:string ;
+            rdfs:label "registration number"@en .
+    """
+    g = _make_graph(ttl)
+    # Both are projected — S3 merges Truck into Vehicle
+    classes = [
+        {"uri": f"{BASE}Vehicle", "name": "Vehicle", "label": "Vehicle", "comment": ""},
+        {"uri": f"{BASE}Truck", "name": "Truck", "label": "Truck", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # registration_number should appear exactly once in the DDL
+    count = ddl.lower().count("registration_number")
+    assert count == 1, f"Expected 1 occurrence, got {count}"
+
+
+def test_inheritance_cycle_protection():
+    """Cycle in rdfs:subClassOf does not cause infinite loop."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:A a owl:Class ; rdfs:label "A"@en ; rdfs:comment "."@en ;
+            rdfs:subClassOf ex:B .
+        ex:B a owl:Class ; rdfs:label "B"@en ; rdfs:comment "."@en ;
+            rdfs:subClassOf ex:A .
+
+        ex:propA a owl:DatatypeProperty ;
+            rdfs:domain ex:A ;
+            rdfs:range xsd:string ;
+            rdfs:label "prop A"@en .
+
+        ex:propB a owl:DatatypeProperty ;
+            rdfs:domain ex:B ;
+            rdfs:range xsd:string ;
+            rdfs:label "prop B"@en .
+    """
+    g = _make_graph(ttl)
+    # Only A projected, B is ancestor via cycle
+    classes = [
+        {"uri": f"{BASE}A", "name": "A", "label": "A", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Should get both properties without infinite loop
+    assert "prop_a" in ddl
+    assert "prop_b" in ddl
