@@ -5,6 +5,30 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.31.0] — 2026-05-19
+
+### Added
+
+- **Shared extension defaults for reference models (DD-023)** — Reference model
+  repositories can now ship `*-silver-defaults.ttl` and `*-gold-defaults.ttl`
+  files alongside their ontologies. The toolkit auto-discovers these via catalog
+  resolution and merges them as a fallback layer beneath hub domain extensions.
+- **`resolve_import_paths()` utility** — New public function in `catalog_utils.py`
+  that exposes catalog-resolved local paths for `owl:imports` URIs.
+- **Layered extension merge** — Merge priority: hub domain ext > reference model
+  defaults > built-in projector conventions. Hub annotations always win.
+
+### Changed
+
+- Silver/gold projectors support `silverInclude`/`goldInclude` declared in
+  reference model defaults files (inherited by downstream hubs).
+- Updated silver and modeling skill documentation with DD-023 guidance.
+
+### Removed
+
+- Obsolete draft documents (`docs/MIGRATION.md`, `docs/TOOLKIT_IMPROVEMENT_SPEC*.md`,
+  `docs/medallion-restructure-advisory.md`).
+
 ## [2.28.0] — 2026-05-17
 
 ### Added
