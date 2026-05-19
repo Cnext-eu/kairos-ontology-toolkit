@@ -2007,3 +2007,471 @@ def test_inheritance_cycle_protection():
     # Should get both properties without infinite loop
     assert "prop_a" in ddl
     assert "prop_b" in ddl
+
+
+# ---------------------------------------------------------------------------
+# Import Scenario Tests — Cross-namespace Inheritance
+# ---------------------------------------------------------------------------
+
+REF_BASE = "https://referencemodels.kairos.cnext.eu/party#"
+HUB_BASE = "https://contoso.com/ont/customer#"
+
+
+def test_import_cross_namespace_property_inheritance():
+    """Hub class inherits properties from reference model parent in different namespace."""
+    ttl = f"""
+        @prefix ref: <{REF_BASE}> .
+        @prefix hub: <{HUB_BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{HUB_BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Customer"@en ;
+            owl:versionInfo "1.0" ;
+            owl:imports <{REF_BASE.rstrip('#')}> .
+
+        # Reference model classes (imported)
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ;
+            rdfs:comment "A party in trade."@en .
+
+        ref:partyName a owl:DatatypeProperty ;
+            rdfs:domain ref:TradeParty ;
+            rdfs:range xsd:string ;
+            rdfs:label "party name"@en .
+
+        ref:partyIdentifier a owl:DatatypeProperty ;
+            rdfs:domain ref:TradeParty ;
+            rdfs:range xsd:string ;
+            rdfs:label "party identifier"@en .
+
+        # Hub class extending reference model
+        hub:FreightCustomer a owl:Class ;
+            rdfs:label "Freight Customer"@en ;
+            rdfs:comment "A customer for freight services."@en ;
+            rdfs:subClassOf ref:TradeParty .
+
+        hub:creditLimit a owl:DatatypeProperty ;
+            rdfs:domain hub:FreightCustomer ;
+            rdfs:range xsd:decimal ;
+            rdfs:label "credit limit"@en .
+    """
+    g = _make_graph(ttl)
+    # Only FreightCustomer projected — TradeParty is NOT claimed
+    classes = [
+        {"uri": f"{HUB_BASE}FreightCustomer", "name": "FreightCustomer",
+         "label": "Freight Customer", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, HUB_BASE, ontology_name="customer")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Should inherit ref:partyName and ref:partyIdentifier from TradeParty
+    assert "party_name" in ddl
+    assert "party_identifier" in ddl
+    # Plus its own property
+    assert "credit_limit" in ddl
+
+
+def test_import_multilevel_inheritance():
+    """Properties inherited through 3-level chain: grandparent → parent → child."""
+    ttl = f"""
+        @prefix ref: <{REF_BASE}> .
+        @prefix hub: <{HUB_BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{HUB_BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Customer"@en ;
+            owl:versionInfo "1.0" .
+
+        # Grandparent (reference model)
+        ref:LegalEntity a owl:Class ;
+            rdfs:label "Legal Entity"@en ;
+            rdfs:comment "."@en .
+
+        ref:legalName a owl:DatatypeProperty ;
+            rdfs:domain ref:LegalEntity ;
+            rdfs:range xsd:string ;
+            rdfs:label "legal name"@en .
+
+        # Parent (reference model)
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ref:LegalEntity .
+
+        ref:partyCode a owl:DatatypeProperty ;
+            rdfs:domain ref:TradeParty ;
+            rdfs:range xsd:string ;
+            rdfs:label "party code"@en .
+
+        # Child (hub domain)
+        hub:Supplier a owl:Class ;
+            rdfs:label "Supplier"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ref:TradeParty .
+
+        hub:supplierRating a owl:DatatypeProperty ;
+            rdfs:domain hub:Supplier ;
+            rdfs:range xsd:integer ;
+            rdfs:label "supplier rating"@en .
+    """
+    g = _make_graph(ttl)
+    # Only Supplier projected — TradeParty and LegalEntity NOT claimed
+    classes = [
+        {"uri": f"{HUB_BASE}Supplier", "name": "Supplier",
+         "label": "Supplier", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, HUB_BASE, ontology_name="customer")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Inherits from grandparent (LegalEntity)
+    assert "legal_name" in ddl
+    # Inherits from parent (TradeParty)
+    assert "party_code" in ddl
+    # Own property
+    assert "supplier_rating" in ddl
+
+
+def test_import_fk_inherited_from_reference_model():
+    """FK object property inherited from reference model parent."""
+    ttl = f"""
+        @prefix ref: <{REF_BASE}> .
+        @prefix hub: <{HUB_BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{HUB_BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Customer"@en ;
+            owl:versionInfo "1.0" .
+
+        # Reference model
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ;
+            rdfs:comment "."@en .
+
+        ref:Country a owl:Class ;
+            rdfs:label "Country"@en ;
+            rdfs:comment "."@en .
+
+        ref:registeredIn a owl:ObjectProperty, owl:FunctionalProperty ;
+            rdfs:domain ref:TradeParty ;
+            rdfs:range ref:Country ;
+            rdfs:label "registered in"@en .
+
+        # Hub class
+        hub:Customer a owl:Class ;
+            rdfs:label "Customer"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ref:TradeParty .
+
+        hub:loyaltyTier a owl:DatatypeProperty ;
+            rdfs:domain hub:Customer ;
+            rdfs:range xsd:string ;
+            rdfs:label "loyalty tier"@en .
+    """
+    g = _make_graph(ttl)
+    # Customer and Country projected; TradeParty NOT claimed
+    classes = [
+        {"uri": f"{HUB_BASE}Customer", "name": "Customer",
+         "label": "Customer", "comment": ""},
+        {"uri": f"{REF_BASE}Country", "name": "Country",
+         "label": "Country", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, HUB_BASE, ontology_name="customer")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Customer should have inherited FK to Country from TradeParty
+    assert "country_sk" in ddl
+    # Plus own property
+    assert "loyalty_tier" in ddl
+
+
+def test_import_mixed_projected_and_unprojected_ancestors():
+    """Mixed: one ancestor projected (S3 handles it), another not (inheritance needed)."""
+    ttl = f"""
+        @prefix ref: <{REF_BASE}> .
+        @prefix hub: <{HUB_BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{HUB_BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Customer"@en ;
+            owl:versionInfo "1.0" .
+
+        # Grandparent — NOT projected (inheritance needed)
+        ref:Entity a owl:Class ;
+            rdfs:label "Entity"@en ;
+            rdfs:comment "."@en .
+
+        ref:entityCode a owl:DatatypeProperty ;
+            rdfs:domain ref:Entity ;
+            rdfs:range xsd:string ;
+            rdfs:label "entity code"@en .
+
+        # Parent — IS projected (S3 flattening applies)
+        hub:Organization a owl:Class ;
+            rdfs:label "Organization"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ref:Entity .
+
+        hub:orgName a owl:DatatypeProperty ;
+            rdfs:domain hub:Organization ;
+            rdfs:range xsd:string ;
+            rdfs:label "org name"@en .
+
+        # Child — IS projected, flattened into Organization by S3
+        hub:Corporation a owl:Class ;
+            rdfs:label "Corporation"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf hub:Organization .
+
+        hub:stockTicker a owl:DatatypeProperty ;
+            rdfs:domain hub:Corporation ;
+            rdfs:range xsd:string ;
+            rdfs:label "stock ticker"@en .
+    """
+    g = _make_graph(ttl)
+    # Organization and Corporation projected; Entity NOT projected
+    classes = [
+        {"uri": f"{HUB_BASE}Organization", "name": "Organization",
+         "label": "Organization", "comment": ""},
+        {"uri": f"{HUB_BASE}Corporation", "name": "Corporation",
+         "label": "Corporation", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, HUB_BASE, ontology_name="customer")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Organization table should have:
+    # - its own property (orgName)
+    assert "org_name" in ddl
+    # - inherited from unprojected Entity
+    assert "entity_code" in ddl
+    # Corporation is S3-flattened into Organization, so stockTicker on org table
+    assert "stock_ticker" in ddl
+    # Only one table created (Corporation folded in)
+    assert "CREATE TABLE" in ddl
+    assert ddl.count("CREATE TABLE") == 1
+
+
+def test_import_multiple_parents_diamond():
+    """Diamond inheritance: child inherits from two parents, both unprojected."""
+    ttl = f"""
+        @prefix ref: <{REF_BASE}> .
+        @prefix hub: <{HUB_BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{HUB_BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Customer"@en ;
+            owl:versionInfo "1.0" .
+
+        # Two separate parent hierarchies
+        ref:Contactable a owl:Class ;
+            rdfs:label "Contactable"@en ;
+            rdfs:comment "."@en .
+
+        ref:contactEmail a owl:DatatypeProperty ;
+            rdfs:domain ref:Contactable ;
+            rdfs:range xsd:string ;
+            rdfs:label "contact email"@en .
+
+        ref:Billable a owl:Class ;
+            rdfs:label "Billable"@en ;
+            rdfs:comment "."@en .
+
+        ref:billingAddress a owl:DatatypeProperty ;
+            rdfs:domain ref:Billable ;
+            rdfs:range xsd:string ;
+            rdfs:label "billing address"@en .
+
+        # Hub class inherits from both
+        hub:Customer a owl:Class ;
+            rdfs:label "Customer"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ref:Contactable, ref:Billable .
+
+        hub:customerCode a owl:DatatypeProperty ;
+            rdfs:domain hub:Customer ;
+            rdfs:range xsd:string ;
+            rdfs:label "customer code"@en .
+    """
+    g = _make_graph(ttl)
+    # Only Customer projected — both parents NOT claimed
+    classes = [
+        {"uri": f"{HUB_BASE}Customer", "name": "Customer",
+         "label": "Customer", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, HUB_BASE, ontology_name="customer")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Inherits from Contactable
+    assert "contact_email" in ddl
+    # Inherits from Billable
+    assert "billing_address" in ddl
+    # Own property
+    assert "customer_code" in ddl
+
+
+def test_import_no_inheritance_when_parent_projected():
+    """When parent IS projected, child is S3-flattened — no double properties."""
+    ttl = f"""
+        @prefix hub: <{HUB_BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{HUB_BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Customer"@en ;
+            owl:versionInfo "1.0" .
+
+        hub:Account a owl:Class ;
+            rdfs:label "Account"@en ;
+            rdfs:comment "."@en .
+
+        hub:accountNumber a owl:DatatypeProperty ;
+            rdfs:domain hub:Account ;
+            rdfs:range xsd:string ;
+            rdfs:label "account number"@en .
+
+        hub:PremiumAccount a owl:Class ;
+            rdfs:label "Premium Account"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf hub:Account .
+
+        hub:discountRate a owl:DatatypeProperty ;
+            rdfs:domain hub:PremiumAccount ;
+            rdfs:range xsd:decimal ;
+            rdfs:label "discount rate"@en .
+    """
+    g = _make_graph(ttl)
+    # Both projected — S3 merges PremiumAccount into Account
+    classes = [
+        {"uri": f"{HUB_BASE}Account", "name": "Account",
+         "label": "Account", "comment": ""},
+        {"uri": f"{HUB_BASE}PremiumAccount", "name": "PremiumAccount",
+         "label": "Premium Account", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, HUB_BASE, ontology_name="customer")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # One table only (PremiumAccount folded into Account)
+    assert ddl.count("CREATE TABLE") == 1
+    assert "account" in ddl.lower()
+    # account_number appears exactly once (no duplication)
+    assert ddl.lower().count("account_number") == 1
+    # discount_rate is S3-merged (nullable, from subtype)
+    assert "discount_rate" in ddl
+
+
+def test_import_sibling_classes_share_parent_properties():
+    """Two sibling classes both inherit from same unprojected parent independently."""
+    ttl = f"""
+        @prefix ref: <{REF_BASE}> .
+        @prefix hub: <{HUB_BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{HUB_BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Customer"@en ;
+            owl:versionInfo "1.0" .
+
+        # Shared parent — NOT projected
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ;
+            rdfs:comment "."@en .
+
+        ref:partyName a owl:DatatypeProperty ;
+            rdfs:domain ref:TradeParty ;
+            rdfs:range xsd:string ;
+            rdfs:label "party name"@en .
+
+        # Two siblings inheriting from same parent
+        hub:Buyer a owl:Class ;
+            rdfs:label "Buyer"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ref:TradeParty .
+
+        hub:buyerCode a owl:DatatypeProperty ;
+            rdfs:domain hub:Buyer ;
+            rdfs:range xsd:string ;
+            rdfs:label "buyer code"@en .
+
+        hub:Seller a owl:Class ;
+            rdfs:label "Seller"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ref:TradeParty .
+
+        hub:sellerLicense a owl:DatatypeProperty ;
+            rdfs:domain hub:Seller ;
+            rdfs:range xsd:string ;
+            rdfs:label "seller license"@en .
+    """
+    g = _make_graph(ttl)
+    # Both Buyer and Seller projected — TradeParty NOT claimed
+    # They are siblings, not in subtype relationship with each other
+    classes = [
+        {"uri": f"{HUB_BASE}Buyer", "name": "Buyer",
+         "label": "Buyer", "comment": ""},
+        {"uri": f"{HUB_BASE}Seller", "name": "Seller",
+         "label": "Seller", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, HUB_BASE, ontology_name="customer")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Two separate tables
+    assert ddl.count("CREATE TABLE") == 2
+    # Both should have party_name inherited from TradeParty
+    # Count occurrences — should be 2 (one per table)
+    assert ddl.lower().count("party_name") == 2
+    # Each has its own property
+    assert "buyer_code" in ddl
+    assert "seller_license" in ddl
+
+
+def test_import_inherited_property_with_extension_override():
+    """Inherited property can have its type overridden via kairos-ext:silverDataType."""
+    ttl = f"""
+        @prefix ref: <{REF_BASE}> .
+        @prefix hub: <{HUB_BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{HUB_BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Customer"@en ;
+            owl:versionInfo "1.0" .
+
+        ref:TradeParty a owl:Class ;
+            rdfs:label "Trade Party"@en ;
+            rdfs:comment "."@en .
+
+        ref:partyName a owl:DatatypeProperty ;
+            rdfs:domain ref:TradeParty ;
+            rdfs:range xsd:string ;
+            rdfs:label "party name"@en ;
+            kairos-ext:silverDataType "NVARCHAR(200)" .
+
+        hub:Customer a owl:Class ;
+            rdfs:label "Customer"@en ;
+            rdfs:comment "."@en ;
+            rdfs:subClassOf ref:TradeParty .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{HUB_BASE}Customer", "name": "Customer",
+         "label": "Customer", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, HUB_BASE, ontology_name="customer")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    # Inherited property should use the overridden type
+    assert "party_name" in ddl
+    assert "NVARCHAR(200)" in ddl
