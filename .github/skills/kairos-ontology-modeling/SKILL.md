@@ -309,6 +309,84 @@ models.
    it for later custom modeling.  Do not attempt to fill gaps with invented
    classes at this point.
 
+### Step 2b — Overlap Resolution (MANDATORY when using multiple reference models)
+
+When an accelerator pack imports from multiple reference model modules, the
+**same concept** (class) may exist in more than one module. Before proceeding to
+domain modeling, you MUST detect and resolve these overlaps.
+
+**Step 2b.1 — Detect overlaps:**
+
+Scan the imported reference models for classes that represent the same real-world
+concept but appear in different modules. Present an overlap table:
+
+> "I found the following concept overlaps across your imported reference models:
+>
+> | # | Concept | Candidate A | Candidate B | Recommended source |
+> |---|---------|------------|------------|-------------------|
+> | 1 | Shipment Event | BSP/Commercial | DCSA/Events | DCSA/Events |
+> | 2 | Dimension (measurement) | BSP/Reference | MMT/Cargo | MMT/Cargo |
+> | 3 | Weight | BSP/Reference | MMT/Cargo | MMT/Cargo |
+> | 4 | Tariff Classification | BSP/Compliance | WCO/Customs | WCO/Customs |
+> | … | … | … | … | … |
+>
+> Each concept must have exactly **one canonical source**. Do you agree with
+> my recommendations, or would you like to override any?"
+
+**Step 2b.2 — Apply resolution principles:**
+
+Use these default principles to determine the recommended source. The user may
+override with client-specific priorities:
+
+| Principle | Application |
+|-----------|-------------|
+| **Authority first** | Use the most authoritative standard for the concept (IMO for vessels, WCO for customs, DCSA for shipping docs) |
+| **Domain-centric** | Prefer the reference model closest to the client's core business (e.g., transport operator → prefer operational models over generic) |
+| **Domain ownership** | Each class is "owned" by one reference module; others may reference it via imports |
+| **No duplication** | Never subclass the same concept from two different parents — pick one canonical source |
+| **Equivalence later** | Add `owl:equivalentClass` links between overlapping URIs only if cross-model querying is needed later |
+
+**Step 2b.3 — Document in data-domains.yaml:**
+
+Record overlap resolutions in the client hub blueprint's `data-domains.yaml`
+under a new `overlaps` field per domain:
+
+```yaml
+domains:
+  cargo:
+    owns: [CargoItem, CargoLine, Dimension, Weight]
+    does_not_own: [Vessel, Port, Container]
+    imports:
+      - https://referencemodels.kairos.cnext.eu/mmt/cargo
+    overlaps:
+      - class: Dimension
+        candidates: [BSP/Reference, MMT/Cargo]
+        resolved_to: MMT/Cargo
+        rationale: "Physical dimensions relate to cargo handling in transport"
+      - class: Weight
+        candidates: [BSP/Reference, MMT/Cargo]
+        resolved_to: MMT/Cargo
+        rationale: "Weight is cargo-operational context"
+
+  events:
+    owns: [ShipmentEvent, MilestoneEvent]
+    imports:
+      - https://referencemodels.kairos.cnext.eu/dcsa/events
+    overlaps:
+      - class: ShipmentEvent
+        candidates: [BSP/Commercial, DCSA/Events]
+        resolved_to: DCSA/Events
+        rationale: "DCSA event model is authoritative for shipping milestones"
+```
+
+**Rules:**
+- Every overlap MUST be resolved before any domain modeling begins.
+- Resolutions are recorded with a rationale so future modelers understand WHY.
+- If the user cannot decide, flag it as `resolved_to: TBD` and revisit in Step 3
+  (validate with business).
+- During domain modeling (Step 5+), if a class is referenced that has an overlap
+  resolution, always import from the `resolved_to` module.
+
 ### Step 3 — Validate with the business
 
 Before proceeding to implementation, **suggest that the user validates the
@@ -486,7 +564,13 @@ For every new class, **explicitly ask**:
 >
 > **Reference model context:**
 > - The reference model calls this `{refmodel:ClassName}` — our class will extend it via `rdfs:subClassOf`.
-> - Inherited properties from the reference model: {list key ones}
+> - **Full inheritance chain:** `:{ProposedName}` → `{ref:Parent}` → `{ref:Grandparent}` → …
+> - **ALL inherited properties (resolve the full chain):**
+>   | Property | Defined on | Type | Semantic meaning |
+>   |----------|-----------|------|-----------------|
+>   | `{ref:prop1}` | `{ref:Parent}` | `xsd:string` | {what it represents} |
+>   | `{ref:prop2}` | `{ref:Grandparent}` | `xsd:dateTime` | {what it represents} |
+>   | … | … | … | … |
 >
 > Proposed name: `:{ProposedName}` — would you like to keep this or rename?"
 
@@ -541,6 +625,91 @@ When a property could be modeled as either flat columns or a structured object:
 > | C: Hybrid | Flat + `originalWeightUnit` | Two columns | Audit trail + simple | Slight redundancy |
 >
 > Which approach fits your business needs?"
+
+### Checkpoint 3b: Property Reuse Check (MANDATORY before defining properties)
+
+Before defining **any** new datatype or object property on a class that extends
+a reference model class, you MUST resolve the full inheritance chain and present
+all available inherited properties. This check also applies to **named
+individuals** (enumerations) and **sub-property relationships**.
+
+**Step 1 — Resolve the inheritance chain:**
+
+Programmatically (or by reading the imported ontology files) build the full
+parent chain:
+
+```
+:{YourClass} → ref:Parent → ref:Grandparent → owl:Thing
+```
+
+**Step 2 — List all inherited properties:**
+
+> "Before defining properties for `:{YourClass}`, here are ALL properties
+> already available via inheritance:
+>
+> | # | Property | Defined on | Range | Semantic meaning |
+> |---|----------|-----------|-------|-----------------|
+> | 1 | `ref:partyName` | `ref:TradeParty` | `xsd:string` | Legal or trading name of the party |
+> | 2 | `ref:partyIdentifier` | `ref:TradeParty` | `xsd:string` | Business identifier (e.g., KVK, DUNS) |
+> | 3 | `ref:contactEmail` | `ref:Party` | `xsd:string` | Primary contact email address |
+> | … | … | … | … | … |
+
+**Step 2b — List all named individuals (enumerations) from imports:**
+
+If the reference model defines named individuals (e.g., status values,
+type codes), list them before allowing new enum creation:
+
+> "The reference model already defines these named individuals relevant to
+> `:{YourClass}`:
+>
+> | # | Individual | Class | Semantic meaning |
+> |---|-----------|-------|-----------------|
+> | 1 | `ref:StatusActive` | `ref:PartyStatus` | Party is active and tradeable |
+> | 2 | `ref:StatusInactive` | `ref:PartyStatus` | Party is suspended |
+> | … | … | … | … |
+>
+> Do any of your proposed status/type values duplicate these?"
+
+**Step 3 — Gate new property creation:**
+
+> "You proposed these new properties: `{list}`.
+>
+> **Reuse check:**
+>
+> | Proposed property | Equivalent inherited property? | Recommendation |
+> |---|---|---|
+> | `customerName` | ✅ `ref:partyName` already covers this | **REUSE** — do not create |
+> | `customerTier` | ❌ No equivalent exists | **CREATE** — genuinely new |
+> | `contactPhone` | ✅ `ref:contactPhone` already exists | **REUSE** — do not create |
+>
+> I recommend reusing the inherited properties where marked. Do you agree,
+> or do you need a separate property with different semantics?"
+
+**Step 3b — Check for sub-property relationships:**
+
+When a new property is genuinely needed but *narrows* an existing inherited
+property, use `rdfs:subPropertyOf` instead of creating an unrelated property:
+
+> "Your proposed property `customerLegalName` is a specialization of the
+> inherited `ref:partyName`. Should I model it as:
+>
+> | Option | Pattern | Implication |
+> |---|---|---|
+> | A: Sub-property | `customerLegalName rdfs:subPropertyOf ref:partyName` | Inherits domain/range semantics; reasoners link them |
+> | B: Independent | `customerLegalName` (standalone) | No link to `partyName`; may cause confusion |
+>
+> **Recommendation:** Use sub-property (Option A) when the new property
+> represents a *narrower meaning* of the parent property."
+
+**Rules:**
+- If an inherited property covers the same semantic meaning, default to REUSE.
+- Only create a new property if the user explicitly confirms it has **different
+  semantics** from all inherited properties (e.g., different cardinality,
+  different business context, or more specific meaning).
+- If a new property *narrows* an inherited one, use `rdfs:subPropertyOf`.
+- If named individuals already exist for a concept, reuse them rather than
+  creating domain-specific duplicates.
+- Document the reuse decision in the session file under "Design Decisions."
 
 ### Checkpoint 4: Domain Boundary Verification
 
@@ -872,6 +1041,8 @@ report. Save to `ontology-hub/.modeling-sessions/{domain}-config-FINAL-{timestam
 | Naming mismatch (CargoLine vs GoodsItem vs CargoItem) | Checkpoint 1 forces explicit naming discussion |
 | Unnecessary subclassing | Checkpoint 2 requires justification |
 | Flat vs structured confusion | Checkpoint 3 shows trade-offs explicitly |
+| Redundant property (e.g., `customerName` when `partyName` is inherited) | Checkpoint 3b forces property reuse check before defining new properties |
+| Same concept imported from two reference models | Step 2b overlap resolution picks one canonical source |
 | Modeling concepts outside domain boundary | Checkpoint 4 verifies ownership |
 | Silver layer surprises | Checkpoint 5 previews projection impact |
 | Lost context between sessions | Session files persist all decisions |
