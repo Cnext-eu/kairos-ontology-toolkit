@@ -655,6 +655,29 @@ ref:TradeParty
     kairos-ext:scdType "2" .
 ```
 
+### Property inheritance from unprojected parents
+
+When a projected class has a parent that is **not** in the projected set (i.e.,
+not claimed via `silverInclude` or `silverIncludeImports`), the projector
+automatically inherits datatype properties and FK object properties from the full
+`rdfs:subClassOf` chain.
+
+**How it works:**
+- The projector walks `rdfs:subClassOf` from the projected class upward.
+- Ancestor classes that are NOT separately projected contribute their properties
+  to the child table.
+- Ancestors that ARE projected are skipped (S3 flattening handles those via the
+  parent table).
+- Cycle protection prevents infinite loops.
+
+**Warning:** The projector emits a DD-021 warning when unclaimed parents are
+detected. This is informational — inherited properties will still appear. Review
+the warning to confirm you don't need the parent as a separate table.
+
+**Example:** If `Truck rdfs:subClassOf Vehicle` and only `Truck` is projected,
+`Vehicle`'s properties (`registrationNumber`, etc.) appear on the `truck` table
+automatically.
+
 ---
 
 ## Part B — dbt Silver Model Generation

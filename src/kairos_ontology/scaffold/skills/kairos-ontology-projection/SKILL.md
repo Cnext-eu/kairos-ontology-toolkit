@@ -223,3 +223,10 @@ You can also check `summary.warnings` or inspect `projections` entries with
 - Use `dbt` projection when you want to see the full property extraction including SHACL tests.
 - Run all targets at once to catch issues specific to certain mappings.
 - For `silver`: run the **kairos-medallion-silver** skill first to set up `kairos-ext:` annotations in `model/extensions/` before projecting.
+
+## Common warnings
+
+| Warning | Meaning | Action |
+|---------|---------|--------|
+| **DD-021: Unclaimed parent** | A projected class has a parent NOT in the projection set. Properties are auto-inherited from unprojected parents. | Review whether the parent should be a separate table (`silverInclude`) or if inheritance is sufficient. |
+| **PII detected** | A property name matches PII keywords but the class lacks `kairos-ext:gdprClassification`. | Add GDPR annotations or confirm the property is not sensitive. |

@@ -80,6 +80,38 @@ def _local_name(uri: str) -> str:
     return local_name(uri)
 
 
+def _get_class_and_ancestors(
+    graph: Graph, cls_uri: URIRef, class_uris: set[str],
+) -> set[URIRef]:
+    """Resolve the full rdfs:subClassOf chain for *cls_uri*.
+
+    Returns a set of URIRefs including *cls_uri* itself plus all ancestor classes
+    that are NOT already in *class_uris* (separately projected — S3 handles those).
+    Stops at owl:Thing and W3C namespace URIs.  Includes cycle protection.
+    """
+    result: set[URIRef] = {cls_uri}
+    visited: set[str] = {str(cls_uri)}
+    queue = [cls_uri]
+    while queue:
+        current = queue.pop()
+        for parent in graph.objects(current, RDFS.subClassOf):
+            if not isinstance(parent, URIRef):
+                continue
+            parent_str = str(parent)
+            if parent_str in visited:
+                continue
+            visited.add(parent_str)
+            # Stop at W3C vocabulary URIs (owl:Thing, rdfs:Resource, etc.)
+            if parent_str.startswith("http://www.w3.org/"):
+                continue
+            # Skip ancestors that are separately projected (S3 handles them)
+            if parent_str in class_uris:
+                continue
+            result.add(parent)
+            queue.append(parent)
+    return result
+
+
 # PII keywords for projection-time GDPR warning (mirrors validator.PII_KEYWORDS)
 _PII_KEYWORDS: list[str] = [
     "first_name", "last_name", "date_of_birth", "national_id", "iban",
@@ -398,7 +430,8 @@ def generate_silver_artifacts(
 
         # 3. FK columns from max-cardinality-1 object properties (R12)
         _add_object_property_fk_cols(merged, cls_uri, tbl, table_name_for, schema_name,
-                                     class_uris, naming_conv)
+                                     class_uris, naming_conv,
+                                     inherit_ancestors=True)
 
         # 4. Discriminator column (R6 + S3 — auto-add if class has subtypes)
         disc_col = _str_val(merged, cls_uri, KAIROS_EXT.discriminatorColumn)
@@ -410,7 +443,8 @@ def generate_silver_artifacts(
                                          comment="Type discriminator"))
 
         # 5. Data properties (business columns)
-        _add_data_properties(merged, cls_uri, tbl, shacl_graph, naming_conv)
+        _add_data_properties(merged, cls_uri, tbl, shacl_graph, naming_conv,
+                             class_uris=class_uris)
 
         # 6. SCD Type 2 columns (R5)
         if scd == "2":
@@ -793,17 +827,26 @@ def _not_null_from_shacl(shacl_graph: Optional[Graph], prop_uri: URIRef,
 
 def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
                           shacl_graph: Optional[Graph], naming_conv: str,
-                          comment_prefix: str = "") -> None:
+                          comment_prefix: str = "",
+                          class_uris: set[str] | None = None) -> None:
     """Add OWL DatatypeProperty columns to the table (business columns, R4, R11).
 
     Args:
         comment_prefix: If set (S3 flattening), prepended to column comment and
             forces nullable=True (subtype columns are always nullable on parent).
+        class_uris: If provided, enables inheritance traversal — properties from
+            unprojected ancestor classes are included.
     """
+    # Determine which domains to match (inheritance traversal)
+    if class_uris is not None:
+        domains_to_match = _get_class_and_ancestors(graph, cls_uri, class_uris)
+    else:
+        domains_to_match = {cls_uri}
+
     existing_col_names = {c.name for c in tbl.columns}
     for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
         domain = graph.value(prop, RDFS.domain)
-        if domain != cls_uri:
+        if domain not in domains_to_match:
             continue
         range_uri = graph.value(prop, RDFS.range)
         sql_type = XSD_TO_SQL.get(str(range_uri), "STRING") if range_uri else "STRING"
@@ -845,6 +888,7 @@ def _add_object_property_fk_cols(
     graph: Graph, cls_uri: URIRef, tbl: TableDef,
     table_name_for, schema_name: str, class_uris: set[str], naming_conv: str,
     comment_prefix: str = "",
+    inherit_ancestors: bool = False,
 ) -> None:
     """Add FK columns from max-cardinality-1 object properties (R12).
 
@@ -866,13 +910,21 @@ def _add_object_property_fk_cols(
     Args:
         comment_prefix: If set (S3 flattening), appended to FK comment and
             forces nullable=True (subtype FK columns are always nullable on parent).
+        inherit_ancestors: If True, include object properties from unprojected
+            ancestor classes (inheritance traversal).
     """
+    # Determine which domains to match (inheritance traversal)
+    if inherit_ancestors:
+        domains_to_match = _get_class_and_ancestors(graph, cls_uri, class_uris)
+    else:
+        domains_to_match = {cls_uri}
+
     # Track existing column names to avoid duplicates (PK, IRI, discriminator, etc.)
     existing_cols = {col.name for col in tbl.columns}
 
     for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
         domain = graph.value(prop, RDFS.domain)
-        if domain != cls_uri:
+        if domain not in domains_to_match:
             continue
         # Skip if this property has a junctionTableName (R13)
         if graph.value(prop, KAIROS_EXT.junctionTableName):
