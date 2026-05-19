@@ -662,6 +662,55 @@ not claimed via `silverInclude` or `silverIncludeImports`), the projector
 automatically inherits datatype properties and FK object properties from the full
 `rdfs:subClassOf` chain.
 
+### Reference model extension defaults (DD-023)
+
+Reference model repositories can ship **default extension files** alongside their
+ontologies. These provide sensible silver annotations (scdType, naturalKey,
+silverInclude, etc.) that downstream hubs inherit automatically.
+
+**Naming convention:**
+```
+{ontology-stem}-silver-defaults.ttl   # e.g., bsp-party-silver-defaults.ttl
+{ontology-stem}-gold-defaults.ttl
+```
+
+**Discovery:** When the catalog resolves an `owl:imports` URI, the toolkit looks
+for a sibling `*-silver-defaults.ttl` alongside the resolved file.
+
+**Merge priority (highest → lowest):**
+1. Hub domain extension (`{domain}-silver-ext.ttl`) — always wins
+2. Reference model defaults — fallback layer
+3. Built-in projector conventions (rdfs:range inference)
+
+**Override semantics:** If the hub's domain extension declares the same
+subject+predicate as the defaults file, the defaults value is skipped.
+
+**Example reference model defaults** (`bsp-party-silver-defaults.ttl`):
+```turtle
+@prefix kairos-ext: <https://kairos.community/ns/ext#> .
+@prefix bsp: <https://bsp.2024.org/party#> .
+
+# Pre-declare which classes are suitable for silver materialization
+bsp:TradeParty kairos-ext:silverInclude "true"^^xsd:boolean ;
+    kairos-ext:scdType "1" ;
+    kairos-ext:naturalKey "partyCode" .
+
+bsp:Buyer kairos-ext:silverInclude "true"^^xsd:boolean ;
+    kairos-ext:scdType "1" .
+```
+
+**Hub override** (`customer-silver-ext.ttl`):
+```turtle
+# Override just scdType — naturalKey and silverInclude come from defaults
+bsp:TradeParty kairos-ext:scdType "2" .
+```
+
+**Benefits:**
+- Eliminates per-hub duplication of extension annotations
+- `silverInclude` in defaults means hubs don't need to repeat claims
+- Reference model repos are standard ontology-hubs with the toolkit installed
+- Fully backward-compatible — hubs without defaults work unchanged
+
 **How it works:**
 - The projector walks `rdfs:subClassOf` from the projected class upward.
 - Ancestor classes that are NOT separately projected contribute their properties

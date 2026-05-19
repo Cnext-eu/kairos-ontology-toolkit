@@ -602,6 +602,7 @@ def build_gold_tables(
     shapes_dir: Optional[Path] = None,
     ontology_name: str = "domain",
     projection_ext_path: Optional[Path] = None,
+    ref_model_defaults: Optional[list] = None,
 ) -> list[GoldTableDef]:
     """Build gold table definitions without rendering output files.
 
@@ -616,12 +617,13 @@ def build_gold_tables(
         shapes_dir: Optional SHACL shapes directory.
         ontology_name: Domain name (used for default schema).
         projection_ext_path: Optional path to ``*-gold-ext.ttl`` annotation file.
+        ref_model_defaults: Optional list of fallback extension paths (DD-023).
 
     Returns:
         Ordered list of ``GoldTableDef`` (date dim → dimensions → facts → bridges).
     """
     # Merge projection extension into working graph
-    merged = merge_ext_graph(graph, projection_ext_path)
+    merged = merge_ext_graph(graph, projection_ext_path, fallback_paths=ref_model_defaults)
 
     # Merge SHACL shapes
     shacl_graph: Optional[Graph] = None
@@ -737,6 +739,7 @@ def generate_gold_artifacts(
     ontology_name: str = "domain",
     projection_ext_path: Optional[Path] = None,
     ontology_metadata: Optional[dict] = None,
+    ref_model_defaults: Optional[list] = None,
 ) -> dict[str, str]:
     """Generate gold layer star-schema DDL, TMDL, DAX measures, and Mermaid ERD.
 
@@ -748,6 +751,7 @@ def generate_gold_artifacts(
         ontology_name: Domain name (used for filenames and default schema).
         projection_ext_path: Optional path to ``*-gold-ext.ttl`` annotation file.
         ontology_metadata: Provenance metadata from ``extract_ontology_metadata()``.
+        ref_model_defaults: Optional list of fallback extension paths (DD-023).
 
     Returns:
         ``{filename: content}`` mapping for all gold artifacts.
@@ -755,16 +759,13 @@ def generate_gold_artifacts(
     # Delegate table building to the shared helper
     all_tables = build_gold_tables(
         classes, graph, namespace, shapes_dir, ontology_name, projection_ext_path,
+        ref_model_defaults=ref_model_defaults,
     )
     if not all_tables:
         return {}
 
     # Re-read ontology-level annotations from merged graph.
-    # NOTE: build_gold_tables already merges graph+extension; we read from the
-    # extension file only once more for the 2 annotations below that are NOT
-    # exposed on GoldTableDef.  A future refactor could return them from
-    # build_gold_tables directly.
-    merged = merge_ext_graph(graph, projection_ext_path)
+    merged = merge_ext_graph(graph, projection_ext_path, fallback_paths=ref_model_defaults)
     onto_uri = _detect_ontology_uri(merged, namespace)
     schema_name = _str_val(merged, onto_uri, KAIROS_EXT.goldSchema,
                            f"gold_{ontology_name}")

@@ -4,7 +4,11 @@
 
 import pytest
 from pathlib import Path
-from kairos_ontology.catalog_utils import CatalogResolver, _get_rdf_format
+from kairos_ontology.catalog_utils import (
+    CatalogResolver,
+    _get_rdf_format,
+    resolve_import_paths,
+)
 
 
 class TestGetRdfFormat:
@@ -121,3 +125,82 @@ class TestCatalogResolver:
         )
         resolver = CatalogResolver(catalog)
         assert resolver.resolve("urn:example:ok") is not None
+
+
+class TestResolveImportPaths:
+    """Tests for resolve_import_paths (DD-023 support)."""
+
+    @pytest.fixture
+    def temp_dir(self, tmp_path):
+        return tmp_path
+
+    def test_resolves_imports_via_catalog(self, temp_dir):
+        """resolve_import_paths returns mapping of import URI → local path."""
+        # Create a reference model file
+        ref_file = temp_dir / "bsp-party.ttl"
+        ref_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://bsp.2024.org/party> a owl:Ontology .\n",
+            encoding="utf-8",
+        )
+
+        # Create domain ontology that imports it
+        onto_file = temp_dir / "booking.ttl"
+        onto_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/ont/booking> a owl:Ontology ;\n"
+            "    owl:imports <https://bsp.2024.org/party> .\n",
+            encoding="utf-8",
+        )
+
+        # Create catalog mapping
+        catalog = temp_dir / "catalog-v001.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            f'  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        result = resolve_import_paths(onto_file, catalog)
+        assert "https://bsp.2024.org/party" in result
+        assert result["https://bsp.2024.org/party"] == ref_file.resolve()
+
+    def test_skips_file_uris(self, temp_dir):
+        """file:// URIs are skipped."""
+        onto_file = temp_dir / "domain.ttl"
+        onto_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/ont/d> a owl:Ontology ;\n"
+            "    owl:imports <file:///local/path.ttl> .\n",
+            encoding="utf-8",
+        )
+        catalog = temp_dir / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        result = resolve_import_paths(onto_file, catalog)
+        assert len(result) == 0
+
+    def test_skips_unmapped_imports(self, temp_dir):
+        """Imports without catalog mapping are excluded."""
+        onto_file = temp_dir / "domain.ttl"
+        onto_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/ont/d> a owl:Ontology ;\n"
+            "    owl:imports <https://unknown.org/ont> .\n",
+            encoding="utf-8",
+        )
+        catalog = temp_dir / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        result = resolve_import_paths(onto_file, catalog)
+        assert len(result) == 0

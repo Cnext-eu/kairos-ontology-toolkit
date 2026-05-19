@@ -180,6 +180,43 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> Graph:
     return graph
 
 
+def resolve_import_paths(
+    ontology_path: Path, catalog_path: Path
+) -> Dict[str, Path]:
+    """Resolve owl:imports URIs to local file paths without loading triples.
+
+    This is useful for discovering sibling files (e.g., extension defaults)
+    alongside resolved imports without the cost of parsing them into a graph.
+
+    Args:
+        ontology_path: Path to main ontology file
+        catalog_path: Path to catalog-v001.xml
+
+    Returns:
+        Dict mapping import URI string → resolved local Path (only for
+        imports that have a catalog mapping and whose file exists).
+    """
+    from rdflib import OWL
+
+    resolver = CatalogResolver(catalog_path)
+
+    graph = Graph()
+    graph.parse(ontology_path, format=_get_rdf_format(ontology_path))
+
+    imports = list(graph.objects(predicate=OWL.imports))
+    resolved: Dict[str, Path] = {}
+
+    for import_uri in imports:
+        import_str = str(import_uri)
+        if import_str.startswith("file://"):
+            continue
+        local_path = resolver.resolve(import_str)
+        if local_path and local_path.exists():
+            resolved[import_str] = local_path
+
+    return resolved
+
+
 def validate_catalog(catalog_path: Path) -> Dict[str, bool]:
     """
     Validate that all catalog mappings point to existing files.
