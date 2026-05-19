@@ -742,6 +742,10 @@ After every 3-5 classes are confirmed, pause and show:
 > **Silver projection preview:**
 > These will become tables: `silver_{domain}.{table1}`, `silver_{domain}.{table2}`
 >
+> **Inheritance note:** If a parent class is NOT projected separately, its
+> properties are automatically inherited by child tables. If the parent IS
+> projected, S3 flattening merges the child into the parent table.
+>
 > Does this structure make sense from a data warehouse perspective?"
 
 ---
