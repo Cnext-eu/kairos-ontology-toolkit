@@ -18,6 +18,14 @@ dbt silver model generation.
 - Source system reference docs should be placed in `ontology-hub/integration/sources/{system-name}/`
 - The `kairos-bronze:` vocabulary is defined in the toolkit (`kairos-bronze.ttl`)
 
+> 💡 **Source-informed modeling:** Source system documentation placed here can also
+> be used as input **during ontology modeling** (not just for bronze vocabulary
+> generation). The **kairos-ontology-modeling** skill has a "Source System Analysis"
+> workflow that reads DDL/API specs to confirm cardinalities, identify property
+> candidates, and cross-validate against reference models. Similarly, existing
+> Power BI TMDL files placed in `integration/sources/powerbi/` are used as
+> advisory input during modeling. See the modeling skill for the full workflow.
+
 ## Architecture
 
 ```
