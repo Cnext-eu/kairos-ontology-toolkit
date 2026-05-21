@@ -289,6 +289,11 @@ integration/
       samples/
 ```
 
+> **💡 Tip:** Use `kairos-ontology import-tmdl <path-to-pbip-or-folder>` to
+> automatically extract and inventory TMDL content. It generates an Engineering
+> Pack (markdown) and a Concept Mapping template (YAML) that this skill can
+> use directly during modeling.
+
 **Present the input matrix:**
 
 > "Here are the available inputs for this modeling session:

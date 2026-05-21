@@ -567,6 +567,37 @@ def init(domain, company_domain, force):
 # update — refresh toolkit-managed files to the installed version
 # ---------------------------------------------------------------------------
 
+@cli.command(name='import-tmdl')
+@click.argument('source', type=click.Path(exists=True))
+@click.option('--output', '-o', type=click.Path(), default='integration/sources/powerbi',
+              help='Output directory (default: integration/sources/powerbi/)')
+def import_tmdl(source, output):
+    """Import and inventory TMDL/PBIP files for ontology modeling.
+
+    SOURCE is a path to a PBIP ZIP archive, a SemanticModel folder, or a
+    standalone .tmdl file. The command parses TMDL content and generates:
+
+    \b
+    - An Engineering Pack (markdown) with table/column/measure inventory
+    - A Concept Mapping template (YAML) for reference model alignment
+    """
+    from ..import_tmdl import run_import_tmdl
+
+    source_path = Path(source)
+    output_path = Path(output)
+
+    click.echo(f"📦 Importing TMDL from: {source_path}")
+    generated = run_import_tmdl(source_path, output_path)
+
+    if generated:
+        click.echo(f"\n✅ Generated {len(generated)} file(s):")
+        for f in generated:
+            click.echo(f"   {f}")
+    else:
+        click.echo("\n⚠️  No TMDL content found. Check input path.", err=True)
+        raise SystemExit(1)
+
+
 @cli.command()
 @click.option("--check", is_flag=True,
               help="Report outdated files without modifying anything (exit 1 on drift).")

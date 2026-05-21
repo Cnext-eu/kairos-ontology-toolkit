@@ -149,6 +149,15 @@ Save progress to `ontology-hub/.modeling-sessions/{domain}-config-{timestamp}.md
 | # | Question | Decision | Rationale |
 |---|----------|----------|-----------|
 | 1 | {question} | {choice made} | {why} |
+
+## Source Alignment Warnings
+
+| # | Issue | TMDL/Source says | Ref model says | Decision | Status |
+|---|-------|-----------------|----------------|----------|--------|
+| 1 | {description} | {what TMDL or source shows} | {what ref model defines} | {follow ref model / create local class / discuss} | ⚠️ Discuss / ✅ Resolved |
+
+_This section captures disagreements between legacy BI (TMDL), source system data,_
+_and the reference model. Reference model has priority unless explicitly overridden._
 ```
 
 ### Saving and pausing
@@ -243,6 +252,75 @@ At the **very start** of any modeling session, ask:
 
 - If the user says **no reference model** is needed, skip to the standard
   modeling workflow (class design, property design, etc.).
+
+### Step 0b — Inventory available inputs (Source Systems & TMDL)
+
+Before selecting reference models or designing classes, inventory all available
+input signals that can inform the modeling process.
+
+**Check for source system documentation:**
+
+```bash
+ls ontology-hub/integration/sources/
+```
+
+**Check for existing TMDL (Power BI semantic model) files:**
+
+```bash
+ls ontology-hub/integration/sources/powerbi/
+# or ask: "Do you have existing Power BI TMDL files to use as input?"
+```
+
+**TMDL file placement convention:**
+
+```
+integration/
+  sources/
+    powerbi/                              ← TMDL input (one or more semantic models)
+      {model-name}.SemanticModel/
+        definition/
+          model.tmdl                      ← Main model definition
+          tables/*.tmdl                   ← Table/measure definitions
+          relationships/*.tmdl            ← Relationship definitions
+      README.md                           ← Brief description, known issues
+    {source-system}/                      ← Source system docs (DDL, API specs)
+      sql-ddl/
+      api-specs/
+      samples/
+```
+
+> **💡 Tip:** Use `kairos-ontology import-tmdl <path-to-pbip-or-folder>` to
+> automatically extract and inventory TMDL content. It generates an Engineering
+> Pack (markdown) and a Concept Mapping template (YAML) that this skill can
+> use directly during modeling.
+
+**Present the input matrix:**
+
+> "Here are the available inputs for this modeling session:
+>
+> | Input | Location | Trust Level | What it provides |
+> |-------|----------|-------------|-----------------|
+> | Reference model | `ontology-reference-models/` | 🟢 Highest — structural authority | Class hierarchies, standard properties |
+> | Source system DDL | `integration/sources/{system}/` | 🟡 High — reality check | Actual cardinalities, data types, columns |
+> | TMDL (Power BI) | `integration/sources/powerbi/` | 🟠 Medium — legacy/advisory | Business measures, BI naming, hierarchies |
+> | Business knowledge | (from user) | 🟢 High — domain authority | Naming, scope, intent |
+>
+> **Trust hierarchy:** Reference model structure > Source system reality > TMDL patterns
+>
+> TMDL files are treated as **legacy input** — they may contain inconsistencies,
+> denormalized structures, or patterns that don't follow best practices.
+> We use them to inform decisions but never override the reference model."
+
+**Rules for using inputs during modeling:**
+
+| Situation | Action |
+|-----------|--------|
+| TMDL table matches a reference model class | ✅ Confirms the class is needed; use ref model structure |
+| TMDL table has no reference model equivalent | ⚠️ Flag as potential gap — candidate for local class |
+| TMDL relationship contradicts reference model | ⚠️ Log as warning; follow reference model; discuss with user |
+| Source DDL has M:N where ref model says 1:N | ⚠️ Flag cardinality mismatch; may need junction table |
+| TMDL measure references a concept | 🔵 Informs gold-layer design later; note for gold-ext |
+| TMDL dimension exists but ref model has no class | ⚠️ Candidate for subclass or new local class |
 
 ### Step 1 — Select the accelerator pack
 
@@ -458,6 +536,152 @@ After the reference baseline is imported and validated:
 
 ---
 
+## TMDL Analysis (Legacy BI Input)
+
+When existing TMDL files are available in `integration/sources/powerbi/`, analyze
+them **before** domain modeling to extract business-validated concepts. TMDL is
+treated as **legacy advisory input** — it informs decisions but the reference model
+has structural priority.
+
+### Step 1 — Read TMDL structure
+
+Read the TMDL files and extract:
+
+| TMDL artifact | What to extract | Modeling relevance |
+|---|---|---|
+| **Tables** (fact + dimension) | Table names, columns, data types | Class candidates and properties |
+| **Relationships** | FK directions, cardinality | Object property candidates |
+| **Measures (DAX)** | Measure name, expression, format | Gold-layer annotations (note for later) |
+| **Hierarchies** | Drill paths (e.g., Year → Quarter → Month) | SubClassOf or part-of patterns |
+| **Display folders** | Logical groupings | Domain boundary hints |
+| **Column descriptions** | Business definitions | `rdfs:comment` candidates |
+
+### Step 2 — Produce concept mapping table
+
+Map each TMDL entity to its reference model equivalent:
+
+> "Based on the TMDL files, here is the concept mapping:
+>
+> | # | TMDL Entity | Type | Reference Model Match | Action |
+> |---|---|---|---|---|
+> | 1 | `dim_Customer` | Dimension | `ref:TradeParty` | ✅ Use ref model; subclass if needed |
+> | 2 | `dim_FreightCustomer` | Dimension | `ref:TradeParty` | 🔶 Specialize — create subclass |
+> | 3 | `fact_Shipment` | Fact | `ref:Consignment` | ✅ Use ref model |
+> | 4 | `dim_Route` | Dimension | _(no match)_ | 🆕 New local class needed |
+> | 5 | `fact_Revenue` | Fact | _(no match)_ | 🆕 New local class needed |
+> | 6 | `dim_Date` | Dimension | _(utility)_ | ⏭️ Skip — handled by gold layer |
+>
+> **Actions:**
+> - ✅ = reference model covers this; use as-is
+> - 🔶 = reference model has a parent class; create a subclass specialization
+> - 🆕 = no reference model equivalent; create a new local class
+> - ⏭️ = BI utility (date dim, bridge table); not an ontology class"
+
+### Step 3 — Flag inconsistencies
+
+When TMDL patterns disagree with the reference model, **always flag as a warning**
+and **always follow the reference model**:
+
+> "⚠️ **TMDL inconsistencies detected** (reference model takes priority):
+>
+> | # | Issue | TMDL pattern | Reference model pattern | Impact |
+> |---|---|---|---|---|
+> | 1 | Shipper cardinality | `dim_Shipper` joined M:N to `fact_Shipment` | `ref:hasShipper` is functional (1:N) | Follow ref model; review source data |
+> | 2 | Flattened address | `dim_Customer.City`, `.Country` as columns | `ref:hasAddress → ref:Address` | Follow ref model (structured); flag for BI simplification later |
+> | 3 | Missing relationship | No FK between `dim_Carrier` and `fact_Booking` | `ref:Booking hasCarrier ref:Carrier` | Ref model is correct; TMDL likely has a gap |
+>
+> These are logged in the session file as items to discuss with stakeholders."
+
+**Rules for TMDL inconsistency handling:**
+
+- ❌ Never restructure the ontology to match TMDL denormalization patterns
+- ✅ Log every inconsistency in the session file "Source Alignment Warnings" section
+- ✅ If the TMDL reveals a genuine **missing concept** in the ref model, that IS
+  a valid input — create a local class
+- ✅ TMDL measure expressions can be carried forward as `kairos-ext:measureExpression`
+  in gold-ext.ttl — note them for later, don't let them drive ontology structure
+
+### Step 4 — Tag classes for specialization
+
+Based on the TMDL analysis, tag reference model classes that need subclassing:
+
+> "The TMDL analysis suggests these **specializations** of reference model classes:
+>
+> | Reference class | TMDL evidence | Proposed subclass | Justification |
+> |---|---|---|---|
+> | `ref:TradeParty` | Has separate `dim_FreightCustomer`, `dim_ContractCustomer` | `:FreightCustomer`, `:ContractCustomer` | Different BI grain, different natural key |
+> | `ref:Location` | Has `dim_Port`, `dim_Warehouse` | `:Port`, `:Warehouse` | Different properties, different lifecycle |
+>
+> Do you agree these warrant subclasses, or should some use the parent class directly?"
+
+This feeds directly into [Checkpoint 2: Subclass Justification](#checkpoint-2-subclass-justification-mandatory-when-extending-reference-model).
+
+---
+
+## Source System Analysis (Reality Check)
+
+When source system documentation is available in `integration/sources/`, analyze
+it to confirm cardinalities, discover real data shapes, and identify attributes
+not covered by the reference model.
+
+### Step 1 — Read source system schemas
+
+For each source system in `integration/sources/{system}/`, read:
+
+| Material | What to extract | Priority |
+|---|---|---|
+| SQL DDL (CREATE TABLE) | Table structure, PKs, FKs, constraints | ⭐ Best — exact schema |
+| API specs (OpenAPI/Swagger) | Endpoint resources, relationships, types | ⭐ Good — typed |
+| Sample data (CSV/JSON) | Actual values, NULLability, patterns | 🔶 Useful — infer patterns |
+
+### Step 2 — Map source entities to reference model
+
+> "Source system `{system}` analysis:
+>
+> | # | Source Entity | Reference Model Match | Cardinality Match? | Extra Columns |
+> |---|---|---|---|---|
+> | 1 | `tbl_Customers` | `ref:TradeParty` | ✅ 1:1 | `credit_limit`, `payment_terms` |
+> | 2 | `tbl_Shipments` | `ref:Consignment` | ✅ 1:1 | `internal_ref`, `priority_code` |
+> | 3 | `tbl_ShipmentItems` | `ref:ConsignmentItem` | ⚠️ Source has M:N via junction | `damage_code` |
+> | 4 | `tbl_Routes` | _(no match)_ | — | Full table is a gap |
+>
+> **Cardinality mismatches** require discussion — they may indicate:
+> - The ref model is too restrictive (raise as feedback to ref model maintainers)
+> - The source has denormalized data (common — model the semantic truth, not the source shape)
+> - A junction table is needed (`kairos-ext:junctionTableName`)"
+
+### Step 3 — Identify candidate properties
+
+Extra columns in source systems that have no reference model equivalent are
+candidates for new properties:
+
+> "These source columns are not represented in the reference model:
+>
+> | # | Source column | Source table | Candidate property | Candidate domain |
+> |---|---|---|---|---|
+> | 1 | `credit_limit` | `tbl_Customers` | `:creditLimit` | `:Customer` (subclass of ref:TradeParty) |
+> | 2 | `priority_code` | `tbl_Shipments` | `:priorityCode` | ref:Consignment or local subclass |
+> | 3 | `damage_code` | `tbl_ShipmentItems` | `:damageCode` | ref:ConsignmentItem or local subclass |
+>
+> Should I add these as properties on the reference model class directly (if you
+> control it) or on a local subclass?"
+
+### Step 4 — Cross-validate with TMDL
+
+If both TMDL and source system data are available, cross-validate:
+
+> "Cross-validation: source system vs TMDL:
+>
+> | Concept | Source system | TMDL | Aligned? |
+> |---|---|---|---|
+> | Customer types | Single `tbl_Customers` table | Split into `dim_FreightCustomer`, `dim_ContractCustomer` | ⚠️ TMDL has more specialization |
+> | Routes | `tbl_Routes` exists | `dim_Route` exists | ✅ Both agree — new class needed |
+> | Carrier-Booking | FK exists in source | No relationship in TMDL | ⚠️ TMDL has gap |
+>
+> Where source and TMDL agree on a gap, this strongly confirms a new class is needed."
+
+---
+
 ## Standard model alignment
 
 When a user wants to model a domain based on — or aligned with — an industry
@@ -585,6 +809,19 @@ For every new class, **explicitly ask**:
 | **Clear in BI/reports?** | Would a business user understand `dim_{snake_case_name}`? |
 | **Consistent across domains?** | Same pattern as other domain classes |
 
+**Multi-source naming context** (when source/TMDL inputs are available):
+
+> | Source | Name for this concept | Notes |
+> |--------|----------------------|-------|
+> | Reference model | `ref:{ClassName}` | Canonical structural name |
+> | TMDL | `dim_{tmdl_name}` / `fact_{tmdl_name}` | Legacy BI name — may differ |
+> | Source system | `tbl_{source_name}` | Technical source name |
+> | Business term | _{what stakeholders say}_ | From user |
+> | **Proposed** | `:{ProposedName}` | Aligned with reference model |
+>
+> If TMDL/source names differ significantly from the reference model, note this
+> in the session file — it may indicate a naming gap or a specialization need.
+
 ### Checkpoint 2: Subclass Justification (MANDATORY when extending reference model)
 
 Before creating any `rdfs:subClassOf` relationship, validate:
@@ -608,6 +845,22 @@ If the user cannot justify the subclass, suggest:
 :myNewProperty rdfs:domain ref:ParentClass ;
     rdfs:range xsd:string .
 ```
+
+**TMDL/Source evidence for subclassing** (when available):
+
+When TMDL or source system data suggests specialization, present the evidence:
+
+> "**Evidence from available inputs:**
+>
+> | Input | What it shows | Supports subclass? |
+> |-------|--------------|-------------------|
+> | TMDL | Separate `dim_FreightCustomer` table with extra columns | ✅ Yes — distinct grain |
+> | Source | Single `tbl_Customers` with `customer_type` discriminator column | ✅ Yes — discriminator exists |
+> | Reference model | `ref:TradeParty` as general parent | ✅ Yes — designed for specialization |
+>
+> ⚠️ **Caution:** TMDL having separate tables does NOT automatically justify a
+> subclass. The TMDL may be denormalized for performance. Always validate
+> against the 'create subclass' criteria above."
 
 ### Checkpoint 3: Property Design — Flat vs. Structured
 
@@ -749,6 +1002,24 @@ After every 3-5 classes are confirmed, pause and show:
 > projected, S3 flattening merges the child into the parent table.
 >
 > Does this structure make sense from a data warehouse perspective?"
+
+**Source/TMDL cross-check** (when available):
+
+After showing the inheritance summary, cross-reference with source/TMDL inputs:
+
+> "**Cross-check against available inputs:**
+>
+> | Your class | Source system | TMDL | Alignment |
+> |---|---|---|---|
+> | `:FreightCustomer` | `tbl_Customers` (filtered by type) | `dim_FreightCustomer` | ✅ All agree |
+> | `:Route` | `tbl_Routes` | `dim_Route` | ✅ All agree (new local class) |
+> | `:Booking` | `tbl_Bookings` | — (not in TMDL) | ⚠️ TMDL gap — class is still valid per ref model |
+>
+> **Cardinality notes from source:**
+> - `tbl_Bookings` → `tbl_Customers`: FK exists (1:N confirmed)
+> - `tbl_Shipments` → `tbl_Routes`: FK exists but nullable (optional relationship)
+>
+> Any cardinality surprises to discuss?"
 
 ---
 

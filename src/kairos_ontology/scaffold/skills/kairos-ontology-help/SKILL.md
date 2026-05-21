@@ -180,6 +180,9 @@ kairos-ontology migrate
 
 # Run catalog tests
 kairos-ontology catalog-test
+
+# Import TMDL/PBIP files for ontology modeling input
+kairos-ontology import-tmdl <source> [--output PATH]
 ```
 
 Default paths:

@@ -147,6 +147,7 @@ Use this table to pick the correct skill for a user's intent:
 | "Create source/bronze vocabulary" | **kairos-ontology-medallion-source** |
 | "Design silver schema / FK annotations" | **kairos-ontology-medallion-silver** |
 | "Design gold / Power BI model" | **kairos-ontology-medallion-gold** |
+| "Import / extract TMDL or PBIP files" | CLI: `kairos-ontology import-tmdl` |
 | "Release / upgrade / version check" | **kairos-ontology-toolkit-ops** |
 
 ## Validation rules
