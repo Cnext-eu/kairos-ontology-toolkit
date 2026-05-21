@@ -191,9 +191,50 @@ def _warn_unclaimed_parents(
     return warnings
 
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
+def _warn_incomplete_fk_annotations(graph: Graph) -> list[str]:
+    """Warn when silverForeignKey is set but rdfs:domain or rdfs:range is missing.
+
+    Without ``rdfs:domain`` the projector cannot determine which table receives
+    the FK column. Without ``rdfs:range`` it cannot resolve the target table.
+    Properties in this state are silently skipped during projection — this
+    warning surfaces the issue early.
+
+    Returns a list of warning messages (also logged).
+    """
+    warnings: list[str] = []
+    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+        # Check silverForeignKey "true" (not silverForeignKeyOn — that has its own check)
+        has_fk = _bool_val(graph, prop, KAIROS_EXT.silverForeignKey, False)
+        if not has_fk:
+            continue
+        # Skip properties that use silverForeignKeyOn (validated separately)
+        if graph.value(prop, KAIROS_EXT.silverForeignKeyOn) is not None:
+            continue
+        prop_local = _local_name(str(prop))
+        domain_cls = graph.value(prop, RDFS.domain)
+        range_cls = graph.value(prop, RDFS.range)
+        if domain_cls is None and range_cls is None:
+            msg = (
+                f"silverForeignKey on {prop_local} will be skipped "
+                f"— missing rdfs:domain and rdfs:range."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+        elif domain_cls is None:
+            msg = (
+                f"silverForeignKey on {prop_local} will be skipped "
+                f"— missing rdfs:domain."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+        elif range_cls is None:
+            msg = (
+                f"silverForeignKey on {prop_local} will be skipped "
+                f"— missing rdfs:range."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+    return warnings
 
 class ColumnDef:
     def __init__(self, name: str, sql_type: str, nullable: bool = True,
@@ -348,6 +389,9 @@ def generate_silver_artifacts(
 
     # DD-021: Warn about claimed classes with unclaimed parents
     _warn_unclaimed_parents(merged, domain_classes)
+
+    # Warn about silverForeignKey annotations missing domain/range
+    _warn_incomplete_fk_annotations(merged)
 
     # S3: Track all subtypes to flatten into parent tables
     folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype names]

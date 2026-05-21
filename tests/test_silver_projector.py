@@ -2475,3 +2475,139 @@ def test_import_inherited_property_with_extension_override():
     # Inherited property should use the overridden type
     assert "party_name" in ddl
     assert "NVARCHAR(200)" in ddl
+
+
+# ---------------------------------------------------------------------------
+# silverForeignKey validation warnings (missing domain/range)
+# ---------------------------------------------------------------------------
+
+
+def test_silver_fk_missing_domain_warns(caplog):
+    """silverForeignKey on a property with no rdfs:domain should emit a warning."""
+    import logging
+
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order    a owl:Class ; rdfs:label "Order"@en    ; rdfs:comment "."@en .
+        ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "."@en .
+
+        ex:placedBy a owl:ObjectProperty ;
+            rdfs:range ex:Customer ;
+            rdfs:label "placed by"@en ;
+            kairos-ext:silverForeignKey "true"^^xsd:boolean .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+    ]
+    with caplog.at_level(logging.WARNING):
+        generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    assert any("silverForeignKey on placedBy" in msg and "missing rdfs:domain" in msg
+               for msg in caplog.messages)
+
+
+def test_silver_fk_missing_range_warns(caplog):
+    """silverForeignKey on a property with no rdfs:range should emit a warning."""
+    import logging
+
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order    a owl:Class ; rdfs:label "Order"@en    ; rdfs:comment "."@en .
+        ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "."@en .
+
+        ex:placedBy a owl:ObjectProperty ;
+            rdfs:domain ex:Order ;
+            rdfs:label "placed by"@en ;
+            kairos-ext:silverForeignKey "true"^^xsd:boolean .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+    ]
+    with caplog.at_level(logging.WARNING):
+        generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    assert any("silverForeignKey on placedBy" in msg and "missing rdfs:range" in msg
+               for msg in caplog.messages)
+
+
+def test_silver_fk_missing_both_domain_and_range_warns(caplog):
+    """silverForeignKey with neither domain nor range should emit a warning."""
+    import logging
+
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order    a owl:Class ; rdfs:label "Order"@en    ; rdfs:comment "."@en .
+
+        ex:hasShipper a owl:ObjectProperty ;
+            rdfs:label "has shipper"@en ;
+            kairos-ext:silverForeignKey "true"^^xsd:boolean .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+    ]
+    with caplog.at_level(logging.WARNING):
+        generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    assert any("silverForeignKey on hasShipper" in msg
+               and "missing rdfs:domain and rdfs:range" in msg
+               for msg in caplog.messages)
+
+
+def test_silver_fk_complete_no_warning(caplog):
+    """silverForeignKey with both domain and range should NOT emit a warning."""
+    import logging
+
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Order    a owl:Class ; rdfs:label "Order"@en    ; rdfs:comment "."@en .
+        ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "."@en .
+
+        ex:placedBy a owl:ObjectProperty ;
+            rdfs:domain ex:Order ;
+            rdfs:range ex:Customer ;
+            rdfs:label "placed by"@en ;
+            kairos-ext:silverForeignKey "true"^^xsd:boolean .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+    ]
+    with caplog.at_level(logging.WARNING):
+        generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    assert not any("silverForeignKey on placedBy" in msg and "will be skipped" in msg
+                   for msg in caplog.messages)
