@@ -1,9 +1,11 @@
 ---
 name: kairos-ontology-modeling
 description: >
-  Expert ontology modeling skill with interactive business alignment checkpoints,
-  session persistence, reference-model workflow, TTL patterns, and extension
-  annotations. Covers the full lifecycle from design through validation.
+  Expert skill for designing and editing OWL ontology classes, properties, and
+  relationships in TTL files. Use when the user wants to create, modify, or
+  extend domain ontologies — NOT for repo setup, scaffolding, or infrastructure.
+  Includes business alignment checkpoints, reference-model workflow, source/TMDL
+  analysis, and session persistence.
 ---
 <!-- kairos-ontology-toolkit:managed v2.29.1 -->
 

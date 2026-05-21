@@ -1,9 +1,10 @@
 ---
 name: kairos-ontology-quickstart
 description: >
-  Step-by-step guide for creating a new Kairos ontology hub repository.
-  Covers repo naming, CLI bootstrapping, first domain, validation, and projections.
-  Usable by both humans and AI assistants.
+  Step-by-step guide for creating a brand-new Kairos ontology hub repository
+  from scratch using the CLI. Covers repo naming, bootstrapping, and initial
+  validation. Only for new repo creation — NOT for ontology design or domain
+  modeling.
 ---
 
 # Quickstart — New Ontology Hub

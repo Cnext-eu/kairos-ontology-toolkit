@@ -132,6 +132,23 @@ interactive configurator (business alignment checkpoints, session persistence in
 edits (adding a property, fixing a label) it supports a quick-edit mode that
 skips checkpoints.
 
+### Skill routing guide
+
+Use this table to pick the correct skill for a user's intent:
+
+| User intent | Correct skill |
+|---|---|
+| "Model / design / create classes / add properties / extend ontology" | **kairos-ontology-modeling** |
+| "Create a new hub repo from scratch" | **kairos-ontology-quickstart** |
+| "Set up folder structure / configure hub" | **kairos-ontology-hub-setup** |
+| "How does Kairos work? / What is this?" | **kairos-ontology-help** |
+| "Run projections / generate dbt / silver / gold" | **kairos-ontology-projection** |
+| "Validate my ontology" | **kairos-ontology-validation** |
+| "Create source/bronze vocabulary" | **kairos-ontology-medallion-source** |
+| "Design silver schema / FK annotations" | **kairos-ontology-medallion-silver** |
+| "Design gold / Power BI model" | **kairos-ontology-medallion-gold** |
+| "Release / upgrade / version check" | **kairos-ontology-toolkit-ops** |
+
 ## Validation rules
 
 - Always validate syntax before applying changes.

@@ -1,9 +1,10 @@
 ---
 name: kairos-ontology-help
 description: >
-  Comprehensive guide to the Kairos Ontology Toolkit — design philosophy,
-  hub structure, projections, CLI commands, and best practices.
-  Invoke whenever a user asks "how does Kairos work?" or needs orientation.
+  Orientation guide to the Kairos Ontology Toolkit — explains design philosophy,
+  hub structure, projections, CLI commands, and best practices. Use when users ask
+  "how does Kairos work?" or need a conceptual overview. NOT for performing
+  actual work (setup, modeling, projections).
 ---
 
 # Kairos Ontology Toolkit — Help & Reference
