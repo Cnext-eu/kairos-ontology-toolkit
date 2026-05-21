@@ -52,3 +52,6 @@ service/.env
 service/frontend/node_modules/
 service/frontend/dist/
 
+
+# Local ontology hub checkouts
+newton-ontology-hub/
