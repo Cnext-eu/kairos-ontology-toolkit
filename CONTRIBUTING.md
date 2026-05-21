@@ -42,6 +42,22 @@ cd kairos-ontology-toolkit
 pip install -e ".[dev]"
 ```
 
+### Install git hooks
+
+Install the pre-commit hook to auto-sync `.github/` skills to the scaffold:
+
+```powershell
+# Windows
+powershell scripts/install-hooks.ps1
+
+# Linux/Mac
+python scripts/sync_dev_skills.py  # run manually, or set up your own hook
+```
+
+The hook ensures that when you edit skills in `.github/skills/` (the master
+source), the scaffold copies (`src/kairos_ontology/scaffold/skills/`) stay in
+sync automatically. CI will fail if they drift apart.
+
 ### Running tests
 
 ```bash

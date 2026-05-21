@@ -293,23 +293,6 @@ ref:hasShipperParty
 The FK column is placed on the **domain** table (the class that "has" the
 property) by default, just like a standard cardinality-1 relationship.
 
-> ⚠️ **Pre-check before declaring silverForeignKey:**
->
-> For every object property you annotate with `silverForeignKey "true"`, verify
-> that `rdfs:domain` and `rdfs:range` are declared (either in the reference
-> model or in your extension file). If either is missing, add them in the
-> extension file:
->
-> ```turtle
-> ref:hasShipperParty
->     rdfs:domain ref:Booking ;
->     kairos-ext:silverForeignKey "true"^^xsd:boolean .
-> ```
->
-> Without `rdfs:domain`, the projector cannot determine which table receives
-> the FK column. Without `rdfs:range`, cross-domain FKs cannot resolve.
-> The projector will emit a warning and skip the FK if either is missing.
-
 #### `kairos-ext:silverForeignKeyOn` (class URI)
 
 Overrides **which table** receives the FK column. Set the value to the
