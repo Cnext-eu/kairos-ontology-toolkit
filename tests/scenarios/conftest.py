@@ -197,6 +197,7 @@ def client_dbt_artifacts(client_ontology):
 
     graph, namespace, classes = client_ontology
     gold_ext = EXTENSIONS_DIR / "client-gold-ext.ttl"
+    silver_ext = EXTENSIONS_DIR / "client-silver-ext.ttl"
     return generate_dbt_artifacts(
         classes=classes,
         graph=graph,
@@ -208,6 +209,7 @@ def client_dbt_artifacts(client_ontology):
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,
         gold_ext_path=gold_ext if gold_ext.exists() else None,
+        silver_ext_path=silver_ext if silver_ext.exists() else None,
     )
 
 
@@ -220,6 +222,7 @@ def invoice_dbt_artifacts(invoice_ontology):
 
     graph, namespace, classes = invoice_ontology
     gold_ext = EXTENSIONS_DIR / "invoice-gold-ext.ttl"
+    silver_ext = EXTENSIONS_DIR / "invoice-silver-ext.ttl"
     return generate_dbt_artifacts(
         classes=classes,
         graph=graph,
@@ -231,6 +234,7 @@ def invoice_dbt_artifacts(invoice_ontology):
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,
         gold_ext_path=gold_ext if gold_ext.exists() else None,
+        silver_ext_path=silver_ext if silver_ext.exists() else None,
     )
 
 

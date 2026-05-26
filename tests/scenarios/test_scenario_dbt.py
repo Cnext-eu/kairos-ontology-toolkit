@@ -8,6 +8,7 @@ deduplication, default values, and SHACL-derived tests.
 """
 
 import pytest
+from .conftest import TEMPLATE_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +420,225 @@ class TestMultiTargetColumn:
         assert "display_name" in yaml_content, (
             "Multi-target: displayName missing from schema YAML"
         )
+
+
+# ---------------------------------------------------------------------------
+# SCD Type-Aware Silver Model Tests — DD-025
+# ---------------------------------------------------------------------------
+
+class TestSCDTypeAwareSilverModels:
+    """Silver dbt models should generate SCD-aware incremental strategies."""
+
+    def test_scd2_model_has_incremental_materialization(self, client_dbt_artifacts):
+        """ClientPII (scdType=2) should generate incremental materialization."""
+        key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
+        assert key is not None, "client_pii.sql model not generated"
+        sql = client_dbt_artifacts[key]
+        assert "materialized='incremental'" in sql, (
+            f"SCD2 model should use incremental materialization:\n{sql}"
+        )
+
+    def test_scd2_model_has_composite_unique_key(self, client_dbt_artifacts):
+        """ClientPII (scdType=2) should have composite unique_key [sk, valid_from]."""
+        key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
+        sql = client_dbt_artifacts[key]
+        assert "client_pii_sk" in sql and "valid_from" in sql, (
+            f"SCD2 model should have composite unique_key with SK + valid_from:\n{sql}"
+        )
+
+    def test_scd2_model_has_row_hash(self, client_dbt_artifacts):
+        """ClientPII (scdType=2) should compute _row_hash for change detection."""
+        key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
+        sql = client_dbt_artifacts[key]
+        assert "_row_hash" in sql, (
+            f"SCD2 model should compute _row_hash:\n{sql}"
+        )
+        assert "SHA2_HEX" in sql.upper() or "sha2_hex" in sql.lower(), (
+            f"SCD2 model should use SHA2_HEX for _row_hash computation:\n{sql}"
+        )
+
+    def test_scd2_model_has_change_detection_ctes(self, client_dbt_artifacts):
+        """ClientPII (scdType=2) should have existing/changed/closed CTEs."""
+        key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
+        sql = client_dbt_artifacts[key]
+        assert "source_data" in sql, f"SCD2 model missing 'source_data' CTE:\n{sql}"
+        assert "existing" in sql, f"SCD2 model missing 'existing' CTE:\n{sql}"
+        assert "changed" in sql, f"SCD2 model missing 'changed' CTE:\n{sql}"
+        assert "closed" in sql, f"SCD2 model missing 'closed' CTE:\n{sql}"
+
+    def test_scd2_model_has_union_all(self, client_dbt_artifacts):
+        """ClientPII (scdType=2) should UNION ALL changed + closed rows."""
+        key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
+        sql = client_dbt_artifacts[key]
+        assert "union all" in sql.lower(), (
+            f"SCD2 model should have UNION ALL for changed+closed:\n{sql}"
+        )
+
+    def test_scd2_model_has_is_current(self, client_dbt_artifacts):
+        """ClientPII (scdType=2) should set is_current for current/closed rows."""
+        key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
+        sql = client_dbt_artifacts[key]
+        assert "is_current" in sql, (
+            f"SCD2 model should reference is_current column:\n{sql}"
+        )
+
+    def test_scd1_model_has_incremental(self, client_dbt_artifacts):
+        """ClientType (scdType=1, reference) should still get incremental."""
+        key = _find_artifact(client_dbt_artifacts, "client_type.sql")
+        if key is None:
+            # client_type might be ref_ prefixed
+            key = _find_artifact(client_dbt_artifacts, "ref_client_type.sql")
+        assert key is not None, "client_type model not generated"
+        sql = client_dbt_artifacts[key]
+        assert "materialized='incremental'" in sql, (
+            f"SCD1 model should use incremental materialization:\n{sql}"
+        )
+
+    def test_scd1_model_no_change_detection(self, client_dbt_artifacts):
+        """ClientType (scdType=1) should NOT have SCD2 change detection."""
+        key = _find_artifact(client_dbt_artifacts, "client_type.sql")
+        if key is None:
+            key = _find_artifact(client_dbt_artifacts, "ref_client_type.sql")
+        assert key is not None, "client_type model not generated"
+        sql = client_dbt_artifacts[key]
+        assert "source_data" not in sql, (
+            "SCD1 model should not have source_data CTE (SCD2 pattern)"
+        )
+        assert "closed" not in sql, (
+            "SCD1 model should not have closed CTE (SCD2 pattern)"
+        )
+
+
+class TestSCDTemplateSyntheticData:
+    """Render the silver template with synthetic data to verify full SQL structure."""
+
+    def test_scd2_template_renders_complete_model(self):
+        """Render silver_model.sql.jinja2 with SCD2 params and verify structure."""
+        from jinja2 import Environment, FileSystemLoader
+
+        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+        template = env.get_template("silver_model.sql.jinja2")
+
+        # Synthetic columns simulating a Customer entity
+        columns = [
+            {"expression": "{{ dbt_utils.generate_surrogate_key(['cust_code']) }}",
+             "target_name": "customer_sk"},
+            {"expression": "CONCAT('ns/', cust_code)", "target_name": "customer_iri"},
+            {"expression": "CustName", "target_name": "customer_name"},
+            {"expression": "CAST(Email AS VARCHAR)", "target_name": "email"},
+            {"expression": "CAST(Revenue AS DECIMAL(18,2))", "target_name": "revenue"},
+        ]
+        hash_columns = ["customer_name", "email", "revenue"]
+
+        sql = template.render(
+            model_name="customer",
+            domain_name="sales",
+            schema_name="silver_sales",
+            materialization="incremental",
+            unique_key=["customer_sk", "valid_from"],
+            scd_type="2",
+            hash_columns=hash_columns,
+            source_ctes=[{
+                "source_name": "erp_system",
+                "table_name": "tblCustomer",
+                "alias": "tbl_customer",
+                "filter": "",
+            }],
+            columns=columns,
+            joins=[],
+            where_clause="",
+            ontology_metadata={},
+        )
+
+        # Verify config block
+        assert "materialized='incremental'" in sql
+        assert "customer_sk" in sql
+        assert "valid_from" in sql
+
+        # Verify source CTE
+        assert "tbl_customer" in sql
+        assert "source('erp_system', 'tblCustomer')" in sql
+
+        # Verify _row_hash computation includes all hash columns
+        assert "SHA2_HEX" in sql
+        assert "customer_name" in sql
+        assert "email" in sql
+        assert "revenue" in sql
+        assert "CONCAT_WS" in sql
+
+        # Verify temporal columns in source_data
+        assert "CURRENT_DATE as valid_from" in sql
+        assert "CAST(NULL AS DATE) as valid_to" in sql
+        assert "1 as is_current" in sql
+
+        # Verify change detection CTEs
+        assert "existing as" in sql
+        assert "where is_current = 1" in sql
+        assert "changed as" in sql
+        assert "closed as" in sql
+
+        # Verify closed CTE sets correct values
+        assert "CURRENT_DATE as valid_to" in sql
+        assert "0 as is_current" in sql
+
+        # Verify final SELECT from changed/source_data
+        assert "{{% if is_incremental() %}}changed" in sql or \
+               "{% if is_incremental() %}changed" in sql
+
+        # Verify UNION ALL with closed
+        assert "union all" in sql.lower()
+
+    def test_scd1_template_renders_simple_model(self):
+        """Render silver_model.sql.jinja2 with SCD1 params — no SCD2 logic."""
+        from jinja2 import Environment, FileSystemLoader
+
+        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+        template = env.get_template("silver_model.sql.jinja2")
+
+        columns = [
+            {"expression": "{{ dbt_utils.generate_surrogate_key(['code']) }}",
+             "target_name": "product_sk"},
+            {"expression": "CONCAT('ns/', code)", "target_name": "product_iri"},
+            {"expression": "ProductName", "target_name": "product_name"},
+            {"expression": "CAST(Price AS DECIMAL(18,2))", "target_name": "price"},
+        ]
+
+        sql = template.render(
+            model_name="product",
+            domain_name="catalog",
+            schema_name="silver_catalog",
+            materialization="incremental",
+            unique_key="product_sk",
+            scd_type="1",
+            hash_columns=["product_name", "price"],
+            source_ctes=[{
+                "source_name": "erp",
+                "table_name": "tblProduct",
+                "alias": "tbl_product",
+                "filter": "",
+            }],
+            columns=columns,
+            joins=[],
+            where_clause="",
+            ontology_metadata={},
+        )
+
+        # Verify incremental config
+        assert "materialized='incremental'" in sql
+        assert "unique_key='product_sk'" in sql
+
+        # Verify NO SCD2 logic
+        assert "source_data" not in sql
+        assert "existing" not in sql
+        assert "changed" not in sql
+        assert "closed" not in sql
+        assert "union all" not in sql.lower()
+        assert "_row_hash" not in sql
+
+        # Verify basic SELECT structure
+        assert "product_name" in sql
+        assert "price" in sql
+        assert "tbl_product" in sql
 
 
 # ---------------------------------------------------------------------------

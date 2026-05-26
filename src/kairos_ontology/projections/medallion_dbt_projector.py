@@ -35,7 +35,7 @@ from rdflib.namespace import OWL, RDF
 from jinja2 import Environment, FileSystemLoader
 
 from .uri_utils import camel_to_snake, extract_local_name
-from .shared import KAIROS_EXT, merge_ext_graph
+from .shared import KAIROS_EXT, merge_ext_graph, str_val, bool_val
 
 logger = logging.getLogger(__name__)
 
@@ -1025,6 +1025,12 @@ def _gen_silver_models(
             continue
 
         # ----- Single source: existing inline model -----
+        # Read SCD type annotation (default: "2" for regular entities, "1" for reference)
+        is_ref = bool_val(graph, URIRef(cls_uri), KAIROS_EXT.isReferenceData, False)
+        scd_type = str_val(
+            graph, URIRef(cls_uri), KAIROS_EXT.scdType, "1" if is_ref else "2"
+        )
+
         # Extract properties for column list with platform-aware types
         columns = _extract_silver_columns(
             graph, cls_uri, namespace, mappings, platform=platform,
@@ -1062,11 +1068,37 @@ def _gen_silver_models(
         # No top-level WHERE needed — all filtering happens at the CTE level.
         where_clause = ""
 
+        # Compute hash columns for SCD2 change detection (_row_hash)
+        # Exclude: SK, IRI, temporal columns, _row_hash itself, FK columns
+        _scd_temporal = {"valid_from", "valid_to", "is_current", "_row_hash"}
+        _fk_target_names = {j.get("fk_column", "") for j in fk_joins} if fk_joins else set()
+        hash_columns = [
+            col["target_name"] for col in columns
+            if col["target_name"] not in _scd_temporal
+            and not col["target_name"].endswith("_sk")
+            and not col["target_name"].endswith("_iri")
+            and col["target_name"] not in _fk_target_names
+        ]
+
+        # Determine materialization and unique_key based on SCD type
+        if scd_type == "2":
+            materialization = "incremental"
+            unique_key = [f"{model_name}_sk", "valid_from"]
+        elif scd_type == "1":
+            materialization = "incremental"
+            unique_key = f"{model_name}_sk"
+        else:
+            materialization = "table"
+            unique_key = ""
+
         content = template.render(
             model_name=model_name,
             domain_name=ontology_name,
             schema_name=schema_name,
-            materialization="table",
+            materialization=materialization,
+            unique_key=unique_key,
+            scd_type=scd_type,
+            hash_columns=hash_columns,
             source_ctes=source_ctes,
             columns=columns,
             joins=fk_joins,
