@@ -344,7 +344,8 @@ def init(domain, company_domain, force):
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
         hub / "output" / "report",
-        hub / ".modeling-sessions",
+        hub / ".sessions-modeling",
+        hub / ".sessions-projection",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -357,10 +358,11 @@ def init(domain, company_domain, force):
         if not gitkeep.exists():
             gitkeep.touch()
 
-    # Place .gitkeep in .modeling-sessions so git tracks the folder
-    ms_gitkeep = hub / ".modeling-sessions" / ".gitkeep"
-    if not ms_gitkeep.exists():
-        ms_gitkeep.touch()
+    # Place .gitkeep in session folders so git tracks them
+    for session_folder in [".sessions-modeling", ".sessions-projection"]:
+        sk = hub / session_folder / ".gitkeep"
+        if not sk.exists():
+            sk.touch()
 
     # 2. Copy README files for each directory
     readme_map = {
@@ -1095,7 +1097,8 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
         hub / "output" / "report",
-        hub / ".modeling-sessions",
+        hub / ".sessions-modeling",
+        hub / ".sessions-projection",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -1108,10 +1111,11 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         if not gitkeep.exists():
             gitkeep.touch()
 
-    # Place .gitkeep in .modeling-sessions so git tracks the folder
-    ms_gitkeep = hub / ".modeling-sessions" / ".gitkeep"
-    if not ms_gitkeep.exists():
-        ms_gitkeep.touch()
+    # Place .gitkeep in session folders so git tracks them
+    for session_folder in [".sessions-modeling", ".sessions-projection"]:
+        sk = hub / session_folder / ".gitkeep"
+        if not sk.exists():
+            sk.touch()
 
     # README files
     readme_map = {

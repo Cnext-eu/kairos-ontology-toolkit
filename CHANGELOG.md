@@ -5,6 +5,28 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.36.0] — 2026-05-26
+
+### Added
+
+- **Per-domain projection markdown reports** — After projections complete, a
+  human-readable markdown report is written to
+  `ontology-hub/.sessions-projection/projection-{domain}-{YYYY-MM-DD}.md`
+  containing domain info, projection results, warnings, and errors.
+- **`.sessions-projection/` folder** — New dedicated folder in the hub for
+  projection session reports, created by `init` and `new-repo` commands.
+- **Hash-tolerant catalog resolution (DD-024)** — `CatalogResolver` now
+  resolves `owl:imports` URIs with or without trailing `#`, preventing silent
+  failures when catalog entries and import statements disagree on hash usage.
+  A diagnostic warning is logged when hash fallback is needed.
+
+### Changed
+
+- **Renamed `.modeling-sessions/` → `.sessions-modeling/`** — The modeling
+  session folder now uses the `.sessions-*` naming convention for consistency.
+- **Renamed modeling session files** — From `{domain}-config-{timestamp}.md`
+  to `modeling-{domain}-{YYYY-MM-DD}.md` to mirror projection report naming.
+
 ## [2.31.0] — 2026-05-19
 
 ### Added

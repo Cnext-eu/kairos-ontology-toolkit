@@ -226,3 +226,102 @@ class TestRunProjectionsReport:
         data = json.loads(report_file.read_text(encoding="utf-8"))
         assert "broken" in data["domains"]
         assert data["domains"]["broken"]["status"] == "load_failed"
+
+
+# ---------------------------------------------------------------------------
+# Markdown domain report
+# ---------------------------------------------------------------------------
+
+
+class TestProjectionReportMarkdown:
+
+    def _make_report(self, **kwargs) -> ProjectionReport:
+        defaults = dict(toolkit_version="0.0.0-test", generated_at="2025-01-01T00:00:00Z")
+        defaults.update(kwargs)
+        return ProjectionReport(**defaults)
+
+    def test_write_domain_markdown_creates_file(self, tmp_path):
+        rpt = self._make_report()
+        rpt.targets_requested = ["silver"]
+        rpt.record_domain_load("client", file="client.ttl", triples=50,
+                               namespace="http://ex.org/ont/client#", status="ok")
+        rpt.record_projection("silver", "client", status="ok", files=["ddl.sql"])
+
+        md_path = rpt.write_domain_markdown("client", tmp_path)
+        assert md_path is not None
+        assert md_path.exists()
+        assert md_path.name.startswith("projection-client-")
+        assert md_path.suffix == ".md"
+
+    def test_write_domain_markdown_contains_warnings(self, tmp_path):
+        import logging
+
+        rpt = self._make_report()
+        rpt.targets_requested = ["silver"]
+        rpt.record_domain_load("client", file="client.ttl", triples=50,
+                               namespace="http://ex.org/ont/client#", status="ok")
+        rpt.record_projection("silver", "client", status="ok", files=["ddl.sql"])
+
+        rec = logging.LogRecord("test", logging.WARNING, "", 0,
+                                "PII detected on Person.email", None, None)
+        rpt.add_captured_warnings("client", "silver", [rec])
+
+        md_path = rpt.write_domain_markdown("client", tmp_path)
+        content = md_path.read_text(encoding="utf-8")
+        assert "## ⚠️ Warnings" in content
+        assert "PII detected on Person.email" in content
+        assert "**[silver]**" in content
+
+    def test_write_domain_markdown_no_issues_section(self, tmp_path):
+        rpt = self._make_report()
+        rpt.targets_requested = ["prompt"]
+        rpt.record_domain_load("clean", file="clean.ttl", triples=10,
+                               namespace="http://ex.org/", status="ok")
+        rpt.record_projection("prompt", "clean", status="ok", files=["f.md"])
+
+        md_path = rpt.write_domain_markdown("clean", tmp_path)
+        content = md_path.read_text(encoding="utf-8")
+        assert "## ✅ No issues" in content
+        assert "## ⚠️ Warnings" not in content
+
+    def test_write_domain_markdown_returns_none_without_dir(self):
+        rpt = self._make_report()
+        rpt.record_domain_load("x", file="x.ttl", status="ok")
+        assert rpt.write_domain_markdown("x", None) is None
+
+    def test_add_captured_warnings_feeds_events(self):
+        import logging
+
+        rpt = self._make_report()
+        rec = logging.LogRecord("test", logging.WARNING, "", 0, "warn msg", None, None)
+        rpt.add_captured_warnings("dom", "silver", [rec])
+
+        # Should appear in events list
+        assert any(e["message"] == "warn msg" and e["level"] == "warning"
+                   for e in rpt.events)
+        assert rpt._warnings == 1
+
+    def test_run_projections_writes_markdown_to_modeling_sessions(self, tmp_path):
+        """Integration: run_projections writes .md to .sessions-projection/."""
+        hub = tmp_path
+        ont_dir = hub / "model" / "ontologies"
+        ont_dir.mkdir(parents=True)
+        (ont_dir / "test.ttl").write_text(_TTL, encoding="utf-8")
+
+        sessions_dir = hub / ".sessions-projection"
+        sessions_dir.mkdir(parents=True)
+
+        output_dir = hub / "output"
+        catalog = tmp_path / "catalog.xml"
+
+        run_projections(
+            ontologies_path=ont_dir,
+            output_path=output_dir,
+            catalog_path=catalog,
+            target="prompt",
+        )
+
+        md_files = list(sessions_dir.glob("projection-test-*.md"))
+        assert len(md_files) == 1
+        content = md_files[0].read_text(encoding="utf-8")
+        assert "# Projection Report — test" in content

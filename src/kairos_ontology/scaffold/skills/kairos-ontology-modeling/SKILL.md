@@ -25,7 +25,7 @@ them means the modeling process has failed, regardless of output quality.
 
 ### Gate 1: Session file prerequisite
 
-> **You MUST create a `.modeling-sessions/{domain}-config-*.md` file BEFORE
+> **You MUST create a `.sessions-modeling/modeling-{domain}-*.md` file BEFORE
 > writing any domain `.ttl` file.**
 
 If no session file exists for the domain being modeled, you are NOT permitted
@@ -125,8 +125,8 @@ If the user explicitly requests skipping governance:
 At the beginning of every modeling session, look for saved configuration files:
 
 ```
-ontology-hub/.modeling-sessions/
-  └── {domain}-config-{YYYY-MM-DD-HHmm}.md    # Saved session state
+ontology-hub/.sessions-modeling/
+  └── modeling-{domain}-{YYYY-MM-DD}.md    # Saved session state
 ```
 
 **Ask the user:**
@@ -141,7 +141,7 @@ If no session exists, start fresh and create one immediately.
 
 ### Session file format
 
-Save progress to `ontology-hub/.modeling-sessions/{domain}-config-{timestamp}.md`:
+Save progress to `ontology-hub/.sessions-modeling/modeling-{domain}-{YYYY-MM-DD}.md`:
 
 ```markdown
 # Modeling Session: {Domain Name}
@@ -1499,7 +1499,7 @@ These go in `model/mappings/<source>-to-<domain>.ttl` alongside SKOS mappings.
 ## Completion: Final Configuration Report
 
 When the user confirms all classes and properties for a domain, generate a final
-report. Save to `ontology-hub/.modeling-sessions/{domain}-config-FINAL-{timestamp}.md`:
+report. Save to `ontology-hub/.sessions-modeling/modeling-{domain}-FINAL-{YYYY-MM-DD}.md`:
 
 ```markdown
 # Modeling Configuration Report: {Domain Name}
