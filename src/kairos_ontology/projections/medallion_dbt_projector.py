@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +39,19 @@ from .uri_utils import camel_to_snake, extract_local_name
 from .shared import KAIROS_EXT, merge_ext_graph, str_val, bool_val
 
 logger = logging.getLogger(__name__)
+
+# Module-level cache for entity metadata (populated by generate_dbt_artifacts,
+# read by projector.py via get_last_entity_metadata)
+_last_entity_metadata: dict[str, list[dict]] = {}
+
+
+def get_last_entity_metadata() -> dict[str, list[dict]]:
+    """Return cached entity metadata from the last generate_dbt_artifacts call.
+
+    Returns:
+        Dict of {domain_name: [entity_meta_dicts]}.
+    """
+    return dict(_last_entity_metadata)
 
 # ---------------------------------------------------------------------------
 # Namespaces
@@ -872,7 +886,7 @@ def _gen_silver_models(
     meta: dict,
     ontology_name: str,
     platform: str = DEFAULT_PLATFORM,
-) -> tuple[dict[str, str], list[str]]:
+) -> tuple[dict[str, str], list[str], list[dict]]:
     """Generate silver entity models that read directly from bronze sources.
 
     Enforces layer contracts:
@@ -882,10 +896,13 @@ def _gen_silver_models(
     - Silver absorbs rename, cast, and transform logic (previously in staging)
 
     Returns:
-        Tuple of (artifacts dict, warnings list).
+        Tuple of (artifacts dict, warnings list, entity_metadata list).
+        Each entity_metadata entry: {class_name, model_file, scd_type,
+        source_count, column_count, fk_join_count, skipped, skip_reason}.
     """
     artifacts: dict[str, str] = {}
     warnings: list[str] = []
+    entity_metadata: list[dict] = []
     template = env.get_template("silver_model.sql.jinja2")
 
     schema_name = f"silver_{ontology_name}"
@@ -929,6 +946,16 @@ def _gen_silver_models(
             )
             logger.warning(msg)
             warnings.append(msg)
+            entity_metadata.append({
+                "class_name": local,
+                "model_file": None,
+                "scd_type": None,
+                "source_count": 0,
+                "column_count": 0,
+                "fk_join_count": 0,
+                "skipped": True,
+                "skip_reason": "No bronze mapping found",
+            })
             continue
 
         # Check for missing naturalKey — critical for SK and IRI generation
@@ -1022,6 +1049,16 @@ def _gen_silver_models(
             )
             path = f"models/silver/{ontology_name}/{model_name}.sql"
             artifacts[path] = content
+            entity_metadata.append({
+                "class_name": local,
+                "model_file": f"{model_name}.sql",
+                "scd_type": "2",
+                "source_count": len(source_refs),
+                "column_count": len(canonical_columns),
+                "fk_join_count": len(fk_joins) if fk_joins else 0,
+                "skipped": False,
+                "skip_reason": None,
+            })
             continue
 
         # ----- Single source: existing inline model -----
@@ -1107,8 +1144,18 @@ def _gen_silver_models(
         )
         path = f"models/silver/{ontology_name}/{model_name}.sql"
         artifacts[path] = content
+        entity_metadata.append({
+            "class_name": local,
+            "model_file": f"{model_name}.sql",
+            "scd_type": scd_type,
+            "source_count": len(source_refs),
+            "column_count": len(columns),
+            "fk_join_count": len(fk_joins) if fk_joins else 0,
+            "skipped": False,
+            "skip_reason": None,
+        })
 
-    return artifacts, warnings
+    return artifacts, warnings, entity_metadata
 
 
 def _get_class_and_parents(graph: Graph, class_uri: str) -> set[str]:
@@ -2345,7 +2392,7 @@ def generate_dbt_artifacts(
         logger.info("Generated %d source definition(s)", len(systems))
 
     # 2. Silver entity models (read directly from bronze via source())
-    silver, silver_warnings = _gen_silver_models(
+    silver, silver_warnings, silver_entity_meta = _gen_silver_models(
         classes, graph, namespace, systems, mappings, env, meta, onto_name,
         platform=target_platform,
     )
@@ -2358,6 +2405,9 @@ def generate_dbt_artifacts(
             "%d class(es) skipped — see projection-report.json for details",
             len(silver_warnings),
         )
+
+    # Cache entity metadata for session log (retrieved via get_last_entity_metadata)
+    _last_entity_metadata[onto_name] = silver_entity_meta
 
     # 3. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(
@@ -2549,3 +2599,93 @@ def _gen_coverage_report(
         {ontology_name: report}, indent=2, ensure_ascii=False,
     )
     return {"coverage-report.json": content}
+
+
+# ---------------------------------------------------------------------------
+# dbt Session Log — per-domain Markdown report for .sessions-projection/
+# ---------------------------------------------------------------------------
+
+
+def write_dbt_session_log(
+    domain: str,
+    entity_metadata: list[dict],
+    sessions_dir: Path,
+    toolkit_version: str = "",
+    warnings: list[str] | None = None,
+) -> Path | None:
+    """Write a separate dbt projection session log.
+
+    Filename: ``dbt-{domain}-{YYYY-MM-DD_HH-MM-SS}.md``
+
+    Args:
+        domain: Domain name (e.g. "client", "invoice").
+        entity_metadata: List of per-entity metadata dicts from _gen_silver_models.
+        sessions_dir: Path to ``.sessions-projection/`` directory.
+        toolkit_version: Installed toolkit version string.
+        warnings: Optional list of projection warning messages.
+
+    Returns:
+        Path to the written file, or None if sessions_dir is unavailable.
+    """
+    if not sessions_dir or not entity_metadata:
+        return None
+
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"dbt-{domain}-{date_str}.md"
+    path = sessions_dir / filename
+
+    lines: list[str] = []
+    lines.append(f"# dbt Projection Report — {domain}")
+    lines.append("")
+    lines.append(f"**Generated:** {now.strftime('%Y-%m-%d %H:%M:%S')}  ")
+    lines.append(f"**Toolkit version:** {toolkit_version}  ")
+    lines.append(f"**Domain:** {domain}  ")
+    lines.append("")
+
+    # Silver Models table
+    generated = [e for e in entity_metadata if not e.get("skipped")]
+    if generated:
+        lines.append("## Silver Models")
+        lines.append("")
+        lines.append("| Entity | Model File | SCD | Sources | Columns | FK Joins |")
+        lines.append("|--------|-----------|-----|---------|---------|----------|")
+        for e in generated:
+            src_label = str(e["source_count"])
+            if e["source_count"] > 1:
+                src_label += " (multi)"
+            lines.append(
+                f"| {e['class_name']} | {e['model_file']} "
+                f"| {e['scd_type']} | {src_label} "
+                f"| {e['column_count']} | {e['fk_join_count']} |"
+            )
+        lines.append("")
+
+    # Skipped classes
+    skipped = [e for e in entity_metadata if e.get("skipped")]
+    if skipped:
+        lines.append("## Skipped Classes (no mapping)")
+        lines.append("")
+        for e in skipped:
+            lines.append(f"- `{e['class_name']}` — {e.get('skip_reason', 'Unknown')}")
+        lines.append("")
+
+    # Warnings
+    if warnings:
+        lines.append("## ⚠️ Warnings")
+        lines.append("")
+        for w in warnings:
+            lines.append(f"- {w}")
+        lines.append("")
+
+    if not skipped and not warnings:
+        lines.append("## ✅ No issues")
+        lines.append("")
+        lines.append("All entities projected without warnings.")
+        lines.append("")
+
+    content = "\n".join(lines)
+    path.write_text(content, encoding="utf-8")
+    return path

@@ -883,6 +883,26 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             if md_path:
                 print(f"   📝 Session report: {md_path.name}")
 
+        # Write separate dbt session logs (per domain)
+        if "dbt" in targets_to_run:
+            from .projections.medallion_dbt_projector import (
+                get_last_entity_metadata, write_dbt_session_log,
+            )
+            from kairos_ontology import __version__ as _ver
+            dbt_meta = get_last_entity_metadata()
+            captured = report.captured_warnings
+            for domain_name, entity_meta in dbt_meta.items():
+                domain_warns = [msg for _, msg in captured.get(domain_name, [])]
+                dbt_path = write_dbt_session_log(
+                    domain=domain_name,
+                    entity_metadata=entity_meta,
+                    sessions_dir=sessions_dir,
+                    toolkit_version=_ver,
+                    warnings=domain_warns,
+                )
+                if dbt_path:
+                    print(f"   📝 dbt session log: {dbt_path.name}")
+
 
 def extract_ontology_metadata(graph: Graph, namespace: str) -> dict:
     """Extract provenance metadata from the owl:Ontology declaration.

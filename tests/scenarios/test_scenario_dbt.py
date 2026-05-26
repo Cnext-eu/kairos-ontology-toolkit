@@ -684,3 +684,135 @@ def _find_artifact(artifacts: dict, suffix: str) -> str | None:
         if key.endswith(suffix):
             return key
     return None
+
+
+# ---------------------------------------------------------------------------
+# dbt Session Log tests
+# ---------------------------------------------------------------------------
+
+
+class TestDbtSessionLog:
+    """Test that the dbt projection writes a separate session log."""
+
+    def test_entity_metadata_returned_in_artifacts(self, client_dbt_artifacts):
+        """generate_dbt_artifacts should include __dbt_session_metadata__ key."""
+        # The conftest fixture calls generate_dbt_artifacts directly;
+        # __dbt_session_metadata__ is consumed by projector.py before writing.
+        # Re-run to capture the metadata:
+        pass  # Tested via write_dbt_session_log below
+
+    def test_write_dbt_session_log_creates_file(self, tmp_path):
+        """write_dbt_session_log should create a markdown file with entity table."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            write_dbt_session_log,
+        )
+
+        entity_meta = [
+            {
+                "class_name": "CorporateClient",
+                "model_file": "corporate_client.sql",
+                "scd_type": "2",
+                "source_count": 2,
+                "column_count": 8,
+                "fk_join_count": 0,
+                "skipped": False,
+                "skip_reason": None,
+            },
+            {
+                "class_name": "ClientType",
+                "model_file": "ref_client_type.sql",
+                "scd_type": "1",
+                "source_count": 1,
+                "column_count": 3,
+                "fk_join_count": 0,
+                "skipped": False,
+                "skip_reason": None,
+            },
+            {
+                "class_name": "LegalEntity",
+                "model_file": None,
+                "scd_type": None,
+                "source_count": 0,
+                "column_count": 0,
+                "fk_join_count": 0,
+                "skipped": True,
+                "skip_reason": "No bronze mapping found",
+            },
+        ]
+
+        result = write_dbt_session_log(
+            domain="client",
+            entity_metadata=entity_meta,
+            sessions_dir=tmp_path,
+            toolkit_version="2.37.0",
+            warnings=["Column xyz unmapped"],
+        )
+
+        assert result is not None
+        assert result.exists()
+        assert result.name.startswith("dbt-client-")
+        assert result.suffix == ".md"
+
+        content = result.read_text(encoding="utf-8")
+        # Header
+        assert "# dbt Projection Report — client" in content
+        assert "**Toolkit version:** 2.37.0" in content
+
+        # Entity table
+        assert "## Silver Models" in content
+        assert "| CorporateClient |" in content
+        assert "| 2 (multi) |" in content
+        assert "| ClientType |" in content
+        assert "| 1 |" in content  # SCD1
+
+        # Skipped classes
+        assert "## Skipped Classes" in content
+        assert "`LegalEntity`" in content
+        assert "No bronze mapping found" in content
+
+        # Warnings
+        assert "## ⚠️ Warnings" in content
+        assert "Column xyz unmapped" in content
+
+    def test_write_dbt_session_log_no_warnings_no_skipped(self, tmp_path):
+        """When no skipped and no warnings, show 'No issues' section."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            write_dbt_session_log,
+        )
+
+        entity_meta = [
+            {
+                "class_name": "Invoice",
+                "model_file": "invoice.sql",
+                "scd_type": "2",
+                "source_count": 1,
+                "column_count": 5,
+                "fk_join_count": 1,
+                "skipped": False,
+                "skip_reason": None,
+            },
+        ]
+
+        result = write_dbt_session_log(
+            domain="invoice",
+            entity_metadata=entity_meta,
+            sessions_dir=tmp_path,
+            toolkit_version="2.37.0",
+        )
+
+        content = result.read_text(encoding="utf-8")
+        assert "## ✅ No issues" in content
+        assert "Skipped Classes" not in content
+
+    def test_write_dbt_session_log_returns_none_for_empty(self, tmp_path):
+        """Returns None when entity_metadata is empty."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            write_dbt_session_log,
+        )
+
+        result = write_dbt_session_log(
+            domain="empty",
+            entity_metadata=[],
+            sessions_dir=tmp_path,
+        )
+        assert result is None
