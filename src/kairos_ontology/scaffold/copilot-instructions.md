@@ -128,7 +128,7 @@ When designing or modifying ontologies, use the **kairos-ontology-modeling** ski
 It combines core modeling knowledge (class hierarchies, property design, naming
 conventions, reference-model-first workflow, extension annotations) with an
 interactive configurator (business alignment checkpoints, session persistence in
-`ontology-hub/.modeling-sessions/`, and structured validation gates). For minor
+`ontology-hub/.sessions-modeling/`, and structured validation gates). For minor
 edits (adding a property, fixing a label) it supports a quick-edit mode that
 skips checkpoints.
 

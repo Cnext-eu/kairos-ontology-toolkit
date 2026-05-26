@@ -9,11 +9,14 @@ Provides functions to:
 - Load imported ontologies from local files
 """
 
+import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Optional
 
 from rdflib import Graph
+
+_logger = logging.getLogger(__name__)
 
 
 def _get_rdf_format(file_path: Path) -> str:
@@ -56,6 +59,7 @@ class CatalogResolver:
         """
         self.catalog_path = catalog_path
         self.mappings: Dict[str, Path] = {}
+        self._hash_fallback_used: bool = False
         self._load_catalog()
     
     def _load_catalog(self):
@@ -79,12 +83,20 @@ class CatalogResolver:
             if uri_name and uri_path:
                 local_path = (catalog_dir / uri_path).resolve()
 
+                # Store exact mapping
+                self.mappings[uri_name] = local_path
+
                 # Normalize URI (ensure trailing slash consistency)
-                normalized_uri = uri_name.rstrip('/') + '/'
+                normalized_uri = uri_name.rstrip('/#') + '/'
                 self.mappings[normalized_uri] = local_path
 
                 # Also add without trailing slash for flexibility
                 self.mappings[normalized_uri.rstrip('/')] = local_path
+
+                # Hash normalization: store both with and without trailing #
+                bare = uri_name.rstrip('#')
+                self.mappings[bare] = local_path
+                self.mappings[bare + '#'] = local_path
 
         # Follow <nextCatalog> references
         for next_elem in root.findall(f"{self.CATALOG_NS}nextCatalog"):
@@ -116,6 +128,17 @@ class CatalogResolver:
         uri_without_slash = uri.rstrip('/')
         if uri_without_slash in self.mappings:
             return self.mappings[uri_without_slash]
+
+        # Try with/without trailing hash
+        uri_with_hash = uri.rstrip('#') + '#'
+        if uri_with_hash in self.mappings:
+            self._hash_fallback_used = True
+            return self.mappings[uri_with_hash]
+
+        uri_without_hash = uri.rstrip('#')
+        if uri_without_hash in self.mappings:
+            self._hash_fallback_used = True
+            return self.mappings[uri_without_hash]
         
         return None
     
@@ -161,7 +184,16 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> Graph:
             continue
         
         # Resolve via catalog
+        hash_before = resolver._hash_fallback_used
         local_path = resolver.resolve(import_str)
+        if resolver._hash_fallback_used and not hash_before:
+            _logger.warning(
+                "Hash mismatch: owl:imports <%s> resolved via '#' fallback. "
+                "Align the catalog name and owl:imports URI to avoid ambiguity.",
+                import_str,
+            )
+            print(f"  ⚠️  Hash mismatch for import: {import_str} "
+                  f"(resolved via '#' fallback — consider aligning catalog/imports)")
         
         if local_path and local_path.exists():
             try:

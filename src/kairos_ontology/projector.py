@@ -3,6 +3,7 @@
 """Projection orchestrator - generates downstream artifacts."""
 
 import json
+import logging
 import traceback as _tb
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -24,6 +25,24 @@ _POST_DOMAIN_TARGETS = {"report"}
 # Filename patterns that are NOT domain ontologies and should be skipped.
 _NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")
 _NON_DOMAIN_PREFIXES = ("_",)
+
+_logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Logging handler to capture projector warnings
+# ---------------------------------------------------------------------------
+
+
+class _ProjectionWarningHandler(logging.Handler):
+    """Temporary handler that captures WARNING+ log records from projectors."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.records: List[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +71,9 @@ class ProjectionReport:
 
     # [{level, ?domain, ?target, message}]
     events: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Captured logger warnings: {domain: [(target, message)]}
+    captured_warnings: Dict[str, List[tuple]] = field(default_factory=dict)
 
     # Running counters
     _total_files: int = field(default=0, repr=False)
@@ -184,6 +206,138 @@ class ProjectionReport:
             json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+        return path
+
+    def add_captured_warnings(
+        self, domain: str, target: str, records: List[logging.LogRecord]
+    ) -> None:
+        """Ingest WARNING+ log records captured during a projection."""
+        if domain not in self.captured_warnings:
+            self.captured_warnings[domain] = []
+        for rec in records:
+            msg = rec.getMessage()
+            self.captured_warnings[domain].append((target, msg))
+            # Also feed into structured events so the JSON report stays in sync
+            self.record("warning", msg, domain=domain, target=target)
+
+    def write_domain_markdown(self, domain: str, sessions_dir: Path) -> Optional[Path]:
+        """Write a per-domain projection report as Markdown.
+
+        Filename: ``projection-<domain>-<YYYY-MM-DD>.md``
+
+        Returns the path written, or None if the sessions_dir is unavailable.
+        """
+        if not sessions_dir:
+            return None
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        filename = f"projection-{domain}-{date_str}.md"
+        path = sessions_dir / filename
+
+        lines: List[str] = []
+        lines.append(f"# Projection Report — {domain}")
+        lines.append("")
+        lines.append(f"**Generated:** {self.generated_at}  ")
+        lines.append(f"**Toolkit version:** {self.toolkit_version}  ")
+        lines.append(f"**Targets:** {', '.join(self.targets_requested)}")
+        lines.append("")
+
+        # Domain load info
+        domain_info = self.domains.get(domain)
+        if domain_info:
+            lines.append("## Domain")
+            lines.append("")
+            lines.append(f"| Property | Value |")
+            lines.append(f"|----------|-------|")
+            lines.append(f"| File | {domain_info.get('file', '—')} |")
+            lines.append(f"| Triples | {domain_info.get('triples', '—')} |")
+            lines.append(f"| Namespace | {domain_info.get('namespace', '—')} |")
+            lines.append(f"| Status | {domain_info.get('status', '—')} |")
+            if domain_info.get("error"):
+                lines.append(f"| Error | {domain_info['error']} |")
+            lines.append("")
+
+        # Projection results for this domain
+        domain_projections = [
+            p for p in self.projections if p.get("domain") == domain
+        ]
+        if domain_projections:
+            lines.append("## Projections")
+            lines.append("")
+            lines.append("| Target | Status | Files |")
+            lines.append("|--------|--------|-------|")
+            for proj in domain_projections:
+                files = proj.get("files_generated", 0)
+                status = proj.get("status", "—")
+                target_name = proj.get("target", "—")
+                note = ""
+                if proj.get("error"):
+                    note = f" ⚠️ {proj['error']}"
+                elif proj.get("reason"):
+                    note = f" ({proj['reason']})"
+                lines.append(f"| {target_name} | {status}{note} | {files} |")
+            lines.append("")
+
+        # Warnings section
+        domain_warnings = self.captured_warnings.get(domain, [])
+        domain_events_warnings = [
+            e for e in self.events
+            if e.get("domain") == domain and e.get("level") == "warning"
+        ]
+        # Combine: use captured_warnings (from logger) + any extra from events
+        # Deduplicate by message text
+        seen_msgs: set = set()
+        all_warnings: List[tuple] = []
+        for target_name, msg in domain_warnings:
+            if msg not in seen_msgs:
+                all_warnings.append((target_name, msg))
+                seen_msgs.add(msg)
+        for evt in domain_events_warnings:
+            if evt["message"] not in seen_msgs:
+                all_warnings.append((evt.get("target", "—"), evt["message"]))
+                seen_msgs.add(evt["message"])
+
+        if all_warnings:
+            lines.append("## ⚠️ Warnings")
+            lines.append("")
+            for target_name, msg in all_warnings:
+                lines.append(f"- **[{target_name}]** {msg}")
+            lines.append("")
+
+        # Errors section
+        domain_errors = [
+            e for e in self.events
+            if e.get("domain") == domain and e.get("level") == "error"
+        ]
+        if domain_errors:
+            lines.append("## ❌ Errors")
+            lines.append("")
+            for evt in domain_errors:
+                lines.append(f"- **[{evt.get('target', '—')}]** {evt['message']}")
+            lines.append("")
+
+        # Info section (non-warning, non-error)
+        domain_infos = [
+            e for e in self.events
+            if e.get("domain") == domain and e.get("level") == "info"
+        ]
+        if domain_infos:
+            lines.append("## ℹ️ Info")
+            lines.append("")
+            for evt in domain_infos:
+                lines.append(f"- **[{evt.get('target', '—')}]** {evt['message']}")
+            lines.append("")
+
+        # Summary footer
+        if not all_warnings and not domain_errors:
+            lines.append("## ✅ No issues")
+            lines.append("")
+            lines.append("All projections completed without warnings or errors.")
+            lines.append("")
+
+        content = "\n".join(lines)
+        path.write_text(content, encoding="utf-8")
         return path
 
 
@@ -531,15 +685,27 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                     report.record("info", f"Using ref-model defaults: {names}",
                                   domain=onto_name, target=target_name)
 
-                artifacts = _run_projection(target_name, onto_graph, target_output, template_base,
-                                            onto_namespace, shapes_dir, onto_name,
-                                            projection_ext_path=ext_path,
-                                            gold_ext_path=gold_ext_path,
-                                            ontology_metadata=onto_meta,
-                                            sources_dir=sources_dir,
-                                            mappings_dir=mappings_dir,
-                                            hub_domain_namespaces=hub_domain_namespaces,
-                                            ref_model_defaults=ref_defaults)
+                # Capture projector-level logger warnings
+                warn_handler = _ProjectionWarningHandler()
+                proj_logger = logging.getLogger("kairos_ontology.projections")
+                proj_logger.addHandler(warn_handler)
+                try:
+                    artifacts = _run_projection(
+                        target_name, onto_graph, target_output, template_base,
+                        onto_namespace, shapes_dir, onto_name,
+                        projection_ext_path=ext_path,
+                        gold_ext_path=gold_ext_path,
+                        ontology_metadata=onto_meta,
+                        sources_dir=sources_dir,
+                        mappings_dir=mappings_dir,
+                        hub_domain_namespaces=hub_domain_namespaces,
+                        ref_model_defaults=ref_defaults)
+                finally:
+                    proj_logger.removeHandler(warn_handler)
+                    if warn_handler.records:
+                        report.add_captured_warnings(
+                            onto_name, target_name, warn_handler.records
+                        )
                 if artifacts:
                     total_files += _write_artifacts(artifacts, target_output)
                     print(f"  [{onto_name}] ✓ Generated {len(artifacts)} file(s)")
@@ -708,6 +874,14 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     # Write the projection report
     report_path = report.write(output_path)
     print(f"   📋 Report:   {report_path.name}")
+
+    # Write per-domain Markdown reports to .sessions-projection/
+    sessions_dir = hub_root / ".sessions-projection" if hub_root else None
+    if sessions_dir:
+        for domain_name in report.domains:
+            md_path = report.write_domain_markdown(domain_name, sessions_dir)
+            if md_path:
+                print(f"   📝 Session report: {md_path.name}")
 
 
 def extract_ontology_metadata(graph: Graph, namespace: str) -> dict:
