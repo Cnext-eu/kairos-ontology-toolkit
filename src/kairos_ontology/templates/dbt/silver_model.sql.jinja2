@@ -16,11 +16,30 @@
 --
 -- Maps bronze source tables to the silver domain entity.
 -- Column definitions align with the silver projector DDL output.
+{%- if scd_type == "2" %}
+-- SCD Type 2: incremental with change detection (insert new + close prior)
+{%- elif scd_type == "1" %}
+-- SCD Type 1: incremental upsert (overwrite in place)
+{%- endif %}
 
+{%- if unique_key is sequence and unique_key is not string %}
+{{"{{"}} config(
+    materialized='{{ materialization | default("table") }}',
+    schema='{{ schema_name }}',
+    unique_key={{ unique_key }}
+) {{"}}"}}
+{%- elif unique_key %}
+{{"{{"}} config(
+    materialized='{{ materialization | default("table") }}',
+    schema='{{ schema_name }}',
+    unique_key='{{ unique_key }}'
+) {{"}}"}}
+{%- else %}
 {{"{{"}} config(
     materialized='{{ materialization | default("table") }}',
     schema='{{ schema_name }}'
 ) {{"}}"}}
+{%- endif %}
 
 {%- for cte in source_ctes %}
 
@@ -33,7 +52,102 @@
 
 ){% if not loop.last %},{% endif %}
 {%- endfor %}
-{%- if source_ctes | length > 1 %}
+{%- if scd_type == "2" %}
+,
+
+source_data as (
+
+    select
+{%- for col in columns %}
+        {{ col.expression }} as {{ col.target_name }},
+{%- endfor %}
+{%- if hash_columns %}
+        SHA2_HEX(CONCAT_WS('|'{% for hc in hash_columns %}, COALESCE(CAST({{ hc }} AS VARCHAR), ''){% endfor %})) as _row_hash,
+{%- endif %}
+        CURRENT_DATE as valid_from,
+        CAST(NULL AS DATE) as valid_to,
+        1 as is_current
+    from {{ source_ctes[0].alias }}
+{%- for join in joins %}
+    {{ join.type }} join {{ join.ref }} as {{ join.alias }}
+        on {{ join.condition }}
+{%- endfor %}
+{%- if where_clause %}
+    where {{ where_clause }}
+{%- endif %}
+
+)
+
+{{"{{"}}% if is_incremental() %{{"}}"}}
+,
+
+existing as (
+
+    select {{ model_name }}_sk, _row_hash
+    from {{"{{"}} this {{"}}"}}
+    where is_current = 1
+
+),
+
+changed as (
+
+    select s.*
+    from source_data s
+    left join existing e on s.{{ model_name }}_sk = e.{{ model_name }}_sk
+    where e.{{ model_name }}_sk is null
+       or e._row_hash != s._row_hash
+
+),
+
+closed as (
+
+    select
+        e.{{ model_name }}_sk,
+        e._row_hash,
+{%- for col in columns %}
+{%- if col.target_name != model_name + "_sk" %}
+        CAST(NULL AS VARCHAR) as {{ col.target_name }},
+{%- endif %}
+{%- endfor %}
+        (select valid_from from {{"{{"}} this {{"}}"}} t where t.{{ model_name }}_sk = e.{{ model_name }}_sk and t.is_current = 1) as valid_from,
+        CURRENT_DATE as valid_to,
+        0 as is_current
+    from existing e
+    inner join changed c on e.{{ model_name }}_sk = c.{{ model_name }}_sk
+
+)
+{{"{{"}}% endif %{{"}}"}}
+
+select
+    {{ model_name }}_sk,
+{%- for col in columns %}
+{%- if col.target_name != model_name + "_sk" %}
+    {{ col.target_name }},
+{%- endif %}
+{%- endfor %}
+    _row_hash,
+    valid_from,
+    valid_to,
+    is_current
+from {{"{{"}}% if is_incremental() %{{"}}"}}changed{{"{{"}}% else %{{"}}"}}source_data{{"{{"}}% endif %{{"}}"}}
+
+{{"{{"}}% if is_incremental() %{{"}}"}}
+union all
+
+select
+    {{ model_name }}_sk,
+{%- for col in columns %}
+{%- if col.target_name != model_name + "_sk" %}
+    {{ col.target_name }},
+{%- endif %}
+{%- endfor %}
+    _row_hash,
+    valid_from,
+    valid_to,
+    is_current
+from closed
+{{"{{"}}% endif %{{"}}"}}
+{%- elif source_ctes | length > 1 %}
 ,
 
 final as (
