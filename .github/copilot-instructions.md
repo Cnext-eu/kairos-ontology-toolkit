@@ -16,6 +16,9 @@ then answer.
 > **New here?** Invoke the **kairos-ontology-help** skill for a full orientation — it covers
 > the shift-left design philosophy, hub folder structure, available projections,
 > CLI commands, and best practices.
+>
+> **Returning?** Would you like me to run a **hub status check** to see where things
+> stand? _(invokes the kairos-ontology-hub-status skill)_
 
 ## Project overview
 
