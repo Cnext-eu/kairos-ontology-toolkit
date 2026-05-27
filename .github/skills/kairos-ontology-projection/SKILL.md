@@ -16,6 +16,46 @@ You help users generate and understand projection artifacts.
    `python -m kairos_ontology update` and commit the refresh before doing any other work.
    See the kairos-ontology-toolkit-ops skill for full upgrade steps.
 
+## Pre-flight checks (medallion targets)
+
+Before running a **medallion target** (`silver`, `dbt`, or `powerbi`), you MUST check
+that prerequisite files exist. Non-medallion targets (`prompt`, `neo4j`, `azure-search`,
+`a2ui`, `report`) need no pre-flight — run them immediately.
+
+### Check matrix
+
+| Target | Required files | Design skill |
+|--------|---------------|--------------|
+| **silver** | `model/extensions/<domain>-silver-ext.ttl` | `kairos-ontology-medallion-silver` |
+| **dbt** | Silver ext (above) + at least one `integration/sources/<system>/*.vocabulary.ttl` + at least one `model/mappings/<system>-to-<domain>.ttl` | `kairos-ontology-medallion-silver` |
+| **powerbi** | `model/extensions/<domain>-gold-ext.ttl` | `kairos-ontology-medallion-gold` |
+
+### Procedure
+
+1. Identify which medallion targets the user requested (explicit `--target` or implied via bare `project`).
+2. For each medallion target, check whether the required files exist in the hub.
+3. **If files are missing:**
+   - List what is missing (e.g. "No `*-silver-ext.ttl` found in `model/extensions/`").
+   - Explain what the extension file provides (annotation decisions: natural keys, SCD types, FK declarations, schema names).
+   - Offer the user a choice:
+     - **(Recommended)** Invoke the design skill to create the extensions first.
+     - Run anyway with defaults (all columns SCD Type 1, no natural keys, no FK — produces valid but incomplete output).
+4. **If files are present:** proceed with projection normally.
+5. **For bare `project` (all targets):** run non-medallion targets immediately; apply the pre-flight check only for the medallion subset.
+
+### Example interaction
+
+```
+User: "project to silver"
+
+You:
+  1. Check model/extensions/*-silver-ext.ttl → NOT FOUND
+  2. "The silver target requires a silver extension file with kairos-ext: annotations
+     (naturalKey, silverSchema, scdType, etc.). None found in model/extensions/.
+     Would you like me to invoke kairos-ontology-medallion-silver to create it,
+     or run the projection with defaults?"
+```
+
 ## Available targets
 
 | Target | Output | Use case |
