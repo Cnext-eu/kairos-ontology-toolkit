@@ -10,7 +10,7 @@ import from here rather than maintaining local copies.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -201,18 +201,10 @@ def merge_ext_graph(
     for s, p, _o in ext_graph:
         ext_sp_pairs.add((s, p))
 
-    # Add fallback triples (skip if domain extension or peer exts define s+p)
-    if fallback_paths:
-        for fb_path in fallback_paths:
-            if fb_path and Path(fb_path).exists():
-                fb_graph = Graph()
-                fb_graph.parse(str(fb_path), format="turtle")
-                for s, p, o in fb_graph:
-                    if (s, p) not in ext_sp_pairs:
-                        merged.add((s, p, o))
-
-    # Add peer extension triples (other domains' ext files) for cross-domain
-    # annotation resolution.  Skip if domain's own ext already defines s+p.
+    # Collect peer extension triples and their (s,p) pairs.
+    # Peers override fallbacks but yield to domain ext.
+    peer_sp_pairs: set = set()
+    peer_triples: list = []
     if peer_ext_paths:
         for peer_path in peer_ext_paths:
             if peer_path and Path(peer_path).exists():
@@ -221,10 +213,27 @@ def merge_ext_graph(
                     peer_graph.parse(str(peer_path), format="turtle")
                     for s, p, o in peer_graph:
                         if (s, p) not in ext_sp_pairs:
-                            merged.add((s, p, o))
-                except Exception:
-                    # Graceful degradation: skip unparseable peer ext files
-                    pass
+                            peer_sp_pairs.add((s, p))
+                            peer_triples.append((s, p, o))
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Could not parse peer ext file %s: %s", peer_path, exc,
+                    )
+
+    # Add fallback triples — lowest priority: skip if domain ext OR peers define s+p
+    if fallback_paths:
+        for fb_path in fallback_paths:
+            if fb_path and Path(fb_path).exists():
+                fb_graph = Graph()
+                fb_graph.parse(str(fb_path), format="turtle")
+                for s, p, o in fb_graph:
+                    if (s, p) not in ext_sp_pairs and (s, p) not in peer_sp_pairs:
+                        merged.add((s, p, o))
+
+    # Add peer extension triples (override fallbacks, yield to domain ext)
+    for triple in peer_triples:
+        merged.add(triple)
 
     # Add domain extension triples last (always wins)
     for triple in ext_graph:

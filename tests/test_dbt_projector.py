@@ -521,7 +521,7 @@ class TestGenerateDbtArtifacts:
         assert proj.get("docs-paths") == ["docs"]
 
     def test_no_bronze_generates_silver_only(self, classes, ontology_graph, template_dir):
-        """Without bronze dir, only silver models + schema are generated."""
+        """Without bronze dir, schema YAML is generated but no SQL models."""
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=ontology_graph,
@@ -532,8 +532,11 @@ class TestGenerateDbtArtifacts:
         # No staging or source files
         assert not any("stg_" in k for k in artifacts)
         assert not any("_sources.yml" in k for k in artifacts)
-        # But silver models exist
-        assert any("models/silver/" in k for k in artifacts)
+        # Schema YAML is generated (no systems = no filtering)
+        assert any("_models.yml" in k for k in artifacts)
+        # But no .sql silver models (no bronze mapping → no model generated)
+        silver_sql = [k for k in artifacts if "models/silver/" in k and k.endswith(".sql")]
+        assert not silver_sql
 
 
 # ---------------------------------------------------------------------------
