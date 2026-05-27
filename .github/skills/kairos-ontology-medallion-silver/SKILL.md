@@ -635,16 +635,44 @@ ref:hasConsignmentItem
 ### Working with imported classes (DD-021)
 
 When a domain ontology uses `owl:imports` to reference external models (e.g.,
-reference models), imported classes are **NOT projected** to silver by default.
-Hub authors must explicitly claim them.
+reference models), imported classes are **NOT projected as separate tables** by
+default. However, **properties from imported parents are always inherited
+automatically** via ancestor traversal.
 
-**Per-class claiming:**
+#### Architectural decision matrix
+
+| Your goal | Action | Result |
+|-----------|--------|--------|
+| Inherit parent properties into child table | **None — automatic** | Child table includes all datatype + FK properties from the full `rdfs:subClassOf` chain |
+| Project the parent as its own separate table | Add `silverInclude "true"` on the parent class | Parent gets its own table; child is **folded into it** via S3 (discriminator column) — child loses its own table |
+| Project all imported classes as tables | Add `silverIncludeImports "true"` on ontology | All first-level imports get tables (use sparingly — can create many unwanted tables) |
+
+> **Key insight:** `silverInclude` does NOT mean "inherit properties" — inheritance
+> always works regardless. It means "project this class as its own table". When a
+> parent IS claimed, S3 single-table inheritance activates: the child is folded into
+> the parent table with a discriminator column.
+
+#### When to ignore the DD-021 notice
+
+The DD-021 message is **informational** (not a warning). You can safely ignore it when:
+- Your domain class extends a reference model parent via `rdfs:subClassOf`
+- You want your domain class as its **own** table (not folded into the parent)
+- You want inherited parent properties in that table
+- → All of this works by default. The notice confirms you have an unclaimed parent.
+
+#### Per-class claiming (when you DO want a parent table)
+
 ```turtle
 @prefix ref: <https://referencemodels.kairos.cnext.eu/party#> .
 ref:TradeParty kairos-ext:silverInclude "true"^^xsd:boolean .
 ```
 
-**Bulk claiming (all first-level imported classes):**
+⚠️ **Impact:** If your domain has `hub:Customer rdfs:subClassOf ref:TradeParty`,
+adding `silverInclude` on `TradeParty` means Customer will be **folded into** the
+TradeParty table (S3 single-table inheritance). Customer will NOT get its own table.
+
+#### Bulk claiming (all first-level imported classes)
+
 ```turtle
 <https://contoso.com/ont/customer> kairos-ext:silverIncludeImports "true"^^xsd:boolean .
 ```
@@ -657,6 +685,7 @@ ref:TradeParty kairos-ext:silverInclude "true"^^xsd:boolean .
 - The silver schema comes from the **hub domain name** (e.g., `silver_customer`),
   not from the reference model namespace.
 - Per-class `silverInclude` overrides bulk mode for individual classes.
+- `silverInclude` on a parent triggers S3 — subtypes are folded into the parent table.
 
 **Example extension file** (`customer-silver-ext.ttl`):
 ```turtle
@@ -664,12 +693,12 @@ ref:TradeParty kairos-ext:silverInclude "true"^^xsd:boolean .
 @prefix ref: <https://referencemodels.kairos.cnext.eu/party#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-# Bulk-claim all imported reference model classes
+# Bulk-claim all imported reference model classes (each gets its own table)
 <https://contoso.com/ont/customer>
     kairos-ext:silverSchema "silver_customer" ;
     kairos-ext:silverIncludeImports "true"^^xsd:boolean .
 
-# Or claim individual classes
+# Or claim individual classes (this parent becomes a table; subtypes fold into it)
 ref:TradeParty
     kairos-ext:silverInclude "true"^^xsd:boolean ;
     kairos-ext:scdType "2" .
@@ -680,7 +709,11 @@ ref:TradeParty
 When a projected class has a parent that is **not** in the projected set (i.e.,
 not claimed via `silverInclude` or `silverIncludeImports`), the projector
 automatically inherits datatype properties and FK object properties from the full
-`rdfs:subClassOf` chain.
+`rdfs:subClassOf` chain. **No action is required** — this is the default behavior.
+
+The `_get_class_and_ancestors()` function traverses all ancestors, stopping at:
+- W3C vocabulary URIs (`owl:Thing`, `rdfs:Resource`)
+- Ancestors that ARE separately projected (S3 handles those via the parent table)
 
 ### Reference model extension defaults (DD-023)
 

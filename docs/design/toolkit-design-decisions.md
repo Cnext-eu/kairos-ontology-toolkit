@@ -902,6 +902,33 @@ The whitelist + bulk flag approach was chosen because:
 - New helper functions: `_discover_whitelisted_imports()`, `_get_reference_model_namespaces()`
 - Schema for adopted imported classes comes from the hub domain name, not the reference model namespace
 
+### Property Inheritance Clarification
+
+The DD-021 notice is **informational only** — properties from unclaimed parents are
+**always inherited automatically**. The projector's `_get_class_and_ancestors()` function
+traverses the full `rdfs:subClassOf` chain and includes datatype + FK properties from
+all ancestor classes that are NOT separately projected.
+
+**Architectural decision matrix:**
+
+| Scenario | Action required | Result |
+|----------|----------------|--------|
+| Want parent properties in child table | None — automatic | Child table includes all inherited properties via ancestor traversal |
+| Want parent as its own separate table (S3) | Add `silverInclude "true"` on parent class | Parent gets own table; child is folded into it with discriminator column |
+| Want all imported classes as separate tables | Add `silverIncludeImports "true"` on ontology | All first-level imports get tables (use sparingly) |
+
+**Key insight:** `silverInclude` does NOT mean "inherit properties" — inheritance
+always works. It means "project this class as its own table". When a parent IS
+projected as its own table, S3 single-table inheritance kicks in: the child class
+is folded into the parent table with a discriminator column (the child does NOT get
+its own table).
+
+**When to ignore the DD-021 notice:**
+- Your domain class extends a reference model class
+- You want your domain class as its own table with all inherited parent properties
+- You do NOT want the reference model parent as a separate table
+- → Properties already flow through; the notice is confirming this is intentional
+
 ### Examples
 
 **Import-only domain (bulk):**

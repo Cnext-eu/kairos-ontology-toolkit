@@ -1566,7 +1566,7 @@ def test_dd021_extension_overrides_on_claimed_imports():
 
 
 def test_dd021_warn_unclaimed_parent(caplog):
-    """DD-021: Warning emitted when a claimed subclass has an unclaimed parent."""
+    """DD-021: Info notice emitted when a claimed subclass has an unclaimed parent."""
     import logging
 
     REF_NS = "http://refmodel.example.com/ont/party#"
@@ -1597,11 +1597,11 @@ def test_dd021_warn_unclaimed_parent(caplog):
     classes = [
         {"uri": f"{REF_NS}Buyer", "name": "Buyer"},
     ]
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         result = generate_silver_artifacts(
             classes, g, HUB_NS, ontology_name="party"
         )
-    # Warning about unclaimed parent should be emitted
+    # Info notice about unclaimed parent should be emitted
     assert any("DD-021" in msg and "TradeParty" in msg and "not claimed" in msg
                for msg in caplog.messages)
 

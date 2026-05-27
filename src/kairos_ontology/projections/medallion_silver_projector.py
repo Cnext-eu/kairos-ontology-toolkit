@@ -158,16 +158,17 @@ def _warn_unclaimed_parents(
     graph: Graph,
     domain_classes: list[dict],
 ) -> list[str]:
-    """Warn when a claimed imported class has an unclaimed parent (DD-021).
+    """Emit an informational notice when a class has an unclaimed parent (DD-021).
 
-    If a class has ``rdfs:subClassOf`` pointing to a class that is NOT in the
-    projected set, inherited properties from that parent will be missing from
-    the generated DDL.
+    Properties from unclaimed parents are still inherited automatically via
+    ``_get_class_and_ancestors()`` — this notice is informational only.  It alerts
+    users that a parent exists outside the projected set so they can decide whether
+    the parent warrants its own table (via ``silverInclude``).
 
-    Returns a list of warning messages (also logged) for inclusion in reports.
+    Returns a list of info messages (also logged) for inclusion in reports.
     """
     class_uris = {c["uri"] for c in domain_classes}
-    warnings: list[str] = []
+    notices: list[str] = []
     for cls_info in domain_classes:
         cls_uri = URIRef(cls_info["uri"])
         for parent in graph.objects(cls_uri, RDFS.subClassOf):
@@ -180,15 +181,16 @@ def _warn_unclaimed_parents(
             if parent_str not in class_uris:
                 parent_local = _local_name(parent_str)
                 msg = (
-                    f"DD-021: {cls_info['name']} is a subclass of "
-                    f"{parent_local} which is not claimed for projection. "
-                    f"Inherited properties from {parent_local} will be "
-                    f"missing. Add kairos-ext:silverInclude true to "
-                    f"<{parent_str}> or claim it via silverIncludeImports."
+                    f"DD-021 info: {cls_info['name']} extends {parent_local} "
+                    f"which is not claimed for projection. Properties from "
+                    f"{parent_local} are inherited automatically into the "
+                    f"child table. To project {parent_local} as its own "
+                    f"table, add kairos-ext:silverInclude true to "
+                    f"<{parent_str}>."
                 )
-                logger.warning(msg)
-                warnings.append(msg)
-    return warnings
+                logger.info(msg)
+                notices.append(msg)
+    return notices
 
 
 def _warn_incomplete_fk_annotations(graph: Graph) -> list[str]:
