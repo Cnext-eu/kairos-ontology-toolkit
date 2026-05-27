@@ -2,12 +2,8 @@
 # Copyright 2026 Cnext.eu
 """FastAPI application entry point."""
 
-from pathlib import Path
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .routers import application_models, auth, chat, ontology, projection, repos, validation
@@ -48,7 +44,7 @@ async def health():
 
 @app.get("/api/config")
 async def get_config():
-    """Public config endpoint — tells the UI about dev mode and active repo."""
+    """Public config endpoint — returns service configuration."""
     return {
         "dev_mode": settings.dev_mode,
         "oauth_enabled": bool(settings.oauth_client_id and settings.oauth_client_secret),
@@ -57,34 +53,6 @@ async def get_config():
             "owner": settings.github_repo_owner,
             "name": settings.github_repo_name,
         },
-        # Expose dev token so the UI can pre-fill auth for chat (local/dev use only)
         "github_token": settings.dev_github_token or None,
     }
 
-
-# Static UI — prefer the compiled React/Vite build, fall back to legacy static/
-_frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-_static_dir = Path(__file__).resolve().parent.parent / "static"
-
-_ui_dir = _frontend_dist if _frontend_dist.is_dir() else _static_dir
-
-if _ui_dir.is_dir():
-    app.mount("/assets", StaticFiles(directory=str(_ui_dir / "assets")), name="assets") \
-        if (_ui_dir / "assets").is_dir() else None
-    app.mount("/static", StaticFiles(directory=str(_ui_dir)), name="static")
-
-    @app.get("/")
-    async def root():
-        return FileResponse(str(_ui_dir / "index.html"))
-
-    @app.get("/{full_path:path}")
-    async def spa_fallback(full_path: str):
-        """Return index.html for any non-API route (SPA client-side routing)."""
-        if full_path.startswith("api/"):
-            from fastapi import HTTPException
-            raise HTTPException(status_code=404)
-        index = _ui_dir / "index.html"
-        if index.is_file():
-            return FileResponse(str(index))
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404)
