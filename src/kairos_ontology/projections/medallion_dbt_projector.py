@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -976,9 +977,19 @@ def _gen_silver_models(
             source_template = env.get_template("silver_source_model.sql.jinja2")
             union_template = env.get_template("silver_union_model.sql.jinja2")
 
+            # Detect same-source collisions requiring table-name disambiguation
+            source_system_counts = Counter(src for src, _, _ in source_refs)
+            needs_table_suffix = {
+                src for src, count in source_system_counts.items() if count > 1
+            }
+
             for i, (src, raw_tbl, tbl_uri) in enumerate(source_refs):
                 src_suffix = _camel_to_snake(src)
-                src_model_name = f"{model_name}__from_{src_suffix}"
+                if src in needs_table_suffix:
+                    tbl_suffix = _camel_to_snake(raw_tbl.split(".")[-1])
+                    src_model_name = f"{model_name}__from_{src_suffix}__{tbl_suffix}"
+                else:
+                    src_model_name = f"{model_name}__from_{src_suffix}"
                 source_model_names.append(src_model_name)
 
                 # Get the set of column URIs for this specific source table
@@ -2360,6 +2371,7 @@ def generate_dbt_artifacts(
     target_platform: str = DEFAULT_PLATFORM,
     silver_ext_path: Path = None,
     ref_model_defaults: list = None,
+    peer_ext_paths: list = None,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -2382,6 +2394,9 @@ def generate_dbt_artifacts(
             Options: ``"fabric"`` (default), ``"databricks"``, ``"spark"`` (alias for databricks).
         silver_ext_path: Optional path to ``*-silver-ext.ttl`` for naturalKey and
             other silver annotations used by the dbt silver layer.
+        peer_ext_paths: Optional list of paths to other domain ``*-silver-ext.ttl``
+            files.  Used for cross-domain naturalKey resolution when FK targets
+            are declared in a different domain's extension.
 
     Returns:
         Dictionary of ``{file_path: content}`` for all generated artifacts.
@@ -2394,7 +2409,12 @@ def generate_dbt_artifacts(
     # Merge silver-ext triples into a working copy of the graph so naturalKey
     # and other silver annotations are visible during dbt silver model generation.
     # DD-023: Include ref-model defaults as fallback layer.
-    graph = merge_ext_graph(graph, silver_ext_path, fallback_paths=ref_model_defaults)
+    # Cross-domain NK: Include peer extension files for FK target resolution.
+    graph = merge_ext_graph(
+        graph, silver_ext_path,
+        fallback_paths=ref_model_defaults,
+        peer_ext_paths=peer_ext_paths,
+    )
 
     # Parse source vocabulary — prefer sources_dir, fall back to bronze_dir
     systems = _parse_bronze(sources_dir or bronze_dir)

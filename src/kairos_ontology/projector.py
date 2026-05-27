@@ -641,7 +641,13 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         target_output.mkdir(parents=True, exist_ok=True)
         
         total_files = 0
-        
+
+        # Collect all silver extension file paths for cross-domain NK resolution.
+        # For dbt/silver targets, peer_ext_paths allows FK resolution across domains.
+        all_silver_ext_paths: list[Path] = []
+        if target_name in ("dbt", "silver") and extensions_dir and extensions_dir.exists():
+            all_silver_ext_paths = sorted(extensions_dir.glob("*-silver-ext.ttl"))
+
         for onto_info in ontology_graphs:
             onto_graph = onto_info['graph']
             onto_name = onto_info['name']
@@ -690,6 +696,12 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 proj_logger = logging.getLogger("kairos_ontology.projections")
                 proj_logger.addHandler(warn_handler)
                 try:
+                    # Compute peer ext paths (all silver-ext files except this domain's)
+                    peer_exts = [
+                        p for p in all_silver_ext_paths
+                        if p != ext_path
+                    ] if all_silver_ext_paths else None
+
                     artifacts = _run_projection(
                         target_name, onto_graph, target_output, template_base,
                         onto_namespace, shapes_dir, onto_name,
@@ -699,7 +711,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                         sources_dir=sources_dir,
                         mappings_dir=mappings_dir,
                         hub_domain_namespaces=hub_domain_namespaces,
-                        ref_model_defaults=ref_defaults)
+                        ref_model_defaults=ref_defaults,
+                        peer_ext_paths=peer_exts)
                 finally:
                     proj_logger.removeHandler(warn_handler)
                     if warn_handler.records:
@@ -1273,7 +1286,8 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
                     sources_dir: Optional[Path] = None,
                     mappings_dir: Optional[Path] = None,
                     hub_domain_namespaces: Optional[set] = None,
-                    ref_model_defaults: Optional[list] = None) -> dict:
+                    ref_model_defaults: Optional[list] = None,
+                    peer_ext_paths: Optional[list] = None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
@@ -1374,6 +1388,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             gold_ext_path=gold_ext_path,
             silver_ext_path=projection_ext_path,
             ref_model_defaults=ref_model_defaults,
+            peer_ext_paths=peer_ext_paths,
         )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts

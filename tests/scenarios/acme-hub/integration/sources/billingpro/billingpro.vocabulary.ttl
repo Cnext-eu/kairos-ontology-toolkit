@@ -135,3 +135,55 @@ bronze-bp:tblInvoiceTag_Label a kairos-bronze:SourceColumn ;
     kairos-bronze:columnName "Label" ;
     kairos-bronze:dataType "nvarchar(100)" ;
     kairos-bronze:nullable "true"^^xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# tblCreditNote — second table mapping to Invoice (multi-table-same-source)
+# ---------------------------------------------------------------------------
+bronze-bp:tblCreditNote a kairos-bronze:SourceTable ;
+    rdfs:label "tblCreditNote" ;
+    kairos-bronze:sourceSystem bronze-bp:BillingPro ;
+    kairos-bronze:tableName "tblCreditNote" ;
+    kairos-bronze:primaryKeyColumns "CreditNoteID" ;
+    kairos-bronze:incrementalColumn "LastModified" .
+
+bronze-bp:tblCreditNote_CreditNoteID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblCreditNote ;
+    kairos-bronze:columnName "CreditNoteID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblCreditNote_InvoiceNumber a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblCreditNote ;
+    kairos-bronze:columnName "InvoiceNumber" ;
+    kairos-bronze:dataType "nvarchar(50)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblCreditNote_InvoiceDate a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblCreditNote ;
+    kairos-bronze:columnName "InvoiceDate" ;
+    kairos-bronze:dataType "date" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblCreditNote_TotalAmount a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblCreditNote ;
+    kairos-bronze:columnName "TotalAmount" ;
+    kairos-bronze:dataType "decimal(18,2)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblCreditNote_ClientRef a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblCreditNote ;
+    kairos-bronze:columnName "ClientRef" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-bp:tblCreditNote_Currency a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblCreditNote ;
+    kairos-bronze:columnName "Currency" ;
+    kairos-bronze:dataType "nvarchar(3)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+bronze-bp:tblCreditNote_LastModified a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblCreditNote ;
+    kairos-bronze:columnName "LastModified" ;
+    kairos-bronze:dataType "datetime" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .

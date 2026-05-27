@@ -165,19 +165,25 @@ def merge_ext_graph(
     base_graph: Graph,
     ext_path: Optional[Path],
     fallback_paths: Optional[list] = None,
+    peer_ext_paths: Optional[list] = None,
 ) -> Graph:
     """Create a working copy of *base_graph* with extension triples merged in.
 
     Always returns a new Graph instance to avoid mutating the caller's graph.
 
-    Merge order (DD-023):
+    Merge order (DD-023, updated for cross-domain NK resolution):
       1. base_graph triples (the domain ontology)
       2. fallback_paths triples (reference model defaults) — only added if the
          subject+predicate pair is not already declared in the domain extension
-         (*ext_path*).  This ensures hub-local annotations always take priority.
-      3. ext_path triples (hub domain extension) — highest priority, always added.
+         (*ext_path*) or peer extensions.
+      3. peer_ext_paths triples (other domain extensions) — added for cross-domain
+         naturalKey resolution, but only if not already declared in the domain's
+         own extension (*ext_path*).  Domain-own extension always takes priority.
+      4. ext_path triples (hub domain extension) — highest priority, always added.
 
-    If *ext_path* is None or doesn't exist, returns base + fallbacks.
+    If *ext_path* is None or doesn't exist, returns base + peers + fallbacks.
+    If *peer_ext_paths* is None or empty, behaves identically to the original
+    signature (backward-compatible).
     If *fallback_paths* is None or empty, behaves identically to the original
     signature (backward-compatible).
     """
@@ -195,7 +201,7 @@ def merge_ext_graph(
     for s, p, _o in ext_graph:
         ext_sp_pairs.add((s, p))
 
-    # Add fallback triples (skip if domain extension already defines s+p)
+    # Add fallback triples (skip if domain extension or peer exts define s+p)
     if fallback_paths:
         for fb_path in fallback_paths:
             if fb_path and Path(fb_path).exists():
@@ -204,6 +210,21 @@ def merge_ext_graph(
                 for s, p, o in fb_graph:
                     if (s, p) not in ext_sp_pairs:
                         merged.add((s, p, o))
+
+    # Add peer extension triples (other domains' ext files) for cross-domain
+    # annotation resolution.  Skip if domain's own ext already defines s+p.
+    if peer_ext_paths:
+        for peer_path in peer_ext_paths:
+            if peer_path and Path(peer_path).exists():
+                try:
+                    peer_graph = Graph()
+                    peer_graph.parse(str(peer_path), format="turtle")
+                    for s, p, o in peer_graph:
+                        if (s, p) not in ext_sp_pairs:
+                            merged.add((s, p, o))
+                except Exception:
+                    # Graceful degradation: skip unparseable peer ext files
+                    pass
 
     # Add domain extension triples last (always wins)
     for triple in ext_graph:

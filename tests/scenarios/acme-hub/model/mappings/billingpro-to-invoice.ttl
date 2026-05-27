@@ -71,3 +71,26 @@ bronze-bp:tblInvoiceTag_TagCode skos:exactMatch acme-inv:tagCode ;
 
 bronze-bp:tblInvoiceTag_Label skos:exactMatch acme-inv:tagLabel ;
     kairos-map:transform "source.Label" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblCreditNote → Invoice (same class, different source table)
+# This exercises the multi-table-same-source union disambiguation.
+# ---------------------------------------------------------------------------
+bronze-bp:tblCreditNote skos:exactMatch acme-inv:Invoice ;
+    kairos-map:mappingType "direct" .
+
+bronze-bp:tblCreditNote_InvoiceNumber skos:exactMatch acme-inv:invoiceNumber ;
+    kairos-map:transform "source.InvoiceNumber" .
+
+bronze-bp:tblCreditNote_InvoiceDate skos:exactMatch acme-inv:invoiceDate ;
+    kairos-map:transform "CAST(source.InvoiceDate AS DATE)" .
+
+bronze-bp:tblCreditNote_TotalAmount skos:exactMatch acme-inv:totalAmount ;
+    kairos-map:transform "CAST(source.TotalAmount AS DECIMAL(18,2))" .
+
+bronze-bp:tblCreditNote_ClientRef skos:exactMatch acme-inv:issuedTo ;
+    kairos-map:transform "source.ClientRef" .
+
+bronze-bp:tblCreditNote_Currency skos:exactMatch acme-inv:currency ;
+    kairos-map:transform "source.Currency" ;
+    kairos-map:defaultValue "'EUR'" .
