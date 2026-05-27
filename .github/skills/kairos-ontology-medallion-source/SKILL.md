@@ -191,7 +191,8 @@ Verify:
 
 After the bronze vocabulary is complete:
 
-1. **Create SKOS mappings** in `model/mappings/{system-name}/` to link source columns to domain ontology properties
+1. **Create SKOS mappings** — invoke the **kairos-ontology-mapping** skill to interactively
+   map source columns to domain ontology properties in `model/mappings/{system-name}/`
 2. **Run the medallion projection** to generate dbt silver models:
    ```bash
    python -m kairos_ontology project --target dbt

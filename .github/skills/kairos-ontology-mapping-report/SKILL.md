@@ -145,7 +145,8 @@ Run the report after:
 
 1. **kairos-ontology-modeling** — defines the domain ontology (report target)
 2. **kairos-ontology-medallion-source** — creates source vocabulary (report source)
-3. **kairos-ontology-mapping-report** — generates coverage report (this skill)
-4. **kairos-ontology-medallion-silver** — uses mappings for dbt transforms (technical layer)
+3. **kairos-ontology-mapping** — guides interactive mapping creation with checkpoints
+4. **kairos-ontology-mapping-report** — generates coverage report (this skill)
+5. **kairos-ontology-medallion-silver** — uses mappings for dbt transforms (technical layer)
 
 The mapping report helps identify gaps *before* investing in dbt transform work.

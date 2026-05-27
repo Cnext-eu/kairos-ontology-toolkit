@@ -16,6 +16,9 @@ then answer.
 > **New here?** Invoke the **kairos-ontology-help** skill for a full orientation — it covers
 > the shift-left design philosophy, hub folder structure, available projections,
 > CLI commands, and best practices.
+>
+> **Returning?** Would you like me to run a **hub status check** to see where things
+> stand? _(invokes the kairos-ontology-hub-status skill)_
 
 ## Project overview
 
@@ -149,6 +152,7 @@ Use this table to pick the correct skill for a user's intent:
 | "Design gold / Power BI model" | **kairos-ontology-medallion-gold** |
 | "Import / extract TMDL or PBIP files" | CLI: `kairos-ontology import-tmdl` |
 | "Release / upgrade / version check" | **kairos-ontology-toolkit-ops** |
+| "Map source columns to domain / create SKOS mappings" | **kairos-ontology-mapping** |
 | "Status / progress / what's missing / where are we" | **kairos-ontology-hub-status** |
 
 ## Validation rules
