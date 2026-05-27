@@ -1345,10 +1345,12 @@ def _resolve_mapped_columns(
                     if formula:
                         expr = str(formula)
                     else:
-                        expr = f"CAST(NULL AS {macro_type})"
+                        # Derived without formula — skip (no source data)
+                        continue
                 else:
-                    # Unmapped: NULL placeholder with portable dbt_utils type
-                    expr = f"CAST(NULL AS {macro_type})"
+                    # Unmapped property with no source data — skip entirely.
+                    # Only include columns that have a real bronze mapping.
+                    continue
 
             columns.append({"expression": expr, "target_name": col_name})
 
@@ -1439,8 +1441,16 @@ def _infer_fk_targets(
 ) -> list[dict]:
     """Identify qualifying FK object properties for a class.
 
+    A property qualifies as a FK column when ANY of:
+      - it has an explicit ``kairos-ext:silverColumnName`` annotation,
+      - it is declared ``owl:FunctionalProperty``,
+      - it has ``kairos-ext:silverForeignKey true`` (DD-022).
+
+    Properties with ``kairos-ext:silverForeignKeyOn`` that redirect the FK to
+    a different class are skipped (the FK belongs on the target class, not here).
+
     Returns a list of dicts with keys: prop, range_cls, range_local, range_model,
-    fk_col_name_base.
+    fk_col_name.
     """
     domain_classes = _get_class_and_parents(graph, class_uri)
     targets: list[dict] = []
@@ -1454,10 +1464,18 @@ def _infer_fk_targets(
         if graph.value(prop, KAIROS_EXT.term("junctionTableName")):
             continue
 
-        # Qualify: must be functional or have silverColumnName
+        # Skip if silverForeignKeyOn redirects this FK to another table (DD-022)
+        fk_on = graph.value(prop, KAIROS_EXT.term("silverForeignKeyOn"))
+        if fk_on is not None:
+            continue
+
+        # Qualify: must be functional, have silverColumnName, or silverForeignKey
         has_explicit_col = graph.value(prop, KAIROS_EXT.term("silverColumnName")) is not None
         is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
-        if not has_explicit_col and not is_functional:
+        has_fk_annotation = bool_val(
+            graph, URIRef(str(prop)), KAIROS_EXT.silverForeignKey, False,
+        )
+        if not has_explicit_col and not is_functional and not has_fk_annotation:
             continue
 
         range_cls = graph.value(prop, RDFS.range)
@@ -1643,8 +1661,9 @@ def _extract_fk_columns_and_joins(
 ) -> tuple[list[dict], list[dict], list[str]]:
     """Extract FK columns and joins from object properties.
 
-    For each qualifying object property (functional or max-cardinality-1) on the
-    class, generates a surrogate-key lookup join to the referenced silver model.
+    For each qualifying object property (functional, silverColumnName, or
+    silverForeignKey) on the class, generates a surrogate-key lookup join to
+    the referenced silver model.
 
     Returns:
         (fk_columns, joins, warnings) where:

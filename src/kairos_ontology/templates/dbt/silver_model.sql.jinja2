@@ -102,18 +102,19 @@ changed as (
 closed as (
 
     select
-        e.{{ model_name }}_sk,
-        e._row_hash,
+        t.{{ model_name }}_sk,
 {%- for col in columns %}
 {%- if col.target_name != model_name + "_sk" %}
-        CAST(NULL AS VARCHAR) as {{ col.target_name }},
+        t.{{ col.target_name }},
 {%- endif %}
 {%- endfor %}
-        (select valid_from from {{"{{"}} this {{"}}"}} t where t.{{ model_name }}_sk = e.{{ model_name }}_sk and t.is_current = 1) as valid_from,
+        t._row_hash,
+        t.valid_from,
         CURRENT_DATE as valid_to,
         0 as is_current
-    from existing e
-    inner join changed c on e.{{ model_name }}_sk = c.{{ model_name }}_sk
+    from {{"{{"}} this {{"}}"}} t
+    inner join changed c on t.{{ model_name }}_sk = c.{{ model_name }}_sk
+    where t.is_current = 1
 
 )
 {{"{{"}}% endif %{{"}}"}}

@@ -36,6 +36,7 @@ with unioned as (
 select
     {{ sk_expression }} as {{ model_name }}_sk,
     {{ iri_expression }} as {{ model_name }}_iri,
+    _source_system,
 {%- for col in columns %}
     {{ col.target_name }}{% if not loop.last or joins %},{% endif %}
 {%- endfor %}
