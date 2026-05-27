@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -200,36 +201,6 @@ def _xsd_to_target(range_uri, platform: str = DEFAULT_PLATFORM) -> str:
 
 
 # ---------------------------------------------------------------------------
-# dbt_utils macro-based type references (for portable silver/gold models)
-# ---------------------------------------------------------------------------
-
-_XSD_TO_DBT_MACRO: dict[str, str] = {
-    str(XSD.string): "{{ dbt_utils.type_string() }}",
-    str(XSD.normalizedString): "{{ dbt_utils.type_string() }}",
-    str(XSD.token): "{{ dbt_utils.type_string() }}",
-    str(XSD.integer): "{{ dbt_utils.type_int() }}",
-    str(XSD.int): "{{ dbt_utils.type_int() }}",
-    str(XSD.long): "{{ dbt_utils.type_int() }}",
-    str(XSD.short): "{{ dbt_utils.type_int() }}",
-    str(XSD.decimal): "DECIMAL(18,4)",  # no dbt_utils macro for decimal
-    str(XSD.float): "{{ dbt_utils.type_float() }}",
-    str(XSD.double): "{{ dbt_utils.type_float() }}",
-    str(XSD.boolean): "{{ dbt_utils.type_boolean() }}",
-    str(XSD.date): "DATE",  # DATE is universal
-    str(XSD.dateTime): "{{ dbt_utils.type_timestamp() }}",
-    str(XSD.time): "{{ dbt_utils.type_string() }}",
-    str(XSD.gYear): "{{ dbt_utils.type_int() }}",
-    str(XSD.anyURI): "{{ dbt_utils.type_string() }}",
-}
-
-
-def _xsd_to_dbt_macro(range_uri) -> str:
-    """Map an XSD range URI to a dbt_utils macro expression (platform-portable)."""
-    if not range_uri:
-        return "{{ dbt_utils.type_string() }}"
-    return _XSD_TO_DBT_MACRO.get(str(range_uri), "{{ dbt_utils.type_string() }}")
-
-
 # ---------------------------------------------------------------------------
 # Bronze TTL parser
 # ---------------------------------------------------------------------------
@@ -436,8 +407,11 @@ def _parse_split_annotations(mappings_dir: Path) -> dict[tuple[str, str], dict]:
         prefix_block = "\n".join(prefix_lines) + "\n"
         body = "\n".join(body_lines)
 
-        # Split body into statement blocks (each terminated by '.')
-        # Use regex to split on '.' that ends a statement (not inside a string)
+        # Split body into statement blocks (each terminated by '.').
+        # LIMITATION: This regex can incorrectly split on periods inside string
+        # literals that happen to precede a newline. In practice, Kairos mapping
+        # files use short IRIs and identifiers (not prose sentences), so this
+        # rarely triggers. A proper fix would require a Turtle tokenizer.
         statements = re.split(r"\.\s*(?=\n|$)", body)
 
         for stmt in statements:
@@ -579,50 +553,71 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
 # SHACL → dbt test extraction
 # ---------------------------------------------------------------------------
 
-def _extract_shacl_tests(shapes_dir: Path, class_uri: str) -> dict[str, list]:
+def _load_shacl_graph(shapes_dir: Path) -> Graph | None:
+    """Load all SHACL files from shapes_dir into a single graph (cached per call).
+
+    Returns None if no shapes were loaded.
+    """
+    if not shapes_dir or not shapes_dir.exists():
+        return None
+
+    sg = Graph()
+    loaded = False
+    for sf in sorted(shapes_dir.glob("*.ttl")):
+        try:
+            sg.parse(sf, format="turtle")
+            loaded = True
+        except Exception as exc:
+            logger.debug("Could not parse SHACL file %s: %s", sf.name, exc)
+    return sg if loaded else None
+
+
+def _extract_shacl_tests(shapes_dir: Path, class_uri: str,
+                          shacl_graph: Graph | None = None) -> dict[str, list]:
     """Extract dbt tests from SHACL shapes for a given class.
+
+    Args:
+        shapes_dir: Path to shapes directory (used only if shacl_graph is None).
+        class_uri: URI of the class to extract tests for.
+        shacl_graph: Pre-parsed SHACL graph. If provided, avoids re-parsing.
 
     Returns ``{column_name: [test_strings]}``.
     """
     if not shapes_dir or not shapes_dir.exists():
         return {}
 
-    class_name = extract_local_name(class_uri)
     target_class = URIRef(class_uri)
 
-    # Try multiple naming conventions for shape files
-    candidates = [
-        shapes_dir / f"{class_name.lower()}.shacl.ttl",
-        shapes_dir / f"{class_name.lower()}-shapes.ttl",
-    ]
-    # Also search all .ttl files for shapes that target this class
-    all_shapes = list(shapes_dir.glob("*.ttl"))
-
-    sg = Graph()
-    loaded = False
-
-    # Try specific file first
-    for candidate in candidates:
-        if candidate.exists():
-            try:
-                sg.parse(candidate, format="turtle")
-                loaded = True
-            except Exception as exc:
-                logger.warning("Could not parse SHACL file %s: %s", candidate.name, exc)
-            break
-
-    # Fallback: load all shape files and filter by sh:targetClass
-    if not loaded:
-        for sf in all_shapes:
-            try:
-                sg.parse(sf, format="turtle")
-                loaded = True
-            except Exception as exc:
-                logger.debug("Could not parse SHACL file %s: %s", sf.name, exc)
-                continue
-
-    if not loaded:
-        return {}
+    # Use provided graph or load (backward-compatible)
+    if shacl_graph is not None:
+        sg = shacl_graph
+    else:
+        class_name = extract_local_name(class_uri)
+        candidates = [
+            shapes_dir / f"{class_name.lower()}.shacl.ttl",
+            shapes_dir / f"{class_name.lower()}-shapes.ttl",
+        ]
+        all_shapes = list(shapes_dir.glob("*.ttl"))
+        sg = Graph()
+        loaded = False
+        for candidate in candidates:
+            if candidate.exists():
+                try:
+                    sg.parse(candidate, format="turtle")
+                    loaded = True
+                except Exception as exc:
+                    logger.warning("Could not parse SHACL file %s: %s", candidate.name, exc)
+                break
+        if not loaded:
+            for sf in all_shapes:
+                try:
+                    sg.parse(sf, format="turtle")
+                    loaded = True
+                except Exception as exc:
+                    logger.debug("Could not parse SHACL file %s: %s", sf.name, exc)
+                    continue
+        if not loaded:
+            return {}
 
     tests_by_col: dict[str, list] = {}
 
@@ -757,125 +752,6 @@ def _gen_sources(systems: list[dict], env: Environment) -> dict[str, str]:
     return artifacts
 
 
-def _build_spark_schema(fields: list[dict]) -> str:
-    """Build Spark schema string for from_json(). E.g. 'array<struct<name:string,age:int>>'."""
-    field_parts = []
-    for f in fields:
-        # Map field length to Spark type (all extracted as string for safety)
-        field_parts.append(f"{f['name']}:string")
-    return f"array<struct<{','.join(field_parts)}>>"
-
-
-def _gen_staging_models(
-    systems: list[dict],
-    mappings: dict,
-    env: Environment,
-    meta: dict,
-    platform: str = DEFAULT_PLATFORM,
-) -> dict[str, str]:
-    """Generate ``stg_{source}__{table}.sql`` staging models."""
-    artifacts: dict[str, str] = {}
-    # Select template based on platform
-    if platform in ("databricks", "spark"):
-        template = env.get_template("staging_model_databricks.sql.jinja2")
-    else:
-        template = env.get_template("staging_model.sql.jinja2")
-
-    for sys in systems:
-        source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
-
-        for tbl in sys["tables"]:
-            tbl_uri = tbl["uri"]
-            tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
-            # Use first entry for per-source-table properties (filter, dedup)
-            tbl_map = tbl_maps_list[0] if tbl_maps_list else {}
-
-            columns_data = []
-            json_extractions = []
-            for col in tbl["columns"]:
-                col_uri = col["uri"] if "uri" in col else ""
-                col_maps_list = mappings["column_maps"].get(col_uri, [])
-
-                # Check if this is a JSON column requiring extraction
-                json_info = col.get("json_info")
-                if json_info and json_info.get("fields"):
-                    # JSON column: don't include as a regular column,
-                    # instead add to json_extractions
-                    alias = f"j_{_camel_to_snake(col['name'])}"
-                    fields = [
-                        {
-                            "name": _camel_to_snake(f["name"]),
-                            "length": f.get("max_length", 255),
-                            "path": f["path"],
-                        }
-                        for f in json_info["fields"]
-                    ]
-                    extraction = {
-                        "source_column": col["name"],
-                        "alias": alias,
-                        "content_type": json_info["content_type"],
-                        "json_path": json_info["json_path"],
-                        "fields": fields,
-                    }
-                    # For Databricks, add Spark schema string
-                    if platform in ("databricks", "spark"):
-                        extraction["spark_schema"] = _build_spark_schema(fields)
-                    json_extractions.append(extraction)
-                    continue
-
-                # Generate one output column per mapping target (supports 1:N)
-                if not col_maps_list:
-                    col_maps_list = [{}]  # unmapped column — single pass
-                for col_map in col_maps_list:
-                    # Use explicit transform if available, else default cast
-                    if col_map.get("transform"):
-                        expr = col_map["transform"].replace("source.", "")
-                    else:
-                        target_type = _source_type_to_target(col["data_type"], platform)
-                        if target_type.startswith("VARCHAR") or target_type == "STRING":
-                            expr = col["name"]
-                        else:
-                            expr = f"TRY_CAST({col['name']} AS {target_type})"
-
-                    # Wrap in COALESCE if defaultValue is declared
-                    if col_map.get("default_value"):
-                        expr = f"COALESCE({expr}, {col_map['default_value']})"
-
-                    # Target column name: from SKOS mapping or snake_case of source
-                    if col_map.get("target_uri"):
-                        target_name = _camel_to_snake(
-                            extract_local_name(col_map["target_uri"])
-                        )
-                else:
-                    target_name = _camel_to_snake(col["name"])
-
-                columns_data.append({
-                    "expression": expr,
-                    "target_name": target_name,
-                })
-
-            snake_table = _camel_to_snake(tbl["name"])
-            # Determine materialization (incremental if configured)
-            incremental_col = tbl.get("incremental_column")
-            content = template.render(
-                source_name=source_name,
-                table_name=snake_table,
-                system_label=sys["system_label"],
-                raw_table_name=tbl["name"],
-                columns=columns_data,
-                json_extractions=json_extractions,
-                filter_condition=tbl_map.get("filter_condition"),
-                dedup_key=tbl_map.get("dedup_key"),
-                dedup_order=tbl_map.get("dedup_order"),
-                ontology_metadata=meta,
-                incremental_column=incremental_col,
-            )
-            path = f"models/staging/{source_name}/stg_{source_name}__{snake_table}.sql"
-            artifacts[path] = content
-
-    return artifacts
-
-
 def _gen_silver_models(
     classes: list[dict],
     graph: Graph,
@@ -976,9 +852,19 @@ def _gen_silver_models(
             source_template = env.get_template("silver_source_model.sql.jinja2")
             union_template = env.get_template("silver_union_model.sql.jinja2")
 
+            # Detect same-source collisions requiring table-name disambiguation
+            source_system_counts = Counter(src for src, _, _ in source_refs)
+            needs_table_suffix = {
+                src for src, count in source_system_counts.items() if count > 1
+            }
+
             for i, (src, raw_tbl, tbl_uri) in enumerate(source_refs):
                 src_suffix = _camel_to_snake(src)
-                src_model_name = f"{model_name}__from_{src_suffix}"
+                if src in needs_table_suffix:
+                    tbl_suffix = _camel_to_snake(raw_tbl.split(".")[-1])
+                    src_model_name = f"{model_name}__from_{src_suffix}__{tbl_suffix}"
+                else:
+                    src_model_name = f"{model_name}__from_{src_suffix}"
                 source_model_names.append(src_model_name)
 
                 # Get the set of column URIs for this specific source table
@@ -1291,7 +1177,6 @@ def _resolve_mapped_columns(
             seen_col_names.add(col_name)
             range_uri = graph.value(prop, RDFS.range)
             # Use dbt_utils macros for portable silver types
-            macro_type = _xsd_to_dbt_macro(range_uri)
 
             # Check population requirement from kairos-ext annotation
             pop_req = graph.value(URIRef(str(prop)), KAIROS_EXT.populationRequirement)
@@ -1817,7 +1702,6 @@ def _get_nk_property_uris(graph: Graph, class_uri: str) -> list[str]:
         return []
 
     nk_names = str(nk).split()  # camelCase as declared in the annotation
-    cls_ref = URIRef(class_uri)
 
     # Collect all domain classes (self + parents) for property lookup
     domain_classes = _get_class_and_parents(graph, class_uri)
@@ -1846,6 +1730,7 @@ def _gen_schema_yaml(
     meta: dict,
     systems: list[dict] | None = None,
     mappings: dict | None = None,
+    generated_class_names: set[str] | None = None,
 ) -> dict[str, str]:
     """Generate ``_models.yml`` with column descriptions, tests, and lineage."""
     artifacts: dict[str, str] = {}
@@ -1871,10 +1756,19 @@ def _gen_schema_yaml(
                     if col_map.get("match_type"):
                         prop_to_match_type[col_map["target_uri"]] = col_map["match_type"]
 
+    # Pre-load SHACL graph once for all classes (performance: avoids re-parsing per class)
+    shacl_graph = _load_shacl_graph(shapes_dir) if shapes_dir else None
+
     models_data = []
     for cls in classes:
+        # Skip classes that didn't generate a silver model (no bronze mapping)
+        if generated_class_names is not None and cls["name"] not in generated_class_names:
+            continue
         model_name = _camel_to_snake(cls["name"])
-        shacl_tests = _extract_shacl_tests(shapes_dir, cls["uri"]) if shapes_dir else {}
+        shacl_tests = (
+            _extract_shacl_tests(shapes_dir, cls["uri"], shacl_graph=shacl_graph)
+            if shapes_dir else {}
+        )
 
         cols = []
         # SK + IRI columns
@@ -2121,7 +2015,7 @@ def _gen_gold_models(
     ``GoldTableDef`` objects, then renders each as a dbt SQL model that
     reads from the corresponding silver model via ``ref()``.
     """
-    from .medallion_gold_projector import build_gold_tables, GoldTableDef
+    from .medallion_gold_projector import build_gold_tables
 
     gold_tables = build_gold_tables(
         classes, graph, namespace, shapes_dir, ontology_name, gold_ext_path,
@@ -2360,6 +2254,7 @@ def generate_dbt_artifacts(
     target_platform: str = DEFAULT_PLATFORM,
     silver_ext_path: Path = None,
     ref_model_defaults: list = None,
+    peer_ext_paths: list = None,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -2382,6 +2277,9 @@ def generate_dbt_artifacts(
             Options: ``"fabric"`` (default), ``"databricks"``, ``"spark"`` (alias for databricks).
         silver_ext_path: Optional path to ``*-silver-ext.ttl`` for naturalKey and
             other silver annotations used by the dbt silver layer.
+        peer_ext_paths: Optional list of paths to other domain ``*-silver-ext.ttl``
+            files.  Used for cross-domain naturalKey resolution when FK targets
+            are declared in a different domain's extension.
 
     Returns:
         Dictionary of ``{file_path: content}`` for all generated artifacts.
@@ -2394,7 +2292,12 @@ def generate_dbt_artifacts(
     # Merge silver-ext triples into a working copy of the graph so naturalKey
     # and other silver annotations are visible during dbt silver model generation.
     # DD-023: Include ref-model defaults as fallback layer.
-    graph = merge_ext_graph(graph, silver_ext_path, fallback_paths=ref_model_defaults)
+    # Cross-domain NK: Include peer extension files for FK target resolution.
+    graph = merge_ext_graph(
+        graph, silver_ext_path,
+        fallback_paths=ref_model_defaults,
+        peer_ext_paths=peer_ext_paths,
+    )
 
     # Parse source vocabulary — prefer sources_dir, fall back to bronze_dir
     systems = _parse_bronze(sources_dir or bronze_dir)
@@ -2428,14 +2331,24 @@ def generate_dbt_artifacts(
     # Cache entity metadata for session log (retrieved via get_last_entity_metadata)
     _last_entity_metadata[onto_name] = silver_entity_meta
 
+    # Determine which classes actually generated silver models (for schema filtering).
+    # Only filter when source systems are present — without sources, schema YAML is
+    # generated for all classes (useful for ontology-only projections without bronze).
+    generated_class_names: set[str] | None = None
+    if systems:
+        generated_class_names = {
+            m["class_name"] for m in silver_entity_meta if not m.get("skipped")
+        }
+
     # 3. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(
         classes, graph, namespace, shapes_dir, env, onto_name, meta,
         systems=systems, mappings=mappings,
+        generated_class_names=generated_class_names,
     )
     artifacts.update(schema)
 
-    # 4. Project config (only once per domain — orchestrator handles multi-domain)
+    # 4. Project config (per-domain fallback — orchestrator generates definitive version)
     has_gold = False
     if systems:
         # 5. Gold entity models (thick gold — pre-materialized star schema)
@@ -2477,6 +2390,39 @@ def generate_dbt_artifacts(
         logger.info("Generated %d platform macro(s)", len(macros))
 
     return artifacts
+
+
+def generate_dbt_project_config(
+    systems: list[dict],
+    ontology_names: list[str],
+    template_dir,
+    project_name: str = "kairos_project",
+    gold_domain_names: list[str] | None = None,
+    platform: str = DEFAULT_PLATFORM,
+) -> dict[str, str]:
+    """Generate project-level dbt config files (dbt_project.yml, packages.yml, README).
+
+    Called by the orchestrator AFTER all per-domain projections are complete,
+    so the project config includes all domains.
+
+    Args:
+        systems: Aggregated source systems from all domains.
+        ontology_names: All domain names that produced artifacts.
+        template_dir: Path to dbt Jinja2 templates directory.
+        project_name: dbt project name.
+        gold_domain_names: Domain names that produced gold models.
+        platform: Target SQL platform.
+
+    Returns:
+        Dictionary of {file_path: content} for project-level files.
+    """
+    env = Environment(loader=FileSystemLoader(str(template_dir)))
+    gold_domains = [{"name": n} for n in (gold_domain_names or [])]
+    return _gen_project_config(
+        systems, ontology_names, env, project_name,
+        gold_domains=gold_domains,
+        platform=platform,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2539,6 +2485,9 @@ def _gen_coverage_report(
         local = cls["name"]
         model_name = _camel_to_snake(local)
 
+        # Include inherited properties from parent classes
+        domain_classes = _get_class_and_parents(graph, cls_uri)
+
         total = 0
         required_count = 0
         optional_count = 0
@@ -2550,7 +2499,7 @@ def _gen_coverage_report(
 
         for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
             domain = graph.value(prop, RDFS.domain)
-            if domain and str(domain) == cls_uri:
+            if domain and str(domain) in domain_classes:
                 total += 1
                 prop_str = str(prop)
                 prop_name = extract_local_name(prop_str)

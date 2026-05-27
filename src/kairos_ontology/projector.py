@@ -9,12 +9,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from rdflib import Graph, Namespace, URIRef
+from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 from .projections.uri_utils import extract_local_name
 from .projections.shared import OntologyClassInfo
 
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report"]
+
+# Public-to-internal target name mapping (user-facing aliases → dispatch names).
+_TARGET_ALIASES = {"gold": "powerbi"}
 
 # Targets that live under output/medallion/ (medallion architecture outputs).
 _MEDALLION_TARGETS = {"dbt", "silver", "powerbi"}
@@ -400,9 +403,11 @@ def project_graph(
         if target_name not in VALID_TARGETS:
             report.record("warning", f"Unknown target '{target_name}' — skipped")
             continue
+        # Normalize public alias to internal dispatch name
+        dispatch_name = _TARGET_ALIASES.get(target_name, target_name)
         try:
             artifacts = _run_projection(
-                target_name, graph, Path("."), template_base, ns, shapes_dir,
+                dispatch_name, graph, Path("."), template_base, ns, shapes_dir,
                 ontology_name, ontology_metadata=meta,
             )
             if artifacts:
@@ -421,7 +426,6 @@ def project_graph(
                 target_name, ontology_name,
                 status="error", error=str(exc), traceback_str=_tb.format_exc(),
             )
-            report.record("error", str(exc), domain=ontology_name, target=target_name)
 
     results["_report"] = report  # type: ignore[assignment]
     return results
@@ -618,9 +622,15 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
 
     targets_to_run = (
         ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report']
-        if target == 'all' else [target]
+        if target == 'all'
+        else [_TARGET_ALIASES.get(target, target)]
     )
     report.targets_requested = list(targets_to_run)
+
+    # Clear dbt entity metadata cache from prior runs (prevents stale data leaking
+    # across invocations in long-lived processes like the FastAPI service).
+    from .projections.medallion_dbt_projector import _last_entity_metadata
+    _last_entity_metadata.clear()
 
     # Accumulate per-domain manifest data: {domain_name: {meta, targets: {target: [files]}}}
     manifests: dict[str, dict] = {}
@@ -641,7 +651,16 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         target_output.mkdir(parents=True, exist_ok=True)
         
         total_files = 0
-        
+        # Track which domains produce artifacts for dbt project config
+        dbt_domain_names: list[str] = []
+        dbt_gold_domains: list[str] = []
+
+        # Collect all silver extension file paths for cross-domain NK resolution.
+        # For dbt/silver targets, peer_ext_paths allows FK resolution across domains.
+        all_silver_ext_paths: list[Path] = []
+        if target_name in ("dbt", "silver") and extensions_dir and extensions_dir.exists():
+            all_silver_ext_paths = sorted(extensions_dir.glob("*-silver-ext.ttl"))
+
         for onto_info in ontology_graphs:
             onto_graph = onto_info['graph']
             onto_name = onto_info['name']
@@ -690,6 +709,12 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 proj_logger = logging.getLogger("kairos_ontology.projections")
                 proj_logger.addHandler(warn_handler)
                 try:
+                    # Compute peer ext paths (all silver-ext files except this domain's)
+                    peer_exts = [
+                        p for p in all_silver_ext_paths
+                        if p != ext_path
+                    ] if all_silver_ext_paths else None
+
                     artifacts = _run_projection(
                         target_name, onto_graph, target_output, template_base,
                         onto_namespace, shapes_dir, onto_name,
@@ -699,7 +724,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                         sources_dir=sources_dir,
                         mappings_dir=mappings_dir,
                         hub_domain_namespaces=hub_domain_namespaces,
-                        ref_model_defaults=ref_defaults)
+                        ref_model_defaults=ref_defaults,
+                        peer_ext_paths=peer_exts)
                 finally:
                     proj_logger.removeHandler(warn_handler)
                     if warn_handler.records:
@@ -722,6 +748,13 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                             "targets": {},
                         }
                     manifests[onto_name]["targets"][target_name] = sorted(artifacts.keys())
+
+                    # Track dbt domains for project config generation
+                    if target_name == "dbt":
+                        dbt_domain_names.append(onto_name)
+                        # Check if gold models were produced
+                        if any(k.startswith("models/gold/") for k in artifacts):
+                            dbt_gold_domains.append(onto_name)
                 else:
                     report.record_projection(
                         target_name, onto_name,
@@ -740,8 +773,21 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                     error=str(e),
                     traceback_str=_tb.format_exc(),
                 )
-                report.record("error", str(e),
-                              domain=onto_name, target=target_name)
+
+        # After all domains: generate dbt project config (once, with all domains)
+        if target_name == "dbt" and dbt_domain_names:
+            from .projections.medallion_dbt_projector import generate_dbt_project_config
+            dbt_template_dir = Path(__file__).parent / "templates" / "dbt"
+            hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "hub"
+            project_config = generate_dbt_project_config(
+                systems=[],
+                ontology_names=dbt_domain_names,
+                template_dir=dbt_template_dir,
+                project_name=f"{hub_name}_project",
+                gold_domain_names=dbt_gold_domains,
+            )
+            total_files += _write_artifacts(project_config, target_output)
+            _logger.info("Generated project config for %d domain(s)", len(dbt_domain_names))
 
         # After all domains: generate master ERD for silver target
         if target_name == "silver" and total_files > 0:
@@ -1273,7 +1319,8 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
                     sources_dir: Optional[Path] = None,
                     mappings_dir: Optional[Path] = None,
                     hub_domain_namespaces: Optional[set] = None,
-                    ref_model_defaults: Optional[list] = None) -> dict:
+                    ref_model_defaults: Optional[list] = None,
+                    peer_ext_paths: Optional[list] = None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
@@ -1294,7 +1341,6 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         ref_model_defaults: Optional list of Paths to reference model default
             extension files (DD-023). Loaded as fallback beneath domain extension.
     """
-    from .projections.shared import KAIROS_EXT, merge_ext_graph
     
     query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
@@ -1374,6 +1420,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             gold_ext_path=gold_ext_path,
             silver_ext_path=projection_ext_path,
             ref_model_defaults=ref_model_defaults,
+            peer_ext_paths=peer_ext_paths,
         )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts

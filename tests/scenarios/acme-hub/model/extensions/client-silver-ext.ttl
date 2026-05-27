@@ -15,6 +15,9 @@
     kairos-ext:inlineRefThreshold "50" .
 
 # Class-level
+acme:Client
+    kairos-ext:naturalKey "clientId" .
+
 acme:CorporateClient
     kairos-ext:silverTableName "corporate_client" ;
     kairos-ext:scdType "2" ;
