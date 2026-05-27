@@ -27,7 +27,7 @@ that prerequisite files exist. Non-medallion targets (`prompt`, `neo4j`, `azure-
 | Target | Required files | Design skill |
 |--------|---------------|--------------|
 | **silver** | `model/extensions/<domain>-silver-ext.ttl` | `kairos-ontology-medallion-silver` |
-| **dbt** | Silver ext (above) + at least one `integration/sources/<system>/*.vocabulary.ttl` + at least one `model/mappings/<system>-to-<domain>.ttl` | `kairos-ontology-medallion-silver` |
+| **dbt** | Silver ext (above) + at least one `integration/sources/<system>/*.vocabulary.ttl` + at least one `model/mappings/<system>-to-<domain>.ttl` | Extensions: `kairos-ontology-medallion-silver`; Mappings: `kairos-ontology-mapping` |
 | **powerbi** | `model/extensions/<domain>-gold-ext.ttl` | `kairos-ontology-medallion-gold` |
 
 ### Procedure

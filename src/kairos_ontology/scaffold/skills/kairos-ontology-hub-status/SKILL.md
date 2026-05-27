@@ -223,6 +223,6 @@ Based on the findings, suggest the appropriate next skill:
 | No source vocabularies | **kairos-ontology-medallion-source** |
 | Missing domain ontologies | **kairos-ontology-modeling** |
 | Missing extensions | **kairos-ontology-medallion-silver** or **kairos-ontology-medallion-gold** |
-| Missing mappings | **kairos-ontology-medallion-silver** (§ mapping workflow) |
+| Missing mappings | **kairos-ontology-mapping** |
 | Projections not run | **kairos-ontology-projection** |
 | Hub not set up | **kairos-ontology-hub-setup** |

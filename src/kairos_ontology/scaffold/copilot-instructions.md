@@ -152,6 +152,7 @@ Use this table to pick the correct skill for a user's intent:
 | "Design gold / Power BI model" | **kairos-ontology-medallion-gold** |
 | "Import / extract TMDL or PBIP files" | CLI: `kairos-ontology import-tmdl` |
 | "Release / upgrade / version check" | **kairos-ontology-toolkit-ops** |
+| "Map source columns to domain / create SKOS mappings" | **kairos-ontology-mapping** |
 | "Status / progress / what's missing / where are we" | **kairos-ontology-hub-status** |
 
 ## Validation rules
