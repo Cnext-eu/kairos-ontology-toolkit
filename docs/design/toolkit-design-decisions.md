@@ -1236,6 +1236,119 @@ Three accuracy issues were identified in the dbt silver projector output:
 
 ---
 
+## DD-027: Cross-Domain Peer Extension Loading for FK Resolution
+
+**Status:** Accepted  
+**Date:** 2026-05-27  
+**Affects:** `projections/shared.py`, `projections/medallion_dbt_projector.py`, `projector.py`  
+**Implementation:** `merge_ext_graph()` peer_ext_paths parameter; `_run_projection()` peer ext discovery
+
+### Context
+
+DD-019 introduced cross-domain FK resolution via surrogate key joins. However, when a FK
+targets a class in another domain (e.g., `financial:chargeForShipment` → `consignment:Shipment`),
+the projector could not resolve the target class's `kairos-ext:naturalKey` because it only
+loaded the current domain's silver extension file. This forced hub authors to duplicate
+naturalKey declarations in every referencing domain's extension file.
+
+DD-023 introduced shared defaults as a fallback layer for reference models, but that mechanism
+only addresses shared reference models — not peer hub domains.
+
+### Decision
+
+The dbt projector now loads **all** `*-silver-ext.ttl` files from the hub's `extensions/`
+directory as "peer extension paths" for each domain projection. This enables cross-domain
+naturalKey resolution without redundant declarations.
+
+**Extended merge priority (highest → lowest):**
+
+1. Hub domain extension (`{domain}-silver-ext.ttl`) — always wins
+2. **Peer domain extensions** (other `*-silver-ext.ttl` files) — cross-domain annotations
+3. Reference model defaults (DD-023 fallback layer)
+4. Built-in projector conventions (rdfs:range inference)
+
+**Override semantics:** Peer extension triples are only added when the subject+predicate pair
+is NOT already declared in the domain's own extension (same as fallback semantics).
+
+**Error handling:** Parse failures in peer extension files are silently skipped (graceful
+degradation). A broken peer file does not break the current domain's projection.
+
+### Rationale
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Manual duplication | Explicit, self-contained | Doesn't scale; drift risk |
+| **Peer ext loading (chosen)** | Zero duplication; works automatically | Cross-domain coupling |
+| Shared global ext | Flexible | No clear ownership; hard to maintain |
+| Require naturalKey in base ontology | Clean | Pollutes domain model with projection concerns |
+
+The peer loading approach was chosen because:
+- NaturalKey is inherently a projection annotation (belongs in ext files, not base ontology)
+- Hub authors already have all ext files in one directory — the toolkit should leverage this
+- Priority rules ensure domain-own annotations always win (no surprises)
+- Existing workaround (manual duplication) remains valid but becomes unnecessary
+
+### Consequences
+
+- `merge_ext_graph()` gains a `peer_ext_paths` parameter (backward-compatible: defaults to None)
+- `generate_dbt_artifacts()` gains a `peer_ext_paths` parameter
+- `projector.py` collects all `*-silver-ext.ttl` paths before the domain loop and passes
+  the peer list (excluding current domain's file) to each projection
+- Existing hubs with duplicated cross-domain NK declarations continue working (redundant
+  declarations are harmless — domain ext wins via priority)
+- Future: same pattern could be applied to gold projector for cross-domain goldInclude resolution
+
+---
+
+## DD-028: Multi-Table Same-Source Union Model Disambiguation
+
+**Status:** Accepted  
+**Date:** 2026-05-27  
+**Affects:** `projections/medallion_dbt_projector.py`, dbt silver model naming  
+**Implementation:** Per-source model naming logic in `_gen_silver_models()`
+
+### Context
+
+DD-018 established entity-centric silver models with multi-source split (one per-source model
+per source system, combined via UNION ALL). The per-source model naming used only the entity
+name and source system name: `{entity}__from_{source_system}`.
+
+When two tables from the **same** source system map to the **same** domain class (e.g.,
+`sales_invoices` and `purchase_invoices` both from `QargoTms` → `Invoice`), the naming
+produced identical model names. The second model silently overwrote the first in the
+artifact dict, and the UNION ALL referenced the same model twice.
+
+### Decision
+
+When multiple tables from the same source system map to the same entity, append a
+sanitized table name suffix to disambiguate:
+
+- **No collision (common case):** `{entity}__from_{source}` (unchanged)
+- **Collision detected:** `{entity}__from_{source}__{table_name}`
+
+Detection uses a `Counter` over source system names in the entity's source_refs list.
+The table suffix is only added when `count > 1` for that source system.
+
+### Rationale
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Always include table name | Unambiguous | Long names; breaking change for all hubs |
+| **Conditional suffix (chosen)** | Short names by default; disambiguates only when needed | Slightly more logic |
+| Numeric suffix (\_1, \_2) | Short | Unstable (order-dependent); not self-documenting |
+| Error on collision | Safe | Blocks projection; poor UX |
+
+### Consequences
+
+- Hubs with multi-table-same-source patterns get correctly disambiguated model files
+- Hubs without collisions see zero change in output (backward-compatible)
+- Model names may be longer for collision cases — warehouse name limits (128 chars) should
+  be monitored for edge cases
+- This is a **minor breaking change** for hubs that previously generated colliding names:
+  their model filenames change (from the incorrect duplicate to two distinct files)
+
+---
+
 ## Template for New Decisions
 
 ```markdown

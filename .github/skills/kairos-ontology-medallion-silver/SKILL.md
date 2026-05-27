@@ -243,9 +243,29 @@ This eliminates the need for redundant explicit FK mappings. The auto-inference
 only activates when exactly one unambiguous candidate exists per NK component.
 
 > **Tip**: If the FK join shows `CAST(NULL ...)`, check that:
-> - The target class has `kairos-ext:naturalKey`
+> - The target class has `kairos-ext:naturalKey` in its own domain's silver ext file
 > - A source column from the current table maps to the NK property of the target
 > - Or add an explicit `skos:exactMatch` targeting the ObjectProperty URI
+>
+> Cross-domain resolution: The projector automatically loads peer domain extension files
+> to resolve naturalKey for FK targets in other domains (DD-027). You do NOT need to
+> duplicate naturalKey declarations across extension files.
+
+> **Anti-pattern — discriminator columns in naturalKey:**
+>
+> If your entity is populated from multiple source tables via UNION ALL (e.g.,
+> `sales_invoices` + `purchase_invoices` → `Invoice`), you may be tempted to add a
+> discriminator column (like `invoiceDirection`) to the naturalKey to ensure uniqueness.
+>
+> **Don't do this.** A discriminator is derived from *which source table* the row came
+> from — it has no SKOS mapping from the source columns. The FK join logic requires every
+> NK column to be resolvable via mappings. An unmapped discriminator makes the FK join
+> incomplete (partial NULL).
+>
+> **Instead:** Use the actual business key that uniquely identifies the entity across all
+> source tables (e.g., `invoiceId`). If the same ID can appear in both source tables with
+> different meaning, the source data needs deduplication or the model needs rethinking —
+> the discriminator belongs in a separate descriptive column, not in the naturalKey.
 
 ### 3c — Nullability overrides (R11)
 
