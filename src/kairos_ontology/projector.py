@@ -226,7 +226,7 @@ class ProjectionReport:
     def write_domain_markdown(self, domain: str, sessions_dir: Path) -> Optional[Path]:
         """Write a per-domain projection report as Markdown.
 
-        Filename: ``projection-<domain>-<YYYY-MM-DD>.md``
+        Filename: ``projection-<domain>-<YYYY-MM-DD_HH-MM-SS>.md``
 
         Returns the path written, or None if the sessions_dir is unavailable.
         """
@@ -234,7 +234,7 @@ class ProjectionReport:
             return None
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"projection-{domain}-{date_str}.md"
         path = sessions_dir / filename
 

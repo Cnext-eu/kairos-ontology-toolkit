@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Per-domain projection markdown reports** — After projections complete, a
   human-readable markdown report is written to
-  `ontology-hub/.sessions-projection/projection-{domain}-{YYYY-MM-DD}.md`
+  `ontology-hub/.sessions-projection/projection-{domain}-{YYYY-MM-DD_HH-MM-SS}.md`
   containing domain info, projection results, warnings, and errors.
 - **`.sessions-projection/` folder** — New dedicated folder in the hub for
   projection session reports, created by `init` and `new-repo` commands.
