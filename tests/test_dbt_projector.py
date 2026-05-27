@@ -1656,3 +1656,147 @@ class TestNaturalKeyWarning:
             )
         # Warning should guide user to add naturalKey annotation
         assert "silver extension file" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# DD-022: silverForeignKey annotation tests for dbt projector
+# ---------------------------------------------------------------------------
+
+SILVER_FK_ANNOTATION_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "Test Ontology" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:Customer a owl:Class ;
+        rdfs:label "Customer" ;
+        rdfs:comment "A customer" ;
+        kairos-ext:naturalKey "customerId" .
+
+    ex:customerId a owl:DatatypeProperty ;
+        rdfs:label "customer ID" ;
+        rdfs:domain ex:Customer ;
+        rdfs:range xsd:string .
+
+    ex:Order a owl:Class ;
+        rdfs:label "Order" ;
+        rdfs:comment "An order" ;
+        kairos-ext:naturalKey "orderId" .
+
+    ex:orderId a owl:DatatypeProperty ;
+        rdfs:label "order ID" ;
+        rdfs:domain ex:Order ;
+        rdfs:range xsd:string .
+
+    ex:placedBy a owl:ObjectProperty ;
+        rdfs:label "placed by" ;
+        rdfs:domain ex:Order ;
+        rdfs:range ex:Customer ;
+        kairos-ext:silverForeignKey "true"^^xsd:boolean .
+""")
+
+SILVER_FK_ANNOTATION_BRONZE_TTL = textwrap.dedent("""\
+    @prefix bronze: <https://example.com/bronze/erp#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+    bronze:ERP a kairos-bronze:SourceSystem ;
+        rdfs:label "ERP" ;
+        kairos-bronze:database "ERP_Prod" ;
+        kairos-bronze:schema "dbo" .
+
+    bronze:Orders a kairos-bronze:SourceTable ;
+        rdfs:label "Orders" ;
+        kairos-bronze:sourceSystem bronze:ERP ;
+        kairos-bronze:tableName "Orders" ;
+        kairos-bronze:primaryKeyColumns "order_id" .
+
+    bronze:Orders_order_id a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze:Orders ;
+        kairos-bronze:columnName "order_id" ;
+        kairos-bronze:dataType "int" .
+
+    bronze:Orders_customer_id a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze:Orders ;
+        kairos-bronze:columnName "customer_id" ;
+        kairos-bronze:dataType "int" .
+""")
+
+SILVER_FK_ANNOTATION_MAPPING_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix bronze: <https://example.com/bronze/erp#> .
+    @prefix ex: <http://kairos.example/ontology/> .
+
+    bronze:Orders skos:exactMatch ex:Order ;
+        kairos-map:mappingType "direct" .
+
+    bronze:Orders_order_id skos:exactMatch ex:orderId .
+    bronze:Orders_customer_id skos:exactMatch ex:placedBy .
+""")
+
+
+class TestSilverForeignKeyAnnotation:
+    """DD-022: silverForeignKey true should qualify a property as FK in dbt projector."""
+
+    @pytest.fixture
+    def fk_graph(self):
+        g = Graph()
+        g.parse(data=SILVER_FK_ANNOTATION_TTL, format="turtle")
+        return g
+
+    @pytest.fixture
+    def fk_sources_dir(self, tmp_path):
+        d = tmp_path / "sources" / "erp"
+        d.mkdir(parents=True)
+        (d / "erp.vocabulary.ttl").write_text(
+            SILVER_FK_ANNOTATION_BRONZE_TTL, encoding="utf-8"
+        )
+        return tmp_path / "sources"
+
+    @pytest.fixture
+    def fk_mappings_dir(self, tmp_path):
+        d = tmp_path / "mappings" / "erp"
+        d.mkdir(parents=True)
+        (d / "erp-to-order.ttl").write_text(
+            SILVER_FK_ANNOTATION_MAPPING_TTL, encoding="utf-8"
+        )
+        return tmp_path / "mappings"
+
+    def test_silver_fk_annotation_generates_join(
+        self, fk_graph, fk_sources_dir, fk_mappings_dir, template_dir,
+    ):
+        """silverForeignKey true must produce FK join even without FunctionalProperty."""
+        classes = [
+            {"uri": "http://kairos.example/ontology/Order",
+             "name": "Order", "label": "Order", "comment": "An order"},
+            {"uri": "http://kairos.example/ontology/Customer",
+             "name": "Customer", "label": "Customer", "comment": "A customer"},
+        ]
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=fk_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="sales",
+            sources_dir=fk_sources_dir,
+            mappings_dir=fk_mappings_dir,
+        )
+        silver_key = next(
+            (k for k in artifacts if "order.sql" in k and "models/silver/" in k),
+            None,
+        )
+        assert silver_key is not None, "order.sql not generated"
+        content = artifacts[silver_key]
+        assert "customer_sk" in content, (
+            "silverForeignKey true should generate customer_sk FK column"
+        )
+        assert "ref('customer')" in content, (
+            "silverForeignKey true should generate a join to customer model"
+        )

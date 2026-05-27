@@ -328,17 +328,18 @@ class TestMultiSource:
             "Per-source model should be materialized as view"
         )
 
-    def test_crm_source_has_null_for_unmapped(self, client_dbt_artifacts):
-        """CRM source lacks VATNumber mapping — should emit CAST(NULL ...)."""
+    def test_crm_source_excludes_unmapped(self, client_dbt_artifacts):
+        """CRM source lacks VATNumber mapping — unmapped columns are excluded."""
         key = _find_artifact(
             client_dbt_artifacts, "corporate_client__from_crm_system.sql"
         )
         sql = client_dbt_artifacts[key]
-        assert "CAST(NULL" in sql, (
-            "CRM source missing NULL placeholder for unmapped columns"
+        assert "vat_number" not in sql, (
+            "CRM source should NOT include unmapped vat_number column"
         )
-        assert "vat_number" in sql, (
-            "CRM source should still have vat_number column (as NULL)"
+        # Mapped columns should still be present
+        assert "client_name" in sql or "client_id" in sql, (
+            "CRM source should include mapped columns"
         )
 
     def test_admin_pulse_source_has_filter(self, client_dbt_artifacts):
@@ -816,3 +817,107 @@ class TestDbtSessionLog:
             sessions_dir=tmp_path,
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Source system discriminator tests — per-source models include _source_system
+# ---------------------------------------------------------------------------
+
+class TestSourceSystemDiscriminator:
+    """Per-source views should include a _source_system literal column."""
+
+    def test_per_source_has_source_system_column(self, client_dbt_artifacts):
+        """Per-source view should include _source_system literal."""
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_admin_pulse.sql"
+        )
+        sql = client_dbt_artifacts[key]
+        assert "_source_system" in sql, (
+            "Per-source view missing _source_system discriminator column"
+        )
+
+    def test_source_system_has_correct_value(self, client_dbt_artifacts):
+        """_source_system should contain the source name as a string literal."""
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_admin_pulse.sql"
+        )
+        sql = client_dbt_artifacts[key]
+        assert "'admin_pulse'" in sql or "admin_pulse" in sql.lower(), (
+            "Per-source view _source_system should contain source name"
+        )
+
+    def test_union_model_has_source_system(self, client_dbt_artifacts):
+        """Union model should pass through _source_system from per-source views."""
+        key = _find_artifact(client_dbt_artifacts, "/corporate_client.sql")
+        sql = client_dbt_artifacts[key]
+        assert "_source_system" in sql, (
+            "Union model should include _source_system column"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Unmapped column exclusion tests — only mapped columns appear
+# ---------------------------------------------------------------------------
+
+class TestUnmappedColumnExclusion:
+    """Silver models should only include columns with source mappings."""
+
+    def test_no_cast_null_for_unmapped(self, client_dbt_artifacts):
+        """Per-source views should not have CAST(NULL) for unmapped properties."""
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_crm_system.sql"
+        )
+        sql = client_dbt_artifacts[key]
+        # Unmapped columns should not appear at all
+        assert "CAST(NULL" not in sql, (
+            "Per-source view should not contain CAST(NULL) for unmapped properties"
+        )
+
+    def test_mapped_columns_present(self, client_dbt_artifacts):
+        """Columns with actual SKOS mappings should still be included."""
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_admin_pulse.sql"
+        )
+        sql = client_dbt_artifacts[key]
+        # AdminPulse maps ClientCode → clientId, so client_id should be present
+        assert "client_id" in sql, (
+            "Mapped column 'client_id' should be present in per-source view"
+        )
+
+
+# ---------------------------------------------------------------------------
+# SCD2 history preservation tests — closed records retain values
+# ---------------------------------------------------------------------------
+
+class TestSCD2HistoryPreservation:
+    """SCD2 template must preserve business data in closed records."""
+
+    def test_scd2_closed_no_null_columns(self, client_dbt_artifacts):
+        """The 'closed' CTE should NOT NULL business columns."""
+        key = _find_artifact(client_dbt_artifacts, "/client.sql")
+        if key is None:
+            pytest.skip("client.sql not generated")
+        sql = client_dbt_artifacts[key]
+        if "closed as" not in sql.lower():
+            pytest.skip("Client model is not SCD2 incremental")
+        # Find the closed CTE content
+        closed_idx = sql.lower().index("closed as")
+        closed_section = sql[closed_idx:closed_idx + 500]
+        assert "CAST(NULL AS VARCHAR)" not in closed_section, (
+            "SCD2 closed CTE should NOT NULL business columns — "
+            "historical data must be preserved"
+        )
+
+    def test_scd2_closed_reads_from_this(self, client_dbt_artifacts):
+        """The closed CTE should read from {{ this }} to preserve column values."""
+        key = _find_artifact(client_dbt_artifacts, "/client.sql")
+        if key is None:
+            pytest.skip("client.sql not generated")
+        sql = client_dbt_artifacts[key]
+        if "closed as" not in sql.lower():
+            pytest.skip("Client model is not SCD2 incremental")
+        closed_idx = sql.lower().index("closed as")
+        closed_section = sql[closed_idx:closed_idx + 500]
+        assert "{{ this }}" in closed_section, (
+            "SCD2 closed CTE should read from {{ this }} to get existing values"
+        )

@@ -19,6 +19,7 @@
 ) {{"}}"}}
 
 select
+    '{{ source_name }}' as _source_system,
 {%- for col in columns %}
     {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}
 {%- endfor %}
