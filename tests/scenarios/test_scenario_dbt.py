@@ -1085,3 +1085,63 @@ class TestSCD2HistoryPreservation:
         assert "{{ this }}" in closed_section, (
             "SCD2 closed CTE should read from {{ this }} to get existing values"
         )
+
+
+# ---------------------------------------------------------------------------
+# Gold model column validation — gold only refs columns that exist in silver
+# ---------------------------------------------------------------------------
+
+
+class TestGoldColumnValidation:
+    """Gold models must only SELECT columns that exist in the referenced silver model."""
+
+    def test_gold_refs_existing_silver_model(self, client_dbt_artifacts):
+        """Gold model should use ref() pointing to a silver model that was generated."""
+        gold_keys = [
+            k for k in client_dbt_artifacts
+            if "models/gold/" in k and k.endswith(".sql")
+        ]
+        silver_model_names = {
+            k.split("/")[-1].replace(".sql", "")
+            for k in client_dbt_artifacts
+            if "models/silver/" in k and k.endswith(".sql")
+            and "/_" not in k
+        }
+        for gk in gold_keys:
+            content = client_dbt_artifacts[gk]
+            # Extract ref() calls
+            import re
+            refs = re.findall(r"ref\('([^']+)'\)", content)
+            for ref_name in refs:
+                if ref_name.startswith("seed_"):
+                    continue
+                assert ref_name in silver_model_names, (
+                    f"Gold model {gk} references ref('{ref_name}') but no "
+                    f"silver model '{ref_name}.sql' was generated. "
+                    f"Available silver models: {sorted(silver_model_names)}"
+                )
+
+    def test_invoice_gold_refs_existing_silver_model(self, invoice_dbt_artifacts):
+        """Invoice gold model ref() calls must point to generated silver models."""
+        gold_keys = [
+            k for k in invoice_dbt_artifacts
+            if "models/gold/" in k and k.endswith(".sql")
+        ]
+        silver_model_names = {
+            k.split("/")[-1].replace(".sql", "")
+            for k in invoice_dbt_artifacts
+            if "models/silver/" in k and k.endswith(".sql")
+            and "/_" not in k
+        }
+        for gk in gold_keys:
+            content = invoice_dbt_artifacts[gk]
+            import re
+            refs = re.findall(r"ref\('([^']+)'\)", content)
+            for ref_name in refs:
+                if ref_name.startswith("seed_"):
+                    continue
+                assert ref_name in silver_model_names, (
+                    f"Gold model {gk} references ref('{ref_name}') but no "
+                    f"silver model '{ref_name}.sql' was generated. "
+                    f"Available: {sorted(silver_model_names)}"
+                )
