@@ -8,13 +8,16 @@ from pathlib import Path
 
 import pytest
 import yaml
-from rdflib import Graph
+from rdflib import Graph, Namespace, URIRef
+from rdflib.namespace import RDFS
 
 from kairos_ontology.projections.medallion_dbt_projector import (
+    _build_silver_model_registry,
     _camel_to_snake,
     _parse_bronze,
     _parse_skos_mappings,
     _extract_shacl_tests,
+    _silver_model_name_for_class,
     _source_type_to_databricks,
     _extract_fk_columns_and_joins,
     _get_nk_property_uris,
@@ -1803,3 +1806,112 @@ class TestSilverForeignKeyAnnotation:
         assert "ref('customer')" in content, (
             "silverForeignKey true should generate a join to customer model"
         )
+
+
+# ---------------------------------------------------------------------------
+# Silver model registry tests (DD-027)
+# ---------------------------------------------------------------------------
+
+
+class TestSilverModelRegistry:
+    """Tests for _build_silver_model_registry and registry-aware resolution."""
+
+    def test_registry_maps_class_uri_to_model_name(self):
+        """Registry maps class URIs from entity metadata to snake_case model names."""
+        g = Graph()
+        meta = [
+            {"class_name": "TransportOrder", "class_uri": "http://ex.com/TransportOrder",
+             "skipped": False, "column_names": ["order_name", "status"]},
+            {"class_name": "Customer", "class_uri": "http://ex.com/Customer",
+             "skipped": False, "column_names": ["customer_name"]},
+        ]
+        classes = [
+            {"uri": "http://ex.com/TransportOrder", "name": "TransportOrder",
+             "label": "TO", "comment": ""},
+            {"uri": "http://ex.com/Customer", "name": "Customer",
+             "label": "C", "comment": ""},
+        ]
+        name_reg, cols_reg = _build_silver_model_registry(meta, classes, g)
+        assert name_reg["http://ex.com/TransportOrder"] == "transport_order"
+        assert name_reg["http://ex.com/Customer"] == "customer"
+        assert cols_reg["transport_order"] == {"order_name", "status"}
+        assert cols_reg["customer"] == {"customer_name"}
+
+    def test_registry_maps_parent_uri_to_child(self):
+        """Parent class URI maps to child's model when single child extends it."""
+        g = Graph()
+        parent_uri = URIRef("http://refmodel.org/PurchaseOrder")
+        child_uri = URIRef("http://ex.com/HubOrder")
+        g.add((child_uri, RDFS.subClassOf, parent_uri))
+
+        meta = [
+            {"class_name": "HubOrder", "class_uri": str(child_uri),
+             "skipped": False, "column_names": ["order_id"]},
+        ]
+        classes = [
+            {"uri": str(child_uri), "name": "HubOrder", "label": "HO", "comment": ""},
+        ]
+        name_reg, _ = _build_silver_model_registry(meta, classes, g)
+        # Parent resolves to child's model name
+        assert name_reg[str(parent_uri)] == "hub_order"
+
+    def test_registry_skips_ambiguous_parent(self):
+        """Parent with multiple children is NOT registered (ambiguous)."""
+        g = Graph()
+        parent_uri = URIRef("http://refmodel.org/Party")
+        child1_uri = URIRef("http://ex.com/Customer")
+        child2_uri = URIRef("http://ex.com/Supplier")
+        g.add((child1_uri, RDFS.subClassOf, parent_uri))
+        g.add((child2_uri, RDFS.subClassOf, parent_uri))
+
+        meta = [
+            {"class_name": "Customer", "class_uri": str(child1_uri),
+             "skipped": False, "column_names": []},
+            {"class_name": "Supplier", "class_uri": str(child2_uri),
+             "skipped": False, "column_names": []},
+        ]
+        classes = [
+            {"uri": str(child1_uri), "name": "Customer", "label": "", "comment": ""},
+            {"uri": str(child2_uri), "name": "Supplier", "label": "", "comment": ""},
+        ]
+        name_reg, _ = _build_silver_model_registry(meta, classes, g)
+        # Parent should NOT be in registry (ambiguous)
+        assert str(parent_uri) not in name_reg
+
+    def test_registry_skips_skipped_classes(self):
+        """Skipped classes (no mapping) are not registered."""
+        g = Graph()
+        meta = [
+            {"class_name": "NoMapping", "class_uri": "http://ex.com/NoMapping",
+             "skipped": True, "column_names": []},
+        ]
+        classes = [{"uri": "http://ex.com/NoMapping", "name": "NoMapping",
+                    "label": "", "comment": ""}]
+        name_reg, _ = _build_silver_model_registry(meta, classes, g)
+        assert "http://ex.com/NoMapping" not in name_reg
+
+    def test_resolver_uses_registry_first(self):
+        """_silver_model_name_for_class uses registry over classes list."""
+        registry = {"http://refmodel.org/ImportedClass": "hub_entity"}
+        classes = [
+            {"uri": "http://refmodel.org/ImportedClass",
+             "name": "ImportedClass", "label": "", "comment": ""},
+        ]
+        # Without registry, would return "imported_class"
+        result = _silver_model_name_for_class(
+            "http://refmodel.org/ImportedClass", classes, registry=registry)
+        assert result == "hub_entity"
+
+    def test_resolver_falls_back_without_registry(self):
+        """Without registry, resolver uses classes list as before."""
+        classes = [
+            {"uri": "http://ex.com/Order", "name": "Order", "label": "", "comment": ""},
+        ]
+        result = _silver_model_name_for_class("http://ex.com/Order", classes)
+        assert result == "order"
+
+    def test_resolver_falls_back_to_uri_local_name(self):
+        """When URI not in registry or classes, extracts local name."""
+        result = _silver_model_name_for_class(
+            "http://unknown.org/ont#SomeClass", [], registry={})
+        assert result == "some_class"

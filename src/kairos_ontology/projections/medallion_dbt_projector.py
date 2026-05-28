@@ -824,10 +824,12 @@ def _gen_silver_models(
             warnings.append(msg)
             entity_metadata.append({
                 "class_name": local,
+                "class_uri": cls_uri,
                 "model_file": None,
                 "scd_type": None,
                 "source_count": 0,
                 "column_count": 0,
+                "column_names": [],
                 "fk_join_count": 0,
                 "skipped": True,
                 "skip_reason": "No bronze mapping found",
@@ -937,10 +939,12 @@ def _gen_silver_models(
             artifacts[path] = content
             entity_metadata.append({
                 "class_name": local,
+                "class_uri": cls_uri,
                 "model_file": f"{model_name}.sql",
                 "scd_type": "2",
                 "source_count": len(source_refs),
                 "column_count": len(canonical_columns),
+                "column_names": [c["target_name"] for c in canonical_columns],
                 "fk_join_count": len(fk_joins) if fk_joins else 0,
                 "skipped": False,
                 "skip_reason": None,
@@ -1032,10 +1036,12 @@ def _gen_silver_models(
         artifacts[path] = content
         entity_metadata.append({
             "class_name": local,
+            "class_uri": cls_uri,
             "model_file": f"{model_name}.sql",
             "scd_type": scd_type,
             "source_count": len(source_refs),
             "column_count": len(columns),
+            "column_names": [c["target_name"] for c in columns],
             "fk_join_count": len(fk_joins) if fk_joins else 0,
             "skipped": False,
             "skip_reason": None,
@@ -1990,11 +1996,90 @@ The `macros/` folder contains platform-abstraction macros:
 # Gold model generation (thick gold — pre-materialized star schema)
 # ---------------------------------------------------------------------------
 
-def _silver_model_name_for_class(cls_uri: str, classes: list[dict]) -> str:
-    """Derive the silver dbt model name for a given ontology class URI."""
+
+def _build_silver_model_registry(
+    silver_entity_meta: list[dict],
+    classes: list[dict],
+    graph: Graph,
+) -> tuple[dict[str, str], dict[str, set[str]]]:
+    """Build registries mapping class URIs to silver model names and columns.
+
+    Returns:
+        Tuple of (name_registry, columns_registry) where:
+        - name_registry: class URI → silver model name (snake_case)
+        - columns_registry: silver model name → set of column names
+
+    Also maps parent class URIs (via rdfs:subClassOf) to the child's silver
+    model name, but ONLY when exactly one hub class extends that parent.
+    This avoids ambiguity when multiple classes share a parent.
+    """
+    name_registry: dict[str, str] = {}
+    columns_registry: dict[str, set[str]] = {}
+
+    # Phase 1: Register direct mappings from entity metadata
+    for meta in silver_entity_meta:
+        if meta.get("skipped"):
+            continue
+        cls_uri = meta.get("class_uri")
+        if not cls_uri:
+            continue
+        model_name = _camel_to_snake(meta["class_name"])
+        name_registry[cls_uri] = model_name
+        col_names = meta.get("column_names", [])
+        columns_registry[model_name] = set(col_names)
+
+    # Phase 2: Map parent URIs → child model name (single-child only)
+    # Track how many children claim each parent
+    parent_to_children: dict[str, list[str]] = {}
+    for cls_uri, model_name in list(name_registry.items()):
+        cls_ref = URIRef(cls_uri)
+        for parent in graph.objects(cls_ref, RDFS.subClassOf):
+            if not isinstance(parent, URIRef):
+                continue
+            parent_str = str(parent)
+            if parent_str.startswith("http://www.w3.org/"):
+                continue
+            # Skip if parent already has its own silver model
+            if parent_str in name_registry:
+                continue
+            parent_to_children.setdefault(parent_str, []).append(model_name)
+
+    # Only register unambiguous parents (exactly one child)
+    for parent_uri, children in parent_to_children.items():
+        if len(children) == 1:
+            name_registry[parent_uri] = children[0]
+        else:
+            logger.warning(
+                "Parent class <%s> extended by multiple hub classes (%s) — "
+                "cannot resolve to a single silver model. Gold models "
+                "referencing this class may produce broken ref() calls.",
+                parent_uri, ", ".join(children),
+            )
+
+    return name_registry, columns_registry
+
+
+def _silver_model_name_for_class(
+    cls_uri: str,
+    classes: list[dict],
+    registry: dict[str, str] | None = None,
+) -> str:
+    """Derive the silver dbt model name for a given ontology class URI.
+
+    Uses the registry (built from actual silver generation metadata) when
+    available.  Falls back to matching against the classes list or extracting
+    the local name from the URI.
+    """
+    # 1. Registry lookup (most reliable — knows actual generated names)
+    if registry and cls_uri in registry:
+        return registry[cls_uri]
+
+    # 2. Fallback: direct match in classes list
     for cls in classes:
         if cls["uri"] == cls_uri:
             return _camel_to_snake(cls["name"])
+
+    # 3. Last resort: derive from URI local name
     local = extract_local_name(cls_uri)
     return _camel_to_snake(local)
 
@@ -2008,6 +2093,8 @@ def _gen_gold_models(
     gold_ext_path: Optional[Path],
     env: Environment,
     meta: dict,
+    silver_name_registry: dict[str, str] | None = None,
+    silver_columns_registry: dict[str, set[str]] | None = None,
 ) -> dict[str, str]:
     """Generate gold dbt models from gold table definitions.
 
@@ -2061,10 +2148,11 @@ def _gen_gold_models(
             # Class-per-table subtype: silver uses discriminator, so source
             # from parent's silver table (subtype is folded into parent in silver)
             silver_name = _silver_model_name_for_class(
-                tbl.parent_class_uri, classes)
+                tbl.parent_class_uri, classes, registry=silver_name_registry)
             source_ctes.append({"model": silver_name, "alias": silver_name})
         elif tbl.source_class_uri:
-            silver_name = _silver_model_name_for_class(tbl.source_class_uri, classes)
+            silver_name = _silver_model_name_for_class(
+                tbl.source_class_uri, classes, registry=silver_name_registry)
             source_ctes.append({"model": silver_name, "alias": silver_name})
 
         # For fact tables with FK constraints, also ref the dimension silver models
@@ -2077,7 +2165,8 @@ def _gen_gold_models(
                     (t for t in gold_tables if t.name == ref_tbl_name), None)
                 if ref_gold and ref_gold.source_class_uri:
                     ref_silver = _silver_model_name_for_class(
-                        ref_gold.source_class_uri, classes)
+                        ref_gold.source_class_uri, classes,
+                        registry=silver_name_registry)
                     if ref_silver not in seen_models:
                         source_ctes.append({
                             "model": ref_silver,
@@ -2091,7 +2180,8 @@ def _gen_gold_models(
                 (t for t in gold_tables if t.name == tbl.gdpr_parent_table), None)
             if parent_gold and parent_gold.source_class_uri:
                 parent_silver = _silver_model_name_for_class(
-                    parent_gold.source_class_uri, classes)
+                    parent_gold.source_class_uri, classes,
+                    registry=silver_name_registry)
                 if not any(c["model"] == parent_silver for c in source_ctes):
                     source_ctes.append({
                         "model": parent_silver, "alias": parent_silver,
@@ -2112,7 +2202,8 @@ def _gen_gold_models(
                     (t for t in gold_tables if t.name == ref_tbl_name), None)
                 if ref_gold and ref_gold.source_class_uri:
                     ref_silver = _silver_model_name_for_class(
-                        ref_gold.source_class_uri, classes)
+                        ref_gold.source_class_uri, classes,
+                        registry=silver_name_registry)
                     alias = ref_silver
                     # Disambiguate aliases
                     base_alias = alias
@@ -2132,11 +2223,26 @@ def _gen_gold_models(
                         ),
                     })
 
-        # Build column expressions
+        # Build column expressions — filter against silver columns when available
+        # to ensure gold only SELECTs columns that actually exist in silver.
+        silver_cols: set[str] | None = None
+        if silver_columns_registry and source_ctes:
+            primary_silver = source_ctes[0]["model"]
+            silver_cols = silver_columns_registry.get(primary_silver)
+
         columns = []
         for col in tbl.columns:
             if col.is_measure:
                 continue
+            # Skip columns not present in silver (except structural columns
+            # like SKs, valid_from/to, is_current which gold generates itself)
+            if silver_cols is not None:
+                structural = (
+                    col.name.endswith("_sk") or col.name.endswith("_type")
+                    or col.name in ("valid_from", "valid_to", "is_current")
+                )
+                if not structural and col.name not in silver_cols:
+                    continue
             columns.append({
                 "expression": col.name,
                 "target_name": col.name,
@@ -2351,9 +2457,16 @@ def generate_dbt_artifacts(
     # 4. Project config (per-domain fallback — orchestrator generates definitive version)
     has_gold = False
     if systems:
+        # Build silver model registry for gold ref() resolution (DD-027)
+        silver_name_reg, silver_cols_reg = _build_silver_model_registry(
+            silver_entity_meta, classes, graph,
+        )
+
         # 5. Gold entity models (thick gold — pre-materialized star schema)
         gold = _gen_gold_models(
             classes, graph, namespace, shapes_dir, onto_name, gold_ext_path, env, meta,
+            silver_name_registry=silver_name_reg,
+            silver_columns_registry=silver_cols_reg,
         )
         artifacts.update(gold)
         has_gold = len(gold) > 0
