@@ -16,9 +16,13 @@ def test_catalog_resolution(catalog_path: Path, ontology_path: Path = None):
     if ontology_path:
         print(f"Testing with: {ontology_path}")
         try:
-            graph = load_graph_with_catalog(ontology_path, catalog_path)
-            print(f"  ✓ Loaded {len(graph)} triples")
-            print("  ✓ All imports resolved successfully")
+            result = load_graph_with_catalog(ontology_path, catalog_path)
+            print(f"  ✓ Loaded {len(result.graph)} triples")
+            if result.diagnostics:
+                for diag in result.diagnostics:
+                    print(f"  ⚠️  [{diag['level']}] {diag['message']}")
+            else:
+                print("  ✓ All imports resolved successfully")
         except Exception as e:
             print(f"  ✗ Failed: {e}")
     else:

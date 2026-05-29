@@ -5,6 +5,7 @@
 import pytest
 from pathlib import Path
 from kairos_ontology.catalog_utils import (
+    CatalogLoadResult,
     CatalogResolver,
     _get_rdf_format,
     resolve_import_paths,
@@ -268,3 +269,299 @@ class TestResolveImportPaths:
         )
         result = resolve_import_paths(onto_file, catalog)
         assert len(result) == 0
+
+
+class TestLoadGraphWithCatalogDiagnostics:
+    """Tests for catalog load diagnostics capture (CatalogLoadResult)."""
+
+    def test_returns_catalog_load_result(self, tmp_path):
+        """load_graph_with_catalog returns a CatalogLoadResult."""
+        from kairos_ontology.catalog_utils import load_graph_with_catalog
+
+        onto = tmp_path / "test.ttl"
+        onto.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/ont/t> a owl:Ontology .\n",
+            encoding="utf-8",
+        )
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        result = load_graph_with_catalog(onto, catalog)
+        assert isinstance(result, CatalogLoadResult)
+        assert len(result.graph) > 0
+        assert result.diagnostics == []
+
+    def test_unresolved_import_produces_warning_diagnostic(self, tmp_path):
+        """Unresolved owl:imports generates a warning in diagnostics."""
+        from kairos_ontology.catalog_utils import load_graph_with_catalog
+
+        onto = tmp_path / "domain.ttl"
+        onto.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/ont/d> a owl:Ontology ;\n"
+            "    owl:imports <https://missing.org/ont/foo> .\n",
+            encoding="utf-8",
+        )
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        result = load_graph_with_catalog(onto, catalog)
+        assert len(result.diagnostics) == 1
+        assert result.diagnostics[0]["level"] == "warning"
+        assert "No catalog mapping for" in result.diagnostics[0]["message"]
+        assert "https://missing.org/ont/foo" in result.diagnostics[0]["message"]
+
+    def test_warnings_helper_method(self, tmp_path):
+        """CatalogLoadResult.warnings() returns only warning messages."""
+        from kairos_ontology.catalog_utils import load_graph_with_catalog
+
+        onto = tmp_path / "domain.ttl"
+        onto.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/ont/d> a owl:Ontology ;\n"
+            "    owl:imports <https://missing.org/a> ;\n"
+            "    owl:imports <https://missing.org/b> .\n",
+            encoding="utf-8",
+        )
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        result = load_graph_with_catalog(onto, catalog)
+        warnings = result.warnings()
+        assert len(warnings) == 2
+        assert all("No catalog mapping for" in w for w in warnings)
+
+    def test_file_uri_produces_warning_diagnostic(self, tmp_path):
+        """file:// imports produce a warning diagnostic."""
+        from kairos_ontology.catalog_utils import load_graph_with_catalog
+
+        onto = tmp_path / "domain.ttl"
+        onto.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/ont/d> a owl:Ontology ;\n"
+            "    owl:imports <file:///some/local.ttl> .\n",
+            encoding="utf-8",
+        )
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        result = load_graph_with_catalog(onto, catalog)
+        assert len(result.diagnostics) == 1
+        assert result.diagnostics[0]["level"] == "warning"
+        assert "file://" in result.diagnostics[0]["message"]
+
+
+class TestRewriteURIResolution:
+    """Tests for <rewriteURI> catalog element parsing and resolution."""
+
+    def test_rewrite_rule_is_parsed(self, tmp_path):
+        """CatalogResolver parses <rewriteURI> elements."""
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <rewriteURI uriStartString="https://example.org/ont/"\n'
+            '              rewritePrefix="local/"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        resolver = CatalogResolver(catalog)
+        assert len(resolver._rewrite_rules) == 1
+        assert resolver._rewrite_rules[0][0] == "https://example.org/ont/"
+        assert resolver._rewrite_rules[0][1] == "local/"
+
+    def test_exact_uri_wins_over_rewrite(self, tmp_path):
+        """Exact <uri> mapping takes priority over matching <rewriteURI>."""
+        # Create the target file for the exact mapping
+        exact_file = tmp_path / "exact.ttl"
+        exact_file.write_text("# exact", encoding="utf-8")
+
+        # Create a file that the rewrite would resolve to
+        rewrite_dir = tmp_path / "local" / "Thing"
+        rewrite_dir.mkdir(parents=True)
+        (tmp_path / "local" / "Thing.ttl").write_text("# rewrite", encoding="utf-8")
+
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <uri name="https://example.org/ont/Thing" uri="exact.ttl"/>\n'
+            '  <rewriteURI uriStartString="https://example.org/ont/"\n'
+            '              rewritePrefix="local/"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        resolver = CatalogResolver(catalog)
+        resolved = resolver.resolve("https://example.org/ont/Thing")
+        assert resolved == exact_file.resolve()
+
+    def test_longest_prefix_wins(self, tmp_path):
+        """When multiple rewrite rules match, longest uriStartString wins."""
+        # Create files for both rules
+        general_dir = tmp_path / "general" / "FND" / "Parties"
+        general_dir.mkdir(parents=True)
+        (tmp_path / "general" / "FND" / "Parties.rdf").write_text("# gen", encoding="utf-8")
+
+        specific_dir = tmp_path / "fnd"
+        specific_dir.mkdir(parents=True)
+        specific_file = specific_dir / "Parties.rdf"
+        specific_file.write_text("# specific", encoding="utf-8")
+
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <rewriteURI uriStartString="https://spec.org/fibo/ontology/"\n'
+            '              rewritePrefix="general/"/>\n'
+            '  <rewriteURI uriStartString="https://spec.org/fibo/ontology/FND/"\n'
+            '              rewritePrefix="fnd/"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        resolver = CatalogResolver(catalog)
+        # The FND-specific rule should win for FND/Parties/
+        resolved = resolver.resolve("https://spec.org/fibo/ontology/FND/Parties/")
+        assert resolved == specific_file.resolve()
+
+    def test_extension_fallback_resolves_trailing_slash(self, tmp_path):
+        """Trailing-slash URI resolves to .rdf file via extension fallback."""
+        # Simulate FIBO structure: directory path + .rdf file
+        fibo_dir = tmp_path / "fibo" / "FND" / "AgentsAndPeople"
+        fibo_dir.mkdir(parents=True)
+        rdf_file = fibo_dir / "Agents.rdf"
+        rdf_file.write_text("# agents rdf", encoding="utf-8")
+
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <rewriteURI uriStartString="https://spec.edmcouncil.org/fibo/ontology/"\n'
+            '              rewritePrefix="fibo/"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        resolver = CatalogResolver(catalog)
+        resolved = resolver.resolve(
+            "https://spec.edmcouncil.org/fibo/ontology/FND/AgentsAndPeople/Agents/"
+        )
+        assert resolved == rdf_file.resolve()
+        assert resolver._rewrite_fallback_used is True
+
+    def test_directory_not_returned_as_resolved(self, tmp_path):
+        """A directory matching the rewrite path is NOT returned."""
+        # Create a directory (but no file with matching extension)
+        agents_dir = tmp_path / "fibo" / "FND" / "Agents"
+        agents_dir.mkdir(parents=True)
+
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <rewriteURI uriStartString="https://example.org/"\n'
+            '              rewritePrefix="fibo/"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        resolver = CatalogResolver(catalog)
+        # The URI resolves to the directory path — should return None
+        resolved = resolver.resolve("https://example.org/FND/Agents")
+        assert resolved is None
+
+    def test_ambiguous_extensions_uses_first_priority(self, tmp_path):
+        """When both .rdf and .ttl exist, first in priority order wins."""
+        fibo_dir = tmp_path / "fibo" / "FND"
+        fibo_dir.mkdir(parents=True)
+        rdf_file = fibo_dir / "Agents.rdf"
+        rdf_file.write_text("# rdf version", encoding="utf-8")
+        ttl_file = fibo_dir / "Agents.ttl"
+        ttl_file.write_text("# ttl version", encoding="utf-8")
+
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <rewriteURI uriStartString="https://example.org/"\n'
+            '              rewritePrefix="fibo/"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        resolver = CatalogResolver(catalog)
+        resolved = resolver.resolve("https://example.org/FND/Agents/")
+        # .rdf has higher priority
+        assert resolved == rdf_file.resolve()
+
+    def test_next_catalog_with_rewrite_rules(self, tmp_path):
+        """<nextCatalog> containing <rewriteURI> rules is followed."""
+        # Child catalog with rewrite rule
+        child_dir = tmp_path / "reference-models"
+        child_dir.mkdir()
+        fibo_dir = child_dir / "fibo" / "FND"
+        fibo_dir.mkdir(parents=True)
+        rdf_file = fibo_dir / "Parties.rdf"
+        rdf_file.write_text("# parties", encoding="utf-8")
+
+        child_catalog = child_dir / "catalog-v001.xml"
+        child_catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <rewriteURI uriStartString="https://spec.org/fibo/"\n'
+            '              rewritePrefix="fibo/"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        # Parent catalog chains to child
+        parent_catalog = tmp_path / "catalog.xml"
+        parent_catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <nextCatalog catalog="reference-models/catalog-v001.xml"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        resolver = CatalogResolver(parent_catalog)
+        resolved = resolver.resolve("https://spec.org/fibo/FND/Parties/")
+        assert resolved == rdf_file.resolve()
+
+    def test_direct_rewrite_match_no_fallback(self, tmp_path):
+        """When rewritten path is a file directly, no extension fallback is used."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        target = local_dir / "Thing.ttl"
+        target.write_text("# thing", encoding="utf-8")
+
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <rewriteURI uriStartString="https://example.org/"\n'
+            '              rewritePrefix="local/"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        resolver = CatalogResolver(catalog)
+        resolved = resolver.resolve("https://example.org/Thing.ttl")
+        assert resolved == target.resolve()
+        assert resolver._rewrite_fallback_used is False

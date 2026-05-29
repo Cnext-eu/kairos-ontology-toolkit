@@ -2,9 +2,10 @@
 # Copyright 2026 Cnext.eu
 """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
 
-__version__ = "2.39.7"
+__version__ = "2.40.0"
 
 from kairos_ontology.catalog_utils import (
+    CatalogLoadResult,
     CatalogResolver,
     load_graph_with_catalog,
     resolve_import_paths,
@@ -26,6 +27,7 @@ from kairos_ontology.ontology_ops import (
 
 __all__ = [
     "__version__",
+    "CatalogLoadResult",
     "CatalogResolver",
     "load_graph_with_catalog",
     "resolve_import_paths",
