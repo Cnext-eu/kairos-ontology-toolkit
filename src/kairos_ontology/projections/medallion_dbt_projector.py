@@ -1684,15 +1684,39 @@ def _build_enum_case(source_expr: str, enum_values: list[dict]) -> str:
     return "\n".join(parts)
 
 
-def _get_natural_key(graph: Graph, class_uri: str) -> list[str]:
+def _get_natural_key(
+    graph: Graph, class_uri: str, _visited: set[str] | None = None
+) -> list[str]:
     """Get natural key column names for a class from kairos-ext:naturalKey annotation.
 
-    Falls back to checking for properties annotated as primary key in mappings.
+    Walks up the rdfs:subClassOf hierarchy when the parent declares
+    inheritanceStrategy "discriminator", inheriting the parent's naturalKey.
+    This avoids requiring redundant annotations on every discriminator subtype.
     """
-    # Check kairos-ext:naturalKey on the class
+    if _visited is None:
+        _visited = set()
+    if class_uri in _visited:
+        return []
+    _visited.add(class_uri)
+
+    # Direct annotation on this class — always wins
     nk = graph.value(URIRef(class_uri), KAIROS_EXT.term("naturalKey"))
     if nk:
         return [_camel_to_snake(c) for c in str(nk).split()]
+
+    # Walk up rdfs:subClassOf to inherit from discriminator parents
+    for parent in graph.objects(URIRef(class_uri), RDFS.subClassOf):
+        if not isinstance(parent, URIRef):
+            continue
+        parent_str = str(parent)
+        if parent_str.startswith("http://www.w3.org/"):
+            continue
+        # Only inherit if parent uses discriminator strategy
+        strategy = graph.value(parent, KAIROS_EXT.term("inheritanceStrategy"))
+        if strategy and str(strategy) == "discriminator":
+            inherited = _get_natural_key(graph, parent_str, _visited)
+            if inherited:
+                return inherited
 
     return []
 
@@ -1702,8 +1726,10 @@ def _get_nk_property_uris(graph: Graph, class_uri: str) -> list[str]:
 
     Resolves NK column names (from ``kairos-ext:naturalKey``) back to property URIs
     by matching the camelCase name against ``rdfs:domain`` on the class and its parents.
+    Walks the discriminator hierarchy to find inherited naturalKey annotations.
     """
-    nk = graph.value(URIRef(class_uri), KAIROS_EXT.term("naturalKey"))
+    # Find the naturalKey annotation (may be inherited from discriminator parent)
+    nk = _get_raw_natural_key(graph, class_uri)
     if not nk:
         return []
 
@@ -1724,6 +1750,40 @@ def _get_nk_property_uris(graph: Graph, class_uri: str) -> list[str]:
             if found:
                 break
     return uris
+
+
+def _get_raw_natural_key(
+    graph: Graph, class_uri: str, _visited: set[str] | None = None
+) -> str | None:
+    """Get the raw naturalKey annotation value (camelCase), walking discriminator hierarchy.
+
+    Returns the literal string value of kairos-ext:naturalKey (unsplit, un-snake-cased),
+    or None if no annotation is found.
+    """
+    if _visited is None:
+        _visited = set()
+    if class_uri in _visited:
+        return None
+    _visited.add(class_uri)
+
+    nk = graph.value(URIRef(class_uri), KAIROS_EXT.term("naturalKey"))
+    if nk:
+        return str(nk)
+
+    # Walk up rdfs:subClassOf to inherit from discriminator parents
+    for parent in graph.objects(URIRef(class_uri), RDFS.subClassOf):
+        if not isinstance(parent, URIRef):
+            continue
+        parent_str = str(parent)
+        if parent_str.startswith("http://www.w3.org/"):
+            continue
+        strategy = graph.value(parent, KAIROS_EXT.term("inheritanceStrategy"))
+        if strategy and str(strategy) == "discriminator":
+            result = _get_raw_natural_key(graph, parent_str, _visited)
+            if result:
+                return result
+
+    return None
 
 
 def _gen_schema_yaml(
