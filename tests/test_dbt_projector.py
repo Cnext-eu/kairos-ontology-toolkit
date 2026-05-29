@@ -20,7 +20,9 @@ from kairos_ontology.projections.medallion_dbt_projector import (
     _silver_model_name_for_class,
     _source_type_to_databricks,
     _extract_fk_columns_and_joins,
+    _get_natural_key,
     _get_nk_property_uris,
+    _get_raw_natural_key,
     generate_dbt_artifacts,
 )
 
@@ -2030,3 +2032,183 @@ class TestSilverModelRegistry:
         result = _silver_model_name_for_class(
             "http://unknown.org/ont#SomeClass", [], registry={})
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Natural Key Inheritance (discriminator hierarchy)
+# ---------------------------------------------------------------------------
+
+NK_DISCRIMINATOR_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.com/ont#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+ex:Client a owl:Class ;
+    rdfs:label "Client" ;
+    kairos-ext:naturalKey "clientId" ;
+    kairos-ext:inheritanceStrategy "discriminator" .
+
+ex:CorporateClient a owl:Class ;
+    rdfs:subClassOf ex:Client ;
+    rdfs:label "Corporate Client" .
+
+ex:SoleProprietorClient a owl:Class ;
+    rdfs:subClassOf ex:Client ;
+    rdfs:label "Sole Proprietor Client" .
+
+ex:clientId a owl:DatatypeProperty ;
+    rdfs:domain ex:Client ;
+    rdfs:label "clientId" .
+"""
+
+NK_CLASS_PER_TABLE_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.com/ont#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+ex:Asset a owl:Class ;
+    rdfs:label "Asset" ;
+    kairos-ext:naturalKey "assetCode" ;
+    kairos-ext:inheritanceStrategy "class-per-table" .
+
+ex:Vehicle a owl:Class ;
+    rdfs:subClassOf ex:Asset ;
+    rdfs:label "Vehicle" .
+"""
+
+NK_MULTILEVEL_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.com/ont#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+ex:Party a owl:Class ;
+    rdfs:label "Party" ;
+    kairos-ext:naturalKey "partyId" ;
+    kairos-ext:inheritanceStrategy "discriminator" .
+
+ex:LegalEntity a owl:Class ;
+    rdfs:subClassOf ex:Party ;
+    rdfs:label "Legal Entity" ;
+    kairos-ext:inheritanceStrategy "discriminator" .
+
+ex:Corporation a owl:Class ;
+    rdfs:subClassOf ex:LegalEntity ;
+    rdfs:label "Corporation" .
+"""
+
+NK_SUBCLASS_OVERRIDE_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.com/ont#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+ex:Account a owl:Class ;
+    rdfs:label "Account" ;
+    kairos-ext:naturalKey "accountId" ;
+    kairos-ext:inheritanceStrategy "discriminator" .
+
+ex:SavingsAccount a owl:Class ;
+    rdfs:subClassOf ex:Account ;
+    rdfs:label "Savings Account" ;
+    kairos-ext:naturalKey "savingsAccountNumber" .
+"""
+
+
+class TestNaturalKeyInheritance:
+    """Test _get_natural_key walks up discriminator hierarchies."""
+
+    def test_inherits_from_discriminator_parent(self):
+        """Subclass inherits naturalKey when parent uses discriminator strategy."""
+        g = Graph()
+        g.parse(data=NK_DISCRIMINATOR_TTL, format="turtle")
+        result = _get_natural_key(g, "http://example.com/ont#CorporateClient")
+        assert result == ["client_id"]
+
+    def test_does_not_inherit_from_class_per_table_parent(self):
+        """Subclass does NOT inherit when parent uses class-per-table strategy."""
+        g = Graph()
+        g.parse(data=NK_CLASS_PER_TABLE_TTL, format="turtle")
+        result = _get_natural_key(g, "http://example.com/ont#Vehicle")
+        assert result == []
+
+    def test_direct_annotation_wins(self):
+        """Direct annotation on subclass takes precedence over parent."""
+        g = Graph()
+        g.parse(data=NK_SUBCLASS_OVERRIDE_TTL, format="turtle")
+        result = _get_natural_key(g, "http://example.com/ont#SavingsAccount")
+        assert result == ["savings_account_number"]
+
+    def test_multilevel_hierarchy(self):
+        """Multi-level discriminator hierarchy: grandchild inherits from grandparent."""
+        g = Graph()
+        g.parse(data=NK_MULTILEVEL_TTL, format="turtle")
+        result = _get_natural_key(g, "http://example.com/ont#Corporation")
+        # Corporation → LegalEntity (discriminator, no NK) → Party (discriminator, has NK)
+        assert result == ["party_id"]
+
+    def test_no_key_anywhere_returns_empty(self):
+        """Class with no NK in hierarchy returns empty list."""
+        g = Graph()
+        g.parse(data="""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.com/ont#> .
+ex:Orphan a owl:Class ; rdfs:label "Orphan" .
+""", format="turtle")
+        result = _get_natural_key(g, "http://example.com/ont#Orphan")
+        assert result == []
+
+    def test_cyclic_subclass_does_not_loop(self):
+        """Cyclic rdfs:subClassOf doesn't cause infinite recursion."""
+        g = Graph()
+        g.parse(data="""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.com/ont#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+ex:A a owl:Class ; rdfs:subClassOf ex:B ; rdfs:label "A" .
+ex:B a owl:Class ; rdfs:subClassOf ex:A ;
+    kairos-ext:inheritanceStrategy "discriminator" ; rdfs:label "B" .
+""", format="turtle")
+        # Should not raise RecursionError; returns [] since no NK declared
+        result = _get_natural_key(g, "http://example.com/ont#A")
+        assert result == []
+
+
+class TestRawNaturalKeyInheritance:
+    """Test _get_raw_natural_key returns the raw camelCase value."""
+
+    def test_returns_raw_value_from_parent(self):
+        """Returns the raw camelCase string when inherited from parent."""
+        g = Graph()
+        g.parse(data=NK_DISCRIMINATOR_TTL, format="turtle")
+        result = _get_raw_natural_key(g, "http://example.com/ont#CorporateClient")
+        assert result == "clientId"
+
+    def test_returns_none_for_class_per_table(self):
+        """Returns None when parent uses class-per-table."""
+        g = Graph()
+        g.parse(data=NK_CLASS_PER_TABLE_TTL, format="turtle")
+        result = _get_raw_natural_key(g, "http://example.com/ont#Vehicle")
+        assert result is None
+
+
+class TestNKPropertyURIsInheritance:
+    """Test _get_nk_property_uris handles inherited naturalKey."""
+
+    def test_resolves_property_uri_from_inherited_nk(self):
+        """NK inherited from parent resolves to correct property URI."""
+        g = Graph()
+        g.parse(data=NK_DISCRIMINATOR_TTL, format="turtle")
+        result = _get_nk_property_uris(g, "http://example.com/ont#CorporateClient")
+        assert result == ["http://example.com/ont#clientId"]
+
+    def test_returns_empty_for_class_per_table(self):
+        """No NK inheritance for class-per-table → empty result."""
+        g = Graph()
+        g.parse(data=NK_CLASS_PER_TABLE_TTL, format="turtle")
+        result = _get_nk_property_uris(g, "http://example.com/ont#Vehicle")
+        assert result == []
