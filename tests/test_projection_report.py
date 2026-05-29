@@ -325,3 +325,92 @@ class TestProjectionReportMarkdown:
         assert len(md_files) == 1
         content = md_files[0].read_text(encoding="utf-8")
         assert "# Projection Report — test" in content
+
+
+class TestCatalogWarningsInReport:
+    """Verify that catalog resolution warnings are captured in projection-report.json."""
+
+    _TTL_WITH_IMPORT = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<http://example.org/ont/test> a owl:Ontology ;
+    rdfs:label "Test"@en ;
+    owl:versionInfo "1.0" ;
+    owl:imports <https://missing.org/reference-model> .
+
+<http://example.org/ont/test#Widget> a owl:Class ;
+    rdfs:label "Widget"@en ;
+    rdfs:comment "A test widget."@en .
+"""
+
+    def test_unresolved_import_appears_in_report_events(self, tmp_path):
+        """Unresolved owl:imports should produce a warning event in the report."""
+        ont_dir = tmp_path / "model" / "ontologies"
+        ont_dir.mkdir(parents=True)
+        (ont_dir / "test.ttl").write_text(self._TTL_WITH_IMPORT, encoding="utf-8")
+
+        # Create catalog without the imported URI
+        catalog = tmp_path / "catalog-v001.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        output_dir = tmp_path / "output"
+
+        run_projections(
+            ontologies_path=ont_dir,
+            output_path=output_dir,
+            catalog_path=catalog,
+            target="prompt",
+        )
+
+        report_file = output_dir / "projection-report.json"
+        assert report_file.exists()
+        data = json.loads(report_file.read_text(encoding="utf-8"))
+
+        # There should be at least one warning event about the missing mapping
+        warning_events = [
+            e for e in data["events"]
+            if e["level"] == "warning" and "No catalog mapping for" in e["message"]
+        ]
+        assert len(warning_events) >= 1
+        assert "https://missing.org/reference-model" in warning_events[0]["message"]
+        assert warning_events[0].get("domain") == "test"
+        assert warning_events[0].get("target") == "load"
+
+    def test_unresolved_import_appears_in_domain_markdown(self, tmp_path):
+        """Unresolved owl:imports warning should appear in the per-domain .md report."""
+        hub = tmp_path
+        ont_dir = hub / "model" / "ontologies"
+        ont_dir.mkdir(parents=True)
+        (ont_dir / "test.ttl").write_text(self._TTL_WITH_IMPORT, encoding="utf-8")
+
+        sessions_dir = hub / ".sessions-projection"
+        sessions_dir.mkdir(parents=True)
+
+        catalog = tmp_path / "catalog-v001.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        output_dir = hub / "output"
+
+        run_projections(
+            ontologies_path=ont_dir,
+            output_path=output_dir,
+            catalog_path=catalog,
+            target="prompt",
+        )
+
+        md_files = list(sessions_dir.glob("projection-test-*.md"))
+        assert len(md_files) == 1
+        content = md_files[0].read_text(encoding="utf-8")
+        assert "No catalog mapping for" in content
+        assert "https://missing.org/reference-model" in content

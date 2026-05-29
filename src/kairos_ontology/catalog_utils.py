@@ -11,12 +11,31 @@ Provides functions to:
 
 import logging
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 from rdflib import Graph
 
 _logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CatalogLoadResult:
+    """Result of loading an ontology graph with catalog-based import resolution.
+
+    Attributes:
+        graph: The loaded RDF graph (including resolved imports).
+        diagnostics: Structured messages collected during loading.
+            Each entry is a dict with keys: level ("warning"|"error"|"info"), message (str).
+    """
+
+    graph: Graph = field(default_factory=Graph)
+    diagnostics: List[Dict[str, str]] = field(default_factory=list)
+
+    def warnings(self) -> List[str]:
+        """Return only warning-level diagnostic messages."""
+        return [d["message"] for d in self.diagnostics if d["level"] == "warning"]
 
 
 def _get_rdf_format(file_path: Path) -> str:
@@ -59,12 +78,16 @@ class CatalogResolver:
         """
         self.catalog_path = catalog_path
         self.mappings: Dict[str, Path] = {}
+        self._rewrite_rules: List[Tuple[str, str, Path]] = []
         self._hash_fallback_used: bool = False
+        self._rewrite_fallback_used: bool = False
         self._load_catalog()
     
     def _load_catalog(self):
         """Parse XML catalog and build URI → local path mappings."""
         self._load_catalog_file(self.catalog_path)
+        # Sort rewrite rules by descending prefix length (longest-prefix-wins)
+        self._rewrite_rules.sort(key=lambda r: len(r[0]), reverse=True)
 
     def _load_catalog_file(self, path: Path):
         """Parse a single catalog file, following <nextCatalog> references."""
@@ -105,6 +128,13 @@ class CatalogResolver:
                 next_path = (catalog_dir / next_catalog).resolve()
                 if next_path.exists():
                     self._load_catalog_file(next_path)
+
+        # Parse <rewriteURI> elements
+        for rewrite_elem in root.findall(f"{self.CATALOG_NS}rewriteURI"):
+            start_string = rewrite_elem.get("uriStartString")
+            rewrite_prefix = rewrite_elem.get("rewritePrefix")
+            if start_string and rewrite_prefix:
+                self._rewrite_rules.append((start_string, rewrite_prefix, catalog_dir))
     
     def resolve(self, uri: str) -> Optional[Path]:
         """
@@ -139,7 +169,55 @@ class CatalogResolver:
         if uri_without_hash in self.mappings:
             self._hash_fallback_used = True
             return self.mappings[uri_without_hash]
-        
+
+        # Try rewriteURI rules (longest-prefix-wins, already sorted)
+        resolved = self._resolve_via_rewrite(uri)
+        if resolved:
+            return resolved
+
+        return None
+
+    # Extension probe order for rewriteURI fallback
+    _EXTENSION_FALLBACK = [".rdf", ".ttl", ".owl"]
+
+    def _resolve_via_rewrite(self, uri: str) -> Optional[Path]:
+        """Apply rewriteURI rules with extension fallback.
+
+        Returns the resolved file path, or None if no rule matches or no file exists.
+        """
+        for start_string, rewrite_prefix, catalog_dir in self._rewrite_rules:
+            if not uri.startswith(start_string):
+                continue
+
+            # Apply prefix replacement
+            suffix = uri[len(start_string):]
+            candidate = (catalog_dir / rewrite_prefix / suffix).resolve()
+
+            # Direct match — rewritten path is an existing file
+            if candidate.is_file():
+                self._rewrite_fallback_used = False
+                return candidate
+
+            # Extension fallback: strip trailing slash/separator, try extensions
+            base = str(candidate).rstrip("/\\")
+            found: List[Path] = []
+            for ext in self._EXTENSION_FALLBACK:
+                probe = Path(base + ext)
+                if probe.is_file():
+                    found.append(probe)
+
+            if found:
+                self._rewrite_fallback_used = True
+                if len(found) > 1:
+                    _logger.warning(
+                        "Ambiguous rewriteURI resolution for <%s>: multiple files exist "
+                        "(%s). Using first in priority order: %s",
+                        uri,
+                        ", ".join(p.name for p in found),
+                        found[0].name,
+                    )
+                return found[0]
+
         return None
     
     def is_mapped(self, uri: str) -> bool:
@@ -151,7 +229,7 @@ class CatalogResolver:
         return self.mappings.copy()
 
 
-def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> Graph:
+def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> CatalogLoadResult:
     """
     Load an RDF graph and resolve owl:imports using XML catalog.
     
@@ -160,12 +238,14 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> Graph:
         catalog_path: Path to catalog-v001.xml
         
     Returns:
-        RDF graph with all imports loaded
+        CatalogLoadResult with the loaded graph and any diagnostics collected
+        during import resolution.
     """
     from rdflib import OWL
     
     # Initialize resolver
     resolver = CatalogResolver(catalog_path)
+    result = CatalogLoadResult()
     
     # Load main graph
     graph = Graph()
@@ -180,20 +260,32 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> Graph:
         
         # Check if it's a file:// URI (old pattern - skip)
         if import_str.startswith('file://'):
-            print(f"⚠️  Skipping file:// import (use catalog instead): {import_str}")
+            msg = f"Skipping file:// import (use catalog instead): {import_str}"
+            result.diagnostics.append({"level": "warning", "message": msg})
+            print(f"⚠️  {msg}")
             continue
         
         # Resolve via catalog
         hash_before = resolver._hash_fallback_used
+        resolver._rewrite_fallback_used = False
         local_path = resolver.resolve(import_str)
         if resolver._hash_fallback_used and not hash_before:
-            _logger.warning(
-                "Hash mismatch: owl:imports <%s> resolved via '#' fallback. "
-                "Align the catalog name and owl:imports URI to avoid ambiguity.",
-                import_str,
+            msg = (
+                f"Hash mismatch: owl:imports <{import_str}> resolved via '#' fallback. "
+                "Align the catalog name and owl:imports URI to avoid ambiguity."
             )
+            _logger.warning(msg)
+            result.diagnostics.append({"level": "warning", "message": msg})
             print(f"  ⚠️  Hash mismatch for import: {import_str} "
                   f"(resolved via '#' fallback — consider aligning catalog/imports)")
+        if resolver._rewrite_fallback_used:
+            msg = (
+                f"Resolved via rewriteURI extension fallback: "
+                f"<{import_str}> → {local_path}"
+            )
+            _logger.info(msg)
+            result.diagnostics.append({"level": "info", "message": msg})
+            print(f"  ℹ️  {msg}")
         
         if local_path and local_path.exists():
             try:
@@ -203,13 +295,18 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> Graph:
                 print(f"✓ Loaded import: {import_str}")
                 print(f"  → {local_path}")
             except Exception as e:
-                print(f"✗ Error loading {local_path}: {e}")
+                msg = f"Error loading {local_path}: {e}"
+                result.diagnostics.append({"level": "error", "message": msg})
+                print(f"✗ {msg}")
         else:
-            print(f"⚠️  No catalog mapping for: {import_str}")
+            msg = f"No catalog mapping for: {import_str}"
+            result.diagnostics.append({"level": "warning", "message": msg})
+            print(f"⚠️  {msg}")
     
     print(f"\n📦 Loaded {loaded_count}/{len(imports)} imports via catalog")
     
-    return graph
+    result.graph = graph
+    return result
 
 
 def resolve_import_paths(

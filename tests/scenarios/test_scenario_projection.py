@@ -879,3 +879,107 @@ class TestNaturalKeyCompleteness:
             "all entity classes must have kairos-ext:naturalKey in their "
             "domain ontology or silver extension file."
         )
+
+
+# ===========================================================================
+# rewriteURI catalog resolution
+# ===========================================================================
+
+class TestRewriteURIScenario:
+    """Verify that <rewriteURI> catalog rules resolve FIBO-style imports."""
+
+    def test_rewrite_uri_resolves_fibo_import(self, tmp_path):
+        """An ontology importing a FIBO-style URI resolves via rewriteURI + extension fallback."""
+        import json
+
+        # Set up a minimal hub with rewriteURI catalog
+        ont_dir = tmp_path / "model" / "ontologies"
+        ont_dir.mkdir(parents=True)
+
+        # Reference model file (FIBO-style: .rdf, trailing-slash URI)
+        ref_dir = tmp_path / "reference-models" / "fibo" / "FND" / "Parties"
+        ref_dir.mkdir(parents=True)
+        (ref_dir / "Parties.rdf").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"\n'
+            '         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"\n'
+            '         xmlns:owl="http://www.w3.org/2002/07/owl#">\n'
+            '  <owl:Ontology rdf:about="https://spec.edmcouncil.org/fibo/ontology/'
+            'FND/Parties/Parties/">\n'
+            '    <rdfs:label>FIBO Parties</rdfs:label>\n'
+            '    <owl:versionInfo>test</owl:versionInfo>\n'
+            '  </owl:Ontology>\n'
+            '  <owl:Class rdf:about="https://spec.edmcouncil.org/fibo/ontology/'
+            'FND/Parties/Parties/Party">\n'
+            '    <rdfs:label>Party</rdfs:label>\n'
+            '    <rdfs:comment>A party entity.</rdfs:comment>\n'
+            '  </owl:Class>\n'
+            '</rdf:RDF>\n',
+            encoding="utf-8",
+        )
+
+        # Domain ontology that imports the FIBO module
+        (ont_dir / "customer.ttl").write_text(
+            '@prefix owl: <http://www.w3.org/2002/07/owl#> .\n'
+            '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n'
+            '\n'
+            '<http://example.org/ont/customer> a owl:Ontology ;\n'
+            '    rdfs:label "Customer"@en ;\n'
+            '    owl:versionInfo "1.0" ;\n'
+            '    owl:imports <https://spec.edmcouncil.org/fibo/ontology/'
+            'FND/Parties/Parties/> .\n'
+            '\n'
+            '<http://example.org/ont/customer#Customer> a owl:Class ;\n'
+            '    rdfs:label "Customer"@en ;\n'
+            '    rdfs:comment "A customer entity."@en .\n',
+            encoding="utf-8",
+        )
+
+        # Catalog with rewriteURI rule
+        catalog = tmp_path / "catalog-v001.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <rewriteURI uriStartString='
+            '"https://spec.edmcouncil.org/fibo/ontology/"\n'
+            '              rewritePrefix="reference-models/fibo/"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        output_dir = tmp_path / "output"
+
+        from kairos_ontology.projector import run_projections
+        run_projections(
+            ontologies_path=ont_dir,
+            output_path=output_dir,
+            catalog_path=catalog,
+            target="prompt",
+        )
+
+        # Verify no "No catalog mapping" warnings in the report
+        report_file = output_dir / "projection-report.json"
+        assert report_file.exists()
+        data = json.loads(report_file.read_text(encoding="utf-8"))
+
+        unresolved = [
+            e for e in data["events"]
+            if e["level"] == "warning" and "No catalog mapping for" in e["message"]
+        ]
+        assert unresolved == [], (
+            f"rewriteURI should have resolved FIBO import, but got: {unresolved}"
+        )
+
+        # Verify the domain loaded successfully with imported triples
+        assert data["domains"]["customer"]["status"] == "ok"
+        # Should have more triples than just the domain ontology (imports resolved)
+        assert data["domains"]["customer"]["triples"] > 3
+
+        # Verify the extension fallback diagnostic is present
+        info_events = [
+            e for e in data["events"]
+            if e["level"] == "info" and "extension fallback" in e["message"]
+        ]
+        assert len(info_events) >= 1, (
+            "Expected info diagnostic about extension fallback resolution"
+        )

@@ -553,7 +553,16 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             if catalog_path and catalog_path.exists():
                 # Load with catalog support for imports
                 from .catalog_utils import load_graph_with_catalog
-                file_graph = load_graph_with_catalog(onto_file, catalog_path)
+                catalog_result = load_graph_with_catalog(onto_file, catalog_path)
+                file_graph = catalog_result.graph
+                # Record catalog diagnostics into the projection report
+                for diag in catalog_result.diagnostics:
+                    report.record(
+                        diag["level"],
+                        diag["message"],
+                        domain=onto_file.stem,
+                        target="load",
+                    )
             else:
                 # Load without catalog
                 file_graph.parse(onto_file, format='turtle' if onto_file.suffix == '.ttl' else 'xml')

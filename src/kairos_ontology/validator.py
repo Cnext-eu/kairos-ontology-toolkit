@@ -287,7 +287,7 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
         
         for ontology_file in ontology_files:
             try:
-                data_graph = load_graph_with_catalog(ontology_file, catalog_path) if catalog_path else Graph()
+                data_graph = load_graph_with_catalog(ontology_file, catalog_path).graph if catalog_path else Graph()
                 if not catalog_path:
                     data_graph.parse(ontology_file, format='turtle' if ontology_file.suffix == '.ttl' else 'xml')
                 
