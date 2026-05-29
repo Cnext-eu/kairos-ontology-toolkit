@@ -1145,3 +1145,91 @@ class TestGoldColumnValidation:
                     f"silver model '{ref_name}.sql' was generated. "
                     f"Available: {sorted(silver_model_names)}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Gold model silver-existence validation (imported classes without silver)
+# ---------------------------------------------------------------------------
+
+
+class TestGoldSkipsUnmappedImports:
+    """Gold dbt models must NOT be generated for imported classes without silver."""
+
+    def test_silver_model_name_returns_none_when_not_in_registry(self):
+        """_silver_model_name_for_class returns None for unregistered classes."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            _silver_model_name_for_class,
+        )
+
+        registry = {
+            "https://example.org/ont#Client": "client",
+            "https://example.org/ont#Invoice": "invoice",
+        }
+        classes = [
+            {"uri": "https://example.org/ont#Client", "name": "Client"},
+            {"uri": "https://example.org/ont#Invoice", "name": "Invoice"},
+            {"uri": "https://refmodel.example/ont#Weight", "name": "Weight"},
+        ]
+        # Class in registry → returns name
+        assert _silver_model_name_for_class(
+            "https://example.org/ont#Client", classes, registry=registry,
+        ) == "client"
+
+        # Class NOT in registry but in classes list → returns None (registry is
+        # authoritative)
+        result = _silver_model_name_for_class(
+            "https://refmodel.example/ont#Weight", classes, registry=registry,
+        )
+        assert result is None, (
+            f"Expected None for class not in registry, got '{result}'"
+        )
+
+        # Totally unknown class → returns None
+        result = _silver_model_name_for_class(
+            "https://unknown.example/ont#Foo", classes, registry=registry,
+        )
+        assert result is None
+
+    def test_silver_model_name_falls_back_without_registry(self):
+        """Without a registry, falls back to classes list (standalone gold)."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            _silver_model_name_for_class,
+        )
+
+        classes = [
+            {"uri": "https://example.org/ont#Client", "name": "Client"},
+        ]
+        # No registry → uses classes list
+        assert _silver_model_name_for_class(
+            "https://example.org/ont#Client", classes, registry=None,
+        ) == "client"
+
+        # No registry, not in classes → returns None (no URI fallback)
+        result = _silver_model_name_for_class(
+            "https://unknown.example/ont#Foo", classes, registry=None,
+        )
+        assert result is None
+
+    def test_gold_schema_yaml_aligned_with_models(self, client_dbt_artifacts):
+        """Gold schema YAML must only list models that have a corresponding .sql."""
+        import yaml
+
+        gold_sql_models = {
+            k.split("/")[-1].replace(".sql", "")
+            for k in client_dbt_artifacts
+            if "models/gold/" in k and k.endswith(".sql")
+        }
+        gold_yaml_keys = [
+            k for k in client_dbt_artifacts
+            if "models/gold/" in k and k.endswith(".yml")
+        ]
+        for yk in gold_yaml_keys:
+            parsed = yaml.safe_load(client_dbt_artifacts[yk])
+            if not parsed or "models" not in parsed:
+                continue
+            for model in parsed["models"]:
+                assert model["name"] in gold_sql_models, (
+                    f"Gold schema YAML lists model '{model['name']}' but no "
+                    f"corresponding .sql was generated. "
+                    f"Generated gold models: {sorted(gold_sql_models)}"
+                )

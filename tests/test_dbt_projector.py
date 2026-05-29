@@ -609,6 +609,105 @@ GOLD_CLASSES = [
      "name": "Order", "label": "Order", "comment": "An order entity"},
 ]
 
+GOLD_BRONZE_TTL = textwrap.dedent("""\
+    @prefix bronze-sales: <https://example.com/bronze/sales#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+    bronze-sales:SalesDB a kairos-bronze:SourceSystem ;
+        rdfs:label "SalesDB" ;
+        kairos-bronze:connectionType "jdbc" ;
+        kairos-bronze:database "Sales_Prod" ;
+        kairos-bronze:schema "dbo" .
+
+    bronze-sales:tblCustomer a kairos-bronze:SourceTable ;
+        rdfs:label "tblCustomer" ;
+        kairos-bronze:sourceSystem bronze-sales:SalesDB ;
+        kairos-bronze:tableName "tblCustomer" ;
+        kairos-bronze:primaryKeyColumns "CustomerID" .
+
+    bronze-sales:tblCustomer_CustomerID a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-sales:tblCustomer ;
+        kairos-bronze:columnName "CustomerID" ;
+        kairos-bronze:dataType "int" ;
+        kairos-bronze:nullable "false"^^xsd:boolean ;
+        kairos-bronze:isPrimaryKey "true"^^xsd:boolean .
+
+    bronze-sales:tblCustomer_Name a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-sales:tblCustomer ;
+        kairos-bronze:columnName "Name" ;
+        kairos-bronze:dataType "nvarchar(255)" ;
+        kairos-bronze:nullable "true"^^xsd:boolean .
+
+    bronze-sales:tblProduct a kairos-bronze:SourceTable ;
+        rdfs:label "tblProduct" ;
+        kairos-bronze:sourceSystem bronze-sales:SalesDB ;
+        kairos-bronze:tableName "tblProduct" ;
+        kairos-bronze:primaryKeyColumns "ProductID" .
+
+    bronze-sales:tblProduct_ProductID a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-sales:tblProduct ;
+        kairos-bronze:columnName "ProductID" ;
+        kairos-bronze:dataType "int" ;
+        kairos-bronze:nullable "false"^^xsd:boolean ;
+        kairos-bronze:isPrimaryKey "true"^^xsd:boolean .
+
+    bronze-sales:tblProduct_Name a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-sales:tblProduct ;
+        kairos-bronze:columnName "Name" ;
+        kairos-bronze:dataType "nvarchar(255)" ;
+        kairos-bronze:nullable "true"^^xsd:boolean .
+
+    bronze-sales:tblOrder a kairos-bronze:SourceTable ;
+        rdfs:label "tblOrder" ;
+        kairos-bronze:sourceSystem bronze-sales:SalesDB ;
+        kairos-bronze:tableName "tblOrder" ;
+        kairos-bronze:primaryKeyColumns "OrderID" .
+
+    bronze-sales:tblOrder_OrderID a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-sales:tblOrder ;
+        kairos-bronze:columnName "OrderID" ;
+        kairos-bronze:dataType "int" ;
+        kairos-bronze:nullable "false"^^xsd:boolean ;
+        kairos-bronze:isPrimaryKey "true"^^xsd:boolean .
+
+    bronze-sales:tblOrder_OrderDate a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-sales:tblOrder ;
+        kairos-bronze:columnName "OrderDate" ;
+        kairos-bronze:dataType "date" ;
+        kairos-bronze:nullable "true"^^xsd:boolean .
+
+    bronze-sales:tblOrder_Amount a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-sales:tblOrder ;
+        kairos-bronze:columnName "Amount" ;
+        kairos-bronze:dataType "decimal(18,2)" ;
+        kairos-bronze:nullable "true"^^xsd:boolean .
+""")
+
+GOLD_MAPPING_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix bronze-sales: <https://example.com/bronze/sales#> .
+    @prefix ex: <http://kairos.example/ontology/> .
+
+    bronze-sales:tblCustomer skos:exactMatch ex:Customer ;
+        kairos-map:mappingType "direct" .
+    bronze-sales:tblCustomer_CustomerID skos:exactMatch ex:customerId .
+    bronze-sales:tblCustomer_Name skos:exactMatch ex:customerName .
+
+    bronze-sales:tblProduct skos:exactMatch ex:Product ;
+        kairos-map:mappingType "direct" .
+    bronze-sales:tblProduct_ProductID skos:exactMatch ex:productId .
+    bronze-sales:tblProduct_Name skos:exactMatch ex:productName .
+
+    bronze-sales:tblOrder skos:exactMatch ex:Order ;
+        kairos-map:mappingType "direct" .
+    bronze-sales:tblOrder_OrderID skos:exactMatch ex:orderId .
+    bronze-sales:tblOrder_OrderDate skos:exactMatch ex:orderDate .
+    bronze-sales:tblOrder_Amount skos:exactMatch ex:orderAmount .
+""")
+
 
 @pytest.fixture
 def gold_ontology_graph():
@@ -617,11 +716,27 @@ def gold_ontology_graph():
     return g
 
 
+@pytest.fixture
+def gold_bronze_dir(tmp_path):
+    d = tmp_path / "gold_bronze"
+    d.mkdir()
+    (d / "sales.ttl").write_text(GOLD_BRONZE_TTL, encoding="utf-8")
+    return d
+
+
+@pytest.fixture
+def gold_mappings_dir(tmp_path):
+    d = tmp_path / "gold_mappings"
+    d.mkdir()
+    (d / "sales-to-sales.ttl").write_text(GOLD_MAPPING_TTL, encoding="utf-8")
+    return d
+
+
 class TestGoldDbtModels:
     """Tests for gold dbt model generation (thick gold — DirectLake optimized)."""
 
-    def test_gold_models_generated(self, gold_ontology_graph, template_dir, bronze_dir,
-                                   mappings_dir):
+    def test_gold_models_generated(self, gold_ontology_graph, template_dir,
+                                   gold_bronze_dir, gold_mappings_dir):
         """Gold models are generated alongside silver when bronze sources exist."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -629,8 +744,8 @@ class TestGoldDbtModels:
             template_dir=template_dir,
             namespace="http://kairos.example/ontology/",
             ontology_name="sales",
-            bronze_dir=bronze_dir,
-            mappings_dir=mappings_dir,
+            bronze_dir=gold_bronze_dir,
+            mappings_dir=gold_mappings_dir,
         )
         gold_models = [k for k in artifacts if k.startswith("models/gold/")]
         assert len(gold_models) >= 3  # at least dim_date, dim_customer, fact_order
@@ -639,8 +754,8 @@ class TestGoldDbtModels:
         assert any("fact_order.sql" in k for k in gold_models)
         assert any("dim_date.sql" in k for k in gold_models)
 
-    def test_gold_model_refs_silver(self, gold_ontology_graph, template_dir, bronze_dir,
-                                    mappings_dir):
+    def test_gold_model_refs_silver(self, gold_ontology_graph, template_dir,
+                                    gold_bronze_dir, gold_mappings_dir):
         """Gold models use ref() to reference silver models."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -648,16 +763,16 @@ class TestGoldDbtModels:
             template_dir=template_dir,
             namespace="http://kairos.example/ontology/",
             ontology_name="sales",
-            bronze_dir=bronze_dir,
-            mappings_dir=mappings_dir,
+            bronze_dir=gold_bronze_dir,
+            mappings_dir=gold_mappings_dir,
         )
         dim_key = next(k for k in artifacts if "dim_customer.sql" in k)
         content = artifacts[dim_key]
         assert "ref('customer')" in content
         assert "materialized='table'" in content
 
-    def test_gold_fact_model_content(self, gold_ontology_graph, template_dir, bronze_dir,
-                                     mappings_dir):
+    def test_gold_fact_model_content(self, gold_ontology_graph, template_dir,
+                                     gold_bronze_dir, gold_mappings_dir):
         """Fact table gold model has correct structure."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -665,8 +780,8 @@ class TestGoldDbtModels:
             template_dir=template_dir,
             namespace="http://kairos.example/ontology/",
             ontology_name="sales",
-            bronze_dir=bronze_dir,
-            mappings_dir=mappings_dir,
+            bronze_dir=gold_bronze_dir,
+            mappings_dir=gold_mappings_dir,
         )
         fact_key = next(k for k in artifacts if "fact_order.sql" in k)
         content = artifacts[fact_key]
@@ -677,8 +792,8 @@ class TestGoldDbtModels:
         # Should mention it's a fact table
         assert "Fact table" in content
 
-    def test_gold_dimension_scd2_framing(self, gold_ontology_graph, template_dir, bronze_dir,
-                                         mappings_dir):
+    def test_gold_dimension_scd2_framing(self, gold_ontology_graph, template_dir,
+                                         gold_bronze_dir, gold_mappings_dir):
         """SCD2 dimension gold model applies is_current = 1 framing."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -686,16 +801,16 @@ class TestGoldDbtModels:
             template_dir=template_dir,
             namespace="http://kairos.example/ontology/",
             ontology_name="sales",
-            bronze_dir=bronze_dir,
-            mappings_dir=mappings_dir,
+            bronze_dir=gold_bronze_dir,
+            mappings_dir=gold_mappings_dir,
         )
         dim_key = next(k for k in artifacts if "dim_customer.sql" in k)
         content = artifacts[dim_key]
         # SCD2 framing should be applied
         assert "is_current = 1" in content
 
-    def test_gold_schema_yaml(self, gold_ontology_graph, template_dir, bronze_dir,
-                              mappings_dir):
+    def test_gold_schema_yaml(self, gold_ontology_graph, template_dir,
+                              gold_bronze_dir, gold_mappings_dir):
         """Gold schema YAML has correct structure with tests."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -703,8 +818,8 @@ class TestGoldDbtModels:
             template_dir=template_dir,
             namespace="http://kairos.example/ontology/",
             ontology_name="sales",
-            bronze_dir=bronze_dir,
-            mappings_dir=mappings_dir,
+            bronze_dir=gold_bronze_dir,
+            mappings_dir=gold_mappings_dir,
         )
         schema_key = "models/gold/sales/_sales__gold_models.yml"
         assert schema_key in artifacts
@@ -724,8 +839,8 @@ class TestGoldDbtModels:
                 assert "not_null" in pk_col["tests"]
                 assert "unique" in pk_col["tests"]
 
-    def test_dbt_project_yml_has_gold(self, gold_ontology_graph, template_dir, bronze_dir,
-                                      mappings_dir):
+    def test_dbt_project_yml_has_gold(self, gold_ontology_graph, template_dir,
+                                      gold_bronze_dir, gold_mappings_dir):
         """dbt_project.yml includes gold section."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -733,8 +848,8 @@ class TestGoldDbtModels:
             template_dir=template_dir,
             namespace="http://kairos.example/ontology/",
             ontology_name="sales",
-            bronze_dir=bronze_dir,
-            mappings_dir=mappings_dir,
+            bronze_dir=gold_bronze_dir,
+            mappings_dir=gold_mappings_dir,
         )
         proj = yaml.safe_load(artifacts["dbt_project.yml"])
         assert "gold" in proj["models"]["sales_project"]
@@ -742,8 +857,8 @@ class TestGoldDbtModels:
         assert "+materialized" in gold_config
         assert gold_config["+materialized"] == "table"
 
-    def test_gold_dim_date_model(self, gold_ontology_graph, template_dir, bronze_dir,
-                                 mappings_dir):
+    def test_gold_dim_date_model(self, gold_ontology_graph, template_dir,
+                                 gold_bronze_dir, gold_mappings_dir):
         """dim_date is auto-generated as a gold model."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -751,8 +866,8 @@ class TestGoldDbtModels:
             template_dir=template_dir,
             namespace="http://kairos.example/ontology/",
             ontology_name="sales",
-            bronze_dir=bronze_dir,
-            mappings_dir=mappings_dir,
+            bronze_dir=gold_bronze_dir,
+            mappings_dir=gold_mappings_dir,
         )
         date_key = next(k for k in artifacts if "dim_date.sql" in k)
         content = artifacts[date_key]
@@ -1910,8 +2025,8 @@ class TestSilverModelRegistry:
         result = _silver_model_name_for_class("http://ex.com/Order", classes)
         assert result == "order"
 
-    def test_resolver_falls_back_to_uri_local_name(self):
-        """When URI not in registry or classes, extracts local name."""
+    def test_resolver_returns_none_when_not_in_registry(self):
+        """When registry is present but URI not in it, returns None."""
         result = _silver_model_name_for_class(
             "http://unknown.org/ont#SomeClass", [], registry={})
-        assert result == "some_class"
+        assert result is None

@@ -2063,25 +2063,37 @@ def _silver_model_name_for_class(
     cls_uri: str,
     classes: list[dict],
     registry: dict[str, str] | None = None,
-) -> str:
+) -> str | None:
     """Derive the silver dbt model name for a given ontology class URI.
 
-    Uses the registry (built from actual silver generation metadata) when
-    available.  Falls back to matching against the classes list or extracting
-    the local name from the URI.
-    """
-    # 1. Registry lookup (most reliable — knows actual generated names)
-    if registry and cls_uri in registry:
-        return registry[cls_uri]
+    When *registry* is provided (built from actual silver generation metadata),
+    it is treated as the **authoritative** source — only classes that appear in
+    the registry are considered to have a silver model.  This prevents gold
+    models from emitting ``ref()`` calls for imported reference-model classes
+    that have no corresponding silver model.
 
-    # 2. Fallback: direct match in classes list
+    When *registry* is ``None`` (standalone gold run without silver), falls back
+    to matching against the *classes* list.
+
+    Returns ``None`` when no silver model can be resolved.
+    """
+    # 1. Registry is authoritative when present
+    if registry is not None:
+        name = registry.get(cls_uri)
+        if name is None:
+            logger.debug(
+                "Class <%s> not found in silver registry — no silver model",
+                cls_uri,
+            )
+        return name
+
+    # 2. No registry — fall back to classes list
     for cls in classes:
         if cls["uri"] == cls_uri:
             return _camel_to_snake(cls["name"])
 
-    # 3. Last resort: derive from URI local name
-    local = extract_local_name(cls_uri)
-    return _camel_to_snake(local)
+    logger.debug("Class <%s> not found in classes list — no silver model", cls_uri)
+    return None
 
 
 def _gen_gold_models(
@@ -2149,11 +2161,13 @@ def _gen_gold_models(
             # from parent's silver table (subtype is folded into parent in silver)
             silver_name = _silver_model_name_for_class(
                 tbl.parent_class_uri, classes, registry=silver_name_registry)
-            source_ctes.append({"model": silver_name, "alias": silver_name})
+            if silver_name:
+                source_ctes.append({"model": silver_name, "alias": silver_name})
         elif tbl.source_class_uri:
             silver_name = _silver_model_name_for_class(
                 tbl.source_class_uri, classes, registry=silver_name_registry)
-            source_ctes.append({"model": silver_name, "alias": silver_name})
+            if silver_name:
+                source_ctes.append({"model": silver_name, "alias": silver_name})
 
         # For fact tables with FK constraints, also ref the dimension silver models
         if tbl.table_type == "fact":
@@ -2167,7 +2181,7 @@ def _gen_gold_models(
                     ref_silver = _silver_model_name_for_class(
                         ref_gold.source_class_uri, classes,
                         registry=silver_name_registry)
-                    if ref_silver not in seen_models:
+                    if ref_silver and ref_silver not in seen_models:
                         source_ctes.append({
                             "model": ref_silver,
                             "alias": ref_silver,
@@ -2182,7 +2196,9 @@ def _gen_gold_models(
                 parent_silver = _silver_model_name_for_class(
                     parent_gold.source_class_uri, classes,
                     registry=silver_name_registry)
-                if not any(c["model"] == parent_silver for c in source_ctes):
+                if parent_silver and not any(
+                    c["model"] == parent_silver for c in source_ctes
+                ):
                     source_ctes.append({
                         "model": parent_silver, "alias": parent_silver,
                     })
@@ -2204,6 +2220,8 @@ def _gen_gold_models(
                     ref_silver = _silver_model_name_for_class(
                         ref_gold.source_class_uri, classes,
                         registry=silver_name_registry)
+                    if not ref_silver:
+                        continue
                     alias = ref_silver
                     # Disambiguate aliases
                     base_alias = alias
@@ -2284,8 +2302,14 @@ def _gen_gold_schema_yaml(
     gold_ext_path: Optional[Path],
     env: Environment,
     meta: dict,
+    generated_gold_names: set[str] | None = None,
 ) -> dict[str, str]:
-    """Generate ``_gold_models.yml`` with column descriptions and tests."""
+    """Generate ``_gold_models.yml`` with column descriptions and tests.
+
+    When *generated_gold_names* is provided, only tables whose name appears in
+    the set are included.  This keeps the schema YAML aligned with the actual
+    ``.sql`` files emitted by ``_gen_gold_models``.
+    """
     from .medallion_gold_projector import build_gold_tables
 
     gold_tables = build_gold_tables(
@@ -2302,6 +2326,10 @@ def _gen_gold_schema_yaml(
         # Skip tables that have no corresponding SQL model
         # (junction bridges have no source_class_uri)
         if tbl.name != "dim_date" and not tbl.source_class_uri:
+            continue
+
+        # Skip tables whose dbt model was not generated (no silver source)
+        if generated_gold_names is not None and tbl.name not in generated_gold_names:
             continue
 
         cols = []
@@ -2473,9 +2501,17 @@ def generate_dbt_artifacts(
         if gold:
             logger.info("Generated %d gold model(s)", len(gold))
 
+        # Extract generated gold model names for schema YAML filtering
+        gold_prefix = f"models/gold/{onto_name}/"
+        generated_gold_names = {
+            p.removeprefix(gold_prefix).removesuffix(".sql")
+            for p in gold if p.startswith(gold_prefix) and p.endswith(".sql")
+        }
+
         # 6. Gold schema YAML with tests
         gold_schema = _gen_gold_schema_yaml(
             classes, graph, namespace, shapes_dir, onto_name, gold_ext_path, env, meta,
+            generated_gold_names=generated_gold_names,
         )
         artifacts.update(gold_schema)
 

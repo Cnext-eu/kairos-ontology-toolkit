@@ -38,3 +38,13 @@ refp:carrierCode a owl:DatatypeProperty ;
     rdfs:comment "SCAC or similar carrier identification code." ;
     rdfs:domain refp:Carrier ;
     rdfs:range xsd:string .
+
+refp:Address a owl:Class ;
+    rdfs:label "Address" ;
+    rdfs:comment "A postal or physical address — NOT claimed by any silver extension." .
+
+refp:addressLine a owl:DatatypeProperty ;
+    rdfs:label "address line" ;
+    rdfs:comment "Free-text address line." ;
+    rdfs:domain refp:Address ;
+    rdfs:range xsd:string .
