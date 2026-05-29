@@ -274,6 +274,12 @@ curated, industry-aligned OWL ontologies bundled into **accelerator packs** —
 sector-specific collections of ontologies (e.g., Financial Services, Supply
 Chain, Healthcare) that provide a proven starting point.
 
+> **Two-tier strategy:** Accelerator packs bundle **Tier 1** (Kairos-managed)
+> reference models that are imported via `owl:imports`. If your sector also uses
+> large external standards (e.g., FIBO for financial services), those are handled
+> as **Tier 2** — model locally and create an alignment file. See
+> [Standard model alignment](#standard-model-alignment) for details.
+
 ### Step 0 — Ask the user
 
 At the **very start** of any modeling session, ask:
@@ -667,11 +673,16 @@ domain mapping with business stakeholders**:
 This is a critical governance step — getting business sign-off on which
 reference domains are in scope prevents scope creep and misalignment.
 
-### Step 4 — Import via OWL catalog (do NOT copy TTL)
+### Step 4 — Import via OWL catalog (Tier 1 reference models ONLY)
 
-When incorporating reference model ontologies into the hub, **always use
+When incorporating **Kairos reference model** ontologies into the hub, **use
 `owl:imports` via the catalog** — never copy or recreate the reference model
 TTL files inside the hub.
+
+> **Important:** This applies only to **Tier 1** (Kairos-managed) reference models
+> that are designed for projection (small, < 50 classes, include `-defaults.ttl`).
+> For large **external standards** (FIBO, DCSA, GS1, schema.org), see
+> [Tier 2: External standard alignment](#tier-2-external-standard-alignment) below.
 
 The reference models ship with a `catalog-v001.xml` that maps logical URIs to
 local file paths.  Your domain ontology imports the reference model by URI:
@@ -686,10 +697,10 @@ local file paths.  Your domain ontology imports the reference model by URI:
     owl:imports <https://referencemodels.kairos.cnext.eu/party> .
 ```
 
-**Rules:**
+**Rules (Tier 1 — Kairos reference models):**
 
-- ✅ **DO** use `owl:imports` referencing the catalog URI for the reference
-  ontology.
+- ✅ **DO** use `owl:imports` referencing the catalog URI for Kairos reference
+  ontologies (BSP, MMT, and other accelerator pack models).
 - ✅ **DO** extend reference classes via `rdfs:subClassOf` when specialization
   is needed.
 - ❌ **DO NOT** copy reference model `.ttl` files into `model/ontologies/`.
@@ -697,6 +708,9 @@ local file paths.  Your domain ontology imports the reference model by URI:
   files — reference them, don't duplicate them.
 - ❌ **DO NOT** add new entities that aren't in the reference model until the
   reference baseline is validated and the user explicitly requests additions.
+- ❌ **DO NOT** use `owl:imports` for large external standards (FIBO, DCSA, GS1,
+  PROV-O, schema.org) — they are not projection-optimized and cause slow loading,
+  unresolvable transitive imports, and whitelisting complexity. Use Tier 2 instead.
 
 ### Step 5 — Trim and specialize
 
@@ -878,60 +892,89 @@ standard ontology (FIBO, DCSA, GS1, PROV-O, schema.org, etc.):
 
 Ask the user to confirm:
 - The exact standard or vocabulary (name + version/edition if relevant).
-- Whether they want **full alignment** (extend standard classes directly) or
-  **loose alignment** (model independently, use `owl:equivalentClass` /
-  `rdfs:seeAlso` mappings).
+- Whether the standard is available as a **Kairos reference model** (Tier 1) or
+  is an **external standard** (Tier 2).
 
-### Step 2 — Check ontology-reference-models/
+### Step 2 — Determine the tier
 
-Look inside `ontology-reference-models/` for the standard:
+| Tier | When to use | Approach |
+|------|-------------|----------|
+| **Tier 1** (import) | Kairos-managed reference models in `ontology-reference-models/`. Small (< 50 classes), projection-optimized, has `-defaults.ttl`. | `owl:imports` + `rdfs:subClassOf` |
+| **Tier 2** (align) | Large external standards (100+ classes), externally maintained, not projection-optimized. | Model locally + alignment file |
 
-```bash
-ls ontology-reference-models/
-```
+**Tier 1 indicators** (use `owl:imports`):
+- Found in `ontology-reference-models/accelerator-packs/`
+- Has a catalog entry mapping its URI to a local `.ttl` file
+- Typically < 50 classes, focused on a specific domain
+- Examples: BSP-Party, BSP-Billing, MMT modules
 
-- If a folder or catalog entry for the standard **exists** → use it as the
-  alignment target.  Import it via the catalog in your domain TTL:
-  ```turtle
-  owl:imports <catalog-uri-for-the-standard> ;
-  ```
-- If the standard is **not present**, do NOT download or inline it manually.
-  Instead, inform the user:
+**Tier 2 indicators** (use alignment file):
+- Large (100+ classes) or depends on large transitive imports
+- Externally maintained — versioned independently of your hub
+- Not projection-optimized (no `kairos-ext:` annotations, no `-defaults.ttl`)
+- Examples: FIBO, DCSA, GS1, PROV-O, schema.org
 
-  > "The `<standard>` reference model is not yet in `ontology-reference-models/`.
-  > If you plan to reuse this standard across multiple projects, the recommended
-  > approach is to add it to the reference models repo first
-  > (`Cnext-eu/kairos-ontology-referencemodels`) so it becomes available to all
-  > hubs via `update-referencemodels.ps1`.  Alternatively, for a one-off
-  > alignment you can reference the public URI directly without importing the
-  > full model."
-
-  Then ask: **"Should we add it to the reference models first, or proceed with
-  a direct URI reference for now?"**
+> **Rule of thumb:** If importing the standard would add > 50 classes to the
+> merged graph that you'll never project, it's Tier 2.
 
 ### Step 3 — Alignment patterns
 
-#### Extend a standard class (full alignment)
+#### Tier 1: Extend a Kairos reference class (full alignment)
 
 ```turtle
-@prefix fibo-be: <https://spec.edmcouncil.org/fibo/ontology/BE/LegalEntities/LegalPersons/> .
+@prefix ref-party: <https://referencemodels.kairos.cnext.eu/party#> .
 
-:LegalEntity rdfs:subClassOf fibo-be:LegalEntity ;
-    rdfs:label "Legal Entity"@en ;
-    rdfs:comment "A legal entity as defined in FIBO, specialised for this domain."@en .
+<https://contoso.com/ont/customer> a owl:Ontology ;
+    owl:imports <https://referencemodels.kairos.cnext.eu/party> .
+
+:PremiumCustomer rdfs:subClassOf ref-party:Customer ;
+    rdfs:label "Premium Customer"@en ;
+    rdfs:comment "A high-value customer — extends the reference model."@en .
 ```
 
-#### Map to a standard class (loose alignment)
+#### Tier 2: External standard alignment (recommended for FIBO, DCSA, etc.)
 
-```turtle
-:Customer a owl:Class ;
-    rdfs:label "Customer"@en ;
-    rdfs:comment "A party that purchases goods or services."@en ;
-    owl:equivalentClass schema:Person ;    # or rdfs:seeAlso
-    rdfs:seeAlso <https://spec.edmcouncil.org/fibo/...> .
-```
+**Do NOT import the external standard.** Instead:
 
-#### Reuse a standard property by reference
+1. Model your classes locally (self-contained, projection-ready):
+   ```turtle
+   :LegalEntity a owl:Class ;
+       rdfs:subClassOf :Party ;
+       rdfs:label "Legal Entity"@en ;
+       rdfs:comment "A legal entity / company."@en .
+   ```
+
+2. Create an alignment file in `model/alignments/`:
+   ```turtle
+   # File: model/alignments/party-fibo-alignment.ttl
+   @prefix party: <https://contoso.com/ont/party#> .
+   @prefix skos:  <http://www.w3.org/2004/02/skos/core#> .
+   @prefix fibo-be: <https://spec.edmcouncil.org/fibo/ontology/BE/LegalEntities/LegalPersons/> .
+
+   <https://contoso.com/ont/party/alignment/fibo> a owl:Ontology ;
+       rdfs:label "Party → FIBO Alignment"@en ;
+       rdfs:comment "Standards correspondence. NOT loaded during projections."@en .
+
+   party:Party        skos:closeMatch fibo-agents:AutonomousAgent .
+   party:NaturalPerson skos:exactMatch fibo-people:Person .
+   party:LegalEntity  skos:exactMatch fibo-be:LegalPerson .
+   ```
+
+**Alignment file convention:**
+- Path: `model/alignments/{domain}-{standard}-alignment.ttl`
+- Declares its own `owl:Ontology` with a descriptive label
+- Uses SKOS match properties (`skos:exactMatch`, `skos:closeMatch`)
+- Is **never** loaded during projections (not in `model/ontologies/`, not imported)
+- Can be loaded by external tools requiring interoperability
+
+**Alignment strength:**
+
+| Relationship | Meaning | Use when |
+|-------------|---------|-----------|
+| `skos:exactMatch` | Same concept, different vocabulary | Your class = their class semantically |
+| `skos:closeMatch` | Very similar, not identical | Your class is narrower or broader |
+
+#### Reuse a standard property by reference (documentation-only)
 
 ```turtle
 :carrierSCAC a owl:DatatypeProperty ;
@@ -942,19 +985,23 @@ ls ontology-reference-models/
     rdfs:seeAlso <https://dcsa.org/standards/> .
 ```
 
-### Known standards and their reference model status
+### Known standards and their recommended tier
 
-| Standard | Domain | In reference models? | Notes |
-|----------|--------|---------------------|-------|
-| FIBO | Financial / legal entities | Check folder | Large; import selectively |
-| DCSA | Shipping / container logistics | Check folder | eBL, Track & Trace |
-| GS1 | Supply chain / product IDs | Check folder | GLN, GTIN, EPCIS |
-| PROV-O | Data provenance | Check folder | W3C standard |
-| schema.org | General-purpose web semantics | Check folder | Broad vocabulary |
-| Dublin Core (DC) | Metadata | Usually included | Small; safe to import |
+| Standard | Domain | Tier | Rationale |
+|----------|--------|------|-----------|
+| BSP-Party | Party / customer | 1 (import) | Kairos-managed, small, has defaults |
+| BSP-Billing | Invoicing | 1 (import) | Kairos-managed, small, has defaults |
+| MMT | Maritime / logistics | 1 (import) | Kairos-managed, small, has defaults |
+| FIBO | Financial / legal entities | **2 (align)** | Large (1000+ classes), deep transitive imports |
+| DCSA | Shipping / container logistics | **2 (align)** | Large, externally maintained |
+| GS1 | Supply chain / product IDs | **2 (align)** | Large, externally maintained |
+| PROV-O | Data provenance | **2 (align)** | W3C standard, small but no projection value |
+| schema.org | General-purpose web semantics | **2 (align)** | Very broad vocabulary |
+| Dublin Core (DC) | Metadata | 1 or 2 | Small enough to import safely if needed |
 
 > **Rule:** Never hardcode a downloaded copy of a standard model inside the hub
-> repo.  Always reference it via the catalog or a public URI.
+> repo.  For Tier 1, reference it via the catalog. For Tier 2, model locally and
+> create an alignment file.
 
 ---
 
