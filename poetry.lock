@@ -1919,6 +1919,22 @@ pytest = ">=4.6"
 testing = ["fields", "hunter", "process-tests", "pytest-xdist", "six", "virtualenv"]
 
 [[package]]
+name = "pytest-ruff"
+version = "0.5"
+description = "pytest plugin to check ruff requirements."
+optional = false
+python-versions = "<4.0,>=3.8"
+groups = ["dev"]
+files = [
+    {file = "pytest_ruff-0.5-py3-none-any.whl", hash = "sha256:d9db170d86fb167008e6702b4d79e2cccd8287f069c3a57f9261831cebdc4a31"},
+    {file = "pytest_ruff-0.5.tar.gz", hash = "sha256:f611c780fc2b9b8d7041fa0e7589f0a9f352b288d0cfc330881101b35d382063"},
+]
+
+[package.dependencies]
+pytest = ">=5"
+ruff = ">=0.0.242"
+
+[[package]]
 name = "python-discovery"
 version = "1.2.2"
 description = "Python interpreter discovery"
@@ -2902,4 +2918,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "f71856eccac5ecdec2bfe925e045670ecaf9cee50bf9533f47c2586a397b6cec"
+content-hash = "1d3e01701d4f0a144c9a2df47c49f14897639652fad8c22eefe32f6142906da6"
