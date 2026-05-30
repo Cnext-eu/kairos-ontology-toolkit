@@ -1308,3 +1308,53 @@ class TestGoldSkipsUnmappedImports:
                     f"corresponding .sql was generated. "
                     f"Generated gold models: {sorted(gold_sql_models)}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# IRI lineage in dbt artifacts
+# ---------------------------------------------------------------------------
+
+class TestIRILineage:
+    """dbt artifacts should include IRI lineage for traceability."""
+
+    def test_schema_yaml_has_domain_iri_in_meta(self, client_dbt_artifacts):
+        """Schema YAML columns should have domain_iri in meta."""
+        import yaml
+
+        key = _find_artifact(client_dbt_artifacts, "_models.yml")
+        assert key is not None
+        parsed = yaml.safe_load(client_dbt_artifacts[key])
+        # Find a data column with meta
+        found_domain_iri = False
+        for model in parsed.get("models", []):
+            for col in model.get("columns", []):
+                meta = col.get("meta", {})
+                if "domain_iri" in meta:
+                    found_domain_iri = True
+                    # Should be a full URI
+                    assert meta["domain_iri"].startswith("http"), (
+                        f"domain_iri should be a full URI, got: {meta['domain_iri']}"
+                    )
+                    break
+            if found_domain_iri:
+                break
+        assert found_domain_iri, "No column with domain_iri in schema YAML meta"
+
+    def test_silver_sql_has_iri_comment(self, client_dbt_artifacts):
+        """Silver SQL model should have prefixed IRI comments on column lines."""
+        # IRI comments appear in per-source models (not the union model)
+        key = _find_artifact(client_dbt_artifacts, "from_admin_pulse")
+        if key is None:
+            # Fall back to any per-source model
+            key = next(
+                (k for k in client_dbt_artifacts if "__from_" in k and k.endswith(".sql")),
+                None,
+            )
+        assert key is not None, "No per-source silver model SQL found"
+        sql = client_dbt_artifacts[key]
+        # Should have prefix:property format comments
+        assert "client:" in sql, (
+            f"Expected 'client:' prefixed IRI comment in SQL model but not found.\n"
+            f"First 500 chars:\n{sql[:500]}"
+        )
+

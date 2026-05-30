@@ -41,6 +41,22 @@ from .shared import KAIROS_EXT, merge_ext_graph, str_val, bool_val
 
 logger = logging.getLogger(__name__)
 
+
+def _prefixed_iri(uri: str) -> str:
+    """Derive a compact prefixed IRI from a full URI.
+
+    Given ``https://acme.example/ontology/party#website``, returns ``party:website``.
+    """
+    local = extract_local_name(uri)
+    if "#" in uri:
+        ns = uri.rsplit("#", 1)[0]
+    elif "/" in uri:
+        ns = uri.rsplit("/", 1)[0]
+    else:
+        return local
+    prefix = ns.rsplit("/", 1)[-1] if "/" in ns else ns
+    return f"{prefix}:{local}"
+
 # Module-level cache for entity metadata (populated by generate_dbt_artifacts,
 # read by projector.py via get_last_entity_metadata)
 _last_entity_metadata: dict[str, list[dict]] = {}
@@ -1297,7 +1313,17 @@ def _resolve_mapped_columns(
                     # Only include columns that have a real bronze mapping.
                     continue
 
-            columns.append({"expression": expr, "target_name": col_name})
+            # Build lineage comment: domain_prefix:prop → source_prefix:col
+            lineage_parts = [_prefixed_iri(str(prop))]
+            if mapped_col_uri:
+                lineage_parts.append(f"→ {_prefixed_iri(mapped_col_uri)}")
+            lineage_comment = " ".join(lineage_parts)
+
+            columns.append({
+                "expression": expr,
+                "target_name": col_name,
+                "comment": lineage_comment,
+            })
 
             # Generate _label column for enum-typed source columns
             if mapped_col_uri and mapped_col_uri in enum_lookup:
@@ -1494,6 +1520,9 @@ def _infer_fk_on_targets(
         })
 
     return targets
+
+
+def _resolve_fk_source_column(
     prop,
     mappings: dict,
     bronze_col_lookup: dict[str, dict],
@@ -1764,6 +1793,7 @@ def _extract_fk_columns_and_joins(
             source_alias, source_col_name, source_columns,
             range_model, range_local, fk_col_name, target_nk, join_alias,
         )
+        fk_col_dict["comment"] = _prefixed_iri(str(prop))
 
         joins.append(join_dict)
         fk_columns.append(fk_col_dict)
@@ -2028,7 +2058,10 @@ def _gen_schema_yaml(
                     })
 
                 # Lineage metadata
-                col_meta = {"data_type": data_type}
+                col_meta = {
+                    "data_type": data_type,
+                    "domain_iri": str(prop),
+                }
                 if source_col_uri:
                     col_meta["source_iri"] = source_col_uri
 
@@ -2070,7 +2103,11 @@ def _gen_schema_yaml(
                 cols.append({
                     "name": fk_col_name,
                     "description": fk_desc,
-                    "meta": {"is_fk": "true", "references": range_model},
+                    "meta": {
+                        "is_fk": "true",
+                        "references": range_model,
+                        "domain_iri": str(prop),
+                    },
                     "tests": [],
                 })
 

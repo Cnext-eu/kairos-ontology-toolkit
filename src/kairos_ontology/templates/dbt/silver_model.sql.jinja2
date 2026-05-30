@@ -59,7 +59,7 @@ source_data as (
 
     select
 {%- for col in columns %}
-        {{ col.expression }} as {{ col.target_name }},
+        {{ col.expression }} as {{ col.target_name }},{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
 {%- endfor %}
 {%- if hash_columns %}
         SHA2_HEX(CONCAT_WS('|'{% for hc in hash_columns %}, COALESCE(CAST({{ hc }} AS VARCHAR), ''){% endfor %})) as _row_hash,
@@ -155,7 +155,7 @@ final as (
 
     select
 {%- for col in columns %}
-        {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}
+        {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
 {%- endfor %}
     from {{ source_ctes[0].alias }}
 {%- for join in joins %}
@@ -173,7 +173,7 @@ select * from final
 
 select
 {%- for col in columns %}
-    {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}
+    {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
 {%- endfor %}
 from {{ source_ctes[0].alias }}
 {%- for join in joins %}

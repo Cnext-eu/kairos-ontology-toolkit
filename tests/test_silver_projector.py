@@ -301,17 +301,19 @@ def test_gdpr_satellite_no_separate_sk():
 # ---------------------------------------------------------------------------
 
 def test_subtype_uses_parent_sk_as_pk():
-    """S3: Subtypes are flattened into parent table — no separate table generated."""
+    """S3: Subtypes with discriminator strategy are flattened into parent table."""
     ttl = f"""
         @prefix ex:  <{BASE}> .
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
         @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 
         <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
 
-        ex:Party a owl:Class ; rdfs:label "Party"@en ; rdfs:comment "."@en .
+        ex:Party a owl:Class ; rdfs:label "Party"@en ; rdfs:comment "."@en ;
+            kairos-ext:inheritanceStrategy "discriminator" .
         ex:Person a owl:Class ; rdfs:label "Person"@en ; rdfs:comment "."@en ;
             rdfs:subClassOf ex:Party .
     """
@@ -709,6 +711,7 @@ def _s3_ontology() -> tuple[Graph, list[dict]]:
             rdfs:label "Client"@en ;
             rdfs:comment "A client."@en ;
             kairos-ext:scdType "2" ;
+            kairos-ext:inheritanceStrategy "discriminator" ;
             kairos-ext:discriminatorColumn "client_type" .
 
         ex:clientName a owl:DatatypeProperty ;
@@ -786,8 +789,8 @@ def test_s3_folded_comment_in_ddl():
     assert "SpecialClient" in ddl
 
 
-def test_s3_class_per_table_also_flattened():
-    """S3: Even class-per-table annotated subtypes are flattened in silver."""
+def test_s3_class_per_table_not_flattened():
+    """S3: class-per-table annotated parents do NOT flatten subtypes (DD-035)."""
     ttl = f"""
         @prefix ex:    <{BASE}> .
         @prefix owl:   <http://www.w3.org/2002/07/owl#> .
@@ -822,11 +825,11 @@ def test_s3_class_per_table_also_flattened():
     ]
     result = generate_silver_artifacts(classes, g, BASE, ontology_name="cpttest")
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
-    # S3: SavingsAccount is flattened into Account (no separate table)
-    assert ddl.lower().count("create table") == 1
-    assert "savings_account" not in ddl.lower()
-    # Auto-discriminator added
-    assert "account_type" in ddl.lower()
+    # DD-035: class-per-table means subtypes get their own tables
+    assert ddl.lower().count("create table") == 2
+    assert "savings_account" in ddl.lower()
+    # Parent should NOT get a discriminator column (TPC, not discriminator)
+    assert "account_type" not in ddl.lower()
 
 
 def test_r16_gdpr_satellite_not_suppressed():
@@ -1274,7 +1277,7 @@ def test_bug1_s5_s6_with_custom_audit():
 
 
 def test_bug2_no_duplicate_subtype_names():
-    """BUG-2: Subtypes listed in the S3 comment must be deduplicated."""
+    """BUG-2: Subtypes listed in the S3 comment must be deduplicated (discriminator)."""
     ttl = f"""
         @prefix ex:  <{BASE}> .
         @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
@@ -1286,7 +1289,8 @@ def test_bug2_no_duplicate_subtype_names():
         <{BASE.rstrip('#')}> a owl:Ontology ;
             rdfs:label "Test"@en ; owl:versionInfo "1.0" .
 
-        ex:Animal a owl:Class ; rdfs:label "Animal"@en ; rdfs:comment "."@en .
+        ex:Animal a owl:Class ; rdfs:label "Animal"@en ; rdfs:comment "."@en ;
+            kairos-ext:inheritanceStrategy "discriminator" .
         ex:Dog a owl:Class ; rdfs:label "Dog"@en ; rdfs:comment "."@en ;
             rdfs:subClassOf ex:Animal .
         ex:Cat a owl:Class ; rdfs:label "Cat"@en ; rdfs:comment "."@en ;
@@ -1942,10 +1946,12 @@ def test_no_duplicate_when_parent_is_projected():
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
         @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 
         <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
 
-        ex:Vehicle a owl:Class ; rdfs:label "Vehicle"@en ; rdfs:comment "."@en .
+        ex:Vehicle a owl:Class ; rdfs:label "Vehicle"@en ; rdfs:comment "."@en ;
+            kairos-ext:inheritanceStrategy "discriminator" .
         ex:Truck a owl:Class ;
             rdfs:label "Truck"@en ;
             rdfs:comment "."@en ;
@@ -1957,7 +1963,7 @@ def test_no_duplicate_when_parent_is_projected():
             rdfs:label "registration number"@en .
     """
     g = _make_graph(ttl)
-    # Both are projected — S3 merges Truck into Vehicle
+    # Both are projected — S3 merges Truck into Vehicle (discriminator strategy)
     classes = [
         {"uri": f"{BASE}Vehicle", "name": "Vehicle", "label": "Vehicle", "comment": ""},
         {"uri": f"{BASE}Truck", "name": "Truck", "label": "Truck", "comment": ""},
@@ -2197,6 +2203,7 @@ def test_import_mixed_projected_and_unprojected_ancestors():
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
         @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 
         <{HUB_BASE.rstrip('#')}> a owl:Ontology ;
             rdfs:label "Customer"@en ;
@@ -2212,11 +2219,12 @@ def test_import_mixed_projected_and_unprojected_ancestors():
             rdfs:range xsd:string ;
             rdfs:label "entity code"@en .
 
-        # Parent — IS projected (S3 flattening applies)
+        # Parent — IS projected (S3 flattening applies with discriminator)
         hub:Organization a owl:Class ;
             rdfs:label "Organization"@en ;
             rdfs:comment "."@en ;
-            rdfs:subClassOf ref:Entity .
+            rdfs:subClassOf ref:Entity ;
+            kairos-ext:inheritanceStrategy "discriminator" .
 
         hub:orgName a owl:DatatypeProperty ;
             rdfs:domain hub:Organization ;
@@ -2324,6 +2332,7 @@ def test_import_no_inheritance_when_parent_projected():
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
         @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 
         <{HUB_BASE.rstrip('#')}> a owl:Ontology ;
             rdfs:label "Customer"@en ;
@@ -2331,7 +2340,8 @@ def test_import_no_inheritance_when_parent_projected():
 
         hub:Account a owl:Class ;
             rdfs:label "Account"@en ;
-            rdfs:comment "."@en .
+            rdfs:comment "."@en ;
+            kairos-ext:inheritanceStrategy "discriminator" .
 
         hub:accountNumber a owl:DatatypeProperty ;
             rdfs:domain hub:Account ;
@@ -2349,7 +2359,7 @@ def test_import_no_inheritance_when_parent_projected():
             rdfs:label "discount rate"@en .
     """
     g = _make_graph(ttl)
-    # Both projected — S3 merges PremiumAccount into Account
+    # Both projected — S3 merges PremiumAccount into Account (discriminator)
     classes = [
         {"uri": f"{HUB_BASE}Account", "name": "Account",
          "label": "Account", "comment": ""},

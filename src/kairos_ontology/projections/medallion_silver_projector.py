@@ -85,6 +85,25 @@ def _local_name(uri: str) -> str:
     return local_name(uri)
 
 
+def _prefixed_iri(uri: str) -> str:
+    """Derive a compact prefixed IRI from a full URI.
+
+    Given ``https://acme.example/ontology/party#website``, returns ``party:website``.
+    Falls back to the full local name if no path segment is found.
+    """
+    local = local_name(uri)
+    # Strip fragment/local to get the namespace
+    if "#" in uri:
+        ns = uri.rsplit("#", 1)[0]
+    elif "/" in uri:
+        ns = uri.rsplit("/", 1)[0]
+    else:
+        return local
+    # Last path segment of the namespace is the prefix
+    prefix = ns.rsplit("/", 1)[-1] if "/" in ns else ns
+    return f"{prefix}:{local}"
+
+
 def _get_class_and_ancestors(
     graph: Graph, cls_uri: URIRef, class_uris: set[str],
     inherit_from: set[str] | None = None,
@@ -957,10 +976,8 @@ def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
                 nullable = str(nullable_ann).lower() not in ("false", "0")
             else:
                 nullable = not _not_null_from_shacl(shacl_graph, prop, cls_uri)
-        label = _str_val(graph, prop, RDFS.label, "")
-        comment = f"{comment_prefix}; {label}" if comment_prefix and label else (
-            comment_prefix or label
-        )
+        prop_iri = _prefixed_iri(str(prop))
+        comment = f"{comment_prefix}; {prop_iri}" if comment_prefix else prop_iri
         tbl.columns.append(ColumnDef(col_name, sql_type, nullable=nullable, comment=comment))
 
 
@@ -1067,8 +1084,10 @@ def _add_object_property_fk_cols(
 
         # Conditional nullable (R14)
         cond_on = _str_val(graph, prop, KAIROS_EXT.conditionalOnType)
+        prop_iri = _prefixed_iri(str(prop))
         cross_note = f"cross-domain FK → {ref_full}" if is_cross_domain else ""
         comment_parts = [p for p in [
+            prop_iri,
             comment_prefix,
             f"nullable: active when type IN ({cond_on})" if cond_on else "",
             cross_note,

@@ -319,3 +319,34 @@ class TestS3InheritanceStrategy:
             assert "individual_client" not in name, (
                 "Discriminator subtype IndividualClient has its own table — should be folded"
             )
+
+
+# ---------------------------------------------------------------------------
+# IRI lineage in DDL comments
+# ---------------------------------------------------------------------------
+
+class TestSilverIRILineage:
+    """Silver DDL column comments should use prefixed IRI format."""
+
+    def test_data_property_has_iri_comment(self, client_silver_artifacts):
+        """Data property columns should have prefixed IRI in DDL comment."""
+        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
+        ddl = client_silver_artifacts[ddl_key]
+        # clientName property should produce: -- client:clientName
+        assert "client:clientName" in ddl, (
+            f"Expected 'client:clientName' IRI comment in DDL but not found.\n"
+            f"First 1000 chars:\n{ddl[:1000]}"
+        )
+
+    def test_fk_property_has_iri_comment(self, client_silver_artifacts):
+        """FK object property columns should have prefixed IRI in DDL comment."""
+        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
+        ddl = client_silver_artifacts[ddl_key]
+        # Look for any FK column with IRI comment (format: prefix:propertyName)
+        # isIdentifiedBy → identifier_sk (if not inlined)
+        import re
+        fk_iri_pattern = re.compile(r"--\s+client:\w+")
+        matches = fk_iri_pattern.findall(ddl)
+        assert len(matches) > 0, (
+            "Expected at least one 'client:<property>' IRI comment in DDL"
+        )
