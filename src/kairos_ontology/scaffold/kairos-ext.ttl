@@ -1,15 +1,21 @@
-# kairos-ext: Silver Layer Projection Extension Vocabulary
+# kairos-ext: Kairos Projection Extension Vocabulary (silver + gold + imports + FK)
 #
 # Namespace: https://kairos.cnext.eu/ext#
 # Prefix:    kairos-ext:
 #
-# This ontology defines annotation properties used to drive the silver-layer
-# projection (DDL + ERD generation) from OWL/Turtle domain ontologies.
-# Rules R1-R15 correspond to the Silver Layer Projection Rules document.
+# This ontology defines annotation properties used to drive the medallion
+# projections (silver DDL/ERD, gold Power BI star schema) from OWL/Turtle domain
+# ontologies. Rule families: Silver R1-R16, Gold G1-G8, Import Whitelisting
+# (DD-021), Foreign Keys (DD-022).
 #
-# These annotations belong in a SEPARATE projection extension file
-# (e.g. customer-silver-ext.ttl) that imports the domain ontology.
-# Domain ontologies must remain free of physical storage concerns (R15).
+# These annotations belong in SEPARATE projection extension files
+# (e.g. customer-silver-ext.ttl, customer-gold-ext.ttl) that import the domain
+# ontology. Domain ontologies must remain free of physical storage concerns (R15).
+#
+# Naming convention: layer-specific annotations are prefixed with their layer
+# (silver* / gold*); bare names denote cross-layer concepts (e.g. naturalKey).
+# Never reuse a local name across the kairos-ext / kairos-bronze / kairos-map
+# vocabularies.
 
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
@@ -34,7 +40,7 @@ kairos-ext:silverSchema a owl:AnnotationProperty ;
 
 kairos-ext:surrogateKeyStrategy a owl:AnnotationProperty ;
     rdfs:label "surrogate key strategy"@en ;
-    rdfs:comment "Strategy for generating surrogate keys (R2). Values: 'uuid'."@en ;
+    rdfs:comment "RESERVED (declared but not yet consumed — surrogate keys are currently generated unconditionally). Intended strategy for generating surrogate keys (R2). Values: 'uuid'."@en ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
@@ -194,6 +200,12 @@ kairos-ext:generateDateDimension a owl:AnnotationProperty ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:boolean .
 
+kairos-ext:generateTimeIntelligence a owl:AnnotationProperty ;
+    rdfs:label "generate time intelligence"@en ;
+    rdfs:comment "If true, generate a Time Intelligence calculation group (YTD, QTD, MTD, PY, YoY %) in the semantic model. Requires a date dimension. Default: false."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:boolean .
+
 # ---------------------------------------------------------------------------
 # Gold — Class-level annotations
 # ---------------------------------------------------------------------------
@@ -215,6 +227,18 @@ kairos-ext:goldExclude a owl:AnnotationProperty ;
     rdfs:comment "If true, exclude this class from the gold layer projection entirely."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:boolean .
+
+kairos-ext:perspective a owl:AnnotationProperty ;
+    rdfs:label "perspective"@en ;
+    rdfs:comment "Space-separated perspective names this table belongs to (e.g. 'Sales Finance'). Each distinct name generates a Power BI perspective grouping its member tables."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:incrementalColumn a owl:AnnotationProperty ;
+    rdfs:label "incremental column"@en ;
+    rdfs:comment "RESERVED (not yet rendered by the gold projector). Intended date/timestamp column to drive a Power BI incremental refresh policy on this fact table. NOTE: distinct from kairos-bronze:incrementalColumn, which drives dbt incremental loads. Do not confuse the two."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
 
 # ---------------------------------------------------------------------------
 # Gold — Property-level annotations
@@ -255,9 +279,14 @@ kairos-ext:degenerateDimension a owl:AnnotationProperty ;
     rdfs:comment "If true, keep this dimension attribute directly on the fact table instead of a separate dimension (G1)."@en ;
     rdfs:range xsd:boolean .
 
+kairos-ext:olsRestricted a owl:AnnotationProperty ;
+    rdfs:label "OLS restricted"@en ;
+    rdfs:comment "If true, add this column to the Object-Level Security (OLS) RestrictedColumns role in the semantic model, hiding it from members of that role. Default: false."@en ;
+    rdfs:range xsd:boolean .
+
 kairos-ext:rolePlayingAs a owl:AnnotationProperty ;
     rdfs:label "role playing as"@en ;
-    rdfs:comment "Space-separated role names for role-playing dimension usage (e.g. 'order_date ship_date'). Each role creates a separate relationship in the semantic model."@en ;
+    rdfs:comment "RESERVED (declared but not yet consumed — the gold projector code path is commented out). Space-separated role names for role-playing dimension usage (e.g. 'order_date ship_date'). Each role is intended to create a separate relationship in the semantic model."@en ;
     rdfs:range xsd:string .
 
 # ===========================================================================
