@@ -41,6 +41,10 @@
 {%- for cte in source_ctes %}
 
 {% if loop.first %}with {% else %}     {% endif %}{{ cte.alias }} as (
+{%- if cte.cte is defined %}
+
+    {{ cte.cte }}
+{%- else %}
 
     select * from {{ "{{" }} ref('{{ cte.model }}') {{ "}}" }}
 {%- if incremental_column and loop.first %}
@@ -49,6 +53,7 @@
     where {{ incremental_column }} > (select max({{ incremental_column }}) from {{ "{{" }} this {{ "}}" }})
     {% raw %}{% endif %}{% endraw %}
 
+{%- endif %}
 {%- endif %}
 
 ){% if not loop.last %},{% endif %}

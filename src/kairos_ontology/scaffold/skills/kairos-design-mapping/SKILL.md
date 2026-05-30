@@ -19,7 +19,7 @@ process — never guess mappings without evidence and user confirmation.
 
 ### Gate 1: Session file prerequisite
 
-> **You MUST create a `.sessions-mapping/mapping-{source}-to-{domain}-{date}.md`
+> **You MUST create a `ontology-hub/.sessions-design/mapping-{source}-to-{domain}-{date}.md`
 > file BEFORE writing any mapping TTL.**
 
 If no session file exists for the source→domain pair being mapped, you are NOT
@@ -64,7 +64,7 @@ The user can override any auto-approved mapping.
 1. List source systems in `integration/sources/` that have a `*.vocabulary.ttl`
 2. Ask user which source system to map
 3. Ask user which domain(s) to target (list available from `model/ontologies/`)
-4. Create session file: `.sessions-mapping/mapping-{source}-to-{domain}-{YYYY-MM-DD}.md`
+4. Create session file: `ontology-hub/.sessions-design/mapping-{source}-to-{domain}-{YYYY-MM-DD}.md`
 
 ### Phase 1 — Table-to-Entity Alignment
 
@@ -200,6 +200,16 @@ For composite mappings (multiple source columns → one property), use
 - Domain properties covered: 15/18 (83%)
 - Unmapped: 8 operational, 4 deprecated, 2 out-of-scope
 ```
+
+### Saving and pausing
+
+- **Auto-save** the session file after each confirmed decision (fill tables immediately)
+- Mark resolved Open Questions as `[x]` with the decision outcome
+- Never mark a session "Complete" while Column Mapping Decisions tables are still empty
+- When the user says "pause", "stop", or "continue later":
+  1. Update the session file with all confirmed decisions so far
+  2. List remaining tables/columns not yet mapped
+  3. Confirm: "Session saved. N tables remaining."
 
 ---
 

@@ -271,3 +271,82 @@ class TestDD021LogisticsDomain:
         # partyName and partyCode are properties of TradeParty in the ref model
         assert "party_name" in ddl
         assert "party_code" in ddl
+
+
+# ---------------------------------------------------------------------------
+# S3 Inheritance Strategy: Discriminator vs TPC (Table-Per-Concrete-Class)
+# ---------------------------------------------------------------------------
+
+class TestS3InheritanceStrategy:
+    """S3 rule respects inheritanceStrategy annotation.
+
+    Client domain uses discriminator → subtypes are folded into parent.
+    Without the annotation, subtypes would get separate tables (TPC).
+    """
+
+    def test_discriminator_folds_subtypes(self, client_silver_artifacts):
+        """With inheritanceStrategy 'discriminator', subtypes are folded into parent."""
+        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
+        ddl = client_silver_artifacts[ddl_key].lower()
+        # The parent 'client' table should exist
+        assert "silver.client" in ddl or "silver_client.client" in ddl, (
+            "Parent Client table missing from DDL"
+        )
+        # Discriminator column should be present on the parent table
+        assert "client_type" in ddl, (
+            "discriminatorColumn 'client_type' missing from DDL"
+        )
+
+    def test_discriminator_skips_subtypes(self, client_silver_artifacts):
+        """Discriminator subtypes should NOT get separate tables."""
+        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
+        ddl = client_silver_artifacts[ddl_key]
+        # Count CREATE TABLE statements — subtypes shouldn't have their own
+        tables = [
+            line for line in ddl.split("\n")
+            if "CREATE TABLE" in line.upper()
+        ]
+        table_names = [t.lower() for t in tables]
+        # CorporateClient, SoleProprietorClient, IndividualClient should NOT
+        # appear as separate tables
+        for name in table_names:
+            assert "corporate_client" not in name, (
+                "Discriminator subtype CorporateClient has its own table — should be folded"
+            )
+            assert "sole_proprietor_client" not in name, (
+                "Discriminator subtype SoleProprietorClient has its own table — should be folded"
+            )
+            assert "individual_client" not in name, (
+                "Discriminator subtype IndividualClient has its own table — should be folded"
+            )
+
+
+# ---------------------------------------------------------------------------
+# IRI lineage in DDL comments
+# ---------------------------------------------------------------------------
+
+class TestSilverIRILineage:
+    """Silver DDL column comments should use prefixed IRI format."""
+
+    def test_data_property_has_iri_comment(self, client_silver_artifacts):
+        """Data property columns should have prefixed IRI in DDL comment."""
+        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
+        ddl = client_silver_artifacts[ddl_key]
+        # clientName property should produce: -- client:clientName
+        assert "client:clientName" in ddl, (
+            f"Expected 'client:clientName' IRI comment in DDL but not found.\n"
+            f"First 1000 chars:\n{ddl[:1000]}"
+        )
+
+    def test_fk_property_has_iri_comment(self, client_silver_artifacts):
+        """FK object property columns should have prefixed IRI in DDL comment."""
+        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
+        ddl = client_silver_artifacts[ddl_key]
+        # Look for any FK column with IRI comment (format: prefix:propertyName)
+        # isIdentifiedBy → identifier_sk (if not inlined)
+        import re
+        fk_iri_pattern = re.compile(r"--\s+client:\w+")
+        matches = fk_iri_pattern.findall(ddl)
+        assert len(matches) > 0, (
+            "Expected at least one 'client:<property>' IRI comment in DDL"
+        )

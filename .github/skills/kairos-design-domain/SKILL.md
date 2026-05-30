@@ -25,7 +25,7 @@ them means the modeling process has failed, regardless of output quality.
 
 ### Gate 1: Session file prerequisite
 
-> **You MUST create a `.sessions-modeling/modeling-{domain}-*.md` file BEFORE
+> **You MUST create a `.sessions-design/modeling-{domain}-*.md` file BEFORE
 > writing any domain `.ttl` file.**
 
 If no session file exists for the domain being modeled, you are NOT permitted
@@ -147,7 +147,7 @@ Use this quick-reference to determine which section applies:
 At the beginning of every modeling session, look for saved configuration files:
 
 ```
-ontology-hub/.sessions-modeling/
+ontology-hub/.sessions-design/
   └── modeling-{domain}-{YYYY-MM-DD}.md    # Saved session state
 ```
 
@@ -163,7 +163,7 @@ If no session exists, start fresh and create one immediately.
 
 ### Session file format
 
-Save progress to `ontology-hub/.sessions-modeling/modeling-{domain}-{YYYY-MM-DD}.md`:
+Save progress to `ontology-hub/.sessions-design/modeling-{domain}-{YYYY-MM-DD}.md`:
 
 ```markdown
 # Modeling Session: {Domain Name}
@@ -227,6 +227,7 @@ _and the reference model. Reference model has priority unless explicitly overrid
 ### Saving and pausing
 
 - **Auto-save** the session file after each confirmed decision
+- Mark resolved Open Questions as `[x]` with the decision outcome
 - When the user says "pause", "stop", "save", or "continue later":
   1. Update the session file with current state
   2. List remaining open questions
@@ -1462,7 +1463,7 @@ When finishing a domain model, remind the user that extension files will need:
 ## Completion: Final Configuration Report
 
 When the user confirms all classes and properties for a domain, generate a final
-report. Save to `ontology-hub/.sessions-modeling/modeling-{domain}-FINAL-{YYYY-MM-DD}.md`:
+report. Save to `ontology-hub/.sessions-design/modeling-{domain}-FINAL-{YYYY-MM-DD}.md`:
 
 ```markdown
 # Modeling Configuration Report: {Domain Name}

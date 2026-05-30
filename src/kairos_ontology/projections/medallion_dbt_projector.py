@@ -41,6 +41,22 @@ from .shared import KAIROS_EXT, merge_ext_graph, str_val, bool_val
 
 logger = logging.getLogger(__name__)
 
+
+def _prefixed_iri(uri: str) -> str:
+    """Derive a compact prefixed IRI from a full URI.
+
+    Given ``https://acme.example/ontology/party#website``, returns ``party:website``.
+    """
+    local = extract_local_name(uri)
+    if "#" in uri:
+        ns = uri.rsplit("#", 1)[0]
+    elif "/" in uri:
+        ns = uri.rsplit("/", 1)[0]
+    else:
+        return local
+    prefix = ns.rsplit("/", 1)[-1] if "/" in ns else ns
+    return f"{prefix}:{local}"
+
 # Module-level cache for entity metadata (populated by generate_dbt_artifacts,
 # read by projector.py via get_last_entity_metadata)
 _last_entity_metadata: dict[str, list[dict]] = {}
@@ -719,25 +735,33 @@ def _extract_property_shape_tests(
 # Artifact generators
 # ---------------------------------------------------------------------------
 
-def _gen_sources(systems: list[dict], env: Environment) -> dict[str, str]:
+def _gen_sources(systems: list[dict], env: Environment, mappings: dict) -> dict[str, str]:
     """Generate a single minimal ``_sources.yml`` under ``models/silver/``.
 
     The sources YAML is intentionally minimal — it declares only database,
     schema, and table names so dbt can generate ``{{ source() }}`` references.
     Column-level documentation lives in the vocabulary TTL (the authoritative
     source of bronze table structure), not in the dbt sources YAML.
+
+    Only tables that have at least one mapping to a domain class are included.
     """
     artifacts: dict[str, str] = {}
     template = env.get_template("sources.yml.jinja2")
+    mapped_table_uris = set(mappings.get("table_maps", {}).keys())
 
     for sys in systems:
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
         tables_data = []
         for tbl in sys["tables"]:
+            if mapped_table_uris and tbl["uri"] not in mapped_table_uris:
+                continue
             tables_data.append({
                 "name": tbl["name"],
                 "label": tbl["label"],
             })
+
+        if not tables_data:
+            continue
 
         content = template.render(
             source_name=source_name,
@@ -1289,7 +1313,17 @@ def _resolve_mapped_columns(
                     # Only include columns that have a real bronze mapping.
                     continue
 
-            columns.append({"expression": expr, "target_name": col_name})
+            # Build lineage comment: domain_prefix:prop → source_prefix:col
+            lineage_parts = [_prefixed_iri(str(prop))]
+            if mapped_col_uri:
+                lineage_parts.append(f"→ {_prefixed_iri(mapped_col_uri)}")
+            lineage_comment = " ".join(lineage_parts)
+
+            columns.append({
+                "expression": expr,
+                "target_name": col_name,
+                "comment": lineage_comment,
+            })
 
             # Generate _label column for enum-typed source columns
             if mapped_col_uri and mapped_col_uri in enum_lookup:
@@ -1369,6 +1403,18 @@ def _extract_silver_columns(
         )
     )
 
+    # Validate that naturalKey columns are present in the generated column list
+    if natural_key_cols and include_sk_iri:
+        col_names = {c["target_name"] for c in columns}
+        missing = [nk for nk in natural_key_cols if nk not in col_names]
+        if missing:
+            class_name = extract_local_name(class_uri)
+            logger.warning(
+                "SK validation: naturalKey column(s) %s not found in model "
+                "columns for %s — SK hash may reference missing columns",
+                missing, class_name,
+            )
+
     return columns
 
 
@@ -1423,6 +1469,45 @@ def _infer_fk_targets(
         range_model = _camel_to_snake(range_local)
 
         # Determine FK column name
+        col_override = graph.value(prop, KAIROS_EXT.silverColumnName)
+        fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
+
+        targets.append({
+            "prop": prop,
+            "range_cls": range_cls,
+            "range_local": range_local,
+            "range_model": range_model,
+            "fk_col_name": fk_col_name,
+        })
+
+    return targets
+
+
+def _infer_fk_on_targets(
+    graph: Graph,
+    class_uri: str,
+) -> list[dict]:
+    """Identify FK properties redirected TO this class via ``silverForeignKeyOn``.
+
+    When a property has ``kairos-ext:silverForeignKeyOn <class>``, the FK column
+    should appear on that target class (not the domain class).  This function
+    collects such properties where the target class matches *class_uri*.
+    """
+    targets: list[dict] = []
+
+    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
+        if fk_on is None or str(fk_on) != class_uri:
+            continue
+
+        # The range of the property is the dimension we're joining to
+        range_cls = graph.value(prop, RDFS.range)
+        if range_cls is None:
+            continue
+
+        range_local = extract_local_name(str(range_cls))
+        range_model = _camel_to_snake(range_local)
+
         col_override = graph.value(prop, KAIROS_EXT.silverColumnName)
         fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
 
@@ -1632,6 +1717,8 @@ def _extract_fk_columns_and_joins(
 
     # Identify qualifying FK targets
     fk_targets = _infer_fk_targets(graph, class_uri)
+    # Also include FK columns redirected to this class via silverForeignKeyOn
+    fk_targets.extend(_infer_fk_on_targets(graph, class_uri))
 
     for target_info in fk_targets:
         prop = target_info["prop"]
@@ -1706,6 +1793,7 @@ def _extract_fk_columns_and_joins(
             source_alias, source_col_name, source_columns,
             range_model, range_local, fk_col_name, target_nk, join_alias,
         )
+        fk_col_dict["comment"] = _prefixed_iri(str(prop))
 
         joins.append(join_dict)
         fk_columns.append(fk_col_dict)
@@ -1970,7 +2058,10 @@ def _gen_schema_yaml(
                     })
 
                 # Lineage metadata
-                col_meta = {"data_type": data_type}
+                col_meta = {
+                    "data_type": data_type,
+                    "domain_iri": str(prop),
+                }
                 if source_col_uri:
                     col_meta["source_iri"] = source_col_uri
 
@@ -2012,7 +2103,11 @@ def _gen_schema_yaml(
                 cols.append({
                     "name": fk_col_name,
                     "description": fk_desc,
-                    "meta": {"is_fk": "true", "references": range_model},
+                    "meta": {
+                        "is_fk": "true",
+                        "references": range_model,
+                        "domain_iri": str(prop),
+                    },
                     "tests": [],
                 })
 
@@ -2257,14 +2352,65 @@ def _gen_gold_models(
     schema_name = gold_tables[0].schema if gold_tables else f"gold_{ontology_name}"
 
     for tbl in gold_tables:
-        # dim_date is auto-generated — no silver ref needed
+        # dim_date is auto-generated with an inline date-spine CTE
         if tbl.name == "dim_date":
+            date_spine_cte = (
+                "date_spine AS (\n"
+                "    SELECT DATEADD(day, ROW_NUMBER() OVER (ORDER BY NULL) - 1,\n"
+                "                   '2000-01-01'::DATE) AS date_key\n"
+                "    FROM TABLE(GENERATOR(ROWCOUNT => 36525))  -- ~100 years\n"
+                ")"
+            )
             columns = []
             for col in tbl.columns:
-                columns.append({
-                    "expression": f"CAST(NULL AS {col.sql_type})",
-                    "target_name": col.name,
-                })
+                if col.name == "date_key":
+                    columns.append({
+                        "expression": "date_spine.date_key",
+                        "target_name": col.name,
+                    })
+                elif col.name == "year":
+                    columns.append({
+                        "expression": "YEAR(date_spine.date_key)",
+                        "target_name": col.name,
+                    })
+                elif col.name == "quarter":
+                    columns.append({
+                        "expression": "QUARTER(date_spine.date_key)",
+                        "target_name": col.name,
+                    })
+                elif col.name == "month":
+                    columns.append({
+                        "expression": "MONTH(date_spine.date_key)",
+                        "target_name": col.name,
+                    })
+                elif col.name == "day_of_month":
+                    columns.append({
+                        "expression": "DAY(date_spine.date_key)",
+                        "target_name": col.name,
+                    })
+                elif col.name == "day_of_week":
+                    columns.append({
+                        "expression": "DAYOFWEEK(date_spine.date_key)",
+                        "target_name": col.name,
+                    })
+                elif col.name == "month_name":
+                    columns.append({
+                        "expression": "MONTHNAME(date_spine.date_key)",
+                        "target_name": col.name,
+                    })
+                elif col.name == "is_weekend":
+                    columns.append({
+                        "expression": (
+                            "CASE WHEN DAYOFWEEK(date_spine.date_key) IN (0, 6)"
+                            " THEN TRUE ELSE FALSE END"
+                        ),
+                        "target_name": col.name,
+                    })
+                else:
+                    columns.append({
+                        "expression": f"CAST(NULL AS {col.sql_type})",
+                        "target_name": col.name,
+                    })
             content = template.render(
                 model_name=tbl.name,
                 domain_name=ontology_name,
@@ -2272,7 +2418,7 @@ def _gen_gold_models(
                 table_type="dimension",
                 scd_type=tbl.scd_type,
                 is_gdpr=False,
-                source_ctes=[{"model": "seed_dim_date", "alias": "date_seed"}],
+                source_ctes=[{"cte": date_spine_cte, "alias": "date_spine"}],
                 columns=columns,
                 joins=[],
                 where_clause="",
@@ -2574,7 +2720,7 @@ def generate_dbt_artifacts(
 
     # 1. Sources YAML (minimal — under models/silver/)
     if systems:
-        artifacts.update(_gen_sources(systems, env))
+        artifacts.update(_gen_sources(systems, env, mappings))
         logger.info("Generated %d source definition(s)", len(systems))
 
     # 2. Silver entity models (read directly from bronze via source())
