@@ -799,7 +799,7 @@ Before running the dbt projection, ensure these artifacts exist in the hub:
 
 - **Source vocabulary** in `integration/sources/{system-name}/{system-name}.vocabulary.ttl`
 - **Silver schema** — domain ontologies with `kairos-ext:` annotations (Part A above)
-- **SKOS mappings** in `model/mappings/{system-name}/`
+- **SKOS mappings** in `model/mappings/{system}-to-{domain}.ttl`
 
 ### Architecture
 

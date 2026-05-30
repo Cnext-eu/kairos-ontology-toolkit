@@ -82,7 +82,7 @@ Check `model/extensions/` and `model/mappings/`:
 |---------------|-------|----------|
 | Silver extensions | `model/extensions/*-silver-ext.ttl` | One per domain that will project to silver |
 | Gold extensions | `model/extensions/*-gold-ext.ttl` | One per domain that will project to gold/Power BI |
-| SKOS mappings | `model/mappings/{source-name}/*.ttl` | One mapping file per (source × domain) combination |
+| SKOS mappings | `model/mappings/{source}-to-{domain}.ttl` | One mapping file per (source × domain) combination |
 | Mapping coverage | Inside mapping TTLs | Check if all source tables have `skos:exactMatch` to domain classes |
 
 **Key questions to answer:**
@@ -97,8 +97,8 @@ Check `model/extensions/` and `model/mappings/`:
 ls model/extensions/*-silver-ext.ttl 2>/dev/null
 ls model/extensions/*-gold-ext.ttl 2>/dev/null
 
-# List mapping files per source
-ls model/mappings/*/  2>/dev/null
+# List mapping files
+ls model/mappings/*.ttl  2>/dev/null
 ```
 
 ### 4. dbt / Medallion Status

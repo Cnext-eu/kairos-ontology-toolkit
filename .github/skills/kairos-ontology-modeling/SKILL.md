@@ -1527,7 +1527,7 @@ report. Save to `ontology-hub/.sessions-modeling/modeling-{domain}-FINAL-{YYYY-M
 
 - [ ] Create silver extension (`model/extensions/{domain}-silver-ext.ttl`)
 - [ ] Create source mappings — invoke **kairos-ontology-mapping** skill to interactively
-  map source columns to domain properties (`model/mappings/{source}/{source}-to-{domain}.ttl`)
+  map source columns to domain properties (`model/mappings/{source}-to-{domain}.ttl`)
 - [ ] Run `python -m kairos_ontology validate`
 - [ ] Run `python -m kairos_ontology project --target silver`
 ```

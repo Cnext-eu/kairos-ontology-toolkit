@@ -192,7 +192,7 @@ Verify:
 After the bronze vocabulary is complete:
 
 1. **Create SKOS mappings** — invoke the **kairos-ontology-mapping** skill to interactively
-   map source columns to domain ontology properties in `model/mappings/{system-name}/`
+   map source columns to domain ontology properties in `model/mappings/`
 2. **Design silver annotations** — invoke the **kairos-ontology-medallion-silver** skill
    to create extension annotations for the silver layer
 3. **Generate output** — invoke the **kairos-ontology-projection** skill to produce

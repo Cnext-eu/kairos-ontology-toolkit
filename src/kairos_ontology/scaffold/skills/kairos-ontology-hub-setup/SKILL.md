@@ -100,6 +100,6 @@ The filename becomes the domain identifier:
 - [ ] Generate projections: `python -m kairos_ontology project --target prompt`
 - [ ] (Optional) Generate silver layer: add `*-silver-ext.ttl` in `ontology-hub/model/extensions/`, then `python -m kairos_ontology project --target silver`
 - [ ] (Optional) Add source system docs in `ontology-hub/integration/sources/` and generate bronze vocab with **kairos-ontology-medallion-source** skill
-- [ ] (Optional) Create source-to-domain mappings in `ontology-hub/model/mappings/{system-name}/` (SKOS + `kairos-map:`) and run **kairos-ontology-medallion-silver** skill for dbt models
+- [ ] (Optional) Create source-to-domain mappings in `ontology-hub/model/mappings/` (SKOS + `kairos-map:`) — invoke **kairos-ontology-mapping** skill, then **kairos-ontology-projection** for dbt models
 - [ ] Optionally add SHACL shapes in `ontology-hub/model/shapes/`
 - [ ] Commit, push, and open PR to merge into main

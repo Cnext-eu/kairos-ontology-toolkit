@@ -75,7 +75,7 @@ Before generating a report, ensure:
 2. **Domain ontology exists** — `model/ontologies/{domain}.ttl` defines the target
    classes and properties.
 
-3. **SKOS mappings exist** — `model/mappings/{system}/*.ttl` contains SKOS alignment
+3. **SKOS mappings exist** — `model/mappings/{system}-to-{domain}.ttl` contains SKOS alignment
    between source column/table URIs and domain ontology URIs.
 
 4. **kairos-map: annotations** (optional) — enrich mappings with transform expressions,
@@ -135,7 +135,7 @@ Sorted by severity:
 ## When to regenerate
 
 Run the report after:
-- Adding or modifying SKOS mappings in `model/mappings/{system}/`
+- Adding or modifying SKOS mappings in `model/mappings/`
 - Adding `kairos-map:` annotations (transforms, filters) to mapping files
 - Adding new source tables/columns to vocabulary files
 - Updating domain ontology classes or properties
