@@ -118,6 +118,28 @@ If the user explicitly requests skipping governance:
 
 ---
 
+## Decision Tree (route within this skill)
+
+Use this quick-reference to determine which section applies:
+
+| User's intent | Go to |
+|---|---|
+| "Add a property" / "fix a label" / minor tweak (≤ 3 props, no new classes) | [Quick-edit mode](#quick-edit-mode) |
+| "Model a new domain" / "create classes for X" | [Before you start](#before-you-start-full-modeling-workflow) → full workflow |
+| "Use FIBO / DCSA / reference model" | [Reference-model-first workflow](#reference-model-first-workflow) |
+| "Here's a TMDL / PBIP file" | [TMDL Analysis](#tmdl-analysis-legacy-bi-input) (then return to modeling) |
+| "Align with industry standard" | [Standard model alignment](#standard-model-alignment) |
+| "What annotations do I need?" | **Delegate:** invoke `kairos-ontology-medallion-silver` or `kairos-ontology-medallion-gold` skill |
+| "Generate dbt / silver DDL / projection" | **Delegate:** invoke `kairos-ontology-projection` skill |
+| "Validate my ontology" | **Delegate:** invoke `kairos-ontology-validation` skill |
+| "Map source columns to domain" | **Delegate:** invoke `kairos-ontology-mapping` skill |
+
+> **Default path:** For any new modeling work, always start at
+> [Before you start](#before-you-start-full-modeling-workflow) and follow
+> Step 0 → Step 0b → Step 0c (Source Evidence Table) → Checkpoints.
+
+---
+
 ## Session Management
 
 ### On start — Check for existing session
@@ -1412,16 +1434,14 @@ Every .ttl file MUST start with an ontology declaration:
 
 ## Extension annotations reference
 
-The Kairos toolkit uses two custom annotation vocabularies that **drive code
-generation** for the silver, gold, and dbt projections.  These annotations live
-in **extension files** (`model/extensions/<domain>-silver-ext.ttl`,
-`<domain>-gold-ext.ttl`) and **mapping files** (`model/mappings/<source>-to-<domain>.ttl`),
-**never** inside the core domain `.ttl` files.
+> **Full reference:** The complete annotation tables for `kairos-ext:` (silver and
+> gold) and `kairos-map:` (mapping) annotations are maintained in the
+> **kairos-ontology-medallion-silver** and **kairos-ontology-medallion-gold** skills.
+> Invoke those skills when you need the detailed annotation reference.
 
-When modeling a domain, you MUST be aware of these annotations because they
-determine how your ontology translates into DDL, dbt models, and Power BI
-artifacts.  If an annotation is missing, the projector falls back to defaults —
-which may not match the intended behavior.
+**Key principle:** Domain ontology files (`.ttl`) define the *what* (classes,
+properties, relationships). Extension files define the *how* (projection behavior).
+Never mix `kairos-ext:` annotations into domain ontology files.
 
 ### File layout
 
@@ -1436,129 +1456,26 @@ model/
     adminpulse-to-client.ttl ← source-to-domain SKOS mappings + kairos-map: annotations
 ```
 
-### `kairos-ext:` — Silver annotations (on ontology or class or property)
+### Quick annotation checklist (for modeling awareness)
 
-These go in `<domain>-silver-ext.ttl`.
+When finishing a domain model, remind the user that extension files will need:
 
-#### Ontology-level (applied to the `owl:Ontology` resource)
-
-| Annotation | Type | Default | Purpose |
-|---|---|---|---|
-| `silverSchema` | string | `silver_<domain>` | Warehouse schema name for silver tables |
-| `namingConvention` | string | `camel-to-snake` | How OWL names become SQL names |
-| `includeNaturalKeyColumn` | boolean | `true` | Include NK columns alongside SK |
-| `auditEnvelope` | boolean | `true` | Add `_loaded_at`, `_source_file` audit columns |
-| `inlineRefThreshold` | integer | `5` | Max enum members before creating a separate ref table |
-| `silverIncludeImports` | boolean | `false` | Bulk-claim all first-level imported classes for silver projection (DD-021) |
-
-#### Class-level (applied to an `owl:Class`)
-
-| Annotation | Type | Default | Purpose |
-|---|---|---|---|
-| `silverTableName` | string | auto (snake_case of class name) | Override the generated table name |
-| `silverInclude` | boolean | `false` | Claim an imported class for silver projection (DD-021) |
-| `scdType` | `"1"` or `"2"` | `"1"` | Slowly Changing Dimension type |
-| `isReferenceData` | boolean | `false` | Mark as reference/enum table |
-| `gdprSatelliteOf` | URI | — | Link a GDPR satellite to its parent class |
-| `discriminatorColumn` | string | — | Column used for class-per-table inheritance splits |
-| `partitionBy` | string | — | Fabric Warehouse partition column |
-| `clusterBy` | string | — | Fabric Warehouse cluster column |
-| `naturalKey` | string | — | Space-separated property names forming the natural key |
-| `junctionTableName` | string | — | Physical M:N junction table name |
-| `conditionalOnType` | string | — | Discriminator value that selects this subclass |
-
-#### Property-level (applied to `owl:DatatypeProperty` or `owl:ObjectProperty`)
-
-| Annotation | Type | Default | Purpose |
-|---|---|---|---|
-| `silverColumnName` | string | auto (snake_case) | Override column name in DDL/dbt |
-| `silverDataType` | string | auto from `xsd:` range | Override SQL data type |
-| `nullable` | boolean | `true` | Whether column allows NULL |
-| `derivationFormula` | string | — | SQL expression for a computed column |
-| `populationRequirement` | `"required"` / `"optional"` | `"optional"` | Maps to NOT NULL constraint |
-| `silverForeignKey` | boolean | `false` | Mark object property as FK column (DD-022) |
-| `silverForeignKeyOn` | class URI | — | Override FK placement to specified class (DD-022) |
-
-### `kairos-ext:` — Gold annotations (on ontology or class or property)
-
-These go in `<domain>-gold-ext.ttl`.
-
-#### Ontology-level
-
-| Annotation | Type | Default | Purpose |
-|---|---|---|---|
-| `goldSchema` | string | `gold_<domain>` | Warehouse schema for gold tables |
-| `goldInheritanceStrategy` | `"class-per-table"` / `"single-table"` | `"single-table"` | How subclasses map to gold tables |
-| `generateDateDimension` | boolean | `true` | Auto-generate `dim_date` |
-| `generateTimeIntelligence` | boolean | `false` | Add DAX time-intelligence measures |
-| `goldIncludeImports` | boolean | `false` | Bulk-claim all first-level imported classes for gold projection (DD-021) |
-
-#### Class-level
-
-| Annotation | Type | Default | Purpose |
-|---|---|---|---|
-| `goldTableType` | `"dimension"` / `"fact"` / `"bridge"` | auto-detected | Force table type |
-| `goldInclude` | boolean | `false` | Claim an imported class for gold projection (DD-021) |
-| `goldTableName` | string | auto (`dim_` / `fact_` prefix) | Override gold table name |
-| `goldExclude` | boolean | `false` | Exclude class from gold layer |
-| `perspective` | string | — | Power BI perspective membership |
-| `incrementalColumn` | string | — | Column for incremental materialization |
-
-#### Property-level
-
-| Annotation | Type | Default | Purpose |
-|---|---|---|---|
-| `goldColumnName` | string | auto | Override column name in gold |
-| `goldDataType` | string | auto | Override SQL type in gold |
-| `measureExpression` | string | — | DAX measure formula |
-| `measureFormatString` | string | — | DAX format string for measure |
-| `hierarchyName` | string | — | Power BI hierarchy group name |
-| `hierarchyLevel` | integer | — | Position in hierarchy |
-| `degenerateDimension` | boolean | `false` | Embed as degenerate dim in fact table |
-| `olsRestricted` | boolean | `false` | Mark for Object-Level Security |
-| `rolePlayingAs` | string | — | Role-playing dimension alias |
-
-### `kairos-map:` — Mapping annotations (in mapping files)
-
-These go in `model/mappings/<source>-to-<domain>.ttl` alongside SKOS mappings.
-
-#### Table-level (on `skos:narrowMatch` or `skos:exactMatch` between source table and domain class)
-
-| Annotation | Type | Purpose |
-|---|---|---|
-| `mappingType` | `"direct"` / `"split"` / `"merge"` | How source table(s) map to domain class |
-| `filterCondition` | string | SQL WHERE clause for split patterns (e.g., `"source.type = 0"`) |
-| `deduplicationKey` | string | Column(s) for dedup in merge patterns |
-| `deduplicationOrder` | string | ORDER BY expression for dedup |
-
-#### Column-level (on `skos:exactMatch` between source column and domain property)
-
-| Annotation | Type | Purpose |
-|---|---|---|
-| `transform` | string | SQL expression (e.g., `"CAST(source.id AS STRING)"`) |
-| `sourceColumns` | string | Space-separated source columns for composite mappings |
-| `defaultValue` | string | Fallback value → generates `COALESCE(expr, default)` |
+| Layer | What to annotate | Key annotations |
+|-------|-----------------|-----------------|
+| Silver | SCD type, natural keys, FK relationships | `scdType`, `naturalKey`, `silverForeignKey` |
+| Gold | Fact vs dimension, measures, hierarchies | `goldTableType`, `measureExpression`, `hierarchyName` |
+| Mapping | Source-to-domain column transforms | `transform`, `mappingType`, `filterCondition` |
 
 ### Design rules for extensions
 
-1. **Separate concerns**: domain ontology defines the *what* (classes, properties,
-   relationships); extension files define the *how* (projection behavior).
+1. **Separate concerns**: domain ontology defines the *what*; extension files define the *how*.
 2. **One extension file per layer per domain**: `client-silver-ext.ttl`,
-   `client-gold-ext.ttl`.  Never mix silver and gold annotations in one file.
+   `client-gold-ext.ttl`. Never mix silver and gold annotations in one file.
 3. **Re-import the domain namespace**: extension files must `@prefix` and reference
    the same domain namespace as the ontology they extend.
-4. **Annotate the ontology URI for ontology-level settings**: e.g.,
-   ```turtle
-   <https://acme.example/ontology/client> kairos-ext:silverSchema "silver_client" .
-   ```
-5. **Annotate class or property URIs for entity-level settings**: e.g.,
-   ```turtle
-   client:Client kairos-ext:scdType "2" ;
-       kairos-ext:partitionBy "country" .
-   ```
-6. **Validate after editing**: run `kairos-ontology validate` to ensure the
+4. **Validate after editing**: run `kairos-ontology validate` to ensure the
    extension file parses correctly.
-7. **Test the projection**: run `kairos-ontology project --target silver` (or `dbt`,
+5. **Test the projection**: run `kairos-ontology project --target silver` (or `dbt`,
    `gold`) and inspect the generated output to verify annotations took effect.
 
 ---
@@ -1643,3 +1560,16 @@ report. Save to `ontology-hub/.sessions-modeling/modeling-{domain}-FINAL-{YYYY-M
 | Silver layer surprises | Checkpoint 5 previews projection impact |
 | Lost context between sessions | Session files persist all decisions |
 | No audit trail for design choices | Final report captures everything |
+
+---
+
+## Related skills
+
+| When you need | Invoke |
+|---|---|
+| Silver/gold extension annotations (full reference tables) | **kairos-ontology-medallion-silver** / **kairos-ontology-medallion-gold** |
+| Source-to-domain column mapping | **kairos-ontology-mapping** |
+| Run projections (dbt, silver DDL, Power BI) | **kairos-ontology-projection** |
+| Validate ontology syntax + SHACL | **kairos-ontology-validation** |
+| Create bronze vocabulary from source docs | **kairos-ontology-medallion-source** |
+| Hub status / what's missing | **kairos-ontology-hub-status** |
