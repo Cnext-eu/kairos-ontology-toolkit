@@ -1094,7 +1094,6 @@ def generate_source_landscape_report(
     sources_with_col = 0
     for src in sources:
         has_table_map = False
-        has_col_map = False
         for tbl in src["tables"]:
             tbl_maps = mappings["table_maps"].get(tbl["uri"], [])
             if tbl_maps:
@@ -1120,7 +1119,6 @@ def generate_source_landscape_report(
             if col_uri in mappings["column_maps"]
         )
         if col_mapped:
-            has_col_map = True
             sources_with_col += 1
         src["mapped_columns"] = col_mapped
 

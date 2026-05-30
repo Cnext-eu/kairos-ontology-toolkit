@@ -2,12 +2,10 @@
 # Copyright 2026 Cnext.eu
 """Unit tests for the TMDL parser."""
 
-import pytest
 
 from kairos_ontology.tmdl_parser import (
     TmdlColumn,
     TmdlMeasure,
-    TmdlModel,
     TmdlRelationship,
     TmdlTable,
     parse_model_tmdl,

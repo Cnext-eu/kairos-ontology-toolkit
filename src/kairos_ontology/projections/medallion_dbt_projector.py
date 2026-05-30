@@ -1181,7 +1181,7 @@ def _resolve_mapped_columns(
             if col_name in seen_col_names:
                 continue
             seen_col_names.add(col_name)
-            range_uri = graph.value(prop, RDFS.range)
+            _range_uri = graph.value(prop, RDFS.range)
             # Use dbt_utils macros for portable silver types
 
             # Check population requirement from kairos-ext annotation
@@ -2202,7 +2202,7 @@ def _gen_gold_models(
                 table_type="dimension",
                 scd_type=tbl.scd_type,
                 is_gdpr=False,
-                source_ctes=[{"model": f"seed_dim_date", "alias": "date_seed"}],
+                source_ctes=[{"model": "seed_dim_date", "alias": "date_seed"}],
                 columns=columns,
                 joins=[],
                 where_clause="",

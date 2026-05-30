@@ -89,7 +89,6 @@ class TestGetApplicationModel:
 
     def test_returns_404_on_not_found(self, client, monkeypatch, mock_env):
         from types import SimpleNamespace
-        from unittest.mock import AsyncMock
 
         async def _raise(*args, **kwargs):
             raise FileNotFoundError("no such file")

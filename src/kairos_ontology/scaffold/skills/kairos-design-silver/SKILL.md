@@ -15,10 +15,10 @@ This skill covers annotation design and output interpretation:
 1. **Schema design** — Create and configure `kairos-ext:` annotations in
    `*-silver-ext.ttl` extension files that control silver DDL generation.
 2. **Output interpretation** — Understand the DDL, ERD, and dbt model outputs
-   produced when the **kairos-project** skill runs the silver/dbt targets.
+   produced when the **kairos-execute-project** skill runs the silver/dbt targets.
 
 > **Design/Execute separation (DD-033):** This skill creates annotation files.
-> To generate output, invoke the **kairos-project** skill.
+> To generate output, invoke the **kairos-execute-project** skill.
 
 ---
 
@@ -356,11 +356,11 @@ ref:hasConsignmentItem
 ## Phase 4 — Generate output (handoff to projection skill)
 
 Once your silver extension annotations are complete, generate the artifacts by
-invoking the **kairos-project** skill with target `silver` (for DDL + ERD)
+invoking the **kairos-execute-project** skill with target `silver` (for DDL + ERD)
 or `dbt` (for dbt models — requires SKOS mappings).
 
 > **Design/Execute separation (DD-033):** This skill handles annotation *design*.
-> The **kairos-project** skill handles *generation*. If you need to
+> The **kairos-execute-project** skill handles *generation*. If you need to
 > iterate on outputs, edit the extension file here, then invoke projection again.
 
 Artifacts are written to the dbt project tree under `output/medallion/dbt/`:
@@ -445,7 +445,7 @@ erDiagram
 ### Fix and iterate
 
 If adjustments are needed, edit `{DOMAIN}-silver-ext.ttl` and re-run the projection
-via the **kairos-project** skill (target `silver` or `dbt`).
+via the **kairos-execute-project** skill (target `silver` or `dbt`).
 The master ERD is regenerated automatically on every run.
 
 ---
@@ -889,7 +889,7 @@ dbt test       # Run SHACL-derived tests
 ### Downstream consumption
 
 The generated dbt project is designed to be consumed as a **dbt package** in a
-data platform repository. See the `kairos-dataplatform` skill for
+data platform repository. See the `kairos-package-dataplatform` skill for
 setup instructions on adding it as a dependency via `packages.yml`.
 
 ---
@@ -902,5 +902,5 @@ setup instructions on adding it as a dependency via `packages.yml`.
 | Design gold layer (Power BI star schema, measures) | **kairos-design-gold** |
 | Create bronze vocabulary from source docs | **kairos-design-source** |
 | Map source columns to domain properties | **kairos-design-mapping** |
-| Run projections (generate dbt/DDL/TMDL output) | **kairos-project** |
-| Consume dbt package in data platform repo | **kairos-dataplatform** |
+| Run projections (generate dbt/DDL/TMDL output) | **kairos-execute-project** |
+| Consume dbt package in data platform repo | **kairos-package-dataplatform** |

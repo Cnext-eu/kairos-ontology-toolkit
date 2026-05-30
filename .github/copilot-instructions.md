@@ -18,7 +18,7 @@ then answer.
 > CLI commands, and best practices.
 >
 > **Returning?** Would you like me to run a **hub status check** to see where things
-> stand? _(invokes the kairos-hub-status skill)_
+> stand? _(invokes the kairos-diagnose-status skill)_
 
 ## Project overview
 
@@ -142,25 +142,25 @@ Use this table to pick the correct skill for a user's intent:
 > **Design vs Execute:** The design skills (`kairos-design-source`,
 > `kairos-design-silver`, `kairos-design-gold`,
 > `kairos-design-mapping`, `kairos-design-domain`) create/modify source files
-> interactively. The **kairos-project** skill **executes generation**
+> interactively. The **kairos-execute-project** skill **executes generation**
 > from those files — it's the single entry point for producing output artifacts.
 > Design first, then project. See DD-033 for the full lifecycle architecture.
 
 | User intent | Correct skill |
 |---|---|
 | "Model / design / create classes / add properties / extend ontology" | **kairos-design-domain** |
-| "Create a new hub repo from scratch" | **kairos-hub-init** |
-| "Set up folder structure / configure hub" | **kairos-hub-setup** |
+| "Create a new hub repo from scratch" | **kairos-setup-init** |
+| "Set up folder structure / configure hub" | **kairos-setup-config** |
 | "How does Kairos work? / What is this?" | **kairos-help** |
-| "Run projections / generate dbt / silver / gold" | **kairos-project** |
-| "Validate my ontology" | **kairos-validate** |
+| "Run projections / generate dbt / silver / gold" | **kairos-execute-project** |
+| "Validate my ontology" | **kairos-execute-validate** |
 | "Create source/bronze vocabulary" | **kairos-design-source** |
 | "Design silver schema / FK annotations" | **kairos-design-silver** |
 | "Design gold / Power BI model" | **kairos-design-gold** |
 | "Import / extract TMDL or PBIP files" | CLI: `kairos-ontology import-tmdl` |
 | "Release / upgrade / version check" | **kairos-toolkit-ops** |
 | "Map source columns to domain / create SKOS mappings" | **kairos-design-mapping** |
-| "Status / progress / what's missing / where are we" | **kairos-hub-status** |
+| "Status / progress / what's missing / where are we" | **kairos-diagnose-status** |
 
 ### Skill-first enforcement (MANDATORY)
 
@@ -172,11 +172,11 @@ interactive validation gates, and contextual guidance that raw CLI commands bypa
 Running CLI directly can produce incomplete or incorrect output without warning.
 
 **Prohibited patterns:**
-- ❌ `python -m kairos_ontology project --target silver` → use **kairos-project** skill
-- ❌ `python -m kairos_ontology project --target dbt` → use **kairos-project** skill
-- ❌ `python -m kairos_ontology project --target powerbi` → use **kairos-project** skill
-- ❌ `python -m kairos_ontology validate` → use **kairos-validate** skill
-- ❌ `python -m kairos_ontology new-repo` → use **kairos-hub-init** skill
+- ❌ `python -m kairos_ontology project --target silver` → use **kairos-execute-project** skill
+- ❌ `python -m kairos_ontology project --target dbt` → use **kairos-execute-project** skill
+- ❌ `python -m kairos_ontology project --target powerbi` → use **kairos-execute-project** skill
+- ❌ `python -m kairos_ontology validate` → use **kairos-execute-validate** skill
+- ❌ `python -m kairos_ontology new-repo` → use **kairos-setup-init** skill
 - ❌ Directly editing `.ttl` files without invoking the modeling/mapping skill
 
 **Only exception:** The `import-tmdl` command has no corresponding skill and may be

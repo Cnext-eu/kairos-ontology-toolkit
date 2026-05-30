@@ -223,7 +223,7 @@ class TestResolveImportPaths:
         catalog.write_text(
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
-            f'  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
+            '  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
             '</catalog>\n',
             encoding="utf-8",
         )

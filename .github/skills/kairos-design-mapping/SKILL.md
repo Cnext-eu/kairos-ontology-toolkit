@@ -4,7 +4,7 @@ description: >
   Structured, interactive workflow for creating SKOS source-to-domain column
   mappings with validation gates. Guides table alignment, column mapping with
   confidence levels, and coverage validation. NOT for running projections —
-  use kairos-project for that.
+  use kairos-execute-project for that.
 ---
 
 # Source-to-Domain Mapping Skill
@@ -122,7 +122,7 @@ For each confirmed table→entity pair:
    - Generate mapping report (`--target report`) for full HTML view
    - Map another table from same source
    - Start new mapping session for different source
-   - Proceed to projection (`kairos-project`)
+   - Proceed to projection (`kairos-execute-project`)
 
 ---
 
@@ -236,9 +236,9 @@ bronze:{transformedColumn}
 | `kairos-design-source` | **Upstream** — creates bronze vocabulary (input to this skill) |
 | `kairos-design-domain` | **Upstream** — creates domain ontology (target for mappings) |
 | **`kairos-design-mapping`** (this) | Creates SKOS mapping files interactively |
-| `kairos-report` | **Downstream** — generates HTML coverage reports from mappings |
+| `kairos-execute-report` | **Downstream** — generates HTML coverage reports from mappings |
 | `kairos-design-silver` | **Downstream** — uses mappings for extension annotations |
-| `kairos-project` | **Downstream** — generates dbt models from mappings |
+| `kairos-execute-project` | **Downstream** — generates dbt models from mappings |
 
 ### Typical pipeline order
 
@@ -247,7 +247,7 @@ bronze:{transformedColumn}
 2. kairos-design-source → bronze vocabulary (.vocabulary.ttl)
 3. kairos-design-mapping          → SKOS mapping files (model/mappings/)
 4. kairos-design-silver → silver extension annotations
-5. kairos-project       → dbt/silver/powerbi output
+5. kairos-execute-project       → dbt/silver/powerbi output
 ```
 
 ---
@@ -268,7 +268,7 @@ bronze:{transformedColumn}
 | When you need | Invoke |
 |---|---|
 | Design/modify domain ontology classes and properties | **kairos-design-domain** |
-| Generate HTML mapping report for stakeholders | **kairos-report** |
+| Generate HTML mapping report for stakeholders | **kairos-execute-report** |
 | Design silver layer (DDL, SCD, FK annotations) | **kairos-design-silver** |
 | Create bronze vocabulary from source docs | **kairos-design-source** |
-| Run projections (generate dbt models from mappings) | **kairos-project** |
+| Run projections (generate dbt models from mappings) | **kairos-execute-project** |

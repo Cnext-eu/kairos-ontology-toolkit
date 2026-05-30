@@ -66,10 +66,10 @@ facts (detected via the ≥2 FK heuristic) still use the standard cardinality fi
 ## Running the Projection (handoff)
 
 Once your gold extension annotations are complete, generate the artifacts by
-invoking the **kairos-project** skill with target `powerbi`.
+invoking the **kairos-execute-project** skill with target `powerbi`.
 
 > **Design/Execute separation (DD-033):** This skill handles annotation *design*.
-> The **kairos-project** skill handles *generation*. If you need to
+> The **kairos-execute-project** skill handles *generation*. If you need to
 > iterate on outputs, edit the extension file here, then invoke projection again.
 
 ## Extension File
@@ -256,7 +256,7 @@ with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
 - [ ] Annotate each class with `goldTableType` (or rely on auto-classification)
 - [ ] Add `measureExpression` for DAX measures on numeric properties
 - [ ] Add `hierarchyName` / `hierarchyLevel` for drill-down hierarchies
-- [ ] Invoke **kairos-project** with `--target powerbi`
+- [ ] Invoke **kairos-execute-project** with `--target powerbi`
 - [ ] Review star schema ERD in `output/medallion/powerbi/{domain}/`
 - [ ] Check SVG renders were created (requires `mmdc` — see SVG export setup)
 - [ ] Import TMDL into Power BI Desktop or deploy to Fabric workspace
@@ -272,4 +272,4 @@ with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
 | Design silver layer (DDL, SCD, FK annotations) | **kairos-design-silver** |
 | Create bronze vocabulary from source docs | **kairos-design-source** |
 | Map source columns to domain properties | **kairos-design-mapping** |
-| Run projections (generate dbt/DDL/TMDL output) | **kairos-project** |
+| Run projections (generate dbt/DDL/TMDL output) | **kairos-execute-project** |

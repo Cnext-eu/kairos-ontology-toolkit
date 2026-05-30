@@ -17,7 +17,6 @@ from kairos_ontology.import_tmdl import (
     generate_engineering_pack,
     run_import_tmdl,
 )
-from kairos_ontology.tmdl_parser import TmdlModel
 
 
 # ---------------------------------------------------------------------------

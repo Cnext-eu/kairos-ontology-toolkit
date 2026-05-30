@@ -412,7 +412,7 @@ class TestMappingToSqlConsistency:
                 missing.append(f"{target_prop} → {snake_col}")
 
         assert not missing, (
-            f"Mapping columns not found in dbt SQL output:\n"
+            "Mapping columns not found in dbt SQL output:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
 
@@ -446,7 +446,7 @@ class TestMappingToSqlConsistency:
                 missing.append(f"{target_prop} → {snake_col}")
 
         assert not missing, (
-            f"Mapping columns not found in dbt SQL output:\n"
+            "Mapping columns not found in dbt SQL output:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
 
@@ -471,7 +471,7 @@ class TestMappingToSqlConsistency:
                 missing.append(f"{target_prop} → {snake_col}")
 
         assert not missing, (
-            f"Mapping columns not found in dbt SQL output:\n"
+            "Mapping columns not found in dbt SQL output:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
 
@@ -530,7 +530,7 @@ class TestMappingToSqlConsistency:
                 missing.append(f"{target_class} → {snake_model}.sql")
 
         assert not missing, (
-            f"Table mappings without corresponding dbt model:\n"
+            "Table mappings without corresponding dbt model:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
 
@@ -571,7 +571,7 @@ class TestMappingToSqlConsistency:
                 missing.append(f"{target_prop} → {snake_col}")
 
         assert not missing, (
-            f"Mapped columns missing from _models.yml:\n"
+            "Mapped columns missing from _models.yml:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
 
@@ -685,7 +685,7 @@ class TestShaclToDbtTests:
                 missing.append(f"{cls}.{prop} ({model_name}.{col_name})")
 
         assert not missing, (
-            f"SHACL sh:minCount 1 not reflected as not_null in dbt tests:\n"
+            "SHACL sh:minCount 1 not reflected as not_null in dbt tests:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
 
@@ -723,7 +723,7 @@ class TestShaclToDbtTests:
                 missing.append(f"{cls}.{prop} ({model_name}.{col_name})")
 
         assert not missing, (
-            f"SHACL sh:minCount+maxCount=1 not reflected as unique in dbt:\n"
+            "SHACL sh:minCount+maxCount=1 not reflected as unique in dbt:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
 
@@ -765,7 +765,7 @@ class TestShaclToDbtTests:
                 missing.append(f"{cls}.{prop} pattern='{pattern}'")
 
         assert not missing, (
-            f"SHACL sh:pattern not reflected as regex test in dbt:\n"
+            "SHACL sh:pattern not reflected as regex test in dbt:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
 
@@ -806,7 +806,7 @@ class TestShaclToDbtTests:
                 missing.append(f"{cls}.{prop} minInclusive={min_val}")
 
         assert not missing, (
-            f"SHACL sh:minInclusive not reflected as between test in dbt:\n"
+            "SHACL sh:minInclusive not reflected as between test in dbt:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
 
@@ -843,7 +843,7 @@ class TestShaclToDbtTests:
                 missing.append(f"{cls}.{prop} ({model_name}.{col_name})")
 
         assert not missing, (
-            f"Invoice SHACL sh:minCount 1 not reflected as not_null:\n"
+            "Invoice SHACL sh:minCount 1 not reflected as not_null:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
 
