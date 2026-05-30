@@ -64,18 +64,18 @@ facts (detected via the ≥2 FK heuristic) still use the standard cardinality fi
 | STRING | VARCHAR(256) | Bounded length for VertiPaq |
 | DOUBLE | FLOAT | Fabric Warehouse type |
 
-## Running the Projection
+## Running the Projection (handoff)
+
+Once your gold extension annotations are complete, generate the artifacts by
+invoking the **kairos-ontology-projection** skill or running directly:
 
 ```bash
-# Generate gold artifacts for all domains
 python -m kairos_ontology project --target powerbi
-
-# With explicit paths
-python -m kairos_ontology project \
-  --ontologies ontology-hub/model/ontologies \
-  --output ontology-hub/output \
-  --target powerbi
 ```
+
+> **Design/Execute separation:** This skill (medallion-gold) handles annotation
+> *design*. The projection skill handles *generation*. If you need to iterate on
+> outputs, edit the extension file here, then re-run projection.
 
 ## Extension File
 

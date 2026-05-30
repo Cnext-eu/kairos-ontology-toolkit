@@ -350,17 +350,19 @@ ref:hasConsignmentItem
 
 ---
 
-## Phase 4 — Run the projection
+## Phase 4 — Generate output (handoff to projection skill)
+
+Once your silver extension annotations are complete, generate the artifacts by
+invoking the **kairos-ontology-projection** skill or running directly:
 
 ```bash
-# Project a single ontology file + extension
-python -m kairos_ontology project \
-    --ontology ontology-hub/model/ontologies/{DOMAIN}.ttl \
-    --target silver
-
-# Project all domains in a hub
-python -m kairos_ontology project --target silver
+python -m kairos_ontology project --target silver   # DDL + ERD
+python -m kairos_ontology project --target dbt      # dbt models (requires mappings)
 ```
+
+> **Design/Execute separation:** This skill (medallion-silver) handles annotation
+> *design*. The projection skill handles *generation*. If you need to iterate on
+> outputs, edit the extension file here, then re-run projection.
 
 Artifacts are written to the dbt project tree under `output/medallion/dbt/`:
 

@@ -9,18 +9,18 @@ description: >
 
 You help users generate and understand projection artifacts.
 
-> **When to use this skill vs medallion skills:**
-> - Use **this skill** (projection) when the user wants to **run** a projection
->   and generate output files (DDL, dbt models, TMDL, ERDs, etc.)
-> - Use **medallion-source** when the user needs to **create** bronze vocabulary
->   descriptions from source system documentation
+> **When to use this skill vs design skills (DD-033):**
+> - Use **this skill** when the user wants to **generate output** — run projections,
+>   produce DDL, dbt models, TMDL, ERDs, JSON artifacts, or reports.
 > - Use **medallion-silver** when the user needs to **design** silver extension
->   annotations (SCD types, natural keys, FK declarations)
+>   annotations (SCD types, natural keys, FK declarations) — the design phase.
 > - Use **medallion-gold** when the user needs to **design** gold extension
->   annotations (fact/dimension types, measures, hierarchies)
+>   annotations (fact/dimension types, measures, hierarchies) — the design phase.
+> - Use **medallion-source** when the user needs to **create** bronze vocabulary
+>   descriptions from source system documentation — the design phase.
 >
-> **Rule of thumb:** Medallion skills = design annotation decisions.
-> Projection skill = execute generation from those annotations.
+> **Rule of thumb:** Design skills create/modify annotation files.
+> This skill generates output FROM those files. Design first, then project.
 
 ## Before you start
 

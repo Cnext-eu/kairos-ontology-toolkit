@@ -139,10 +139,11 @@ skips checkpoints.
 
 Use this table to pick the correct skill for a user's intent:
 
-> **Projection vs Medallion:** The medallion skills (`medallion-source`,
-> `medallion-silver`, `medallion-gold`) are for **designing** annotations and
-> extension files. The `projection` skill is for **running** the generator to
-> produce output artifacts. Design first, then generate.
+> **Design vs Execute:** The `design` skills (`medallion-source`, `medallion-silver`,
+> `medallion-gold`, `mapping`, `modeling`) create/modify source files interactively.
+> The `projection` skill **executes generation** from those files — it's the single
+> entry point for producing output artifacts. Design first, then project.
+> See DD-033 for the full lifecycle architecture.
 
 | User intent | Correct skill |
 |---|---|
