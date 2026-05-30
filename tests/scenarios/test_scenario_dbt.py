@@ -1341,7 +1341,7 @@ class TestIRILineage:
         assert found_domain_iri, "No column with domain_iri in schema YAML meta"
 
     def test_silver_sql_has_iri_comment(self, client_dbt_artifacts):
-        """Silver SQL model should have prefixed IRI comments on column lines."""
+        """Silver SQL model should have SKOS mapping comments on column lines."""
         # IRI comments appear in per-source models (not the union model)
         key = _find_artifact(client_dbt_artifacts, "from_admin_pulse")
         if key is None:
@@ -1352,10 +1352,49 @@ class TestIRILineage:
             )
         assert key is not None, "No per-source silver model SQL found"
         sql = client_dbt_artifacts[key]
-        # Should have prefix:property format comments
-        assert "client:" in sql, (
-            f"Expected 'client:' prefixed IRI comment in SQL model but not found.\n"
+        # Should have SKOS match type in comments (mirrors actual SKOS triples)
+        assert "skos:" in sql, (
+            f"Expected 'skos:' match type in IRI comment but not found.\n"
             f"First 500 chars:\n{sql[:500]}"
+        )
+
+    def test_skos_comment_uses_declared_prefix(self, client_dbt_artifacts):
+        """Comments should use declared prefixes from mapping files."""
+        key = _find_artifact(client_dbt_artifacts, "from_admin_pulse")
+        if key is None:
+            key = next(
+                (k for k in client_dbt_artifacts if "__from_" in k and k.endswith(".sql")),
+                None,
+            )
+        assert key is not None
+        sql = client_dbt_artifacts[key]
+        # The mapping file declares bronze-ap: and acme: prefixes
+        assert "bronze-ap:" in sql, (
+            f"Expected 'bronze-ap:' declared prefix in comment but not found.\n"
+            f"First 500 chars:\n{sql[:500]}"
+        )
+        assert "acme:" in sql, (
+            f"Expected 'acme:' declared prefix in comment but not found.\n"
+            f"First 500 chars:\n{sql[:500]}"
+        )
+
+    def test_skos_comment_format(self, client_dbt_artifacts):
+        """Comments should follow 'source skos:{type} target' triple format."""
+        import re
+
+        pattern = re.compile(r"-- \S+ skos:\w+ \S+")
+        key = _find_artifact(client_dbt_artifacts, "from_admin_pulse")
+        if key is None:
+            key = next(
+                (k for k in client_dbt_artifacts if "__from_" in k and k.endswith(".sql")),
+                None,
+            )
+        assert key is not None
+        sql = client_dbt_artifacts[key]
+        matches = pattern.findall(sql)
+        assert len(matches) > 0, (
+            "Expected at least one SKOS-format lineage comment "
+            "'-- source skos:type target' in SQL"
         )
 
 

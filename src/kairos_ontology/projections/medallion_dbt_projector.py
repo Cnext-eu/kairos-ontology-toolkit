@@ -57,6 +57,21 @@ def _prefixed_iri(uri: str) -> str:
     prefix = ns.rsplit("/", 1)[-1] if "/" in ns else ns
     return f"{prefix}:{local}"
 
+
+def _resolve_qname(uri: str, ns_bindings: dict[str, str] | None = None) -> str:
+    """Resolve a URI to a prefixed form using declared namespace bindings.
+
+    Tries declared prefixes first (e.g., ``bronze-ap:col_name``), falls back to
+    ``_prefixed_iri()`` if no matching binding found.
+    """
+    if not ns_bindings:
+        return _prefixed_iri(uri)
+    for prefix, ns_uri in ns_bindings.items():
+        if uri.startswith(ns_uri):
+            local = uri[len(ns_uri):]
+            return f"{prefix}:{local}"
+    return _prefixed_iri(uri)
+
 # Module-level cache for entity metadata (populated by generate_dbt_artifacts,
 # read by projector.py via get_last_entity_metadata)
 _last_entity_metadata: dict[str, list[dict]] = {}
@@ -465,10 +480,12 @@ def _parse_split_annotations(mappings_dir: Path) -> dict[tuple[str, str], dict]:
     return result
 
 
-def _parse_skos_mappings(mappings_dir: Path) -> dict:
+def _parse_skos_mappings(mappings_dir: Path) -> tuple[dict, dict[str, str]]:
     """Parse SKOS + kairos-map: mappings and return structured mapping data.
 
-    Returns::
+    Returns a tuple of (mappings_dict, ns_bindings):
+
+    mappings_dict::
 
         {
             "table_maps": {bronze_table_uri: [{
@@ -487,13 +504,16 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
             }, ...]}
         }
 
+    ns_bindings: dict mapping prefix → namespace URI from the mapping files.
+
     Note: Both ``table_maps`` and ``column_maps`` values are **lists** to support
     one-to-many patterns (split: one table → multiple classes; multi-target: one
     column → multiple properties).
     """
     result: dict = {"table_maps": {}, "column_maps": {}}
+    ns_bindings: dict[str, str] = {}
     if not mappings_dir or not mappings_dir.is_dir():
-        return result
+        return result, ns_bindings
 
     # Pre-parse to resolve per-target annotations for split patterns
     split_annotations = _parse_split_annotations(mappings_dir)
@@ -562,7 +582,12 @@ def _parse_skos_mappings(mappings_dir: Path) -> dict:
                         "default_value": str(default) if default else None,
                     })
 
-    return result
+    # Extract declared namespace bindings from mapping files
+    for prefix, ns_uri in g.namespaces():
+        if prefix:  # skip default namespace
+            ns_bindings[prefix] = str(ns_uri)
+
+    return result, ns_bindings
 
 
 # ---------------------------------------------------------------------------
@@ -786,6 +811,7 @@ def _gen_silver_models(
     meta: dict,
     ontology_name: str,
     platform: str = DEFAULT_PLATFORM,
+    mapping_ns: dict[str, str] | None = None,
 ) -> tuple[dict[str, str], list[str], list[dict]]:
     """Generate silver entity models that read directly from bronze sources.
 
@@ -947,6 +973,7 @@ def _gen_silver_models(
                     graph, cls_uri, namespace, mappings, platform=platform,
                     source_refs=source_refs, systems=systems,
                     table_column_uris=tbl_col_uris, include_sk_iri=False,
+                    mapping_ns=mapping_ns,
                 )
 
                 # Resolve filter condition
@@ -985,6 +1012,7 @@ def _gen_silver_models(
                 graph, cls_uri, namespace, mappings, platform=platform,
                 source_refs=source_refs, systems=systems,
                 table_column_uris=first_tbl_col_uris, include_sk_iri=False,
+                mapping_ns=mapping_ns,
             )
 
             # FK joins in union model (applied on normalised column names)
@@ -1032,6 +1060,7 @@ def _gen_silver_models(
         columns = _extract_silver_columns(
             graph, cls_uri, namespace, mappings, platform=platform,
             source_refs=source_refs, systems=systems,
+            mapping_ns=mapping_ns,
         )
 
         # Extract FK columns from object properties (cross-domain joins)
@@ -1229,6 +1258,7 @@ def _resolve_mapped_columns(
     bronze_col_lookup: dict[str, dict],
     enum_lookup: dict[str, list[dict]],
     table_column_uris: set[str] | None = None,
+    mapping_ns: dict[str, str] | None = None,
 ) -> list[dict]:
     """Resolve data columns from source mappings for a silver model.
 
@@ -1313,11 +1343,14 @@ def _resolve_mapped_columns(
                     # Only include columns that have a real bronze mapping.
                     continue
 
-            # Build lineage comment: domain_prefix:prop → source_prefix:col
-            lineage_parts = [_prefixed_iri(str(prop))]
-            if mapped_col_uri:
-                lineage_parts.append(f"→ {_prefixed_iri(mapped_col_uri)}")
-            lineage_comment = " ".join(lineage_parts)
+            # Build lineage comment: source skos:{matchType} target (mirrors SKOS triple)
+            if mapped_col_uri and matched_col_map:
+                match_type = matched_col_map.get("match_type", "exactMatch")
+                source_qname = _resolve_qname(mapped_col_uri, mapping_ns)
+                target_qname = _resolve_qname(str(prop), mapping_ns)
+                lineage_comment = f"{source_qname} skos:{match_type} {target_qname}"
+            else:
+                lineage_comment = _resolve_qname(str(prop), mapping_ns)
 
             columns.append({
                 "expression": expr,
@@ -1347,6 +1380,7 @@ def _extract_silver_columns(
     systems: list[dict] | None = None,
     table_column_uris: set[str] | None = None,
     include_sk_iri: bool = True,
+    mapping_ns: dict[str, str] | None = None,
 ) -> list[dict]:
     """Extract silver-layer columns for a class from the ontology graph.
 
@@ -1400,6 +1434,7 @@ def _extract_silver_columns(
         _resolve_mapped_columns(
             graph, class_uri, mappings, platform,
             bronze_col_lookup, enum_lookup, table_column_uris,
+            mapping_ns=mapping_ns,
         )
     )
 
@@ -2761,7 +2796,7 @@ def generate_dbt_artifacts(
     systems = _parse_bronze(sources_dir or bronze_dir)
 
     # Parse SKOS mappings
-    mappings = _parse_skos_mappings(mappings_dir)
+    mappings, mapping_ns = _parse_skos_mappings(mappings_dir)
 
     if not systems:
         logger.info("No source systems found — generating silver models only")
@@ -2775,6 +2810,7 @@ def generate_dbt_artifacts(
     silver, silver_warnings, silver_entity_meta = _gen_silver_models(
         classes, graph, namespace, systems, mappings, env, meta, onto_name,
         platform=target_platform,
+        mapping_ns=mapping_ns,
     )
     artifacts.update(silver)
     logger.info("Generated %d silver model(s)", len(silver))

@@ -258,7 +258,7 @@ class TestBronzeParsing:
 
 class TestSkosMapping:
     def test_parse_skos_table_maps(self, mappings_dir):
-        maps = _parse_skos_mappings(mappings_dir)
+        maps, _ = _parse_skos_mappings(mappings_dir)
         table_maps = maps["table_maps"]
         assert len(table_maps) == 1
         key = "https://example.com/bronze/adminpulse#tblClient"
@@ -267,7 +267,7 @@ class TestSkosMapping:
         assert table_maps[key][0]["target_uri"] == "http://kairos.example/ontology/Client"
 
     def test_parse_skos_column_maps(self, mappings_dir):
-        maps = _parse_skos_mappings(mappings_dir)
+        maps, _ = _parse_skos_mappings(mappings_dir)
         col_maps = maps["column_maps"]
         assert len(col_maps) == 2
 
@@ -284,7 +284,7 @@ class TestSkosMapping:
     def test_parse_skos_empty_dir(self, tmp_path):
         empty = tmp_path / "empty_map"
         empty.mkdir()
-        result = _parse_skos_mappings(empty)
+        result, _ = _parse_skos_mappings(empty)
         assert result == {"table_maps": {}, "column_maps": {}}
 
     def test_parse_skos_subdirectory(self, tmp_path):
@@ -293,7 +293,7 @@ class TestSkosMapping:
         sub = d / "adminpulse"
         sub.mkdir(parents=True)
         (sub / "adminpulse-to-client.ttl").write_text(SKOS_MAPPING_TTL, encoding="utf-8")
-        maps = _parse_skos_mappings(d)
+        maps, _ = _parse_skos_mappings(d)
         assert len(maps["table_maps"]) == 1
         assert len(maps["column_maps"]) == 2
 
@@ -316,7 +316,7 @@ class TestSkosMapping:
         d = tmp_path / "mappings"
         d.mkdir()
         (d / "contacts-split.ttl").write_text(split_ttl, encoding="utf-8")
-        maps = _parse_skos_mappings(d)
+        maps, _ = _parse_skos_mappings(d)
         # One key (the bronze table URI), but TWO entries in the list
         key = "https://example.com/bronze/adminpulse#tblContacts"
         assert key in maps["table_maps"]
@@ -344,7 +344,7 @@ class TestSkosMapping:
         d = tmp_path / "mappings"
         d.mkdir()
         (d / "default-val.ttl").write_text(default_ttl, encoding="utf-8")
-        maps = _parse_skos_mappings(d)
+        maps, _ = _parse_skos_mappings(d)
         col = maps["column_maps"]["https://example.com/bronze/adminpulse#tblClient_Email"][0]
         assert col["default_value"] == "'unknown@example.com'"
         assert col["transform"] == "source.Email"
@@ -369,7 +369,7 @@ class TestSkosMapping:
         d = tmp_path / "mappings"
         d.mkdir()
         (d / "multi-target.ttl").write_text(multi_ttl, encoding="utf-8")
-        maps = _parse_skos_mappings(d)
+        maps, _ = _parse_skos_mappings(d)
         col_key = "https://example.com/bronze/adminpulse#tblClient_Name"
         assert col_key in maps["column_maps"]
         targets = maps["column_maps"][col_key]
