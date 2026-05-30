@@ -5,6 +5,30 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] — 2026-05-30
+
+### Added
+- **Extension vocabulary coverage guard** — `tests/test_ext_vocabulary_coverage.py`
+  fails if any `kairos-ext` annotation consumed by a projector is undeclared in
+  `kairos-ext.ttl`, keeping the vocabulary the single source of truth (DD-034).
+- **`docs/design/extension-explanation.md`** — hub-author reference for the full
+  `kairos-ext:` vocabulary (per-layer annotations, naming conventions, FK-child
+  identity guidance, RESERVED list).
+- **Context-aware `naturalKey` warning** — the dbt projector now detects FK-child
+  entities (targeted by `silverForeignKeyOn`) and names the parent + explains the
+  weak-entity / source-identity / embedded options (CR-3 Option 4).
+
+### Changed
+- **Declared previously-undeclared gold annotations** in `kairos-ext.ttl`:
+  `perspective`, `generateTimeIntelligence`, `olsRestricted` (plus RESERVED
+  `incrementalColumn`); marked `surrogateKeyStrategy` and `rolePlayingAs` RESERVED;
+  fixed the stale "Silver Layer" header and documented the layer-prefix convention.
+- **Standardized** `KAIROS_EXT.term("x")` → `KAIROS_EXT.x` within the dbt projector.
+
+### Decisions
+- **DD-034** — extension vocabulary is the single source of truth; `identityStrategy`
+  (CR-3) deferred in favour of improved warnings.
+
 ## [2.36.0] — 2026-05-26
 
 ### Added
