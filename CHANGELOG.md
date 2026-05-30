@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **DD-034** — extension vocabulary is the single source of truth; `identityStrategy`
   (CR-3) deferred in favour of improved warnings.
 
+### Fixed
+- **CI lockfile drift** — raised the `ruff` floor to `>=0.5.0` and regenerated
+  `poetry.lock` (ruff `0.1.15` → `0.15.15`). The previously locked ruff `0.1.15`
+  was too old for `pytest-ruff 0.5`, which passes `--output-format=full`, breaking
+  the `test` job for all files regardless of code changes.
+
 ## [2.36.0] — 2026-05-26
 
 ### Added
