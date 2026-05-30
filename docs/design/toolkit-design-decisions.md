@@ -38,6 +38,13 @@ Kairos Ontology Toolkit. Each decision is recorded as an Architecture Decision R
 | [DD-023](#dd-023-shared-extension-defaults-for-reference-models) | Shared Extension Defaults for Reference Models | Proposed | 2026-05-19 |
 | [DD-024](#dd-024-hash-tolerant-catalog-resolution) | Hash-Tolerant Catalog Resolution | Accepted | 2026-05-26 |
 | [DD-025](#dd-025-scd-type-aware-dbt-silver-models) | SCD Type-Aware dbt Silver Models | Proposed | 2026-05-26 |
+| [DD-026](#dd-026-silver-layer-accuracy--mapped-only-columns-fk-parity-and-scd2-history-preservation) | Silver Layer Accuracy — Mapped-Only Columns, FK Parity, and SCD2 History Preservation | Accepted | 2026-05-27 |
+| [DD-027](#dd-027-cross-domain-peer-extension-loading-for-fk-resolution) | Cross-Domain Peer Extension Loading for FK Resolution | Accepted | 2026-05-27 |
+| [DD-028](#dd-028-multi-table-same-source-union-model-disambiguation) | Multi-Table Same-Source Union Model Disambiguation | Accepted | 2026-05-27 |
+| [DD-029](#dd-029-silver-model-registry-for-gold-ref-resolution) | Silver Model Registry for Gold ref() Resolution | Accepted | 2026-05-28 |
+| [DD-030](#dd-030-rewriteuri-catalog-resolution-with-extension-fallback) | rewriteURI Catalog Resolution with Extension Fallback | Accepted | 2026-05-29 |
+| [DD-031](#dd-031-inherit-naturalkey-from-discriminator-parents) | Inherit naturalKey from Discriminator Parents | Accepted | 2026-05-29 |
+| [DD-032](#dd-032-tier-15--local-pattern-adoption-from-reference-models) | Tier 1.5 — Local Pattern Adoption from Reference Models | Accepted | 2026-05-30 |
 
 ---
 
@@ -1520,6 +1527,149 @@ the raw camelCase literal (used by `_get_nk_property_uris` for property URI reso
 - Existing hubs with explicit subtype annotations continue to work (direct wins)
 - FK resolution to discriminator subtypes now correctly generates join conditions
 - The silver projector is unaffected (it skips subtypes entirely and projects only the parent)
+
+---
+
+## DD-032: Tier 1.5 — Local Pattern Adoption from Reference Models
+
+**Status:** Accepted  
+**Date:** 2026-05-30  
+**Affects:** modeling workflow, skill guidance, scaffold, alignment file conventions  
+**Implementation:** No code changes required — Tier 1.5 classes are regular local classes already supported by all projectors. Guidance lives in skills and `docs/design/tier-1-5-reference-model-alignment.md`.
+
+### Context
+
+Kairos hubs face a tension when working with industry reference models (FIBO, HL7 FHIR,
+GS1, Schema.org):
+
+- **Tier 1** (`owl:imports` + `rdfs:subClassOf`): Full structural coupling. Works well for
+  small, projection-compatible reference models (Kairos reference model repos like BSP, TIC).
+  Fails for large, axiom-heavy models (FIBO imports 1000+ classes; DD-021 whitelisting and
+  DD-023 shared defaults exist specifically to manage this complexity).
+
+- **Tier 2** (separate SKOS alignment file, no structural adoption): Zero runtime cost,
+  clean projections, but the alignment is *documentation only* — it never influences the
+  silver schema. The alignment file says "we're like FIBO" but the silver tables don't
+  benefit from FIBO's structural patterns (Identifier, PartyInRole, Classification).
+
+**The gap:** There is no supported pattern for adopting the *structural intent* and
+*semantic patterns* of a reference model while keeping a fully local, projection-optimized
+ontology.
+
+### Decision
+
+Introduce **Tier 1.5** as the standard approach for reference model alignment when
+Tier 1 (full import) is impractical. **Retire Tier 2 as a separate concept** — it is
+subsumed as the minimum case of Tier 1.5 (alignment file present, zero patterns adopted).
+
+**Tier 1.5 definition:**
+
+> Mirror reference model structural patterns as local classes (own namespace), with a
+> formal SKOS alignment file declaring correspondence to the source vocabulary. No
+> `owl:imports` at runtime.
+
+**The simplified tier model (2 tiers, not 3):**
+
+| Tier | When | What |
+|------|------|------|
+| **Tier 1** | Small, projection-compatible ref model (Kairos repos) | `owl:imports` + DD-021/DD-023 |
+| **Tier 1.5** | Large/complex ref model OR alignment-only documentation | Local patterns + SKOS alignment file |
+
+**Core principles:**
+
+1. **Local ownership** — All classes and properties are in the hub's own namespace.
+   No `owl:imports` of external ontologies at runtime.
+2. **Selective pattern adoption** — Cherry-pick only patterns that provide business
+   value. Zero adoption (alignment file only) is valid.
+3. **Projection-first gate** — Only adopt a pattern as a local class when it produces
+   a **structurally different silver schema** (new table or new relationship).
+4. **Formal alignment** — A `model/alignments/{domain}-{refmodel}-alignment.ttl` file
+   declares SKOS match predicates for machine-readable interoperability.
+5. **Alignment file is never loaded by projectors** — It is documentation for
+   semantic interoperability, not a runtime input.
+
+**Silver structural difference criterion** (the key decision gate):
+
+| Question | Answer | Action |
+|----------|--------|--------|
+| Does adopting this pattern create a new silver table? | Yes | Adopt as Tier 1.5 class ✅ |
+| Does it create a new FK relationship? | Yes | Adopt as Tier 1.5 class ✅ |
+| Does it inline to the same flat columns (S4, embedded)? | Yes | Optional — ontology clarity only ⚠️ |
+| Does it have no projection target at all? | Yes | Do NOT adopt ❌ |
+
+**Practical examples:**
+
+| Pattern | Silver impact | Adopt? |
+|---------|--------------|--------|
+| `Identifier` (replaces 6 flat string properties) | New `identifier` table with scheme + validity | ✅ Yes |
+| `PartyInRole` (role hierarchy) | New `party_in_role` table with discriminator | ✅ Yes |
+| `LegalFormClassifier` (replaces flat `legalForm`) | Inlined via S4 — same `legal_form` column | ⚠️ Optional |
+| `QuantityValue` (value + unit) | Inlined as two columns on parent | ⚠️ Optional |
+| `DatePeriod` (temporal qualification) | Handled by SCD2 — no separate table | ❌ Skip |
+
+### Rationale
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Tier 1 for everything | Full OWL reasoning | FIBO imports 1000+ classes; DD-021 noise; slow |
+| Tier 2 only (retired) | Zero cost | Zero structural benefit; silver schema doesn't improve |
+| **Tier 1.5 (this)** | Selective structural benefit; clean projections; formal alignment | Requires judgment on which patterns to adopt |
+| Domain-local subclasses of imported classes | OWL-correct | Property inheritance issues; namespace confusion |
+
+**Industry best practices supporting this decision:**
+
+| Pattern | Source | How it maps |
+|---------|--------|-------------|
+| FHIR Profiling | HL7 | Constrain/extend base spec without forking = adopt pattern, own namespace |
+| DDD Anti-Corruption Layer | Evans | Alignment file = ACL at domain boundary |
+| SSN/SOSA Modularization (MOMo) | W3C | Lightweight core + optional alignment modules |
+| Canonical Data Model | EIP (Hohpe & Woolf) | Hub ontology = CDM; SKOS mappings = translators |
+| "Conformance = what you use" | W3C DCAT v2 | Align to patterns you USE, not everything in ref model |
+| Domain ownership | Data Mesh (Dehghani) | Hub domain owns its silver schema; aligns formally but doesn't couple |
+
+**Why retire Tier 2 as a separate concept:**
+
+1. Tier 1.5 with zero patterns adopted IS Tier 2 (alignment file only).
+2. Keeping 3 tiers creates a false choice — "with structure or without?" is better answered
+   by the silver structural difference criterion on a per-pattern basis.
+3. Simplifies skill guidance and decision flowcharts.
+4. Skills no longer need to explain when Tier 2 is "enough" — the answer is always "use
+   Tier 1.5; adopt patterns that pass the silver structural difference test."
+
+### Consequences
+
+**Immediate (this PR):**
+- Tier 1.5 is the recommended approach for non-Kairos reference models
+- Tier 2 terminology is retired from documentation and skills
+- See `docs/design/tier-1-5-reference-model-alignment.md` for full specification
+
+**Future work (separate PRs):**
+
+| Component | Update needed |
+|-----------|---------------|
+| `kairos-ontology-modeling` skill | Add Tier 1.5 to reference-model workflow |
+| `kairos-ontology-hub-setup` skill | Add `model/alignments/` to scaffold guidance |
+| `kairos-ontology-hub-status` skill | Detect alignment files, report coverage |
+| `kairos-ontology-projection` skill | Clarify alignment files are never loaded |
+| `kairos-ontology-medallion-silver` skill | Present Tier 1.5 as alternative to imports + whitelisting |
+| `kairos-ontology-medallion-gold` skill | Same |
+| `kairos-ontology-validation` skill | Optional: validate alignment file syntax |
+| `kairos-ontology-help` skill | Update conceptual overview with 2-tier model |
+| `kairos-ontology-mapping` skill | Document that Tier 1.5 patterns change mapping structure |
+| Scaffold (`src/kairos_ontology/scaffold/`) | Add `model/alignments/` directory + starter template |
+
+**No projector code changes required.** Tier 1.5 classes are regular local classes —
+the projector already handles them identically to any hub-defined class. The alignment
+file lives in `model/alignments/` and is never loaded during projection.
+
+**Relationship to DD-021/DD-023:**
+- DD-021 (extension-as-whitelist) applies to **Tier 1** only — when you `owl:imports` a
+  reference model, you whitelist which imported classes to project.
+- DD-023 (shared extension defaults) applies to **Tier 1** only — reference model repos
+  ship `*-silver-defaults.ttl` for imported classes.
+- DD-032 (this) applies when you do NOT import — you create local equivalents instead.
+- A hub may use Tier 1 for Kairos reference models AND Tier 1.5 for industry standards
+  simultaneously.
 
 ---
 

@@ -373,7 +373,7 @@ class TestBuildEntityView:
 # ── Tests: generate_mapping_report (integration) ──────────────────────
 
 class TestGenerateMappingReport:
-    def test_produces_html(self, sources_dir, mappings_dir, ontology_graph, template_dir):
+    def test_produces_html_and_markdown(self, sources_dir, mappings_dir, ontology_graph, template_dir):
         classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
         result = generate_mapping_report(
             ontology_classes=classes,
@@ -381,13 +381,17 @@ class TestGenerateMappingReport:
             mappings_dir=mappings_dir,
             template_dir=template_dir,
         )
-        assert len(result) == 1
-        fname = list(result.keys())[0]
-        assert fname.endswith("-mapping-report.html")
+        assert len(result) == 2
+        fnames = list(result.keys())
+        assert any(f.endswith("-mapping-report.html") for f in fnames)
+        assert any(f.endswith("-mapping-report.md") for f in fnames)
 
-        html = list(result.values())[0]
+        html = result[next(f for f in fnames if f.endswith(".html"))]
         assert "<!DOCTYPE html>" in html
         assert "ERP System" in html
+
+        md = result[next(f for f in fnames if f.endswith(".md"))]
+        assert "ERP System" in md
 
     def test_html_contains_coverage(self, sources_dir, mappings_dir, ontology_graph, template_dir):
         classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
@@ -397,7 +401,7 @@ class TestGenerateMappingReport:
             mappings_dir=mappings_dir,
             template_dir=template_dir,
         )
-        html = list(result.values())[0]
+        html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "67%" in html
 
     def test_html_contains_match_badges(
@@ -410,7 +414,7 @@ class TestGenerateMappingReport:
             mappings_dir=mappings_dir,
             template_dir=template_dir,
         )
-        html = list(result.values())[0]
+        html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "Exact" in html
         assert "Close" in html
         assert "Unmapped" in html
@@ -434,7 +438,7 @@ class TestGenerateMappingReport:
             mappings_dir=mappings_dir,
             template_dir=template_dir,
         )
-        html = list(result.values())[0]
+        html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "Action Items" in html
         assert "email" in html.lower()
 
@@ -449,8 +453,8 @@ class TestGenerateMappingReport:
             namespace="http://example.com/ontology#",
             graph=ontology_graph,
         )
-        assert len(result) == 1
-        html = list(result.values())[0]
+        assert len(result) == 2
+        html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "Customer" in html
 
     def test_html_contains_data_flow(
@@ -463,7 +467,7 @@ class TestGenerateMappingReport:
             mappings_dir=mappings_dir,
             template_dir=template_dir,
         )
-        html = list(result.values())[0]
+        html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "Data Flow Overview" in html
         assert "Bronze Layer" in html
         assert "Silver Layer" in html
@@ -478,7 +482,7 @@ class TestGenerateMappingReport:
             mappings_dir=mappings_dir,
             template_dir=template_dir,
         )
-        html = list(result.values())[0]
+        html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "Domain Entity Details" in html
 
     def test_html_contains_transform(
@@ -491,7 +495,7 @@ class TestGenerateMappingReport:
             mappings_dir=mappings_dir,
             template_dir=template_dir,
         )
-        html = list(result.values())[0]
+        html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "CAST(source.customer_id AS STRING)" in html
         assert "TRIM(source.name)" in html
 
@@ -505,5 +509,5 @@ class TestGenerateMappingReport:
             mappings_dir=mappings_dir,
             template_dir=template_dir,
         )
-        html = list(result.values())[0]
+        html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "Match Type Distribution" in html
