@@ -1454,3 +1454,55 @@ class TestDbtValidation:
                     f"Jinja syntax error in {path} line {exc.lineno}: {exc.message}"
                 )
 
+
+class TestGoldSharedDimDate:
+    """dim_date is a conformed dimension — emitted once to shared folder."""
+
+    def test_dim_date_in_shared_folder(self, client_dbt_artifacts):
+        """dim_date.sql lives in models/gold/shared/, not per-domain."""
+        shared_path = "models/gold/shared/dim_date.sql"
+        assert shared_path in client_dbt_artifacts, (
+            f"Expected dim_date at '{shared_path}', got keys: "
+            + str([k for k in client_dbt_artifacts if "dim_date" in k])
+        )
+
+    def test_dim_date_not_in_domain_folder(self, client_dbt_artifacts):
+        """dim_date must NOT appear in the per-domain gold folder."""
+        domain_path = "models/gold/client/dim_date.sql"
+        assert domain_path not in client_dbt_artifacts, (
+            f"dim_date should not be at '{domain_path}' — must be in shared/"
+        )
+
+    def test_shared_schema_yaml_exists(self, client_dbt_artifacts):
+        """Shared gold schema YAML contains dim_date entry."""
+        shared_schema = "models/gold/shared/_shared__gold_models.yml"
+        assert shared_schema in client_dbt_artifacts, (
+            f"Expected shared schema at '{shared_schema}'"
+        )
+        content = client_dbt_artifacts[shared_schema]
+        assert "dim_date" in content
+
+    def test_no_duplicate_model_names(self, client_dbt_artifacts):
+        """No two SQL artifacts resolve to the same dbt model name."""
+        from collections import Counter
+
+        names = [
+            path.rsplit("/", 1)[-1].removesuffix(".sql")
+            for path in client_dbt_artifacts
+            if path.endswith(".sql")
+        ]
+        dupes = [n for n, c in Counter(names).items() if c > 1]
+        assert not dupes, f"Duplicate dbt model names: {dupes}"
+
+    def test_dim_date_not_in_domain_schema(self, client_dbt_artifacts):
+        """Per-domain gold schema YAML must not contain dim_date."""
+        domain_schema = next(
+            (k for k in client_dbt_artifacts if "_client__gold_models.yml" in k),
+            None,
+        )
+        if domain_schema:
+            content = client_dbt_artifacts[domain_schema]
+            assert "dim_date" not in content, (
+                "dim_date should not appear in per-domain gold schema YAML"
+            )
+

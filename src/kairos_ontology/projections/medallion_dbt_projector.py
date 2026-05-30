@@ -2463,7 +2463,7 @@ def _gen_gold_models(
                 incremental_column="",
                 unique_key="",
             )
-            path = f"models/gold/{ontology_name}/{tbl.name}.sql"
+            path = f"models/gold/shared/{tbl.name}.sql"
             artifacts[path] = content
             continue
 
@@ -2635,6 +2635,7 @@ def _gen_gold_schema_yaml(
     template = env.get_template("gold_schema.yml.jinja2")
 
     models_data = []
+    shared_models_data = []
     for tbl in gold_tables:
         # Skip tables that have no corresponding SQL model
         # (junction bridges have no source_class_uri)
@@ -2664,7 +2665,7 @@ def _gen_gold_schema_yaml(
                 "tests": tests,
             })
 
-        models_data.append({
+        model_entry = {
             "name": tbl.name,
             "description": tbl.source_class_label or tbl.name,
             "table_type": tbl.table_type,
@@ -2672,12 +2673,22 @@ def _gen_gold_schema_yaml(
             "ontology_iri": meta.get("iri", ""),
             "ontology_version": meta.get("version", ""),
             "columns": cols,
-        })
+        }
+
+        # Conformed dimensions go to shared schema
+        if tbl.name == "dim_date":
+            shared_models_data.append(model_entry)
+        else:
+            models_data.append(model_entry)
 
     if models_data:
         content = template.render(models=models_data)
         path = f"models/gold/{ontology_name}/_{ontology_name}__gold_models.yml"
         artifacts[path] = content
+
+    if shared_models_data:
+        content = template.render(models=shared_models_data)
+        artifacts["models/gold/shared/_shared__gold_models.yml"] = content
 
     return artifacts
 
@@ -2816,9 +2827,13 @@ def generate_dbt_artifacts(
 
         # Extract generated gold model names for schema YAML filtering
         gold_prefix = f"models/gold/{onto_name}/"
+        shared_prefix = "models/gold/shared/"
         generated_gold_names = {
             p.removeprefix(gold_prefix).removesuffix(".sql")
             for p in gold if p.startswith(gold_prefix) and p.endswith(".sql")
+        } | {
+            p.removeprefix(shared_prefix).removesuffix(".sql")
+            for p in gold if p.startswith(shared_prefix) and p.endswith(".sql")
         }
 
         # 6. Gold schema YAML with tests
