@@ -155,6 +155,46 @@ Use this table to pick the correct skill for a user's intent:
 | "Map source columns to domain / create SKOS mappings" | **kairos-ontology-mapping** |
 | "Status / progress / what's missing / where are we" | **kairos-ontology-hub-status** |
 
+### Skill-first enforcement (MANDATORY)
+
+**NEVER run `kairos-ontology` CLI commands directly** when the action is covered by
+a skill in the routing table above. Always invoke the corresponding skill instead.
+
+Why: Skills contain pre-flight checks (file existence, annotation completeness),
+interactive validation gates, and contextual guidance that raw CLI commands bypass.
+Running CLI directly can produce incomplete or incorrect output without warning.
+
+**Prohibited patterns:**
+- ❌ `python -m kairos_ontology project --target silver` → use **kairos-ontology-projection** skill
+- ❌ `python -m kairos_ontology project --target dbt` → use **kairos-ontology-projection** skill
+- ❌ `python -m kairos_ontology project --target powerbi` → use **kairos-ontology-projection** skill
+- ❌ `python -m kairos_ontology validate` → use **kairos-ontology-validation** skill
+- ❌ `python -m kairos_ontology new-repo` → use **kairos-ontology-quickstart** skill
+- ❌ Directly editing `.ttl` files without invoking the modeling/mapping skill
+
+**Only exception:** The `import-tmdl` command has no corresponding skill and may be
+run directly via CLI.
+
+**If you are unsure which skill to use**, invoke **kairos-ontology-help** for guidance.
+
+### No-autopilot for design skills (MANDATORY)
+
+The following skills are **interactive by design** — they require explicit user
+confirmation at multiple checkpoints (naming alignment, mapping confirmation,
+annotation review). They MUST NEVER be run in autopilot or autopilot-fleet mode:
+
+| Skill | Reason |
+|-------|--------|
+| **kairos-ontology-modeling** | Hard gates require user naming confirmation before TTL generation |
+| **kairos-ontology-mapping** | Every table→entity and column→property mapping needs explicit user approval |
+| **kairos-ontology-medallion-silver** | Extension annotations (SCD types, natural keys, FK) need design review |
+| **kairos-ontology-medallion-gold** | Gold measure definitions and star-schema design need stakeholder sign-off |
+| **kairos-ontology-medallion-source** | Source vocabulary descriptions need verification against source docs |
+
+When these skills are invoked, always use **interactive mode** — present proposals,
+wait for user confirmation, and proceed step-by-step. Never batch or auto-approve
+design decisions.
+
 ## Validation rules
 
 - Always validate syntax before applying changes.
