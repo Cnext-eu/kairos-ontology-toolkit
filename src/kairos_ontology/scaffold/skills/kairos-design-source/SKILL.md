@@ -195,7 +195,7 @@ After the bronze vocabulary is complete:
    map source columns to domain ontology properties in `model/mappings/`
 2. **Design silver annotations** — invoke the **kairos-design-silver** skill
    to create extension annotations for the silver layer
-3. **Generate output** — invoke the **kairos-project** skill to produce
+3. **Generate output** — invoke the **kairos-execute-project** skill to produce
    dbt models, silver DDL, and ERDs
 
 See the **kairos-design-silver** skill for annotation design guidance.
@@ -225,4 +225,4 @@ ontology-hub/integration/sources/{system-name}/
 | Design silver layer (DDL, SCD, FK annotations) | **kairos-design-silver** |
 | Design gold layer (Power BI star schema, measures) | **kairos-design-gold** |
 | Map source columns to domain properties | **kairos-design-mapping** |
-| Run projections after source vocab is complete | **kairos-project** |
+| Run projections after source vocab is complete | **kairos-execute-project** |

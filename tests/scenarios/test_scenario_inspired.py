@@ -10,14 +10,13 @@ These tests verify that:
 """
 
 import pytest
-from pathlib import Path
-from rdflib import Graph, Namespace, RDF, RDFS, OWL
+from rdflib import Graph, Namespace, RDF, OWL
 
 from kairos_ontology.projections.medallion_silver_projector import (
     generate_silver_artifacts,
 )
 
-from .conftest import EXTENSIONS_DIR, SHAPES_DIR, ALIGNMENTS_DIR, ONTOLOGIES_DIR
+from .conftest import EXTENSIONS_DIR, SHAPES_DIR, ALIGNMENTS_DIR
 
 
 # ---------------------------------------------------------------------------

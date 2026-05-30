@@ -594,7 +594,7 @@ def generate_silver_artifacts(
     # ----------------------------------------------------------------
     ddl_lines = prov_sql + [
         "",
-        f"-- Schema",
+        "-- Schema",
         f"CREATE SCHEMA IF NOT EXISTS {schema_name};",
         "",
     ]
@@ -618,8 +618,8 @@ def generate_silver_artifacts(
     # ----------------------------------------------------------------
     alter_lines = [
         f"-- Silver layer constraints (documentation only — S2): {schema_name}",
-        f"-- Fabric Warehouse cannot enforce PK/FK/UNIQUE constraints.",
-        f"-- These are provided as reference for data engineers.",
+        "-- Fabric Warehouse cannot enforce PK/FK/UNIQUE constraints.",
+        "-- These are provided as reference for data engineers.",
         f"-- Domain: {ontology_name}",
     ]
     if meta.get("iri"):

@@ -1253,11 +1253,11 @@ class TestDD021ImportWhitelisting:
                     rdfs:label "Peer Class"@en ; rdfs:comment "."@en .
             """)
         if with_silver_include:
-            ttl += textwrap.dedent(f"""\
+            ttl += textwrap.dedent("""\
                 ref:TradeParty kairos-ext:silverInclude true .
             """)
         if with_bulk:
-            ttl += textwrap.dedent(f"""\
+            ttl += textwrap.dedent("""\
                 <http://hub.example.com/ont/mydom> kairos-ext:silverIncludeImports true .
             """)
         g = Graph()
@@ -1441,7 +1441,7 @@ class TestDiscoverRefModelDefaults:
         catalog.write_text(
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
-            f'  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
+            '  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
             '</catalog>\n',
             encoding="utf-8",
         )
@@ -1482,7 +1482,7 @@ class TestDiscoverRefModelDefaults:
         catalog.write_text(
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
-            f'  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
+            '  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
             '</catalog>\n',
             encoding="utf-8",
         )
@@ -1543,7 +1543,7 @@ class TestDiscoverRefModelDefaults:
         catalog.write_text(
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
-            f'  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
+            '  <uri name="https://bsp.2024.org/party" uri="bsp-party.ttl"/>\n'
             '</catalog>\n',
             encoding="utf-8",
         )
@@ -1559,7 +1559,7 @@ class TestMergeExtGraphWithFallbacks:
     def test_fallback_triples_added_when_no_domain_ext(self):
         """Fallback triples are added when ext_path is None."""
         from kairos_ontology.projections.shared import merge_ext_graph
-        from rdflib import Graph, URIRef, Literal, Namespace
+        from rdflib import Graph, URIRef, Namespace
 
         KAIROS_EXT = Namespace("https://kairos.community/ns/ext#")
         base = Graph()

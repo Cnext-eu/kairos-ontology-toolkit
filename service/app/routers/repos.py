@@ -5,7 +5,7 @@
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header
 
 from ..config import get_github_service, settings
 

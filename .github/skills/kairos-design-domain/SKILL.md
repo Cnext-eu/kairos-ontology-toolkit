@@ -130,8 +130,8 @@ Use this quick-reference to determine which section applies:
 | "Here's a TMDL / PBIP file" | [TMDL Analysis](#tmdl-analysis-legacy-bi-input) (then return to modeling) |
 | "Align with industry standard" | [Standard model alignment](#standard-model-alignment) |
 | "What annotations do I need?" | **Delegate:** invoke `kairos-design-silver` or `kairos-design-gold` skill |
-| "Generate dbt / silver DDL / projection" | **Delegate:** invoke `kairos-project` skill |
-| "Validate my ontology" | **Delegate:** invoke `kairos-validate` skill |
+| "Generate dbt / silver DDL / projection" | **Delegate:** invoke `kairos-execute-project` skill |
+| "Validate my ontology" | **Delegate:** invoke `kairos-execute-validate` skill |
 | "Map source columns to domain" | **Delegate:** invoke `kairos-design-mapping` skill |
 
 > **Default path:** For any new modeling work, always start at
@@ -1569,7 +1569,7 @@ report. Save to `ontology-hub/.sessions-modeling/modeling-{domain}-FINAL-{YYYY-M
 |---|---|
 | Silver/gold extension annotations (full reference tables) | **kairos-design-silver** / **kairos-design-gold** |
 | Source-to-domain column mapping | **kairos-design-mapping** |
-| Run projections (dbt, silver DDL, Power BI) | **kairos-project** |
-| Validate ontology syntax + SHACL | **kairos-validate** |
+| Run projections (dbt, silver DDL, Power BI) | **kairos-execute-project** |
+| Validate ontology syntax + SHACL | **kairos-execute-validate** |
 | Create bronze vocabulary from source docs | **kairos-design-source** |
-| Hub status / what's missing | **kairos-hub-status** |
+| Hub status / what's missing | **kairos-diagnose-status** |

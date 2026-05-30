@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from rdflib import Graph, Namespace, URIRef
+from rdflib import Graph, URIRef
 from rdflib.namespace import RDFS
 
 from kairos_ontology.projections.medallion_dbt_projector import (

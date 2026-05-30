@@ -19,7 +19,7 @@ from typing import Literal
 
 import yaml
 
-from .tmdl_parser import TmdlModel, TmdlTable, parse_model_folder, parse_tmdl_content
+from .tmdl_parser import TmdlModel, parse_model_folder, parse_tmdl_content
 
 logger = logging.getLogger(__name__)
 

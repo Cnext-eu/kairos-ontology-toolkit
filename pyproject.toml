@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "kairos-ontology-toolkit"
-version = "3.0.0"
+version = "3.1.0"
 description = "Validation and projection tools for OWL/Turtle ontologies in the Kairos platform"
 authors = ["Cnext <info@cnext.eu>"]
 license = "Apache-2.0"
@@ -32,7 +32,8 @@ click = "^8.1.7"
 pytest = ">=8.0.0,<9.0.0"
 pytest-cov = "^4.1.0"
 black = "^24.1.0"
-ruff = "^0.1.11"
+ruff = ">=0.1.11"
+pytest-ruff = ">=0.4.0"
 pytest-asyncio = ">=0.23,<1.0"
 poetry = "^2.3.4"
 
@@ -63,9 +64,14 @@ target-version = ['py312']
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.lint]
+select = ["F", "E4", "E7"]
+per-file-ignores = {"tests/*" = ["E741", "E402", "F841"]}
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "--ruff"
 filterwarnings = [
     # Ignore deprecation warnings from rdflib's SPARQL parser using old pyparsing API
     # This is a known issue in rdflib 7.5.0 with pyparsing 3.3.1

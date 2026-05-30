@@ -330,7 +330,7 @@ The ontology-hub repo (scaffolded by the toolkit) includes these skills in `.git
 | `kairos-ontology-validation` | Validating syntax + SHACL after changes |
 | `kairos-medallion-silver` | Understanding silver-ext annotation requirements |
 | `kairos-medallion-gold` | Understanding gold-ext annotation requirements |
-| `kairos-projection-generation` | Running projections to verify output |
+| `kairos-execute-projection-generation` | Running projections to verify output |
 | `kairos-medallion-staging` | Creating/updating bronze vocabulary descriptions |
 
 #### Agent Behaviour Expectations

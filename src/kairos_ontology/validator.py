@@ -5,7 +5,7 @@
 import logging
 from pathlib import Path
 from typing import Optional
-from rdflib import Graph, Namespace, URIRef
+from rdflib import Graph, Namespace
 from rdflib.namespace import OWL, RDF, RDFS
 from pyshacl import validate as shacl_validate
 import json

@@ -3,11 +3,9 @@
 """Tests for the silver layer projector (R1-R16 annotations + S1-S8 Fabric rules)."""
 
 import textwrap
-from pathlib import Path
 
 import pytest
-from rdflib import Graph, Literal, Namespace, URIRef
-from rdflib.namespace import OWL, RDF, RDFS, XSD
+from rdflib import Graph, Namespace
 
 from kairos_ontology.projections.medallion_silver_projector import (
     ColumnDef,

@@ -47,10 +47,10 @@ src/kairos_ontology/
 │   │   ├── shapes/README.md
 │   │   └── mappings/README.md
 │   └── skills/                          # Skills installed into hub repos
-│       ├── kairos-hub-setup/SKILL.md
+│       ├── kairos-setup-config/SKILL.md
 │       ├── kairos-design-domain/SKILL.md
-│       ├── kairos-validate/SKILL.md
-│       ├── kairos-project/SKILL.md
+│       ├── kairos-execute-validate/SKILL.md
+│       ├── kairos-execute-project/SKILL.md
 │       ├── kairos-toolkit-ops/SKILL.md
 │       ├── SC-feature-branch/SKILL.md
 │       └── SC-merge-pr/SKILL.md
@@ -173,7 +173,7 @@ target-specific modules in `projections/` → renders Jinja2 templates from
 5. Add the output directory to the scaffold structure (in `init()` and
    `new_repo()`).
 6. Add tests in `tests/test_projector.py`.
-7. Update `kairos-project` skill (both copies).
+7. Update `kairos-execute-project` skill (both copies).
 
 ### Projection targets
 

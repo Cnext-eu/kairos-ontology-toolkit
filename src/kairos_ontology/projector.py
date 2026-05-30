@@ -251,8 +251,8 @@ class ProjectionReport:
         if domain_info:
             lines.append("## Domain")
             lines.append("")
-            lines.append(f"| Property | Value |")
-            lines.append(f"|----------|-------|")
+            lines.append("| Property | Value |")
+            lines.append("|----------|-------|")
             lines.append(f"| File | {domain_info.get('file', '—')} |")
             lines.append(f"| Triples | {domain_info.get('triples', '—')} |")
             lines.append(f"| Namespace | {domain_info.get('namespace', '—')} |")
@@ -810,7 +810,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 master_path = diagrams_dir / "master-erd.mmd"
                 master_path.write_text(master_mmd, encoding="utf-8")
                 total_files += 1
-                print(f"  ✓ Master ERD written: dbt/docs/diagrams/master-erd.mmd")
+                print("  ✓ Master ERD written: dbt/docs/diagrams/master-erd.mmd")
                 report.record_post_step("master_silver_erd", status="ok")
             else:
                 report.record_post_step("master_silver_erd", status="skipped",
@@ -845,7 +845,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 master_path = gold_output / "master-gold-erd.mmd"
                 master_path.write_text(master_mmd, encoding="utf-8")
                 total_files += 1
-                print(f"  ✓ Master Gold ERD written: powerbi/master-gold-erd.mmd")
+                print("  ✓ Master Gold ERD written: powerbi/master-gold-erd.mmd")
                 report.record_post_step("master_gold_erd", status="ok")
             else:
                 report.record_post_step("master_gold_erd", status="skipped",

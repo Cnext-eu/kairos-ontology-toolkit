@@ -640,8 +640,8 @@ def build_gold_tables(
                            "camel-to-snake")
     gen_date_dim = _bool_val(merged, onto_uri, KAIROS_EXT.generateDateDimension,
                              True)
-    gen_time_intel = _bool_val(merged, onto_uri,
-                               KAIROS_EXT.generateTimeIntelligence, False)
+    _gen_time_intel = _bool_val(merged, onto_uri,
+                                KAIROS_EXT.generateTimeIntelligence, False)
     default_inheritance = _str_val(merged, onto_uri,
                                    KAIROS_EXT.goldInheritanceStrategy,
                                    "class-per-table")
@@ -810,7 +810,7 @@ def generate_gold_artifacts(
     # ----------------------------------------------------------
     alter_lines = [
         f"-- Gold layer constraints (documentation only): {schema_name}",
-        f"-- Fabric Warehouse cannot enforce PK/FK constraints.",
+        "-- Fabric Warehouse cannot enforce PK/FK constraints.",
         f"-- Domain: {ontology_name}",
     ]
     if meta.get("iri"):
@@ -839,9 +839,9 @@ def generate_gold_artifacts(
             view_lines.append(f"-- Current-record view for {tbl.full_name}")
             view_lines.append(
                 f"CREATE OR REPLACE VIEW {tbl.schema}.{view_name} AS")
-            view_lines.append(f"SELECT *")
+            view_lines.append("SELECT *")
             view_lines.append(f"FROM {tbl.full_name}")
-            view_lines.append(f"WHERE is_current = 1;")
+            view_lines.append("WHERE is_current = 1;")
             view_lines.append("")
             has_views = True
 
@@ -966,7 +966,6 @@ def _add_gold_data_properties(
     comment_prefix: str = "",
 ) -> None:
     """Add OWL DatatypeProperty columns to the gold table."""
-    SH = Namespace("http://www.w3.org/ns/shacl#")
     existing = {c.name for c in tbl.columns}
 
     for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
@@ -1227,12 +1226,12 @@ def _render_tmdl_definition(schema: str, domain: str, meta: dict) -> str:
     lines.extend([
         "",
         "model Model",
-        f"\tculture: en-US",
-        f"\tdataAccessOptions",
-        f"\t\tlegacyRedirects",
-        f"\t\treturnErrorValuesAsNull",
+        "\tculture: en-US",
+        "\tdataAccessOptions",
+        "\t\tlegacyRedirects",
+        "\t\treturnErrorValuesAsNull",
         "",
-        f"\tannotation __PBI_TimeIntelligenceEnabled = 0",
+        "\tannotation __PBI_TimeIntelligenceEnabled = 0",
         "",
     ])
     return "\n".join(lines)
@@ -1254,12 +1253,12 @@ def _render_tmdl_table(tbl: GoldTableDef, schema: str) -> str:
         is_key = col.name == tbl.pk_column
         lines.append(f"\tcolumn {col.name}")
         lines.append(f"\t\tdataType: {col.tmdl_type}")
-        lines.append(f"\t\tformatString: 0")
+        lines.append("\t\tformatString: 0")
         lines.append(f"\t\tlineageTag: {_tmdl_guid(f'{tbl.name}.{col.name}')}")
         if is_key:
-            lines.append(f"\t\tisKey")
-            lines.append(f"\t\tisHidden")
-        lines.append(f"\t\tsummarizeBy: none")
+            lines.append("\t\tisKey")
+            lines.append("\t\tisHidden")
+        lines.append("\t\tsummarizeBy: none")
         lines.append(f"\t\tsourceColumn: {col.name}")
         if col.comment:
             safe_desc = col.comment.replace('"', '\\"')
@@ -1291,8 +1290,8 @@ def _render_tmdl_table(tbl: GoldTableDef, schema: str) -> str:
 
     # Partition (source query)
     lines.append(f"\tpartition {tbl.name} = m")
-    lines.append(f"\t\tmode: directLake")
-    lines.append(f"\t\tsource")
+    lines.append("\t\tmode: directLake")
+    lines.append("\t\tsource")
     lines.append(f'\t\t\tentityName: "{schema}.{tbl.name}"')
     lines.append(f'\t\t\tschemaName: "{schema}"')
     lines.append("")
@@ -1312,7 +1311,7 @@ def _render_tmdl_relationships(tables: list[GoldTableDef], schema: str) -> str:
             ref_tbl_name = ref_full.split(".")[-1]
             lines.append(
                 f"relationship {_tmdl_guid(f'rel.{tbl.name}.{col}.{rel_idx}')}")
-            lines.append(f"\tjoinOnDateBehavior: datePartOnly")
+            lines.append("\tjoinOnDateBehavior: datePartOnly")
             lines.append(
                 f"\tfromColumn: {tbl.name}.{col}")
             lines.append(
@@ -1337,11 +1336,11 @@ def _render_tmdl_rls_roles(tables: list[GoldTableDef], schema: str) -> str:
             has_roles = True
             role_name = f"Restrict_{tbl.name}"
             lines.append(f"role '{role_name}'")
-            lines.append(f"\tmodelPermission: read")
+            lines.append("\tmodelPermission: read")
             lines.append("")
             lines.append(f"\ttablePermission {tbl.name}")
             lines.append(
-                f'\t\tfilterExpression: [is_authorized] = TRUE()')
+                '\t\tfilterExpression: [is_authorized] = TRUE()')
             lines.append("")
 
     # OLS roles for columns marked with olsRestricted
@@ -1360,7 +1359,7 @@ def _render_tmdl_rls_roles(tables: list[GoldTableDef], schema: str) -> str:
         lines.append("")
         for tbl_name, col_name in ols_columns:
             lines.append(f"\tcolumnPermission {tbl_name}.{col_name}")
-            lines.append(f"\t\tmetadataPermission: none")
+            lines.append("\t\tmetadataPermission: none")
             lines.append("")
 
     return "\n".join(lines) if has_roles else ""
@@ -1435,7 +1434,7 @@ def _render_tmdl_calculation_group(schema: str, meta: dict) -> str:
         "\t\t\tVAR _py = CALCULATE(SELECTEDMEASURE(), "
         "SAMEPERIODLASTYEAR('dim_date'[full_date]))",
         "\t\t\tRETURN IF(NOT ISBLANK(_py), DIVIDE(_current - _py, _py))",
-        f"\t\t\tformatString: 0.0%",
+        "\t\t\tformatString: 0.0%",
         f"\t\t\tlineageTag: {_tmdl_guid(f'{schema}.ci.yoy')}",
         "",
     ])

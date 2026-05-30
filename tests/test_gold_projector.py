@@ -5,16 +5,12 @@
 import textwrap
 from pathlib import Path
 
-import pytest
 from rdflib import Graph, Literal, Namespace, URIRef
-from rdflib.namespace import OWL, RDF, RDFS, XSD
+from rdflib.namespace import XSD
 
 from kairos_ontology.projections.medallion_gold_projector import (
-    GoldColumnDef,
-    GoldTableDef,
     _camel_to_snake,
     _classify_tables,
-    _detect_ontology_uri,
     _generate_date_dimension,
     _mmd_type,
     _tmdl_guid,

@@ -197,6 +197,54 @@ def cli():
     pass
 
 
+_LIFECYCLE_TABLE = """\
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         ONTOLOGY HUB LIFECYCLE                          │
+├──────────┬──────────────────────────────────────────────────────────────┤
+│  PHASE   │  SKILLS                                                      │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Orient   │  kairos-help                                                  │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Setup    │  kairos-setup-init        (create new hub repo)               │
+│          │  kairos-setup-config      (folder structure + config)         │
+│          │  kairos-setup-migrate     (flat → grouped layout)            │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Design   │  kairos-design-source     (bronze vocabulary)                 │
+│          │  kairos-design-domain     (OWL ontology)                      │
+│          │  kairos-design-mapping    (SKOS source→domain)               │
+│          │  kairos-design-silver     (silver annotations)                │
+│          │  kairos-design-gold       (gold annotations)                  │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Execute  │  kairos-execute-project   (generate all projection targets)   │
+│          │  kairos-execute-validate  (syntax + SHACL check)              │
+│          │  kairos-execute-report    (HTML mapping reports)              │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Diagnose │  kairos-diagnose-status   (completeness check)                │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Package  │  kairos-package-dataplatform (dbt package in downstream repo) │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Toolkit  │  kairos-toolkit-dev       (modify the toolkit)                │
+│ (dev)    │  kairos-toolkit-ops       (release, upgrade, versioning)      │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Workflow │  SC-feature-branch        (create branch)                     │
+│ (git)    │  SC-merge-pr              (PR + merge)                        │
+│          │  SC-document              (Outline wiki)                       │
+└──────────┴──────────────────────────────────────────────────────────────┘"""
+
+
+@cli.command()
+def lifecycle():
+    """Display the ontology hub lifecycle phases and available Copilot skills."""
+    print()
+    print(f"  Kairos Ontology Toolkit v{_toolkit_version}")
+    print()
+    print(_LIFECYCLE_TABLE)
+    print()
+    print("  Tip: Invoke any skill by name in GitHub Copilot Chat.")
+    print("  Run 'kairos-ontology --help' for available CLI commands.")
+    print()
+
+
 # Catalog search order: hub-local catalog first, then shared reference-models.
 _CATALOG_CANDIDATES = [
     Path("ontology-hub/catalog-v001.xml"),
@@ -929,7 +977,7 @@ def migrate(check, hub_path):
     app_models = hub.parent / "application-models"
     if app_models.is_dir():
         if check:
-            print(f"  DELETE  application-models/  (ERDs now in output/medallion/dbt/docs/diagrams/)")
+            print("  DELETE  application-models/  (ERDs now in output/medallion/dbt/docs/diagrams/)")
         else:
             shutil.rmtree(app_models)
             print("  ✓ Removed application-models/")

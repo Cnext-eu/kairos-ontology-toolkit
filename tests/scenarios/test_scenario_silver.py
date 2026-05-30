@@ -7,7 +7,6 @@ that include cross-domain relationships and extension annotations.
 """
 
 import pytest
-from pathlib import Path
 
 from kairos_ontology.projections.medallion_silver_projector import (
     generate_silver_artifacts,
