@@ -78,7 +78,7 @@ source_data as (
 
 )
 
-{{"{{"}}% if is_incremental() %{{"}}"}}
+{{"{%"}} if is_incremental() {{"%}"}}
 ,
 
 existing as (
@@ -117,7 +117,7 @@ closed as (
     where t.is_current = 1
 
 )
-{{"{{"}}% endif %{{"}}"}}
+{{"{%"}} endif {{"%}"}}
 
 select
     {{ model_name }}_sk,
@@ -130,9 +130,9 @@ select
     valid_from,
     valid_to,
     is_current
-from {{"{{"}}% if is_incremental() %{{"}}"}}changed{{"{{"}}% else %{{"}}"}}source_data{{"{{"}}% endif %{{"}}"}}
+from {{"{%"}} if is_incremental() {{"%}"}}changed{{"{%"}} else {{"%}"}}source_data{{"{%"}} endif {{"%}"}}
 
-{{"{{"}}% if is_incremental() %{{"}}"}}
+{{"{%"}} if is_incremental() {{"%}"}}
 union all
 
 select
@@ -147,7 +147,7 @@ select
     valid_to,
     is_current
 from closed
-{{"{{"}}% endif %{{"}}"}}
+{{"{%"}} endif {{"%}"}}
 {%- elif source_ctes | length > 1 %}
 ,
 

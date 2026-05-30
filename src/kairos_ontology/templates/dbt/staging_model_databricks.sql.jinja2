@@ -96,7 +96,7 @@ select * from {% if json_extractions %}json_extracted{% else %}renamed{% endif %
 {%- endif %}
 {%- if incremental_column %}
 
-{{"{{"}}{%- raw %} if is_incremental() {%- endraw %}{{"}}"}}
+{{"{%"}} if is_incremental() {{"%}"}}
   where {{ incremental_column }} > (select max({{ incremental_column }}) from {{"{{"}} this {{"}}"}})
-{{"{{"}}{%- raw %} endif {%- endraw %}{{"}}"}}
+{{"{%"}} endif {{"%}"}}
 {%- endif %}

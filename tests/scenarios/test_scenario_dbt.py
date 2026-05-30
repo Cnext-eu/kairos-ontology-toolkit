@@ -1358,3 +1358,99 @@ class TestIRILineage:
             f"First 500 chars:\n{sql[:500]}"
         )
 
+
+class TestDbtValidation:
+    """Bug #7/#8 fixes and post-generation validation."""
+
+    def test_no_self_referential_joins(self, client_dbt_artifacts):
+        """Bug #1/#2: FK joins must not reference the model itself."""
+        import re
+
+        ref_pattern = re.compile(r"""\bref\(\s*['"]([^'"]+)['"]\s*\)""")
+        for path, content in client_dbt_artifacts.items():
+            if not path.endswith(".sql"):
+                continue
+            model_name = path.rsplit("/", 1)[-1].removesuffix(".sql")
+            refs_found = ref_pattern.findall(content)
+            assert model_name not in refs_found, (
+                f"Self-referential ref('{model_name}') found in {path}"
+            )
+
+    def test_jinja_syntax_valid(self, client_dbt_artifacts):
+        """Bug #7: All generated SQL must parse as valid Jinja2."""
+        from jinja2 import Environment as J2Env, TemplateSyntaxError
+
+        env = J2Env()
+        for path, content in client_dbt_artifacts.items():
+            if not path.endswith(".sql"):
+                continue
+            try:
+                env.parse(content)
+            except TemplateSyntaxError as exc:
+                raise AssertionError(
+                    f"Jinja syntax error in {path} line {exc.lineno}: {exc.message}"
+                )
+
+    def test_project_name_no_hyphens(self, client_dbt_artifacts):
+        """Bug #8: dbt_project.yml project name must be a valid Python identifier."""
+        import re
+
+        content = client_dbt_artifacts.get("dbt_project.yml")
+        assert content is not None, "dbt_project.yml not generated"
+        # Extract name field
+        for line in content.splitlines():
+            if line.strip().startswith("name:"):
+                name = line.split(":", 1)[1].strip().strip("'\"")
+                assert re.match(r"^[^\d\W]\w*$", name), (
+                    f"project name '{name}' contains invalid characters for dbt"
+                )
+                break
+
+    def test_ref_consistency(self, client_dbt_artifacts):
+        """All ref() targets must point to generated models."""
+        import re
+
+        ref_pattern = re.compile(r"""\bref\(\s*['"]([^'"]+)['"]\s*\)""")
+        model_names = set()
+        for path in client_dbt_artifacts:
+            if path.endswith(".sql"):
+                model_names.add(path.rsplit("/", 1)[-1].removesuffix(".sql"))
+
+        for path, content in client_dbt_artifacts.items():
+            if not path.endswith(".sql"):
+                continue
+            for target in ref_pattern.findall(content):
+                assert target in model_names, (
+                    f"ref('{target}') in {path} does not match any generated model. "
+                    f"Available: {sorted(model_names)}"
+                )
+
+    def test_invoice_no_self_referential_joins(self, invoice_dbt_artifacts):
+        """Bug #1/#2: Same check for invoice domain."""
+        import re
+
+        ref_pattern = re.compile(r"""\bref\(\s*['"]([^'"]+)['"]\s*\)""")
+        for path, content in invoice_dbt_artifacts.items():
+            if not path.endswith(".sql"):
+                continue
+            model_name = path.rsplit("/", 1)[-1].removesuffix(".sql")
+            refs_found = ref_pattern.findall(content)
+            assert model_name not in refs_found, (
+                f"Self-referential ref('{model_name}') found in {path}"
+            )
+
+    def test_invoice_jinja_syntax_valid(self, invoice_dbt_artifacts):
+        """Bug #7: Invoice domain Jinja validity."""
+        from jinja2 import Environment as J2Env, TemplateSyntaxError
+
+        env = J2Env()
+        for path, content in invoice_dbt_artifacts.items():
+            if not path.endswith(".sql"):
+                continue
+            try:
+                env.parse(content)
+            except TemplateSyntaxError as exc:
+                raise AssertionError(
+                    f"Jinja syntax error in {path} line {exc.lineno}: {exc.message}"
+                )
+
