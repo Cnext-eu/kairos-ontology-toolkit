@@ -89,4 +89,4 @@ Next steps:
 | When you need | Invoke |
 |---|---|
 | Create a pull request to merge branch into main | **SC-merge-pr** |
-| Model ontology classes and properties | **kairos-ontology-modeling** |
+| Model ontology classes and properties | **kairos-design-domain** |
