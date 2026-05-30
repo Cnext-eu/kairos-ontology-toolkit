@@ -28,9 +28,9 @@
 
 ---
 
-**Turn OWL/Turtle ontologies into production-ready data artifacts** — DDL schemas,
-dbt models, graph databases, search indexes, UI schemas, and AI prompt context — with
-built-in validation and a single CLI command.
+**Turn OWL/Turtle ontologies into production-ready data artifacts** — medallion-layer
+SQL schemas, dbt models, Power BI semantic models, graph databases, search indexes,
+and AI prompt context — with built-in validation and a single CLI command.
 
 > 📖 **New here?** Read the [User Guide](docs/USER_GUIDE.md) for a complete walkthrough.
 
@@ -38,45 +38,45 @@ built-in validation and a single CLI command.
 
 ## ✨ Key Features
 
-- 🔍 **3-Level Validation** — Syntax (RDF/OWL), SHACL constraints, and SPARQL consistency checks
-- 🏗️ **8 Projection Targets** — Generate downstream artifacts from a single ontology source
-- 🥈 **Silver Layer DDL** — Full CREATE TABLE generation with SCD2, GDPR satellites, junction tables, and ERD diagrams
-- 📦 **Hub Scaffolding** — `kairos init` bootstraps a complete ontology repository in seconds
-- 🤖 **AI Chat Service** — FastAPI + GitHub Copilot SDK for conversational ontology management
-- 🔗 **Traceability** — Every generated artifact links back to its source ontology IRI and version
-- 🌐 **Multi-Domain** — Each domain deploys independently with domain-scoped output folders
+| Category | Highlights |
+|----------|-----------|
+| 🔍 **Validation** | 3-level pipeline: RDF/OWL syntax → SHACL constraints → SPARQL consistency |
+| 🏗️ **8 Projection Targets** | Silver DDL, dbt, Power BI / TMDL, Neo4j, Azure Search, a2ui, prompt, HTML report |
+| 🥈 **Medallion Architecture** | Full silver + gold layers with SCD2, GDPR satellites, junction tables, conformed dimensions |
+| 📦 **Hub Scaffolding** | `kairos init` bootstraps a complete ontology repository with CI, skills, and config |
+| 🔗 **Full Traceability** | SKOS-based source→domain lineage in every generated SQL comment and schema YAML |
+| 🌐 **Multi-Domain** | Each domain deploys independently; cross-domain FK joins resolve automatically |
+| 🤖 **AI Chat Service** | FastAPI + GitHub Copilot SDK for conversational ontology management |
+| 📊 **Power BI** | Star-schema gold layer, TMDL import/export, DAX measures, hierarchies, RLS |
 
 ## 🚀 Quick Start
 
 ```bash
-# Install
+# Install from PyPI
 pip install kairos-ontology-toolkit
 
-# Validate your ontologies
-python -m kairos_ontology validate --all
+# Scaffold a new ontology hub
+kairos-ontology init my-ontology-hub
 
-# Generate all projections
-python -m kairos_ontology project --target all
-```
+# Validate ontologies
+kairos-ontology validate --all
 
-To scaffold a brand-new ontology hub repository:
-
-```bash
-python -m kairos_ontology init my-ontology-hub
+# Generate all projection targets
+kairos-ontology project --target all
 ```
 
 ## 🎯 Projection Targets
 
 | Target | Output | Use Case |
 |--------|--------|----------|
-| **silver** | `CREATE TABLE` DDL, `ALTER TABLE`, Mermaid ERD + SVG | Data warehouse physical layer |
-| **powerbi** | Star schema DDL, TMDL, DAX measures, ERD | Power BI / MS Fabric gold layer |
-| **dbt** | SQL models + `schema.yml` (staging + silver + gold) | dbt-based transformation pipelines |
+| **silver** | `CREATE TABLE` DDL, `ALTER TABLE`, Mermaid ERD + SVG | Fabric/Databricks warehouse physical layer |
+| **dbt** | SQL models, `schema.yml`, `dbt_project.yml` (silver + gold) | dbt-based ELT pipelines on Fabric/Databricks |
+| **powerbi** | Star schema DDL, TMDL, DAX measures, hierarchies | Power BI DirectLake semantic models |
 | **neo4j** | Cypher `CREATE` statements | Knowledge graph databases |
 | **azure-search** | JSON index definitions | Azure AI Search |
 | **a2ui** | JSON Schema messages | UI generation / form builders |
 | **prompt** | JSON context documents | LLM prompt engineering |
-| **report** | HTML mapping reports | Source-to-domain coverage review |
+| **report** | HTML mapping report with data flow diagrams | Source-to-domain coverage review |
 
 Each target produces per-domain output — deploy and version domains independently.
 
@@ -84,16 +84,44 @@ Each target produces per-domain output — deploy and version domains independen
 
 ```
 kairos-ontology-toolkit/
-├── src/kairos_ontology/           # Core toolkit (pip-installable)
-│   ├── cli/                       # Click CLI (validate, project, init)
-│   ├── projections/               # 6 projection generators
-│   ├── templates/                 # Jinja2 output templates
-│   ├── validator.py               # 3-level validation pipeline
-│   └── projector.py               # Projection orchestrator
-├── service/                       # FastAPI REST API + AI chat
-│   ├── app/routers/               # Endpoints: ontology, validate, project, chat
-│   └── app/services/              # GitHub integration, Copilot SDK
-└── tests/                         # pytest test suite (700+ tests)
+├── src/kairos_ontology/              # Core toolkit (pip-installable)
+│   ├── cli/                          # Click CLI (validate, project, init, import-tmdl)
+│   ├── projections/                  # 8 projection generators
+│   │   ├── medallion_silver_projector.py   # Silver DDL + ERD
+│   │   ├── medallion_dbt_projector.py      # dbt models (silver + gold)
+│   │   ├── medallion_gold_projector.py     # Gold star-schema definitions
+│   │   └── ...                             # neo4j, azure-search, a2ui, prompt, report
+│   ├── scaffold/                     # Hub repo templates (distributed via init/update)
+│   ├── templates/                    # Jinja2 output templates per target
+│   ├── validator.py                  # 3-level validation pipeline
+│   └── projector.py                  # Multi-domain projection orchestrator
+├── service/                          # FastAPI REST API + AI chat
+│   ├── app/routers/                  # Endpoints: ontology, validate, project, chat
+│   └── app/services/                 # GitHub integration, Copilot SDK
+└── tests/                            # pytest test suite (700+ tests)
+    ├── scenarios/                    # Full-pipeline scenario tests (acme-hub)
+    └── service/                      # API endpoint tests
+```
+
+## 📂 Hub Repository Structure
+
+When you run `kairos-ontology init`, you get a fully configured ontology hub:
+
+```
+my-ontology-hub/
+├── model/
+│   ├── ontologies/          # Domain ontologies (.ttl) — the single source of truth
+│   ├── extensions/          # Silver/gold extension annotations (*-silver-ext.ttl, *-gold-ext.ttl)
+│   ├── mappings/            # SKOS source-to-domain column mappings
+│   └── reference-models/    # Shared/imported ontologies + XML catalog
+├── sources/                 # Bronze source vocabulary descriptions
+├── output/                  # Generated projections (per target, per domain)
+│   └── medallion/
+│       ├── dbt/             # dbt project (models/, macros/, dbt_project.yml)
+│       ├── silver/          # DDL + ERD diagrams
+│       └── powerbi/         # TMDL + star schema
+├── shapes/                  # SHACL validation shapes (optional)
+└── .github/skills/          # Copilot agent skills for interactive modeling
 ```
 
 ## 🌐 Web Service
@@ -102,7 +130,6 @@ The toolkit ships with a FastAPI service for REST-based ontology management and 
 AI chat interface powered by the GitHub Copilot SDK.
 
 ```bash
-# Local dev mode (no GitHub App required)
 KAIROS_DEV_MODE=true uvicorn service.app.main:app --reload
 ```
 
@@ -111,32 +138,16 @@ Key endpoints: `/api/validate`, `/api/project`, `/api/ontology/query`, `/api/cha
 ➡️ See the [User Guide — Service section](docs/USER_GUIDE.md) for full endpoint
 documentation and setup instructions.
 
-## 📂 Hub Repository Structure
-
-When you run `kairos init`, you get:
-
-```
-my-ontology-hub/
-├── ontologies/           # Your domain ontologies (.ttl)
-├── shapes/               # SHACL validation shapes
-├── reference-models/     # External ontologies + XML catalog
-└── output/               # Generated projections (per target, per domain)
-    ├── silver/  dbt/  neo4j/  azure-search/  a2ui/  prompt/
-```
-
-➡️ See the [User Guide](docs/USER_GUIDE.md) for namespace conventions, multi-domain
-architecture, and detailed examples.
-
 ## 🛠️ Development
 
 ```bash
 git clone https://github.com/Cnext-eu/kairos-ontology-toolkit.git
 cd kairos-ontology-toolkit
 pip install -e ".[dev]"
-python -m pytest                   # 172+ tests
+python -m pytest                   # 700+ tests
 ```
 
-[Poetry](https://python-poetry.org/) is used for packaging and releases.
+[Poetry](https://python-poetry.org/) manages packaging and releases.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
 ## 🤝 Community
@@ -151,6 +162,7 @@ tools for ontology-driven data architecture.
 | 🔒 [Security Policy](SECURITY.md) | Vulnerability reporting |
 | 📝 [Changelog](CHANGELOG.md) | Release history |
 | 📖 [User Guide](docs/USER_GUIDE.md) | Complete walkthrough & reference |
+| 🏗️ [Design Decisions](docs/design/toolkit-design-decisions.md) | ADR log for architectural choices |
 
 ## 📄 License
 
