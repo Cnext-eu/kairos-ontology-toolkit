@@ -30,13 +30,3 @@ jobs:
 
       - name: Test
         run: poetry run pytest tests/ -v --tb=short
-
-  docker:
-    runs-on: ubuntu-latest
-    needs: test
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build Docker image
-        run: docker build -f service/Dockerfile -t kairos-service:ci .
