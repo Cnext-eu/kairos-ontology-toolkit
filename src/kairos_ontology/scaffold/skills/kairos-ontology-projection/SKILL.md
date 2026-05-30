@@ -9,6 +9,19 @@ description: >
 
 You help users generate and understand projection artifacts.
 
+> **When to use this skill vs medallion skills:**
+> - Use **this skill** (projection) when the user wants to **run** a projection
+>   and generate output files (DDL, dbt models, TMDL, ERDs, etc.)
+> - Use **medallion-source** when the user needs to **create** bronze vocabulary
+>   descriptions from source system documentation
+> - Use **medallion-silver** when the user needs to **design** silver extension
+>   annotations (SCD types, natural keys, FK declarations)
+> - Use **medallion-gold** when the user needs to **design** gold extension
+>   annotations (fact/dimension types, measures, hierarchies)
+>
+> **Rule of thumb:** Medallion skills = design annotation decisions.
+> Projection skill = execute generation from those annotations.
+
 ## Before you start
 
 0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
