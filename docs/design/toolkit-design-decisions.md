@@ -1588,13 +1588,13 @@ only when a Kairos-managed reference model meets all eligibility criteria.
 1. **Local ownership** — All classes and properties are in the hub's own namespace.
    No `owl:imports` of external ontologies at runtime.
 2. **Selective pattern adoption** — Cherry-pick only patterns that provide business
-   value. Zero adoption (alignment file only) is valid.
+   value. Zero adoption is valid (no local class created).
 3. **Projection-first gate** — Only adopt a pattern as a local class when it produces
    a **structurally different silver schema** (new table or new relationship).
-4. **Formal alignment** — A `model/alignments/{domain}-{refmodel}-alignment.ttl` file
-   declares SKOS match predicates for machine-readable interoperability.
-5. **Alignment file is never loaded by projectors** — It is documentation for
-   semantic interoperability, not a runtime input.
+4. **Inline traceability** — Use `rdfs:seeAlso <reference-model-class-URI>` on each
+   inspired local class for machine-readable back-reference to the source pattern.
+5. **rdfs:seeAlso is ignored by projectors** — It is documentation for
+   designers revisiting extension properties, not a runtime input.
 
 **Silver structural difference criterion** (the key decision gate):
 
@@ -1637,12 +1637,12 @@ only when a Kairos-managed reference model meets all eligibility criteria.
 
 **Why Inspired is the default (not Enforced):**
 
-1. Inspired with zero patterns adopted = alignment file only (minimum case).
+1. Inspired with zero patterns adopted = no local classes, just documentation (minimum case).
 2. The silver structural difference criterion answers "how much to adopt?" on a
-   per-pattern basis — no separate "alignment-only" strategy needed.
+   per-pattern basis — no separate strategy needed.
 3. Simplifies skill guidance and decision flowcharts.
 4. Skills only need one question: "Does this pattern pass the silver structural
-   difference test?" — if yes, adopt; if no, alignment file only.
+   difference test?" — if yes, adopt (with `rdfs:seeAlso`); if no, skip.
 
 ### Consequences
 
@@ -1655,16 +1655,15 @@ only when a Kairos-managed reference model meets all eligibility criteria.
 
 | Component | Update needed |
 |-----------|---------------|
-| `kairos-ontology-modeling` skill | Use Inspired/Enforced terminology |
-| `kairos-ontology-hub-setup` skill | Add `model/alignments/` to scaffold guidance |
-| `kairos-ontology-hub-status` skill | Detect alignment files, report coverage |
-| `kairos-ontology-projection` skill | Clarify alignment files are never loaded |
-| `kairos-ontology-medallion-silver` skill | Present Inspired as alternative to imports + whitelisting |
-| `kairos-ontology-medallion-gold` skill | Same |
-| `kairos-ontology-validation` skill | Optional: validate alignment file syntax |
-| `kairos-ontology-help` skill | Update conceptual overview with 2-strategy model |
-| `kairos-ontology-mapping` skill | Document that Inspired patterns change mapping structure |
-| Scaffold (`src/kairos_ontology/scaffold/`) | Add `model/alignments/` directory + starter template |
+| `kairos-design-domain` skill | Use Inspired/Enforced terminology; `rdfs:seeAlso` (DD-033) |
+| `kairos-setup-config` skill | Scaffold guidance (no `model/alignments/` — see DD-033) |
+| `kairos-diagnose-status` skill | Detect `rdfs:seeAlso` on inspired classes |
+| `kairos-execute-project` skill | Clarify `rdfs:seeAlso` is never used in projections |
+| `kairos-design-silver` skill | Present Inspired as alternative to imports + whitelisting |
+| `kairos-design-gold` skill | Same |
+| `kairos-execute-validate` skill | Optional: validate `rdfs:seeAlso` URIs resolve |
+| `kairos-help` skill | Update conceptual overview with 2-strategy model |
+| `kairos-design-mapping` skill | Document that Inspired patterns change mapping structure |
 
 **No projector code changes required.** Inspired classes are regular local classes —
 the projector already handles them identically to any hub-defined class. The alignment
@@ -1678,6 +1677,68 @@ file lives in `model/alignments/` and is never loaded during projection.
 - DD-032 (this) applies when you do NOT import — you create local equivalents instead.
 - A hub may use Enforced for Kairos reference models AND Inspired for industry standards
   simultaneously.
+
+---
+
+## DD-033: Replace Alignment Files with rdfs:seeAlso on Inspired Classes
+
+**Status:** Accepted  
+**Date:** 2026-05-30  
+**Affects:** modeling workflow, skill guidance, scaffold, DD-032 alignment mechanism  
+**Supersedes:** DD-032 §4 (alignment file convention)  
+**Implementation:** Skill docs updated; `model/alignments/` removed from scaffold and scenario tests.
+
+### Context
+
+DD-032 introduced the Reference Model Inspired strategy with SKOS alignment files
+(`model/alignments/{domain}-{standard}-alignment.ttl`) as the formal traceability mechanism.
+In practice, these files:
+
+- Were **never loaded** by any projector, validator, or design skill
+- Required maintaining a **separate file** that could drift from the domain ontology
+- Provided no **inline context** when editing silver/gold extensions for an inspired class
+- Duplicated information already expressible with standard RDFS predicates
+
+### Decision
+
+**Replace alignment files with `rdfs:seeAlso` directly on inspired class definitions.**
+
+```turtle
+# BEFORE (separate file, not loaded, high maintenance)
+# model/alignments/party-fibo-alignment.ttl:
+:LegalEntity skos:exactMatch fibo-be:LegalPerson .
+
+# AFTER (inline, machine-readable, zero overhead)
+# model/ontologies/party.ttl:
+:LegalEntity a owl:Class ;
+    rdfs:label "Legal Entity"@en ;
+    rdfs:comment "A legal entity / company."@en ;
+    rdfs:seeAlso <https://spec.edmcouncil.org/fibo/ontology/BE/LegalEntities/LegalPersons/LegalPerson> .
+```
+
+**Why `rdfs:seeAlso`:**
+- Part of core RDFS — no extra imports needed
+- Non-committal — no logical entailments (unlike `owl:equivalentClass` or `rdfs:subClassOf`)
+- Machine-readable — tooling can resolve the URI to check reference model alignment
+- Loaded with the domain ontology — visible during silver/gold design sessions
+- Already used for property-level references to standards (established pattern)
+
+### Rationale
+
+| Approach | Loaded by tooling? | Inline context? | Maintenance? |
+|----------|---|---|---|
+| Alignment file (DD-032 original) | ❌ Never loaded | ❌ Separate file | High |
+| `rdfs:comment` provenance text | ✅ Loaded | ✅ Inline | Low but not machine-readable |
+| **`rdfs:seeAlso` (this decision)** | ✅ Loaded | ✅ Inline | Low + machine-readable |
+
+### Consequences
+
+- `model/alignments/` folder is **removed** from scaffold and skill guidance
+- Existing hubs with alignment files can migrate by adding `rdfs:seeAlso` to classes
+  and deleting the alignment folder
+- Design skills can now read `rdfs:seeAlso` to show reference model context
+- Projectors continue to ignore `rdfs:seeAlso` (no code change needed)
+- DD-032 principles 1-3 remain unchanged; principle 4 is replaced by this decision
 
 ---
 

@@ -179,16 +179,18 @@ ontology-hub/
         adminpulse-to-party.ttl            # Source mapping (maps to local classes)
 ```
 
-**Key rule:** The `model/alignments/` directory is purely documentation. Its files are
-never loaded by `projector.py`. They exist for:
-- Semantic interoperability with external tools
-- FIBO compliance documentation
-- Future MDM federation
-- Alignment quality reporting
+**Key rule:** The `model/alignments/` directory has been **superseded by DD-033**.
+Reference model traceability is now provided via `rdfs:seeAlso` on class definitions
+directly in the domain ontology. Existing hubs may still have alignment files but
+new hubs should use `rdfs:seeAlso` instead.
 
 ---
 
-## 5. Alignment File Specification
+## 5. ~~Alignment File Specification~~ (Superseded by DD-033)
+
+> **Note:** As of DD-033, alignment files are replaced by `rdfs:seeAlso` on class
+> definitions. This section is retained for historical reference only.
+> Use `rdfs:seeAlso <reference-model-class-URI>` on each inspired class instead.
 
 ### Naming convention
 
@@ -322,9 +324,9 @@ A well-executed Reference Model Inspired implementation satisfies:
 | # | Criterion | Verification |
 |---|-----------|-------------|
 | 1 | No `owl:imports` of reference model in runtime ontology | `grep "owl:imports" {domain}.ttl` = no external refs |
-| 2 | Alignment file exists in `model/alignments/` | File exists with SKOS predicates |
+| 2 | Inspired classes have `rdfs:seeAlso` pointing to reference model URI | `grep "rdfs:seeAlso" {domain}.ttl` |
 | 3 | Adopted pattern classes have silver extension annotations | Every new class → scdType + naturalKey in ext file |
-| 4 | Alignment file covers all adopted classes | Count local classes with ref model correspondence |
+| 4 | `rdfs:seeAlso` covers all adopted classes | Count local classes with ref model back-reference |
 | 5 | Source mappings updated for structural patterns | No mappings pointing to deprecated flat properties |
 | 6 | Projection output is additive (new tables, no lost columns) | Diff DDL before/after |
 | 7 | No abstract classes without projection target | Every adopted class → table, ref, or inline |

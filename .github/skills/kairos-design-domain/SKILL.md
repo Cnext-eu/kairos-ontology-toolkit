@@ -964,57 +964,36 @@ Ask the user to confirm:
 
 **Do NOT import the external standard.** Instead:
 
-1. Model your classes locally (self-contained, projection-ready):
+1. Model your classes locally (self-contained, projection-ready) and add
+   `rdfs:seeAlso` pointing to the reference model class URI for traceability:
    ```turtle
    :LegalEntity a owl:Class ;
        rdfs:subClassOf :Party ;
        rdfs:label "Legal Entity"@en ;
-       rdfs:comment "A legal entity / company."@en .
+       rdfs:comment "A legal entity / company."@en ;
+       rdfs:seeAlso <https://spec.edmcouncil.org/fibo/ontology/BE/LegalEntities/LegalPersons/LegalPerson> .
    ```
 
 2. Selectively adopt patterns from the reference model when they create a
    **structurally different silver schema** (new table or new FK relationship).
-   Document provenance in `rdfs:comment`:
+   Always include `rdfs:seeAlso` linking back to the source pattern:
    ```turtle
    :Identifier a owl:Class ;
        rdfs:label "Identifier"@en ;
-       rdfs:comment "Inspired by FIBO FND/Arrangements/Identifiers. Adopted because it creates a separate silver table for multi-identifier support."@en .
+       rdfs:comment "Multi-identifier support — separate silver table."@en ;
+       rdfs:seeAlso <https://spec.edmcouncil.org/fibo/ontology/FND/Arrangements/Identifiers/Identifier> .
    ```
 
-3. Create an alignment file in `model/alignments/`:
-   ```turtle
-   # File: model/alignments/party-fibo-alignment.ttl
-   @prefix party: <https://contoso.com/ont/party#> .
-   @prefix skos:  <http://www.w3.org/2004/02/skos/core#> .
-   @prefix fibo-be: <https://spec.edmcouncil.org/fibo/ontology/BE/LegalEntities/LegalPersons/> .
-
-   <https://contoso.com/ont/party/alignment/fibo> a owl:Ontology ;
-       rdfs:label "Party → FIBO Alignment"@en ;
-       rdfs:comment "Standards correspondence. NOT loaded during projections."@en .
-
-   party:Party        skos:closeMatch fibo-agents:AutonomousAgent .
-   party:NaturalPerson skos:exactMatch fibo-people:Person .
-   party:LegalEntity  skos:exactMatch fibo-be:LegalPerson .
-   ```
+**Why `rdfs:seeAlso`:**
+- Part of core RDFS — no extra imports needed
+- Non-committal — no logical entailments (unlike `owl:equivalentClass`)
+- Machine-readable — tooling can resolve the URI to check reference model alignment
+- Loaded with the domain ontology — visible during silver/gold design sessions
 
 **Silver structural difference criterion (DD-032):** Only adopt a reference model
 pattern as a local class when it produces a structurally different silver output
 (new table or new FK relationship). If a pattern merely renames or reclassifies
-without changing the silver schema, record it in the alignment file only.
-
-**Alignment file convention:**
-- Path: `model/alignments/{domain}-{standard}-alignment.ttl`
-- Declares its own `owl:Ontology` with a descriptive label
-- Uses SKOS match properties (`skos:exactMatch`, `skos:closeMatch`)
-- Is **never** loaded during projections (not in `model/ontologies/`, not imported)
-- Can be loaded by external tools requiring interoperability
-
-**Alignment strength:**
-
-| Relationship | Meaning | Use when |
-|-------------|---------|-----------|
-| `skos:exactMatch` | Same concept, different vocabulary | Your class = their class semantically |
-| `skos:closeMatch` | Very similar, not identical | Your class is narrower or broader |
+without changing the silver schema, do not create a local class for it.
 
 #### Reuse a standard property by reference (documentation-only)
 
@@ -1043,7 +1022,7 @@ without changing the silver schema, record it in the alignment file only.
 
 > **Rule:** Never hardcode a downloaded copy of a standard model inside the hub
 > repo.  For Enforced, reference it via the catalog. For Inspired, model locally
-> and create an alignment file.
+> and add `rdfs:seeAlso` on each inspired class.
 
 ---
 
