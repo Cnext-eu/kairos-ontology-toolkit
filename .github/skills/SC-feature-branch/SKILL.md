@@ -81,3 +81,12 @@ Next steps:
 | Not a git repo | Tell user to run `git init` or check they're in the right directory |
 | Remote is ahead | `git pull --rebase origin main` before branching |
 | Detached HEAD | `git checkout main` first |
+
+---
+
+## Related skills
+
+| When you need | Invoke |
+|---|---|
+| Create a pull request to merge branch into main | **SC-merge-pr** |
+| Model ontology classes and properties | **kairos-design-domain** |

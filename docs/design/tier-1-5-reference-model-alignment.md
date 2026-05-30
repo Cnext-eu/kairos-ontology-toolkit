@@ -1,28 +1,28 @@
-# Tier 1.5 — Local Pattern Adoption from Reference Models
+# Reference Model Inspired — Local Pattern Adoption from Reference Models
 
 ## Document Purpose
 
-This document is the **detailed architectural specification** for Tier 1.5 reference
-model alignment in the Kairos Ontology Toolkit. It provides the pattern catalog, decision
-flowcharts, naming conventions, migration paths, quality criteria, and mapping
+This document is the **detailed architectural specification** for the Reference Model
+Inspired strategy in the Kairos Ontology Toolkit. It provides the pattern catalog,
+decision flowcharts, naming conventions, migration paths, quality criteria, and mapping
 implications that complement the formal decision in DD-032.
 
 ---
 
 ## 1. Overview
 
-### The Two-Tier Model
+### The Two-Strategy Model
 
-Kairos hubs use one of two approaches for reference model alignment:
+Kairos hubs use one of two strategies for reference model alignment:
 
-| Tier | Mechanism | When to use |
-|------|-----------|-------------|
-| **Tier 1** | `owl:imports` + DD-021 whitelisting + DD-023 shared defaults | Small, projection-compatible reference models (Kairos reference model repos) |
-| **Tier 1.5** | Local pattern adoption + SKOS alignment file | Large/complex reference models (FIBO, GS1, HL7, Schema.org) |
+| Strategy | Mechanism | When to use |
+|----------|-----------|-------------|
+| **Reference Model Inspired** (default) | Local pattern adoption + SKOS alignment file | All reference models; default strategy |
+| **Reference Model Enforced** (override) | `owl:imports` + DD-021 whitelisting + DD-023 shared defaults | Small, projection-compatible Kairos reference model repos only |
 
-Tier 1.5 is a spectrum: from alignment-file-only (minimum) to full structural pattern
-adoption (maximum). The **silver structural difference criterion** determines how far
-along that spectrum a hub should go.
+Reference Model Inspired is a spectrum: from alignment-file-only (minimum) to full
+structural pattern adoption (maximum). The **silver structural difference criterion**
+determines how far along that spectrum a hub should go.
 
 ### Core Principles
 
@@ -45,11 +45,11 @@ along that spectrum a hub should go.
 ```
 Is there a relevant reference model for this domain?
 ├── No → Pure local modeling (no alignment file needed)
-└── Yes
-    ├── Is it a Kairos reference model repo (small, projection-ready, ships *-silver-defaults.ttl)?
-    │   └── Yes → Tier 1: owl:imports + DD-021 whitelist + DD-023 defaults
-    └── No (large/complex/axiom-heavy: FIBO, GS1, HL7, Schema.org, PROV-O)
-        └── Tier 1.5: Local pattern adoption + alignment file
+└── Yes (default: use Reference Model Inspired)
+    ├── Does user explicitly request Enforced AND model meets eligibility?
+    │   └── Yes → Reference Model Enforced: owl:imports + DD-021 whitelist + DD-023 defaults
+    └── Otherwise (default path)
+        └── Reference Model Inspired: Local pattern adoption + alignment file
             │
             For EACH pattern in the reference model:
             ├── Does adopting it create a new silver table or FK relationship?
@@ -60,11 +60,13 @@ Is there a relevant reference model for this domain?
                 └── Yes → Do NOT adopt
 ```
 
-**Key decision criteria for Tier 1 eligibility:**
-- All classes have clear projection targets (not "abstract philosophy")
+**Enforced eligibility criteria** (ALL must be true):
+- Published in `ontology-reference-models/` central repo
+- Small (< 50 classes), focused domain
+- Ships `*-silver-defaults.ttl` (DD-023 compatible)
+- Has `catalog-v001.xml` entry
 - No transitive imports that pull in unrequested concepts
 - No deep inheritance trees conflicting with S3 flattening
-- Ships with `*-silver-defaults.ttl` (DD-023 compatible)
 
 ---
 
@@ -117,7 +119,7 @@ without an ontology version bump.
 
 **Blueprint alignment note:** This pattern is directly used by ALL Kairos reference
 models (BSP's TradeParty, TIC's TerminalParty, DCSA's ShippingParty, WCO's role classes).
-It is the most blueprint-aligned Tier 1.5 pattern.
+It is the most blueprint-aligned Reference Model Inspired pattern.
 
 ### 3.3 Classification Pattern
 
@@ -168,7 +170,7 @@ ontology-hub/
       party/
         party.ttl                          # Runtime ontology (projection input)
     alignments/
-      party-fibo-alignment.ttl             # Tier 1.5 SKOS alignment (never loaded by projectors)
+      party-fibo-alignment.ttl             # Reference Model Inspired SKOS alignment (never loaded by projectors)
       invoice-schema-alignment.ttl         # Another domain's alignment
     extensions/
       party-silver-ext.ttl                 # Silver annotations (unchanged)
@@ -207,7 +209,7 @@ Examples: `party-fibo-alignment.ttl`, `product-gs1-alignment.ttl`, `patient-hl7-
 
 <https://example.com/ont/party/alignment/fibo> a owl:Ontology ;
     rdfs:label "Party → FIBO Alignment"@en ;
-    rdfs:comment "Tier 1.5 alignment. NOT loaded during projections."@en ;
+    rdfs:comment "Reference Model Inspired alignment. NOT loaded during projections."@en ;
     owl:versionInfo "1.0.0" .
 
 # Class alignments
@@ -234,7 +236,7 @@ domain:name           skos:exactMatch fibo-x:hasName .
 
 ## 6. Mapping Implications
 
-**Critical:** Adopting Tier 1.5 patterns changes how source-to-domain mappings work.
+**Critical:** Adopting Inspired patterns changes how source-to-domain mappings work.
 
 ### Flat → Structured mapping change
 
@@ -260,14 +262,14 @@ The mapping now needs to express:
 2. What context/scheme qualifier applies
 3. How to construct the composite natural key (party NK + scheme)
 
-**Recommendation:** When adopting Tier 1.5 patterns, update source mappings in the same
+**Recommendation:** When adopting Inspired patterns, update source mappings in the same
 PR. Don't leave mappings pointing at deprecated flat properties.
 
 ---
 
 ## 7. Migration Paths
 
-### Tier 1 → Tier 1.5 (downgrade for performance/simplicity)
+### Enforced → Inspired (downgrade for performance/simplicity)
 
 1. Remove `owl:imports` from domain ontology
 2. Copy adopted classes/properties into local namespace (keep same names)
@@ -277,7 +279,7 @@ PR. Don't leave mappings pointing at deprecated flat properties.
 6. Remove DD-023 shared defaults dependency (annotations now live in hub's own ext file)
 7. Re-run projections — output should be equivalent
 
-### Tier 1.5 → Tier 1 (upgrade for full reasoning)
+### Inspired → Enforced (upgrade for full reasoning)
 
 1. Replace local class definitions with `owl:imports` + `rdfs:subClassOf`
 2. Change alignment predicates to `owl:equivalentClass` (optional)
@@ -285,7 +287,7 @@ PR. Don't leave mappings pointing at deprecated flat properties.
 4. Verify DD-023 shared defaults are available for the reference model
 5. Re-run projections and validate
 
-### Adding a new pattern to existing Tier 1.5 hub
+### Adding a new pattern to existing Inspired hub
 
 1. Identify pattern from catalog (§3) that passes silver structural difference test
 2. Add local classes/properties to domain ontology
@@ -315,7 +317,7 @@ PR. Don't leave mappings pointing at deprecated flat properties.
 
 ## 9. Quality Criteria
 
-A well-executed Tier 1.5 implementation satisfies:
+A well-executed Reference Model Inspired implementation satisfies:
 
 | # | Criterion | Verification |
 |---|-----------|-------------|
@@ -330,15 +332,15 @@ A well-executed Tier 1.5 implementation satisfies:
 
 ---
 
-## 10. Reference Models Suitable for Tier 1.5
+## 10. Reference Models Suitable for the Inspired Strategy
 
 | Reference Model | Domain | Recommended Patterns | Notes |
 |---|---|---|---|
-| **FIBO** (EDM Council) | Finance, Parties, Legal | Identifier, PartyInRole, Classification | Large (1000+ classes); Tier 1 impractical |
-| **GS1** (EPCIS, CBV) | Supply Chain, Products | QuantityValue, Location, TradeItem | Medium; Tier 1 possible for subsets |
-| **HL7 FHIR** | Healthcare | Identifier, CodeableConcept, Reference | Very large; profiling model = natural Tier 1.5 |
-| **Schema.org** | General, Commerce | Organization, PostalAddress | Medium; flat properties don't benefit much from Tier 1.5 |
-| **PROV-O** (W3C) | Provenance | Activity, Entity, Agent | Small enough for Tier 1 if needed |
+| **FIBO** (EDM Council) | Finance, Parties, Legal | Identifier, PartyInRole, Classification | Large (1000+ classes); Enforced impractical |
+| **GS1** (EPCIS, CBV) | Supply Chain, Products | QuantityValue, Location, TradeItem | Medium; Enforced possible for subsets |
+| **HL7 FHIR** | Healthcare | Identifier, CodeableConcept, Reference | Very large; profiling model = natural Inspired fit |
+| **Schema.org** | General, Commerce | Organization, PostalAddress | Medium; flat properties don't benefit much from structural adoption |
+| **PROV-O** (W3C) | Provenance | Activity, Entity, Agent | Small enough for Enforced if needed |
 | **Dublin Core** | Metadata | — | Flat properties only; alignment file sufficient |
 
 ---
@@ -347,12 +349,12 @@ A well-executed Tier 1.5 implementation satisfies:
 
 | DD | Relationship |
 |----|--------------|
-| DD-020 (Stable IRIs) | Tier 1.5 local classes use the hub's stable namespace (no version in IRI) |
-| DD-021 (Extension-as-Whitelist) | Applies to Tier 1 only. Tier 1.5 classes are local = auto-projected |
-| DD-022 (Simplified FK) | Applies to both tiers — FK annotations work identically on local or imported classes |
-| DD-023 (Shared Defaults) | Applies to Tier 1 only. Tier 1.5 hubs define their own extension annotations |
-| DD-014 (Silver reads Bronze) | Tier 1.5 patterns create new silver targets; Bronze→Silver mapping changes accordingly |
-| DD-015 (Vocabulary as Contract) | Source vocabulary describes source shape; Tier 1.5 mapping transforms flat→structured |
+| DD-020 (Stable IRIs) | Inspired local classes use the hub's stable namespace (no version in IRI) |
+| DD-021 (Extension-as-Whitelist) | Applies to Enforced only. Inspired classes are local = auto-projected |
+| DD-022 (Simplified FK) | Applies to both strategies — FK annotations work identically on local or imported classes |
+| DD-023 (Shared Defaults) | Applies to Enforced only. Inspired hubs define their own extension annotations |
+| DD-014 (Silver reads Bronze) | Inspired patterns create new silver targets; Bronze→Silver mapping changes accordingly |
+| DD-015 (Vocabulary as Contract) | Source vocabulary describes source shape; Inspired mapping transforms flat→structured |
 
 ---
 
@@ -362,7 +364,7 @@ A well-executed Tier 1.5 implementation satisfies:
 |-----------|--------|----------------------|
 | Domain ownership / bounded context | Data Mesh (Dehghani), DDD (Evans) | Hub ontology = bounded context with own schema |
 | Anti-Corruption Layer | DDD | SKOS alignment file = ACL at domain boundary |
-| Profile cascade | HL7 FHIR | Tier 1.5 = "profile" of ref model patterns |
+| Profile cascade | HL7 FHIR | Reference Model Inspired = "profile" of ref model patterns |
 | Lightweight core + optional modules | W3C SSN/SOSA (MOMo methodology) | Adopt core patterns; skip axiom-heavy modules |
 | Conformance = what you use | W3C DCAT v2 | Align to patterns you USE, not all of ref model |
 | CDM justified at N≥4 | EIP (Hohpe & Woolf) | Don't over-abstract for single-source scenarios |
@@ -379,24 +381,24 @@ A well-executed Tier 1.5 implementation satisfies:
   Still pulls in transitive dependencies (FIBO's Party imports Agents, which imports Relations...).
 - **Neither** gives the hub full control over property definitions, cardinality, and naming.
 
-Tier 1.5 avoids all three by using distinct local URIs with formal SKOS alignment.
+Reference Model Inspired avoids all three by using distinct local URIs with formal SKOS alignment.
 
 ---
 
-## Appendix B: Coexistence of Tier 1 and Tier 1.5
+## Appendix B: Coexistence of Enforced and Inspired
 
-A hub may use **both tiers simultaneously**:
+A hub may use **both strategies simultaneously**:
 
 ```turtle
-# Tier 1: import Kairos reference model (small, projection-ready)
+# Reference Model Enforced: import Kairos reference model (small, projection-ready)
 <https://example.com/ont/party> owl:imports <https://referencemodels.kairos.cnext.eu/bsp/party> .
 
-# Tier 1.5: local patterns inspired by FIBO (large, not imported)
+# Reference Model Inspired: local patterns inspired by FIBO (large, not imported)
 :Identifier a owl:Class ;
     rdfs:comment "Pattern adopted from FIBO FND/Arrangements/Identifiers."@en .
 ```
 
-**Precedence rule:** When a Tier 1 imported class and a Tier 1.5 local class model the
+**Precedence rule:** When an Enforced imported class and an Inspired local class model the
 same concept differently, the **local class wins** for projection. The imported class
 may still be used for taxonomy (as a superclass) but the local class defines the silver
 schema. Document the relationship in the alignment file.

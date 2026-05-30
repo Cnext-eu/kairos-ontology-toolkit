@@ -96,3 +96,29 @@ acme:nationalId
 acme:dateOfBirth
     kairos-ext:silverColumnName "date_of_birth" ;
     kairos-ext:silverDataType "DATE" .
+
+# ---------------------------------------------------------------------------
+# Reference Model Inspired: Identifier pattern
+# ---------------------------------------------------------------------------
+acme:Identifier
+    kairos-ext:silverTableName "identifier" ;
+    kairos-ext:scdType "2" ;
+    kairos-ext:naturalKey "identifierValue, identifierScheme" .
+
+acme:identifierValue
+    kairos-ext:silverColumnName "identifier_value" ;
+    kairos-ext:silverDataType "STRING" ;
+    kairos-ext:nullable "false" .
+
+acme:identifierScheme
+    kairos-ext:silverColumnName "identifier_scheme" ;
+    kairos-ext:silverDataType "STRING" ;
+    kairos-ext:nullable "false" .
+
+acme:identifierValidFrom
+    kairos-ext:silverColumnName "valid_from" ;
+    kairos-ext:silverDataType "DATE" .
+
+acme:isIdentifiedBy
+    kairos-ext:silverForeignKey "true" ;
+    kairos-ext:silverForeignKeyOn "client_id" .

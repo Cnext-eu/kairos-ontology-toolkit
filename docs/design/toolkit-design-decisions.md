@@ -44,7 +44,8 @@ Kairos Ontology Toolkit. Each decision is recorded as an Architecture Decision R
 | [DD-029](#dd-029-silver-model-registry-for-gold-ref-resolution) | Silver Model Registry for Gold ref() Resolution | Accepted | 2026-05-28 |
 | [DD-030](#dd-030-rewriteuri-catalog-resolution-with-extension-fallback) | rewriteURI Catalog Resolution with Extension Fallback | Accepted | 2026-05-29 |
 | [DD-031](#dd-031-inherit-naturalkey-from-discriminator-parents) | Inherit naturalKey from Discriminator Parents | Accepted | 2026-05-29 |
-| [DD-032](#dd-032-tier-15--local-pattern-adoption-from-reference-models) | Tier 1.5 — Local Pattern Adoption from Reference Models | Accepted | 2026-05-30 |
+| [DD-032](#dd-032-reference-model-inspired--local-pattern-adoption-from-reference-models) | Reference Model Inspired — Local Pattern Adoption from Reference Models | Accepted | 2026-05-30 |
+| [DD-033](#dd-033-skill-lifecycle-architecture--design--execute-separation) | Skill Lifecycle Architecture — Design / Execute Separation | Proposed | 2026-05-30 |
 
 ---
 
@@ -1530,24 +1531,24 @@ the raw camelCase literal (used by `_get_nk_property_uris` for property URI reso
 
 ---
 
-## DD-032: Tier 1.5 — Local Pattern Adoption from Reference Models
+## DD-032: Reference Model Inspired — Local Pattern Adoption from Reference Models
 
 **Status:** Accepted  
 **Date:** 2026-05-30  
 **Affects:** modeling workflow, skill guidance, scaffold, alignment file conventions  
-**Implementation:** No code changes required — Tier 1.5 classes are regular local classes already supported by all projectors. Guidance lives in skills and `docs/design/tier-1-5-reference-model-alignment.md`.
+**Implementation:** No code changes required — Inspired classes are regular local classes already supported by all projectors. Guidance lives in skills and `docs/design/tier-1-5-reference-model-alignment.md`.
 
 ### Context
 
 Kairos hubs face a tension when working with industry reference models (FIBO, HL7 FHIR,
 GS1, Schema.org):
 
-- **Tier 1** (`owl:imports` + `rdfs:subClassOf`): Full structural coupling. Works well for
-  small, projection-compatible reference models (Kairos reference model repos like BSP, TIC).
-  Fails for large, axiom-heavy models (FIBO imports 1000+ classes; DD-021 whitelisting and
-  DD-023 shared defaults exist specifically to manage this complexity).
+- **Reference Model Enforced** (`owl:imports` + `rdfs:subClassOf`): Full structural coupling.
+  Works well for small, projection-compatible reference models (Kairos reference model repos
+  like BSP, TIC). Fails for large, axiom-heavy models (FIBO imports 1000+ classes; DD-021
+  whitelisting and DD-023 shared defaults exist specifically to manage this complexity).
 
-- **Tier 2** (separate SKOS alignment file, no structural adoption): Zero runtime cost,
+- **SKOS alignment file only** (no structural adoption): Zero runtime cost,
   clean projections, but the alignment is *documentation only* — it never influences the
   silver schema. The alignment file says "we're like FIBO" but the silver tables don't
   benefit from FIBO's structural patterns (Identifier, PartyInRole, Classification).
@@ -1558,22 +1559,29 @@ ontology.
 
 ### Decision
 
-Introduce **Tier 1.5** as the standard approach for reference model alignment when
-Tier 1 (full import) is impractical. **Retire Tier 2 as a separate concept** — it is
-subsumed as the minimum case of Tier 1.5 (alignment file present, zero patterns adopted).
+Introduce **Reference Model Inspired** as the **default** strategy for reference model
+alignment. **Reference Model Enforced** (full `owl:imports`) is the override, available
+only when a Kairos-managed reference model meets all eligibility criteria.
 
-**Tier 1.5 definition:**
+**Reference Model Inspired definition:**
 
 > Mirror reference model structural patterns as local classes (own namespace), with a
 > formal SKOS alignment file declaring correspondence to the source vocabulary. No
 > `owl:imports` at runtime.
 
-**The simplified tier model (2 tiers, not 3):**
+**The simplified strategy model (2 strategies):**
 
-| Tier | When | What |
-|------|------|------|
-| **Tier 1** | Small, projection-compatible ref model (Kairos repos) | `owl:imports` + DD-021/DD-023 |
-| **Tier 1.5** | Large/complex ref model OR alignment-only documentation | Local patterns + SKOS alignment file |
+| Strategy | When | What |
+|----------|------|------|
+| **Reference Model Inspired** (default) | All reference models; large/complex models; alignment-only documentation | Local patterns + SKOS alignment file |
+| **Reference Model Enforced** (override) | Small, projection-compatible Kairos ref models only | `owl:imports` + DD-021/DD-023 |
+
+**Enforced eligibility** (ALL must be true):
+- Published in `ontology-reference-models/` central repo
+- Small (< 50 classes), focused domain
+- Ships `*-silver-defaults.ttl` (DD-023 compatible)
+- Has `catalog-v001.xml` entry
+- No transitive imports pulling in unrequested concepts
 
 **Core principles:**
 
@@ -1592,8 +1600,8 @@ subsumed as the minimum case of Tier 1.5 (alignment file present, zero patterns 
 
 | Question | Answer | Action |
 |----------|--------|--------|
-| Does adopting this pattern create a new silver table? | Yes | Adopt as Tier 1.5 class ✅ |
-| Does it create a new FK relationship? | Yes | Adopt as Tier 1.5 class ✅ |
+| Does adopting this pattern create a new silver table? | Yes | Adopt as local class ✅ |
+| Does it create a new FK relationship? | Yes | Adopt as local class ✅ |
 | Does it inline to the same flat columns (S4, embedded)? | Yes | Optional — ontology clarity only ⚠️ |
 | Does it have no projection target at all? | Yes | Do NOT adopt ❌ |
 
@@ -1611,9 +1619,9 @@ subsumed as the minimum case of Tier 1.5 (alignment file present, zero patterns 
 
 | Approach | Pros | Cons |
 |----------|------|------|
-| Tier 1 for everything | Full OWL reasoning | FIBO imports 1000+ classes; DD-021 noise; slow |
-| Tier 2 only (retired) | Zero cost | Zero structural benefit; silver schema doesn't improve |
-| **Tier 1.5 (this)** | Selective structural benefit; clean projections; formal alignment | Requires judgment on which patterns to adopt |
+| Enforced for everything | Full OWL reasoning | FIBO imports 1000+ classes; DD-021 noise; slow |
+| Alignment file only (no adoption) | Zero cost | Zero structural benefit; silver schema doesn't improve |
+| **Reference Model Inspired (this)** | Selective structural benefit; clean projections; formal alignment | Requires judgment on which patterns to adopt |
 | Domain-local subclasses of imported classes | OWL-correct | Property inheritance issues; namespace confusion |
 
 **Industry best practices supporting this decision:**
@@ -1627,48 +1635,48 @@ subsumed as the minimum case of Tier 1.5 (alignment file present, zero patterns 
 | "Conformance = what you use" | W3C DCAT v2 | Align to patterns you USE, not everything in ref model |
 | Domain ownership | Data Mesh (Dehghani) | Hub domain owns its silver schema; aligns formally but doesn't couple |
 
-**Why retire Tier 2 as a separate concept:**
+**Why Inspired is the default (not Enforced):**
 
-1. Tier 1.5 with zero patterns adopted IS Tier 2 (alignment file only).
-2. Keeping 3 tiers creates a false choice — "with structure or without?" is better answered
-   by the silver structural difference criterion on a per-pattern basis.
+1. Inspired with zero patterns adopted = alignment file only (minimum case).
+2. The silver structural difference criterion answers "how much to adopt?" on a
+   per-pattern basis — no separate "alignment-only" strategy needed.
 3. Simplifies skill guidance and decision flowcharts.
-4. Skills no longer need to explain when Tier 2 is "enough" — the answer is always "use
-   Tier 1.5; adopt patterns that pass the silver structural difference test."
+4. Skills only need one question: "Does this pattern pass the silver structural
+   difference test?" — if yes, adopt; if no, alignment file only.
 
 ### Consequences
 
 **Immediate (this PR):**
-- Tier 1.5 is the recommended approach for non-Kairos reference models
-- Tier 2 terminology is retired from documentation and skills
+- Reference Model Inspired is the default approach for all reference models
+- Reference Model Enforced is the override for Kairos-managed ref model repos only
 - See `docs/design/tier-1-5-reference-model-alignment.md` for full specification
 
 **Future work (separate PRs):**
 
 | Component | Update needed |
 |-----------|---------------|
-| `kairos-ontology-modeling` skill | Add Tier 1.5 to reference-model workflow |
+| `kairos-ontology-modeling` skill | Use Inspired/Enforced terminology |
 | `kairos-ontology-hub-setup` skill | Add `model/alignments/` to scaffold guidance |
 | `kairos-ontology-hub-status` skill | Detect alignment files, report coverage |
 | `kairos-ontology-projection` skill | Clarify alignment files are never loaded |
-| `kairos-ontology-medallion-silver` skill | Present Tier 1.5 as alternative to imports + whitelisting |
+| `kairos-ontology-medallion-silver` skill | Present Inspired as alternative to imports + whitelisting |
 | `kairos-ontology-medallion-gold` skill | Same |
 | `kairos-ontology-validation` skill | Optional: validate alignment file syntax |
-| `kairos-ontology-help` skill | Update conceptual overview with 2-tier model |
-| `kairos-ontology-mapping` skill | Document that Tier 1.5 patterns change mapping structure |
+| `kairos-ontology-help` skill | Update conceptual overview with 2-strategy model |
+| `kairos-ontology-mapping` skill | Document that Inspired patterns change mapping structure |
 | Scaffold (`src/kairos_ontology/scaffold/`) | Add `model/alignments/` directory + starter template |
 
-**No projector code changes required.** Tier 1.5 classes are regular local classes —
+**No projector code changes required.** Inspired classes are regular local classes —
 the projector already handles them identically to any hub-defined class. The alignment
 file lives in `model/alignments/` and is never loaded during projection.
 
 **Relationship to DD-021/DD-023:**
-- DD-021 (extension-as-whitelist) applies to **Tier 1** only — when you `owl:imports` a
+- DD-021 (extension-as-whitelist) applies to **Enforced** only — when you `owl:imports` a
   reference model, you whitelist which imported classes to project.
-- DD-023 (shared extension defaults) applies to **Tier 1** only — reference model repos
+- DD-023 (shared extension defaults) applies to **Enforced** only — reference model repos
   ship `*-silver-defaults.ttl` for imported classes.
 - DD-032 (this) applies when you do NOT import — you create local equivalents instead.
-- A hub may use Tier 1 for Kairos reference models AND Tier 1.5 for industry standards
+- A hub may use Enforced for Kairos reference models AND Inspired for industry standards
   simultaneously.
 
 ---
