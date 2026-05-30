@@ -274,11 +274,11 @@ curated, industry-aligned OWL ontologies bundled into **accelerator packs** —
 sector-specific collections of ontologies (e.g., Financial Services, Supply
 Chain, Healthcare) that provide a proven starting point.
 
-> **Two-tier strategy:** Accelerator packs bundle **Tier 1** (Kairos-managed)
-> reference models that are imported via `owl:imports`. If your sector also uses
-> large external standards (e.g., FIBO for financial services), those are handled
-> as **Tier 2** — model locally and create an alignment file. See
-> [Standard model alignment](#standard-model-alignment) for details.
+> **Two alignment strategies:** The default strategy is **Reference Model Inspired**
+> — model locally with selective pattern adoption and a SKOS alignment file. If the
+> user's domain uses a Kairos-managed reference model (small, projection-ready, ships
+> defaults), they can override to **Reference Model Enforced** which uses `owl:imports`.
+> See [Standard model alignment](#standard-model-alignment) for details.
 
 ### Step 0 — Ask the user
 
@@ -673,16 +673,16 @@ domain mapping with business stakeholders**:
 This is a critical governance step — getting business sign-off on which
 reference domains are in scope prevents scope creep and misalignment.
 
-### Step 4 — Import via OWL catalog (Tier 1 reference models ONLY)
+### Step 4 — Import via OWL catalog (Reference Model Enforced ONLY)
 
 When incorporating **Kairos reference model** ontologies into the hub, **use
 `owl:imports` via the catalog** — never copy or recreate the reference model
 TTL files inside the hub.
 
-> **Important:** This applies only to **Tier 1** (Kairos-managed) reference models
-> that are designed for projection (small, < 50 classes, include `-defaults.ttl`).
-> For large **external standards** (FIBO, DCSA, GS1, schema.org), see
-> [Tier 2: External standard alignment](#tier-2-external-standard-alignment) below.
+> **Important:** This applies only to the **Reference Model Enforced** strategy
+> (Kairos-managed reference models: small, < 50 classes, include `-defaults.ttl`).
+> For large **external standards** (FIBO, DCSA, GS1, schema.org), use the default
+> [Reference Model Inspired](#reference-model-inspired-default-strategy) strategy below.
 
 The reference models ship with a `catalog-v001.xml` that maps logical URIs to
 local file paths.  Your domain ontology imports the reference model by URI:
@@ -697,7 +697,7 @@ local file paths.  Your domain ontology imports the reference model by URI:
     owl:imports <https://referencemodels.kairos.cnext.eu/party> .
 ```
 
-**Rules (Tier 1 — Kairos reference models):**
+**Rules (Reference Model Enforced — Kairos reference models):**
 
 - ✅ **DO** use `owl:imports` referencing the catalog URI for Kairos reference
   ontologies (BSP, MMT, and other accelerator pack models).
@@ -710,7 +710,8 @@ local file paths.  Your domain ontology imports the reference model by URI:
   reference baseline is validated and the user explicitly requests additions.
 - ❌ **DO NOT** use `owl:imports` for large external standards (FIBO, DCSA, GS1,
   PROV-O, schema.org) — they are not projection-optimized and cause slow loading,
-  unresolvable transitive imports, and whitelisting complexity. Use Tier 2 instead.
+  unresolvable transitive imports, and whitelisting complexity. Use the Reference
+  Model Inspired strategy instead.
 
 ### Step 5 — Trim and specialize
 
@@ -892,34 +893,39 @@ standard ontology (FIBO, DCSA, GS1, PROV-O, schema.org, etc.):
 
 Ask the user to confirm:
 - The exact standard or vocabulary (name + version/edition if relevant).
-- Whether the standard is available as a **Kairos reference model** (Tier 1) or
-  is an **external standard** (Tier 2).
+- Whether the standard is available as a **Kairos reference model** (Enforced-eligible)
+  or is an **external standard** (Inspired — the default).
 
-### Step 2 — Determine the tier
+### Step 2 — Determine the strategy
 
-| Tier | When to use | Approach |
-|------|-------------|----------|
-| **Tier 1** (import) | Kairos-managed reference models in `ontology-reference-models/`. Small (< 50 classes), projection-optimized, has `-defaults.ttl`. | `owl:imports` + `rdfs:subClassOf` |
-| **Tier 2** (align) | Large external standards (100+ classes), externally maintained, not projection-optimized. | Model locally + alignment file |
+| Strategy | When to use | Approach |
+|----------|-------------|----------|
+| **Reference Model Inspired** (default) | All external standards AND any reference model where you want selective adoption. This is the default — use unless overridden. | Model locally + selective pattern adoption + SKOS alignment file |
+| **Reference Model Enforced** (override) | Kairos-managed reference models in `ontology-reference-models/`. Small (< 50 classes), projection-optimized, ships `-defaults.ttl`. | `owl:imports` + `rdfs:subClassOf` + DD-021 whitelist + DD-023 defaults |
 
-**Tier 1 indicators** (use `owl:imports`):
+> **Default rule:** Always start with **Reference Model Inspired** unless the user
+> explicitly requests Enforced and the reference model meets all eligibility criteria.
+
+**Enforced eligibility** (ALL must be true):
 - Found in `ontology-reference-models/accelerator-packs/`
 - Has a catalog entry mapping its URI to a local `.ttl` file
 - Typically < 50 classes, focused on a specific domain
+- Ships `*-silver-defaults.ttl` (DD-023 compatible)
+- No transitive imports pulling in unrequested concepts
 - Examples: BSP-Party, BSP-Billing, MMT modules
 
-**Tier 2 indicators** (use alignment file):
+**Inspired indicators** (anything not meeting Enforced criteria):
 - Large (100+ classes) or depends on large transitive imports
 - Externally maintained — versioned independently of your hub
 - Not projection-optimized (no `kairos-ext:` annotations, no `-defaults.ttl`)
 - Examples: FIBO, DCSA, GS1, PROV-O, schema.org
 
 > **Rule of thumb:** If importing the standard would add > 50 classes to the
-> merged graph that you'll never project, it's Tier 2.
+> merged graph that you'll never project, use Reference Model Inspired (the default).
 
 ### Step 3 — Alignment patterns
 
-#### Tier 1: Extend a Kairos reference class (full alignment)
+#### Reference Model Enforced: Extend a Kairos reference class
 
 ```turtle
 @prefix ref-party: <https://referencemodels.kairos.cnext.eu/party#> .
@@ -932,7 +938,7 @@ Ask the user to confirm:
     rdfs:comment "A high-value customer — extends the reference model."@en .
 ```
 
-#### Tier 2: External standard alignment (recommended for FIBO, DCSA, etc.)
+#### Reference Model Inspired (default strategy)
 
 **Do NOT import the external standard.** Instead:
 
@@ -944,7 +950,16 @@ Ask the user to confirm:
        rdfs:comment "A legal entity / company."@en .
    ```
 
-2. Create an alignment file in `model/alignments/`:
+2. Selectively adopt patterns from the reference model when they create a
+   **structurally different silver schema** (new table or new FK relationship).
+   Document provenance in `rdfs:comment`:
+   ```turtle
+   :Identifier a owl:Class ;
+       rdfs:label "Identifier"@en ;
+       rdfs:comment "Inspired by FIBO FND/Arrangements/Identifiers. Adopted because it creates a separate silver table for multi-identifier support."@en .
+   ```
+
+3. Create an alignment file in `model/alignments/`:
    ```turtle
    # File: model/alignments/party-fibo-alignment.ttl
    @prefix party: <https://contoso.com/ont/party#> .
@@ -959,6 +974,11 @@ Ask the user to confirm:
    party:NaturalPerson skos:exactMatch fibo-people:Person .
    party:LegalEntity  skos:exactMatch fibo-be:LegalPerson .
    ```
+
+**Silver structural difference criterion (DD-032):** Only adopt a reference model
+pattern as a local class when it produces a structurally different silver output
+(new table or new FK relationship). If a pattern merely renames or reclassifies
+without changing the silver schema, record it in the alignment file only.
 
 **Alignment file convention:**
 - Path: `model/alignments/{domain}-{standard}-alignment.ttl`
@@ -985,23 +1005,23 @@ Ask the user to confirm:
     rdfs:seeAlso <https://dcsa.org/standards/> .
 ```
 
-### Known standards and their recommended tier
+### Known standards and their recommended strategy
 
-| Standard | Domain | Tier | Rationale |
-|----------|--------|------|-----------|
-| BSP-Party | Party / customer | 1 (import) | Kairos-managed, small, has defaults |
-| BSP-Billing | Invoicing | 1 (import) | Kairos-managed, small, has defaults |
-| MMT | Maritime / logistics | 1 (import) | Kairos-managed, small, has defaults |
-| FIBO | Financial / legal entities | **2 (align)** | Large (1000+ classes), deep transitive imports |
-| DCSA | Shipping / container logistics | **2 (align)** | Large, externally maintained |
-| GS1 | Supply chain / product IDs | **2 (align)** | Large, externally maintained |
-| PROV-O | Data provenance | **2 (align)** | W3C standard, small but no projection value |
-| schema.org | General-purpose web semantics | **2 (align)** | Very broad vocabulary |
-| Dublin Core (DC) | Metadata | 1 or 2 | Small enough to import safely if needed |
+| Standard | Domain | Strategy | Rationale |
+|----------|--------|----------|-----------|
+| BSP-Party | Party / customer | Enforced | Kairos-managed, small, has defaults |
+| BSP-Billing | Invoicing | Enforced | Kairos-managed, small, has defaults |
+| MMT | Maritime / logistics | Enforced | Kairos-managed, small, has defaults |
+| FIBO | Financial / legal entities | **Inspired** | Large (1000+ classes), deep transitive imports |
+| DCSA | Shipping / container logistics | **Inspired** | Large, externally maintained |
+| GS1 | Supply chain / product IDs | **Inspired** | Large, externally maintained |
+| PROV-O | Data provenance | **Inspired** | W3C standard, small but no projection value |
+| schema.org | General-purpose web semantics | **Inspired** | Very broad vocabulary |
+| Dublin Core (DC) | Metadata | Enforced or Inspired | Small enough to import safely if needed |
 
 > **Rule:** Never hardcode a downloaded copy of a standard model inside the hub
-> repo.  For Tier 1, reference it via the catalog. For Tier 2, model locally and
-> create an alignment file.
+> repo.  For Enforced, reference it via the catalog. For Inspired, model locally
+> and create an alignment file.
 
 ---
 
