@@ -226,7 +226,7 @@ class ProjectionReport:
     def write_domain_markdown(self, domain: str, sessions_dir: Path) -> Optional[Path]:
         """Write a per-domain projection report as Markdown.
 
-        Filename: ``projection-<domain>-<YYYY-MM-DD_HH-MM-SS>.md``
+        Filename: ``projection-<domain>-<targets>-<YYYY-MM-DD_HH-MM-SS>.md``
 
         Returns the path written, or None if the sessions_dir is unavailable.
         """
@@ -235,7 +235,8 @@ class ProjectionReport:
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
         date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"projection-{domain}-{date_str}.md"
+        targets_slug = "+".join(sorted(self.targets_requested)) if self.targets_requested else "all"
+        filename = f"projection-{domain}-{targets_slug}-{date_str}.md"
         path = sessions_dir / filename
 
         lines: List[str] = []
@@ -991,7 +992,10 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             dbt_meta = get_last_entity_metadata()
             captured = report.captured_warnings
             for domain_name, entity_meta in dbt_meta.items():
-                domain_warns = [msg for _, msg in captured.get(domain_name, [])]
+                domain_warns = [
+                    msg for target, msg in captured.get(domain_name, [])
+                    if target == "dbt"
+                ]
                 dbt_path = write_dbt_session_log(
                     domain=domain_name,
                     entity_metadata=entity_meta,

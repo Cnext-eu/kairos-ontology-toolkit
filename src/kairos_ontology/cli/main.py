@@ -395,6 +395,7 @@ def init(domain, company_domain, force):
         hub / ".sessions-modeling",
         hub / ".sessions-projection",
         hub / ".sessions-mapping",
+        hub / ".sessions-design",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -408,7 +409,10 @@ def init(domain, company_domain, force):
             gitkeep.touch()
 
     # Place .gitkeep in session folders so git tracks them
-    for session_folder in [".sessions-modeling", ".sessions-projection", ".sessions-mapping"]:
+    for session_folder in [
+        ".sessions-modeling", ".sessions-projection", ".sessions-mapping",
+        ".sessions-design",
+    ]:
         sk = hub / session_folder / ".gitkeep"
         if not sk.exists():
             sk.touch()
@@ -1149,6 +1153,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / ".sessions-modeling",
         hub / ".sessions-projection",
         hub / ".sessions-mapping",
+        hub / ".sessions-design",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -1162,7 +1167,10 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
             gitkeep.touch()
 
     # Place .gitkeep in session folders so git tracks them
-    for session_folder in [".sessions-modeling", ".sessions-projection", ".sessions-mapping"]:
+    for session_folder in [
+        ".sessions-modeling", ".sessions-projection", ".sessions-mapping",
+        ".sessions-design",
+    ]:
         sk = hub / session_folder / ".gitkeep"
         if not sk.exists():
             sk.touch()

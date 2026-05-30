@@ -264,6 +264,59 @@ with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
 
 ---
 
+## Session Management
+
+> **MANDATORY:** Every gold design session MUST produce a session file that
+> captures decisions made, items deferred, and design rationale.
+
+### On start — Check for existing session
+
+```
+ontology-hub/.sessions-design/
+  └── gold-{domain}-{YYYY-MM-DD}.md
+```
+
+If a previous session exists, ask the user whether to continue or start fresh.
+
+### Session file format
+
+Save to `ontology-hub/.sessions-design/gold-{domain}-{YYYY-MM-DD}.md`:
+
+```markdown
+# Gold Design Session: {Domain}
+
+**Started:** {ISO-8601}
+**Last updated:** {ISO-8601}
+**Status:** Complete | In Progress
+**Toolkit version:** {version}
+
+## Decisions Made
+
+| Class | Gold Role | Measures | Hierarchies | RLS | Status |
+|---|---|---|---|---|---|
+| {ClassName} | fact/dimension/bridge | {count} | {list or —} | {yes/no} | ✅/⚠️ |
+
+## Deferred / TODO
+
+| # | Class | Item | Reason | Resolve via |
+|---|---|---|---|---|
+| 1 | {ClassName} | {what is missing} | {why deferred} | kairos-design-gold |
+
+## Design Rationale
+
+| # | Question | Decision | Rationale |
+|---|---|---|---|
+| 1 | {question} | {choice made} | {why} |
+```
+
+### Saving rules
+
+- **Auto-save** after each class gold annotation is confirmed
+- Record **every** deferred item with a reason
+- On pause/completion, list remaining open items and confirm with user
+
+---
+
 ## Related skills
 
 | When you need | Invoke |

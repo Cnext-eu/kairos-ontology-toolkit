@@ -218,21 +218,24 @@ def _warn_incomplete_fk_annotations(graph: Graph) -> list[str]:
         if domain_cls is None and range_cls is None:
             msg = (
                 f"silverForeignKey on {prop_local} will be skipped "
-                f"— missing rdfs:domain and rdfs:range."
+                f"— missing rdfs:domain and rdfs:range. "
+                f"Resolve via: kairos-design-domain"
             )
             logger.warning(msg)
             warnings.append(msg)
         elif domain_cls is None:
             msg = (
                 f"silverForeignKey on {prop_local} will be skipped "
-                f"— missing rdfs:domain."
+                f"— missing rdfs:domain. "
+                f"Resolve via: kairos-design-domain"
             )
             logger.warning(msg)
             warnings.append(msg)
         elif range_cls is None:
             msg = (
                 f"silverForeignKey on {prop_local} will be skipped "
-                f"— missing rdfs:range."
+                f"— missing rdfs:range. "
+                f"Resolve via: kairos-design-domain"
             )
             logger.warning(msg)
             warnings.append(msg)

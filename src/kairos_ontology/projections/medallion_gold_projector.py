@@ -126,8 +126,7 @@ def _warn_unclaimed_parents_gold(
                     f"DD-021: {cls_info['name']} is a subclass of "
                     f"{parent_local} which is not claimed for gold projection. "
                     f"Inherited properties from {parent_local} will be "
-                    f"missing. Add kairos-ext:goldInclude true to "
-                    f"<{parent_str}> or claim it via goldIncludeImports."
+                    f"missing. Resolve via: kairos-design-gold"
                 )
                 logger.warning(msg)
                 warnings.append(msg)

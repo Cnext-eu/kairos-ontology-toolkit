@@ -1777,8 +1777,8 @@ class TestNaturalKeyWarning:
                 sources_dir=nk_sources_dir,
                 mappings_dir=nk_mappings_widget,
             )
-        # Warning should guide user to add naturalKey annotation
-        assert "silver extension file" in caplog.text
+        # Warning should guide user to the correct design skill
+        assert "kairos-design-silver" in caplog.text
 
 
 # ---------------------------------------------------------------------------

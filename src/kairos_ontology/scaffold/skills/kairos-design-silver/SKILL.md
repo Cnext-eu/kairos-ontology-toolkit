@@ -894,6 +894,67 @@ setup instructions on adding it as a dependency via `packages.yml`.
 
 ---
 
+## Session Management
+
+> **MANDATORY:** Every silver design session MUST produce a session file that
+> captures decisions made, items deferred, and design rationale. This enables
+> traceability from projection warnings back to design decisions.
+
+### On start — Check for existing session
+
+```
+ontology-hub/.sessions-design/
+  └── silver-{domain}-{YYYY-MM-DD}.md
+```
+
+If a previous session exists, ask the user whether to continue or start fresh.
+
+### Session file format
+
+Save to `ontology-hub/.sessions-design/silver-{domain}-{YYYY-MM-DD}.md`:
+
+```markdown
+# Silver Design Session: {Domain}
+
+**Started:** {ISO-8601}
+**Last updated:** {ISO-8601}
+**Status:** Complete | In Progress
+**Toolkit version:** {version}
+
+## Decisions Made
+
+| Class | SCD Type | Natural Key | Inheritance | FK Relations | Schema | Status |
+|---|---|---|---|---|---|---|
+| {ClassName} | {1/2} | {key or —} | {discriminator/—} | {fk list or —} | {schema} | ✅/⚠️ |
+
+## Deferred / TODO
+
+| # | Class | Item | Reason | Resolve via |
+|---|---|---|---|---|
+| 1 | {ClassName} | {what is missing} | {why deferred} | kairos-design-silver |
+
+## Design Rationale
+
+| # | Question | Decision | Rationale |
+|---|---|---|---|
+| 1 | {question} | {choice made} | {why} |
+
+## Warnings Acknowledged
+
+| # | Warning | Classification | Action |
+|---|---|---|---|
+| 1 | No naturalKey for {Class} | Deferred — FK-child | Will derive from parent |
+```
+
+### Saving rules
+
+- **Auto-save** after each class annotation is confirmed
+- Record **every** deferred item with a reason
+- When a class is skipped or left incomplete, record it as a deferred item
+- On pause/completion, list remaining open items and confirm with user
+
+---
+
 ## Related skills
 
 | When you need | Invoke |
