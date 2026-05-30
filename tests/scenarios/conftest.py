@@ -19,6 +19,7 @@ from rdflib import Graph
 HUB_ROOT = Path(__file__).parent / "acme-hub"
 ONTOLOGIES_DIR = HUB_ROOT / "model" / "ontologies"
 EXTENSIONS_DIR = HUB_ROOT / "model" / "extensions"
+ALIGNMENTS_DIR = HUB_ROOT / "model" / "alignments"
 SHAPES_DIR = HUB_ROOT / "model" / "shapes"
 MAPPINGS_DIR = HUB_ROOT / "model" / "mappings"
 SOURCES_DIR = HUB_ROOT / "integration" / "sources"

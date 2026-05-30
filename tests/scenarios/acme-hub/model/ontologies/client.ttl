@@ -148,3 +148,36 @@ acme:hasType a owl:ObjectProperty, owl:FunctionalProperty ;
     rdfs:comment "The type classification of this client." ;
     rdfs:domain acme:Client ;
     rdfs:range acme:ClientType .
+
+# ---------------------------------------------------------------------------
+# Reference Model Inspired: Identifier pattern (adopted from FIBO)
+# Creates a separate silver table for multi-identifier support.
+# ---------------------------------------------------------------------------
+acme:Identifier a owl:Class ;
+    rdfs:label "Identifier" ;
+    rdfs:comment "A business identifier with scheme and validity. Inspired by FIBO FND/Arrangements/Identifiers — adopted because it creates a separate silver table for multi-identifier support."@en ;
+    kairos-ext:naturalKey "identifierValue, identifierScheme" .
+
+acme:identifierValue a owl:DatatypeProperty ;
+    rdfs:label "identifier value" ;
+    rdfs:comment "The literal value of the identifier (e.g., BE0123456789)." ;
+    rdfs:domain acme:Identifier ;
+    rdfs:range xsd:string .
+
+acme:identifierScheme a owl:DatatypeProperty ;
+    rdfs:label "identifier scheme" ;
+    rdfs:comment "The scheme or registry that issued the identifier (e.g., KBO, VAT)." ;
+    rdfs:domain acme:Identifier ;
+    rdfs:range xsd:string .
+
+acme:identifierValidFrom a owl:DatatypeProperty ;
+    rdfs:label "identifier valid from" ;
+    rdfs:comment "Date from which this identifier is valid." ;
+    rdfs:domain acme:Identifier ;
+    rdfs:range xsd:date .
+
+acme:isIdentifiedBy a owl:ObjectProperty ;
+    rdfs:label "is identified by" ;
+    rdfs:comment "Links a client to one or more business identifiers." ;
+    rdfs:domain acme:Client ;
+    rdfs:range acme:Identifier .
