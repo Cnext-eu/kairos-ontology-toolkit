@@ -7,6 +7,11 @@
 | **Scope** | All Copilot skills |
 | **Impact** | Skill naming, routing, scaffold distribution |
 
+> ⚠️ **Implementation status:** Phase 1 (design/execute separation) is implemented —
+> design skills no longer run projections directly. Phase 2 (rename to shorter names
+> like `kairos-design-silver`, `kairos-project`) is **not yet implemented**. Current
+> skill names remain `kairos-ontology-*` until the rename PR.
+
 ---
 
 ## Context

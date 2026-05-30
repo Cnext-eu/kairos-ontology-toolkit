@@ -1,10 +1,9 @@
 ---
 name: kairos-ontology-medallion-gold
 description: >
-  Expert guide for designing and running the gold-layer projection.
-  Generates Power BI star-schema DDL, TMDL semantic model, DAX measures,
-  and Mermaid ERD from OWL ontologies annotated with kairos-ext: properties.
-  Targets DirectLake on Microsoft Fabric Warehouse.
+  Expert guide for designing gold-layer extension annotations (fact/dimension
+  types, DAX measures, hierarchies, RLS) and understanding Power BI projection
+  output. Targets DirectLake on Microsoft Fabric Warehouse.
 ---
 
 # Kairos Medallion Gold Skill
@@ -67,15 +66,11 @@ facts (detected via the ≥2 FK heuristic) still use the standard cardinality fi
 ## Running the Projection (handoff)
 
 Once your gold extension annotations are complete, generate the artifacts by
-invoking the **kairos-ontology-projection** skill or running directly:
+invoking the **kairos-ontology-projection** skill with target `powerbi`.
 
-```bash
-python -m kairos_ontology project --target powerbi
-```
-
-> **Design/Execute separation:** This skill (medallion-gold) handles annotation
-> *design*. The projection skill handles *generation*. If you need to iterate on
-> outputs, edit the extension file here, then re-run projection.
+> **Design/Execute separation (DD-033):** This skill handles annotation *design*.
+> The **kairos-ontology-projection** skill handles *generation*. If you need to
+> iterate on outputs, edit the extension file here, then invoke projection again.
 
 ## Extension File
 
@@ -261,7 +256,7 @@ with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
 - [ ] Annotate each class with `goldTableType` (or rely on auto-classification)
 - [ ] Add `measureExpression` for DAX measures on numeric properties
 - [ ] Add `hierarchyName` / `hierarchyLevel` for drill-down hierarchies
-- [ ] Run `python -m kairos_ontology project --target powerbi`
+- [ ] Invoke **kairos-ontology-projection** with `--target powerbi`
 - [ ] Review star schema ERD in `output/medallion/powerbi/{domain}/`
 - [ ] Check SVG renders were created (requires `mmdc` — see SVG export setup)
 - [ ] Import TMDL into Power BI Desktop or deploy to Fabric workspace

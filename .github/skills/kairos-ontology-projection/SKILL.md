@@ -89,7 +89,7 @@ You:
 - **azure-search**: When building a search index. Maps ontology properties to Azure Search field types with filters and facets.
 - **a2ui**: When generating UI forms. Creates JSON schemas that describe the data structure for automatic UI rendering.
 - **prompt**: When using the ontology as LLM context. Generates a compact version (entity→fields map) and a detailed version (with types, descriptions, relationships).
-- **silver**: When building the silver layer of a medallion data platform (e.g. MS Fabric warehouse). Generates T-SQL DDL (`CREATE TABLE`), FK/UNIQUE constraints (`ALTER TABLE`), and a Mermaid ERD. Requires a `*-silver-ext.ttl` annotation file in `model/extensions/`. Imported classes (via `owl:imports`) are not projected by default — use `silverInclude` or `silverIncludeImports` to claim them (DD-021). See the **kairos-medallion-silver** skill.
+- **silver**: When building the silver layer of a medallion data platform (e.g. MS Fabric warehouse). Generates T-SQL DDL (`CREATE TABLE`), FK/UNIQUE constraints (`ALTER TABLE`), and a Mermaid ERD. Requires a `*-silver-ext.ttl` annotation file in `model/extensions/`. Imported classes (via `owl:imports`) are not projected by default — use `silverInclude` or `silverIncludeImports` to claim them (DD-021). See the **kairos-ontology-medallion-silver** skill.
 
 ## CLI commands
 
@@ -275,7 +275,7 @@ You can also check `summary.warnings` or inspect `projections` entries with
 - Generate `prompt` projection first to quickly verify the ontology structure is correct.
 - Use `dbt` projection when you want to see the full property extraction including SHACL tests.
 - Run all targets at once to catch issues specific to certain mappings.
-- For `silver`: run the **kairos-medallion-silver** skill first to set up `kairos-ext:` annotations in `model/extensions/` before projecting.
+- For `silver`: run the **kairos-ontology-medallion-silver** skill first to set up `kairos-ext:` annotations in `model/extensions/` before projecting.
 
 ## Common warnings
 

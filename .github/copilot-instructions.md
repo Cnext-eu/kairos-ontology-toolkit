@@ -139,11 +139,12 @@ skips checkpoints.
 
 Use this table to pick the correct skill for a user's intent:
 
-> **Design vs Execute:** The `design` skills (`medallion-source`, `medallion-silver`,
-> `medallion-gold`, `mapping`, `modeling`) create/modify source files interactively.
-> The `projection` skill **executes generation** from those files — it's the single
-> entry point for producing output artifacts. Design first, then project.
-> See DD-033 for the full lifecycle architecture.
+> **Design vs Execute:** The design skills (`kairos-ontology-medallion-source`,
+> `kairos-ontology-medallion-silver`, `kairos-ontology-medallion-gold`,
+> `kairos-ontology-mapping`, `kairos-ontology-modeling`) create/modify source files
+> interactively. The **kairos-ontology-projection** skill **executes generation**
+> from those files — it's the single entry point for producing output artifacts.
+> Design first, then project. See DD-033 for the full lifecycle architecture.
 
 | User intent | Correct skill |
 |---|---|

@@ -193,12 +193,12 @@ After the bronze vocabulary is complete:
 
 1. **Create SKOS mappings** — invoke the **kairos-ontology-mapping** skill to interactively
    map source columns to domain ontology properties in `model/mappings/{system-name}/`
-2. **Run the medallion projection** to generate dbt silver models:
-   ```bash
-   python -m kairos_ontology project --target dbt
-   ```
+2. **Design silver annotations** — invoke the **kairos-ontology-medallion-silver** skill
+   to create extension annotations for the silver layer
+3. **Generate output** — invoke the **kairos-ontology-projection** skill to produce
+   dbt models, silver DDL, and ERDs
 
-See the **kairos-ontology-medallion-silver** skill for the full bronze-to-silver pipeline.
+See the **kairos-ontology-medallion-silver** skill for annotation design guidance.
 
 ---
 

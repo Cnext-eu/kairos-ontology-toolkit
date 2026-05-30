@@ -1,21 +1,24 @@
 ---
 name: kairos-ontology-medallion-silver
 description: >
-  Expert guide for designing the silver-layer schema (DDL, ERD, FK scripts)
-  AND generating dbt Core silver models from source-to-domain mappings.
-  Covers R1-R16 annotation vocabulary, S1-S8 Silver Fabric Warehouse
-  behaviours, and the full bronze-to-silver dbt pipeline.
+  Expert guide for designing silver-layer extension annotations (SCD types,
+  natural keys, FK declarations, schema names) and understanding silver
+  projection output. Covers R1-R16 annotation vocabulary and S1-S8 Silver
+  Fabric Warehouse behaviours.
 ---
 
 # Kairos Medallion Silver Skill
 
-You are helping the user with the **silver layer** of the medallion architecture.
-This skill covers two complementary workflows:
+You are helping the user **design** the silver layer of the medallion architecture.
+This skill covers annotation design and output interpretation:
 
-1. **Schema design** — Generate MS Fabric / Delta Lake silver schema (DDL, ERD,
-   FK constraints) from OWL ontology + `kairos-ext:` annotations.
-2. **dbt model generation** — Generate dbt Core models that transform bronze data
-   into silver tables using SKOS mappings + `kairos-map:` annotations.
+1. **Schema design** — Create and configure `kairos-ext:` annotations in
+   `*-silver-ext.ttl` extension files that control silver DDL generation.
+2. **Output interpretation** — Understand the DDL, ERD, and dbt model outputs
+   produced when the **kairos-ontology-projection** skill runs the silver/dbt targets.
+
+> **Design/Execute separation (DD-033):** This skill creates annotation files.
+> To generate output, invoke the **kairos-ontology-projection** skill.
 
 ---
 
@@ -353,16 +356,12 @@ ref:hasConsignmentItem
 ## Phase 4 — Generate output (handoff to projection skill)
 
 Once your silver extension annotations are complete, generate the artifacts by
-invoking the **kairos-ontology-projection** skill or running directly:
+invoking the **kairos-ontology-projection** skill with target `silver` (for DDL + ERD)
+or `dbt` (for dbt models — requires SKOS mappings).
 
-```bash
-python -m kairos_ontology project --target silver   # DDL + ERD
-python -m kairos_ontology project --target dbt      # dbt models (requires mappings)
-```
-
-> **Design/Execute separation:** This skill (medallion-silver) handles annotation
-> *design*. The projection skill handles *generation*. If you need to iterate on
-> outputs, edit the extension file here, then re-run projection.
+> **Design/Execute separation (DD-033):** This skill handles annotation *design*.
+> The **kairos-ontology-projection** skill handles *generation*. If you need to
+> iterate on outputs, edit the extension file here, then invoke projection again.
 
 Artifacts are written to the dbt project tree under `output/medallion/dbt/`:
 
@@ -445,10 +444,8 @@ erDiagram
 
 ### Fix and iterate
 
-If adjustments are needed, edit `{DOMAIN}-silver-ext.ttl` and re-run:
-```bash
-python -m kairos_ontology project --target silver
-```
+If adjustments are needed, edit `{DOMAIN}-silver-ext.ttl` and re-run the projection
+via the **kairos-ontology-projection** skill (target `silver` or `dbt`).
 The master ERD is regenerated automatically on every run.
 
 ---
