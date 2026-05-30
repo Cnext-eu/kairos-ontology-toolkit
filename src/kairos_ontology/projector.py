@@ -903,6 +903,50 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             print(f"  ✓ {fname}")
         print(f"  ✓ report projection completed: {report_count} total files\n")
         report.record_post_step("mapping_report", status="ok")
+
+        # Generate domain overview report
+        from .projections.report_projector import generate_domain_overview_report
+        ontology_dir = hub_root / "model" / "ontologies" if hub_root else None
+        if ontology_dir and ontology_dir.is_dir():
+            overview_artifacts = generate_domain_overview_report(
+                ontology_dir=ontology_dir,
+                template_dir=template_base,
+            )
+            for fname, content in overview_artifacts.items():
+                out_file = report_output / fname
+                out_file.write_text(content, encoding="utf-8")
+                report_count += 1
+                print(f"  ✓ {fname}")
+
+        # Generate source landscape report
+        from .projections.report_projector import generate_source_landscape_report
+        if sources_dir and sources_dir.is_dir():
+            landscape_artifacts = generate_source_landscape_report(
+                sources_dir=sources_dir,
+                mappings_dir=mappings_dir,
+                ontology_dir=ontology_dir,
+                template_dir=template_base,
+            )
+            for fname, content in landscape_artifacts.items():
+                out_file = report_output / fname
+                out_file.write_text(content, encoding="utf-8")
+                report_count += 1
+                print(f"  ✓ {fname}")
+
+        # Generate mapping progress dashboard
+        from .projections.report_projector import generate_mapping_progress_report
+        if sources_dir and sources_dir.is_dir():
+            progress_artifacts = generate_mapping_progress_report(
+                sources_dir=sources_dir,
+                mappings_dir=mappings_dir,
+                ontology_dir=ontology_dir,
+                template_dir=template_base,
+            )
+            for fname, content in progress_artifacts.items():
+                out_file = report_output / fname
+                out_file.write_text(content, encoding="utf-8")
+                report_count += 1
+                print(f"  ✓ {fname}")
     
     print("✅ Projection generation completed!")
     print(f"   Generated artifacts for {len(ontology_graphs)} data domain(s)")
