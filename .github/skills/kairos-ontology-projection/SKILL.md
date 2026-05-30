@@ -270,3 +270,16 @@ You can also check `summary.warnings` or inspect `projections` entries with
 |---------|---------|--------|
 | **DD-021: Unclaimed parent** | A projected class has a parent NOT in the projection set. Properties are auto-inherited from unprojected parents. | Review whether the parent should be a separate table (`silverInclude`) or if inheritance is sufficient. |
 | **PII detected** | A property name matches PII keywords but the class lacks `kairos-ext:gdprClassification`. | Add GDPR annotations or confirm the property is not sensitive. |
+
+---
+
+## Related skills
+
+| When you need | Invoke |
+|---|---|
+| Design/modify domain ontology classes and properties | **kairos-ontology-modeling** |
+| Design silver layer (DDL, SCD, FK annotations) | **kairos-ontology-medallion-silver** |
+| Design gold layer (Power BI star schema, measures) | **kairos-ontology-medallion-gold** |
+| Map source columns to domain properties | **kairos-ontology-mapping** |
+| Validate ontology syntax + SHACL | **kairos-ontology-validation** |
+| Consume dbt package in data platform repo | **kairos-ontology-dataplatform** |

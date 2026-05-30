@@ -365,3 +365,15 @@ End with a summary:
 3. Re-run validation: `python -m kairos_ontology validate`
 4. Run projection: `python -m kairos_ontology project --target all`
 5. Inspect generated output to confirm annotations took effect.
+
+---
+
+## Related skills
+
+| When you need | Invoke |
+|---|---|
+| Design/modify domain ontology classes and properties | **kairos-ontology-modeling** |
+| Design silver layer (DDL, SCD, FK annotations) | **kairos-ontology-medallion-silver** |
+| Run projections (generate artifacts after validation) | **kairos-ontology-projection** |
+| Map source columns to domain properties | **kairos-ontology-mapping** |
+| Check hub status and completeness | **kairos-ontology-hub-status** |

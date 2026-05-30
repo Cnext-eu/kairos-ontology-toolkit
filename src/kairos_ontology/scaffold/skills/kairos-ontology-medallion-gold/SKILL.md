@@ -266,3 +266,15 @@ with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
 - [ ] Check SVG renders were created (requires `mmdc` — see SVG export setup)
 - [ ] Import TMDL into Power BI Desktop or deploy to Fabric workspace
 - [ ] Configure RLS roles in Power BI service (if GDPR dimensions exist)
+
+---
+
+## Related skills
+
+| When you need | Invoke |
+|---|---|
+| Design/modify domain ontology classes and properties | **kairos-ontology-modeling** |
+| Design silver layer (DDL, SCD, FK annotations) | **kairos-ontology-medallion-silver** |
+| Create bronze vocabulary from source docs | **kairos-ontology-medallion-source** |
+| Map source columns to domain properties | **kairos-ontology-mapping** |
+| Run projections (generate dbt/DDL/TMDL output) | **kairos-ontology-projection** |

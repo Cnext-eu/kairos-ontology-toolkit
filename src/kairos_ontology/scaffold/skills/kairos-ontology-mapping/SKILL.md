@@ -260,3 +260,15 @@ bronze:{transformedColumn}
 - ❌ Mapping operational columns (created_by, updated_at) to domain properties
 - ❌ Skipping the session file "because it's just one table"
 - ❌ Presenting 50+ columns in one wall of text (chunk to 15 max)
+
+---
+
+## Related skills
+
+| When you need | Invoke |
+|---|---|
+| Design/modify domain ontology classes and properties | **kairos-ontology-modeling** |
+| Generate HTML mapping report for stakeholders | **kairos-ontology-mapping-report** |
+| Design silver layer (DDL, SCD, FK annotations) | **kairos-ontology-medallion-silver** |
+| Create bronze vocabulary from source docs | **kairos-ontology-medallion-source** |
+| Run projections (generate dbt models from mappings) | **kairos-ontology-projection** |

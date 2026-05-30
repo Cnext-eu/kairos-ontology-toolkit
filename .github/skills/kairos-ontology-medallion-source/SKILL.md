@@ -214,3 +214,15 @@ ontology-hub/integration/sources/{system-name}/
   docs/                            # Additional documentation (ERD, data dictionary)
   notes.md                         # Free-form observations and notes
 ```
+
+---
+
+## Related skills
+
+| When you need | Invoke |
+|---|---|
+| Design/modify domain ontology classes and properties | **kairos-ontology-modeling** |
+| Design silver layer (DDL, SCD, FK annotations) | **kairos-ontology-medallion-silver** |
+| Design gold layer (Power BI star schema, measures) | **kairos-ontology-medallion-gold** |
+| Map source columns to domain properties | **kairos-ontology-mapping** |
+| Run projections after source vocab is complete | **kairos-ontology-projection** |

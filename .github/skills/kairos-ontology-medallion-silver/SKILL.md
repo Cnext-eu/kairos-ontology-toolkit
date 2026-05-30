@@ -892,3 +892,16 @@ dbt test       # Run SHACL-derived tests
 The generated dbt project is designed to be consumed as a **dbt package** in a
 data platform repository. See the `kairos-ontology-dataplatform` skill for
 setup instructions on adding it as a dependency via `packages.yml`.
+
+---
+
+## Related skills
+
+| When you need | Invoke |
+|---|---|
+| Design/modify domain ontology classes and properties | **kairos-ontology-modeling** |
+| Design gold layer (Power BI star schema, measures) | **kairos-ontology-medallion-gold** |
+| Create bronze vocabulary from source docs | **kairos-ontology-medallion-source** |
+| Map source columns to domain properties | **kairos-ontology-mapping** |
+| Run projections (generate dbt/DDL/TMDL output) | **kairos-ontology-projection** |
+| Consume dbt package in data platform repo | **kairos-ontology-dataplatform** |
