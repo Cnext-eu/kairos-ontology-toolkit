@@ -4,19 +4,19 @@
 
 These tests verify that:
 1. Locally-adopted classes (Identifier pattern) produce silver tables correctly.
-2. Alignment files in model/alignments/ are NOT loaded by the projection pipeline.
+2. rdfs:seeAlso back-references are present on inspired classes but ignored by projectors.
 3. The Inspired approach is functionally equivalent to any other local class for
    projection purposes — no special handling needed.
 """
 
 import pytest
-from rdflib import Graph, Namespace, RDF, OWL
+from rdflib import Graph, Namespace, RDFS, URIRef
 
 from kairos_ontology.projections.medallion_silver_projector import (
     generate_silver_artifacts,
 )
 
-from .conftest import EXTENSIONS_DIR, SHAPES_DIR, ALIGNMENTS_DIR
+from .conftest import EXTENSIONS_DIR, SHAPES_DIR, ONTOLOGIES_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -79,72 +79,48 @@ class TestInspiredIdentifierPattern:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Alignment file is NOT loaded during projection
+# Tests: rdfs:seeAlso back-reference — present but ignored by projectors
 # ---------------------------------------------------------------------------
 
-class TestAlignmentFileIsolation:
-    """Alignment files must never be loaded by the projection pipeline."""
+class TestSeeAlsoBackReference:
+    """rdfs:seeAlso on inspired classes provides traceability without affecting projections."""
 
-    def test_alignment_file_exists(self):
-        """Verify the alignment file is present in the fixture."""
-        alignment = ALIGNMENTS_DIR / "client-fibo-alignment.ttl"
-        assert alignment.exists(), (
-            "Test fixture missing: model/alignments/client-fibo-alignment.ttl"
+    def test_see_also_present_on_identifier(self):
+        """The Identifier class should have rdfs:seeAlso pointing to the FIBO URI."""
+        g = Graph()
+        g.parse(ONTOLOGIES_DIR / "client.ttl", format="turtle")
+        acme = Namespace("https://acme.example/ontology/client#")
+        see_also = list(g.objects(acme.Identifier, RDFS.seeAlso))
+        assert len(see_also) >= 1, (
+            "Identifier class should have rdfs:seeAlso linking to reference model"
+        )
+        fibo_uri = URIRef(
+            "https://spec.edmcouncil.org/fibo/ontology/FND/Arrangements/"
+            "Identifiers/Identifier"
+        )
+        assert fibo_uri in see_also, (
+            f"Expected rdfs:seeAlso to point to FIBO Identifier URI, got: {see_also}"
         )
 
-    def test_alignment_not_in_projection_graph(self, client_ontology):
-        """The projection graph should NOT contain FIBO URIs from the alignment file."""
+    def test_see_also_not_in_silver_output(self, client_silver_with_identifier):
+        """Silver projection output should NOT contain rdfs:seeAlso targets."""
+        ddl_key = _find_artifact(client_silver_with_identifier, ".sql")
+        ddl = client_silver_with_identifier[ddl_key].lower()
+        assert "seealso" not in ddl, "rdfs:seeAlso should not appear in silver DDL"
+        assert "fibo" not in ddl, "FIBO URIs should not appear in silver DDL"
+
+    def test_projection_graph_excludes_fibo_uris(self, client_ontology):
+        """The projection graph should NOT contain FIBO URIs from rdfs:seeAlso."""
         graph, namespace, classes = client_ontology
         fibo_ns = "https://spec.edmcouncil.org/fibo/"
-        fibo_triples = [
-            s for s in graph.subjects()
-            if isinstance(s, (str,)) and fibo_ns in str(s)
-        ]
-        # Also check as URIRef
         from rdflib import URIRef
         fibo_subjects = [
             s for s in graph.subjects()
             if isinstance(s, URIRef) and fibo_ns in str(s)
         ]
         assert len(fibo_subjects) == 0, (
-            f"Projection graph contains FIBO URIs — alignment file was loaded! "
-            f"Found: {fibo_subjects[:3]}"
-        )
-
-    def test_skos_match_not_in_projection_graph(self, client_ontology):
-        """No skos:exactMatch or skos:closeMatch triples should be in the projection graph."""
-        graph, namespace, classes = client_ontology
-        SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
-        exact_matches = list(graph.triples((None, SKOS.exactMatch, None)))
-        close_matches = list(graph.triples((None, SKOS.closeMatch, None)))
-        assert len(exact_matches) == 0, (
-            f"Projection graph has skos:exactMatch triples — alignment file was loaded! "
-            f"Found: {exact_matches[:3]}"
-        )
-        assert len(close_matches) == 0, (
-            f"Projection graph has skos:closeMatch triples — alignment file was loaded! "
-            f"Found: {close_matches[:3]}"
-        )
-
-    def test_alignment_file_is_valid_turtle(self):
-        """The alignment file should parse as valid Turtle."""
-        alignment = ALIGNMENTS_DIR / "client-fibo-alignment.ttl"
-        g = Graph()
-        g.parse(alignment, format="turtle")
-        # Should have an owl:Ontology declaration
-        ontologies = list(g.subjects(RDF.type, OWL.Ontology))
-        assert len(ontologies) == 1, "Alignment file should declare exactly one owl:Ontology"
-
-    def test_alignment_has_skos_mappings(self):
-        """The alignment file should contain SKOS match predicates."""
-        alignment = ALIGNMENTS_DIR / "client-fibo-alignment.ttl"
-        g = Graph()
-        g.parse(alignment, format="turtle")
-        SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
-        exact = list(g.triples((None, SKOS.exactMatch, None)))
-        close = list(g.triples((None, SKOS.closeMatch, None)))
-        assert len(exact) + len(close) > 0, (
-            "Alignment file should have at least one skos:exactMatch or skos:closeMatch"
+            f"Projection graph contains FIBO URIs as subjects — "
+            f"rdfs:seeAlso should be an opaque annotation. Found: {fibo_subjects[:3]}"
         )
 
 

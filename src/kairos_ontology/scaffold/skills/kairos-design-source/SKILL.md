@@ -217,6 +217,65 @@ ontology-hub/integration/sources/{system-name}/
 
 ---
 
+## Session Management
+
+> **MANDATORY:** Every source design session MUST produce a session file that
+> captures what was documented, what gaps remain, and design decisions.
+
+### On start — Check for existing session
+
+```
+ontology-hub/.sessions-design/
+  └── source-{system-name}-{YYYY-MM-DD}.md
+```
+
+If a previous session exists, ask the user whether to continue or start fresh.
+
+### Session file format
+
+Save to `ontology-hub/.sessions-design/source-{system-name}-{YYYY-MM-DD}.md`:
+
+```markdown
+# Source Design Session: {system-name}
+
+**Started:** {ISO-8601}
+**Last updated:** {ISO-8601}
+**Status:** Complete | In Progress
+**Toolkit version:** {version}
+
+## Tables Documented
+
+| # | Table | Columns | Data Types Verified | Notes |
+|---|---|---|---|---|
+| 1 | {table_name} | {count} | ✅/❌ | {any notes} |
+
+## Deferred / TODO
+
+| # | Table/Column | Item | Reason | Resolve via |
+|---|---|---|---|---|
+| 1 | {name} | {what is missing} | {why deferred} | kairos-design-source |
+
+## Design Decisions
+
+| # | Question | Decision | Rationale |
+|---|---|---|---|
+| 1 | {question} | {choice made} | {why} |
+
+## Source Evidence Gaps
+
+| # | Gap | Impact | Resolution |
+|---|---|---|---|
+| 1 | {what documentation is missing} | {which mappings/projections are blocked} | {how to resolve} |
+```
+
+### Saving rules
+
+- **Auto-save** after each table vocabulary is confirmed
+- Record tables that could not be fully documented with reasons
+- On pause/completion, list remaining gaps and their downstream impact
+
+---
+
 ## Related skills
 
 | When you need | Invoke |

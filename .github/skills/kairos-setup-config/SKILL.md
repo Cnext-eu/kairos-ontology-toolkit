@@ -39,7 +39,7 @@ structure and adds domains inside an existing repo.
 │   │   │   └── README.md
 │   │   ├── extensions/                  # *-silver-ext.ttl projection annotations
 │   │   └── mappings/                    # Source-to-domain SKOS + kairos-map: mappings
-│   │       └── README.md                #   (also ontology alignment to external standards)
+│   │       └── README.md
 │   ├── integration/                     # Source system integration
 │   │   └── sources/                     # Source system reference docs + bronze vocab
 │   │       ├── README.md

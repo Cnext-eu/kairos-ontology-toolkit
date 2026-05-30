@@ -155,7 +155,8 @@ acme:hasType a owl:ObjectProperty, owl:FunctionalProperty ;
 # ---------------------------------------------------------------------------
 acme:Identifier a owl:Class ;
     rdfs:label "Identifier" ;
-    rdfs:comment "A business identifier with scheme and validity. Inspired by FIBO FND/Arrangements/Identifiers — adopted because it creates a separate silver table for multi-identifier support."@en ;
+    rdfs:comment "A business identifier with scheme and validity — separate silver table for multi-identifier support."@en ;
+    rdfs:seeAlso <https://spec.edmcouncil.org/fibo/ontology/FND/Arrangements/Identifiers/Identifier> ;
     kairos-ext:naturalKey "identifierValue, identifierScheme" .
 
 acme:identifierValue a owl:DatatypeProperty ;

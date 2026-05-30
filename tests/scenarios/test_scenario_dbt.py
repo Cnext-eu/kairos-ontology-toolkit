@@ -982,9 +982,84 @@ class TestDbtSessionLog:
         )
         assert result is None
 
+    def test_write_dbt_session_log_deduplicates_warnings(self, tmp_path):
+        """Duplicate warnings should appear only once in the output."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            write_dbt_session_log,
+        )
 
-# ---------------------------------------------------------------------------
-# Source system discriminator tests — per-source models include _source_system
+        entity_meta = [
+            {
+                "class_name": "Client",
+                "class_uri": "http://example.org/Client",
+                "model_file": "client.sql",
+                "scd_type": "2",
+                "source_count": 1,
+                "column_count": 5,
+                "column_names": ["name"],
+                "fk_join_count": 0,
+                "skipped": False,
+                "skip_reason": None,
+            },
+        ]
+        duplicate_warnings = [
+            "Class 'PartyRole' has no naturalKey",
+            "Class 'PartyRole' has no naturalKey",
+            "Class 'Address' has no naturalKey",
+        ]
+
+        result = write_dbt_session_log(
+            domain="party",
+            entity_metadata=entity_meta,
+            sessions_dir=tmp_path,
+            toolkit_version="3.1.0",
+            warnings=duplicate_warnings,
+        )
+
+        content = result.read_text(encoding="utf-8")
+        assert content.count("PartyRole") == 1, "Duplicate warning not deduplicated"
+        assert content.count("Address") == 1
+
+    def test_write_dbt_session_log_excludes_skip_reason_from_warnings(self, tmp_path):
+        """Warnings matching a skip_reason should not appear in Warnings section."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            write_dbt_session_log,
+        )
+
+        entity_meta = [
+            {
+                "class_name": "SomeClass",
+                "class_uri": "http://example.org/SomeClass",
+                "model_file": None,
+                "scd_type": None,
+                "source_count": 0,
+                "column_count": 0,
+                "column_names": [],
+                "fk_join_count": 0,
+                "skipped": True,
+                "skip_reason": "No bronze mapping found",
+            },
+        ]
+        warnings_with_overlap = [
+            "No bronze mapping for class 'SomeClass' — skipping silver model. "
+            "Resolve via: kairos-design-mapping",
+            "Class 'Other' has no naturalKey",
+        ]
+
+        result = write_dbt_session_log(
+            domain="test",
+            entity_metadata=entity_meta,
+            sessions_dir=tmp_path,
+            toolkit_version="3.1.0",
+            warnings=warnings_with_overlap,
+        )
+
+        content = result.read_text(encoding="utf-8")
+        # The "No bronze mapping" warning should be filtered (already in Skipped section)
+        assert "## ⚠️ Warnings" in content
+        assert "No bronze mapping" not in content.split("## ⚠️ Warnings")[1]
+        # The naturalKey warning should still appear
+        assert "Class 'Other' has no naturalKey" in content
 # ---------------------------------------------------------------------------
 
 class TestSourceSystemDiscriminator:

@@ -816,9 +816,42 @@ def _gen_silver_models(
 
         source_refs = class_to_sources.get(cls_uri, [])
         if not source_refs:
+            # Check if this class is a discriminator subclass (S3-flattened into parent)
+            is_discriminator_subclass = False
+            parent_name = None
+            for parent in graph.objects(URIRef(cls_uri), RDFS.subClassOf):
+                if not isinstance(parent, URIRef):
+                    continue
+                if str(parent).startswith("http://www.w3.org/"):
+                    continue
+                strategy = graph.value(parent, KAIROS_EXT.term("inheritanceStrategy"))
+                if strategy and str(strategy) == "discriminator":
+                    is_discriminator_subclass = True
+                    parent_name = extract_local_name(str(parent))
+                    break
+
+            if is_discriminator_subclass:
+                logger.info(
+                    f"Class '{local}' flattened into parent '{parent_name}' via "
+                    f"S3 discriminator strategy — no separate silver model needed."
+                )
+                entity_metadata.append({
+                    "class_name": local,
+                    "class_uri": cls_uri,
+                    "model_file": None,
+                    "scd_type": None,
+                    "source_count": 0,
+                    "column_count": 0,
+                    "column_names": [],
+                    "fk_join_count": 0,
+                    "skipped": True,
+                    "skip_reason": f"S3 discriminator subclass of {parent_name}",
+                })
+                continue
+
             msg = (
                 f"No bronze mapping for class '{local}' — skipping silver model. "
-                f"Add a SKOS mapping (skos:exactMatch) in model/mappings/ to enable."
+                f"Resolve via: kairos-design-mapping"
             )
             logger.warning(msg)
             warnings.append(msg)
@@ -841,9 +874,8 @@ def _gen_silver_models(
         if not natural_key_cols:
             msg = (
                 f"Class '{local}' has no kairos-ext:naturalKey — "
-                f"SK and IRI columns will be NULL. Add "
-                f"'kairos-ext:naturalKey \"<propertyName>\"' to the class "
-                f"definition or its silver extension file."
+                f"SK and IRI columns will be NULL. "
+                f"Resolve via: kairos-design-silver"
             )
             logger.warning(msg)
             warnings.append(msg)
@@ -1638,8 +1670,7 @@ def _extract_fk_columns_and_joins(
             msg = (
                 f"FK column '{fk_col_name}' targets class '{range_local}' which "
                 f"has no kairos-ext:naturalKey — cannot generate join. "
-                f"Add 'kairos-ext:naturalKey \"<propertyName>\"' to the "
-                f"'{range_local}' class definition."
+                f"Resolve via: kairos-design-silver"
             )
             warnings.append(msg)
             existing_aliases.add(fk_col_name)
@@ -2849,15 +2880,29 @@ def write_dbt_session_log(
             lines.append(f"- `{e['class_name']}` — {e.get('skip_reason', 'Unknown')}")
         lines.append("")
 
-    # Warnings
-    if warnings:
+    # Warnings (deduplicated, excluding messages already shown in Skipped section)
+    skipped_class_names = {e["class_name"] for e in entity_metadata if e.get("skipped")}
+    seen: set[str] = set()
+    unique_warnings: list[str] = []
+    for w in (warnings or []):
+        if w not in seen:
+            # Skip warnings about classes already listed in Skipped section
+            is_about_skipped = any(
+                f"'{name}'" in w and "skipping" in w.lower()
+                for name in skipped_class_names
+            )
+            if not is_about_skipped:
+                seen.add(w)
+                unique_warnings.append(w)
+
+    if unique_warnings:
         lines.append("## ⚠️ Warnings")
         lines.append("")
-        for w in warnings:
+        for w in unique_warnings:
             lines.append(f"- {w}")
         lines.append("")
 
-    if not skipped and not warnings:
+    if not skipped and not unique_warnings:
         lines.append("## ✅ No issues")
         lines.append("")
         lines.append("All entities projected without warnings.")
