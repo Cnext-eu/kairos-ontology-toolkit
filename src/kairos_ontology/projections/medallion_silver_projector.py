@@ -8,12 +8,17 @@ Silver Fabric rules S1–S8 control Warehouse-specific output behaviour:
 
   S1 — Spark SQL types (BOOLEAN, TIMESTAMP, STRING, DOUBLE)
   S2 — PK/FK/UNIQUE as DDL comments (Fabric can't enforce constraints)
-  S3 — Flatten ALL inheritance to single table + discriminator
+  S3 — Flatten inheritance to single table + discriminator (opt-in via annotation)
   S4 — Inline small reference tables (≤3 columns) into parent
   S5 — ``_row_hash`` BINARY column for incremental MERGE
   S6 — ``_deleted_at`` TIMESTAMP soft-delete column
   S7 — Canonical schema ownership (no cross-domain table duplication)
   S8 — No ``dim_``/``fact_`` prefixes (reserved for Gold layer)
+
+Default inheritance strategy is **Table-Per-Concrete-class (TPC)**: each concrete
+class gets its own table inheriting parent properties.  S3 discriminator flattening
+is activated only when the parent class has:
+  ``kairos-ext:inheritanceStrategy "discriminator"``
 
 Namespace:  kairos-ext:  https://kairos.cnext.eu/ext#
 """
@@ -82,11 +87,14 @@ def _local_name(uri: str) -> str:
 
 def _get_class_and_ancestors(
     graph: Graph, cls_uri: URIRef, class_uris: set[str],
+    inherit_from: set[str] | None = None,
 ) -> set[URIRef]:
     """Resolve the full rdfs:subClassOf chain for *cls_uri*.
 
     Returns a set of URIRefs including *cls_uri* itself plus all ancestor classes
-    that are NOT already in *class_uris* (separately projected — S3 handles those).
+    that are NOT already in *class_uris* (separately projected — S3 handles those),
+    UNLESS they appear in *inherit_from* (TPC parents whose properties should be
+    inherited by the child table).
     Stops at owl:Thing and W3C namespace URIs.  Includes cycle protection.
     """
     result: set[URIRef] = {cls_uri}
@@ -105,7 +113,11 @@ def _get_class_and_ancestors(
             if parent_str.startswith("http://www.w3.org/"):
                 continue
             # Skip ancestors that are separately projected (S3 handles them)
+            # UNLESS they are TPC parents we should inherit from
             if parent_str in class_uris:
+                if inherit_from and parent_str in inherit_from:
+                    result.add(parent)
+                    queue.append(parent)
                 continue
             result.add(parent)
             queue.append(parent)
@@ -398,12 +410,14 @@ def generate_silver_artifacts(
     # Warn about silverForeignKey annotations missing domain/range
     _warn_incomplete_fk_annotations(merged)
 
-    # S3: Track all subtypes to flatten into parent tables
+    # S3: Track subtypes to flatten into parent tables (discriminator strategy only)
     folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype names]
-    # Map of subtype_uri → parent_uri for property merging
+    # Map of subtype_uri → parent_uri for property merging (discriminator only)
     subtype_parents: dict[str, str] = {}
+    # TPC parents: parents that use table-per-concrete-class (children inherit props)
+    tpc_parents: set[str] = set()
 
-    # Pre-scan: identify all subtype relationships and build folded_subtypes map
+    # Pre-scan: identify subtype relationships and classify inheritance strategy
     for cls_info in domain_classes:
         cls_uri = URIRef(cls_info["uri"])
         gdpr_parent = merged.value(cls_uri, KAIROS_EXT.gdprSatelliteOf)
@@ -411,11 +425,16 @@ def generate_silver_artifacts(
             continue  # GDPR satellites are never flattened
         for parent in merged.objects(cls_uri, RDFS.subClassOf):
             if isinstance(parent, URIRef) and str(parent) in class_uris:
-                subtype_parents[cls_info["uri"]] = str(parent)
-                # BUG-2 fix: use set-like append to avoid duplicates from import paths
-                existing = folded_subtypes.setdefault(str(parent), [])
-                if cls_info["name"] not in existing:
-                    existing.append(cls_info["name"])
+                parent_strategy = _str_val(merged, parent, KAIROS_EXT.inheritanceStrategy)
+                if parent_strategy == "discriminator":
+                    # S3: flatten into parent
+                    subtype_parents[cls_info["uri"]] = str(parent)
+                    existing = folded_subtypes.setdefault(str(parent), [])
+                    if cls_info["name"] not in existing:
+                        existing.append(cls_info["name"])
+                else:
+                    # TPC: child gets its own table, inheriting parent properties
+                    tpc_parents.add(str(parent))
                 break
 
     for cls_info in domain_classes:
@@ -435,18 +454,19 @@ def generate_silver_artifacts(
         tbl.cluster_by = _str_val(merged, cls_uri, KAIROS_EXT.clusterBy) or None
 
         # ----------------------------------------------------------------
-        # Determine inheritance: is this a subtype?
+        # Determine inheritance: is this a discriminator subtype?
         # ----------------------------------------------------------------
         supertype_uri = None
         if cls_info["uri"] in subtype_parents:
             supertype_uri = URIRef(subtype_parents[cls_info["uri"]])
-        is_subtype = supertype_uri is not None
+        is_disc_subtype = supertype_uri is not None
 
         # ----------------------------------------------------------------
-        # S3 — Flatten ALL subtypes into parent table (except GDPR)
-        # Silver always uses single-table inheritance with discriminator.
+        # S3 — Flatten discriminator subtypes into parent table (except GDPR)
+        # Only when parent declares inheritanceStrategy "discriminator".
+        # TPC subtypes (default) generate their own table below.
         # ----------------------------------------------------------------
-        if is_subtype and not is_gdpr:
+        if is_disc_subtype and not is_gdpr:
             continue  # skip table generation — properties merged in post-pass
 
         # ----------------------------------------------------------------
@@ -481,9 +501,11 @@ def generate_silver_artifacts(
             tbl.unique_columns.append(f"{tbl_name}_iri")
 
         # 3. FK columns from max-cardinality-1 object properties (R12)
+        # TPC subtypes inherit parent's FK columns via inherit_from
         _add_object_property_fk_cols(merged, cls_uri, tbl, table_name_for, schema_name,
                                      class_uris, naming_conv,
-                                     inherit_ancestors=True)
+                                     inherit_ancestors=True,
+                                     inherit_from=tpc_parents if tpc_parents else None)
 
         # 4. Discriminator column (R6 + S3 — auto-add if class has subtypes)
         disc_col = _str_val(merged, cls_uri, KAIROS_EXT.discriminatorColumn)
@@ -495,8 +517,10 @@ def generate_silver_artifacts(
                                          comment="Type discriminator"))
 
         # 5. Data properties (business columns)
+        # TPC subtypes inherit parent properties via inherit_from
         _add_data_properties(merged, cls_uri, tbl, shacl_graph, naming_conv,
-                             class_uris=class_uris)
+                             class_uris=class_uris,
+                             inherit_from=tpc_parents if tpc_parents else None)
 
         # 6. SCD Type 2 columns (R5)
         if scd == "2":
@@ -880,7 +904,8 @@ def _not_null_from_shacl(shacl_graph: Optional[Graph], prop_uri: URIRef,
 def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
                           shacl_graph: Optional[Graph], naming_conv: str,
                           comment_prefix: str = "",
-                          class_uris: set[str] | None = None) -> None:
+                          class_uris: set[str] | None = None,
+                          inherit_from: set[str] | None = None) -> None:
     """Add OWL DatatypeProperty columns to the table (business columns, R4, R11).
 
     Args:
@@ -888,10 +913,13 @@ def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
             forces nullable=True (subtype columns are always nullable on parent).
         class_uris: If provided, enables inheritance traversal — properties from
             unprojected ancestor classes are included.
+        inherit_from: If provided (TPC parents), properties from these ancestors
+            are included even though they are separately projected.
     """
     # Determine which domains to match (inheritance traversal)
     if class_uris is not None:
-        domains_to_match = _get_class_and_ancestors(graph, cls_uri, class_uris)
+        domains_to_match = _get_class_and_ancestors(graph, cls_uri, class_uris,
+                                                    inherit_from=inherit_from)
     else:
         domains_to_match = {cls_uri}
 
@@ -941,6 +969,7 @@ def _add_object_property_fk_cols(
     table_name_for, schema_name: str, class_uris: set[str], naming_conv: str,
     comment_prefix: str = "",
     inherit_ancestors: bool = False,
+    inherit_from: set[str] | None = None,
 ) -> None:
     """Add FK columns from max-cardinality-1 object properties (R12).
 
@@ -964,10 +993,13 @@ def _add_object_property_fk_cols(
             forces nullable=True (subtype FK columns are always nullable on parent).
         inherit_ancestors: If True, include object properties from unprojected
             ancestor classes (inheritance traversal).
+        inherit_from: If provided (TPC parents), properties from these ancestors
+            are included even though they are separately projected.
     """
     # Determine which domains to match (inheritance traversal)
     if inherit_ancestors:
-        domains_to_match = _get_class_and_ancestors(graph, cls_uri, class_uris)
+        domains_to_match = _get_class_and_ancestors(graph, cls_uri, class_uris,
+                                                    inherit_from=inherit_from)
     else:
         domains_to_match = {cls_uri}
 

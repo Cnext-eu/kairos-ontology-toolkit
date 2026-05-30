@@ -271,3 +271,51 @@ class TestDD021LogisticsDomain:
         # partyName and partyCode are properties of TradeParty in the ref model
         assert "party_name" in ddl
         assert "party_code" in ddl
+
+
+# ---------------------------------------------------------------------------
+# S3 Inheritance Strategy: Discriminator vs TPC (Table-Per-Concrete-Class)
+# ---------------------------------------------------------------------------
+
+class TestS3InheritanceStrategy:
+    """S3 rule respects inheritanceStrategy annotation.
+
+    Client domain uses discriminator → subtypes are folded into parent.
+    Without the annotation, subtypes would get separate tables (TPC).
+    """
+
+    def test_discriminator_folds_subtypes(self, client_silver_artifacts):
+        """With inheritanceStrategy 'discriminator', subtypes are folded into parent."""
+        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
+        ddl = client_silver_artifacts[ddl_key].lower()
+        # The parent 'client' table should exist
+        assert "silver.client" in ddl or "silver_client.client" in ddl, (
+            "Parent Client table missing from DDL"
+        )
+        # Discriminator column should be present on the parent table
+        assert "client_type" in ddl, (
+            "discriminatorColumn 'client_type' missing from DDL"
+        )
+
+    def test_discriminator_skips_subtypes(self, client_silver_artifacts):
+        """Discriminator subtypes should NOT get separate tables."""
+        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
+        ddl = client_silver_artifacts[ddl_key]
+        # Count CREATE TABLE statements — subtypes shouldn't have their own
+        tables = [
+            line for line in ddl.split("\n")
+            if "CREATE TABLE" in line.upper()
+        ]
+        table_names = [t.lower() for t in tables]
+        # CorporateClient, SoleProprietorClient, IndividualClient should NOT
+        # appear as separate tables
+        for name in table_names:
+            assert "corporate_client" not in name, (
+                "Discriminator subtype CorporateClient has its own table — should be folded"
+            )
+            assert "sole_proprietor_client" not in name, (
+                "Discriminator subtype SoleProprietorClient has its own table — should be folded"
+            )
+            assert "individual_client" not in name, (
+                "Discriminator subtype IndividualClient has its own table — should be folded"
+            )

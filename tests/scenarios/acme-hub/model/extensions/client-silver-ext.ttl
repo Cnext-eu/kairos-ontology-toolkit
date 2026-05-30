@@ -16,7 +16,8 @@
 
 # Class-level
 acme:Client
-    kairos-ext:naturalKey "clientId" .
+    kairos-ext:naturalKey "clientId" ;
+    kairos-ext:inheritanceStrategy "discriminator" .
 
 acme:CorporateClient
     kairos-ext:silverTableName "corporate_client" ;

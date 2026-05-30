@@ -70,6 +70,18 @@ but **not yet consumed** by a projector — safe to ignore until it is wired up.
 | `clusterBy` | string | Column(s) for Delta Lake Liquid Clustering `CLUSTER BY` (R10) |
 | `naturalKey` | string | Space-separated property names (camelCase) forming the business key — drives SK generation and IRI construction. See §5 |
 
+> **S3 Inheritance behaviour (DD-035):** The `inheritanceStrategy` annotation
+> controls whether child classes (subtypes) get their own tables or are folded into
+> the parent:
+>
+> - **`class-per-table`** (default): each subtype gets its own table with inherited
+>   properties copied down. This is the safe default that preserves all information.
+> - **`discriminator`**: subtypes are folded into the parent table, which gains a
+>   discriminator column and any subtype-specific columns. Use when subtypes share a
+>   single source table distinguished by a type column.
+>
+> All three projectors (silver, dbt, gold) now respect this annotation consistently.
+
 ### 3c. Property-level
 
 | Annotation | Range | Purpose |

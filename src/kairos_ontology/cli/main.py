@@ -392,9 +392,7 @@ def init(domain, company_domain, force):
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
         hub / "output" / "report",
-        hub / ".sessions-modeling",
         hub / ".sessions-projection",
-        hub / ".sessions-mapping",
         hub / ".sessions-design",
     ]:
         d.mkdir(parents=True, exist_ok=True)
@@ -410,7 +408,7 @@ def init(domain, company_domain, force):
 
     # Place .gitkeep in session folders so git tracks them
     for session_folder in [
-        ".sessions-modeling", ".sessions-projection", ".sessions-mapping",
+        ".sessions-projection",
         ".sessions-design",
     ]:
         sk = hub / session_folder / ".gitkeep"
@@ -1150,9 +1148,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "output" / "a2ui",
         hub / "output" / "prompt",
         hub / "output" / "report",
-        hub / ".sessions-modeling",
         hub / ".sessions-projection",
-        hub / ".sessions-mapping",
         hub / ".sessions-design",
     ]:
         d.mkdir(parents=True, exist_ok=True)
@@ -1168,7 +1164,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
 
     # Place .gitkeep in session folders so git tracks them
     for session_folder in [
-        ".sessions-modeling", ".sessions-projection", ".sessions-mapping",
+        ".sessions-projection",
         ".sessions-design",
     ]:
         sk = hub / session_folder / ".gitkeep"
