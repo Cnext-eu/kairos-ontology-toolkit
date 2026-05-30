@@ -1418,6 +1418,29 @@ def _extract_silver_columns(
     return columns
 
 
+def _resolve_discriminated_model(graph: Graph, class_uri) -> tuple[str, str]:
+    """Resolve a class to its effective model name, accounting for discriminator folding.
+
+    If the class is a subclass of a parent with ``inheritanceStrategy "discriminator"``,
+    the subclass is folded into the parent table — return the parent's model name.
+    Otherwise return the class's own model name.
+
+    Returns (model_name, local_name) for the resolved target.
+    """
+    cls_local = extract_local_name(str(class_uri))
+    cls_model = _camel_to_snake(cls_local)
+
+    # Walk up the subClassOf chain looking for a discriminator parent
+    for parent in graph.objects(URIRef(str(class_uri)), RDFS.subClassOf):
+        strategy = graph.value(parent, KAIROS_EXT.inheritanceStrategy)
+        if strategy and str(strategy) == "discriminator":
+            parent_local = extract_local_name(str(parent))
+            parent_model = _camel_to_snake(parent_local)
+            return parent_model, parent_local
+
+    return cls_model, cls_local
+
+
 def _infer_fk_targets(
     graph: Graph,
     class_uri: str,
@@ -1465,8 +1488,8 @@ def _infer_fk_targets(
         if range_cls is None:
             continue
 
-        range_local = extract_local_name(str(range_cls))
-        range_model = _camel_to_snake(range_local)
+        # Resolve through discriminator folding (e.g. LegalEntity → Party)
+        range_model, range_local = _resolve_discriminated_model(graph, range_cls)
 
         # Determine FK column name
         col_override = graph.value(prop, KAIROS_EXT.silverColumnName)
@@ -1492,6 +1515,10 @@ def _infer_fk_on_targets(
     When a property has ``kairos-ext:silverForeignKeyOn <class>``, the FK column
     should appear on that target class (not the domain class).  This function
     collects such properties where the target class matches *class_uri*.
+
+    The join target is the property's **domain** (the parent entity), not its
+    range (which equals this class).  E.g. hasAddress(domain=Party, range=Address)
+    with silverForeignKeyOn=Address → FK on Address joining to Party.
     """
     targets: list[dict] = []
 
@@ -1500,22 +1527,27 @@ def _infer_fk_on_targets(
         if fk_on is None or str(fk_on) != class_uri:
             continue
 
-        # The range of the property is the dimension we're joining to
-        range_cls = graph.value(prop, RDFS.range)
-        if range_cls is None:
+        # The domain of the property is the parent we're joining to
+        # (not range, which is the current class — would cause self-join)
+        parent_cls = graph.value(prop, RDFS.domain)
+        if parent_cls is None:
             continue
 
-        range_local = extract_local_name(str(range_cls))
-        range_model = _camel_to_snake(range_local)
+        # Skip if parent is same as current class (true self-referential)
+        if str(parent_cls) == class_uri:
+            continue
+
+        # Resolve through discriminator folding
+        parent_model, parent_local = _resolve_discriminated_model(graph, parent_cls)
 
         col_override = graph.value(prop, KAIROS_EXT.silverColumnName)
-        fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
+        fk_col_name = str(col_override) if col_override else f"{parent_model}_sk"
 
         targets.append({
             "prop": prop,
-            "range_cls": range_cls,
-            "range_local": range_local,
-            "range_model": range_model,
+            "range_cls": parent_cls,
+            "range_local": parent_local,
+            "range_model": parent_model,
             "fk_col_name": fk_col_name,
         })
 
@@ -2141,11 +2173,16 @@ def _gen_project_config(
     """Generate ``dbt_project.yml``, ``packages.yml``, and ``README.md``."""
     artifacts: dict[str, str] = {}
 
+    # Sanitize project name for dbt (must match ^[^\d\W]\w*$)
+    safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", project_name)
+    if safe_name and safe_name[0].isdigit():
+        safe_name = f"p_{safe_name}"
+
     domains = [{"name": n} for n in ontology_names]
 
     proj_template = env.get_template("dbt_project.yml.jinja2")
     artifacts["dbt_project.yml"] = proj_template.render(
-        project_name=project_name,
+        project_name=safe_name,
         domains=domains,
         gold_domains=gold_domains or [],
     )
@@ -2814,7 +2851,76 @@ def generate_dbt_artifacts(
     if macros:
         logger.info("Generated %d platform macro(s)", len(macros))
 
+    # 9. Post-generation validation
+    _validate_dbt_artifacts(artifacts)
+
     return artifacts
+
+
+# ---------------------------------------------------------------------------
+# Post-generation validation helpers
+# ---------------------------------------------------------------------------
+
+
+def _validate_dbt_artifacts(artifacts: dict[str, str]) -> None:
+    """Run lightweight validation checks on generated dbt artifacts.
+
+    Emits warnings via logger — does NOT raise. Checks:
+    1. Jinja syntax: all .sql files parse with standard {% %} delimiters
+    2. Ref consistency: every ref('x') points to an artifact that exists
+    3. Self-join detection: no model refs itself
+    """
+    model_names = _extract_model_names(artifacts)
+    for path, content in artifacts.items():
+        if not path.endswith(".sql"):
+            continue
+        _check_jinja_syntax(path, content)
+        _check_refs(path, content, model_names)
+
+
+def _extract_model_names(artifacts: dict[str, str]) -> set[str]:
+    """Derive the set of model names from artifact paths."""
+    names: set[str] = set()
+    for path in artifacts:
+        if path.endswith(".sql"):
+            # models/silver_<schema>/<name>.sql -> name (without .sql)
+            name = path.rsplit("/", 1)[-1].removesuffix(".sql")
+            names.add(name)
+    return names
+
+
+def _check_jinja_syntax(path: str, content: str) -> None:
+    """Verify that generated SQL parses as valid Jinja2."""
+    from jinja2 import Environment as J2Env, TemplateSyntaxError
+
+    env = J2Env()  # default {% %} / {{ }} delimiters
+    try:
+        env.parse(content)
+    except TemplateSyntaxError as exc:
+        logger.warning(
+            "dbt validation: Jinja syntax error in %s line %s: %s",
+            path, exc.lineno, exc.message,
+        )
+
+
+_REF_PATTERN = re.compile(r"""\bref\(\s*['"]([^'"]+)['"]\s*\)""")
+
+
+def _check_refs(path: str, content: str, model_names: set[str]) -> None:
+    """Check ref() calls point to known models and don't self-reference."""
+    model_name = path.rsplit("/", 1)[-1].removesuffix(".sql")
+    for match in _REF_PATTERN.finditer(content):
+        target = match.group(1)
+        if target == model_name:
+            logger.warning(
+                "dbt validation: self-referential ref('%s') in %s",
+                target, path,
+            )
+        elif target not in model_names:
+            logger.warning(
+                "dbt validation: ref('%s') in %s does not match any generated model",
+                target, path,
+            )
 
 
 def generate_dbt_project_config(
