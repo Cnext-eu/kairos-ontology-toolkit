@@ -93,8 +93,7 @@ kairos-ontology-toolkit/
 ├── service/                       # FastAPI REST API + AI chat
 │   ├── app/routers/               # Endpoints: ontology, validate, project, chat
 │   └── app/services/              # GitHub integration, Copilot SDK
-├── tests/                         # pytest test suite (172+ tests)
-└── docker-compose.yml             # One-command service deployment
+└── tests/                         # pytest test suite (700+ tests)
 ```
 
 ## 🌐 Web Service
@@ -103,9 +102,6 @@ The toolkit ships with a FastAPI service for REST-based ontology management and 
 AI chat interface powered by the GitHub Copilot SDK.
 
 ```bash
-# Docker (production)
-docker compose up --build
-
 # Local dev mode (no GitHub App required)
 KAIROS_DEV_MODE=true uvicorn service.app.main:app --reload
 ```
