@@ -28,6 +28,9 @@ models:
 {%- if gold_domains %}
     gold:
       +materialized: table
+      shared:
+        +schema: 'gold_shared'
+        +tags: ['gold', 'shared']
 {%- for domain in gold_domains %}
       {{ domain.name }}:
         +schema: 'gold_{{ domain.name }}'
