@@ -1,7 +1,7 @@
 # CR-3 Discussion: naturalKey for FK-child Entities
 
 **Date:** 2026-05-30  
-**Status:** Open — design discussion  
+**Status:** Resolved — Option 4 implemented, `identityStrategy` deferred  
 **Context:** Part of CR-projection-warnings-2026-05-30 from PKF Bofidi hub team  
 **Related:** kairos-ext:naturalKey, kairos-ext:silverForeignKeyOn  
 
@@ -208,3 +208,35 @@ provides the best balance:
 - FK detection: `src/kairos_ontology/projections/medallion_dbt_projector.py:1359`
 - Silver skill: `.github/skills/kairos-design-silver/SKILL.md`
 - Original CR: `pkf-bofidi-ontology-hub/.docs/draft/CR-projection-warnings-2026-05-30.md`
+
+---
+
+## Resolution (2026-05-30)
+
+Following the consistency review in `extension-vocabulary-review-2026-05-30.md` §3,
+this CR was **challenged and resolved as follows**:
+
+**Decision: implement Option 4 (improved warning) now; defer `identityStrategy`.**
+
+Rationale (from the review challenge):
+- The CR's "composite" case is already derivable: when `silverForeignKeyOn` targets
+  a class that also has a `naturalKey`, the projector has enough information to build
+  a composite key — no new annotation is required.
+- The "embedded" case has **no projector consumer** today (neither silver nor dbt
+  skips table generation), so adding `identityStrategy "embedded"` would introduce
+  vocabulary with nothing to honour it. Per the "don't add vocabulary that has no
+  projector consumer yet" principle, this is deferred.
+- `identityParent` re-declares the parent relationship that `silverForeignKeyOn`
+  already encodes in the graph.
+- The user's real pain was a **confusing WARNING**, not a missing annotation.
+
+**Implemented (Option 4):** the dbt projector's missing-`naturalKey` warning now
+detects FK-child context via `_fk_child_parents()` and, when the class is targeted
+by `silverForeignKeyOn`, names the parent(s) and explains the options (add a
+composite/weak-entity key, add a source identity key, or denormalise onto the
+parent). See `medallion_dbt_projector.py` (`_fk_child_parents` + the
+missing-naturalKey branch) and `tests/test_dbt_projector.py::TestNaturalKeyWarning::test_warning_mentions_fk_child_context`.
+
+**Deferred:** `kairos-ext:identityStrategy` / `identityParent`. Revisit only if hub
+teams still struggle after the improved warnings — at which point the implementation
+steps listed under "Recommendation" above apply. See design decision DD-034.

@@ -1685,6 +1685,38 @@ NK_MAPPING_WIDGET_TTL = textwrap.dedent("""\
         kairos-map:transform "source.Code" .
 """)
 
+NK_ONTOLOGY_FK_CHILD_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "NK Test Ontology" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:Gadget a owl:Class ;
+        rdfs:label "Gadget" ;
+        rdfs:comment "A parent entity" ;
+        kairos-ext:naturalKey "gadgetCode" .
+
+    ex:Widget a owl:Class ;
+        rdfs:label "Widget" ;
+        rdfs:comment "A widget entity (FK-child, no naturalKey)" .
+
+    ex:widgetCode a owl:DatatypeProperty ;
+        rdfs:label "widget code" ;
+        rdfs:domain ex:Widget ;
+        rdfs:range xsd:string .
+
+    ex:hasWidget a owl:ObjectProperty ;
+        rdfs:label "has widget" ;
+        rdfs:domain ex:Gadget ;
+        rdfs:range ex:Widget ;
+        kairos-ext:silverForeignKeyOn ex:Widget .
+""")
+
 
 class TestNaturalKeyWarning:
     """Tests that missing kairos-ext:naturalKey emits a warning."""
@@ -1778,6 +1810,32 @@ class TestNaturalKeyWarning:
                 mappings_dir=nk_mappings_widget,
             )
         # Warning should guide user to the correct design skill
+        assert "kairos-design-silver" in caplog.text
+
+    def test_warning_mentions_fk_child_context(
+        self, template_dir, nk_sources_dir, nk_mappings_widget, caplog,
+    ):
+        """An FK-child (silverForeignKeyOn target) without naturalKey should get
+        a context-aware warning naming its parent and explaining the options."""
+        g = Graph()
+        g.parse(data=NK_ONTOLOGY_FK_CHILD_TTL, format="turtle")
+        classes = [{"uri": "http://kairos.example/ontology/Widget",
+                     "name": "Widget", "label": "Widget",
+                     "comment": "A widget entity"}]
+
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.projections.medallion_dbt_projector"):
+            generate_dbt_artifacts(
+                classes=classes,
+                graph=g,
+                template_dir=template_dir,
+                namespace="http://kairos.example/ontology/",
+                ontology_name="widget",
+                sources_dir=nk_sources_dir,
+                mappings_dir=nk_mappings_widget,
+            )
+        assert "no kairos-ext:naturalKey" in caplog.text
+        assert "FK-child of Gadget" in caplog.text
+        assert "weak entity" in caplog.text
         assert "kairos-design-silver" in caplog.text
 
 

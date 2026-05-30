@@ -824,7 +824,7 @@ def _gen_silver_models(
                     continue
                 if str(parent).startswith("http://www.w3.org/"):
                     continue
-                strategy = graph.value(parent, KAIROS_EXT.term("inheritanceStrategy"))
+                strategy = graph.value(parent, KAIROS_EXT.inheritanceStrategy)
                 if strategy and str(strategy) == "discriminator":
                     is_discriminator_subclass = True
                     parent_name = extract_local_name(str(parent))
@@ -872,11 +872,25 @@ def _gen_silver_models(
         # Check for missing naturalKey — critical for SK and IRI generation
         natural_key_cols = _get_natural_key(graph, cls_uri)
         if not natural_key_cols:
-            msg = (
-                f"Class '{local}' has no kairos-ext:naturalKey — "
-                f"SK and IRI columns will be NULL. "
-                f"Resolve via: kairos-design-silver"
-            )
+            fk_parents = _fk_child_parents(graph, cls_uri)
+            if fk_parents:
+                msg = (
+                    f"Class '{local}' has no kairos-ext:naturalKey and is an "
+                    f"FK-child of {', '.join(fk_parents)} (via "
+                    f"kairos-ext:silverForeignKeyOn) — its surrogate key and IRI "
+                    f"will be NULL. If this is a weak entity, add a "
+                    f"kairos-ext:naturalKey for its composite business key (e.g. "
+                    f"a type/discriminator column distinguishing rows under the "
+                    f"same parent); if it has its own source identity, add that "
+                    f"key; if it is purely embedded, consider denormalising it "
+                    f"onto the parent table. Resolve via: kairos-design-silver"
+                )
+            else:
+                msg = (
+                    f"Class '{local}' has no kairos-ext:naturalKey — "
+                    f"SK and IRI columns will be NULL. "
+                    f"Resolve via: kairos-design-silver"
+                )
             logger.warning(msg)
             warnings.append(msg)
 
@@ -1384,16 +1398,16 @@ def _infer_fk_targets(
             continue
 
         # Skip junction-table properties (many-to-many)
-        if graph.value(prop, KAIROS_EXT.term("junctionTableName")):
+        if graph.value(prop, KAIROS_EXT.junctionTableName):
             continue
 
         # Skip if silverForeignKeyOn redirects this FK to another table (DD-022)
-        fk_on = graph.value(prop, KAIROS_EXT.term("silverForeignKeyOn"))
+        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
         if fk_on is not None:
             continue
 
         # Qualify: must be functional, have silverColumnName, or silverForeignKey
-        has_explicit_col = graph.value(prop, KAIROS_EXT.term("silverColumnName")) is not None
+        has_explicit_col = graph.value(prop, KAIROS_EXT.silverColumnName) is not None
         is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
         has_fk_annotation = bool_val(
             graph, URIRef(str(prop)), KAIROS_EXT.silverForeignKey, False,
@@ -1409,7 +1423,7 @@ def _infer_fk_targets(
         range_model = _camel_to_snake(range_local)
 
         # Determine FK column name
-        col_override = graph.value(prop, KAIROS_EXT.term("silverColumnName"))
+        col_override = graph.value(prop, KAIROS_EXT.silverColumnName)
         fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
 
         targets.append({
@@ -1715,6 +1729,31 @@ def _build_enum_case(source_expr: str, enum_values: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def _fk_child_parents(graph: Graph, class_uri: str) -> list[str]:
+    """Local names of parent classes for which ``class_uri`` is an FK-child.
+
+    A class is an FK-child (weak entity) when an object property declares
+    ``kairos-ext:silverForeignKeyOn`` pointing at it, so the FK column lands on
+    this class's table pointing back to the property's other end (the parent).
+    Such entities typically derive their identity from the parent (composite key)
+    rather than from a standalone natural key. Used only to enrich warnings.
+    """
+    parents: list[str] = []
+    target = URIRef(class_uri)
+    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
+        if fk_on is None or fk_on != target:
+            continue
+        domain = graph.value(prop, RDFS.domain)
+        rng = graph.value(prop, RDFS.range)
+        parent = domain if rng == target else rng
+        if parent is not None:
+            local = extract_local_name(str(parent))
+            if local not in parents:
+                parents.append(local)
+    return parents
+
+
 def _get_natural_key(
     graph: Graph, class_uri: str, _visited: set[str] | None = None
 ) -> list[str]:
@@ -1731,7 +1770,7 @@ def _get_natural_key(
     _visited.add(class_uri)
 
     # Direct annotation on this class — always wins
-    nk = graph.value(URIRef(class_uri), KAIROS_EXT.term("naturalKey"))
+    nk = graph.value(URIRef(class_uri), KAIROS_EXT.naturalKey)
     if nk:
         return [_camel_to_snake(c) for c in str(nk).split()]
 
@@ -1743,7 +1782,7 @@ def _get_natural_key(
         if parent_str.startswith("http://www.w3.org/"):
             continue
         # Only inherit if parent uses discriminator strategy
-        strategy = graph.value(parent, KAIROS_EXT.term("inheritanceStrategy"))
+        strategy = graph.value(parent, KAIROS_EXT.inheritanceStrategy)
         if strategy and str(strategy) == "discriminator":
             inherited = _get_natural_key(graph, parent_str, _visited)
             if inherited:
@@ -1797,7 +1836,7 @@ def _get_raw_natural_key(
         return None
     _visited.add(class_uri)
 
-    nk = graph.value(URIRef(class_uri), KAIROS_EXT.term("naturalKey"))
+    nk = graph.value(URIRef(class_uri), KAIROS_EXT.naturalKey)
     if nk:
         return str(nk)
 
@@ -1808,7 +1847,7 @@ def _get_raw_natural_key(
         parent_str = str(parent)
         if parent_str.startswith("http://www.w3.org/"):
             continue
-        strategy = graph.value(parent, KAIROS_EXT.term("inheritanceStrategy"))
+        strategy = graph.value(parent, KAIROS_EXT.inheritanceStrategy)
         if strategy and str(strategy) == "discriminator":
             result = _get_raw_natural_key(graph, parent_str, _visited)
             if result:
@@ -1947,11 +1986,11 @@ def _gen_schema_yaml(
             domain = graph.value(prop, RDFS.domain)
             if domain and str(domain) in domain_classes:
                 # Skip junction-table properties
-                if graph.value(prop, KAIROS_EXT.term("junctionTableName")):
+                if graph.value(prop, KAIROS_EXT.junctionTableName):
                     continue
                 # Only functional / explicit column
                 has_explicit = graph.value(
-                    prop, KAIROS_EXT.term("silverColumnName")
+                    prop, KAIROS_EXT.silverColumnName
                 ) is not None
                 is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
                 if not has_explicit and not is_functional:
@@ -1961,7 +2000,7 @@ def _gen_schema_yaml(
                     continue
                 range_local = extract_local_name(str(range_cls))
                 range_model = _camel_to_snake(range_local)
-                col_override = graph.value(prop, KAIROS_EXT.term("silverColumnName"))
+                col_override = graph.value(prop, KAIROS_EXT.silverColumnName)
                 fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
                 prop_label = graph.value(prop, RDFS.label)
                 prop_comment = graph.value(prop, RDFS.comment)
