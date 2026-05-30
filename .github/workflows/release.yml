@@ -82,7 +82,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          gh release create "$TAG" dist/* \
-            --title "$TAG" \
-            --generate-notes \
-            ${{ steps.prerelease.outputs.flags }}
+          if gh release view "$TAG" &>/dev/null; then
+            echo "Release $TAG already exists — uploading assets only"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "$TAG" \
+              --generate-notes \
+              ${{ steps.prerelease.outputs.flags }}
+          fi
