@@ -32,10 +32,7 @@ _ensure_utf8_stdio()
 # Resolve scaffold data directory bundled with the package
 _SCAFFOLD_DIR = Path(__file__).resolve().parent.parent / "scaffold"
 
-# Reference models repository
-_REF_MODELS_REPO = (
-    "https://github.com/Cnext-eu/kairos-ontology-referencemodels.git"
-)
+# Reference models folder name (at hub root)
 _REF_MODELS_PATH = "ontology-reference-models"
 
 # Toolkit GitHub repo for channel resolution
@@ -571,8 +568,8 @@ def init(domain, company_domain, force):
             shutil.copy2(gitignore_src, gitignore_dst)
             print("  ✓ Installed .gitignore")
 
-    # 5. Add reference models as git submodule
-    _add_reference_models(cwd)
+    # 5. Reference models are populated later by _run_reference_models_update()
+    # (no submodule — files committed directly)
 
     # 6. Generate hub README with company context
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
@@ -1088,7 +1085,7 @@ def _slugify(name: str) -> str:
 @click.option("--private/--public", "is_private", default=True,
               help="Create a private (default) or public GitHub repo.")
 @click.option("--ref-models-version", "ref_models_version", type=str, default=None,
-              help="Git ref (tag/branch) for the reference-models submodule (default: latest).")
+              help="Git ref (tag/branch) for reference models (default: latest).")
 @click.option("--template", "template", type=str, default="kairos-app-template",
               help="GitHub repo template to use (default: kairos-app-template). "
                    "Pass empty string to skip.")
@@ -1373,15 +1370,13 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         shutil.copytree(devcontainer_src, devcontainer_dst)
         print("  ✓ .devcontainer/ (VS Code Dev Container)")
 
-    # --- Git + submodule + commit -------------------------------------------
+    # --- Git + commit -------------------------------------------
     try:
         if not use_template:
             subprocess.run(
                 ["git", "init", "-b", "main"],
                 cwd=repo_dir, capture_output=True, check=True,
             )
-        # Add reference models as git submodule
-        _add_reference_models(repo_dir, ref_models_version)
         subprocess.run(["git", "add", "."], cwd=repo_dir, capture_output=True, check=True)
         subprocess.run(
             ["git", "commit", "-m", "Initial ontology hub scaffold"],
@@ -1465,7 +1460,6 @@ def _create_repo_from_template(
 
 
 _SMARTCODING_SCRIPT = "update-smartcoding-latest.ps1"
-_REF_MODELS_SCRIPT = "update-referencemodels.ps1"
 
 
 def _run_smartcoding_update(repo_dir: Path):
@@ -1499,23 +1493,23 @@ _REFMODELS_REMOTE_DIR = "ontology-reference-models"
 def _detect_refmodels_dest() -> Path:
     """Auto-detect the reference-models destination directory.
 
-    Walks up from CWD looking for a hub structure with model/reference-models/.
-    Falls back to model/reference-models/ relative to CWD.
+    Walks up from CWD looking for a hub structure with ontology-reference-models/.
+    Falls back to ontology-reference-models/ relative to CWD.
     """
     cwd = Path.cwd()
 
     # Check if we're inside an ontology-hub directory structure
     for parent in [cwd, *cwd.parents]:
-        candidate = parent / "model" / "reference-models"
+        candidate = parent / "ontology-reference-models"
         if candidate.exists():
             return candidate
         # Also check ontology-hub subdirectory
-        candidate2 = parent / "ontology-hub" / "model" / "reference-models"
+        candidate2 = parent / "ontology-hub" / "ontology-reference-models"
         if candidate2.exists():
             return candidate2
 
     # Default: assume we're at hub root
-    default = cwd / "model" / "reference-models"
+    default = cwd / "ontology-reference-models"
     return default
 
 
@@ -1524,7 +1518,7 @@ def _detect_refmodels_dest() -> Path:
               help="Branch, tag, or SHA to fetch (default: main).")
 @click.option("--dest", "dest_path", type=click.Path(), default=None,
               help="Destination path for reference models "
-                   "(default: auto-detect model/reference-models/).")
+                   "(default: auto-detect ontology-reference-models/).")
 def update_refmodels(git_ref, dest_path):
     """Fetch reference models from the upstream repository.
 
@@ -1616,29 +1610,57 @@ def update_refmodels(git_ref, dest_path):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def _run_reference_models_update(repo_dir: Path, version: str | None = None):
-    """Run update-referencemodels.ps1 to populate ontology-reference-models/.
+    """Populate ontology-reference-models/ via sparse clone (no submodule).
 
-    The script performs a sparse clone and copies the reference model files
-    into the repo.  After running it, any new/changed files are committed.
+    Performs the same sparse-clone + copy logic as the update-refmodels CLI
+    command, then commits the result.
     """
-    script = repo_dir / _REF_MODELS_SCRIPT
-    if not script.is_file():
-        print(f"  ⚠  {_REF_MODELS_SCRIPT} not found — skipping reference models update")
+    import tempfile
+
+    git_ref = version or "main"
+    dest = repo_dir / _REF_MODELS_PATH
+
+    try:
+        subprocess.run(["git", "--version"], capture_output=True, check=True)
+    except FileNotFoundError:
+        print("  ⚠  git not found — skipping reference models update")
         return
 
-    print(f"  ▶ Running {_REF_MODELS_SCRIPT} …")
-    cmd = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
-    if version:
-        cmd += ["-Ref", version]
+    print(f"  ▶ Fetching reference models (ref '{git_ref}')…")
+    tmp_dir = Path(tempfile.mkdtemp(prefix="kairos-refmodels-"))
+
     try:
-        subprocess.run(cmd, cwd=repo_dir, check=True)
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1", "--filter=blob:none",
+             "--sparse", "--branch", git_ref,
+             _REFMODELS_REMOTE, str(tmp_dir)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"  ⚠  git clone failed: {result.stderr.strip()}")
+            return
+
+        subprocess.run(
+            ["git", "-C", str(tmp_dir), "sparse-checkout", "set", _REFMODELS_REMOTE_DIR],
+            capture_output=True, text=True, check=True,
+        )
+
+        src = tmp_dir / _REFMODELS_REMOTE_DIR
+        if not src.exists():
+            print(f"  ⚠  Folder '{_REFMODELS_REMOTE_DIR}' not found in ref '{git_ref}'")
+            return
+
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+
         # Commit the populated reference-models content
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=repo_dir, capture_output=True, text=True,
         )
         if result.stdout.strip():
-            subprocess.run(["git", "add", "ontology-reference-models"], cwd=repo_dir,
+            subprocess.run(["git", "add", _REF_MODELS_PATH], cwd=repo_dir,
                            capture_output=True, check=True)
             subprocess.run(
                 ["git", "commit", "-m", "chore: populate ontology-reference-models"],
@@ -1648,53 +1670,14 @@ def _run_reference_models_update(repo_dir: Path, version: str | None = None):
             print("  ✓ Reference models populated and committed")
         else:
             print("  ✓ Reference models already up to date")
-    except FileNotFoundError:
-        print(f"  ⚠  pwsh not found — run {_REF_MODELS_SCRIPT} manually to populate reference models")
     except subprocess.CalledProcessError as exc:
-        print(f"  ⚠  {_REF_MODELS_SCRIPT} failed — run it manually")
+        print("  ⚠  Reference models update failed — run 'kairos-ontology update-refmodels' manually")
         if hasattr(exc, "stderr") and exc.stderr:
-            print(f"       {exc.stderr.decode().strip()}")
+            print(f"       {exc.stderr.decode().strip() if isinstance(exc.stderr, bytes) else exc.stderr}")
+    finally:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
-
-def _add_reference_models(repo_dir: Path, version: str | None = None):
-    """Add kairos-ontology-referencemodels as a git submodule.
-
-    If *version* is given it should be a git ref (tag or branch).  The
-    submodule is checked out at that ref after being added.
-    """
-    target = repo_dir / _REF_MODELS_PATH
-    if target.exists() and any(target.iterdir()):
-        print(f"  ⏭  {_REF_MODELS_PATH}/ already exists — skipping submodule")
-        return
-
-    try:
-        # Enable long paths to avoid Windows filename length issues
-        subprocess.run(
-            ["git", "config", "core.longpaths", "true"],
-            cwd=repo_dir, capture_output=True, check=True,
-        )
-        subprocess.run(
-            ["git", "submodule", "add", _REF_MODELS_REPO, _REF_MODELS_PATH],
-            cwd=repo_dir, capture_output=True, check=True,
-        )
-        if version:
-            subprocess.run(
-                ["git", "checkout", version],
-                cwd=target, capture_output=True, check=True,
-            )
-            subprocess.run(
-                ["git", "add", _REF_MODELS_PATH],
-                cwd=repo_dir, capture_output=True, check=True,
-            )
-        print(f"  ✓ Reference models submodule ({version or 'latest'})")
-    except FileNotFoundError:
-        print("  ⚠  git not found — skipping reference models submodule")
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode().strip() if exc.stderr else str(exc)
-        print(f"  ⚠  Failed to add reference models submodule: {stderr}")
-        print("     You can add it manually:")
-        print(f"       cd {repo_dir.name}")
-        print(f"       git submodule add {_REF_MODELS_REPO} {_REF_MODELS_PATH}")
 
 
 def _configure_branch_protection(repo_dir: Path, full_name: str):

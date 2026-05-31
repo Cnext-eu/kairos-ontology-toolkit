@@ -131,7 +131,7 @@ contoso-ontology-hub/
 | `--private / --public` | private | Repo visibility |
 | `--company-domain TEXT` | `<name>.com` | Company domain for namespaces |
 | `--template TEXT` | `kairos-app-template` | GitHub template. Keep default for Cnext-eu |
-| `--ref-models-version` | latest | Git ref for reference-models submodule |
+| `--ref-models-version` | latest | Git ref for reference models |
 
 ---
 

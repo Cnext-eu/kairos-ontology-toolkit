@@ -1930,6 +1930,45 @@ proposal to add a new `kairos-ext:identityStrategy` annotation for FK-child enti
 
   ---
 
+  ## DD-036: Drop Git Submodules for Reference Models
+
+  **Status:** Accepted  
+  **Date:** 2026-05-31  
+  **Affects:** `cli/main.py` (init, new-repo, update-refmodels), scaffold workflows, hub repos  
+  **Implementation:** `_run_reference_models_update()` in cli/main.py
+
+  ### Context
+
+  Reference models were distributed to hub repos as a git submodule at
+  `ontology-reference-models/`. This caused friction: CI needed `submodules: true`,
+  users forgot `git submodule update`, `.gitmodules` got stale, and the Copilot
+  cloud agent couldn't resolve imports without explicit submodule checkout.
+
+  Meanwhile, the `update-refmodels` CLI command already implemented a cleaner
+  approach: sparse-clone the upstream repo, copy files directly, commit them.
+
+  ### Decision
+
+  Remove all git submodule logic. Reference models are committed directly into
+  `ontology-reference-models/` as regular files. Updated via `kairos-ontology update-refmodels`.
+
+  ### Rationale
+
+  - Simpler developer experience (no submodule commands needed)
+  - CI is faster (no recursive submodule checkout)
+  - Copilot agent can read reference models without special config
+  - Single update mechanism (`update-refmodels`) instead of two (submodule + script)
+  - Files are version-controlled in the hub repo — easy to diff/track changes
+
+  ### Consequences
+
+  - Existing hubs must remove their submodule: `git rm ontology-reference-models`,
+    delete from `.gitmodules`, then run `kairos-ontology update-refmodels`
+  - Hub repo size slightly increases (reference model .ttl files are committed)
+  - `update-refmodels` becomes the single way to refresh reference models
+
+  ---
+
   ## Template for New Decisions
 
 ```markdown

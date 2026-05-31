@@ -53,7 +53,7 @@ structure and adds domains inside an existing repo.
 │       ├── azure-search/
 │       ├── a2ui/
 │       └── prompt/
-├── ontology-reference-models/           # Git submodule (sparse checkout)
+├── ontology-reference-models/           # Committed reference models (updated via CLI)
 │   ├── authoritative-ontologies/
 │   ├── derived-ontologies/
 │   └── catalog-v001.xml
