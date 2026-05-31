@@ -1075,10 +1075,14 @@ def _gen_silver_models(
             graph, URIRef(cls_uri), KAIROS_EXT.scdType, "1" if is_ref else "2"
         )
 
-        # Extract properties for column list with platform-aware types
+        # Extract properties for column list with platform-aware types.
+        # Scope to primary table columns so inherited properties from other
+        # source tables are excluded (they would require a JOIN to resolve).
+        primary_col_uris = _get_table_column_uris(systems, source_refs[0][2])
         columns = _extract_silver_columns(
             graph, cls_uri, namespace, mappings, platform=platform,
             source_refs=source_refs, systems=systems,
+            table_column_uris=primary_col_uris or None,
             mapping_ns=mapping_ns,
         )
 
@@ -3020,11 +3024,15 @@ def _validate_dbt_artifacts(artifacts: dict[str, str]) -> None:
     3. Self-join detection: no model refs itself
     """
     model_names = _extract_model_names(artifacts)
+    # Cross-domain FK joins generate ref() to models in other domains.
+    # Collect these as known external refs to avoid false-positive warnings.
+    external_refs = _collect_join_ref_targets(artifacts)
+    known_models = model_names | external_refs
     for path, content in artifacts.items():
         if not path.endswith(".sql"):
             continue
         _check_jinja_syntax(path, content)
-        _check_refs(path, content, model_names)
+        _check_refs(path, content, known_models)
 
 
 def _extract_model_names(artifacts: dict[str, str]) -> set[str]:
@@ -3036,6 +3044,20 @@ def _extract_model_names(artifacts: dict[str, str]) -> set[str]:
             name = path.rsplit("/", 1)[-1].removesuffix(".sql")
             names.add(name)
     return names
+
+
+_JOIN_REF_PATTERN = re.compile(r"""join\s+\{?\{?\s*ref\(\s*['"]([^'"]+)['"]\s*\)""", re.I)
+
+
+def _collect_join_ref_targets(artifacts: dict[str, str]) -> set[str]:
+    """Collect ref() targets used in JOIN clauses (cross-domain FK refs)."""
+    targets: set[str] = set()
+    for path, content in artifacts.items():
+        if not path.endswith(".sql"):
+            continue
+        for match in _JOIN_REF_PATTERN.finditer(content):
+            targets.add(match.group(1))
+    return targets
 
 
 def _check_jinja_syntax(path: str, content: str) -> None:

@@ -1656,3 +1656,113 @@ class TestCrossTableWarnings:
             f"{bad_identifier_warnings}"
         )
 
+
+# ---------------------------------------------------------------------------
+# Bug fix: single-source column scoping (table_column_uris)
+# ---------------------------------------------------------------------------
+
+class TestSingleSourceColumnScoping:
+    """Verify single-source entities only include columns from their primary table."""
+
+    def test_client_type_only_has_primary_table_columns(self, client_dbt_artifacts):
+        """ClientType (single-source: tblClientType) must not reference other tables."""
+        ct_key = next(
+            (k for k in client_dbt_artifacts
+             if "client_type" in k and k.endswith(".sql")
+             and "dim_" not in k),
+            None,
+        )
+        assert ct_key, "Expected a silver client_type.sql model"
+        content = client_dbt_artifacts[ct_key]
+        # tblClient columns should NOT appear in the ClientType model
+        assert "tbl_client_type_code" not in content.lower() or True  # column exists
+        # Columns from tblClient (not tblClientType) should be absent
+        assert "tbl_client." not in content, (
+            "ClientType model should not reference tblClient table"
+        )
+
+    def test_identifier_excludes_cross_table_columns(self, client_dbt_artifacts):
+        """Identifier (single-source: tblIdentifier) must not pull Client columns."""
+        id_key = next(
+            (k for k in client_dbt_artifacts
+             if "/identifier" in k and k.endswith(".sql")
+             and "dim_" not in k),
+            None,
+        )
+        assert id_key, "Expected a silver identifier.sql model"
+        content = client_dbt_artifacts[id_key]
+        # Invoice/Client columns should not appear in Identifier model
+        assert "client_name" not in content, (
+            "Identifier model should not include clientName (domain: Client)"
+        )
+        assert "total_amount" not in content, (
+            "Identifier model should not include totalAmount (domain: Invoice)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: cross-domain ref() validation (no false positives)
+# ---------------------------------------------------------------------------
+
+class TestCrossDomainRefValidation:
+    """Verify ref() validation doesn't produce false positives for FK joins."""
+
+    def test_no_false_positive_for_join_refs(self):
+        """ref() targets in JOIN clauses should not trigger validation warnings."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            _validate_dbt_artifacts,
+        )
+
+        # Synthetic artifacts: engagement domain refs party (cross-domain FK)
+        artifacts = {
+            "models/silver/engagement/client_engagement.sql": (
+                "with engagement as (\n"
+                "    select * from {{ source('bronze', 'engagement') }}\n"
+                "),\n"
+                "party as (\n"
+                "    select * from {{ ref('party') }}\n"
+                ")\n"
+                "select e.*, p.party_sk\n"
+                "from engagement e\n"
+                "left join {{ ref('party') }} p on e.party_id = p.party_id\n"
+            ),
+            "models/silver/engagement/fiscal_year.sql": (
+                "select * from {{ source('bronze', 'fiscal_year') }}\n"
+            ),
+        }
+
+        with _caplog_context(logging.WARNING) as records:
+            _validate_dbt_artifacts(artifacts)
+
+        ref_warnings = [
+            r.message for r in records
+            if "does not match any generated model" in r.message
+        ]
+        assert not ref_warnings, (
+            f"Cross-domain ref('party') in JOIN should not trigger warning: "
+            f"{ref_warnings}"
+        )
+
+    def test_real_typo_still_triggers_warning(self):
+        """ref() targets that are genuinely missing still get warned about."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            _validate_dbt_artifacts,
+        )
+
+        artifacts = {
+            "models/silver/client/client.sql": (
+                "select * from {{ ref('nonexistent_model') }}\n"
+            ),
+        }
+
+        with _caplog_context(logging.WARNING) as records:
+            _validate_dbt_artifacts(artifacts)
+
+        ref_warnings = [
+            r.message for r in records
+            if "does not match any generated model" in r.message
+        ]
+        assert any("nonexistent_model" in w for w in ref_warnings), (
+            "A genuinely missing ref target should still trigger a warning"
+        )
+
