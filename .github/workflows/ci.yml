@@ -18,15 +18,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Poetry
-        run: pip install poetry
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
-        run: |
-          poetry install --with dev,service
+        run: uv sync --all-groups
 
       - name: Lint (ruff)
-        run: poetry run ruff check src/ tests/ service/
+        run: uv run ruff check src/ tests/ service/
 
       - name: Test
-        run: poetry run pytest tests/ -v --tb=short
+        run: uv run pytest tests/ -v --tb=short

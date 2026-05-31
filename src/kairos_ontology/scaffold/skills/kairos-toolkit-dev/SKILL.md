@@ -197,7 +197,7 @@ Validation levels: syntax (rdflib parse), SHACL (pySHACL), consistency (placehol
 
 ## FastAPI service
 
-Optional install group (`pip install -e ".[service]"`).
+Optional install group (`uv sync --group service`).
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -268,20 +268,21 @@ of truth for hub repos.
 
 ## Release process
 
-1. Ensure clean working tree (`git status`).
-2. Run `.\release.ps1` (Windows) or `./release.sh` (Linux/macOS).
-3. Select Patch / Minor / Major.
-4. Script bumps version in `pyproject.toml` and `src/kairos_ontology/__init__.py`.
-5. Builds with Poetry, commits, tags `vX.Y.Z`, pushes.
-6. CI publishes to PyPI.
+1. Ensure clean working tree on `main` (`git status`).
+2. Edit `src/kairos_ontology/__init__.py` → bump `__version__`.
+3. Run `uv lock && uv build`.
+4. Commit: `git add uv.lock src/kairos_ontology/__init__.py && git commit -m "chore: bump version to X.Y.Z"`.
+5. Tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z"`.
+6. Push: `git push && git push --tags`.
+7. CI builds `.whl` and creates GitHub Release.
 
 ### Version locations
 
-- `pyproject.toml` → `[tool.poetry] version`
-- `src/kairos_ontology/__init__.py` → `__version__`
+- `src/kairos_ontology/__init__.py` → `__version__` (single source of truth)
+- `pyproject.toml` → `dynamic = ["version"]` (reads from `__init__.py` via hatchling)
 - Managed-file stamps → `<!-- kairos-ontology-toolkit:managed vX.Y.Z -->`
 
-All three must stay in sync.  The release script handles the first two.
+The version in `__init__.py` is the only place to update.
 Managed stamps are applied at install time (from `__version__`).
 
 ## Dependencies

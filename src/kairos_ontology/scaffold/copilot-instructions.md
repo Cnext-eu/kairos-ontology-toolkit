@@ -80,12 +80,12 @@ When reviewing or creating a pull request, verify:
 
 ## Dev toolchain
 
-- **Poetry** manages dependencies and builds the package. It must be installed separately
-  on the developer's machine — it is NOT a pip dependency.
-  Install: `(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python -`
-  or `pipx install poetry`.
-- Run tests with `py -m pytest` (Windows) — Poetry's venv is not required for tests if
-  dependencies are already installed via pip.
+- **[uv](https://docs.astral.sh/uv/)** manages the virtual environment and dependencies.
+  Install: `irm https://astral.sh/uv/install.ps1 | iex` (Windows) or
+  `curl -LsSf https://astral.sh/uv/install.sh | sh` (Linux/macOS).
+- Run `uv sync` to create/refresh the `.venv` and install all dependencies.
+- Run toolkit commands with `uv run kairos-ontology <command>`.
+- Run tests with `uv run pytest` or activate the venv and run `py -m pytest`.
 
 ## Testing rules
 

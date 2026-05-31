@@ -1,49 +1,56 @@
 # Setup script for Kairos ontology hub development environment.
-# Creates an isolated .venv and installs the toolkit + dev dependencies.
+# Uses uv to create an isolated .venv and install the toolkit + dev dependencies.
 #
 # Usage:
-#   .\setup-env.ps1            # Create/refresh the virtual environment
+#   .\setup-env.ps1            # Create/sync the virtual environment
 #   .\setup-env.ps1 -Force     # Recreate from scratch (deletes existing .venv)
+#
+# Requires: uv (https://docs.astral.sh/uv/)
+#   Install: irm https://astral.sh/uv/install.ps1 | iex
 
 param(
     [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
-$venvDir = Join-Path $PSScriptRoot ".venv"
+
+# --- Check uv is installed ---
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    Write-Host "ERROR: 'uv' is not installed." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Install uv with:" -ForegroundColor Yellow
+    Write-Host "  irm https://astral.sh/uv/install.ps1 | iex" -ForegroundColor White
+    Write-Host ""
+    Write-Host "More info: https://docs.astral.sh/uv/getting-started/installation/" -ForegroundColor Gray
+    exit 1
+}
 
 # --- Recreate if -Force ---
+$venvDir = Join-Path $PSScriptRoot ".venv"
 if ($Force -and (Test-Path $venvDir)) {
     Write-Host "Removing existing .venv ..." -ForegroundColor Yellow
     Remove-Item -Recurse -Force $venvDir
 }
 
-# --- Create venv ---
-if (-not (Test-Path $venvDir)) {
-    Write-Host "Creating virtual environment in .venv ..." -ForegroundColor Cyan
-    py -m venv $venvDir
-    if ($LASTEXITCODE -ne 0) { throw "Failed to create virtual environment" }
+# --- Sync environment ---
+Write-Host "Syncing environment with uv ..." -ForegroundColor Cyan
+Push-Location $PSScriptRoot
+try {
+    uv sync
+    if ($LASTEXITCODE -ne 0) { throw "uv sync failed" }
+} finally {
+    Pop-Location
 }
-
-# --- Activate ---
-$activateScript = Join-Path $venvDir "Scripts\Activate.ps1"
-if (-not (Test-Path $activateScript)) {
-    throw "Activate script not found at $activateScript"
-}
-& $activateScript
-
-# --- Install dependencies ---
-Write-Host "Installing dependencies ..." -ForegroundColor Cyan
-pip install --upgrade pip --quiet
-pip install -e ".[dev]" --quiet
-if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # --- Validate ---
 Write-Host ""
-$toolkitPath = py -c "import kairos_ontology; print(kairos_ontology.__file__)"
-$toolkitVersion = py -c "from kairos_ontology import __version__; print(__version__)"
+$toolkitVersion = uv run python -c "from kairos_ontology import __version__; print(__version__)"
+$toolkitPath = uv run python -c "import kairos_ontology; print(kairos_ontology.__file__)"
 Write-Host "Toolkit version : $toolkitVersion" -ForegroundColor Green
 Write-Host "Toolkit location: $toolkitPath" -ForegroundColor Green
 Write-Host ""
-Write-Host "Environment ready. Activate with:" -ForegroundColor Cyan
+Write-Host "Environment ready. Run commands with:" -ForegroundColor Cyan
+Write-Host "  uv run kairos-ontology <command>" -ForegroundColor White
+Write-Host ""
+Write-Host "Or activate the venv manually:" -ForegroundColor Cyan
 Write-Host "  .\.venv\Scripts\Activate.ps1" -ForegroundColor White

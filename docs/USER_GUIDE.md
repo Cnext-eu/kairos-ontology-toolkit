@@ -66,7 +66,7 @@ for your data model.
 
 A Git repository containing one or more domain ontologies, SHACL validation
 shapes, reference models, and generated output. Created by
-`python -m kairos_ontology new-repo`.
+`kairos-ontology new-repo`.
 
 ### Projection
 
@@ -93,30 +93,35 @@ controlled upgrades in both directions.
 ### Prerequisites
 
 - **Python 3.12+**
+- **[uv](https://docs.astral.sh/uv/)** — Python package and environment manager
 - **Git**
 - **GitHub CLI** (`gh`) — for repository creation and pull requests
 - **Node.js** (optional) — for Mermaid SVG rendering
 
 ### Install the Toolkit
 
-```bash
-pip install kairos-ontology-toolkit
-```
-
-Or install a specific version from GitHub Releases:
+Hub repos manage the toolkit automatically via `uv sync`. After cloning a hub repo:
 
 ```bash
-pip install https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/v3.6.2/kairos_ontology_toolkit-3.6.2-py3-none-any.whl
+cd my-ontology-hub
+.\setup-env.ps1          # Windows (PowerShell)
+./setup-env.sh           # Linux / macOS
 ```
 
-Verify installation:
+Or directly:
 
 ```bash
-python -m kairos_ontology --version
+uv sync
 ```
 
-> **Always use `python -m kairos_ontology`** to invoke the CLI. This works
-> regardless of whether the `Scripts/` directory is on your PATH.
+This creates a `.venv` and installs the pinned toolkit version from `pyproject.toml`.
+
+Run toolkit commands:
+
+```bash
+uv run kairos-ontology --version
+uv run kairos-ontology validate
+```
 
 ### Updating the Toolkit
 
@@ -138,10 +143,10 @@ To upgrade the toolkit and refresh managed files:
 
 ```bash
 # Upgrade to the channel's latest version
-python -m kairos_ontology update --upgrade
+uv run kairos-ontology update --upgrade
 
 # Refresh skill files and copilot-instructions
-python -m kairos_ontology update
+uv run kairos-ontology update
 ```
 
 > **Testing a pre-release:** Set `channel = "preview"` in `pyproject.toml`, run
@@ -155,7 +160,7 @@ An ontology hub is a Git repository that holds your domain ontologies and their
 generated projections. Create one with a single command:
 
 ```bash
-python -m kairos_ontology new-repo \
+kairos-ontology new-repo \
   --name "my-company-ontology-hub" \
   --desc "Ontology hub for My Company" \
   --company-domain "mycompany.com"
@@ -248,13 +253,13 @@ Always validate before generating projections or merging a PR.
 
 ```bash
 # Full validation (syntax + SHACL + consistency)
-python -m kairos_ontology validate --all
+kairos-ontology validate --all
 
 # Syntax check only
-python -m kairos_ontology validate --syntax
+kairos-ontology validate --syntax
 
 # SHACL shapes only
-python -m kairos_ontology validate --shacl
+kairos-ontology validate --shacl
 ```
 
 ### What Gets Validated
@@ -271,15 +276,15 @@ python -m kairos_ontology validate --shacl
 
 ```bash
 # All targets at once
-python -m kairos_ontology project --target all
+kairos-ontology project --target all
 
 # Single target
-python -m kairos_ontology project --target silver
-python -m kairos_ontology project --target dbt
-python -m kairos_ontology project --target neo4j
-python -m kairos_ontology project --target azure-search
-python -m kairos_ontology project --target a2ui
-python -m kairos_ontology project --target prompt
+kairos-ontology project --target silver
+kairos-ontology project --target dbt
+kairos-ontology project --target neo4j
+kairos-ontology project --target azure-search
+kairos-ontology project --target a2ui
+kairos-ontology project --target prompt
 ```
 
 ### Available Targets
@@ -475,13 +480,13 @@ When a new toolkit version is released, update your hub:
 
 ```bash
 # 1. Update the toolkit (uses .whl from GitHub Releases)
-python -m kairos_ontology update --upgrade
+kairos-ontology update --upgrade
 
 # 2. Refresh managed files (skills, copilot-instructions, kairos-ext.ttl)
-python -m kairos_ontology update
+kairos-ontology update
 
 # 3. Regenerate projections
-python -m kairos_ontology project --target all
+kairos-ontology project --target all
 
 # 4. Commit
 git add . && git commit -m "chore: update toolkit to v1.9.0 and regenerate projections"
@@ -528,17 +533,17 @@ all your domains.
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  1. CREATE HUB                                              │
-│     python -m kairos_ontology new-repo --name my-hub        │
+│     kairos-ontology new-repo --name my-hub        │
 │                                                             │
 │  2. MODEL                                                   │
 │     Write / edit .ttl ontology files in ontologies/         │
 │     Add silver annotations in *-silver-ext.ttl              │
 │                                                             │
 │  3. VALIDATE                                                │
-│     python -m kairos_ontology validate --all                │
+│     kairos-ontology validate --all                │
 │                                                             │
 │  4. PROJECT                                                 │
-│     python -m kairos_ontology project --target all          │
+│     kairos-ontology project --target all          │
 │                                                             │
 │  5. REVIEW & MERGE                                          │
 │     git add . && git commit                                 │
@@ -551,15 +556,17 @@ all your domains.
 
 ### Quick Reference — CLI Commands
 
+> **Prefix all commands with `uv run`** (e.g., `uv run kairos-ontology validate --all`)
+
 | Command | Description |
 |---------|-------------|
-| `python -m kairos_ontology new-repo` | Create a new ontology hub repository |
-| `python -m kairos_ontology init` | Initialize a domain ontology in an existing hub |
-| `python -m kairos_ontology validate --all` | Validate all ontologies |
-| `python -m kairos_ontology project --target all` | Generate all projections |
-| `python -m kairos_ontology project --target silver` | Generate silver layer only |
-| `python -m kairos_ontology update` | Refresh managed toolkit files |
-| `python -m kairos_ontology catalog-test` | Test XML catalog resolution |
+| `kairos-ontology new-repo` | Create a new ontology hub repository |
+| `kairos-ontology init` | Initialize a domain ontology in an existing hub |
+| `kairos-ontology validate --all` | Validate all ontologies |
+| `kairos-ontology project --target all` | Generate all projections |
+| `kairos-ontology project --target silver` | Generate silver layer only |
+| `kairos-ontology update` | Refresh managed toolkit files |
+| `kairos-ontology catalog-test` | Test XML catalog resolution |
 
 ---
 
@@ -595,7 +602,8 @@ npx mmdc --version
 
 ### Windows Path Issues
 
-Always use `python -m kairos_ontology` (not `kairos-ontology.exe` directly).
+Always use `uv run kairos-ontology` to invoke the CLI. This uses the repo's
+isolated `.venv` without needing manual activation.
 The toolkit sanitizes filenames to be Windows-compatible.
 
 ---
