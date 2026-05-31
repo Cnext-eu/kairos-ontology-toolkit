@@ -1442,6 +1442,133 @@ def _run_smartcoding_update(repo_dir: Path):
         print(f"  ⚠  {_SMARTCODING_SCRIPT} failed — run it manually")
 
 
+# ---------------------------------------------------------------------------
+# update-refmodels — fetch reference models from upstream repo
+# ---------------------------------------------------------------------------
+
+_REFMODELS_REMOTE = "https://github.com/Cnext-eu/kairos-ontology-referencemodels.git"
+_REFMODELS_REMOTE_DIR = "ontology-reference-models"
+
+
+def _detect_refmodels_dest() -> Path:
+    """Auto-detect the reference-models destination directory.
+
+    Walks up from CWD looking for a hub structure with model/reference-models/.
+    Falls back to model/reference-models/ relative to CWD.
+    """
+    cwd = Path.cwd()
+
+    # Check if we're inside an ontology-hub directory structure
+    for parent in [cwd, *cwd.parents]:
+        candidate = parent / "model" / "reference-models"
+        if candidate.exists():
+            return candidate
+        # Also check ontology-hub subdirectory
+        candidate2 = parent / "ontology-hub" / "model" / "reference-models"
+        if candidate2.exists():
+            return candidate2
+
+    # Default: assume we're at hub root
+    default = cwd / "model" / "reference-models"
+    return default
+
+
+@cli.command(name="update-refmodels")
+@click.option("--ref", "git_ref", type=str, default="main",
+              help="Branch, tag, or SHA to fetch (default: main).")
+@click.option("--dest", "dest_path", type=click.Path(), default=None,
+              help="Destination path for reference models "
+                   "(default: auto-detect model/reference-models/).")
+def update_refmodels(git_ref, dest_path):
+    """Fetch reference models from the upstream repository.
+
+    Performs a sparse shallow clone of the kairos-ontology-referencemodels repo,
+    extracts the ontology-reference-models/ subfolder, and replaces the local
+    reference-models directory.
+
+    \b
+    Examples:
+        kairos-ontology update-refmodels
+        kairos-ontology update-refmodels --ref v1.2.1
+        kairos-ontology update-refmodels --dest path/to/reference-models
+    """
+    import tempfile
+
+    dest = Path(dest_path) if dest_path else _detect_refmodels_dest()
+
+    # Verify git is available
+    try:
+        subprocess.run(
+            ["git", "--version"], capture_output=True, check=True,
+        )
+    except FileNotFoundError:
+        raise click.ClickException(
+            "git is not installed or not on PATH. "
+            "Install git and try again."
+        )
+
+    click.echo(f"  ▶ Fetching ref '{git_ref}' from upstream reference models…")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="kairos-refmodels-"))
+
+    try:
+        # Sparse shallow clone
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1", "--filter=blob:none",
+             "--sparse", "--branch", git_ref,
+             _REFMODELS_REMOTE, str(tmp_dir)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise click.ClickException(
+                f"git clone failed (ref '{git_ref}'):\n{result.stderr.strip()}"
+            )
+
+        # Set sparse-checkout to only the reference models folder
+        result = subprocess.run(
+            ["git", "-C", str(tmp_dir), "sparse-checkout", "set", _REFMODELS_REMOTE_DIR],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise click.ClickException(
+                f"git sparse-checkout failed:\n{result.stderr.strip()}"
+            )
+
+        src = tmp_dir / _REFMODELS_REMOTE_DIR
+        if not src.exists():
+            raise click.ClickException(
+                f"Expected folder '{_REFMODELS_REMOTE_DIR}' not found in cloned repo. "
+                f"Check that the ref '{git_ref}' contains this folder."
+            )
+
+        # Get commit SHA for reporting
+        sha_result = subprocess.run(
+            ["git", "-C", str(tmp_dir), "rev-parse", "HEAD"],
+            capture_output=True, text=True,
+        )
+        sha = sha_result.stdout.strip() if sha_result.returncode == 0 else "unknown"
+
+        # Replace destination with fetched content
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+
+        # Report results
+        click.echo(f"  ✓ Reference models updated: {dest}")
+        click.echo(f"    Ref    : {git_ref}")
+        click.echo(f"    Commit : {sha[:12]}")
+
+        # Check for VERSION file
+        version_file = dest / "VERSION"
+        if version_file.exists():
+            version = version_file.read_text().strip()
+            click.echo(f"    Version: {version}")
+
+    finally:
+        # Clean up temp directory
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
 def _run_reference_models_update(repo_dir: Path, version: str | None = None):
     """Run update-referencemodels.ps1 to populate ontology-reference-models/.
 

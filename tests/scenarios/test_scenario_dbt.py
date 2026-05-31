@@ -465,14 +465,15 @@ class TestSCDTypeAwareSilverModels:
         assert "_row_hash" in sql, (
             f"SCD2 model should compute _row_hash:\n{sql}"
         )
-        assert "SHA2_HEX" in sql.upper() or "sha2_hex" in sql.lower(), (
-            f"SCD2 model should use SHA2_HEX for _row_hash computation:\n{sql}"
+        assert "kairos_row_hash" in sql, (
+            f"SCD2 model should use kairos_row_hash macro for _row_hash computation:\n{sql}"
         )
 
     def test_scd2_model_has_change_detection_ctes(self, client_dbt_artifacts):
-        """ClientPII (scdType=2) should have existing/changed/closed CTEs."""
+        """ClientPII (scdType=2) should have mapped/source_data/existing/changed/closed CTEs."""
         key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
         sql = client_dbt_artifacts[key]
+        assert "mapped" in sql, f"SCD2 model missing 'mapped' CTE:\n{sql}"
         assert "source_data" in sql, f"SCD2 model missing 'source_data' CTE:\n{sql}"
         assert "existing" in sql, f"SCD2 model missing 'existing' CTE:\n{sql}"
         assert "changed" in sql, f"SCD2 model missing 'changed' CTE:\n{sql}"
@@ -572,14 +573,13 @@ class TestSCDTemplateSyntheticData:
         assert "source('erp_system', 'tblCustomer')" in sql
 
         # Verify _row_hash computation includes all hash columns
-        assert "SHA2_HEX" in sql
+        assert "kairos_row_hash" in sql
         assert "customer_name" in sql
         assert "email" in sql
         assert "revenue" in sql
-        assert "CONCAT_WS" in sql
 
         # Verify temporal columns in source_data
-        assert "CURRENT_DATE as valid_from" in sql
+        assert "kairos_current_date()" in sql
         assert "CAST(NULL AS DATE) as valid_to" in sql
         assert "1 as is_current" in sql
 
@@ -590,7 +590,7 @@ class TestSCDTemplateSyntheticData:
         assert "closed as" in sql
 
         # Verify closed CTE sets correct values
-        assert "CURRENT_DATE as valid_to" in sql
+        assert "kairos_current_date()" in sql
         assert "0 as is_current" in sql
 
         # Verify final SELECT from changed/source_data

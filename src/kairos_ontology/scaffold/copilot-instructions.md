@@ -131,7 +131,7 @@ When designing or modifying ontologies, use the **kairos-design-domain** skill.
 It combines core modeling knowledge (class hierarchies, property design, naming
 conventions, reference-model-first workflow, extension annotations) with an
 interactive configurator (business alignment checkpoints, session persistence in
-`ontology-hub/.sessions-modeling/`, and structured validation gates). For minor
+`ontology-hub/.sessions-design/`, and structured validation gates). For minor
 edits (adding a property, fixing a label) it supports a quick-edit mode that
 skips checkpoints.
 
@@ -158,7 +158,7 @@ Use this table to pick the correct skill for a user's intent:
 | "Design silver schema / FK annotations" | **kairos-design-silver** |
 | "Design gold / Power BI model" | **kairos-design-gold** |
 | "Import / extract TMDL or PBIP files" | CLI: `kairos-ontology import-tmdl` |
-| "Release / upgrade / version check" | **kairos-toolkit-ops** |
+| "Release / upgrade / version check / update reference models" | **kairos-toolkit-ops** |
 | "Map source columns to domain / create SKOS mappings" | **kairos-design-mapping** |
 | "Status / progress / what's missing / where are we" | **kairos-diagnose-status** |
 

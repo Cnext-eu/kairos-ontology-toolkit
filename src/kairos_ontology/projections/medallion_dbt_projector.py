@@ -206,6 +206,25 @@ DEFAULT_PLATFORM = "fabric"
 # SHACL namespace
 SH = Namespace("http://www.w3.org/ns/shacl#")
 
+# T-SQL reserved keywords that must be bracket-quoted when used as identifiers.
+# This list covers the most commonly encountered keywords in bronze source columns.
+_TSQL_RESERVED_KEYWORDS: set[str] = {
+    "function", "key", "value", "index", "table", "column", "user", "role",
+    "order", "group", "type", "status", "date", "time", "level", "check",
+    "default", "select", "insert", "update", "delete", "create", "drop",
+    "alter", "grant", "revoke", "execute", "view", "procedure", "trigger",
+    "constraint", "primary", "foreign", "references", "identity", "schema",
+    "database", "transaction", "commit", "rollback", "cursor", "open",
+    "close", "fetch", "option", "plan", "rule", "system", "backup",
+}
+
+
+def _quote_identifier_if_reserved(name: str) -> str:
+    """Wrap an identifier in a kairos_quote_identifier macro call if it's a reserved keyword."""
+    if name.lower() in _TSQL_RESERVED_KEYWORDS:
+        return "{{ kairos_quote_identifier('" + name + "') }}"
+    return name
+
 
 def _camel_to_snake(name: str) -> str:
     """Convert PascalCase / camelCase to snake_case."""
@@ -1063,11 +1082,32 @@ def _gen_silver_models(
             mapping_ns=mapping_ns,
         )
 
+        # Cross-table column detection: warn if mapped columns reference source
+        # tables other than the primary source (would require a JOIN to resolve)
+        if systems and source_refs and len(source_refs) == 1:
+            primary_tbl_uri = source_refs[0][2]
+            primary_col_uris = _get_table_column_uris(systems, primary_tbl_uri)
+            if primary_col_uris:
+                for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
+                    for col_map in col_maps_list:
+                        if col_map.get("target_uri"):
+                            # Check if this column is used in the model
+                            if col_uri not in primary_col_uris:
+                                target_prop = extract_local_name(
+                                    col_map["target_uri"]
+                                )
+                                source_col = extract_local_name(col_uri)
+                                warnings.append(
+                                    f"Cross-table reference in '{local}': "
+                                    f"column '{source_col}' mapped to "
+                                    f"'{target_prop}' belongs to a different "
+                                    f"source table — model may need a JOIN."
+                                )
+
         # Extract FK columns from object properties (cross-domain joins)
         fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
             graph, cls_uri, mappings, source_refs, systems=systems,
         )
-        columns.extend(fk_columns)
         warnings.extend(fk_warnings)
 
         # Build source CTEs that reference bronze tables directly
@@ -1089,6 +1129,27 @@ def _gen_silver_models(
                 "alias": alias,
                 "filter": cte_filter,
             })
+
+        # When FK JOINs are present, qualify unqualified column expressions with
+        # the primary source alias to prevent ambiguous references in T-SQL.
+        if fk_joins and source_ctes:
+            primary_alias = source_ctes[0]["alias"]
+            for col in columns:
+                expr = col["expression"]
+                # Only qualify simple column references (no dots, parens, or spaces)
+                # Skip SK/IRI/NULL expressions and already-qualified references
+                if (
+                    "." not in expr
+                    and "(" not in expr
+                    and " " not in expr
+                    and "{{" not in expr
+                    and expr != "CAST(NULL"
+                    and not expr.startswith("CAST(")
+                    and not expr.startswith("COALESCE(")
+                ):
+                    col["expression"] = f"{primary_alias}.{expr}"
+
+        columns.extend(fk_columns)
 
         # Filter conditions are embedded in each CTE via cte.filter.
         # No top-level WHERE needed — all filtering happens at the CTE level.
@@ -1309,7 +1370,9 @@ def _resolve_mapped_columns(
                             if bronze_col:
                                 src_type = bronze_col["data_type"]
                                 target_type = _source_type_to_target(src_type, platform)
-                                bronze_name = bronze_col["name"]
+                                bronze_name = _quote_identifier_if_reserved(
+                                    bronze_col["name"]
+                                )
                                 if target_type.startswith("VARCHAR") or target_type == "STRING":
                                     expr = bronze_name
                                 else:
@@ -1317,7 +1380,7 @@ def _resolve_mapped_columns(
                             else:
                                 # Fallback: use URI local name
                                 source_col_name = extract_local_name(col_uri)
-                                expr = source_col_name
+                                expr = _quote_identifier_if_reserved(source_col_name)
                         break
                 if mapped_col_uri:
                     break
@@ -1438,7 +1501,9 @@ def _extract_silver_columns(
         )
     )
 
-    # Validate that naturalKey columns are present in the generated column list
+    # Validate that naturalKey columns are present in the generated column list.
+    # If missing, add them as pass-through from the source table so that SK/IRI
+    # expressions in the staged CTE can reference them.
     if natural_key_cols and include_sk_iri:
         col_names = {c["target_name"] for c in columns}
         missing = [nk for nk in natural_key_cols if nk not in col_names]
@@ -1446,9 +1511,16 @@ def _extract_silver_columns(
             class_name = extract_local_name(class_uri)
             logger.warning(
                 "SK validation: naturalKey column(s) %s not found in model "
-                "columns for %s — SK hash may reference missing columns",
+                "columns for %s — adding as pass-through",
                 missing, class_name,
             )
+            for nk_col in missing:
+                # Attempt to find the source column name via bronze lookup
+                # (natural key is snake_case of the property local name)
+                columns.append({
+                    "expression": nk_col,
+                    "target_name": nk_col,
+                })
 
     return columns
 
@@ -2424,13 +2496,13 @@ def _gen_gold_models(
     schema_name = gold_tables[0].schema if gold_tables else f"gold_{ontology_name}"
 
     for tbl in gold_tables:
-        # dim_date is auto-generated with an inline date-spine CTE
+        # dim_date is auto-generated with platform-aware date-spine logic
         if tbl.name == "dim_date":
+            # The date spine CTE uses dbt macros for cross-platform compatibility
             date_spine_cte = (
                 "date_spine AS (\n"
-                "    SELECT DATEADD(day, ROW_NUMBER() OVER (ORDER BY NULL) - 1,\n"
-                "                   '2000-01-01'::DATE) AS date_key\n"
-                "    FROM TABLE(GENERATOR(ROWCOUNT => 36525))  -- ~100 years\n"
+                "    SELECT CAST(value AS DATE) AS date_key\n"
+                "    FROM {{ kairos_date_spine(36525) }}\n"
                 ")"
             )
             columns = []
@@ -2447,7 +2519,7 @@ def _gen_gold_models(
                     })
                 elif col.name == "quarter":
                     columns.append({
-                        "expression": "QUARTER(date_spine.date_key)",
+                        "expression": "{{ kairos_quarter(date_spine.date_key) }}",
                         "target_name": col.name,
                     })
                 elif col.name == "month":
@@ -2462,19 +2534,25 @@ def _gen_gold_models(
                     })
                 elif col.name == "day_of_week":
                     columns.append({
-                        "expression": "DAYOFWEEK(date_spine.date_key)",
+                        "expression": (
+                            "{{ kairos_day_of_week(date_spine.date_key) }}"
+                        ),
                         "target_name": col.name,
                     })
                 elif col.name == "month_name":
                     columns.append({
-                        "expression": "MONTHNAME(date_spine.date_key)",
+                        "expression": (
+                            "{{ kairos_month_name(date_spine.date_key) }}"
+                        ),
                         "target_name": col.name,
                     })
                 elif col.name == "is_weekend":
                     columns.append({
                         "expression": (
-                            "CASE WHEN DAYOFWEEK(date_spine.date_key) IN (0, 6)"
-                            " THEN TRUE ELSE FALSE END"
+                            "CASE WHEN {{ kairos_day_of_week(date_spine.date_key) }}"
+                            " IN (1, 7)"
+                            " THEN {{ kairos_bool(true) }}"
+                            " ELSE {{ kairos_bool(false) }} END"
                         ),
                         "target_name": col.name,
                     })
@@ -2601,13 +2679,20 @@ def _gen_gold_models(
             if col.is_measure:
                 continue
             # Skip columns not present in silver (except structural columns
-            # like SKs, valid_from/to, is_current which gold generates itself)
+            # like SKs, valid_from/to, is_current which gold generates itself).
+            # Note: _type discriminator columns ARE expected to be in silver;
+            # if they're missing from silver_cols it means silver didn't generate
+            # them and gold should not reference them.
             if silver_cols is not None:
                 structural = (
-                    col.name.endswith("_sk") or col.name.endswith("_type")
+                    col.name.endswith("_sk")
                     or col.name in ("valid_from", "valid_to", "is_current")
                 )
                 if not structural and col.name not in silver_cols:
+                    logger.debug(
+                        "Gold model '%s': skipping column '%s' — not in silver",
+                        tbl.name, col.name,
+                    )
                     continue
             columns.append({
                 "expression": col.name,

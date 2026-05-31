@@ -158,7 +158,6 @@ def _get_sql_columns(sql: str) -> set[str]:
 # ===========================================================================
 
 
-@pytest.mark.slow
 class TestMappingToSqlCompleteness:
     """Every SKOS-mapped column should appear in the generated dbt SQL."""
 
@@ -230,7 +229,6 @@ class TestMappingToSqlCompleteness:
         )
 
 
-@pytest.mark.slow
 class TestSchemaYamlCompleteness:
     """Schema YAML should list all columns present in SQL models."""
 
@@ -252,7 +250,8 @@ class TestSchemaYamlCompleteness:
         for key, content in client_dbt_artifacts.items():
             if (key.endswith(".sql")
                     and "__from_" not in key
-                    and "dim_date" not in key):
+                    and "dim_date" not in key
+                    and "macros/" not in key):
                 sql_columns.update(_get_sql_columns(content))
 
         # Filter out system columns
@@ -269,7 +268,6 @@ class TestSchemaYamlCompleteness:
         )
 
 
-@pytest.mark.slow
 class TestFilterConditionsApplied:
     """Split pattern filter conditions should appear in per-source SQL."""
 
@@ -310,7 +308,6 @@ class TestFilterConditionsApplied:
         )
 
 
-@pytest.mark.slow
 class TestNoPhantomColumns:
     """SQL models should not contain columns without a mapping or system origin."""
 
@@ -353,12 +350,17 @@ class TestNoPhantomColumns:
         )
 
 
-@pytest.mark.slow
 class TestSilverExtTypesMatchCasts:
-    """Silver extension silverDataType annotations should match SQL CAST types."""
+    """Silver extension silverDataType annotations should be consistent with SQL output."""
 
     def test_client_data_types_consistent(self, client_dbt_artifacts):
-        """silverDataType annotations should produce matching CASTs in SQL."""
+        """When a CAST is present for an annotated column, it must match silverDataType.
+
+        Not every column gets a CAST — transforms may pass through source values
+        directly.  This test verifies:
+        1. Every annotated column appears in the SQL output.
+        2. Where a CAST/TRY_CAST exists for that column, it uses the declared type.
+        """
         # Load silver extension to get type annotations
         ext_path = HUB_ROOT / "model" / "extensions" / "client-silver-ext.ttl"
         if not ext_path.exists():
@@ -376,30 +378,44 @@ class TestSilverExtTypesMatchCasts:
         if not type_annotations:
             pytest.skip("No silverDataType annotations found")
 
-        # Get all SQL content
+        # Get all SQL content (exclude macros)
         all_sql = ""
         for key, content in client_dbt_artifacts.items():
-            if key.endswith(".sql"):
+            if key.endswith(".sql") and "macros/" not in key:
                 all_sql += content + "\n"
 
-        # For each annotated property, check that the SQL has a matching CAST
-        mismatches = []
+        # Check 1: Every annotated column should appear as an alias in SQL
+        missing_columns = []
+        for prop in type_annotations:
+            snake_name = _camel_to_snake(prop)
+            # Column should appear as "as <snake_name>" somewhere in the SQL
+            if not re.search(rf"\bas\s+{re.escape(snake_name)}\b", all_sql, re.IGNORECASE):
+                missing_columns.append(f"{prop} (expected column '{snake_name}')")
+
+        assert not missing_columns, (
+            "silverDataType-annotated columns missing from SQL output:\n"
+            + "\n".join(f"  - {c}" for c in sorted(missing_columns))
+        )
+
+        # Check 2: Where CAST exists for a column, verify it uses the correct type
+        type_mismatches = []
         for prop, expected_type in type_annotations.items():
             snake_name = _camel_to_snake(prop)
-            # Look for "AS <type>) as snake_name" pattern
-            pattern = rf"(?i)as\s+{re.escape(expected_type)}\).*?as\s+{re.escape(snake_name)}"
-            if not re.search(pattern, all_sql):
-                # Also check for TRY_CAST pattern
-                pattern2 = rf"(?i)try_cast\(.*?as\s+{re.escape(expected_type)}\).*?as\s+{re.escape(snake_name)}"
-                if not re.search(pattern2, all_sql):
-                    mismatches.append(
-                        f"{prop} → expected {expected_type}, "
-                        f"column '{snake_name}' cast not found"
+            # Find any CAST(...AS <TYPE>) ... as <snake_name> pattern
+            cast_pattern = (
+                rf"(?i)(?:cast|try_cast)\s*\(.*?\bas\s+(\w+)\s*\)"
+                rf".*?\bas\s+{re.escape(snake_name)}\b"
+            )
+            match = re.search(cast_pattern, all_sql)
+            if match:
+                actual_type = match.group(1).upper()
+                if actual_type != expected_type.upper():
+                    type_mismatches.append(
+                        f"{prop}: silverDataType={expected_type}, "
+                        f"SQL CAST uses {actual_type}"
                     )
 
-        # This is advisory — transforms may override the default CAST
-        if mismatches:
-            pytest.xfail(
-                "Type annotation mismatches (may be overridden by transforms):\n"
-                + "\n".join(f"  - {m}" for m in mismatches)
-            )
+        assert not type_mismatches, (
+            "silverDataType annotations inconsistent with SQL CASTs:\n"
+            + "\n".join(f"  - {m}" for m in sorted(type_mismatches))
+        )

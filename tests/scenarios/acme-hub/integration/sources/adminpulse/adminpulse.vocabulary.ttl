@@ -168,3 +168,49 @@ bronze-ap:tblRelation_ModifiedDate a kairos-bronze:SourceColumn ;
     kairos-bronze:columnName "ModifiedDate" ;
     kairos-bronze:dataType "datetime" ;
     kairos-bronze:nullable "false"^^xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# tblIdentifier — multi-identifier support (FK to Client)
+# ---------------------------------------------------------------------------
+bronze-ap:tblIdentifier a kairos-bronze:SourceTable ;
+    rdfs:label "tblIdentifier" ;
+    kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+    kairos-bronze:tableName "tblIdentifier" ;
+    kairos-bronze:primaryKeyColumns "IdentifierID" ;
+    kairos-bronze:incrementalColumn "ModifiedDate" .
+
+bronze-ap:tblIdentifier_IdentifierID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblIdentifier ;
+    kairos-bronze:columnName "IdentifierID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblIdentifier_ClientID a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblIdentifier ;
+    kairos-bronze:columnName "ClientID" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblIdentifier_Value a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblIdentifier ;
+    kairos-bronze:columnName "Value" ;
+    kairos-bronze:dataType "nvarchar(100)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblIdentifier_Scheme a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblIdentifier ;
+    kairos-bronze:columnName "Scheme" ;
+    kairos-bronze:dataType "nvarchar(50)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-ap:tblIdentifier_ValidFrom a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblIdentifier ;
+    kairos-bronze:columnName "ValidFrom" ;
+    kairos-bronze:dataType "date" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+bronze-ap:tblIdentifier_ModifiedDate a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-ap:tblIdentifier ;
+    kairos-bronze:columnName "ModifiedDate" ;
+    kairos-bronze:dataType "datetime" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .

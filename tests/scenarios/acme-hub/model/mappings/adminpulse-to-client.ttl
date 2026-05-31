@@ -96,3 +96,21 @@ bronze-ap:tblClientType_TypeCode skos:exactMatch acme:typeCode ;
 
 bronze-ap:tblClientType_Label skos:exactMatch acme:typeLabel ;
     kairos-map:transform "source.Label" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblIdentifier → Identifier (multi-identifier pattern)
+# ---------------------------------------------------------------------------
+bronze-ap:tblIdentifier skos:exactMatch acme:Identifier ;
+    kairos-map:mappingType "direct" .
+
+bronze-ap:tblIdentifier_Value skos:exactMatch acme:identifierValue ;
+    kairos-map:transform "CAST(source.Value AS STRING)" .
+
+bronze-ap:tblIdentifier_Scheme skos:exactMatch acme:identifierScheme ;
+    kairos-map:transform "CAST(source.Scheme AS STRING)" .
+
+bronze-ap:tblIdentifier_ValidFrom skos:exactMatch acme:identifierValidFrom ;
+    kairos-map:transform "CAST(source.ValidFrom AS DATE)" .
+
+bronze-ap:tblIdentifier_ClientID skos:exactMatch acme:clientId ;
+    kairos-map:transform "CAST(source.ClientID AS STRING)" .
