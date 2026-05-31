@@ -32,14 +32,14 @@ Signed-off-by: Your Name <your.email@example.com>
 ### Prerequisites
 
 - Python 3.12+
-- [Poetry](https://python-poetry.org/) for dependency management
+- [uv](https://docs.astral.sh/uv/) for environment and dependency management
 
 ### Setup
 
 ```bash
 git clone https://github.com/Cnext-eu/kairos-ontology-toolkit.git
 cd kairos-ontology-toolkit
-pip install -e ".[dev]"
+uv sync --all-groups
 ```
 
 ### Install git hooks

@@ -550,6 +550,17 @@ def init(domain, company_domain, force):
             shutil.copy2(refscript_src, refscript_dst)
             print("  ✓ Installed update-referencemodels.ps1")
 
+    # 4c-ii. Copy setup-env scripts (uv-based environment bootstrap)
+    for script_name in ("setup-env.ps1", "setup-env.sh"):
+        script_src = _SCAFFOLD_DIR / script_name
+        script_dst = cwd / script_name
+        if script_src.is_file():
+            if script_dst.exists() and not force:
+                print(f"  ⏭  {script_name} already exists (use --force to overwrite)")
+            else:
+                shutil.copy2(script_src, script_dst)
+                print(f"  ✓ Installed {script_name}")
+
     # 4d. Copy .gitignore
     gitignore_src = _SCAFFOLD_DIR / "gitignore.template"
     gitignore_dst = cwd / ".gitignore"
@@ -694,7 +705,7 @@ def update(check, upgrade):
       .github/copilot-instructions.md
       .github/skills/*/SKILL.md
     """
-    # --- Upgrade toolkit dependency via pip -----------------------------------
+    # --- Upgrade toolkit dependency via uv ------------------------------------
     if upgrade:
         channel = _read_hub_channel()
         ref = _resolve_channel(channel)
@@ -704,27 +715,7 @@ def update(check, upgrade):
             raise SystemExit(1)
         print(f"📦 Channel: {channel} → {ref}")
 
-        # Prefer .whl from GitHub Releases (faster, no git clone)
-        whl = _whl_url(ref)
-        print(f"   Installing kairos-ontology-toolkit @ {ref} (.whl) ...")
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", whl],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            # Fallback to git+https if .whl not found (e.g. pre-release)
-            print(f"   ⚠ .whl not available, falling back to git+https ...")
-            pip_url = (f"git+https://github.com/{_TOOLKIT_REPO}.git@{ref}"
-                       f"#egg=kairos-ontology-toolkit")
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--upgrade", pip_url],
-                capture_output=True, text=True,
-            )
-        if result.returncode != 0:
-            print(f"❌ pip install failed:\n{result.stderr}")
-            raise SystemExit(1)
-        print(f"   ✓ Upgraded to {ref}")
-        # Update the pyproject.toml dependency pin
+        # Update the pyproject.toml dependency pin first
         pyproject = Path.cwd() / "pyproject.toml"
         if pyproject.is_file():
             content = pyproject.read_text(encoding="utf-8")
@@ -744,6 +735,18 @@ def update(check, upgrade):
             if new_content != content:
                 pyproject.write_text(new_content, encoding="utf-8")
                 print(f"   ✓ Updated pyproject.toml pin to {ref} (.whl)")
+
+        # Lock and sync with uv
+        print(f"   Syncing environment with uv ...")
+        result = subprocess.run(["uv", "lock"], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"❌ uv lock failed:\n{result.stderr}")
+            raise SystemExit(1)
+        result = subprocess.run(["uv", "sync"], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"❌ uv sync failed:\n{result.stderr}")
+            raise SystemExit(1)
+        print(f"   ✓ Upgraded to {ref}")
         return
     managed_map = _managed_scaffold_map()
     repo_root = Path.cwd()
@@ -1350,6 +1353,12 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     if setup_env_src.is_file():
         shutil.copy2(setup_env_src, repo_dir / "setup-env.ps1")
         print("  ✓ setup-env.ps1 (venv bootstrap)")
+
+    # setup-env.sh (bash equivalent for Linux/CI)
+    setup_env_sh_src = _SCAFFOLD_DIR / "setup-env.sh"
+    if setup_env_sh_src.is_file():
+        shutil.copy2(setup_env_sh_src, repo_dir / "setup-env.sh")
+        print("  ✓ setup-env.sh (venv bootstrap - bash)")
 
     # package.json (Mermaid CLI for SVG rendering)
     pkg_src = _SCAFFOLD_DIR / "ontology-hub" / "package.json.template"

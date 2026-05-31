@@ -28,8 +28,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Install toolkit and dependencies
-        run: pip install -e .
+        run: uv sync
 
       - name: Install Node.js (for Mermaid CLI SVG export)
         uses: actions/setup-node@v4

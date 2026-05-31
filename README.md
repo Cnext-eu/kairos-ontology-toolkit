@@ -143,11 +143,11 @@ documentation and setup instructions.
 ```bash
 git clone https://github.com/Cnext-eu/kairos-ontology-toolkit.git
 cd kairos-ontology-toolkit
-pip install -e ".[dev]"
-python -m pytest                   # 700+ tests
+uv sync --all-groups              # install all deps
+uv run pytest                     # 700+ tests
 ```
 
-[Poetry](https://python-poetry.org/) manages packaging and releases.
+[uv](https://docs.astral.sh/uv/) manages dependencies, environments, and builds.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
 ## 🤝 Community

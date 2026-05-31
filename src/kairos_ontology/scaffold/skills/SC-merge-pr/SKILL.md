@@ -183,17 +183,18 @@ After switching to `main`, ask the user which version bump to apply:
 | `minor` | New features, new projections, new CLI commands |
 | `major` | Breaking API changes |
 
-Then run the release script:
+Then perform the release:
 
-```powershell
-.\release.ps1
+```bash
+# 1. Bump version in __init__.py
+# 2. Lock and build
+uv lock && uv build
+# 3. Commit, tag, push
+git add uv.lock src/kairos_ontology/__init__.py
+git commit -m "chore: bump version to X.Y.Z"
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push && git push --tags
 ```
-
-The script will:
-1. Prompt for release type (major / minor / patch)
-2. Bump the version in `pyproject.toml` and `__init__.py`
-3. Commit the version change
-4. Create and push a `v*` git tag
 
 The tag push triggers the **release.yml** workflow which:
 - Builds the package

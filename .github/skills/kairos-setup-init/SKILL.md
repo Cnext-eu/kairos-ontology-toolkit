@@ -20,15 +20,17 @@ or project using the **kairos-ontology-toolkit** CLI.
 
 ## Prerequisites
 
-- **Python 3.12+** with `pip`
+- **Python 3.12+**
+- **[uv](https://docs.astral.sh/uv/)** — Python package manager
+  (`irm https://astral.sh/uv/install.ps1 | iex` on Windows,
+  `curl -LsSf https://astral.sh/uv/install.sh | sh` on Linux/macOS)
 - **Git** — installed and configured
 - **[GitHub CLI (`gh`)](https://cli.github.com/)** — installed and authenticated
   (`gh auth login`)
-- **kairos-ontology-toolkit** — `pip install kairos-ontology-toolkit`
+- **kairos-ontology-toolkit** — installed automatically by `uv sync`
 
-> **Tip:** In hub repos, always invoke the toolkit as `python -m kairos_ontology` rather than
-> `kairos-ontology`. This works in any virtual environment without needing the Python `Scripts/`
-> directory on PATH.
+> **Tip:** In hub repos, run toolkit commands with `uv run kairos-ontology <command>`.
+> This automatically uses the repo's isolated `.venv` without manual activation.
 
 ---
 
@@ -137,21 +139,31 @@ contoso-ontology-hub/
 
 ```bash
 cd contoso-ontology-hub
-.\setup-env.ps1
+.\setup-env.ps1          # Windows (PowerShell)
+# or
+./setup-env.sh           # Linux / macOS / CI
 ```
 
-This creates an isolated `.venv`, installs the `kairos-ontology-toolkit` (from
-the `.whl` package pinned in `pyproject.toml`), and validates the installation.
+This uses `uv sync` to create an isolated `.venv` and install the
+`kairos-ontology-toolkit` (from the `.whl` pinned in `pyproject.toml`).
 
-Activate the environment before working:
+Run toolkit commands without manual activation:
 
 ```bash
-.\.venv\Scripts\Activate.ps1
+uv run kairos-ontology validate
+uv run kairos-ontology project --target dbt
+```
+
+Or activate the venv for interactive work:
+
+```bash
+.\.venv\Scripts\Activate.ps1   # Windows
+source .venv/bin/activate       # Linux / macOS
 ```
 
 The hub's `pyproject.toml` includes a `[tool.kairos]` section with a
 `channel` setting (default `"stable"`). To test pre-release toolkit
-versions, change it to `"preview"` and run `python -m kairos_ontology update --upgrade`.
+versions, change it to `"preview"` and run `uv run kairos-ontology update --upgrade`.
 
 > **Why venvs?** Each hub repo gets its own isolated Python environment,
 > preventing toolkit version conflicts between hub repos on the same machine.

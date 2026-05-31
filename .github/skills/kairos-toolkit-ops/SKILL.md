@@ -33,20 +33,21 @@ git status  # should be clean
 
 ### Running a release
 
-The toolkit uses an interactive release script:
+Release steps (all done manually or by Copilot):
 
-```powershell
-.\release.ps1
-```
+```bash
+# 1. Bump version in __init__.py (single source of truth)
+#    Edit src/kairos_ontology/__init__.py: __version__ = "X.Y.Z"
 
-The script presents a menu:
+# 2. Update lock and build
+uv lock
+uv build
 
-```
-Select release type:
-  [1] Patch (bug fixes)           2.17.0 -> 2.17.1
-  [2] Minor (new features)        2.17.0 -> 2.18.0
-  [3] Major (breaking changes)    2.17.0 -> 3.0.0
-  [4] Pre-release (rc/beta/alpha) 2.17.0 -> 2.18.0-rc.1
+# 3. Commit, tag, and push
+git add uv.lock src/kairos_ontology/__init__.py
+git commit -m "chore: bump version to X.Y.Z"
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push && git push --tags
 ```
 
 #### Release levels explained
@@ -58,37 +59,14 @@ Select release type:
 | **Major** | Breaking changes to CLI, API, or projections | `v3.0.0` |
 | **Pre-release** | Testing before GA — for hub-repo validation | `v2.18.0-rc.1` |
 
-#### Pre-release sub-menu
-
-When selecting [4], the script asks for a label:
-
-```
-Select pre-release label:
-  [1] rc    (release candidate — feature-complete, final testing)
-  [2] beta  (feature-complete, may have bugs)
-  [3] alpha (early preview, unstable)
-```
-
-The sequence number auto-increments from existing tags (e.g., if `v2.18.0-rc.1`
-exists, the next will be `v2.18.0-rc.2`).
-
 #### Version format
 
-| Label | Git tag | PEP 440 (pyproject.toml) |
+| Label | Git tag | PEP 440 (__init__.py) |
 |-------|---------|--------------------------|
 | Stable | `v2.17.0` | `2.17.0` |
 | RC | `v2.18.0-rc.1` | `2.18.0rc1` |
 | Beta | `v2.18.0-beta.1` | `2.18.0b1` |
 | Alpha | `v2.18.0-alpha.1` | `2.18.0a1` |
-
-### What the script does
-
-1. Bumps version in `pyproject.toml` and `src/kairos_ontology/__init__.py`
-2. Updates `poetry.lock`
-3. Builds the package (`poetry build`)
-4. Commits changes
-5. Creates an annotated git tag
-6. Pushes commit + tag to GitHub
 
 ### What happens after push
 
@@ -179,8 +157,8 @@ channel = "v2.18.0-rc.1"
 Then run:
 
 ```bash
-python -m kairos_ontology update --upgrade
-python -m kairos_ontology update
+uv run kairos-ontology update --upgrade
+uv run kairos-ontology update
 ```
 
 When testing is complete, switch back to stable:
@@ -194,14 +172,15 @@ channel = "stable"
 
 ```bash
 # Automatic: resolves version from channel
-python -m kairos_ontology update --upgrade
+uv run kairos-ontology update --upgrade
 ```
 
 This will:
 1. Read the `channel` from `[tool.kairos]` in `pyproject.toml`
 2. Resolve the channel to a git tag via GitHub Releases API (`gh` CLI required)
-3. Download and install the `.whl` package from the GitHub Release assets
-4. Update the `pyproject.toml` dependency pin to match
+3. Update the `pyproject.toml` dependency pin to the `.whl` URL
+4. Run `uv lock` to update the lock file
+5. Run `uv sync` to install the new version
 
 ### Refreshing managed files
 
@@ -209,10 +188,10 @@ After upgrading, refresh toolkit-owned files:
 
 ```bash
 # Preview what would change
-python -m kairos_ontology update --check
+uv run kairos-ontology update --check
 
 # Apply updates (refreshes outdated files + creates missing ones)
-python -m kairos_ontology update
+uv run kairos-ontology update
 ```
 
 Managed files:
@@ -246,7 +225,7 @@ copilot
 ### Commit the upgrade
 
 ```bash
-git add .github/ pyproject.toml
+git add .github/ pyproject.toml uv.lock
 git commit -m "chore: update kairos-ontology-toolkit to vX.Y.Z"
 ```
 
@@ -315,8 +294,8 @@ git commit -m "chore: update reference models to <version/sha>"
    ```
 2. Run the upgrade:
    ```bash
-   python -m kairos_ontology update --upgrade
-   python -m kairos_ontology update
+   uv run kairos-ontology update --upgrade
+   uv run kairos-ontology update
    ```
 3. Test projections, validate ontologies, etc.
 4. When satisfied, switch back to stable:
@@ -324,7 +303,7 @@ git commit -m "chore: update reference models to <version/sha>"
    [tool.kairos]
    channel = "stable"
    ```
-5. Run `python -m kairos_ontology update --upgrade` to revert to stable.
+5. Run `uv run kairos-ontology update --upgrade` to revert to stable.
 
 ---
 
@@ -333,13 +312,13 @@ git commit -m "chore: update reference models to <version/sha>"
 ### Check installed version
 
 ```bash
-python -m kairos_ontology --version
+uv run kairos-ontology --version
 ```
 
 ### Check for drift
 
 ```bash
-python -m kairos_ontology update --check
+uv run kairos-ontology update --check
 ```
 
 Exit code 1 means managed files are outdated or missing.
@@ -361,7 +340,7 @@ gh release list --repo Cnext-eu/kairos-ontology-toolkit --limit 10
 
 ```bash
 # Installed
-python -m kairos_ontology --version
+uv run kairos-ontology --version
 
 # Latest stable
 gh release list --repo Cnext-eu/kairos-ontology-toolkit --exclude-pre-releases --limit 1
@@ -374,13 +353,12 @@ gh release list --repo Cnext-eu/kairos-ontology-toolkit --limit 1
 
 ## Agent Instructions
 
-> **IMPORTANT:** Run all `pip` and `python` commands directly in the shell —
-> do **NOT** wrap them in `Start-Process`, `Invoke-Expression`, or request
-> elevated permissions. If a pip install fails with "Permission denied", retry
-> with the `--user` flag.
+> **IMPORTANT:** Run toolkit commands with `uv run kairos-ontology <command>`.
+> Do **NOT** wrap them in `Start-Process`, `Invoke-Expression`, or request
+> elevated permissions.
 
-> For releases: the `release.ps1` script is interactive. Run it with
-> `mode="async"` and use `write_powershell` to send menu selections.
+> For releases: follow the steps in §1 above (edit `__init__.py`, `uv lock`,
+> `uv build`, commit, tag, push).
 
 ---
 
@@ -388,12 +366,10 @@ gh release list --repo Cnext-eu/kairos-ontology-toolkit --limit 1
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `update --check` reports drift | Toolkit upgraded but files not refreshed | Run `python -m kairos_ontology update` |
-| `--version` shows old version | pip cache or wrong venv | `pip install --force-reinstall ...` |
+| `update --check` reports drift | Toolkit upgraded but files not refreshed | Run `uv run kairos-ontology update` |
+| `--version` shows old version | Stale venv or wrong directory | Run `uv sync` to refresh |
 | Channel resolution fails | `gh` CLI not installed/authenticated | Install GitHub CLI, run `gh auth login` |
 | `--upgrade` picks wrong version | Wrong channel setting | Check `[tool.kairos] channel` in pyproject.toml |
-| release.ps1 fails on git tag | Tag already exists | Delete with `git tag -d vX.Y.Z` and retry |
+| `uv` not found | uv not installed | `irm https://astral.sh/uv/install.ps1 \| iex` (Windows) |
+| Tag already exists | Duplicate release attempt | Delete with `git tag -d vX.Y.Z` and retry |
 | Release workflow didn't trigger | Tag not pushed | `git push --tags` |
-| Pre-release on PyPI | Workflow bug | Check `release.yml` — pre-releases should skip PyPI |
-| Permission denied on pip | System Python | Use a venv (`.\setup-env.ps1`) or add `--user` flag |
-| Stale toolkit after hub install | Shared Python, hub re-installed toolkit | Use per-repo venvs: run `.\setup-env.ps1` in each hub |
