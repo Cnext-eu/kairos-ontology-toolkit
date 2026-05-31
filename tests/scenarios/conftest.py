@@ -223,6 +223,9 @@ def invoice_dbt_artifacts(invoice_ontology):
     graph, namespace, classes = invoice_ontology
     gold_ext = EXTENSIONS_DIR / "invoice-gold-ext.ttl"
     silver_ext = EXTENSIONS_DIR / "invoice-silver-ext.ttl"
+    # Cross-domain FK: issuedTo → Client needs client's silver-ext for NK resolution
+    client_silver_ext = EXTENSIONS_DIR / "client-silver-ext.ttl"
+    peer_exts = [client_silver_ext] if client_silver_ext.exists() else []
     return generate_dbt_artifacts(
         classes=classes,
         graph=graph,
@@ -235,6 +238,7 @@ def invoice_dbt_artifacts(invoice_ontology):
         mappings_dir=MAPPINGS_DIR,
         gold_ext_path=gold_ext if gold_ext.exists() else None,
         silver_ext_path=silver_ext if silver_ext.exists() else None,
+        peer_ext_paths=peer_exts,
     )
 
 
@@ -242,3 +246,25 @@ def invoice_dbt_artifacts(invoice_ontology):
 def logistics_ontology():
     """Load the logistics domain (import-only, DD-021) with whitelisted imports."""
     return _load_ontology_with_imports("logistics")
+
+
+@pytest.fixture(scope="module")
+def logistics_dbt_artifacts(logistics_ontology):
+    """Generate dbt artifacts for the logistics domain (ref-model classes)."""
+    from kairos_ontology.projections.medallion_dbt_projector import (
+        generate_dbt_artifacts,
+    )
+
+    graph, namespace, classes = logistics_ontology
+    silver_ext = EXTENSIONS_DIR / "logistics-silver-ext.ttl"
+    return generate_dbt_artifacts(
+        classes=classes,
+        graph=graph,
+        template_dir=TEMPLATE_DIR,
+        namespace=namespace,
+        shapes_dir=SHAPES_DIR,
+        ontology_name="logistics",
+        sources_dir=SOURCES_DIR,
+        mappings_dir=MAPPINGS_DIR,
+        silver_ext_path=silver_ext if silver_ext.exists() else None,
+    )

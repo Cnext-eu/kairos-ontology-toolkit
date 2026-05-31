@@ -1,0 +1,31 @@
+@prefix skos:      <http://www.w3.org/2004/02/skos/core#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix bronze-lp: <https://acme.example/bronze/logisticspro#> .
+@prefix refp:      <https://refmodel.example/ontology/party#> .
+
+# ---------------------------------------------------------------------------
+# Table-to-entity mappings — LogisticsPro → Logistics (ref model party)
+# ---------------------------------------------------------------------------
+
+# tblShipmentParty → TradeParty (ref model class, claimed via silverInclude)
+bronze-lp:tblShipmentParty skos:exactMatch refp:TradeParty ;
+    kairos-map:mappingType "direct" .
+
+# tblCarrier → Carrier (ref model class, claimed via silverInclude)
+bronze-lp:tblCarrier skos:exactMatch refp:Carrier ;
+    kairos-map:mappingType "direct" .
+
+# ---------------------------------------------------------------------------
+# Column-to-property mappings
+# ---------------------------------------------------------------------------
+
+# TradeParty columns
+bronze-lp:tblShipmentParty_PartyCode skos:exactMatch refp:partyCode ;
+    kairos-map:transform "source.PartyCode" .
+
+bronze-lp:tblShipmentParty_PartyName skos:exactMatch refp:partyName ;
+    kairos-map:transform "source.PartyName" .
+
+# Carrier columns
+bronze-lp:tblCarrier_CarrierCode skos:exactMatch refp:carrierCode ;
+    kairos-map:transform "source.CarrierCode" .
