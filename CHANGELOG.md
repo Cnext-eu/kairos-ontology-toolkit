@@ -5,6 +5,19 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.1] — 2026-07-27
+
+### Fixed
+- **Cross-table warnings filtered by domain** — the dbt projector's cross-table
+  column warning now only fires for properties whose `rdfs:domain` matches the
+  current class (or its parents). Previously it warned for ALL column_maps regardless
+  of domain, causing 100+ spurious warnings in hubs with many source tables.
+
+### Added
+- **Scenario tests for cross-table warnings** — two tests verify the domain filter:
+  warnings fire for legitimate cross-table references and stay silent for properties
+  belonging to other entities.
+
 ## [3.3.0] — 2026-05-30
 
 ### Added
