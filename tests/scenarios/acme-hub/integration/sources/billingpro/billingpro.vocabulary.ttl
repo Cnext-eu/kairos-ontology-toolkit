@@ -109,6 +109,12 @@ bronze-bp:tblInvoiceLine_UnitPrice a kairos-bronze:SourceColumn ;
     kairos-bronze:dataType "decimal(18,2)" ;
     kairos-bronze:nullable "false"^^xsd:boolean .
 
+bronze-bp:tblInvoiceLine_DerivedLineTotal a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceLine ;
+    kairos-bronze:columnName "DerivedLineTotal" ;
+    kairos-bronze:dataType "decimal(18,2)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
 # ---------------------------------------------------------------------------
 # tblInvoiceTag — bridge/junction for many-to-many
 # ---------------------------------------------------------------------------
