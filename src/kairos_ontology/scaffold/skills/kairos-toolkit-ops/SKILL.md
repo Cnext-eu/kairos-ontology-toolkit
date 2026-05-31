@@ -200,7 +200,7 @@ python -m kairos_ontology update --upgrade
 This will:
 1. Read the `channel` from `[tool.kairos]` in `pyproject.toml`
 2. Resolve the channel to a git tag via GitHub Releases API (`gh` CLI required)
-3. Install the resolved version with pip
+3. Download and install the `.whl` package from the GitHub Release assets
 4. Update the `pyproject.toml` dependency pin to match
 
 ### Refreshing managed files
@@ -395,4 +395,5 @@ gh release list --repo Cnext-eu/kairos-ontology-toolkit --limit 1
 | release.ps1 fails on git tag | Tag already exists | Delete with `git tag -d vX.Y.Z` and retry |
 | Release workflow didn't trigger | Tag not pushed | `git push --tags` |
 | Pre-release on PyPI | Workflow bug | Check `release.yml` — pre-releases should skip PyPI |
-| Permission denied on pip | System Python | Add `--user` flag |
+| Permission denied on pip | System Python | Use a venv (`.\setup-env.ps1`) or add `--user` flag |
+| Stale toolkit after hub install | Shared Python, hub re-installed toolkit | Use per-repo venvs: run `.\setup-env.ps1` in each hub |

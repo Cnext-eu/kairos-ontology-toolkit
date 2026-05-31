@@ -76,6 +76,21 @@ def _resolve_channel(channel: str) -> str | None:
         return None
 
 
+def _tag_to_version(tag: str) -> str:
+    """Strip the leading 'v' from a tag to get the PEP 440 version string."""
+    return tag.lstrip("v")
+
+
+def _whl_url(tag: str) -> str:
+    """Build the GitHub Releases download URL for the .whl artifact."""
+    version = _tag_to_version(tag)
+    filename = f"kairos_ontology_toolkit-{version}-py3-none-any.whl"
+    return (
+        f"https://github.com/{_TOOLKIT_REPO}/releases/download/"
+        f"{tag}/{filename}"
+    )
+
+
 def _read_hub_channel() -> str:
     """Read the [tool.kairos] channel from the current directory's pyproject.toml."""
     pyproject = Path.cwd() / "pyproject.toml"
@@ -688,13 +703,23 @@ def update(check, upgrade):
                   f"authenticated?")
             raise SystemExit(1)
         print(f"📦 Channel: {channel} → {ref}")
-        pip_url = (f"git+https://github.com/{_TOOLKIT_REPO}.git@{ref}"
-                   f"#egg=kairos-ontology-toolkit")
-        print(f"   Installing kairos-ontology-toolkit @ {ref} ...")
+
+        # Prefer .whl from GitHub Releases (faster, no git clone)
+        whl = _whl_url(ref)
+        print(f"   Installing kairos-ontology-toolkit @ {ref} (.whl) ...")
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", pip_url],
+            [sys.executable, "-m", "pip", "install", "--upgrade", whl],
             capture_output=True, text=True,
         )
+        if result.returncode != 0:
+            # Fallback to git+https if .whl not found (e.g. pre-release)
+            print(f"   ⚠ .whl not available, falling back to git+https ...")
+            pip_url = (f"git+https://github.com/{_TOOLKIT_REPO}.git@{ref}"
+                       f"#egg=kairos-ontology-toolkit")
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", pip_url],
+                capture_output=True, text=True,
+            )
         if result.returncode != 0:
             print(f"❌ pip install failed:\n{result.stderr}")
             raise SystemExit(1)
@@ -703,16 +728,22 @@ def update(check, upgrade):
         pyproject = Path.cwd() / "pyproject.toml"
         if pyproject.is_file():
             content = pyproject.read_text(encoding="utf-8")
+            version = _tag_to_version(ref)
+            new_dep = (
+                f"kairos-ontology-toolkit @ {_whl_url(ref)}"
+            )
+            # Match both old git+https format and new .whl URL format
             new_content = re.sub(
-                r'kairos-ontology-toolkit\s*@\s*git\+https://github\.com/'
-                r'Cnext-eu/kairos-ontology-toolkit\.git@[^\s"]+',
-                f'kairos-ontology-toolkit @ git+https://github.com/'
-                f'{_TOOLKIT_REPO}.git@{ref}',
+                r'kairos-ontology-toolkit\s*@\s*(?:'
+                r'git\+https://github\.com/Cnext-eu/kairos-ontology-toolkit\.git@[^\s"]*'
+                r'|https://github\.com/Cnext-eu/kairos-ontology-toolkit/releases/download/[^\s"]*'
+                r')',
+                new_dep,
                 content,
             )
             if new_content != content:
                 pyproject.write_text(new_content, encoding="utf-8")
-                print(f"   ✓ Updated pyproject.toml pin to @{ref}")
+                print(f"   ✓ Updated pyproject.toml pin to {ref} (.whl)")
         return
     managed_map = _managed_scaffold_map()
     repo_root = Path.cwd()
@@ -1313,6 +1344,12 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     if refscript_src.is_file():
         shutil.copy2(refscript_src, repo_dir / "update-referencemodels.ps1")
         print("  ✓ update-referencemodels.ps1")
+
+    # setup-env.ps1 (venv bootstrap)
+    setup_env_src = _SCAFFOLD_DIR / "setup-env.ps1"
+    if setup_env_src.is_file():
+        shutil.copy2(setup_env_src, repo_dir / "setup-env.ps1")
+        print("  ✓ setup-env.ps1 (venv bootstrap)")
 
     # package.json (Mermaid CLI for SVG rendering)
     pkg_src = _SCAFFOLD_DIR / "ontology-hub" / "package.json.template"
