@@ -7,8 +7,32 @@ multi-domain, multi-source data — including split patterns, cross-domain FKs,
 deduplication, default values, and SHACL-derived tests.
 """
 
+import logging
+from contextlib import contextmanager
+
 import pytest
-from .conftest import TEMPLATE_DIR
+from .conftest import EXTENSIONS_DIR, MAPPINGS_DIR, SHAPES_DIR, SOURCES_DIR, TEMPLATE_DIR
+
+
+@contextmanager
+def _caplog_context(level=logging.WARNING):
+    """Context manager that captures log records at the given level."""
+    logger = logging.getLogger("kairos_ontology.projections.medallion_dbt_projector")
+    records: list[logging.LogRecord] = []
+
+    class _Handler(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Handler(level=level)
+    logger.addHandler(handler)
+    old_level = logger.level
+    logger.setLevel(level)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
 
 
 # ---------------------------------------------------------------------------
@@ -1544,4 +1568,91 @@ class TestGoldSharedDimDate:
             assert "dim_date" not in content, (
                 "dim_date should not appear in per-domain gold schema YAML"
             )
+
+
+# ---------------------------------------------------------------------------
+# Cross-table warning tests — domain-filtered noise reduction
+# ---------------------------------------------------------------------------
+
+class TestCrossTableWarnings:
+    """Verify cross-table warnings fire only for properties in the class's domain."""
+
+    def test_cross_table_warning_fires_for_domain_properties(self, client_ontology):
+        """Single-source entities with cross-table mappings emit warnings."""
+        import logging
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            generate_dbt_artifacts,
+        )
+
+        graph, namespace, classes = client_ontology
+        silver_ext = EXTENSIONS_DIR / "client-silver-ext.ttl"
+
+        with _caplog_context(logging.WARNING) as records:
+            generate_dbt_artifacts(
+                classes=classes,
+                graph=graph,
+                template_dir=TEMPLATE_DIR,
+                namespace=namespace,
+                shapes_dir=SHAPES_DIR,
+                ontology_name="client",
+                sources_dir=SOURCES_DIR,
+                mappings_dir=MAPPINGS_DIR,
+                silver_ext_path=silver_ext if silver_ext.exists() else None,
+            )
+
+        cross_table_msgs = [
+            r.message for r in records
+            if "Cross-table reference" in r.message
+        ]
+        # ClientType has tblClientType as sole source; tblClient_TypeCode maps to
+        # typeCode (domain: ClientType) — this MUST generate a warning.
+        client_type_warnings = [
+            m for m in cross_table_msgs if "'ClientType'" in m
+        ]
+        assert client_type_warnings, (
+            "Expected at least one cross-table warning for ClientType "
+            "(tblClient_TypeCode → typeCode is a cross-table mapping)"
+        )
+
+    def test_no_cross_table_warning_for_other_domain_properties(self, client_ontology):
+        """Properties with domain != current class must NOT produce warnings."""
+        import logging
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            generate_dbt_artifacts,
+        )
+
+        graph, namespace, classes = client_ontology
+        silver_ext = EXTENSIONS_DIR / "client-silver-ext.ttl"
+
+        with _caplog_context(logging.WARNING) as records:
+            generate_dbt_artifacts(
+                classes=classes,
+                graph=graph,
+                template_dir=TEMPLATE_DIR,
+                namespace=namespace,
+                shapes_dir=SHAPES_DIR,
+                ontology_name="client",
+                sources_dir=SOURCES_DIR,
+                mappings_dir=MAPPINGS_DIR,
+                silver_ext_path=silver_ext if silver_ext.exists() else None,
+            )
+
+        cross_table_msgs = [
+            r.message for r in records
+            if "Cross-table reference" in r.message
+        ]
+        # Identifier has its own domain properties (identifierValue, identifierType).
+        # Columns like tblClient_Name should NOT trigger warnings on Identifier
+        # because clientName has domain Client, not Identifier.
+        identifier_warnings = [
+            m for m in cross_table_msgs if "'Identifier'" in m
+        ]
+        bad_identifier_warnings = [
+            m for m in identifier_warnings
+            if "clientName" in m or "displayName" in m or "isActive" in m
+        ]
+        assert not bad_identifier_warnings, (
+            f"Identifier should not get warnings for Client-domain properties: "
+            f"{bad_identifier_warnings}"
+        )
 

@@ -1083,19 +1083,32 @@ def _gen_silver_models(
         )
 
         # Cross-table column detection: warn if mapped columns reference source
-        # tables other than the primary source (would require a JOIN to resolve)
+        # tables other than the primary source (would require a JOIN to resolve).
+        # Only warn for properties that belong to THIS class's domain (avoids
+        # noise from mappings targeting other entities in the same source system).
         if systems and source_refs and len(source_refs) == 1:
             primary_tbl_uri = source_refs[0][2]
             primary_col_uris = _get_table_column_uris(systems, primary_tbl_uri)
+            # Collect property URIs whose domain matches this class
+            domain_classes = _get_class_and_parents(graph, cls_uri)
+            domain_prop_uris: set[str] = set()
+            for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+                prop_domain = graph.value(prop, RDFS.domain)
+                if prop_domain and str(prop_domain) in domain_classes:
+                    domain_prop_uris.add(str(prop))
+            # Also include object properties (for FK references)
+            for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+                prop_domain = graph.value(prop, RDFS.domain)
+                if prop_domain and str(prop_domain) in domain_classes:
+                    domain_prop_uris.add(str(prop))
+
             if primary_col_uris:
                 for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
                     for col_map in col_maps_list:
-                        if col_map.get("target_uri"):
-                            # Check if this column is used in the model
+                        target_uri = col_map.get("target_uri")
+                        if target_uri and target_uri in domain_prop_uris:
                             if col_uri not in primary_col_uris:
-                                target_prop = extract_local_name(
-                                    col_map["target_uri"]
-                                )
+                                target_prop = extract_local_name(target_uri)
                                 source_col = extract_local_name(col_uri)
                                 warnings.append(
                                     f"Cross-table reference in '{local}': "
