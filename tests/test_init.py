@@ -48,13 +48,12 @@ def test_init_creates_hub_structure(tmp_path):
             # Check copilot instructions
             assert Path(".github/copilot-instructions.md").is_file()
 
-            # Check submodule add was called
+            # No submodule calls (reference models are fetched separately)
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
             submodule_calls = [
-                c for c in call_args_list if "submodule" in c and "add" in c
+                c for c in call_args_list if "submodule" in c
             ]
-            assert len(submodule_calls) == 1
-            assert "ontology-reference-models" in submodule_calls[0]
+            assert len(submodule_calls) == 0
 
             # Check starter ontology
             assert Path("ontology-hub/model/ontologies/order.ttl").is_file()
@@ -167,11 +166,10 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / "ontology-hub" / "model" / "mappings" / "README.md").is_file()
     assert (repo / "ontology-hub" / "output" / "medallion" / "dbt").is_dir()
 
-    # Submodule add was called for reference models
+    # Sparse-clone was called for reference models (no submodule)
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
     submodule_calls = [c for c in call_args_list if "submodule" in c and "add" in c]
-    assert len(submodule_calls) == 1
-    assert "ontology-reference-models" in submodule_calls[0]
+    assert len(submodule_calls) == 0
 
     # Copilot
     assert (repo / ".github" / "copilot-instructions.md").is_file()
@@ -280,9 +278,9 @@ def test_new_repo_creates_git_and_pushes(tmp_path):
     assert ["git", "init", "-b", "main"] in call_args_list
     assert ["git", "add", "."] in call_args_list
     assert ["gh", "--version"] in call_args_list
-    # Submodule should be added between git init and git add
+    # No submodule — reference models are fetched via sparse clone
     submodule_calls = [c for c in call_args_list if "submodule" in c and "add" in c]
-    assert len(submodule_calls) == 1
+    assert len(submodule_calls) == 0
     gh_create_call = [c for c in call_args_list if "gh" in c and "create" in c]
     assert len(gh_create_call) == 1
     assert "--push" in gh_create_call[0]
@@ -740,36 +738,31 @@ def test_new_repo_ref_models_version(tmp_path):
     assert result.exit_code == 0, result.output
 
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
-    # Should have git checkout v1.2.0 inside the submodule
-    checkout_calls = [c for c in call_args_list if "checkout" in c]
-    assert len(checkout_calls) == 1
-    assert "v1.2.0" in checkout_calls[0]
+    # Should have clone with --branch v1.2.0 for reference models
+    clone_calls = [c for c in call_args_list if "clone" in c and "--sparse" in c]
+    assert len(clone_calls) >= 1
+    assert "v1.2.0" in clone_calls[0]
 
 
-def test_init_submodule_skips_existing(tmp_path):
-    """init should skip submodule add when ontology-reference-models/ already has content."""
+def test_init_no_submodule_calls(tmp_path):
+    """init should never call git submodule (reference models are committed directly)."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            # Pre-create the directory with content (simulates existing submodule)
-            refs = Path("ontology-reference-models")
-            refs.mkdir()
-            (refs / "catalog-v001.xml").write_text("<catalog/>", encoding="utf-8")
-
             result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert result.exit_code == 0
 
-            # Submodule add should NOT have been called
+            # No submodule calls at all
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
             submodule_calls = [
-                c for c in call_args_list if "submodule" in c and "add" in c
+                c for c in call_args_list if "submodule" in c
             ]
             assert len(submodule_calls) == 0
 
 
-def test_new_repo_workflow_has_submodules(tmp_path):
-    """new-repo workflow should include submodules: true in checkout step."""
+def test_new_repo_workflow_no_submodules(tmp_path):
+    """new-repo workflow should NOT include submodules: true (no longer needed)."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
@@ -780,7 +773,7 @@ def test_new_repo_workflow_has_submodules(tmp_path):
     assert result.exit_code == 0, result.output
     wf = tmp_path / "contoso-ontology-hub" / ".github" / "workflows" / "managed-check.yml"
     content = wf.read_text(encoding="utf-8")
-    assert "submodules: true" in content
+    assert "submodules: true" not in content
 
 
 # ---------------------------------------------------------------------------
@@ -906,9 +899,10 @@ def test_new_repo_smartcoding_runs_when_script_exists(tmp_path):
 
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
     pwsh_calls = [c for c in call_args_list if c[0] == "pwsh"]
-    # Both update-smartcoding-latest.ps1 and update-referencemodels.ps1 run
+    # Smartcoding script still runs via pwsh
     assert any("update-smartcoding-latest.ps1" in str(c) for c in pwsh_calls)
-    assert any("update-referencemodels.ps1" in str(c) for c in pwsh_calls)
+    # Reference models are now fetched via Python sparse-clone, NOT via pwsh script
+    assert not any("update-referencemodels.ps1" in str(c) for c in pwsh_calls)
 
 
 def test_init_smartcoding_runs_when_script_exists(tmp_path):

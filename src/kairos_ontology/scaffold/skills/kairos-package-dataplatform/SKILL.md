@@ -171,8 +171,8 @@ The ontology-hub uses semantic versioning tracked in `VERSION.json`:
 
 A **tag push** (`v*`) triggers the release pipeline (`.github/workflows/release-projections.yml`):
 
-1. Checkout repo (with submodules)
-2. Install toolkit (`pip install kairos-ontology-toolkit`)
+1. Checkout repo
+2. Install toolkit (`uv sync`)
 3. Run all projections (`kairos-ontology project --target all`)
 4. Validate ontologies (`kairos-ontology validate`)
 5. Package Power BI output as zip
