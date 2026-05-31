@@ -8,6 +8,35 @@ import tempfile
 import shutil
 
 
+# ---------------------------------------------------------------------------
+# Guard: detect stale (non-editable) installs early
+# ---------------------------------------------------------------------------
+def _check_editable_install() -> None:
+    """Warn if kairos_ontology is loaded from site-packages instead of src/.
+
+    When hub repos (which depend on kairos-ontology-toolkit via git+https)
+    are installed in the same Python environment, ``pip install`` can silently
+    overwrite the editable install with the remote version.  This guard
+    catches that early so tests don't run against stale code.
+    """
+    import kairos_ontology
+
+    module_path = Path(kairos_ontology.__file__).resolve()
+    repo_src = (Path(__file__).parent.parent / "src").resolve()
+    if not str(module_path).startswith(str(repo_src)):
+        import warnings
+
+        warnings.warn(
+            f"kairos_ontology is loading from {module_path} instead of "
+            f"{repo_src}.  Tests may run against stale code.\n"
+            f"Fix: pip install -e {Path(__file__).parent.parent}",
+            stacklevel=1,
+        )
+
+
+_check_editable_install()
+
+
 @pytest.fixture
 def temp_dir():
     """Create a temporary directory for tests."""

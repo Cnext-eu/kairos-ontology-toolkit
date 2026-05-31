@@ -133,22 +133,28 @@ contoso-ontology-hub/
 
 ---
 
-## 3. Install the hub's dependencies
+## 3. Set up the development environment
 
 ```bash
 cd contoso-ontology-hub
-pip install -e .
+.\setup-env.ps1
 ```
 
-This installs the `kairos-ontology-toolkit` from GitHub (pinned to the
-toolkit version tag) and makes the `kairos-ontology` CLI available.
+This creates an isolated `.venv`, installs the `kairos-ontology-toolkit` (from
+the `.whl` package pinned in `pyproject.toml`), and validates the installation.
+
+Activate the environment before working:
+
+```bash
+.\.venv\Scripts\Activate.ps1
+```
 
 The hub's `pyproject.toml` includes a `[tool.kairos]` section with a
 `channel` setting (default `"stable"`). To test pre-release toolkit
 versions, change it to `"preview"` and run `python -m kairos_ontology update --upgrade`.
 
-> **If pip fails:** Ensure you have `git` installed and can access
-> `github.com/Cnext-eu/kairos-ontology-toolkit`.
+> **Why venvs?** Each hub repo gets its own isolated Python environment,
+> preventing toolkit version conflicts between hub repos on the same machine.
 
 ---
 

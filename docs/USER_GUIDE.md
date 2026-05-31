@@ -100,7 +100,13 @@ controlled upgrades in both directions.
 ### Install the Toolkit
 
 ```bash
-pip install git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git
+pip install kairos-ontology-toolkit
+```
+
+Or install a specific version from GitHub Releases:
+
+```bash
+pip install https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/v3.6.2/kairos_ontology_toolkit-3.6.2-py3-none-any.whl
 ```
 
 Verify installation:
@@ -468,8 +474,8 @@ Each domain gets a `<domain>-projection-manifest.json`:
 When a new toolkit version is released, update your hub:
 
 ```bash
-# 1. Update the toolkit
-pip install --upgrade git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git
+# 1. Update the toolkit (uses .whl from GitHub Releases)
+python -m kairos_ontology update --upgrade
 
 # 2. Refresh managed files (skills, copilot-instructions, kairos-ext.ttl)
 python -m kairos_ontology update
