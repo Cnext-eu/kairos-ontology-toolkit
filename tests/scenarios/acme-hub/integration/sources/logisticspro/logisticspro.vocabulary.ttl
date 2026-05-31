@@ -1,0 +1,48 @@
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix bronze-lp:    <https://acme.example/bronze/logisticspro#> .
+@prefix rdfs:         <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:          <http://www.w3.org/2001/XMLSchema#> .
+
+# ---------------------------------------------------------------------------
+# LogisticsPro source system
+# ---------------------------------------------------------------------------
+bronze-lp:LogisticsPro a kairos-bronze:SourceSystem ;
+    rdfs:label "LogisticsPro" ;
+    kairos-bronze:systemName "logisticspro" ;
+    kairos-bronze:schemaName "dbo" .
+
+# ---------------------------------------------------------------------------
+# tblShipmentParty — trade parties in logistics system
+# ---------------------------------------------------------------------------
+bronze-lp:tblShipmentParty a kairos-bronze:SourceTable ;
+    rdfs:label "tblShipmentParty" ;
+    kairos-bronze:sourceSystem bronze-lp:LogisticsPro ;
+    kairos-bronze:tableName "tblShipmentParty" ;
+    kairos-bronze:schemaName "dbo" .
+
+bronze-lp:tblShipmentParty_PartyCode a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-lp:tblShipmentParty ;
+    kairos-bronze:columnName "PartyCode" ;
+    kairos-bronze:dataType "nvarchar(50)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+
+bronze-lp:tblShipmentParty_PartyName a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-lp:tblShipmentParty ;
+    kairos-bronze:columnName "PartyName" ;
+    kairos-bronze:dataType "nvarchar(200)" ;
+    kairos-bronze:nullable "true"^^xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# tblCarrier — carriers with SCAC codes
+# ---------------------------------------------------------------------------
+bronze-lp:tblCarrier a kairos-bronze:SourceTable ;
+    rdfs:label "tblCarrier" ;
+    kairos-bronze:sourceSystem bronze-lp:LogisticsPro ;
+    kairos-bronze:tableName "tblCarrier" ;
+    kairos-bronze:schemaName "dbo" .
+
+bronze-lp:tblCarrier_CarrierCode a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-lp:tblCarrier ;
+    kairos-bronze:columnName "CarrierCode" ;
+    kairos-bronze:dataType "nvarchar(20)" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .

@@ -1502,6 +1502,178 @@ class TestDbtValidation:
                 f"Self-referential ref('{model_name}') found in {path}"
             )
 
+
+# ---------------------------------------------------------------------------
+# Intra-domain FK join tests — belongsToInvoice (InvoiceLine → Invoice)
+# ---------------------------------------------------------------------------
+
+class TestIntraDomainFKJoin:
+    """InvoiceLine has silverForeignKey on belongsToInvoice (range: Invoice).
+
+    This tests intra-domain FK join generation: the join target is in the same
+    domain, so no peer_ext_paths are needed to resolve the target NK.
+    """
+
+    def test_invoice_line_has_invoice_fk_join(self, invoice_dbt_artifacts):
+        """invoice_line.sql should have a left join to ref('invoice')."""
+        key = _find_artifact(invoice_dbt_artifacts, "invoice_line.sql")
+        assert key is not None, "invoice_line.sql not found"
+        sql = invoice_dbt_artifacts[key].lower()
+        assert "left join" in sql and "ref('invoice')" in sql, (
+            f"InvoiceLine missing intra-domain FK join to invoice:\n{sql}"
+        )
+
+    def test_invoice_line_has_invoice_sk_column(self, invoice_dbt_artifacts):
+        """invoice_line.sql should produce an invoice_sk FK column."""
+        key = _find_artifact(invoice_dbt_artifacts, "invoice_line.sql")
+        assert key is not None
+        sql = invoice_dbt_artifacts[key].lower()
+        assert "invoice_sk" in sql, (
+            f"InvoiceLine missing invoice_sk FK column:\n{sql}"
+        )
+
+    def test_invoice_line_fk_join_uses_nk(self, invoice_dbt_artifacts):
+        """The FK join condition should reference Invoice's natural key."""
+        key = _find_artifact(invoice_dbt_artifacts, "invoice_line.sql")
+        assert key is not None
+        sql = invoice_dbt_artifacts[key].lower()
+        # Invoice NK is 'invoiceNumber' → snake_case 'invoice_number'
+        assert "invoice_number" in sql, (
+            f"InvoiceLine FK join should reference invoice_number NK:\n{sql}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Multi-source FK skip tests — Invoice is multi-source, FK joins skipped
+# ---------------------------------------------------------------------------
+
+class TestMultiSourceFKSkip:
+    """Invoice entity is multi-source (tblInvoice + tblCreditNote).
+
+    FK joins are intentionally skipped for multi-source entities because the
+    join logic is too complex with UNION ALL patterns.
+    """
+
+    def test_invoice_no_client_fk_join(self, invoice_dbt_artifacts):
+        """invoice.sql should NOT have a left join to ref('client')."""
+        key = _find_artifact(invoice_dbt_artifacts, "invoice.sql")
+        assert key is not None, "invoice.sql not found"
+        sql = invoice_dbt_artifacts[key].lower()
+        assert "ref('client')" not in sql, (
+            f"Multi-source Invoice should not have FK join to client:\n{sql}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Logistics domain tests — ref-model classes with source mappings
+# ---------------------------------------------------------------------------
+
+class TestLogisticsDomain:
+    """Logistics domain uses DD-021 import-only pattern with ref-model classes.
+
+    TradeParty and Carrier are claimed via silverInclude in the logistics
+    silver-ext, with source mappings from LogisticsPro vocabulary.
+    """
+
+    def test_trade_party_model_generated(self, logistics_dbt_artifacts):
+        """TradeParty should have a silver model generated."""
+        key = _find_artifact(logistics_dbt_artifacts, "trade_party.sql")
+        assert key is not None, (
+            f"trade_party.sql not generated. "
+            f"Available: {sorted(k for k in logistics_dbt_artifacts if k.endswith('.sql'))}"
+        )
+
+    def test_carrier_model_generated(self, logistics_dbt_artifacts):
+        """Carrier should have a silver model generated."""
+        key = _find_artifact(logistics_dbt_artifacts, "carrier.sql")
+        assert key is not None, (
+            f"carrier.sql not generated. "
+            f"Available: {sorted(k for k in logistics_dbt_artifacts if k.endswith('.sql'))}"
+        )
+
+    def test_trade_party_has_party_code_column(self, logistics_dbt_artifacts):
+        """TradeParty model should include party_code column from mapping."""
+        key = _find_artifact(logistics_dbt_artifacts, "trade_party.sql")
+        assert key is not None
+        sql = logistics_dbt_artifacts[key].lower()
+        assert "party_code" in sql, (
+            f"TradeParty model missing party_code column:\n{sql}"
+        )
+
+    def test_trade_party_has_party_name_column(self, logistics_dbt_artifacts):
+        """TradeParty model should include party_name column from mapping."""
+        key = _find_artifact(logistics_dbt_artifacts, "trade_party.sql")
+        assert key is not None
+        sql = logistics_dbt_artifacts[key].lower()
+        assert "party_name" in sql, (
+            f"TradeParty model missing party_name column:\n{sql}"
+        )
+
+    def test_trade_party_is_scd2(self, logistics_dbt_artifacts):
+        """TradeParty has scdType=2 in silver-ext — should use incremental."""
+        key = _find_artifact(logistics_dbt_artifacts, "trade_party.sql")
+        assert key is not None
+        sql = logistics_dbt_artifacts[key].lower()
+        assert "incremental" in sql or "snapshot" in sql, (
+            f"TradeParty (SCD2) missing incremental/snapshot strategy:\n{sql[:300]}"
+        )
+
+    def test_trade_party_source_ref(self, logistics_dbt_artifacts):
+        """TradeParty should reference LogisticsPro tblShipmentParty source."""
+        key = _find_artifact(logistics_dbt_artifacts, "trade_party.sql")
+        assert key is not None
+        sql = logistics_dbt_artifacts[key].lower()
+        assert "shipment_party" in sql or "tblshipmentparty" in sql, (
+            f"TradeParty model missing LogisticsPro source reference:\n{sql[:500]}"
+        )
+
+    def test_carrier_has_carrier_code_column(self, logistics_dbt_artifacts):
+        """Carrier model should include carrier_code column from mapping."""
+        key = _find_artifact(logistics_dbt_artifacts, "carrier.sql")
+        assert key is not None
+        sql = logistics_dbt_artifacts[key].lower()
+        assert "carrier_code" in sql, (
+            f"Carrier model missing carrier_code column:\n{sql}"
+        )
+
+    def test_logistics_no_false_positive_warnings(self, logistics_dbt_artifacts):
+        """Logistics projection should not produce 'No bronze mapping' warnings.
+
+        Both TradeParty and Carrier have source mappings — any 'No bronze mapping'
+        warning indicates the mapping resolution failed.
+        """
+        with _caplog_context() as records:
+            # Re-generate to capture warnings (fixture is cached but we need logs)
+            from kairos_ontology.projections.medallion_dbt_projector import (
+                generate_dbt_artifacts,
+            )
+            from .conftest import (
+                _load_ontology_with_imports,
+                EXTENSIONS_DIR,
+            )
+
+            graph, namespace, classes = _load_ontology_with_imports("logistics")
+            silver_ext = EXTENSIONS_DIR / "logistics-silver-ext.ttl"
+            generate_dbt_artifacts(
+                classes=classes,
+                graph=graph,
+                template_dir=TEMPLATE_DIR,
+                namespace=namespace,
+                shapes_dir=SHAPES_DIR,
+                ontology_name="logistics",
+                sources_dir=SOURCES_DIR,
+                mappings_dir=MAPPINGS_DIR,
+                silver_ext_path=silver_ext if silver_ext.exists() else None,
+            )
+
+        no_mapping_warnings = [
+            r for r in records if "No bronze mapping" in r.getMessage()
+        ]
+        assert len(no_mapping_warnings) == 0, (
+            f"Unexpected 'No bronze mapping' warnings: "
+            f"{[r.getMessage() for r in no_mapping_warnings]}"
+        )
+
     def test_invoice_jinja_syntax_valid(self, invoice_dbt_artifacts):
         """Bug #7: Invoice domain Jinja validity."""
         from jinja2 import Environment as J2Env, TemplateSyntaxError

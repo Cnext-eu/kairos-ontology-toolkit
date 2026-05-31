@@ -73,10 +73,12 @@ acme-inv:lineTotal
     kairos-ext:derivationFormula "source.Quantity * source.UnitPrice" .
 
 acme-inv:issuedTo
-    kairos-ext:silverColumnName "client_sk" .
+    kairos-ext:silverColumnName "client_sk" ;
+    kairos-ext:silverForeignKey "true" .
 
 acme-inv:belongsToInvoice
-    kairos-ext:silverColumnName "invoice_sk" .
+    kairos-ext:silverColumnName "invoice_sk" ;
+    kairos-ext:silverForeignKey "true" .
 
 acme-inv:tagCode
     kairos-ext:silverColumnName "tag_code" ;
