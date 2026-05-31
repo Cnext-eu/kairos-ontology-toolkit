@@ -568,6 +568,25 @@ def init(domain, company_domain, force):
             shutil.copy2(gitignore_src, gitignore_dst)
             print("  ✓ Installed .gitignore")
 
+    # 4e. Generate pyproject.toml (needed for uv sync)
+    pyproject_src = _SCAFFOLD_DIR / "pyproject.toml.template"
+    pyproject_dst = cwd / "pyproject.toml"
+    if pyproject_src.is_file():
+        if pyproject_dst.exists() and not force:
+            print("  ⏭  pyproject.toml already exists (use --force to overwrite)")
+        else:
+            ref = _resolve_channel("stable") or "v3.8.0"
+            version = _tag_to_version(ref)
+            repo_name = cwd.name
+            content = pyproject_src.read_text(encoding="utf-8")
+            content = (content
+                       .replace("{repo_name}", repo_name)
+                       .replace("{description}", repo_name)
+                       .replace("{toolkit_ref}", ref)
+                       .replace("{toolkit_version}", version))
+            pyproject_dst.write_text(content, encoding="utf-8")
+            print("  ✓ Created pyproject.toml")
+
     # 5. Reference models are populated later by _run_reference_models_update()
     # (no submodule — files committed directly)
 
@@ -714,9 +733,24 @@ def update(check, upgrade):
 
         # Update the pyproject.toml dependency pin first
         pyproject = Path.cwd() / "pyproject.toml"
+        version = _tag_to_version(ref)
+        if not pyproject.is_file():
+            # Auto-generate pyproject.toml from scaffold template for legacy hubs
+            template = _SCAFFOLD_DIR / "pyproject.toml.template"
+            if template.is_file():
+                repo_name = Path.cwd().name
+                content = template.read_text(encoding="utf-8")
+                content = content.replace("{repo_name}", repo_name)
+                content = content.replace("{description}", repo_name)
+                content = content.replace("{toolkit_ref}", ref)
+                content = content.replace("{toolkit_version}", version)
+                pyproject.write_text(content, encoding="utf-8")
+                print(f"   ✓ Created pyproject.toml (was missing)")
+            else:
+                print("❌ pyproject.toml not found and cannot generate it")
+                raise SystemExit(1)
         if pyproject.is_file():
             content = pyproject.read_text(encoding="utf-8")
-            version = _tag_to_version(ref)
             new_dep = (
                 f"kairos-ontology-toolkit @ {_whl_url(ref)}"
             )
