@@ -53,20 +53,20 @@
 ){% if not loop.last %},{% endif %}
 {%- endfor %}
 {%- if scd_type == "2" %}
+{%- set mapped_cols = [] %}
+{%- for col in columns %}
+{%- if not col.target_name.endswith("_sk") and not col.target_name.endswith("_iri") %}
+{%- set _ = mapped_cols.append(col) %}
+{%- endif %}
+{%- endfor %}
 ,
 
-source_data as (
+mapped as (
 
     select
-{%- for col in columns %}
-        {{ col.expression }} as {{ col.target_name }},{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
+{%- for col in mapped_cols %}
+        {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
 {%- endfor %}
-{%- if hash_columns %}
-        SHA2_HEX(CONCAT_WS('|'{% for hc in hash_columns %}, COALESCE(CAST({{ hc }} AS VARCHAR), ''){% endfor %})) as _row_hash,
-{%- endif %}
-        CURRENT_DATE as valid_from,
-        CAST(NULL AS DATE) as valid_to,
-        1 as is_current
     from {{ source_ctes[0].alias }}
 {%- for join in joins %}
     {{ join.type }} join {{ join.ref }} as {{ join.alias }}
@@ -75,6 +75,26 @@ source_data as (
 {%- if where_clause %}
     where {{ where_clause }}
 {%- endif %}
+
+),
+
+source_data as (
+
+    select
+{%- for col in columns %}
+{%- if col.target_name.endswith("_sk") or col.target_name.endswith("_iri") %}
+        {{ col.expression }} as {{ col.target_name }},
+{%- else %}
+        {{ col.target_name }},
+{%- endif %}
+{%- endfor %}
+{%- if hash_columns %}
+        {{"{{"}} kairos_row_hash([{% for hc in hash_columns %}'{{ hc }}'{% if not loop.last %}, {% endif %}{% endfor %}]) {{"}}"}} as _row_hash,
+{%- endif %}
+        {{"{{"}} kairos_current_date() {{"}}"}} as valid_from,
+        CAST(NULL AS DATE) as valid_to,
+        1 as is_current
+    from mapped
 
 )
 
@@ -110,7 +130,7 @@ closed as (
 {%- endfor %}
         t._row_hash,
         t.valid_from,
-        CURRENT_DATE as valid_to,
+        {{"{{"}} kairos_current_date() {{"}}"}} as valid_to,
         0 as is_current
     from {{"{{"}} this {{"}}"}} t
     inner join changed c on t.{{ model_name }}_sk = c.{{ model_name }}_sk

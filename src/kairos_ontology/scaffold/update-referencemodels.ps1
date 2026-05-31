@@ -1,9 +1,19 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Fetch the ontology-reference-models folder from the remote reference repo.
+    [DEPRECATED] Use 'kairos-ontology update-refmodels' instead.
 
 .DESCRIPTION
+    This script is deprecated. The functionality has been moved to the
+    kairos-ontology CLI as a cross-platform Python command:
+
+        kairos-ontology update-refmodels [--ref main]
+
+    This script is kept for backward compatibility but will be removed
+    in a future release.
+
+    ---
+    Original description:
     Performs a sparse shallow clone of the upstream repo into a temp directory,
     copies just the ontology-reference-models/ subfolder into this workspace,
     then discards the clone. No git submodule, no history, no git objects left
@@ -13,12 +23,12 @@
     The branch, tag, or SHA to fetch. Defaults to 'main'.
 
 .EXAMPLE
-    .\update-referencemodels.ps1
-    # Fetches latest from main
+    kairos-ontology update-refmodels
+    # Preferred cross-platform alternative
 
 .EXAMPLE
     .\update-referencemodels.ps1 -Ref v1.2.1
-    # Fetches the v1.2.1 tag
+    # Legacy PowerShell usage
 #>
 
 param(

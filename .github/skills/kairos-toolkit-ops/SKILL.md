@@ -3,18 +3,20 @@ name: kairos-toolkit-ops
 description: >
   Consolidated operations guide for the kairos-ontology-toolkit.
   Covers releasing new versions (stable + pre-release), upgrading hub repos
-  via channels (update --upgrade), refreshing managed files, and version diagnostics.
+  via channels (update --upgrade), refreshing managed files, version diagnostics,
+  and updating reference models from the upstream repo.
 ---
 
 # Toolkit Operations Skill
 
 You are helping a user with **kairos-ontology-toolkit operations** — releasing,
-upgrading, or diagnosing versions.
+upgrading, diagnosing versions, or updating reference models.
 
 Determine which workflow the user needs:
 - **Release** → they are a toolkit maintainer publishing a new version
 - **Update** → they are a hub-repo user upgrading their toolkit dependency
 - **Diagnose** → they want to check versions, channels, or drift
+- **Update Reference Models** → they want to sync reference models from the upstream repo
 
 ---
 
@@ -247,6 +249,62 @@ copilot
 git add .github/ pyproject.toml
 git commit -m "chore: update kairos-ontology-toolkit to vX.Y.Z"
 ```
+
+---
+
+## 4. Update Reference Models
+
+Hub repos that use shared ontology reference models (e.g., FIBO Party, W3C Org)
+can pull the latest versions from the upstream
+[kairos-ontology-referencemodels](https://github.com/Cnext-eu/kairos-ontology-referencemodels)
+repository.
+
+### When to update
+
+- After the reference models repo publishes a new release/tag
+- When starting work on a new domain that depends on a reference model
+- When the toolkit notifies you of a new available version
+
+### Running the update
+
+```powershell
+# Default: fetch latest from main
+kairos-ontology update-refmodels
+
+# Pin to a specific tag or branch
+kairos-ontology update-refmodels --ref v1.2.1
+```
+
+### What it does
+
+1. Performs a sparse shallow clone of `Cnext-eu/kairos-ontology-referencemodels`
+2. Extracts only the `ontology-reference-models/` subfolder
+3. Replaces the local `model/reference-models/` folder with the fetched version
+4. Reports the commit SHA and version (if a VERSION file is present)
+5. Cleans up the temporary clone (no git history left behind)
+
+### Post-update steps
+
+After updating reference models:
+
+1. **Validate** — run `kairos-ontology validate` to check for breaking changes
+2. **Check imports** — verify your domain ontologies' `owl:imports` still resolve
+3. **Re-project** — regenerate dbt/silver/gold output to pick up any new
+   properties from the reference models
+4. **Commit** — commit the updated reference models
+
+```bash
+git add model/reference-models/
+git commit -m "chore: update reference models to <version/sha>"
+```
+
+### Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| `git clone failed` | Check network access to GitHub; verify the ref/tag exists |
+| Properties disappeared after update | The upstream may have renamed/removed classes — check the reference models CHANGELOG |
+| SHACL violations after update | New constraints may require additional annotations — run `kairos-ontology validate` for details |
 
 ### Pre-release testing workflow
 
