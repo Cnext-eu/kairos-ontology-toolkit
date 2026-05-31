@@ -125,14 +125,17 @@ Open a GitHub Issue with the `enhancement` label describing:
 
 If you want hub-repo users to test your changes before a GA release:
 
-1. Use `release.ps1` option **[4]** to publish a pre-release (e.g. `v2.18.0-rc.1`)
-2. Ask testers to switch their hub `pyproject.toml`:
+1. Edit `src/kairos_ontology/__init__.py` → set version to e.g. `3.7.0-rc.1`
+2. Run `uv lock && uv build`
+3. Commit, tag (`git tag v3.7.0-rc.1`), and push (`git push --tags`)
+4. CI creates a GitHub Release with the `.whl` attached
+5. Ask testers to switch their hub `pyproject.toml`:
    ```toml
    [tool.kairos]
    channel = "preview"
    ```
-3. Testers run `python -m kairos_ontology update --upgrade` to pick up the rc.
-4. After validation, create a GA release and testers switch back to `channel = "stable"`.
+6. Testers run `kairos-ontology update --upgrade` (uses `uv lock` + `uv sync`)
+7. After validation, create a GA release and testers switch back to `channel = "stable"`.
 
 ## Code of Conduct
 
