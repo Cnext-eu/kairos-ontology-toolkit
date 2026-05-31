@@ -5,6 +5,16 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.2] — 2026-05-31
+
+### Fixed
+- **Single-source column scoping** — entities with one source table now only include
+  columns from that table. Previously, inherited properties from other tables generated
+  invalid column references in the SQL SELECT.
+- **Cross-domain ref() validation** — the post-generation validator no longer emits
+  false-positive warnings for `ref()` targets used in FK JOIN clauses (cross-domain
+  references). Genuine typos still trigger warnings.
+
 ## [3.6.1] — 2026-07-27
 
 ### Fixed
