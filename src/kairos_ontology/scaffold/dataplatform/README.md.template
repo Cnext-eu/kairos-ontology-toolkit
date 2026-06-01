@@ -1,0 +1,79 @@
+# {PROJECT_NAME} — Dataplatform
+
+This repository contains the dbt project that consumes ontology-generated models
+from the [ontology-hub]({HUB_REPO_URL}) and connects them to the actual bronze
+lakehouse/warehouse.
+
+## Architecture
+
+```
+ontology-hub (producer)              this repo (consumer)
+┌────────────────────────┐           ┌────────────────────────┐
+│ Vocabulary + Mappings  │           │ dbt_project.yml        │
+│ → dbt projection       │           │ packages.yml ──────┐   │
+│                        │           │ models/_sources.yml │   │
+│ output/medallion/dbt/  │ ────────► │ dbt_packages/ ◄────┘   │
+│ (logical source refs)  │           │   └── ontology_hub/    │
+└────────────────────────┘           │ macros/                │
+                                     │   └── extract_source_  │
+                                     │       schema.sql       │
+                                     └────────────────────────┘
+```
+
+## Quick Start
+
+```bash
+# 1. Install dependencies (requires uv: https://docs.astral.sh/uv/)
+uv sync
+
+# 2. Configure your dbt profile
+#    Copy profiles.yml.example → ~/.dbt/profiles.yml
+#    Fill in your connection details
+
+# 3. Pull ontology-hub models
+dbt deps
+
+# 4. Build all models
+dbt build
+```
+
+## Bronze Schema Introspection
+
+To refresh the ontology-hub vocabulary from your actual bronze tables:
+
+```bash
+# 1. Extract schema from live bronze (requires source declarations in _sources.yml)
+dbt run-operation extract_source_schema --args '{source_name: "your_system"}'
+
+# 2. Copy the output YAML to the ontology-hub and run import-source there:
+#    kairos-ontology import-source --from extracted-schema.yaml --system your_system
+```
+
+## Source Binding
+
+The ontology-hub generates dbt models with logical `{{ source() }}` references.
+This repo provides the physical binding in `models/_sources.yml`:
+
+```yaml
+version: 2
+sources:
+  - name: your_system
+    database: your_bronze_database    # Physical database
+    schema: your_bronze_schema        # Physical schema
+    tables:
+      - name: tblClient
+      - name: tblInvoice
+```
+
+## Development
+
+```bash
+# Run tests
+dbt test
+
+# Generate docs
+dbt docs generate && dbt docs serve
+
+# Lint SQL
+sqlfluff lint models/
+```

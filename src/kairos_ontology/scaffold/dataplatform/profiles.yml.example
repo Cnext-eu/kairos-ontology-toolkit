@@ -1,0 +1,45 @@
+# dbt Profile Configuration — Example
+#
+# Copy this file to ~/.dbt/profiles.yml (or set DBT_PROFILES_DIR)
+# and fill in your connection details.
+#
+# See: https://docs.getdbt.com/docs/core/connect-data-platform
+
+{PROJECT_NAME}:
+  target: dev
+  outputs:
+
+    # Microsoft Fabric Lakehouse (via Spark)
+    # Requires: pip install dbt-fabric
+    dev:
+      type: fabric
+      driver: "ODBC Driver 18 for SQL Server"
+      server: "{your-workspace}.datawarehouse.fabric.microsoft.com"
+      database: "{your-lakehouse-name}"
+      schema: "dbo"
+      authentication: CLI  # or ServicePrincipal
+      # For Service Principal auth:
+      # tenant_id: "{tenant-id}"
+      # client_id: "{client-id}"
+      # client_secret: "{client-secret}"
+
+    # Microsoft Fabric Warehouse
+    # prod:
+    #   type: fabric
+    #   driver: "ODBC Driver 18 for SQL Server"
+    #   server: "{your-workspace}.datawarehouse.fabric.microsoft.com"
+    #   database: "{your-warehouse-name}"
+    #   schema: "dbo"
+    #   authentication: ServicePrincipal
+    #   tenant_id: "{tenant-id}"
+    #   client_id: "{client-id}"
+    #   client_secret: "{client-secret}"
+
+    # Databricks (Unity Catalog)
+    # dev:
+    #   type: databricks
+    #   catalog: "{your-catalog}"
+    #   schema: "silver"
+    #   host: "{workspace-url}.azuredatabricks.net"
+    #   http_path: "/sql/1.0/warehouses/{warehouse-id}"
+    #   token: "{personal-access-token}"

@@ -1,0 +1,22 @@
+# Physical Source Bindings
+#
+# This file defines the physical database/schema location for bronze source tables.
+# The ontology-hub generates dbt models with logical {{ source() }} references;
+# this file resolves them to actual lakehouse/warehouse locations.
+#
+# Update this file when:
+# - Adding a new source system
+# - Changing database/schema names between environments
+# - Deploying to a different environment (use dbt target-specific overrides)
+
+version: 2
+
+sources:
+  - name: {SOURCE_NAME}
+    description: "Bronze source: {SOURCE_LABEL}"
+    database: "{DATABASE}"
+    schema: "{SCHEMA}"
+    tables:
+      # Add tables matching the ontology-hub vocabulary:
+      # - name: tblClient
+      # - name: tblInvoice

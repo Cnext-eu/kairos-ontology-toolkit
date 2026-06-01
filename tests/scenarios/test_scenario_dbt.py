@@ -11,7 +11,10 @@ import logging
 from contextlib import contextmanager
 
 import pytest
-from .conftest import EXTENSIONS_DIR, MAPPINGS_DIR, SHAPES_DIR, SOURCES_DIR, TEMPLATE_DIR
+from .conftest import (
+    EXTENSIONS_DIR, MAPPINGS_DIR, SHAPES_DIR, SOURCES_DIR, TEMPLATE_DIR,
+    _load_ontology,
+)
 
 
 @contextmanager
@@ -1937,4 +1940,80 @@ class TestCrossDomainRefValidation:
         assert any("nonexistent_model" in w for w in ref_warnings), (
             "A genuinely missing ref target should still trigger a warning"
         )
+
+
+# ---------------------------------------------------------------------------
+# Logical sources mode — DD-035
+# ---------------------------------------------------------------------------
+
+class TestLogicalSourcesMode:
+    """Verify the logical_sources_only flag omits database/schema from _sources.yml."""
+
+    def test_default_mode_includes_schema(self, client_dbt_artifacts):
+        """Default mode should include schema in _sources.yml."""
+        source_files = {
+            k: v for k, v in client_dbt_artifacts.items() if "__sources.yml" in k
+        }
+        assert source_files, "Should have at least one sources file"
+        for path, content in source_files.items():
+            assert "schema:" in content, f"{path} should include schema"
+
+    def test_logical_mode_omits_database_schema(self):
+        """logical_sources_only=True should omit database/schema from _sources.yml."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            generate_dbt_artifacts,
+        )
+
+        graph, namespace, classes = _load_ontology("client")
+        artifacts = generate_dbt_artifacts(
+            classes, graph, TEMPLATE_DIR, namespace,
+            shapes_dir=SHAPES_DIR,
+            ontology_name="client",
+            sources_dir=SOURCES_DIR,
+            mappings_dir=MAPPINGS_DIR,
+            silver_ext_path=EXTENSIONS_DIR / "client-silver-ext.ttl",
+            logical_sources_only=True,
+        )
+
+        source_files = {
+            k: v for k, v in artifacts.items() if "__sources.yml" in k
+        }
+        assert source_files, "Should have at least one sources file"
+        for path, content in source_files.items():
+            assert "database:" not in content, (
+                f"{path} should NOT include database in logical mode"
+            )
+            assert "schema:" not in content, (
+                f"{path} should NOT include schema in logical mode"
+            )
+            # Should still have source name and tables
+            assert "name:" in content
+            assert "tables:" in content
+
+    def test_logical_mode_still_generates_valid_models(self):
+        """Silver models should still be generated correctly in logical mode."""
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            generate_dbt_artifacts,
+        )
+
+        graph, namespace, classes = _load_ontology("client")
+        artifacts = generate_dbt_artifacts(
+            classes, graph, TEMPLATE_DIR, namespace,
+            shapes_dir=SHAPES_DIR,
+            ontology_name="client",
+            sources_dir=SOURCES_DIR,
+            mappings_dir=MAPPINGS_DIR,
+            silver_ext_path=EXTENSIONS_DIR / "client-silver-ext.ttl",
+            logical_sources_only=True,
+        )
+
+        # Silver models should still have source() references
+        sql_files = {k: v for k, v in artifacts.items() if k.endswith(".sql")}
+        assert sql_files, "Should have generated SQL models"
+        for path, content in sql_files.items():
+            if "silver" in path and "ddl" not in path and "alter" not in path:
+                if "{{ source(" in content:
+                    break
+        else:
+            pytest.fail("No silver model contains {{ source() }} reference")
 

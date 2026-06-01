@@ -74,8 +74,15 @@ def _resolve_channel(channel: str) -> str | None:
 
 
 def _tag_to_version(tag: str) -> str:
-    """Strip the leading 'v' from a tag to get the PEP 440 version string."""
-    return tag.lstrip("v")
+    """Convert a git tag (e.g. ``v3.9.0-rc.1``) to PEP 440 (``3.9.0rc1``)."""
+    import re
+
+    v = tag.lstrip("v")
+    # -rc.N → rcN, -beta.N → bN, -alpha.N → aN
+    v = re.sub(r"-rc\.?(\d+)", r"rc\1", v)
+    v = re.sub(r"-beta\.?(\d+)", r"b\1", v)
+    v = re.sub(r"-alpha\.?(\d+)", r"a\1", v)
+    return v
 
 
 def _whl_url(tag: str) -> str:
@@ -691,6 +698,75 @@ def import_tmdl(source, output):
     else:
         click.echo("\n⚠️  No TMDL content found. Check input path.", err=True)
         raise SystemExit(1)
+
+
+@cli.command(name='import-source')
+@click.option('--from', 'from_path', type=click.Path(exists=True), required=True,
+              help='Path to source-schema YAML file.')
+@click.option('--system', 'system_name', default=None,
+              help='Override the system name (default: from YAML).')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Output directory (default: integration/sources/{system}/).')
+@click.option('--dry-run', is_flag=True,
+              help='Show changes without writing files.')
+def import_source(from_path, system_name, output, dry_run):
+    """Import source schema YAML and generate/refresh bronze vocabulary TTL.
+
+    Reads a standardized source-schema YAML file (produced by the
+    extract_source_schema dbt macro or manually) and generates or updates
+    the corresponding kairos-bronze vocabulary TTL.
+
+    \b
+    Examples:
+      kairos-ontology import-source --from extracted/adminpulse-schema.yaml
+      kairos-ontology import-source --from schema.yaml --system myapp --dry-run
+    """
+    from ..import_source import run_import_source, ChangeReport
+
+    yaml_path = Path(from_path)
+    output_dir = Path(output) if output else None
+
+    click.echo(f"📋 Importing source schema from: {yaml_path}")
+
+    try:
+        result_path, report = run_import_source(
+            yaml_path=yaml_path,
+            system_name=system_name,
+            output_dir=output_dir,
+            dry_run=dry_run,
+        )
+    except ValueError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+    if report and report.has_changes:
+        click.echo(f"\n📊 Changes detected: {report.summary()}")
+        if report.added_tables:
+            click.echo(f"   ✅ New tables: {', '.join(report.added_tables)}")
+        if report.removed_tables:
+            click.echo(f"   ⚠️  Deprecated tables: {', '.join(report.removed_tables)}")
+        if report.added_columns:
+            for c in report.added_columns[:10]:
+                click.echo(f"   + {c.table}.{c.column}")
+            if len(report.added_columns) > 10:
+                click.echo(f"   ... and {len(report.added_columns) - 10} more")
+        if report.removed_columns:
+            for c in report.removed_columns[:10]:
+                click.echo(f"   - {c.table}.{c.column}")
+            if len(report.removed_columns) > 10:
+                click.echo(f"   ... and {len(report.removed_columns) - 10} more")
+        if report.type_changes:
+            for c in report.type_changes[:10]:
+                click.echo(f"   ~ {c.table}.{c.column}: {c.old_value} → {c.new_value}")
+    elif report is None:
+        click.echo("\n🆕 Fresh vocabulary generated (no existing file to merge with)")
+    else:
+        click.echo("\n✅ No changes — vocabulary is already in sync")
+
+    if dry_run:
+        click.echo("\n🔍 Dry-run mode — no files written")
+    elif result_path:
+        click.echo(f"\n✅ Written: {result_path}")
 
 
 @cli.command()
@@ -1833,3 +1909,292 @@ def _create_github_repo(repo_dir: Path, repo_slug: str, org: str,
 
 if __name__ == '__main__':
     cli()
+
+
+# --------------------------------------------------------------------------- #
+# init-dataplatform — scaffold a downstream dataplatform repo from a hub
+# --------------------------------------------------------------------------- #
+
+_DATAPLATFORM_SCAFFOLD = _SCAFFOLD_DIR / "dataplatform"
+
+
+def _detect_hub_context() -> dict:
+    """Detect ontology-hub context from the current working directory.
+
+    Returns a dict with hub_root, repo_url, org, repo_name, version,
+    and source_systems (list of system names found under integration/sources/).
+    """
+    cwd = Path.cwd()
+    hub_root = None
+    for candidate in [cwd / "ontology-hub", cwd]:
+        if (candidate / "model" / "ontologies").is_dir():
+            hub_root = candidate
+            break
+
+    if not hub_root:
+        raise click.ClickException(
+            "Could not detect an ontology-hub in the current directory.\n"
+            "Run this command from the root of a hub repository (containing "
+            "ontology-hub/model/ontologies/)."
+        )
+
+    # Detect git remote URL
+    repo_url = ""
+    org = ""
+    repo_name = ""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=10,
+            cwd=hub_root.parent if hub_root.name == "ontology-hub" else hub_root,
+        )
+        if result.returncode == 0:
+            repo_url = result.stdout.strip()
+            # Parse org/repo from URL (https or ssh)
+            import re as _re
+            m = _re.search(r'[/:]([^/]+)/([^/]+?)(?:\.git)?$', repo_url)
+            if m:
+                org = m.group(1)
+                repo_name = m.group(2)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # Detect version from VERSION.json
+    version = "v0.1.0"
+    version_file = (hub_root.parent if hub_root.name == "ontology-hub" else hub_root)
+    version_json = version_file / "VERSION.json"
+    if version_json.exists():
+        try:
+            v = json.loads(version_json.read_text(encoding="utf-8"))
+            version = f"v{v.get('version', '0.1.0')}"
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Detect source systems
+    sources_dir = hub_root / "integration" / "sources"
+    source_systems = []
+    if sources_dir.is_dir():
+        for d in sorted(sources_dir.iterdir()):
+            if d.is_dir() and not d.name.startswith("."):
+                source_systems.append(d.name)
+
+    return {
+        "hub_root": hub_root,
+        "repo_url": repo_url,
+        "org": org,
+        "repo_name": repo_name,
+        "version": version,
+        "source_systems": source_systems,
+    }
+
+
+@cli.command(name="init-dataplatform")
+@click.argument("name", required=False, default=None)
+@click.option("--path", "dest", type=click.Path(), default=None,
+              help="Parent directory to create the dataplatform repo in (default: sibling of hub).")
+@click.option("--platform", type=click.Choice(
+    ["fabric-lakehouse", "fabric-warehouse", "databricks"]),
+    default="fabric-lakehouse",
+    help="Target platform for dbt adapter configuration.")
+@click.option("--org", "org_override", type=str, default=None,
+              help="GitHub organisation (default: same as hub repo).")
+def init_dataplatform(name, dest, platform, org_override):
+    """Scaffold a dataplatform dbt project linked to this ontology hub.
+
+    Run this command from within an ontology-hub repository. It creates a
+    sibling directory with a dbt project pre-configured to consume the
+    hub's projections via dbt deps.
+
+    \b
+    NAME is the project name (default: derived from hub name, e.g.,
+    "contoso-ontology-hub" → "contoso-dataplatform").
+
+    \b
+    What it creates:
+      - dbt_project.yml with correct package reference
+      - packages.yml pinned to the hub's current version
+      - profiles.yml.example for your platform
+      - macros/extract_source_schema.sql for bronze introspection
+      - _sources.yml template with physical binding placeholders
+      - pyproject.toml with uv + toolkit dependency
+      - README.md with setup instructions
+
+    \b
+    Examples:
+      kairos-ontology init-dataplatform
+      kairos-ontology init-dataplatform contoso-data --platform databricks
+    """
+    # Detect hub context
+    ctx = _detect_hub_context()
+    hub_org = org_override or ctx["org"] or "your-org"
+    hub_repo = ctx["repo_name"] or "your-ontology-hub"
+    hub_version = ctx["version"]
+
+    # Derive name
+    if not name:
+        base = hub_repo.replace("-ontology-hub", "").replace("-ontology", "")
+        name = f"{base}-dataplatform"
+
+    project_name = name.replace("-", "_")
+
+    # Determine output directory
+    if dest:
+        parent = Path(dest)
+    else:
+        # Place sibling to the hub repo
+        hub_git_root = ctx["hub_root"].parent if ctx["hub_root"].name == "ontology-hub" else ctx["hub_root"]
+        parent = hub_git_root.parent
+
+    repo_dir = parent / name
+
+    if repo_dir.exists():
+        raise click.ClickException(f"Directory already exists: {repo_dir}")
+
+    click.echo(f"🚀 Creating dataplatform project: {name}")
+    click.echo(f"   Location: {repo_dir}")
+    click.echo(f"   Hub: {hub_org}/{hub_repo} @ {hub_version}")
+    click.echo(f"   Platform: {platform}")
+    if ctx["source_systems"]:
+        click.echo(f"   Source systems: {', '.join(ctx['source_systems'])}")
+    click.echo()
+
+    # Create directory structure
+    repo_dir.mkdir(parents=True)
+    (repo_dir / "models" / "custom").mkdir(parents=True)
+    (repo_dir / "macros").mkdir(parents=True)
+    (repo_dir / "tests").mkdir(parents=True)
+    (repo_dir / "seeds").mkdir(parents=True)
+    (repo_dir / "snapshots").mkdir(parents=True)
+    (repo_dir / "analyses").mkdir(parents=True)
+
+    # Template substitutions
+    subs = {
+        "{PROJECT_NAME}": project_name,
+        "{ORG}": hub_org,
+        "{HUB_REPO}": hub_repo,
+        "{HUB_VERSION}": hub_version,
+        "{DATABASE}": "your_bronze_database",
+        "{SCHEMA}": "your_bronze_schema",
+    }
+
+    # Copy and template scaffold files
+    template_files = {
+        "dbt_project.yml.template": "dbt_project.yml",
+        "packages.yml.template": "packages.yml",
+        "profiles.yml.example": "profiles.yml.example",
+        "pyproject.toml.template": "pyproject.toml",
+        "README.md.template": "README.md",
+    }
+
+    for src_name, dst_name in template_files.items():
+        src = _DATAPLATFORM_SCAFFOLD / src_name
+        if src.exists():
+            content = src.read_text(encoding="utf-8")
+            for placeholder, value in subs.items():
+                content = content.replace(placeholder, value)
+            (repo_dir / dst_name).write_text(content, encoding="utf-8")
+            click.echo(f"  ✓ {dst_name}")
+
+    # Copy macros
+    macro_src = _DATAPLATFORM_SCAFFOLD / "macros" / "extract_source_schema.sql"
+    if macro_src.exists():
+        shutil.copy2(macro_src, repo_dir / "macros" / "extract_source_schema.sql")
+        click.echo("  ✓ macros/extract_source_schema.sql")
+
+    # Generate _sources.yml from detected source systems
+    if ctx["source_systems"]:
+        sources_content = "# Physical Source Bindings\n"
+        sources_content += "# Update database/schema per environment.\n\n"
+        sources_content += "version: 2\n\nsources:\n"
+        for sys_name in ctx["source_systems"]:
+            sources_content += f"  - name: {sys_name}\n"
+            sources_content += f'    description: "Bronze source: {sys_name}"\n'
+            sources_content += f'    database: "your_bronze_database"\n'
+            sources_content += f'    schema: "raw_{sys_name}"\n'
+            sources_content += "    tables:\n"
+
+            # Scan for table names in vocabulary TTL
+            vocab_dir = ctx["hub_root"] / "integration" / "sources" / sys_name
+            if vocab_dir.is_dir():
+                from rdflib import Graph as RdfGraph, Namespace as RdfNamespace
+                from rdflib.namespace import RDF as RDF_NS
+                bronze_ns = RdfNamespace("https://kairos.cnext.eu/bronze#")
+                g = RdfGraph()
+                for ttl in vocab_dir.glob("*.ttl"):
+                    try:
+                        g.parse(ttl, format="turtle")
+                    except Exception:
+                        continue
+                table_names = []
+                for tbl_uri in g.subjects(RDF_NS.type, bronze_ns.SourceTable):
+                    tbl_name = str(g.value(tbl_uri, bronze_ns.tableName) or "")
+                    if tbl_name:
+                        table_names.append(tbl_name)
+                for tbl_name in sorted(table_names):
+                    sources_content += f"      - name: {tbl_name}\n"
+            else:
+                sources_content += "      # Add tables matching the hub vocabulary\n"
+                sources_content += "      # - name: tblExample\n"
+            sources_content += "\n"
+
+        (repo_dir / "models" / "_sources.yml").write_text(sources_content, encoding="utf-8")
+        click.echo("  ✓ models/_sources.yml (pre-populated from hub vocabulary)")
+    else:
+        # Copy template
+        src = _DATAPLATFORM_SCAFFOLD / "models" / "_sources.yml.template"
+        if src.exists():
+            content = src.read_text(encoding="utf-8")
+            for placeholder, value in subs.items():
+                content = content.replace(placeholder, value)
+            (repo_dir / "models" / "_sources.yml").write_text(content, encoding="utf-8")
+            click.echo("  ✓ models/_sources.yml (template)")
+
+    # Create .gitignore
+    gitignore = (
+        "target/\ndbt_packages/\nlogs/\n.venv/\n__pycache__/\n*.pyc\n"
+        ".env\nprofiles.yml\n"
+    )
+    (repo_dir / ".gitignore").write_text(gitignore, encoding="utf-8")
+    click.echo("  ✓ .gitignore")
+
+    # Create .python-version
+    (repo_dir / ".python-version").write_text("3.12\n", encoding="utf-8")
+    click.echo("  ✓ .python-version")
+
+    # Create minimal Python package so hatchling can build the project
+    pkg_name = project_name.replace("-", "_")
+    pkg_dir = repo_dir / pkg_name
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
+    click.echo(f"  ✓ {pkg_name}/__init__.py")
+
+    # Initialize git repo
+    try:
+        subprocess.run(
+            ["git", "init", "-b", "main"], cwd=repo_dir,
+            capture_output=True, check=True, timeout=10,
+        )
+        subprocess.run(
+            ["git", "add", "."], cwd=repo_dir,
+            capture_output=True, check=True, timeout=10,
+        )
+        subprocess.run(
+            ["git", "commit", "-m",
+             f"chore: scaffold dataplatform from {hub_org}/{hub_repo}\n\n"
+             f"Hub version: {hub_version}\n"
+             f"Platform: {platform}\n\n"
+             "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"],
+            cwd=repo_dir, capture_output=True, check=True, timeout=10,
+        )
+        click.echo("  ✓ git init + initial commit")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        click.echo(f"  ⚠️  git init skipped: {e}")
+
+    click.echo(f"\n✅ Dataplatform project created at: {repo_dir}")
+    click.echo(f"\n📋 Next steps:")
+    click.echo(f"   cd {name}")
+    click.echo(f"   uv sync")
+    click.echo(f"   # Edit profiles.yml.example → ~/.dbt/profiles.yml")
+    click.echo(f"   # Edit models/_sources.yml with actual database/schema")
+    click.echo(f"   dbt deps")
+    click.echo(f"   dbt build")

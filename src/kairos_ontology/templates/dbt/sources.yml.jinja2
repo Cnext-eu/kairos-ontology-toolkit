@@ -3,8 +3,16 @@ version: 2
 sources:
   - name: {{ source_name }}
     description: "Bronze source: {{ system_label }}"
+{%- if database and not logical_sources_only %}
     database: {{ database }}
+{%- endif %}
+{%- if schema and not logical_sources_only %}
     schema: {{ schema }}
+{%- endif %}
+{%- if logical_sources_only %}
+    # Physical database/schema binding is defined in the dataplatform repo's _sources.yml.
+    # This source declaration provides logical table references for dbt graph resolution.
+{%- endif %}
     tables:
 {%- for table in tables %}
       - name: {{ table.name }}

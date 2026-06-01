@@ -779,7 +779,10 @@ def _extract_property_shape_tests(
 # Artifact generators
 # ---------------------------------------------------------------------------
 
-def _gen_sources(systems: list[dict], env: Environment, mappings: dict) -> dict[str, str]:
+def _gen_sources(
+    systems: list[dict], env: Environment, mappings: dict,
+    logical_sources_only: bool = False,
+) -> dict[str, str]:
     """Generate a single minimal ``_sources.yml`` under ``models/silver/``.
 
     The sources YAML is intentionally minimal — it declares only database,
@@ -788,6 +791,10 @@ def _gen_sources(systems: list[dict], env: Environment, mappings: dict) -> dict[
     source of bronze table structure), not in the dbt sources YAML.
 
     Only tables that have at least one mapping to a domain class are included.
+
+    When *logical_sources_only* is True, the generated sources omit ``database``
+    and ``schema`` fields — physical binding is expected to be defined in the
+    downstream dataplatform repo's own ``_sources.yml``.
     """
     artifacts: dict[str, str] = {}
     template = env.get_template("sources.yml.jinja2")
@@ -813,6 +820,7 @@ def _gen_sources(systems: list[dict], env: Environment, mappings: dict) -> dict[
             database=sys["database"],
             schema=sys["schema"],
             tables=tables_data,
+            logical_sources_only=logical_sources_only,
         )
         path = f"models/silver/_{source_name}__sources.yml"
         artifacts[path] = content
@@ -2850,6 +2858,7 @@ def generate_dbt_artifacts(
     silver_ext_path: Path = None,
     ref_model_defaults: list = None,
     peer_ext_paths: list = None,
+    logical_sources_only: bool = False,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -2905,7 +2914,7 @@ def generate_dbt_artifacts(
 
     # 1. Sources YAML (minimal — under models/silver/)
     if systems:
-        artifacts.update(_gen_sources(systems, env, mappings))
+        artifacts.update(_gen_sources(systems, env, mappings, logical_sources_only))
         logger.info("Generated %d source definition(s)", len(systems))
 
     # 2. Silver entity models (read directly from bronze via source())
