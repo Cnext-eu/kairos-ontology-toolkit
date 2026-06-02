@@ -141,6 +141,21 @@ class TestInitDataplatform:
         pyproject = (dp_dir / "pyproject.toml").read_text(encoding="utf-8")
         assert "kairos-ontology-toolkit" in pyproject
 
+    def test_pyproject_includes_dbt_adapter(self, mock_hub):
+        runner = CliRunner()
+        dp_dir = mock_hub.parent / "test-dp-adapter"
+
+        _run_in_hub(runner, mock_hub, [
+            "init-dataplatform", "test-dp-adapter",
+            "--path", str(mock_hub.parent),
+            "--platform", "fabric-warehouse",
+        ])
+
+        pyproject = (dp_dir / "pyproject.toml").read_text(encoding="utf-8")
+        assert "dbt-fabric>=1.9.0" in pyproject
+        # Should NOT have dbt-core separately — adapter pulls it in
+        assert "dbt-core" not in pyproject
+
     def test_version_pinned_from_hub(self, mock_hub):
         runner = CliRunner()
         dp_dir = mock_hub.parent / "test-dp5"
@@ -191,3 +206,105 @@ class TestInitDataplatform:
         gitignore = (dp_dir / ".gitignore").read_text(encoding="utf-8")
         assert "target/" in gitignore
         assert "dbt_packages/" in gitignore
+
+    def test_copilot_instructions_created(self, mock_hub):
+        runner = CliRunner()
+        dp_dir = mock_hub.parent / "test-dp7"
+
+        result = _run_in_hub(runner, mock_hub, [
+            "init-dataplatform", "test-dp7",
+            "--path", str(mock_hub.parent),
+        ])
+
+        assert result.exit_code == 0, result.output
+        ci = dp_dir / ".github" / "copilot-instructions.md"
+        assert ci.exists()
+        content = ci.read_text(encoding="utf-8")
+        assert "Kairos Dataplatform" in content
+        assert "kairos-ontology-toolkit" in content  # managed marker
+
+    def test_skills_subset_created(self, mock_hub):
+        runner = CliRunner()
+        dp_dir = mock_hub.parent / "test-dp8"
+
+        result = _run_in_hub(runner, mock_hub, [
+            "init-dataplatform", "test-dp8",
+            "--path", str(mock_hub.parent),
+        ])
+
+        assert result.exit_code == 0, result.output
+        skills_dir = dp_dir / ".github" / "skills"
+        assert skills_dir.exists()
+
+        # Expected skills
+        expected = [
+            "kairos-develop-dataplatform",
+            "kairos-package-dataplatform",
+            "kairos-help",
+            "kairos-diagnose-status",
+            "kairos-toolkit-ops",
+            "SC-feature-branch",
+            "SC-merge-pr",
+            "SC-document",
+        ]
+        for skill in expected:
+            skill_file = skills_dir / skill / "SKILL.md"
+            assert skill_file.exists(), f"Missing skill: {skill}"
+            content = skill_file.read_text(encoding="utf-8")
+            assert "kairos-ontology-toolkit" in content  # managed marker
+
+        # Should NOT have ontology-hub-specific skills
+        assert not (skills_dir / "kairos-design-domain").exists()
+        assert not (skills_dir / "kairos-execute-project").exists()
+
+
+class TestUpdateDataplatform:
+    """Tests for the update command in a dataplatform repo context."""
+
+    def test_update_detects_dataplatform(self, tmp_path):
+        """Update should use dataplatform map when dbt_project.yml exists."""
+        runner = CliRunner()
+
+        # Create a minimal dataplatform repo structure
+        (tmp_path / "dbt_project.yml").write_text("name: test\n", encoding="utf-8")
+        github_dir = tmp_path / ".github"
+        github_dir.mkdir()
+
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            result = runner.invoke(cli, ["update"])
+        finally:
+            os.chdir(old_cwd)
+
+        assert result.exit_code == 0, result.output
+        # Should create copilot-instructions for dataplatform
+        ci = github_dir / "copilot-instructions.md"
+        assert ci.exists()
+        content = ci.read_text(encoding="utf-8")
+        assert "Kairos Dataplatform" in content
+
+    def test_update_creates_skill_subset(self, tmp_path):
+        """Update in dataplatform repo should only create the skill subset."""
+        runner = CliRunner()
+
+        (tmp_path / "dbt_project.yml").write_text("name: test\n", encoding="utf-8")
+        (tmp_path / ".github").mkdir()
+
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            result = runner.invoke(cli, ["update"])
+        finally:
+            os.chdir(old_cwd)
+
+        assert result.exit_code == 0, result.output
+        skills_dir = tmp_path / ".github" / "skills"
+
+        # Dataplatform skills present
+        assert (skills_dir / "kairos-help" / "SKILL.md").exists()
+        assert (skills_dir / "kairos-toolkit-ops" / "SKILL.md").exists()
+
+        # Hub-only skills absent
+        assert not (skills_dir / "kairos-design-domain").exists()
+        assert not (skills_dir / "kairos-execute-project").exists()
