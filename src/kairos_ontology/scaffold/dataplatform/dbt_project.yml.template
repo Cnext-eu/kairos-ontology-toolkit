@@ -1,0 +1,28 @@
+# Dataplatform dbt Project
+#
+# This project consumes ontology-generated dbt models from the ontology-hub
+# via dbt deps. It provides the physical source bindings for your bronze
+# lakehouse/warehouse tables.
+#
+# See: https://github.com/Cnext-eu/kairos-ontology-toolkit
+
+name: '{PROJECT_NAME}'
+version: '1.0.0'
+
+# Ontology-generated models are pulled in as a dbt package
+# See packages.yml for the ontology-hub reference
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Schema routing per environment
+models:
+  +schema: silver

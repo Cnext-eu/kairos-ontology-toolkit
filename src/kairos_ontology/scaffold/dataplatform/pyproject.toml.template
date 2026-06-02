@@ -1,0 +1,25 @@
+[project]
+name = "{PROJECT_NAME}"
+version = "1.0.0"
+description = "Dataplatform dbt project consuming ontology-hub projections"
+requires-python = ">=3.12"
+
+dependencies = [
+    "kairos-ontology-toolkit",
+    "dbt-core>=1.7.0,<2.0.0",
+    # Add your dbt adapter:
+    # "dbt-fabric>=1.7.0,<2.0.0",
+    # "dbt-databricks>=1.7.0,<2.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0,<9.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+kairos-ontology-toolkit = { git = "https://github.com/{ORG}/kairos-ontology-toolkit" }

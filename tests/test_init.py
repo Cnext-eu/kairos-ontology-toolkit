@@ -8,6 +8,7 @@ from unittest import mock
 from click.testing import CliRunner
 from kairos_ontology.cli.main import (
     cli, _slugify, _stamp_managed, _get_managed_version, _managed_scaffold_map,
+    _tag_to_version, _whl_url,
 )
 
 
@@ -1253,3 +1254,38 @@ def test_migrate_already_migrated(tmp_path):
     result = runner.invoke(cli, ["migrate", "--hub", str(hub)])
     assert result.exit_code == 0
     assert "already using the new layout" in result.output
+
+
+# -- _tag_to_version / _whl_url PEP 440 conversion tests ----------------------
+
+
+class TestTagToVersion:
+    """Ensure git tags are properly converted to PEP 440 version strings."""
+
+    def test_stable_tag(self):
+        assert _tag_to_version("v3.8.1") == "3.8.1"
+
+    def test_rc_tag(self):
+        assert _tag_to_version("v3.9.0-rc.1") == "3.9.0rc1"
+
+    def test_rc_tag_multi_digit(self):
+        assert _tag_to_version("v3.9.0-rc.12") == "3.9.0rc12"
+
+    def test_beta_tag(self):
+        assert _tag_to_version("v4.0.0-beta.2") == "4.0.0b2"
+
+    def test_alpha_tag(self):
+        assert _tag_to_version("v4.0.0-alpha.1") == "4.0.0a1"
+
+    def test_no_v_prefix(self):
+        assert _tag_to_version("3.8.1") == "3.8.1"
+
+    def test_whl_url_stable(self):
+        url = _whl_url("v3.8.1")
+        assert "3.8.1-py3-none-any.whl" in url
+        assert "/v3.8.1/" in url
+
+    def test_whl_url_rc(self):
+        url = _whl_url("v3.9.0-rc.1")
+        assert "3.9.0rc1-py3-none-any.whl" in url
+        assert "/v3.9.0-rc.1/" in url

@@ -161,6 +161,8 @@ Use this table to pick the correct skill for a user's intent:
 | "Release / upgrade / version check / update reference models" | **kairos-toolkit-ops** |
 | "Map source columns to domain / create SKOS mappings" | **kairos-design-mapping** |
 | "Status / progress / what's missing / where are we" | **kairos-diagnose-status** |
+| "Set up / scaffold a dataplatform dbt repo" | **kairos-setup-dataplatform** |
+| "Import source schema / refresh vocabulary from bronze" | CLI: `kairos-ontology import-source` |
 
 ### Skill-first enforcement (MANDATORY)
 

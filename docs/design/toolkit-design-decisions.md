@@ -47,6 +47,7 @@ Kairos Ontology Toolkit. Each decision is recorded as an Architecture Decision R
 | [DD-032](#dd-032-reference-model-inspired--local-pattern-adoption-from-reference-models) | Reference Model Inspired — Local Pattern Adoption from Reference Models | Accepted | 2026-05-30 |
 | [DD-033](#dd-033-skill-lifecycle-architecture--design--execute-separation) | Skill Lifecycle Architecture — Design / Execute Separation | Proposed | 2026-05-30 |
 | [DD-034](#dd-034-uv-as-standard-environment-manager-for-hub-repos) | uv as Standard Environment Manager for Hub Repos | Accepted | 2026-05-31 |
+| [DD-035](#dd-035-bronze-source-introspection--layered-dbt-architecture) | Bronze Source Introspection & Layered dbt Architecture | Proposed | 2026-06-01 |
 
 ---
 
@@ -1966,6 +1967,45 @@ proposal to add a new `kairos-ext:identityStrategy` annotation for FK-child enti
     delete from `.gitmodules`, then run `kairos-ontology update-refmodels`
   - Hub repo size slightly increases (reference model .ttl files are committed)
   - `update-refmodels` becomes the single way to refresh reference models
+
+  ---
+
+## DD-035: Bronze Source Introspection & Layered dbt Architecture
+
+**Status:** Proposed  
+**Date:** 2026-06-01  
+**Affects:** `integration/sources/`, `_sources.yml` generation, dataplatform repos, dbt projector  
+**Implementation:** See `docs/design/bronze-introspection-architecture.md` for full ADR
+
+### Context
+
+Vocabulary TTL files (DD-015) are manually maintained bronze contracts. Actual lakehouse
+tables drift over time. The hub's dbt projector generates `_sources.yml` with physical
+database/schema info, coupling the hub to a specific environment.
+
+### Decision
+
+1. **Hybrid introspection pipeline**: Dataplatform extracts schema via dbt's
+   `adapter.get_columns_in_relation()` → YAML → toolkit's `import-source` refreshes
+   vocabulary TTL.
+2. **Layered source separation**: Hub generates logical `{{ source() }}` refs without
+   database/schema; dataplatform owns physical `_sources.yml` binding.
+3. **Dataplatform scaffold**: New `init-dataplatform` CLI + skill to bootstrap consumer repos
+   with dbt project, extraction macro, and toolkit as uv dependency.
+
+### Rationale
+
+- dbt adapter layer provides platform-agnostic introspection (no custom SQL)
+- YAML intermediate is dbt-ecosystem aligned and human-readable
+- Source separation follows dbt multi-project best practices
+- Vocabulary remains the semantic contract; introspection keeps it current
+
+### Consequences
+
+- Existing dataplatforms need to add their own `_sources.yml` (breaking change, requires
+  major version bump)
+- Two-step refresh (extract + import) rather than fully automated
+- JSON content_type requires manual annotation (adapters don't expose this)
 
   ---
 
