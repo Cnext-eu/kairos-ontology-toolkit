@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 
 # Supported YAML schema versions
-SUPPORTED_VERSIONS = {"1.0"}
+SUPPORTED_VERSIONS = {"1.0", "1.1"}
 
 
 @dataclass
@@ -164,6 +164,56 @@ def parse_source_schema(yaml_path: Path) -> dict:
     return data
 
 
+def parse_source_schema_dir(schema_dir: Path) -> dict:
+    """Parse a directory of per-table YAML files (v1.1 format).
+
+    Reads _manifest.yaml for system metadata and individual table YAML files
+    for column details.
+
+    Args:
+        schema_dir: Directory containing _manifest.yaml + per-table YAML files.
+
+    Returns:
+        Assembled dict in the standard source-schema format (compatible with
+        generate_vocabulary_ttl).
+
+    Raises ValueError if manifest is missing or invalid.
+    """
+    manifest_path = schema_dir / "_manifest.yaml"
+    if not manifest_path.is_file():
+        raise ValueError(f"Missing _manifest.yaml in: {schema_dir}")
+
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = yaml.safe_load(f)
+
+    if not manifest:
+        raise ValueError("_manifest.yaml is empty")
+
+    # Assemble the combined schema dict
+    data = {
+        "version": manifest.get("version", "1.1"),
+        "system": manifest.get("system", ""),
+        "platform": manifest.get("platform", "unknown"),
+        "extracted_at": manifest.get("extracted_at", ""),
+        "connection": manifest.get("connection", {}),
+        "tables": [],
+    }
+
+    # Read each table file listed in manifest
+    table_names = manifest.get("tables", [])
+    for tbl_name in table_names:
+        tbl_path = schema_dir / f"{tbl_name}.yaml"
+        if not tbl_path.is_file():
+            logger.warning(f"Table file not found: {tbl_path}")
+            continue
+        with open(tbl_path, encoding="utf-8") as f:
+            tbl_data = yaml.safe_load(f)
+        if tbl_data:
+            data["tables"].append(tbl_data)
+
+    return data
+
+
 # --------------------------------------------------------------------------- #
 # URI Generation (stable, deterministic)
 # --------------------------------------------------------------------------- #
@@ -187,6 +237,20 @@ def _column_uri(base_ns: Namespace, table_name: str, column_name: str) -> URIRef
 # --------------------------------------------------------------------------- #
 # TTL Generation
 # --------------------------------------------------------------------------- #
+
+
+def _json_type_to_sql(json_type: str) -> str:
+    """Map a JSON value type to an approximate SQL data type."""
+    mapping = {
+        "string": "varchar(max)",
+        "integer": "int",
+        "number": "decimal",
+        "boolean": "bit",
+        "object": "varchar(max)",
+        "array": "varchar(max)",
+        "null": "varchar(max)",
+    }
+    return mapping.get(json_type, "varchar(max)")
 
 
 def generate_vocabulary_ttl(data: dict) -> str:
@@ -250,6 +314,12 @@ def generate_vocabulary_ttl(data: dict) -> str:
         if pk_cols:
             g.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(pk_cols))))
 
+        # Row count (v1.1 enrichment)
+        row_count = tbl.get("row_count")
+        if row_count is not None:
+            g.add((tbl_uri, KAIROS_BRONZE.rowCount,
+                   Literal(row_count, datatype=XSD.integer)))
+
         # Incremental column
         inc_col = tbl.get("incremental_column")
         if inc_col:
@@ -273,10 +343,99 @@ def generate_vocabulary_ttl(data: dict) -> str:
                 g.add((col_uri, KAIROS_BRONZE.isPrimaryKey,
                        Literal(True, datatype=XSD.boolean)))
 
-            # JSON content type
+            # JSON content type (v1.0 manual annotation)
             content_type = col.get("content_type")
             if content_type:
                 g.add((col_uri, KAIROS_BRONZE.contentType, Literal(content_type)))
+
+            # v1.1: Sample values
+            samples = col.get("samples")
+            if samples:
+                g.add((col_uri, KAIROS_BRONZE.sampleValues,
+                       Literal(" | ".join(str(s) for s in samples[:5]))))
+
+            # v1.1: Distinct count
+            distinct_count = col.get("distinct_count")
+            if distinct_count is not None:
+                g.add((col_uri, KAIROS_BRONZE.distinctCount,
+                       Literal(distinct_count, datatype=XSD.integer)))
+
+            # Enrichment: Suggested enum
+            if col.get("suggested_enum"):
+                g.add((col_uri, KAIROS_BRONZE.suggestedEnum,
+                       Literal(True, datatype=XSD.boolean)))
+                enum_values = col.get("enum_values", [])
+                if enum_values:
+                    g.add((col_uri, KAIROS_BRONZE.enumValues,
+                           Literal(" | ".join(str(v) for v in enum_values))))
+
+            # Enrichment: Format hint
+            format_hint = col.get("format_hint")
+            if format_hint:
+                g.add((col_uri, KAIROS_BRONZE.formatHint, Literal(format_hint)))
+
+            # Enrichment: Suggested FK
+            suggested_fk = col.get("suggested_fk")
+            if suggested_fk:
+                fk_target_uri = _table_uri(base_ns, suggested_fk)
+                g.add((col_uri, KAIROS_BRONZE.suggestedForeignKey, fk_target_uri))
+                fk_confidence = col.get("fk_confidence", "medium")
+                g.add((col_uri, KAIROS_BRONZE.fkConfidence, Literal(fk_confidence)))
+
+            # Enrichment: Comment with samples for context
+            if samples and not col.get("json_detected"):
+                sample_comment = f"Examples: {', '.join(str(s) for s in samples[:3])}"
+                g.add((col_uri, RDFS.comment, Literal(sample_comment)))
+
+            # v1.1: JSON structure detection
+            if col.get("json_detected"):
+                classification = col.get("json_classification", "polymorphic")
+                g.add((col_uri, KAIROS_BRONZE.contentType, Literal("json")))
+                g.add((col_uri, KAIROS_BRONZE.jsonClassification,
+                       Literal(classification)))
+
+                # Generate expanded properties for flat/nested JSON
+                json_structure = col.get("json_structure", [])
+                if classification in ("flat", "nested") and json_structure:
+                    for js in json_structure:
+                        key_name = js.get("key", "")
+                        if not key_name:
+                            continue
+                        prop_uri = _column_uri(base_ns, tbl_name, f"{col_name}__{key_name}")
+                        g.add((prop_uri, RDF.type, KAIROS_BRONZE.SourceColumn))
+                        g.add((prop_uri, KAIROS_BRONZE.sourceTable, tbl_uri))
+                        g.add((prop_uri, KAIROS_BRONZE.columnName,
+                               Literal(f"{col_name}.{key_name}")))
+                        g.add((prop_uri, KAIROS_BRONZE.dataType,
+                               Literal(_json_type_to_sql(js.get("type", "string")))))
+                        g.add((prop_uri, KAIROS_BRONZE.derivedFromJson, col_uri))
+                        if js.get("sample") is not None:
+                            g.add((prop_uri, KAIROS_BRONZE.sampleValues,
+                                   Literal(str(js["sample"]))))
+
+                elif classification == "array_object" and json_structure:
+                    # Generate a linked child table concept
+                    child_tbl_name = f"{tbl_name}_{col_name}"
+                    child_uri = _table_uri(base_ns, child_tbl_name)
+                    g.add((child_uri, RDF.type, KAIROS_BRONZE.SourceTable))
+                    g.add((child_uri, RDFS.label, Literal(child_tbl_name)))
+                    g.add((child_uri, KAIROS_BRONZE.sourceSystem, sys_uri))
+                    g.add((child_uri, KAIROS_BRONZE.tableName, Literal(child_tbl_name)))
+                    g.add((child_uri, KAIROS_BRONZE.derivedFromJson, col_uri))
+                    g.add((child_uri, RDFS.comment, Literal(
+                        f"Virtual table derived from JSON array column "
+                        f"{tbl_name}.{col_name}"
+                    )))
+                    for js in json_structure:
+                        key_name = js.get("key", "")
+                        if not key_name:
+                            continue
+                        prop_uri = _column_uri(base_ns, child_tbl_name, key_name)
+                        g.add((prop_uri, RDF.type, KAIROS_BRONZE.SourceColumn))
+                        g.add((prop_uri, KAIROS_BRONZE.sourceTable, child_uri))
+                        g.add((prop_uri, KAIROS_BRONZE.columnName, Literal(key_name)))
+                        g.add((prop_uri, KAIROS_BRONZE.dataType,
+                               Literal(_json_type_to_sql(js.get("type", "string")))))
 
     return g.serialize(format="turtle")
 
@@ -530,6 +689,8 @@ def run_import_source(
     system_name: str | None = None,
     output_dir: Path | None = None,
     dry_run: bool = False,
+    enrich: bool = True,
+    enum_threshold: int = 25,
 ) -> tuple[Path | None, ChangeReport | None]:
     """Orchestrate the import-source workflow.
 
@@ -538,6 +699,8 @@ def run_import_source(
         system_name: Override system name (default: from YAML).
         output_dir: Output directory (default: integration/sources/{system}/).
         dry_run: If True, show changes but don't write files.
+        enrich: If True, run inference enrichment (enum/format/FK detection).
+        enum_threshold: Max distinct values for enum detection.
 
     Returns:
         Tuple of (output file path or None if dry-run, ChangeReport or None if fresh).
@@ -546,6 +709,11 @@ def run_import_source(
 
     if system_name:
         data["system"] = system_name
+
+    # Run enrichment if enabled and data has samples (v1.1)
+    if enrich and _has_enrichable_data(data):
+        from .enrich_vocabulary import enrich_source_schema
+        enrich_source_schema(data, enum_threshold=enum_threshold)
 
     sys_name = data["system"]
 
@@ -572,3 +740,12 @@ def run_import_source(
     logger.info("Written vocabulary to %s", output_file)
 
     return output_file, report
+
+
+def _has_enrichable_data(data: dict) -> bool:
+    """Check if the schema data has samples/distinct counts worth enriching."""
+    for tbl in data.get("tables", []):
+        for col in tbl.get("columns", []):
+            if col.get("samples") or col.get("distinct_count") is not None:
+                return True
+    return False

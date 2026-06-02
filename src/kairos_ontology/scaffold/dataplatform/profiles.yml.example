@@ -1,7 +1,10 @@
 # dbt Profile Configuration — Example
 #
-# Copy this file to ~/.dbt/profiles.yml (or set DBT_PROFILES_DIR)
-# and fill in your connection details.
+# Copy this file to .dbt/profiles.yml and fill in your connection details.
+# Run dbt with: dbt build --profiles-dir .dbt
+# Or set the env var: export DBT_PROFILES_DIR=.dbt
+#
+# The .dbt/profiles.yml file is gitignored to keep secrets out of version control.
 #
 # See: https://docs.getdbt.com/docs/core/connect-data-platform
 

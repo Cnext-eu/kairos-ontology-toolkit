@@ -27,14 +27,15 @@ ontology-hub (producer)              this repo (consumer)
 uv sync
 
 # 2. Configure your dbt profile
-#    Copy profiles.yml.example → ~/.dbt/profiles.yml
+#    Copy .dbt/profiles.yml.example → .dbt/profiles.yml
 #    Fill in your connection details
+#    Then run dbt with: dbt build --profiles-dir .dbt
 
 # 3. Pull ontology-hub models
 dbt deps
 
 # 4. Build all models
-dbt build
+dbt build --profiles-dir .dbt
 ```
 
 ## Bronze Schema Introspection

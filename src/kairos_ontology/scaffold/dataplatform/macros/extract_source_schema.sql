@@ -2,6 +2,10 @@
 {# This macro uses dbt's adapter layer to introspect declared source tables #}
 {# and outputs a YAML-formatted schema file for the kairos-ontology toolkit. #}
 {#                                                                            #}
+{# NOTE: For full metadata (samples, JSON detection, row counts), use the     #}
+{# kairos-ontology extract-schema CLI command instead. This macro is a        #}
+{# lightweight fallback that only captures column names and data types.       #}
+{#                                                                            #}
 {# Usage:                                                                     #}
 {#   dbt run-operation extract_source_schema --args '{source_name: "myapp"}'  #}
 {#                                                                            #}

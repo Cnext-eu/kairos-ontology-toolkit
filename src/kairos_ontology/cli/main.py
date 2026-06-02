@@ -32,6 +32,18 @@ _ensure_utf8_stdio()
 # Resolve scaffold data directory bundled with the package
 _SCAFFOLD_DIR = Path(__file__).resolve().parent.parent / "scaffold"
 
+# Skills subset for dataplatform repos (used by init-dataplatform and update)
+_DATAPLATFORM_SKILLS = [
+    "kairos-develop-dataplatform",
+    "kairos-package-dataplatform",
+    "kairos-help",
+    "kairos-diagnose-status",
+    "kairos-toolkit-ops",
+    "SC-feature-branch",
+    "SC-merge-pr",
+    "SC-document",
+]
+
 # Reference models folder name (at hub root)
 _REF_MODELS_PATH = "ontology-reference-models"
 
@@ -158,6 +170,23 @@ def _managed_scaffold_map() -> dict[str, Path]:
                 skill_file = skill_dir / "SKILL.md"
                 if skill_file.is_file():
                     result[f".github/skills/{skill_dir.name}/SKILL.md"] = skill_file
+
+    return result
+
+
+def _managed_dataplatform_map() -> dict[str, Path]:
+    """Return managed-file map for dataplatform repos (skill subset)."""
+    result: dict[str, Path] = {}
+
+    ci = _SCAFFOLD_DIR / "dataplatform-copilot-instructions.md"
+    if ci.is_file():
+        result[".github/copilot-instructions.md"] = ci
+
+    skills = _SCAFFOLD_DIR / "skills"
+    for skill_name in _DATAPLATFORM_SKILLS:
+        skill_file = skills / skill_name / "SKILL.md"
+        if skill_file.is_file():
+            result[f".github/skills/{skill_name}/SKILL.md"] = skill_file
 
     return result
 
@@ -702,31 +731,65 @@ def import_tmdl(source, output):
 
 @cli.command(name='import-source')
 @click.option('--from', 'from_path', type=click.Path(exists=True), required=True,
-              help='Path to source-schema YAML file.')
+              help='Path to source-schema YAML file or extracted/<system>/ directory.')
 @click.option('--system', 'system_name', default=None,
               help='Override the system name (default: from YAML).')
 @click.option('--output', '-o', type=click.Path(), default=None,
               help='Output directory (default: integration/sources/{system}/).')
 @click.option('--dry-run', is_flag=True,
               help='Show changes without writing files.')
-def import_source(from_path, system_name, output, dry_run):
+@click.option('--enrich/--no-enrich', default=True,
+              help='Run inference enrichment (enum/format/FK detection). Default: enabled.')
+@click.option('--enum-threshold', type=int, default=25,
+              help='Max distinct values to suggest as enumeration (default: 25).')
+def import_source(from_path, system_name, output, dry_run, enrich, enum_threshold):
     """Import source schema YAML and generate/refresh bronze vocabulary TTL.
 
     Reads a standardized source-schema YAML file (produced by the
     extract_source_schema dbt macro or manually) and generates or updates
     the corresponding kairos-bronze vocabulary TTL.
 
+    Accepts either a single YAML file (v1.0) or a directory with
+    _manifest.yaml + per-table YAML files (v1.1 from extract-schema).
+
+    With --enrich (default), runs inference passes that add:
+    - Enum suggestions for low-cardinality columns
+    - Format hints (email, date, UUID, phone, URL)
+    - FK relationship suggestions from naming patterns
+
     \b
     Examples:
       kairos-ontology import-source --from extracted/adminpulse-schema.yaml
+      kairos-ontology import-source --from extracted/adminpulse/
       kairos-ontology import-source --from schema.yaml --system myapp --dry-run
+      kairos-ontology import-source --from extracted/nms/ --no-enrich
     """
-    from ..import_source import run_import_source, ChangeReport
+    from ..import_source import run_import_source, parse_source_schema_dir
 
-    yaml_path = Path(from_path)
+    source_path = Path(from_path)
     output_dir = Path(output) if output else None
 
-    click.echo(f"📋 Importing source schema from: {yaml_path}")
+    # Support directory input (v1.1 per-table format)
+    tmp_cleanup = None
+    if source_path.is_dir():
+        click.echo(f"📋 Importing source schema from directory: {source_path}")
+        try:
+            data = parse_source_schema_dir(source_path)
+        except ValueError as e:
+            click.echo(f"\n❌ {e}", err=True)
+            raise SystemExit(1)
+        # Write a temporary combined YAML for run_import_source
+        import tempfile
+        import yaml as _yaml
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as tmp:
+            _yaml.dump(data, tmp, default_flow_style=False, sort_keys=False)
+            yaml_path = Path(tmp.name)
+            tmp_cleanup = yaml_path
+    else:
+        yaml_path = source_path
+        click.echo(f"📋 Importing source schema from: {yaml_path}")
 
     try:
         result_path, report = run_import_source(
@@ -734,6 +797,8 @@ def import_source(from_path, system_name, output, dry_run):
             system_name=system_name,
             output_dir=output_dir,
             dry_run=dry_run,
+            enrich=enrich,
+            enum_threshold=enum_threshold,
         )
     except ValueError as e:
         click.echo(f"\n❌ {e}", err=True)
@@ -767,6 +832,144 @@ def import_source(from_path, system_name, output, dry_run):
         click.echo("\n🔍 Dry-run mode — no files written")
     elif result_path:
         click.echo(f"\n✅ Written: {result_path}")
+
+    # Clean up temp file if we created one
+    if tmp_cleanup and tmp_cleanup.exists():
+        tmp_cleanup.unlink()
+
+
+@cli.command(name='extract-schema')
+@click.option('--profile', 'profile_name', required=True,
+              help='dbt profile name (from profiles.yml).')
+@click.option('--target', default='dev',
+              help='dbt target name (default: dev).')
+@click.option('--schema', 'schema_name', required=True,
+              help='Database schema to introspect.')
+@click.option('--system', 'system_name', required=True,
+              help='Logical source system name (used for output directory).')
+@click.option('--output', '-o', type=click.Path(), default='extracted',
+              help='Output base directory (default: extracted/).')
+@click.option('--profiles-dir', 'profiles_dir', type=click.Path(exists=True),
+              default='.dbt',
+              help='Directory containing profiles.yml (default: .dbt/).')
+@click.option('--tables', 'table_list', default=None,
+              help='Comma-separated list of tables to introspect (default: all).')
+@click.option('--sample-size', default=5, type=int,
+              help='Number of sample rows per table (default: 5).')
+def extract_schema(profile_name, target, schema_name, system_name, output,
+                   profiles_dir, table_list, sample_size):
+    """Introspect live warehouse/lakehouse schema and produce per-table YAML.
+
+    Connects to the database using dbt profile credentials and extracts:
+    column metadata, row counts, sample values, and JSON structure detection.
+
+    \b
+    Output structure:
+      extracted/<system>/
+        _manifest.yaml       (system metadata)
+        <table1>.yaml        (columns + samples + JSON)
+        <table2>.yaml
+
+    \b
+    Examples:
+      kairos-ontology extract-schema --profile myproject --schema bronze --system adminpulse
+      kairos-ontology extract-schema --profile myproject --schema dbo --system nms \\
+          --tables "tblClient,tblInvoice" --sample-size 10
+    """
+    from ..extract_schema import run_extract_schema
+
+    tables = [t.strip() for t in table_list.split(",")] if table_list else None
+    output_path = Path(output)
+    profiles_path = Path(profiles_dir)
+
+    click.echo(f"🔍 Extracting schema: {schema_name}")
+    click.echo(f"   Profile: {profile_name} (target: {target})")
+    click.echo(f"   System: {system_name}")
+    click.echo(f"   Profiles dir: {profiles_path}")
+    if tables:
+        click.echo(f"   Tables: {', '.join(tables)}")
+    else:
+        click.echo(f"   Tables: all in schema")
+    click.echo(f"   Sample size: {sample_size}")
+    click.echo()
+
+    try:
+        result_dir = run_extract_schema(
+            profiles_dir=profiles_path,
+            profile_name=profile_name,
+            target=target,
+            schema=schema_name,
+            system_name=system_name,
+            output_dir=output_path,
+            tables=tables,
+            sample_size=sample_size,
+        )
+    except ImportError as e:
+        click.echo(f"\n❌ Missing dependency: {e}", err=True)
+        raise SystemExit(1)
+    except FileNotFoundError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+    except (ValueError, RuntimeError, NotImplementedError) as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+    # Report results
+    yaml_files = sorted(result_dir.glob("*.yaml"))
+    table_files = [f for f in yaml_files if f.name != "_manifest.yaml"]
+    click.echo(f"✅ Extracted {len(table_files)} tables to: {result_dir}")
+    for f in table_files:
+        click.echo(f"   📄 {f.name}")
+
+
+@cli.command(name='generate-staging')
+@click.option('--from', 'from_dir', type=click.Path(exists=True), required=True,
+              help='Path to extracted/<system>/ directory (from extract-schema).')
+@click.option('--output', '-o', type=click.Path(), default='models/staging',
+              help='Output directory for staging models (default: models/staging/).')
+@click.option('--source', 'source_name', default=None,
+              help='dbt source name for {{ source() }} refs (default: from manifest).')
+def generate_staging(from_dir, output, source_name):
+    """Generate bronze_expanded staging models from JSON metadata.
+
+    Reads extract-schema output (per-table YAML with json_structure) and
+    generates dbt SQL models that flatten JSON columns into typed columns.
+
+    \b
+    Generated model patterns:
+      - Flat JSON → view with JSON_VALUE extractions
+      - Array of objects → table with CROSS APPLY OPENJSON
+
+    \b
+    Examples:
+      kairos-ontology generate-staging --from extracted/adminpulse/
+      kairos-ontology generate-staging --from extracted/nms/ --output models/staging/nms
+    """
+    from ..generate_staging import generate_staging_models
+
+    schema_dir = Path(from_dir)
+    output_path = Path(output)
+
+    click.echo(f"🏗️  Generating staging models from: {schema_dir}")
+    click.echo(f"   Output: {output_path}")
+    click.echo()
+
+    try:
+        generated = generate_staging_models(
+            schema_dir=schema_dir,
+            output_dir=output_path,
+            source_name=source_name,
+        )
+    except FileNotFoundError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+    if generated:
+        click.echo(f"✅ Generated {len(generated)} staging models:")
+        for p in generated:
+            click.echo(f"   📄 {p.name}")
+    else:
+        click.echo("ℹ️  No JSON columns detected — no staging models needed.")
 
 
 @cli.command()
@@ -849,14 +1052,24 @@ def update(check, upgrade):
         if result.returncode != 0:
             print(f"❌ uv lock failed:\n{result.stderr}")
             raise SystemExit(1)
-        result = subprocess.run(["uv", "sync"], capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"❌ uv sync failed:\n{result.stderr}")
-            raise SystemExit(1)
-        print(f"   ✓ Upgraded to {ref}")
-        return
-    managed_map = _managed_scaffold_map()
+        if sys.platform == "win32":
+            # On Windows the running .exe is locked and uv sync cannot replace it.
+            # uv run auto-syncs when the lock file is newer, so the new version
+            # activates on the next invocation without manual intervention.
+            print(f"   ✓ Upgraded to {ref} (will activate on next uv run)")
+        else:
+            result = subprocess.run(["uv", "sync"], capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"❌ uv sync failed:\n{result.stderr}")
+                raise SystemExit(1)
+            print(f"   ✓ Upgraded to {ref}")
+
+    # Detect repo type: dataplatform (has dbt_project.yml) vs ontology-hub
     repo_root = Path.cwd()
+    if (repo_root / "dbt_project.yml").is_file():
+        managed_map = _managed_dataplatform_map()
+    else:
+        managed_map = _managed_scaffold_map()
 
     updated: list[tuple[str, str]] = []
     outdated: list[tuple[str, str]] = []
@@ -2066,8 +2279,14 @@ def init_dataplatform(name, dest, platform, org_override):
     (repo_dir / "seeds").mkdir(parents=True)
     (repo_dir / "snapshots").mkdir(parents=True)
     (repo_dir / "analyses").mkdir(parents=True)
+    (repo_dir / ".dbt").mkdir(parents=True)
 
     # Template substitutions
+    adapter_map = {
+        "fabric-lakehouse": "dbt-fabric>=1.9.0",
+        "fabric-warehouse": "dbt-fabric>=1.9.0",
+        "databricks": "dbt-databricks>=1.9.0",
+    }
     subs = {
         "{PROJECT_NAME}": project_name,
         "{ORG}": hub_org,
@@ -2075,13 +2294,14 @@ def init_dataplatform(name, dest, platform, org_override):
         "{HUB_VERSION}": hub_version,
         "{DATABASE}": "your_bronze_database",
         "{SCHEMA}": "your_bronze_schema",
+        "{DBT_ADAPTER}": adapter_map.get(platform, "dbt-fabric>=1.9.0"),
     }
 
     # Copy and template scaffold files
     template_files = {
         "dbt_project.yml.template": "dbt_project.yml",
         "packages.yml.template": "packages.yml",
-        "profiles.yml.example": "profiles.yml.example",
+        "profiles.yml.example": ".dbt/profiles.yml.example",
         "pyproject.toml.template": "pyproject.toml",
         "README.md.template": "README.md",
     }
@@ -2152,7 +2372,7 @@ def init_dataplatform(name, dest, platform, org_override):
     # Create .gitignore
     gitignore = (
         "target/\ndbt_packages/\nlogs/\n.venv/\n__pycache__/\n*.pyc\n"
-        ".env\nprofiles.yml\n"
+        ".env\nprofiles.yml\n.dbt/profiles.yml\n"
     )
     (repo_dir / ".gitignore").write_text(gitignore, encoding="utf-8")
     click.echo("  ✓ .gitignore")
@@ -2160,6 +2380,22 @@ def init_dataplatform(name, dest, platform, org_override):
     # Create .python-version
     (repo_dir / ".python-version").write_text("3.12\n", encoding="utf-8")
     click.echo("  ✓ .python-version")
+
+    # Copy Copilot instructions and skills (managed files)
+    github_dir = repo_dir / ".github"
+    github_dir.mkdir(parents=True, exist_ok=True)
+
+    dp_instructions = _SCAFFOLD_DIR / "dataplatform-copilot-instructions.md"
+    if dp_instructions.is_file():
+        _copy_managed(dp_instructions, github_dir / "copilot-instructions.md")
+        click.echo("  ✓ .github/copilot-instructions.md")
+
+    skills_src = _SCAFFOLD_DIR / "skills"
+    for skill_name in _DATAPLATFORM_SKILLS:
+        skill_file = skills_src / skill_name / "SKILL.md"
+        if skill_file.is_file():
+            _copy_managed(skill_file, github_dir / "skills" / skill_name / "SKILL.md")
+            click.echo(f"  ✓ .github/skills/{skill_name}/SKILL.md")
 
     # Create minimal Python package so hatchling can build the project
     pkg_name = project_name.replace("-", "_")

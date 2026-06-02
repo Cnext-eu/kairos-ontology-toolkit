@@ -96,6 +96,37 @@ If `samples/` contains CSV or JSON files, infer:
 - Data types from values (inspect patterns)
 - Nullable from presence of empty values
 
+### 2d — From enriched schema YAML (preferred)
+
+If the vocabulary was generated via `import-source --enrich` from an `extract-schema`
+output, the TTL already contains rich inference annotations. **Check these first** before
+manual documentation — they are machine-derived but highly informative:
+
+| Annotation | What it tells you | Design action |
+|---|---|---|
+| `kairos-bronze:suggestedEnum true` | Low-cardinality column (≤25 distinct values) | Propose as `skos:ConceptScheme` with values as concepts |
+| `kairos-bronze:enumValues "A | B | C"` | The actual distinct values observed | Use as concept labels in the scheme |
+| `kairos-bronze:formatHint "email"` | Samples match a known format pattern | Suggest `xsd:string` with format constraint; propose dedicated property name |
+| `kairos-bronze:formatHint "date"` | Date-like values stored as string | Suggest `xsd:date` or `xsd:dateTime` range in domain model |
+| `kairos-bronze:formatHint "uuid"` | UUID identifiers | Likely a natural key or foreign key reference |
+| `kairos-bronze:suggestedForeignKey <uri>` | Column likely references another table | Propose as `owl:ObjectProperty` linking to the target entity |
+| `kairos-bronze:fkConfidence "high"` | Name-based match (strong signal) | High confidence — present as default recommendation |
+| `kairos-bronze:fkConfidence "medium"` | Cardinality-based match (weaker signal) | Present as suggestion, ask user to confirm |
+| `kairos-bronze:rowCount N` | Table size | Prioritize high-volume tables for modeling |
+| `kairos-bronze:sampleValues "val1 | val2 | val3"` | Actual data samples | Show in prompts for user to validate semantics |
+| `rdfs:comment "Examples: ..."` | Concrete value examples | Use to write meaningful property descriptions |
+
+**Workflow when enrichment annotations exist:**
+
+1. List all tables sorted by `rowCount` (high → low) for prioritization
+2. For each table, highlight:
+   - Columns with `suggestedEnum` → ask user: "Should this be a code list?"
+   - Columns with `suggestedForeignKey` → ask user: "Does this reference [target]?"
+   - Columns with `formatHint` → propose appropriate `xsd:` type
+3. Use `sampleValues` in all interactive prompts so user can validate without
+   querying the database
+4. After user confirms/rejects each suggestion, generate the enriched vocabulary
+
 ---
 
 ## Phase 3 — Generate the bronze vocabulary TTL
