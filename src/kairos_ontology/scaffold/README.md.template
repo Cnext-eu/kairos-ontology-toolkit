@@ -6,7 +6,7 @@ Kairos ontology hub for **{description}**.
 
 ```bash
 # Install dependencies (includes kairos-ontology-toolkit)
-pip install -e .
+uv sync
 
 # Validate all ontologies
 kairos-ontology validate

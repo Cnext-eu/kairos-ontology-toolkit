@@ -773,7 +773,7 @@ def import_source(from_path, system_name, output, dry_run):
 @click.option("--check", is_flag=True,
               help="Report outdated files without modifying anything (exit 1 on drift).")
 @click.option("--upgrade", is_flag=True,
-              help="Upgrade the toolkit pip dependency to the channel's latest version.")
+              help="Upgrade the toolkit dependency to the channel's latest version.")
 def update(check, upgrade):
     """Update toolkit-managed files to the installed toolkit version.
 
@@ -784,7 +784,7 @@ def update(check, upgrade):
     removed) are deleted.  Use --check to preview what would change without
     writing anything.
 
-    Use --upgrade to upgrade the toolkit pip dependency based on the channel
+    Use --upgrade to upgrade the toolkit dependency based on the channel
     configured in [tool.kairos] of pyproject.toml (stable or preview).
 
     \b
@@ -1234,7 +1234,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     After running this, `cd` into the new repo and add domains with:
 
     \b
-      pip install -e .
+      uv sync
       kairos-ontology init --domain customer
     """
     repo_slug = _slugify(name)
@@ -1528,7 +1528,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     print(f"   GitHub: https://github.com/{org}/{repo_slug}")
     print("\nNext steps:")
     print(f"  cd {repo_dir}")
-    print("  pip install -e .")
+    print("  uv sync")
     print("  kairos-ontology init --domain <your-domain>")
 
 

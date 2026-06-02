@@ -7,7 +7,7 @@
     },
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
-  "postCreateCommand": "pip install kairos-ontology-toolkit && npm install",
+  "postCreateCommand": "uv sync && npm install",
   "customizations": {
     "vscode": {
       "extensions": [
