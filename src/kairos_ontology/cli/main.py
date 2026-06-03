@@ -2186,9 +2186,10 @@ def _detect_hub_context() -> dict:
     # Detect source systems
     sources_dir = hub_root / "integration" / "sources"
     source_systems = []
+    _skip_dirs = {"source-system-template", "reference-data"}
     if sources_dir.is_dir():
         for d in sorted(sources_dir.iterdir()):
-            if d.is_dir() and not d.name.startswith("."):
+            if d.is_dir() and not d.name.startswith(".") and d.name not in _skip_dirs:
                 source_systems.append(d.name)
 
     return {
@@ -2316,10 +2317,11 @@ def init_dataplatform(name, dest, platform, org_override):
             click.echo(f"  ✓ {dst_name}")
 
     # Copy macros
-    macro_src = _DATAPLATFORM_SCAFFOLD / "macros" / "extract_source_schema.sql"
-    if macro_src.exists():
-        shutil.copy2(macro_src, repo_dir / "macros" / "extract_source_schema.sql")
-        click.echo("  ✓ macros/extract_source_schema.sql")
+    for macro_name in ("extract_source_schema.sql", "print_query.sql"):
+        macro_src = _DATAPLATFORM_SCAFFOLD / "macros" / macro_name
+        if macro_src.exists():
+            shutil.copy2(macro_src, repo_dir / "macros" / macro_name)
+            click.echo(f"  ✓ macros/{macro_name}")
 
     # Generate _sources.yml from detected source systems
     if ctx["source_systems"]:
@@ -2331,7 +2333,6 @@ def init_dataplatform(name, dest, platform, org_override):
             sources_content += f'    description: "Bronze source: {sys_name}"\n'
             sources_content += f'    database: "your_bronze_database"\n'
             sources_content += f'    schema: "raw_{sys_name}"\n'
-            sources_content += "    tables:\n"
 
             # Scan for table names in vocabulary TTL
             vocab_dir = ctx["hub_root"] / "integration" / "sources" / sys_name
@@ -2350,11 +2351,14 @@ def init_dataplatform(name, dest, platform, org_override):
                     tbl_name = str(g.value(tbl_uri, bronze_ns.tableName) or "")
                     if tbl_name:
                         table_names.append(tbl_name)
-                for tbl_name in sorted(table_names):
-                    sources_content += f"      - name: {tbl_name}\n"
+                if table_names:
+                    sources_content += "    tables:\n"
+                    for tbl_name in sorted(table_names):
+                        sources_content += f"      - name: {tbl_name}\n"
+                else:
+                    sources_content += "    # tables: (run schema discovery to populate)\n"
             else:
-                sources_content += "      # Add tables matching the hub vocabulary\n"
-                sources_content += "      # - name: tblExample\n"
+                sources_content += "    # tables: (run schema discovery to populate)\n"
             sources_content += "\n"
 
         (repo_dir / "models" / "_sources.yml").write_text(sources_content, encoding="utf-8")

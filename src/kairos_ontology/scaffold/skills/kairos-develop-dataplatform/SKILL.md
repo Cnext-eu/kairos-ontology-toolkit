@@ -19,6 +19,10 @@ repository — the downstream consumer of ontology-hub projections.
    `.dbt/profiles.yml.example`.
 2. **Verify packages are installed** — `dbt_packages/` should exist. If not,
    run `dbt deps` first.
+3. **If `dbt deps` fails because the hub package isn't published yet** — this is
+   normal for new projects. Temporarily rename `packages.yml` to `packages.yml.bak`
+   so you can run connection tests and schema discovery without it. Restore it once
+   the hub has its first release tag.
 
 ---
 
@@ -81,17 +85,7 @@ Source introspection produces a **schema YAML file** that serves two purposes:
 ### Prerequisites
 
 1. **`.dbt/profiles.yml`** must exist with valid credentials.
-2. **`models/_sources.yml`** must declare the source with at least database + schema:
-   ```yaml
-   version: 2
-   sources:
-     - name: <system_name>
-       database: <your_database>
-       schema: <your_schema>
-       tables:
-         - name: table1
-         - name: table2
-   ```
+2. **`models/_sources.yml`** should declare the source with at least database + schema.
    If the user doesn't have this yet, help them create it first (see Step 0 below).
 
 ### Step 0 — Discover schemas and tables (interactive selection)
@@ -108,7 +102,7 @@ WHERE table_type = 'BASE TABLE'
 ORDER BY table_schema
 ```
 
-Run via: `dbt run-operation run_query --args '{sql: "..."}' --profiles-dir .dbt`
+Run via: `dbt run-operation print_query --args '{sql: "..."}' --profiles-dir .dbt`
 
 Present the list and let the user **select which schemas** are relevant (some may be
 system schemas like `sys`, `INFORMATION_SCHEMA`, etc. — skip those by default).
@@ -153,12 +147,13 @@ Ensure `models/_sources.yml` has the source system declared with all known table
 If tables are unknown, use a wildcard approach — list the database/schema and let
 the extraction macro discover them.
 
-### Step 2 — Run schema extraction
+### Step 2 — Run schema extraction (default: enriched with samples)
 
-**Recommended: `extract-schema` CLI** (full metadata including samples + JSON detection):
+**Always use `extract-schema` CLI by default** — it provides full metadata including
+sample values, row/distinct counts, and JSON structure detection. This is the standard
+workflow for both dataplatform source binding and ontology hub vocabulary generation.
 
 ```bash
-# Extract with interactive schema/table discovery
 kairos-ontology extract-schema \
   --profiles-dir .dbt \
   --profile <profile_name> \
@@ -182,13 +177,17 @@ Each table YAML (v1.1) contains:
 - JSON detection: classification (flat/nested/array_object/polymorphic)
 - JSON structure: keys, types, sample values
 
-**Fallback: dbt macro** (lightweight, no Python deps, only names + types):
+**Fallback only** (use only when `extract-schema` is unavailable, e.g., no Python/toolkit
+installed in the environment — rare for dataplatform repos):
 
 ```bash
 dbt run-operation extract_source_schema \
   --args '{source_name: "<system_name>"}' \
   --profiles-dir .dbt > extracted/<system_name>-schema.yaml
 ```
+
+This lightweight fallback only captures column names + data types (no samples, no JSON
+detection, no row counts).
 
 ### Step 3 — Generate bronze_expanded staging models (for JSON)
 
@@ -205,14 +204,19 @@ Generated model patterns:
 - **Array of objects** → `table` with `CROSS APPLY OPENJSON` (child table)
 - **Nested objects** → flattened with dotted key naming
 
-### Step 4 — Update _sources.yml (dataplatform use)
+### Step 4 — Update _sources.yml (automatic — dataplatform only)
 
-Compare the extracted schema against the current `models/_sources.yml`:
+**Always update `_sources.yml` automatically after extraction** — this file is only
+used in this dataplatform repo (dbt needs it for `{{ source() }}` resolution). The
+ontology hub uses the extracted YAML files directly via `import-source`, so there is
+no risk of side effects.
+
+After extraction completes, immediately:
 - Add newly discovered tables
-- Add new columns to existing tables
-- Flag type mismatches or removed columns
+- Add new columns to existing tables (with `data_type`)
+- Flag type mismatches or removed columns (warn but don't auto-delete)
 
-Offer to update `_sources.yml` with the full column definitions:
+Write the updated `_sources.yml` without asking for confirmation:
 
 ```yaml
 sources:
@@ -228,6 +232,9 @@ sources:
           - name: Name
             data_type: varchar
 ```
+
+> **Note:** Only *removals* of tables/columns should be flagged for user review
+> (they may be intentional renames). Additions and type updates are safe to apply.
 
 ### Step 5 — Export to ontology hub (vocabulary use)
 
@@ -331,10 +338,12 @@ When creating helper macros, place them in `macros/` and follow these convention
 - Include a docstring block at the top
 - Use `{{ log(...) }}` for debug output
 
-### Available built-in macro
+### Available built-in macros
 
 - **`extract_source_schema`** — introspects a dbt source and returns its schema as
   YAML output. Already included in the scaffold.
+- **`print_query`** — executes arbitrary SQL and prints results to stdout. Use for
+  ad-hoc schema discovery (listing schemas, tables, row counts).
 
 ### Macros you can help create
 

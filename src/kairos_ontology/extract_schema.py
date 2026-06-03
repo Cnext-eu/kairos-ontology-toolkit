@@ -15,12 +15,28 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+def _az_cmd() -> str:
+    """Return the correct az CLI executable name for the platform.
+
+    On Windows, ``az`` is distributed as ``az.cmd`` which ``subprocess.run``
+    cannot find without ``shell=True``.  We use ``shutil.which`` to resolve
+    the actual path so it works cross-platform without ``shell=True``.
+    """
+    resolved = shutil.which("az")
+    if resolved:
+        return resolved
+    # Fallback: let subprocess raise FileNotFoundError with a clear message
+    return "az"
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +237,7 @@ def _connect_fabric(profile: dict) -> Any:
         try:
             import subprocess as _sp
             result = _sp.run(
-                ["az", "account", "get-access-token",
+                [_az_cmd(), "account", "get-access-token",
                  "--resource", "https://database.windows.net/"],
                 capture_output=True, text=True, timeout=30,
             )
@@ -326,7 +342,7 @@ def _connect_databricks(profile: dict) -> Any:
         try:
             import subprocess as _sp
             result = _sp.run(
-                ["az", "account", "get-access-token",
+                [_az_cmd(), "account", "get-access-token",
                  "--resource", "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"],
                 capture_output=True, text=True, timeout=30,
             )
