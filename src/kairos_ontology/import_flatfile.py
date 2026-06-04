@@ -15,11 +15,15 @@ from __future__ import annotations
 import csv
 import logging
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+# Increase CSV field size limit to handle large fields (e.g., Oracle exports)
+csv.field_size_limit(sys.maxsize)
 
 logger = logging.getLogger(__name__)
 
@@ -142,9 +146,9 @@ def read_csv_table(
     columns = []
     for pos, col_name in enumerate(headers, start=1):
         non_empty_values = [
-            row.get(col_name, "").strip()
+            (row.get(col_name) or "").strip()
             for row in all_rows
-            if row.get(col_name, "").strip()
+            if (row.get(col_name) or "").strip()
         ]
         distinct_values = list(dict.fromkeys(non_empty_values))
         nullable = len(non_empty_values) < row_count
@@ -238,9 +242,9 @@ def read_xlsx_tables(
         columns = []
         for pos, col_name in enumerate(headers, start=1):
             non_empty_values = [
-                row.get(col_name, "").strip()
+                (row.get(col_name) or "").strip()
                 for row in all_rows
-                if row.get(col_name, "").strip()
+                if (row.get(col_name) or "").strip()
             ]
             distinct_values = list(dict.fromkeys(non_empty_values))
             nullable = len(non_empty_values) < row_count
@@ -417,6 +421,12 @@ def run_import_flatfile(
         if hub_root:
             output_dir = hub_root / "integration" / "sources" / system_name
         else:
+            logger.warning(
+                "Could not detect ontology-hub root (no model/ontologies/ found). "
+                "Writing to relative path: integration/sources/%s. "
+                "Use --output to specify an explicit output directory.",
+                system_name,
+            )
             output_dir = Path("integration/sources") / system_name
 
     return write_source_dir(tables, system_name, output_dir)
