@@ -86,8 +86,9 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-036](#dd-036-drop-git-submodules-for-reference-models) | Drop Git Submodules for Reference Models | Accepted | 2026-05-31 |
 | [DD-037](#dd-037-uv-as-standard-environment-manager-for-hub-repos) | uv as Standard Environment Manager for Hub Repos | Accepted | 2026-05-31 |
 | [DD-038](#dd-038-bronze-source-introspection--layered-dbt-architecture) | Bronze Source Introspection & Layered dbt Architecture | Proposed | 2026-06-01 |
-| [DD-039](#dd-039-enhanced-schema-extraction-with-json-flattening--bronze-expanded-layer) | Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer | Proposed | 2026-06-02 |
+| [DD-039](#dd-039-enhanced-schema-extraction-with-json-flattening--bronze-expanded-layer) | Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer | Accepted | 2026-06-02 |
 | [DD-040](#dd-040-skill-lifecycle-architecture--design--execute-separation) | Skill Lifecycle Architecture — Design / Execute Separation | Accepted | 2026-05-30 |
+| [DD-041](#dd-041-llm-powered-source-affinity-analysis--coverage-reporting) | LLM-powered Source Affinity Analysis & Coverage Reporting | Accepted | 2026-06-04 |
 
 ---
 
@@ -2173,6 +2174,59 @@ Separate all skills into two categories:
 - Execute skills can be safely automated in CI/CD pipelines
 - Existing skills renamed from long-form (`kairos-ontology-modeling`) to short-form
   (`kairos-design-domain`)
+
+---
+
+## DD-041: LLM-powered Source Affinity Analysis & Coverage Reporting
+
+**Status:** Accepted  
+**Date:** 2026-06-04  
+**Affects:** `analyse_sources.py`, `coverage_report.py`, CLI, `kairos-design-domain` skill  
+**Implementation:** `src/kairos_ontology/analyse_sources.py`, `src/kairos_ontology/coverage_report.py`
+
+### Context
+
+When modeling with the `kairos-design-domain` skill, all source vocabulary is loaded into the
+LLM context window. This leads to:
+- Context overflow with many sources
+- Poor reference model reuse (~18% data property coverage on average)
+- No automated correlation between source columns and reference model properties
+- No post-modeling feedback loop to measure alignment quality
+
+Name-only matching (tokenized, fuzzy) catches only a fraction of semantic overlaps.
+E.g., `arrivalEstimated` ↔ `estimatedArrivalTime`, `MAFINR` ↔ `mafiNumber` require
+semantic understanding.
+
+### Decision
+
+Introduce two new CLI commands powered by LLM (gpt-5-mini via GitHub Models API):
+
+1. **`analyse-sources`** (pre-modeling) — semantically matches source table/columns against
+   reference model domains. Outputs per-source affinity reports to
+   `integration/sources/_analysis/`. The modeling skill uses these to scope context
+   (only load relevant tables) and seed the Source Evidence Table.
+
+2. **`coverage-report`** (post-modeling) — measures how well the final ontology aligns with
+   reference models, with source evidence tracing. Shows class/property coverage %,
+   identifies custom vs. industry-standard concepts, and suggests improvements.
+
+Both require `GITHUB_TOKEN` environment variable (no deterministic fallback).
+
+### Rationale
+
+- LLM semantic matching far exceeds tokenized name matching — understands naming conventions,
+  abbreviations, sample data patterns, and domain context from labels/comments
+- gpt-5-mini provides excellent quality at efficient cost for column→property matching
+- Pre-analysis scopes the modeling context → better quality, fewer custom classes
+- Post-modeling report creates a feedback loop to iteratively improve coverage
+- Sample values (from extract-schema) are key input — `BEANR, NLRTM` → Port.unlocode
+
+### Consequences
+
+- `GITHUB_TOKEN` is now required for source analysis (was optional before)
+- New prerequisite gate in modeling skill — sources must be analysed before design
+- Output stored in `integration/sources/_analysis/` (gitignored or committed per preference)
+- Coverage reports in `output/reports/` provide actionable improvement guidance
 
 ---
 

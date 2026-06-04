@@ -997,6 +997,221 @@ def generate_staging(from_dir, output, source_name):
         click.echo("ℹ️  No JSON columns detected — no staging models needed.")
 
 
+@cli.command(name='analyse-sources')
+@click.option('--sources', type=click.Path(exists=True), default=None,
+              help='Path to integration/sources/ directory (default: auto-detect from hub).')
+@click.option('--ref-models', type=click.Path(exists=True), default=None,
+              help='Path to ontology-reference-models/ directory (default: auto-detect).')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Output directory (default: integration/sources/_analysis/).')
+@click.option('--threshold', type=float, default=0.3,
+              help='Minimum affinity confidence to include (default: 0.3).')
+@click.option('--model', 'llm_model', default='gpt-5-mini',
+              help='LLM model for semantic matching (default: gpt-5-mini).')
+def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model):
+    """Analyse source vocabularies against reference model domains (LLM-powered).
+
+    Semantically matches source table columns against reference model properties
+    using the GitHub Models API. Produces per-source affinity reports that the
+    modeling skill uses to scope context and seed evidence tables.
+
+    Requires GITHUB_TOKEN environment variable.
+
+    \b
+    Examples:
+      kairos-ontology analyse-sources
+      kairos-ontology analyse-sources --model gpt-5-mini --threshold 0.4
+      kairos-ontology analyse-sources --sources path/to/sources/ --ref-models path/to/refs/
+    """
+    from ..analyse_sources import run_analyse_sources
+
+    # Auto-detect hub paths
+    cwd = Path.cwd()
+    hub_root = None
+    for candidate in [cwd / "ontology-hub", cwd]:
+        if (candidate / "model" / "ontologies").is_dir():
+            hub_root = candidate
+            break
+
+    if sources is None:
+        if hub_root:
+            sources_path = hub_root / "integration" / "sources"
+        else:
+            sources_path = Path("integration/sources")
+    else:
+        sources_path = Path(sources)
+
+    if ref_models is None:
+        # Check common locations
+        for candidate_rm in [
+            cwd / "ontology-reference-models",
+            (hub_root / "ontology-reference-models") if hub_root else None,
+            cwd / "ontology-hub" / "ontology-reference-models",
+        ]:
+            if candidate_rm and candidate_rm.is_dir():
+                ref_models_path = candidate_rm
+                break
+        else:
+            click.echo("❌ Cannot find ontology-reference-models/ directory. "
+                       "Use --ref-models to specify.", err=True)
+            raise SystemExit(1)
+    else:
+        ref_models_path = Path(ref_models)
+
+    if output is None:
+        output_path = sources_path / "_analysis"
+    else:
+        output_path = Path(output)
+
+    if not sources_path.is_dir():
+        click.echo(f"❌ Sources directory not found: {sources_path}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"🔍 Analysing sources in: {sources_path}")
+    click.echo(f"   Reference models: {ref_models_path}")
+    click.echo(f"   Model: {llm_model}")
+    click.echo(f"   Threshold: {threshold}")
+    click.echo()
+
+    try:
+        output_files = run_analyse_sources(
+            sources_dir=sources_path,
+            ref_models_dir=ref_models_path,
+            output_dir=output_path,
+            model=llm_model,
+            threshold=threshold,
+        )
+        click.echo(f"\n✅ Analysis complete! Written {len(output_files)} file(s) to: {output_path}")
+        for f in output_files:
+            click.echo(f"   📄 {f.name}")
+    except EnvironmentError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+    except ValueError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+
+@cli.command(name='coverage-report')
+@click.option('--ontology', type=click.Path(exists=True), default=None,
+              help='Path to model/ontologies/ directory (default: auto-detect from hub).')
+@click.option('--ref-models', type=click.Path(exists=True), default=None,
+              help='Path to ontology-reference-models/ directory (default: auto-detect).')
+@click.option('--sources', type=click.Path(exists=True), default=None,
+              help='Path to integration/sources/ (for evidence tracing).')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Output directory (default: output/reports/).')
+@click.option('--format', 'out_format', type=click.Choice(['yaml', 'markdown', 'both']),
+              default='both', help='Output format (default: both).')
+@click.option('--model', 'llm_model', default='gpt-5-mini',
+              help='LLM model for semantic matching (default: gpt-5-mini).')
+def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_model):
+    """Generate ontology-to-reference-model coverage report (LLM-powered).
+
+    Measures how well the domain ontology aligns with industry reference models,
+    traces source evidence, and suggests improvements.
+
+    Requires GITHUB_TOKEN environment variable.
+
+    \b
+    Examples:
+      kairos-ontology coverage-report
+      kairos-ontology coverage-report --format markdown
+      kairos-ontology coverage-report --ontology path/to/ontologies/ --ref-models path/to/refs/
+    """
+    from ..coverage_report import (
+        run_coverage_report,
+        write_coverage_yaml,
+        write_coverage_markdown,
+    )
+
+    # Auto-detect hub paths
+    cwd = Path.cwd()
+    hub_root = None
+    for candidate in [cwd / "ontology-hub", cwd]:
+        if (candidate / "model" / "ontologies").is_dir():
+            hub_root = candidate
+            break
+
+    if ontology is None:
+        if hub_root:
+            ont_path = hub_root / "model" / "ontologies"
+        else:
+            click.echo("❌ Cannot find model/ontologies/ directory. "
+                       "Use --ontology to specify.", err=True)
+            raise SystemExit(1)
+    else:
+        ont_path = Path(ontology)
+
+    if ref_models is None:
+        for candidate_rm in [
+            cwd / "ontology-reference-models",
+            (hub_root / "ontology-reference-models") if hub_root else None,
+            cwd / "ontology-hub" / "ontology-reference-models",
+        ]:
+            if candidate_rm and candidate_rm.is_dir():
+                ref_models_path = candidate_rm
+                break
+        else:
+            click.echo("❌ Cannot find ontology-reference-models/ directory. "
+                       "Use --ref-models to specify.", err=True)
+            raise SystemExit(1)
+    else:
+        ref_models_path = Path(ref_models)
+
+    sources_path = None
+    if sources:
+        sources_path = Path(sources)
+    elif hub_root and (hub_root / "integration" / "sources").is_dir():
+        sources_path = hub_root / "integration" / "sources"
+
+    if output is None:
+        if hub_root:
+            output_path = hub_root.parent / "output" / "reports"
+        else:
+            output_path = Path("output/reports")
+    else:
+        output_path = Path(output)
+
+    click.echo(f"📊 Generating coverage report")
+    click.echo(f"   Ontology: {ont_path}")
+    click.echo(f"   Reference models: {ref_models_path}")
+    click.echo(f"   Model: {llm_model}")
+    click.echo()
+
+    try:
+        report = run_coverage_report(
+            ontology_dir=ont_path,
+            ref_models_dir=ref_models_path,
+            sources_dir=sources_path,
+            model=llm_model,
+        )
+
+        output_files = []
+        if out_format in ("yaml", "both"):
+            yaml_path = write_coverage_yaml(report, output_path / "coverage-report.yaml")
+            output_files.append(yaml_path)
+        if out_format in ("markdown", "both"):
+            md_path = write_coverage_markdown(report, output_path / "coverage-report.md")
+            output_files.append(md_path)
+
+        click.echo(f"\n✅ Coverage report generated!")
+        click.echo(f"   Classes: {report.aligned_classes}/{report.total_classes} "
+                   f"({report.class_coverage_pct}%)")
+        click.echo(f"   Properties: {report.aligned_properties}/{report.total_properties} "
+                   f"({report.property_coverage_pct}%)")
+        click.echo()
+        for f in output_files:
+            click.echo(f"   📄 {f}")
+
+    except EnvironmentError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+    except ValueError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+
 @cli.command()
 @click.option("--check", is_flag=True,
               help="Report outdated files without modifying anything (exit 1 on drift).")
