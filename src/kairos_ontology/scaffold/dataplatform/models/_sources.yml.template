@@ -16,7 +16,9 @@ sources:
     description: "Bronze source: {SOURCE_LABEL}"
     database: "{DATABASE}"
     schema: "{SCHEMA}"
-    tables:
-      # Add tables matching the ontology-hub vocabulary:
-      # - name: tblClient
-      # - name: tblInvoice
+    tables: []
+      # Populate with tables matching the ontology-hub vocabulary, e.g.:
+      # tables:
+      #   - name: tblClient
+      #   - name: tblInvoice
+      # Or run: dbt run-operation extract_source_schema --args '{source_name: "<name>"}'

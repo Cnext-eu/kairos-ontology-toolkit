@@ -769,6 +769,17 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
     source_path = Path(from_path)
     output_dir = Path(output) if output else None
 
+    # CWD guard: warn if running from a dataplatform repo
+    cwd = Path.cwd()
+    if (cwd / "dbt_project.yml").exists() and not (cwd / "model").is_dir():
+        click.echo(
+            "⚠️  You appear to be in a dataplatform repo (dbt_project.yml found, "
+            "no model/ directory). import-source writes to CWD-relative paths by "
+            "default. Consider running from your ontology-hub repo or using "
+            "--output to specify the hub path.",
+            err=True,
+        )
+
     # Support directory input (v1.1 per-table format)
     tmp_cleanup = None
     if source_path.is_dir():
@@ -832,6 +843,20 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
         click.echo("\n🔍 Dry-run mode — no files written")
     elif result_path:
         click.echo(f"\n✅ Written: {result_path}")
+
+        # Copy .samples.yaml files from source directory to output directory
+        if source_path.is_dir() and result_path:
+            import shutil as _shutil
+            dest_dir = result_path.parent
+            samples_copied = 0
+            for samples_file in source_path.glob("*.samples.yaml"):
+                dest_file = dest_dir / samples_file.name
+                _shutil.copy2(samples_file, dest_file)
+                samples_copied += 1
+            if samples_copied:
+                click.echo(
+                    f"   📋 Copied {samples_copied} .samples.yaml file(s) for row-level context"
+                )
 
     # Clean up temp file if we created one
     if tmp_cleanup and tmp_cleanup.exists():

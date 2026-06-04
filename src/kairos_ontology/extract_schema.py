@@ -84,6 +84,7 @@ class TableInfo:
     schema: str
     row_count: int | None = None
     columns: list[ColumnInfo] = field(default_factory=list)
+    sample_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -432,8 +433,11 @@ def _introspect_single_table_databricks(
         columns.append(col)
 
     # Sample rows and compute distinct counts
+    sample_rows: list[dict[str, Any]] = []
     if row_count > 0 and columns:
-        _enrich_with_samples_databricks(cursor, schema, table_name, columns, sample_size)
+        sample_rows = _enrich_with_samples_databricks(
+            cursor, schema, table_name, columns, sample_size
+        )
         _detect_json_columns_databricks(columns)
 
     return TableInfo(
@@ -441,6 +445,7 @@ def _introspect_single_table_databricks(
         schema=schema,
         row_count=row_count,
         columns=columns,
+        sample_rows=sample_rows,
     )
 
 
@@ -450,8 +455,12 @@ def _enrich_with_samples_databricks(
     table_name: str,
     columns: list[ColumnInfo],
     sample_size: int,
-) -> None:
-    """Fetch sample rows and distinct counts for Databricks columns."""
+) -> list[dict[str, Any]]:
+    """Fetch sample rows and distinct counts for Databricks columns.
+
+    Returns the raw sample rows as list of dicts (column_name → value) for
+    row-level sample output.
+    """
     col_names = ", ".join(f"`{c.name}`" for c in columns)
 
     # Get samples (LIMIT N)
@@ -462,9 +471,18 @@ def _enrich_with_samples_databricks(
         rows = cursor.fetchall()
     except Exception as e:
         logger.warning(f"Could not sample {schema}.{table_name}: {e}")
-        return
+        return []
 
-    # Collect samples per column
+    # Build raw row dicts (preserves row context)
+    raw_rows: list[dict[str, Any]] = []
+    for row in rows:
+        row_dict: dict[str, Any] = {}
+        for col_idx, col in enumerate(columns):
+            val = row[col_idx]
+            row_dict[col.name] = str(val) if val is not None else None
+        raw_rows.append(row_dict)
+
+    # Collect samples per column (deduplicated for format/enum detection)
     for col_idx, col in enumerate(columns):
         col.samples = []
         for row in rows:
@@ -486,6 +504,8 @@ def _enrich_with_samples_databricks(
             col.distinct_count = distinct_row[col_idx]
     except Exception as e:
         logger.warning(f"Could not get distinct counts for {schema}.{table_name}: {e}")
+
+    return raw_rows
 
 
 def _detect_json_columns_databricks(columns: list[ColumnInfo]) -> None:
@@ -589,8 +609,9 @@ def _introspect_single_table(
         columns.append(col)
 
     # Sample rows and compute distinct counts
+    sample_rows: list[dict[str, Any]] = []
     if row_count > 0 and columns:
-        _enrich_with_samples(cursor, schema, table_name, columns, sample_size)
+        sample_rows = _enrich_with_samples(cursor, schema, table_name, columns, sample_size)
         _detect_json_columns(columns)
 
     return TableInfo(
@@ -598,6 +619,7 @@ def _introspect_single_table(
         schema=schema,
         row_count=row_count,
         columns=columns,
+        sample_rows=sample_rows,
     )
 
 
@@ -626,8 +648,12 @@ def _enrich_with_samples(
     table_name: str,
     columns: list[ColumnInfo],
     sample_size: int,
-) -> None:
-    """Fetch sample rows and distinct counts for columns."""
+) -> list[dict[str, Any]]:
+    """Fetch sample rows and distinct counts for columns.
+
+    Returns the raw sample rows as list of dicts (column_name → value) for
+    row-level sample output.
+    """
     col_names = ", ".join(f"[{c.name}]" for c in columns)
 
     # Get samples (TOP N)
@@ -638,9 +664,18 @@ def _enrich_with_samples(
         rows = cursor.fetchall()
     except Exception as e:
         logger.warning(f"Could not sample {schema}.{table_name}: {e}")
-        return
+        return []
 
-    # Collect samples per column
+    # Build raw row dicts (preserves row context)
+    raw_rows: list[dict[str, Any]] = []
+    for row in rows:
+        row_dict: dict[str, Any] = {}
+        for col_idx, col in enumerate(columns):
+            val = row[col_idx]
+            row_dict[col.name] = str(val) if val is not None else None
+        raw_rows.append(row_dict)
+
+    # Collect samples per column (deduplicated for format/enum detection)
     for col_idx, col in enumerate(columns):
         col.samples = []
         for row in rows:
@@ -663,6 +698,8 @@ def _enrich_with_samples(
             col.distinct_count = distinct_row[col_idx]
     except Exception as e:
         logger.warning(f"Could not get distinct counts for {schema}.{table_name}: {e}")
+
+    return raw_rows
 
 
 def _detect_json_columns(columns: list[ColumnInfo]) -> None:
@@ -792,6 +829,18 @@ def write_extraction_output(
         table_path = system_dir / f"{table.name}.yaml"
         with open(table_path, "w", encoding="utf-8") as f:
             yaml.dump(table_data, f, default_flow_style=False, sort_keys=False)
+
+        # Write per-table samples YAML (raw rows preserving row context)
+        if table.sample_rows:
+            samples_data = {
+                "extracted_at": manifest.extracted_at,
+                "table": table.name,
+                "schema": table.schema,
+                "rows": table.sample_rows,
+            }
+            samples_path = system_dir / f"{table.name}.samples.yaml"
+            with open(samples_path, "w", encoding="utf-8") as f:
+                yaml.dump(samples_data, f, default_flow_style=False, sort_keys=False)
 
     return system_dir
 

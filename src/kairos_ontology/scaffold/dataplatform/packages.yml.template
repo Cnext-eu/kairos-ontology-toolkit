@@ -2,11 +2,14 @@
 #
 # The ontology-hub dbt package provides silver and gold models generated
 # from the domain ontology + SKOS mappings.
+#
+# IMPORTANT: Uncomment the package below once the ontology-hub has published
+# its first release tag. Until then, leave it commented to avoid dbt deps errors.
 
 packages:
-  - git: "https://github.com/{ORG}/{HUB_REPO}.git"
-    revision: "{HUB_VERSION}"            # Pin to ontology-hub release tag (e.g., v1.0.0)
-    subdirectory: output/medallion/dbt
+  # - git: "https://github.com/{ORG}/{HUB_REPO}.git"
+  #   revision: "{HUB_VERSION}"            # Pin to ontology-hub release tag (e.g., v1.0.0)
+  #   subdirectory: output/medallion/dbt
 
   # Transitive dependencies (pulled automatically from hub's packages.yml):
   # - dbt_utils

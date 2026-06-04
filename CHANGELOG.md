@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Extension vocabulary coverage guard** — `tests/test_ext_vocabulary_coverage.py`
   fails if any `kairos-ext` annotation consumed by a projector is undeclared in
   `kairos-ext.ttl`, keeping the vocabulary the single source of truth (DD-034).
-- **`docs/design/extension-explanation.md`** — hub-author reference for the full
+- **`docs/design/dd-034-extension-explanation.md`** — hub-author reference for the full
   `kairos-ext:` vocabulary (per-layer annotations, naming conventions, FK-child
   identity guidance, RESERVED list).
 - **Context-aware `naturalKey` warning** — the dbt projector now detects FK-child
