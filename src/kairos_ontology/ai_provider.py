@@ -5,6 +5,7 @@
 Supports multiple AI backends via environment variable configuration:
 - GitHub Models (default): uses GITHUB_TOKEN
 - Azure AI Foundry: uses AZURE_AI_ENDPOINT + AZURE_AI_KEY
+- Microsoft Foundry: uses AZURE_FOUNDRY_ENDPOINT + azure-ai-projects SDK
 
 Both providers return an OpenAI-compatible client instance.
 Automatically loads .env from the hub root (or CWD) if present.
@@ -59,6 +60,8 @@ ENV_PROVIDER = "KAIROS_AI_PROVIDER"
 ENV_GITHUB_TOKEN = "GITHUB_TOKEN"
 ENV_AZURE_ENDPOINT = "AZURE_AI_ENDPOINT"
 ENV_AZURE_KEY = "AZURE_AI_KEY"
+ENV_FOUNDRY_ENDPOINT = "AZURE_FOUNDRY_ENDPOINT"
+ENV_FOUNDRY_API_KEY = "AZURE_FOUNDRY_API_KEY"
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +72,7 @@ ENV_AZURE_KEY = "AZURE_AI_KEY"
 @dataclass
 class AIProviderConfig:
     """Resolved AI provider configuration."""
-    provider: str  # "github" or "azure"
+    provider: str  # "github", "azure", or "foundry"
     endpoint: str
     api_key: str
     model: str
@@ -84,10 +87,11 @@ def resolve_provider_config(model: str = DEFAULT_MODEL) -> AIProviderConfig:
     """Resolve AI provider configuration from environment variables.
 
     Detection order:
-    1. KAIROS_AI_PROVIDER env var (explicit: "github" or "azure")
+    1. KAIROS_AI_PROVIDER env var (explicit: "github", "azure", or "foundry")
     2. If AZURE_AI_ENDPOINT is set → azure
-    3. If GITHUB_TOKEN is set → github
-    4. Error if nothing is configured
+    3. If AZURE_FOUNDRY_ENDPOINT is set → foundry
+    4. If GITHUB_TOKEN is set → github
+    5. Error if nothing is configured
 
     Returns:
         AIProviderConfig with provider, endpoint, api_key, model.
@@ -101,6 +105,10 @@ def resolve_provider_config(model: str = DEFAULT_MODEL) -> AIProviderConfig:
         not explicit_provider and os.environ.get(ENV_AZURE_ENDPOINT)
     ):
         return _resolve_azure(model)
+    elif explicit_provider == "foundry" or (
+        not explicit_provider and os.environ.get(ENV_FOUNDRY_ENDPOINT)
+    ):
+        return _resolve_foundry(model)
     elif explicit_provider == "github" or (
         not explicit_provider and os.environ.get(ENV_GITHUB_TOKEN)
     ):
@@ -108,14 +116,15 @@ def resolve_provider_config(model: str = DEFAULT_MODEL) -> AIProviderConfig:
     elif explicit_provider:
         raise EnvironmentError(
             f"Unknown KAIROS_AI_PROVIDER value: '{explicit_provider}'. "
-            f"Supported values: 'github', 'azure'."
+            f"Supported values: 'github', 'azure', 'foundry'."
         )
     else:
         raise EnvironmentError(
             "No AI provider configured. Set one of:\n"
             f"  - {ENV_GITHUB_TOKEN} (for GitHub Models)\n"
             f"  - {ENV_AZURE_ENDPOINT} + {ENV_AZURE_KEY} (for Azure AI Foundry)\n"
-            f"  - {ENV_PROVIDER}=github|azure (explicit provider selection)"
+            f"  - {ENV_FOUNDRY_ENDPOINT} (for Microsoft Foundry)\n"
+            f"  - {ENV_PROVIDER}=github|azure|foundry (explicit provider selection)"
         )
 
 
@@ -176,6 +185,25 @@ def _get_azure_managed_identity_token() -> str:
         )
 
 
+def _resolve_foundry(model: str) -> AIProviderConfig:
+    """Resolve Microsoft Foundry configuration using azure-ai-projects SDK."""
+    endpoint = os.environ.get(ENV_FOUNDRY_ENDPOINT)
+    if not endpoint:
+        raise EnvironmentError(
+            f"{ENV_FOUNDRY_ENDPOINT} environment variable is required for Microsoft Foundry. "
+            "Set it to your Foundry project endpoint URL.\n"
+            "Format: https://<resource>.services.ai.azure.com/api/projects/<project>"
+        )
+
+    api_key = os.environ.get(ENV_FOUNDRY_API_KEY, "")
+    return AIProviderConfig(
+        provider="foundry",
+        endpoint=endpoint,
+        api_key=api_key,
+        model=model,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Client factory
 # ---------------------------------------------------------------------------
@@ -193,13 +221,45 @@ def get_ai_client(model: str = DEFAULT_MODEL):
     Raises:
         EnvironmentError: If no valid provider configuration is found.
     """
-    from openai import OpenAI
-
     config = resolve_provider_config(model)
 
     logger.info("Using AI provider: %s (endpoint: %s)", config.provider, config.endpoint)
 
+    if config.provider == "foundry":
+        return _create_foundry_client(config)
+
+    from openai import OpenAI
     return OpenAI(
         base_url=config.endpoint,
         api_key=config.api_key,
     )
+
+
+def _create_foundry_client(config: AIProviderConfig):
+    """Create an OpenAI-compatible client via the Microsoft Foundry SDK."""
+    try:
+        from azure.ai.projects import AIProjectClient
+    except ImportError:
+        raise EnvironmentError(
+            "The azure-ai-projects package is required for the Foundry provider. "
+            "Install with: pip install kairos-ontology-toolkit[foundry]"
+        )
+
+    if config.api_key:
+        from azure.core.credentials import AzureKeyCredential
+        credential = AzureKeyCredential(config.api_key)
+    else:
+        try:
+            from azure.identity import DefaultAzureCredential
+            credential = DefaultAzureCredential()
+        except ImportError:
+            raise EnvironmentError(
+                f"Neither {ENV_FOUNDRY_API_KEY} is set nor azure-identity is installed. "
+                "Install with: pip install kairos-ontology-toolkit[foundry]"
+            )
+
+    project_client = AIProjectClient(
+        endpoint=config.endpoint,
+        credential=credential,
+    )
+    return project_client.get_openai_client()

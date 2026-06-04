@@ -34,6 +34,23 @@ wheels = [
 ]
 
 [[package]]
+name = "azure-ai-projects"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "azure-identity" },
+    { name = "azure-storage-blob" },
+    { name = "isodate" },
+    { name = "openai" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b9/d8/24342aea74fe75b0a8378b6eff665b9c1cb63f855c1a96f70a0095e474a2/azure_ai_projects-2.2.0.tar.gz", hash = "sha256:58ee31bb031cfb004051145c545294bb0d32de679c670c312ef384845bd72cef", size = 668496, upload-time = "2026-05-30T00:20:59.099Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/40/cf/90f27a2b48c9b748f84194b07e565f900e7f0ce0500da9b9f067dca599d3/azure_ai_projects-2.2.0-py3-none-any.whl", hash = "sha256:8f89bdaca4df1bd479d3bd2bd0f19a0905d60be6d17b84a69e8fabd82eac5906", size = 344307, upload-time = "2026-05-30T00:21:00.672Z" },
+]
+
+[[package]]
 name = "azure-core"
 version = "1.41.0"
 source = { registry = "https://pypi.org/simple" }
@@ -60,6 +77,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c5/0e/3a63efb48aa4a5ae2cfca61ee152fbcb668092134d3eb8bfda472dd5c617/azure_identity-1.25.3.tar.gz", hash = "sha256:ab23c0d63015f50b630ef6c6cf395e7262f439ce06e5d07a64e874c724f8d9e6", size = 286304, upload-time = "2026-03-13T01:12:20.892Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/49/9a/417b3a533e01953a7c618884df2cb05a71e7b68bdbce4fbdb62349d2a2e8/azure_identity-1.25.3-py3-none-any.whl", hash = "sha256:f4d0b956a8146f30333e071374171f3cfa7bdb8073adb8c3814b65567aa7447c", size = 192138, upload-time = "2026-03-13T01:12:22.951Z" },
+]
+
+[[package]]
+name = "azure-storage-blob"
+version = "12.29.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "cryptography" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/59/25/fdcf1e381922dbab8ba23d6fd78d397fe6cbac6b480310218834b7bc91fe/azure_storage_blob-12.29.0.tar.gz", hash = "sha256:2824ddd7ebc9056034ebc76b17971a38e9aa5835abb0d565b9700493f2a6c657", size = 611359, upload-time = "2026-05-15T03:34:59.865Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c2/2c/6ddee6a3e42d0236ba9259e4df7fa97fdc415ff0802b736c634baaf4b285/azure_storage_blob-12.29.0-py3-none-any.whl", hash = "sha256:ccf8a1bcd5e49df83ab85aab793b579e5ba2eeea2ad8900b2f62ca3a37dc391f", size = 434823, upload-time = "2026-05-15T03:35:01.837Z" },
 ]
 
 [[package]]
@@ -526,6 +558,15 @@ wheels = [
 ]
 
 [[package]]
+name = "isodate"
+version = "0.7.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/4d/e940025e2ce31a8ce1202635910747e5a87cc3a6a6bb2d00973375014749/isodate-0.7.2.tar.gz", hash = "sha256:4cd1aa0f43ca76f4a6c6c0292a85f40b35ec2e43e315b59f06e6d32171a953e6", size = 29705, upload-time = "2024-10-08T23:04:11.5Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/15/aa/0aca39a37d3c7eb941ba736ede56d689e7be91cab5d9ca846bde3999eba6/isodate-0.7.2-py3-none-any.whl", hash = "sha256:28009937d8031054830160fce6d409ed342816b543597cece116d966c6d99e15", size = 22320, upload-time = "2024-10-08T23:04:09.501Z" },
+]
+
+[[package]]
 name = "jinja2"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
@@ -638,6 +679,10 @@ dev = [
 flatfile = [
     { name = "openpyxl" },
 ]
+foundry = [
+    { name = "azure-ai-projects" },
+    { name = "azure-identity" },
+]
 service = [
     { name = "fastapi" },
     { name = "httpx" },
@@ -671,6 +716,10 @@ dev = [
     { name = "ruff", specifier = ">=0.5.0" },
 ]
 flatfile = [{ name = "openpyxl", specifier = ">=3.1.0,<4.0.0" }]
+foundry = [
+    { name = "azure-ai-projects", specifier = ">=2.0.0,<3.0.0" },
+    { name = "azure-identity", specifier = ">=1.15.0,<2.0.0" },
+]
 service = [
     { name = "fastapi", specifier = ">=0.115.0,<1.0.0" },
     { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
