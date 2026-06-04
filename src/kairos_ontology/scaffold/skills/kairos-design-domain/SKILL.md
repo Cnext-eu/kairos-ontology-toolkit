@@ -324,6 +324,52 @@ At the **very start** of any modeling session, ask:
 - If the user says **no reference model** is needed, skip to the standard
   modeling workflow (class design, property design, etc.).
 
+### Step 0a — Source Affinity Analysis (MANDATORY prerequisite)
+
+> **BLOCKING GATE:** Before proceeding to modeling, verify that source systems
+> have been pre-analysed against reference model domains.
+
+Check for the analysis output:
+
+```bash
+ls integration/sources/_analysis/
+```
+
+- If `_analysis/` exists with `*-affinity.yaml` files → proceed.  Read the
+  affinity reports to understand which reference domains each source contributes to.
+- If `_analysis/` is **missing** → instruct the user to run:
+  ```bash
+  kairos-ontology analyse-sources
+  ```
+  This uses LLM (gpt-5-mini) to semantically match source columns against reference
+  model properties.  Requires `GITHUB_TOKEN` environment variable.
+
+**Why this matters:**
+- The affinity report tells you WHICH reference model domains are relevant
+- It pre-matches source columns → reference properties (seeds the Evidence Table)
+- It scopes context: only load tables with ≥30% affinity to the target domain
+- Without it, the modeler tends to create too many custom classes instead of
+  reusing proven reference model concepts
+
+**Using the affinity report during modeling:**
+
+When loading source evidence for a domain, read the relevant `{system}-affinity.yaml`:
+
+```yaml
+# Example: adminpulse-affinity.yaml shows 82% affinity to "Party" domain
+domain_affinities:
+  - domain: Party
+    confidence: 0.82
+    matched_tables:
+      - table: tblRelations
+        suggestions:
+          - column: RelationName → Party.partyName (0.95)
+          - column: VATNumber → Party.taxIdentifier (0.92)
+```
+
+Use these pre-matched suggestions as the **starting point** for your Source Evidence
+Table (Step 0c). This dramatically reduces hallucinated custom properties.
+
 ### Step 0b — Inventory available inputs (Source Systems & TMDL)
 
 Before selecting reference models or designing classes, inventory all available

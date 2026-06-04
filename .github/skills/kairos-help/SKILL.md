@@ -183,6 +183,12 @@ kairos-ontology catalog-test
 
 # Import TMDL/PBIP files for ontology modeling input
 kairos-ontology import-tmdl <source> [--output PATH]
+
+# Analyse sources against reference models (LLM-powered, pre-modeling)
+kairos-ontology analyse-sources [--sources PATH] [--ref-models PATH] [--model gpt-5-mini]
+
+# Generate coverage report (LLM-powered, post-modeling)
+kairos-ontology coverage-report [--ontology PATH] [--ref-models PATH] [--format both]
 ```
 
 Default paths:
