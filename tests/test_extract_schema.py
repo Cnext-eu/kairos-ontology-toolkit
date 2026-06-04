@@ -139,7 +139,8 @@ class TestYamlOutput:
         assert table_data["name"] == "tblClient"
         assert table_data["row_count"] == 100
         assert len(table_data["columns"]) == 2
-        assert table_data["columns"][1]["samples"] == ["Acme", "Baker"]
+        # Samples are no longer written inline — they go to .samples.yaml
+        assert "samples" not in table_data["columns"][1]
 
 
 class TestProfileParsing:

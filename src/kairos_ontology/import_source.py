@@ -209,9 +209,50 @@ def parse_source_schema_dir(schema_dir: Path) -> dict:
         with open(tbl_path, encoding="utf-8") as f:
             tbl_data = yaml.safe_load(f)
         if tbl_data:
+            # Merge per-column samples from sibling .samples.yaml if present
+            _merge_samples_from_file(schema_dir, tbl_name, tbl_data)
             data["tables"].append(tbl_data)
 
     return data
+
+
+def _merge_samples_from_file(schema_dir: Path, tbl_name: str, tbl_data: dict) -> None:
+    """Merge per-column sample values from a .samples.yaml file into table data.
+
+    If the table YAML already contains inline samples (backward compat with older
+    extracted files), those are preserved and this function is a no-op for that column.
+    """
+    samples_path = schema_dir / f"{tbl_name}.samples.yaml"
+    if not samples_path.is_file():
+        return
+
+    with open(samples_path, encoding="utf-8") as f:
+        samples_data = yaml.safe_load(f)
+
+    if not samples_data or "rows" not in samples_data:
+        return
+
+    rows = samples_data["rows"]
+    if not rows:
+        return
+
+    # Build per-column sample lists from row data
+    col_samples: dict[str, list[str]] = {}
+    for row in rows:
+        for col_name, val in row.items():
+            if val is not None:
+                col_samples.setdefault(col_name, [])
+                str_val = str(val)
+                if str_val and str_val not in col_samples[col_name]:
+                    col_samples[col_name].append(str_val)
+
+    # Merge into table columns (only if not already present)
+    for col in tbl_data.get("columns", []):
+        if col.get("samples"):
+            continue  # Already has inline samples (backward compat)
+        name = col.get("name", "")
+        if name in col_samples:
+            col["samples"] = col_samples[name][:5]
 
 
 # --------------------------------------------------------------------------- #
@@ -718,7 +759,17 @@ def run_import_source(
     sys_name = data["system"]
 
     if output_dir is None:
-        output_dir = Path("integration/sources") / sys_name
+        # Detect hub root: check cwd/ontology-hub/ first, then cwd itself
+        cwd = Path.cwd()
+        hub_root = None
+        for candidate in [cwd / "ontology-hub", cwd]:
+            if (candidate / "model" / "ontologies").is_dir():
+                hub_root = candidate
+                break
+        if hub_root:
+            output_dir = hub_root / "integration" / "sources" / sys_name
+        else:
+            output_dir = Path("integration/sources") / sys_name
 
     output_file = output_dir / f"{sys_name}.vocabulary.ttl"
 
