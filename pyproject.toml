@@ -91,7 +91,7 @@ per-file-ignores = {"tests/*" = ["E741", "E402", "F841"]}
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--ruff -m 'not slow'"
+addopts = "-m 'not slow'"
 markers = [
     "slow: marks tests as slow QA checks (deselect with '-m \"not slow\"')",
 ]

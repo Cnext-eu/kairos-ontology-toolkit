@@ -175,6 +175,7 @@ class TestProjector:
             content = schema_file.read_text()
             assert "CREATE CONSTRAINT" in content or "Customer" in content
     
+    @pytest.mark.slow
     def test_all_targets_projection(self, temp_dir, ontology_files):
         """Test running all projection targets."""
         output_dir = temp_dir / "output"
@@ -363,6 +364,7 @@ class TestProjector:
         sql_files = list(dbt_dir.glob('**/*.sql'))
         assert len(sql_files) > 0
     
+    @pytest.mark.slow
     def test_windows_safe_filenames_from_http_uris(self, temp_dir, http_ontology):
         """Test that HTTP URIs generate Windows-safe filenames (no colons in paths)."""
         from kairos_ontology.projector import run_projections

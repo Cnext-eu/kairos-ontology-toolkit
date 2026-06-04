@@ -61,13 +61,23 @@ sync automatically. CI will fail if they drift apart.
 ### Running tests
 
 ```bash
-python -m pytest
+# Fast dev cycle (skips slow integration tests — ~15s)
+uv run pytest
+
+# Full test suite including slow integration tests (~50s)
+uv run pytest -m ""
+
+# Slow integration tests only
+uv run pytest -m slow
+
+# Lint check (run separately from tests)
+uv run ruff check src/ tests/
 ```
 
 ### Code style
 
 - **Formatter:** Black (line length 100)
-- **Linter:** Ruff
+- **Linter:** Ruff (`uv run ruff check src/ tests/`)
 - Source layout: `src/kairos_ontology/`
 - All new functions and endpoints must have unit tests
 
@@ -98,7 +108,7 @@ Open a GitHub Issue with the `enhancement` label describing:
    ```
 2. Make your changes — follow existing code conventions.
 3. Add or update tests for your changes.
-4. Run the full test suite: `python -m pytest`
+4. Run tests: `uv run pytest` (fast) or `uv run pytest -m ""` (full)
 5. Commit with DCO sign-off: `git commit -s`
 6. Push and open a Pull Request against `main`.
 
@@ -115,7 +125,7 @@ Open a GitHub Issue with the `enhancement` label describing:
 
 ### PR checklist
 
-- [ ] Tests pass (`python -m pytest`)
+- [ ] Tests pass (`uv run pytest` for fast, `uv run pytest -m ""` for full)
 - [ ] `python -m kairos_ontology validate` passes (if ontology changes)
 - [ ] `python -m kairos_ontology project` regenerated (if ontology changes)
 - [ ] DCO sign-off on all commits

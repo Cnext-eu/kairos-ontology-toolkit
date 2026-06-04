@@ -17,6 +17,8 @@ from rdflib import Graph, Namespace
 
 from .conftest import HUB_ROOT, MAPPINGS_DIR, SHAPES_DIR
 
+pytestmark = pytest.mark.slow
+
 
 # ---------------------------------------------------------------------------
 # Fixture — run full projection once, share the output tree
