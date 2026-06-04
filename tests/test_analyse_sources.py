@@ -17,7 +17,6 @@ from kairos_ontology.analyse_sources import (
     SourceAnalysis,
     DomainAffinity,
     TableMatch,
-    ColumnSuggestion,
 )
 from kairos_ontology.coverage_report import (
     parse_domain_ontology,
@@ -214,23 +213,9 @@ class TestAnalyseTableAgainstDomain:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = json.dumps({
             "domain_relevance": 0.85,
-            "matches": [
-                {
-                    "column": "ClientName",
-                    "ref_property": "Party.partyName",
-                    "confidence": 0.95,
-                    "evidence": "Both represent the name of a business entity",
-                },
-                {
-                    "column": "VATNumber",
-                    "ref_property": "Party.taxIdentifier",
-                    "confidence": 0.90,
-                    "evidence": "VAT number is a tax identifier",
-                },
-            ],
-            "unmatched": [
-                {"column": "Email", "reason": "Generic field, multiple possible matches"},
-            ],
+            "rationale": "Client table contains party-related data",
+            "likely_entity": "Party",
+            "indicative_columns": ["ClientName", "VATNumber"],
         })
         mock_client.chat.completions.create.return_value = mock_response
 
@@ -252,8 +237,8 @@ class TestAnalyseTableAgainstDomain:
         )
 
         assert result["domain_relevance"] == 0.85
-        assert len(result["matches"]) == 2
-        assert result["matches"][0]["column"] == "ClientName"
+        assert result["likely_entity"] == "Party"
+        assert "ClientName" in result["indicative_columns"]
 
     def test_handles_llm_error_gracefully(self):
         mock_client = MagicMock()
@@ -264,7 +249,7 @@ class TestAnalyseTableAgainstDomain:
         )
 
         assert result["domain_relevance"] == 0.0
-        assert result["matches"] == []
+        assert result["indicative_columns"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -287,15 +272,10 @@ class TestWriteAnalysisOutput:
                         TableMatch(
                             table="tblClient",
                             total_columns=3,
-                            matched_columns=2,
-                            suggestions=[
-                                ColumnSuggestion(
-                                    column="ClientName",
-                                    ref_property="Party.partyName",
-                                    confidence=0.95,
-                                    evidence="Name match",
-                                ),
-                            ],
+                            domain_relevance=0.82,
+                            rationale="Client table maps to Party domain",
+                            likely_entity="Party",
+                            indicative_columns=["ClientName", "ClientEmail"],
                         ),
                     ],
                 ),

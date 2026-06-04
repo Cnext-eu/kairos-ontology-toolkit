@@ -1203,8 +1203,15 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         click.echo(f"   Domain filter: {domains_filter}")
     click.echo()
 
+    # Detect catalog for owl:imports resolution
+    catalog_file = None
+    if hub_root:
+        candidate_cat = hub_root / "catalog-v001.xml"
+        if candidate_cat.exists():
+            catalog_file = candidate_cat
+
     # Pre-flight: show resolved domains
-    ref_domains = resolve_reference_models(ref_models_path)
+    ref_domains = resolve_reference_models(ref_models_path, catalog_path=catalog_file)
     if ref_domains:
         total_cls = sum(len(d.get("classes", [])) for d in ref_domains)
         total_props = sum(
@@ -1237,6 +1244,7 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
             max_domains=max_domains,
             domains_filter=filter_list,
             materialize_dir=mat_dir,
+            catalog_path=catalog_file,
         )
         click.echo(f"\n✅ Analysis complete! Written {len(output_files)} file(s) to: {output_path}")
         for f in output_files:

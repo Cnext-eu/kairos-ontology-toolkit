@@ -349,8 +349,8 @@ ls integration/sources/_analysis/
 
 **Why this matters:**
 - The contribution report tells you WHICH reference model domains are relevant
-- It pre-matches source columns → reference properties (seeds the Evidence Table)
-- It scopes context: only load tables with ≥30% contribution_score to the target domain
+- It classifies source tables by domain affinity and identifies likely entities
+- It scopes context: only load tables with ≥30% domain_relevance to the target domain
 - Without it, the modeler tends to create too many custom classes instead of
   reusing proven reference model concepts
 
@@ -367,21 +367,20 @@ domain_contributions:
     total_classes: 5
     contributing_tables:
       - table: tblRelations
-        contribution_score: 0.78
-        matched_columns: "12/18"
-        top_matches:
-          - column: RelationName
-            ref_class: Party
-            ref_property: partyName
-            confidence: 0.95
-          - column: VATNumber
-            ref_class: Party
-            ref_property: taxIdentifier
-            confidence: 0.92
+        domain_relevance: 0.85
+        rationale: "Contains party names, tax identifiers, and contact details"
+        likely_entity: Party
+        indicative_columns: [RelationName, VATNumber, Email, Phone]
+      - table: tblAddresses
+        domain_relevance: 0.78
+        rationale: "Address data linked to relation records"
+        likely_entity: Address
+        indicative_columns: [Street, City, PostalCode, Country]
 ```
 
-Use these pre-matched suggestions as the **starting point** for your Source Evidence
-Table (Step 0c). This dramatically reduces hallucinated custom properties.
+Use these pre-classified tables as the **starting point** for your Source Evidence
+Table (Step 0c). The `likely_entity` tells you which class each table feeds,
+and `indicative_columns` highlights the most relevant columns to consider.
 
 ### Step 0b — Inventory available inputs (Source Systems & TMDL)
 
@@ -464,14 +463,23 @@ or properties in Checkpoint 1. The Source Evidence Table drives all proposals.
 **Step 0c.1 — Identify relevant source systems:**
 
 Determine which bronze vocabulary files relate to the domain being modeled.
-Use naming heuristics and the user's input to identify relevant systems:
+If `_analysis/` contains `*-affinity.yaml` files, use them to scope:
+
+```bash
+# Check for affinity reports
+ls ontology-hub/_analysis/*-affinity.yaml
+
+# Each report lists contributing_tables per domain with domain_relevance scores.
+# Only load tables with domain_relevance ≥ 0.3 for the target domain.
+# The likely_entity field tells you which class each table feeds.
+```
+
+If no affinity reports exist, use naming heuristics and the user's input to
+identify relevant systems:
 
 ```bash
 # List all bronze vocabulary files
 find ontology-hub/integration/sources/ -name "*.vocabulary.ttl"
-
-# Identify which source systems relate to this domain
-# (ask user if unclear)
 ```
 
 **Step 0c.2 — Extract source table and column inventory:**

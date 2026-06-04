@@ -320,8 +320,10 @@ The command produces `{system}-affinity.yaml` files in
 
 - **`domain_contributions`** — ranked list of reference model domains each
   source feeds
-- **Per-table contribution scores** — how strongly each table maps to a domain
-- **Column-level match suggestions** — specific column↔property matches
+- **Per-table domain relevance** — how strongly each table belongs to a domain
+- **`likely_entity`** — which reference model class the table most likely maps to
+- **`indicative_columns`** — key columns that signal domain membership
+- **`rationale`** — natural language explanation of why the table fits
 
 **Checkpoint:** Review the affinity reports with the user. Ask:
 - Do the domain assignments make sense?
