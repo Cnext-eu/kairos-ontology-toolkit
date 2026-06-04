@@ -48,6 +48,9 @@ service = [
     "openai>=1.0.0,<3.0.0",
     "PyJWT[crypto]>=2.8.0,<3.0.0",
 ]
+azure = [
+    "azure-identity>=1.15.0,<2.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]
