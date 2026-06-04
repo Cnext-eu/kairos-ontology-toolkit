@@ -72,6 +72,12 @@ kairos-ext:silverTableName a owl:AnnotationProperty ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
+kairos-ext:silverSourceRef a owl:AnnotationProperty ;
+    rdfs:label "silver source ref"@en ;
+    rdfs:comment "dbt model name to use as {{ ref() }} instead of {{ source() }} for this class (DD-039). Use when the class sources from a bronze_expanded staging model (JSON flattening). If absent, the projector uses the default {{ source(system, table) }} from SKOS mappings."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
 kairos-ext:scdType a owl:AnnotationProperty ;
     rdfs:label "SCD type"@en ;
     rdfs:comment "Slowly Changing Dimension type (R5, R8). Values: '1' (overwrite) or '2' (history). Default: '2'."@en ;

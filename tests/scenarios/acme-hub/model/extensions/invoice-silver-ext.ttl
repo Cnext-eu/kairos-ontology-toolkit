@@ -28,6 +28,12 @@ acme-inv:InvoiceTag
     kairos-ext:isReferenceData "true" ;
     kairos-ext:scdType "1" .
 
+# DD-039: InvoiceLineTax sources from bronze_expanded staging model
+acme-inv:InvoiceLineTax
+    kairos-ext:silverTableName "invoice_line_tax" ;
+    kairos-ext:scdType "1" ;
+    kairos-ext:silverSourceRef "stg_billingpro_invoice_line_details" .
+
 # Property-level
 acme-inv:invoiceNumber
     kairos-ext:silverColumnName "invoice_number" ;

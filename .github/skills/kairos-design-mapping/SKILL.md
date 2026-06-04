@@ -262,6 +262,39 @@ bronze:{transformedColumn}
 
 ---
 
+## JSON-Expanded Columns (DD-039)
+
+When the bronze vocabulary contains columns with `kairos-bronze:derivedFromJson`
+(created by `import-source` from `extract-schema` v1.1 output), these represent
+flattened JSON fields available in the `bronze_expanded` schema.
+
+### Mapping to expanded columns
+
+Map domain properties to expanded column URIs the same way as regular columns:
+
+```turtle
+bronze-sys:tblOrders_details__firstName skos:exactMatch domain:firstName ;
+    kairos-map:transform "source.firstName" .
+```
+
+### Recommending silverSourceRef
+
+**After mapping** to any `derivedFromJson` column, suggest adding
+`kairos-ext:silverSourceRef` to the silver extension file:
+
+```turtle
+domain:Order kairos-ext:silverSourceRef "stg_erp_orders_details" .
+```
+
+This tells the dbt projector to use `{{ ref('stg_erp_orders_details') }}`
+instead of `{{ source('erp', 'tblOrders') }}`, routing the model through
+the `bronze_expanded` staging layer that flattens JSON.
+
+**Without this annotation**, the projector uses raw bronze — which won't have
+the expanded columns available.
+
+---
+
 ## Anti-patterns to avoid
 
 - ❌ Writing mapping TTL without reading the bronze vocabulary first

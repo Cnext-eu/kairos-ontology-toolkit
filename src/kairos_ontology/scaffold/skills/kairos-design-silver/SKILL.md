@@ -173,6 +173,7 @@ class in the domain MUST have at minimum:
 | `kairos-ext:scdType` | ✅ Always | `"2"` |
 | `kairos-ext:isReferenceData` | ✅ Always | `"false"` |
 | `kairos-ext:inheritanceStrategy` | Only if has subclasses | `"class-per-table"` |
+| `kairos-ext:silverSourceRef` | Only if sourcing from bronze_expanded (DD-039) | _(none — uses source())_ |
 | `kairos-ext:namingConvention` | Ontology-level | `"camel-to-snake"` |
 | `kairos-ext:includeNaturalKeyColumn` | Ontology-level | `"true"` |
 | `kairos-ext:inlineRefThreshold` | Ontology-level | `"3"` |

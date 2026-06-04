@@ -94,3 +94,19 @@ bronze-bp:tblCreditNote_ClientRef skos:exactMatch acme-inv:issuedTo ;
 bronze-bp:tblCreditNote_Currency skos:exactMatch acme-inv:currency ;
     kairos-map:transform "source.Currency" ;
     kairos-map:defaultValue "'EUR'" .
+
+# ---------------------------------------------------------------------------
+# Table-level: tblInvoiceLine_LineDetails → InvoiceLineTax (DD-039)
+# Maps the JSON-derived child table to a domain entity
+# ---------------------------------------------------------------------------
+bronze-bp:tblInvoiceLine_LineDetails skos:exactMatch acme-inv:InvoiceLineTax ;
+    kairos-map:mappingType "direct" .
+
+bronze-bp:tblInvoiceLine_LineDetails_TaxCode skos:exactMatch acme-inv:taxCode ;
+    kairos-map:transform "source.TaxCode" .
+
+bronze-bp:tblInvoiceLine_LineDetails_TaxRate skos:exactMatch acme-inv:taxRate ;
+    kairos-map:transform "CAST(source.TaxRate AS DECIMAL(5,2))" .
+
+bronze-bp:tblInvoiceLine_LineDetails_DiscountPct skos:exactMatch acme-inv:discountPct ;
+    kairos-map:transform "CAST(source.DiscountPct AS DECIMAL(5,2))" .

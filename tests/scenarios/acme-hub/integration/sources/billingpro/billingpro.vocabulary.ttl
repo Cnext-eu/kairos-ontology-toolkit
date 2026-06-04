@@ -193,3 +193,36 @@ bronze-bp:tblCreditNote_LastModified a kairos-bronze:SourceColumn ;
     kairos-bronze:columnName "LastModified" ;
     kairos-bronze:dataType "datetime" ;
     kairos-bronze:nullable "false"^^xsd:boolean .
+
+# ---------------------------------------------------------------------------
+# tblInvoiceLine_LineDetails — derived child table (DD-039: JSON array_object)
+# Simulates import-source output for a JSON column tblInvoiceLine.LineDetails
+# containing array of objects with keys: taxCode, taxRate, discountPct
+# ---------------------------------------------------------------------------
+bronze-bp:tblInvoiceLine_LineDetails a kairos-bronze:SourceTable ;
+    rdfs:label "tblInvoiceLine_LineDetails" ;
+    kairos-bronze:sourceSystem bronze-bp:BillingPro ;
+    kairos-bronze:tableName "tblInvoiceLine_LineDetails" ;
+    kairos-bronze:derivedFromJson bronze-bp:tblInvoiceLine_LineDetailsJson .
+
+bronze-bp:tblInvoiceLine_LineDetailsJson a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceLine ;
+    kairos-bronze:columnName "LineDetails" ;
+    kairos-bronze:dataType "varchar(max)" ;
+    kairos-bronze:contentType "json" ;
+    kairos-bronze:jsonClassification "array_object" .
+
+bronze-bp:tblInvoiceLine_LineDetails_TaxCode a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceLine_LineDetails ;
+    kairos-bronze:columnName "TaxCode" ;
+    kairos-bronze:dataType "varchar(10)" .
+
+bronze-bp:tblInvoiceLine_LineDetails_TaxRate a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceLine_LineDetails ;
+    kairos-bronze:columnName "TaxRate" ;
+    kairos-bronze:dataType "decimal(5,2)" .
+
+bronze-bp:tblInvoiceLine_LineDetails_DiscountPct a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable bronze-bp:tblInvoiceLine_LineDetails ;
+    kairos-bronze:columnName "DiscountPct" ;
+    kairos-bronze:dataType "decimal(5,2)" .

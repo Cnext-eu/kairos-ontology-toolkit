@@ -2051,10 +2051,10 @@ database/schema info, coupling the hub to a specific environment.
 
 ## DD-039: Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-06-02  
-**Affects:** `extract-schema` CLI command, `import_source.py`, `kairos-develop-dataplatform` skill, dataplatform staging models  
-**Implementation:** `src/kairos_ontology/extract_schema.py`, `scaffold/dataplatform/`
+**Affects:** `extract-schema` CLI command, `import_source.py`, `kairos-develop-dataplatform` skill, dataplatform staging models, dbt projector  
+**Implementation:** `src/kairos_ontology/extract_schema.py`, `src/kairos_ontology/generate_staging.py`, `scaffold/dataplatform/`, `medallion_dbt_projector.py`
 
 ### Context
 
@@ -2135,10 +2135,13 @@ the same fields.
 - New optional dependency: `pyodbc` (via `kairos-ontology-toolkit[fabric]` extra)
 - Two extraction paths coexist: dbt macro (lightweight, SQL-only) and CLI (rich, Python)
 - Bronze_expanded layer adds maintenance for JSON-heavy sources, but is optional
-- Silver projector may need `kairos-ext:bronzeExpandedRef` annotation to emit
-  `ref('stg_...')` instead of `source()` calls for expanded tables
+- **Silver source routing:** `kairos-ext:silverSourceRef` annotation on a class makes the
+  dbt projector emit `{{ ref('stg_...') }}` instead of `{{ source() }}`. This is opt-in
+  via the silver extension file — absent annotation = backward-compatible `source()` behavior.
 - JSON classification heuristic (5 samples) may misclassify rare polymorphic columns;
   user review step mitigates this
+- Flat JSON staging views are row-preserving (no WHERE filter on NULL JSON) so that
+  switching to `ref()` never drops rows silently
 
 ---
 
