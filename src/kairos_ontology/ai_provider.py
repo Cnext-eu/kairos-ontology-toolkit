@@ -7,6 +7,7 @@ Supports multiple AI backends via environment variable configuration:
 - Azure AI Foundry: uses AZURE_AI_ENDPOINT + AZURE_AI_KEY
 
 Both providers return an OpenAI-compatible client instance.
+Automatically loads .env from the hub root (or CWD) if present.
 """
 
 from __future__ import annotations
@@ -14,8 +15,37 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# .env auto-loading
+# ---------------------------------------------------------------------------
+
+
+def _load_dotenv_from_hub():
+    """Load .env file from repo root or hub subfolder (whichever is found first)."""
+    cwd = Path.cwd()
+    candidates = [
+        cwd / ".env",
+    ]
+    # Also walk up looking for hub structure
+    for parent in [cwd] + list(cwd.parents)[:3]:
+        if (parent / "ontology-hub").is_dir() or (parent / "model" / "ontologies").is_dir():
+            candidates.insert(0, parent / ".env")
+            break
+
+    for env_file in candidates:
+        if env_file.is_file():
+            load_dotenv(env_file, override=False)
+            logger.debug("Loaded .env from %s", env_file)
+            return
+
+
+_load_dotenv_from_hub()
 
 # ---------------------------------------------------------------------------
 # Constants
