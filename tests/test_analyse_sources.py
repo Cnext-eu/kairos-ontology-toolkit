@@ -313,9 +313,9 @@ class TestWriteAnalysisOutput:
 
         assert data["system"] == "testapp"
         assert data["model_used"] == "gpt-5-mini"
-        assert len(data["domain_affinities"]) == 1
-        assert data["domain_affinities"][0]["domain"] == "Party"
-        assert data["domain_affinities"][0]["confidence"] == 0.82
+        assert len(data["domain_contributions"]) == 1
+        assert data["domain_contributions"][0]["domain"] == "Party"
+        assert data["domain_contributions"][0]["confidence"] == 0.82
 
     def test_writes_affinity_matrix(self, tmp_path):
         analyses = [

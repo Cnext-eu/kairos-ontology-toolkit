@@ -44,6 +44,7 @@ class ColumnSuggestion:
     ref_property: str
     confidence: float
     evidence: str
+    ref_class: str = ""
 
 
 @dataclass
@@ -52,6 +53,7 @@ class TableMatch:
     table: str
     total_columns: int
     matched_columns: int
+    contribution_score: float = 0.0
     suggestions: list[ColumnSuggestion] = field(default_factory=list)
     unmatched_columns: list[dict[str, str]] = field(default_factory=list)
 
@@ -62,6 +64,8 @@ class DomainAffinity:
     domain: str
     ref_model_file: str
     confidence: float
+    total_classes: int = 0
+    ref_source: str = ""
     matched_tables: list[TableMatch] = field(default_factory=list)
 
 
@@ -234,6 +238,7 @@ def resolve_reference_models(ref_models_dir: Path) -> list[dict[str, Any]]:
             try:
                 result = parse_reference_model(ttl_files[0])
                 if result["classes"]:
+                    result["ref_source"] = domain_key
                     domains.append(result)
             except Exception as e:
                 logger.warning("Failed to parse %s: %s", ttl_files[0], e)
@@ -247,6 +252,7 @@ def resolve_reference_models(ref_models_dir: Path) -> list[dict[str, Any]]:
                     logger.warning("Failed to parse %s: %s", ttl, e)
 
             result = parse_reference_model(graph=merged, domain_name=domain_key)
+            result["ref_source"] = domain_key
             # Skip stub-only domains (<=2 classes are likely just import declarations)
             if len(result["classes"]) > 2:
                 domains.append(result)
@@ -512,14 +518,21 @@ def _analyse_source_against_domains(
                         ref_property=m["ref_property"],
                         confidence=m["confidence"],
                         evidence=m.get("evidence", ""),
+                        ref_class=m.get("ref_property", "").split(".")[0]
+                        if "." in m.get("ref_property", "") else "",
                     )
                     for m in matches
                 ]
+
+                contribution_score = (
+                    len(suggestions) / len(columns) if columns else 0.0
+                )
 
                 table_matches.append(TableMatch(
                     table=tbl_name,
                     total_columns=len(columns),
                     matched_columns=len(suggestions),
+                    contribution_score=round(contribution_score, 2),
                     suggestions=suggestions,
                     unmatched_columns=unmatched,
                 ))
@@ -530,6 +543,8 @@ def _analyse_source_against_domains(
                 domain=domain_key,
                 ref_model_file=domain["file"],
                 confidence=round(avg_relevance, 2),
+                total_classes=len(domain.get("classes", [])),
+                ref_source=domain.get("ref_source", ""),
                 matched_tables=table_matches,
             )
 
@@ -550,45 +565,48 @@ def _analyse_source_against_domains(
 
 
 def write_analysis_output(analysis: SourceAnalysis, output_dir: Path) -> Path:
-    """Write analysis results to YAML files.
+    """Write analysis results to YAML in domain_contributions format.
 
     Returns the path to the written system affinity file.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Per-system affinity file
     data: dict[str, Any] = {
         "system": analysis.system,
         "analysed_at": analysis.analysed_at,
         "model_used": analysis.model_used,
-        "domain_affinities": [],
+        "domain_contributions": [],
     }
 
     for aff in analysis.domain_affinities:
-        aff_dict: dict[str, Any] = {
+        domain_dict: dict[str, Any] = {
             "domain": aff.domain,
-            "ref_model": aff.ref_model_file,
+            "ref_source": aff.ref_source or aff.ref_model_file,
             "confidence": aff.confidence,
-            "matched_tables": [],
+            "total_classes": aff.total_classes,
+            "contributing_tables": [],
         }
         for tm in aff.matched_tables:
             table_dict: dict[str, Any] = {
                 "table": tm.table,
+                "contribution_score": tm.contribution_score,
                 "matched_columns": f"{tm.matched_columns}/{tm.total_columns}",
-                "suggestions": [
+                "top_matches": [
                     {
                         "column": s.column,
+                        "ref_class": s.ref_class,
                         "ref_property": s.ref_property,
                         "confidence": s.confidence,
-                        "evidence": s.evidence,
                     }
-                    for s in tm.suggestions
+                    for s in sorted(
+                        tm.suggestions, key=lambda x: x.confidence, reverse=True
+                    )[:10]  # Top 10 matches per table
                 ],
             }
             if tm.unmatched_columns:
                 table_dict["unmatched_columns"] = tm.unmatched_columns
-            aff_dict["matched_tables"].append(table_dict)
-        data["domain_affinities"].append(aff_dict)
+            domain_dict["contributing_tables"].append(table_dict)
+        data["domain_contributions"].append(domain_dict)
 
     output_file = output_dir / f"{analysis.system}-affinity.yaml"
     with open(output_file, "w", encoding="utf-8") as f:
@@ -635,6 +653,8 @@ def run_analyse_sources(
     model: str = DEFAULT_MODEL,
     threshold: float = 0.3,
     max_domains: int | None = None,
+    domains_filter: list[str] | None = None,
+    materialize_dir: Path | None = None,
 ) -> list[Path]:
     """Run analysis for all source systems in a hub.
 
@@ -645,6 +665,8 @@ def run_analyse_sources(
         model: LLM model to use
         threshold: Minimum affinity confidence to report
         max_domains: Maximum number of reference domains to analyse (rate limit protection)
+        domains_filter: Optional list of domain names to include (case-insensitive substring)
+        materialize_dir: Optional path to write merged TTLs for inspection
 
     Returns:
         List of output file paths written.
@@ -657,7 +679,25 @@ def run_analyse_sources(
     # Resolve reference models (recursive discovery + merge)
     ref_domains = resolve_reference_models(ref_models_dir)
     if not ref_domains:
-        raise ValueError(f"No reference model TTL files found in {ref_models_dir}")
+        raise ValueError(
+            f"No reference model TTL files with classes found in {ref_models_dir}.\n"
+            f"Ensure your reference model TTLs contain owl:Class definitions.\n"
+            f"The folder may only have owl:imports stubs — sub-module TTLs with "
+            f"actual classes should be in subdirectories."
+        )
+
+    # Apply --domains filter
+    if domains_filter:
+        filter_lower = [d.lower() for d in domains_filter]
+        ref_domains = [
+            d for d in ref_domains
+            if any(f in d["domain_name"].lower() for f in filter_lower)
+        ]
+        if not ref_domains:
+            raise ValueError(
+                f"No domains matched filter: {domains_filter}. "
+                f"Available domains: {[d['domain_name'] for d in resolve_reference_models(ref_models_dir)]}"
+            )
 
     if max_domains and len(ref_domains) > max_domains:
         logger.info(
@@ -665,6 +705,21 @@ def run_analyse_sources(
             max_domains, len(ref_domains),
         )
         ref_domains = ref_domains[:max_domains]
+
+    # Pre-flight summary
+    total_classes = sum(len(d.get("classes", [])) for d in ref_domains)
+    total_props = sum(
+        sum(len(c.get("properties", [])) for c in d.get("classes", []))
+        for d in ref_domains
+    )
+    logger.info(
+        "Resolved %d domain(s) with %d classes, %d properties",
+        len(ref_domains), total_classes, total_props,
+    )
+
+    # Materialize merged TTLs if requested
+    if materialize_dir:
+        _materialize_domains(ref_domains, ref_models_dir, materialize_dir)
 
     logger.info(
         "Analysing %d source system(s) against %d reference domain(s)",
@@ -691,3 +746,28 @@ def run_analyse_sources(
         output_files.append(matrix_file)
 
     return output_files
+
+
+def _materialize_domains(
+    ref_domains: list[dict[str, Any]],
+    ref_models_dir: Path,
+    materialize_dir: Path,
+) -> None:
+    """Write merged TTLs per domain to disk for inspection."""
+    materialize_dir.mkdir(parents=True, exist_ok=True)
+    for domain in ref_domains:
+        domain_name = domain["domain_name"].replace(" ", "-").replace("/", "_").lower()
+        ref_source = domain.get("ref_source", domain_name)
+
+        # Re-parse and merge the source files for this domain
+        source_dir = ref_models_dir / ref_source
+        if source_dir.is_dir():
+            merged = Graph()
+            for ttl in sorted(source_dir.glob("**/*.ttl")):
+                try:
+                    merged.parse(ttl, format="turtle")
+                except Exception:
+                    pass
+            out_path = materialize_dir / f"{domain_name}.ttl"
+            merged.serialize(destination=str(out_path), format="turtle")
+            logger.info("  Materialized: %s (%d triples)", out_path.name, len(merged))

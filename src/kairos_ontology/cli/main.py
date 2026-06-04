@@ -1020,22 +1020,28 @@ def generate_staging(from_dir, output, source_name):
               help='LLM model for semantic matching (default: gpt-5.4-mini).')
 @click.option('--max-domains', type=int, default=None,
               help='Maximum reference domains to analyse (rate limit protection).')
-def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_domains):
+@click.option('--domains', 'domains_filter', default=None,
+              help='Comma-separated domain names to include (case-insensitive substring match).')
+@click.option('--materialize', 'materialize_dir', type=click.Path(), default=None,
+              help='Write merged TTLs per domain to this directory (for inspection).')
+def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_domains,
+                        domains_filter, materialize_dir):
     """Analyse source vocabularies against reference model domains (LLM-powered).
 
     Semantically matches source table columns against reference model properties
-    using the GitHub Models API. Produces per-source affinity reports that the
+    using the configured AI provider. Produces per-source affinity reports that the
     modeling skill uses to scope context and seed evidence tables.
 
-    Requires GITHUB_TOKEN environment variable.
+    Requires AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
 
     \b
     Examples:
       kairos-ontology analyse-sources
-      kairos-ontology analyse-sources --model gpt-5-mini --threshold 0.4
+      kairos-ontology analyse-sources --domains "party,booking"
+      kairos-ontology analyse-sources --materialize .resolved/
       kairos-ontology analyse-sources --sources path/to/sources/ --ref-models path/to/refs/
     """
-    from ..analyse_sources import run_analyse_sources
+    from ..analyse_sources import run_analyse_sources, resolve_reference_models
 
     # Auto-detect hub paths
     cwd = Path.cwd()
@@ -1083,7 +1089,33 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
     click.echo(f"   Reference models: {ref_models_path}")
     click.echo(f"   Model: {llm_model}")
     click.echo(f"   Threshold: {threshold}")
+    if domains_filter:
+        click.echo(f"   Domain filter: {domains_filter}")
     click.echo()
+
+    # Pre-flight: show resolved domains
+    ref_domains = resolve_reference_models(ref_models_path)
+    if ref_domains:
+        total_cls = sum(len(d.get("classes", [])) for d in ref_domains)
+        total_props = sum(
+            sum(len(c.get("properties", [])) for c in d.get("classes", []))
+            for d in ref_domains
+        )
+        click.echo(f"📊 Resolved {len(ref_domains)} domain(s) "
+                   f"({total_cls} classes, {total_props} properties):")
+        for d in ref_domains:
+            n_cls = len(d.get("classes", []))
+            n_props = sum(len(c.get("properties", [])) for c in d.get("classes", []))
+            click.echo(f"   • {d['domain_name']} ({n_cls} classes, {n_props} properties)")
+        click.echo()
+
+    # Parse domains filter
+    filter_list = None
+    if domains_filter:
+        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
+
+    # Parse materialize dir
+    mat_dir = Path(materialize_dir) if materialize_dir else None
 
     try:
         output_files = run_analyse_sources(
@@ -1093,6 +1125,8 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
             model=llm_model,
             threshold=threshold,
             max_domains=max_domains,
+            domains_filter=filter_list,
+            materialize_dir=mat_dir,
         )
         click.echo(f"\n✅ Analysis complete! Written {len(output_files)} file(s) to: {output_path}")
         for f in output_files:
