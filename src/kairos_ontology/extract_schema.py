@@ -857,8 +857,7 @@ def _table_to_yaml_dict(table: TableInfo) -> dict:
         }
         if col.distinct_count is not None:
             col_dict["distinct_count"] = col.distinct_count
-        if col.samples:
-            col_dict["samples"] = col.samples
+        # Samples are written to separate .samples.yaml files (not inline)
         if col.json_detected:
             col_dict["json_detected"] = True
             col_dict["json_classification"] = col.json_classification

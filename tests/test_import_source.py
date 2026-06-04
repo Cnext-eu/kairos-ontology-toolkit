@@ -421,3 +421,127 @@ class TestChangeReport:
 
 # Import ColumnChange for the test above
 from kairos_ontology.import_source import ColumnChange  # noqa: E402
+from kairos_ontology.import_source import parse_source_schema_dir  # noqa: E402
+
+
+class TestParseSourceSchemaDir:
+    """Tests for directory-based schema parsing with .samples.yaml merge."""
+
+    def test_merges_samples_from_samples_yaml(self, tmp_path):
+        """parse_source_schema_dir merges per-column samples from .samples.yaml."""
+        import yaml
+
+        system_dir = tmp_path / "testapp"
+        system_dir.mkdir()
+
+        # Write manifest
+        manifest = {"version": "1.1", "system": "testapp", "platform": "fabric",
+                    "tables": ["tblClient"]}
+        (system_dir / "_manifest.yaml").write_text(
+            yaml.dump(manifest, default_flow_style=False), encoding="utf-8")
+
+        # Write table YAML (no inline samples)
+        table_data = {
+            "name": "tblClient",
+            "schema": "bronze",
+            "row_count": 10,
+            "columns": [
+                {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False},
+                {"name": "name", "data_type": "varchar(100)", "ordinal_position": 2, "nullable": True},
+            ],
+        }
+        (system_dir / "tblClient.yaml").write_text(
+            yaml.dump(table_data, default_flow_style=False), encoding="utf-8")
+
+        # Write .samples.yaml with row data
+        samples_data = {
+            "extracted_at": "2026-06-01T10:00:00Z",
+            "table": "tblClient",
+            "schema": "bronze",
+            "rows": [
+                {"id": "1", "name": "Acme NV"},
+                {"id": "2", "name": "Baker BV"},
+                {"id": "3", "name": "Acme NV"},  # duplicate
+            ],
+        }
+        (system_dir / "tblClient.samples.yaml").write_text(
+            yaml.dump(samples_data, default_flow_style=False), encoding="utf-8")
+
+        result = parse_source_schema_dir(system_dir)
+
+        assert len(result["tables"]) == 1
+        cols = result["tables"][0]["columns"]
+        # id column should have unique samples
+        assert cols[0]["samples"] == ["1", "2", "3"]
+        # name column should have unique samples (deduped)
+        assert cols[1]["samples"] == ["Acme NV", "Baker BV"]
+
+    def test_no_samples_when_no_samples_yaml(self, tmp_path):
+        """No samples merged when .samples.yaml doesn't exist."""
+        import yaml
+
+        system_dir = tmp_path / "testapp"
+        system_dir.mkdir()
+
+        manifest = {"version": "1.1", "system": "testapp", "platform": "fabric",
+                    "tables": ["tblClient"]}
+        (system_dir / "_manifest.yaml").write_text(
+            yaml.dump(manifest, default_flow_style=False), encoding="utf-8")
+
+        table_data = {
+            "name": "tblClient", "schema": "bronze", "row_count": 5,
+            "columns": [{"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}],
+        }
+        (system_dir / "tblClient.yaml").write_text(
+            yaml.dump(table_data, default_flow_style=False), encoding="utf-8")
+
+        result = parse_source_schema_dir(system_dir)
+        assert "samples" not in result["tables"][0]["columns"][0]
+
+    def test_preserves_existing_inline_samples(self, tmp_path):
+        """If table YAML already has inline samples (old format), they are preserved."""
+        import yaml
+
+        system_dir = tmp_path / "testapp"
+        system_dir.mkdir()
+
+        manifest = {"version": "1.1", "system": "testapp", "platform": "fabric",
+                    "tables": ["tblClient"]}
+        (system_dir / "_manifest.yaml").write_text(
+            yaml.dump(manifest, default_flow_style=False), encoding="utf-8")
+
+        # Table with inline samples (backward compat)
+        table_data = {
+            "name": "tblClient", "schema": "bronze", "row_count": 5,
+            "columns": [{"name": "id", "data_type": "int", "ordinal_position": 1,
+                         "nullable": False, "samples": ["OLD1", "OLD2"]}],
+        }
+        (system_dir / "tblClient.yaml").write_text(
+            yaml.dump(table_data, default_flow_style=False), encoding="utf-8")
+
+        # .samples.yaml exists but inline should take precedence
+        samples_data = {"table": "tblClient", "schema": "bronze",
+                        "rows": [{"id": "NEW1"}, {"id": "NEW2"}]}
+        (system_dir / "tblClient.samples.yaml").write_text(
+            yaml.dump(samples_data, default_flow_style=False), encoding="utf-8")
+
+        result = parse_source_schema_dir(system_dir)
+        # Should keep the old inline samples
+        assert result["tables"][0]["columns"][0]["samples"] == ["OLD1", "OLD2"]
+
+
+class TestImportSourceHubRootDetection:
+    """Tests that run_import_source detects ontology-hub/ subfolder."""
+
+    def test_output_dir_resolves_to_ontology_hub(self, valid_yaml_file, tmp_path, monkeypatch):
+        """When CWD has ontology-hub/model/ontologies/, output goes inside ontology-hub/."""
+        hub = tmp_path / "ontology-hub"
+        (hub / "model" / "ontologies").mkdir(parents=True)
+
+        monkeypatch.chdir(tmp_path)
+        result_path, _ = run_import_source(valid_yaml_file)
+        assert result_path is not None
+        # Should write inside ontology-hub/integration/sources/
+        assert "ontology-hub" in str(result_path)
+        assert result_path.parent.name == "testapp"
+        assert "integration" in str(result_path)
