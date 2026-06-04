@@ -498,16 +498,10 @@ def run_import_flatfile(
 
     if output_dir is None:
         # Detect hub root
+        from .hub_utils import find_hub_root
+
         cwd = Path.cwd()
-        hub_root = None
-        for candidate in [cwd / "ontology-hub", cwd]:
-            if (candidate / "model" / "ontologies").is_dir():
-                hub_root = candidate
-                break
-        # Fall back: if ontology-hub/ exists as a directory, use it even
-        # without model/ontologies/ (freshly created hub before first model).
-        if hub_root is None and (cwd / "ontology-hub").is_dir():
-            hub_root = cwd / "ontology-hub"
+        hub_root = find_hub_root(cwd)
         if hub_root:
             output_dir = hub_root / "integration" / "sources" / system_name
         else:

@@ -550,6 +550,18 @@ class TestImportSourceHubRootDetection:
         assert result_path.parent.name == "testapp"
         assert "integration" in str(result_path)
 
+    def test_freshly_scaffolded_hub_resolves(self, valid_yaml_file, tmp_path, monkeypatch):
+        """When ontology-hub/ has model/ but not model/ontologies/, still resolves."""
+        hub = tmp_path / "ontology-hub"
+        (hub / "model").mkdir(parents=True)
+        (hub / "integration").mkdir(parents=True)
+
+        monkeypatch.chdir(tmp_path)
+        result_path, _ = run_import_source(valid_yaml_file)
+        assert result_path is not None
+        assert "ontology-hub" in str(result_path)
+        assert "integration" in str(result_path)
+
 
 # --------------------------------------------------------------------------- #
 # Split-Tables Tests
