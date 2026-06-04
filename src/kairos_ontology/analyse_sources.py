@@ -98,8 +98,10 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
                        tbl_uri.split("#")[-1].split("/")[-1])
         columns = []
 
-        # Find columns belonging to this table
-        for col_uri in g.subjects(KAIROS_BRONZE.belongsToTable, tbl_uri):
+        # Find columns belonging to this table (both predicates are used)
+        col_uris = set(g.subjects(KAIROS_BRONZE.belongsToTable, tbl_uri))
+        col_uris.update(g.subjects(KAIROS_BRONZE.sourceTable, tbl_uri))
+        for col_uri in col_uris:
             col_name = str(g.value(col_uri, KAIROS_BRONZE.columnName) or
                            col_uri.split("#")[-1].split("/")[-1])
             data_type = str(g.value(col_uri, KAIROS_BRONZE.dataType) or "unknown")
