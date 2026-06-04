@@ -1,0 +1,80 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ref-party: <https://kairos.cnext.eu/ref/party#> .
+
+# ---------------------------------------------------------------------------
+# Reference Model: Party (synthetic for scenario testing)
+# ---------------------------------------------------------------------------
+<https://kairos.cnext.eu/ref/party> a owl:Ontology ;
+    rdfs:label "Party" ;
+    owl:versionInfo "1.0.0" ;
+    rdfs:comment "Industry reference model for party/customer concepts." .
+
+# ---------------------------------------------------------------------------
+# Classes
+# ---------------------------------------------------------------------------
+ref-party:Party a owl:Class ;
+    rdfs:label "Party" ;
+    rdfs:comment "A business party — person or organisation." .
+
+ref-party:Organisation a owl:Class ;
+    rdfs:subClassOf ref-party:Party ;
+    rdfs:label "Organisation" ;
+    rdfs:comment "A legal entity or corporate body." .
+
+ref-party:Person a owl:Class ;
+    rdfs:subClassOf ref-party:Party ;
+    rdfs:label "Person" ;
+    rdfs:comment "A natural person / individual." .
+
+# ---------------------------------------------------------------------------
+# Data Properties — Party
+# ---------------------------------------------------------------------------
+ref-party:partyName a owl:DatatypeProperty ;
+    rdfs:label "Party name" ;
+    rdfs:comment "The legal or common name of the party." ;
+    rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
+
+ref-party:partyIdentifier a owl:DatatypeProperty ;
+    rdfs:label "Party identifier" ;
+    rdfs:comment "A unique business identifier for the party." ;
+    rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
+
+ref-party:taxIdentifier a owl:DatatypeProperty ;
+    rdfs:label "Tax identifier" ;
+    rdfs:comment "VAT number or tax registration number." ;
+    rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
+
+ref-party:email a owl:DatatypeProperty ;
+    rdfs:label "Email address" ;
+    rdfs:comment "Primary email contact for the party." ;
+    rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
+
+ref-party:phone a owl:DatatypeProperty ;
+    rdfs:label "Phone number" ;
+    rdfs:comment "Primary phone contact." ;
+    rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
+
+ref-party:country a owl:DatatypeProperty ;
+    rdfs:label "Country" ;
+    rdfs:comment "Country of registration or residence." ;
+    rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
+
+ref-party:city a owl:DatatypeProperty ;
+    rdfs:label "City" ;
+    rdfs:comment "City of the party address." ;
+    rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
+
+ref-party:postalCode a owl:DatatypeProperty ;
+    rdfs:label "Postal code" ;
+    rdfs:comment "Postal/ZIP code of the party address." ;
+    rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
