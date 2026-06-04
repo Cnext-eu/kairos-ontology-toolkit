@@ -67,14 +67,85 @@ class TestResolveProviderConfig:
             config = resolve_provider_config()
         assert config.provider == "azure"
 
+    def test_foundry_from_explicit_provider(self):
+        env = {
+            "KAIROS_AI_PROVIDER": "foundry",
+            "AZURE_FOUNDRY_ENDPOINT": "https://my.ai.azure.com/api/projects/proj",
+            "AZURE_FOUNDRY_API_KEY": "foundry-key",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = resolve_provider_config()
+        assert config.provider == "foundry"
+        assert config.endpoint == "https://my.ai.azure.com/api/projects/proj"
+        assert config.api_key == "foundry-key"
+        assert config.model == DEFAULT_MODEL
+
+    def test_foundry_from_endpoint_env(self):
+        """Auto-detect foundry when AZURE_FOUNDRY_ENDPOINT is set."""
+        env = {
+            "AZURE_FOUNDRY_ENDPOINT": "https://my.ai.azure.com/api/projects/proj",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = resolve_provider_config()
+        assert config.provider == "foundry"
+        assert config.api_key == ""
+
+    def test_foundry_with_custom_model(self):
+        env = {
+            "KAIROS_AI_PROVIDER": "foundry",
+            "AZURE_FOUNDRY_ENDPOINT": "https://my.ai.azure.com/api/projects/proj",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = resolve_provider_config("gpt-5.4-mini")
+        assert config.model == "gpt-5.4-mini"
+
+    def test_foundry_without_api_key(self):
+        """Foundry without API key should resolve (will use Entra ID at client creation)."""
+        env = {
+            "KAIROS_AI_PROVIDER": "foundry",
+            "AZURE_FOUNDRY_ENDPOINT": "https://my.ai.azure.com/api/projects/proj",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = resolve_provider_config()
+        assert config.provider == "foundry"
+        assert config.api_key == ""
+
+    def test_error_foundry_no_endpoint(self):
+        with patch.dict(os.environ, {"KAIROS_AI_PROVIDER": "foundry"}, clear=True):
+            with pytest.raises(EnvironmentError, match="AZURE_FOUNDRY_ENDPOINT"):
+                resolve_provider_config()
+
+    def test_foundry_precedence_over_github(self):
+        """When both foundry and github are set, explicit foundry wins."""
+        env = {
+            "KAIROS_AI_PROVIDER": "foundry",
+            "GITHUB_TOKEN": "gh-tok",
+            "AZURE_FOUNDRY_ENDPOINT": "https://my.ai.azure.com/api/projects/proj",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = resolve_provider_config()
+        assert config.provider == "foundry"
+
     def test_error_no_config(self):
         with patch.dict(os.environ, {}, clear=True):
             with pytest.raises(EnvironmentError, match="No AI provider configured"):
                 resolve_provider_config()
 
+    def test_error_no_config_mentions_foundry(self):
+        """Error message should mention foundry as an option."""
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(EnvironmentError, match="AZURE_FOUNDRY_ENDPOINT"):
+                resolve_provider_config()
+
     def test_error_unknown_provider(self):
         with patch.dict(os.environ, {"KAIROS_AI_PROVIDER": "invalid"}, clear=True):
             with pytest.raises(EnvironmentError, match="Unknown KAIROS_AI_PROVIDER"):
+                resolve_provider_config()
+
+    def test_error_unknown_provider_mentions_foundry(self):
+        """Unknown provider error should list foundry as supported."""
+        with patch.dict(os.environ, {"KAIROS_AI_PROVIDER": "invalid"}, clear=True):
+            with pytest.raises(EnvironmentError, match="foundry"):
                 resolve_provider_config()
 
     def test_error_github_no_token(self):
@@ -111,6 +182,104 @@ class TestGetAiClient:
             api_key="test-token",
         )
         assert client is not None
+
+    @patch("kairos_ontology.ai_provider._create_foundry_client")
+    def test_foundry_delegates_to_create_foundry_client(self, mock_create):
+        mock_create.return_value = MagicMock()
+        env = {
+            "KAIROS_AI_PROVIDER": "foundry",
+            "AZURE_FOUNDRY_ENDPOINT": "https://my.ai.azure.com/api/projects/proj",
+            "AZURE_FOUNDRY_API_KEY": "fkey",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            client = get_ai_client()
+
+        mock_create.assert_called_once()
+        assert client is not None
+
+
+class TestCreateFoundryClient:
+    """Test Foundry client creation."""
+
+    def test_foundry_missing_sdk_raises(self):
+        """Missing azure-ai-projects package should raise EnvironmentError."""
+        from kairos_ontology.ai_provider import _create_foundry_client, AIProviderConfig
+        config = AIProviderConfig(
+            provider="foundry",
+            endpoint="https://my.ai.azure.com/api/projects/proj",
+            api_key="key",
+            model="gpt-5.4-mini",
+        )
+        # Simulate ImportError for azure.ai.projects
+        real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') \
+            else __import__
+
+        def fail_import(name, *args, **kwargs):
+            if name == "azure.ai.projects":
+                raise ImportError("No module named 'azure.ai.projects'")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fail_import):
+            with pytest.raises(EnvironmentError, match="azure-ai-projects"):
+                _create_foundry_client(config)
+
+    def test_foundry_with_api_key(self):
+        """Foundry with API key uses AzureKeyCredential."""
+        from kairos_ontology.ai_provider import _create_foundry_client, AIProviderConfig
+
+        mock_project_client = MagicMock()
+        mock_openai = MagicMock()
+        mock_project_client.get_openai_client.return_value = mock_openai
+
+        mock_projects_module = MagicMock()
+        mock_projects_module.AIProjectClient.return_value = mock_project_client
+
+        mock_key_cred_module = MagicMock()
+
+        config = AIProviderConfig(
+            provider="foundry",
+            endpoint="https://my.ai.azure.com/api/projects/proj",
+            api_key="my-foundry-key",
+            model="gpt-5.4-mini",
+        )
+
+        with patch.dict("sys.modules", {
+            "azure.ai.projects": mock_projects_module,
+            "azure.core.credentials": mock_key_cred_module,
+        }):
+            client = _create_foundry_client(config)
+
+        mock_projects_module.AIProjectClient.assert_called_once()
+        call_kwargs = mock_projects_module.AIProjectClient.call_args.kwargs
+        assert call_kwargs["endpoint"] == config.endpoint
+        mock_project_client.get_openai_client.assert_called_once()
+        assert client is mock_openai
+
+    def test_foundry_no_key_no_identity_raises(self):
+        """Foundry without API key and without azure-identity should error."""
+        from kairos_ontology.ai_provider import _create_foundry_client, AIProviderConfig
+        config = AIProviderConfig(
+            provider="foundry",
+            endpoint="https://my.ai.azure.com/api/projects/proj",
+            api_key="",
+            model="gpt-5.4-mini",
+        )
+        mock_projects_module = MagicMock()
+
+        real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') \
+            else __import__
+
+        def selective_import(name, *args, **kwargs):
+            if name == "azure.identity":
+                raise ImportError("No module named 'azure.identity'")
+            if name == "azure.ai.projects":
+                return mock_projects_module
+            return real_import(name, *args, **kwargs)
+
+        with patch.dict("sys.modules", {"azure.ai.projects": mock_projects_module}):
+            with patch("builtins.__import__", side_effect=selective_import):
+                with pytest.raises(EnvironmentError, match="azure-identity"):
+                    _create_foundry_client(config)
 
 
 class TestDefaultModel:
