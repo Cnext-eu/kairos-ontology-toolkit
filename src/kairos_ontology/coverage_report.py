@@ -23,7 +23,6 @@ from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 
 from .analyse_sources import (
     DEFAULT_MODEL,
-    parse_reference_model,
     resolve_reference_models,
 )
 from .ai_provider import get_ai_client
@@ -449,8 +448,8 @@ def write_coverage_markdown(report: CoverageReport, output_path: Path) -> Path:
         "",
         "## Summary",
         "",
-        f"| Metric | Value |",
-        f"|--------|-------|",
+        "| Metric | Value |",
+        "|--------|-------|",
         f"| Total classes | {report.total_classes} |",
         f"| Aligned classes | {report.aligned_classes} ({report.class_coverage_pct}%) |",
         f"| Total properties | {report.total_properties} |",

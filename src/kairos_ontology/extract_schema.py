@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path

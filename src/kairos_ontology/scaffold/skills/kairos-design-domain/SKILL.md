@@ -340,15 +340,19 @@ ls integration/sources/_analysis/
 - If `_analysis/` is **missing** → instruct the user to run:
   ```bash
   kairos-ontology analyse-sources \
+    --accelerator logistics \
     --sources integration/sources \
     --ref-models ontology-reference-models \
     --output integration/sources/_analysis
   ```
-  This uses LLM (gpt-5.4-mini) to semantically match source columns against reference
-  model properties.  Requires AI provider env vars (see `.env.example`).
+  With `--accelerator <name>` the analysis classifies each source table toward the
+  accelerator's **data domains** (party, commercial, booking, ...) — each carrying its
+  model URIs — instead of raw reference-model groupings. Without `--accelerator` it
+  falls back to grouping reference-model TTLs. Requires AI provider env vars (see
+  `.env.example`).
 
 **Why this matters:**
-- The contribution report tells you WHICH reference model domains are relevant
+- The contribution report tells you WHICH data domains are relevant (with their URIs)
 - It classifies source tables by domain affinity and identifies likely entities
 - It scopes context: only load tables with ≥30% domain_relevance to the target domain
 - Without it, the modeler tends to create too many custom classes instead of
@@ -359,28 +363,32 @@ ls integration/sources/_analysis/
 When loading source evidence for a domain, read the relevant `{system}-affinity.yaml`:
 
 ```yaml
-# Example: adminpulse-affinity.yaml shows 82% confidence to "Party" domain
+# Example: adminpulse-affinity.yaml shows 82% confidence to the "commercial" data domain
 domain_contributions:
-  - domain: Party
-    ref_source: "shared-kernel/"
+  - domain: commercial
+    group: party-commercial
+    domain_uris:
+      - https://www.kairosflow.ai/ont/bsp/commercial#
+    ref_source: party-commercial
     confidence: 0.82
-    total_classes: 5
     contributing_tables:
-      - table: tblRelations
+      - table: tblContracts
         domain_relevance: 0.85
-        rationale: "Contains party names, tax identifiers, and contact details"
-        likely_entity: Party
-        indicative_columns: [RelationName, VATNumber, Email, Phone]
-      - table: tblAddresses
-        domain_relevance: 0.78
-        rationale: "Address data linked to relation records"
-        likely_entity: Address
-        indicative_columns: [Street, City, PostalCode, Country]
+        rationale: "Contains contract numbers, trade terms, and validity dates"
+        likely_entity: SalesContract
+        indicative_columns: [ContractNo, TradeTerms, ValidFrom]
+      - table: tblPricing
+        domain_relevance: 0.71
+        rationale: "Pricing conditions tied to commercial agreements"
+        likely_entity: PricingCondition
+        indicative_columns: [RateCode, Amount, Currency]
 ```
 
-Use these pre-classified tables as the **starting point** for your Source Evidence
-Table (Step 0c). The `likely_entity` tells you which class each table feeds,
-and `indicative_columns` highlights the most relevant columns to consider.
+The `domain` is the data-domain id and `domain_uris` tells you which reference-model
+module(s) to `owl:imports` for that domain (e.g. `bsp/commercial`). Use the
+pre-classified tables as the **starting point** for your Source Evidence Table
+(Step 0c). The `likely_entity` tells you which class each table feeds, and
+`indicative_columns` highlights the most relevant columns to consider.
 
 ### Step 0b — Inventory available inputs (Source Systems & TMDL)
 

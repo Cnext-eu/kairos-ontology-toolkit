@@ -490,8 +490,6 @@ def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
     This enables fine-grained git diffs and scoped LLM context loading.
     """
     system_name = data["system"]
-    platform = data.get("platform", "unknown")
-    environment = data.get("environment", "")
     connection = data.get("connection", {})
     database = connection.get("database", "")
     schema = connection.get("schema", "dbo")

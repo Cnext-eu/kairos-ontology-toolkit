@@ -1037,7 +1037,7 @@ def extract_schema(profile_name, target, schema_name, system_name, output,
     if tables:
         click.echo(f"   Tables: {', '.join(tables)}")
     else:
-        click.echo(f"   Tables: all in schema")
+        click.echo("   Tables: all in schema")
     click.echo(f"   Sample size: {sample_size}")
     click.echo()
 
@@ -1136,27 +1136,49 @@ def generate_staging(from_dir, output, source_name):
 @click.option('--domains', 'domains_filter', default=None,
               help='Comma-separated domain names to include (case-insensitive substring match).')
 @click.option('--materialize', 'materialize_dir', type=click.Path(), default=None,
-              help='Write merged TTLs per domain to this directory (for inspection).')
+              help='Write the resolved analysis context (manifest + per-domain YAML) '
+                   'to this directory for inspection.')
 @click.option('--exclude', 'exclude_patterns', multiple=True, default=('archive/**',),
               help='Glob patterns to exclude from reference models (default: archive/**).')
+@click.option('--accelerator', default=None,
+              help='Accelerator pack name (e.g. logistics) — classify against its '
+                   'data domains (party, commercial, ...) instead of raw reference models.')
+@click.option('--shallow', is_flag=True, default=False,
+              help='Skip owl:imports resolution in the reference-model fallback (faster).')
+@click.option('--verbose', '-v', is_flag=True, default=False,
+              help='Show per-table classification lines.')
+@click.option('--quiet', '-q', is_flag=True, default=False,
+              help='Suppress progress output (errors still shown).')
 def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_domains,
-                        domains_filter, materialize_dir, exclude_patterns):
+                        domains_filter, materialize_dir, exclude_patterns,
+                        accelerator, shallow, verbose, quiet):
     """Analyse source vocabularies against reference model domains (LLM-powered).
 
-    Semantically matches source table columns against reference model properties
-    using the configured AI provider. Produces per-source affinity reports that the
-    modeling skill uses to scope context and seed evidence tables.
+    Classifies each source table by domain affinity. Two strategies:
+
+    \b
+    - Data-domain-first (recommended): pass --accelerator <name> to classify
+      tables toward the accelerator's data domains (party, commercial, booking,
+      ...), each carrying its model URIs. Fast — no owl:imports resolution.
+    - Reference-model (default): resolves and groups reference model TTLs.
+
+    Produces per-source affinity reports that the modeling skill uses to scope
+    context and seed evidence tables.
 
     Requires AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
 
     \b
     Examples:
-      kairos-ontology analyse-sources
-      kairos-ontology analyse-sources --domains "party,booking"
-      kairos-ontology analyse-sources --materialize .resolved/
+      kairos-ontology analyse-sources --accelerator logistics
+      kairos-ontology analyse-sources --accelerator logistics --domains "party,booking"
+      kairos-ontology analyse-sources --materialize .resolved/ --verbose
       kairos-ontology analyse-sources --sources path/to/sources/ --ref-models path/to/refs/
     """
-    from ..analyse_sources import run_analyse_sources, resolve_reference_models
+    from ..analyse_sources import (
+        run_analyse_sources, resolve_reference_models,
+        build_data_domain_targets, load_data_domains, list_accelerator_packs,
+        make_reporter,
+    )
     from ..hub_utils import find_hub_root
 
     # Auto-detect hub paths
@@ -1197,13 +1219,16 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         click.echo(f"❌ Sources directory not found: {sources_path}", err=True)
         raise SystemExit(1)
 
-    click.echo(f"🔍 Analysing sources in: {sources_path}")
-    click.echo(f"   Reference models: {ref_models_path}")
-    click.echo(f"   Model: {llm_model}")
-    click.echo(f"   Threshold: {threshold}")
-    if domains_filter:
-        click.echo(f"   Domain filter: {domains_filter}")
-    click.echo()
+    if not quiet:
+        click.echo(f"🔍 Analysing sources in: {sources_path}")
+        click.echo(f"   Reference models: {ref_models_path}")
+        click.echo(f"   Model: {llm_model}")
+        click.echo(f"   Threshold: {threshold}")
+        if accelerator:
+            click.echo(f"   Accelerator: {accelerator} (data-domain-first)")
+        if domains_filter:
+            click.echo(f"   Domain filter: {domains_filter}")
+        click.echo()
 
     # Detect catalog for owl:imports resolution
     catalog_file = None
@@ -1215,23 +1240,44 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
     # Convert exclude_patterns tuple to list
     excl_list = list(exclude_patterns) if exclude_patterns else None
 
-    # Pre-flight: show resolved domains
-    ref_domains = resolve_reference_models(
-        ref_models_path, catalog_path=catalog_file, exclude_patterns=excl_list,
-    )
-    if ref_domains:
-        total_cls = sum(len(d.get("classes", [])) for d in ref_domains)
-        total_props = sum(
-            sum(len(c.get("properties", [])) for c in d.get("classes", []))
-            for d in ref_domains
-        )
-        click.echo(f"📊 Resolved {len(ref_domains)} domain(s) "
-                   f"({total_cls} classes, {total_props} properties):")
-        for d in ref_domains:
-            n_cls = len(d.get("classes", []))
-            n_props = sum(len(c.get("properties", [])) for c in d.get("classes", []))
-            click.echo(f"   • {d['domain_name']} ({n_cls} classes, {n_props} properties)")
-        click.echo()
+    # Pre-flight: show resolved domains (skipped in quiet mode)
+    if not quiet:
+        if accelerator:
+            data_domains = load_data_domains(ref_models_path, accelerator=accelerator)
+            if not data_domains:
+                available = list_accelerator_packs(ref_models_path)
+                click.echo(
+                    f"❌ No data-domains.yaml for accelerator '{accelerator}'. "
+                    f"Available: {available or '(none)'}", err=True,
+                )
+                raise SystemExit(1)
+            targets = build_data_domain_targets(data_domains)
+            click.echo(f"📊 {len(targets)} data domain(s) from '{accelerator}':")
+            for d in targets:
+                uris = ", ".join(d.get("uris", [])) or "(no URIs)"
+                click.echo(f"   • {d['domain_name']} [{d.get('group', '')}] → {uris}")
+            click.echo()
+        else:
+            ref_domains = resolve_reference_models(
+                ref_models_path,
+                catalog_path=(None if shallow else catalog_file),
+                exclude_patterns=excl_list,
+            )
+            if ref_domains:
+                total_cls = sum(len(d.get("classes", [])) for d in ref_domains)
+                total_props = sum(
+                    sum(len(c.get("properties", [])) for c in d.get("classes", []))
+                    for d in ref_domains
+                )
+                click.echo(f"📊 Resolved {len(ref_domains)} domain(s) "
+                           f"({total_cls} classes, {total_props} properties):")
+                for d in ref_domains:
+                    n_cls = len(d.get("classes", []))
+                    n_props = sum(len(c.get("properties", [])) for c in d.get("classes", []))
+                    click.echo(
+                        f"   • {d['domain_name']} ({n_cls} classes, {n_props} properties)"
+                    )
+                click.echo()
 
     # Parse domains filter
     filter_list = None
@@ -1242,6 +1288,7 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
     mat_dir = Path(materialize_dir) if materialize_dir else None
 
     try:
+        reporter = make_reporter(verbose=verbose, quiet=quiet)
         output_files = run_analyse_sources(
             sources_dir=sources_path,
             ref_models_dir=ref_models_path,
@@ -1253,10 +1300,17 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
             materialize_dir=mat_dir,
             catalog_path=catalog_file,
             exclude_patterns=excl_list,
+            accelerator=accelerator,
+            shallow=shallow,
+            report=reporter,
         )
-        click.echo(f"\n✅ Analysis complete! Written {len(output_files)} file(s) to: {output_path}")
-        for f in output_files:
-            click.echo(f"   📄 {f.name}")
+        if not quiet:
+            click.echo(
+                f"\n✅ Analysis complete! Written {len(output_files)} file(s) "
+                f"to: {output_path}"
+            )
+            for f in output_files:
+                click.echo(f"   📄 {f.name}")
     except EnvironmentError as e:
         click.echo(f"\n❌ {e}", err=True)
         raise SystemExit(1)
@@ -1344,7 +1398,7 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_m
     else:
         output_path = Path(output)
 
-    click.echo(f"📊 Generating coverage report")
+    click.echo("📊 Generating coverage report")
     click.echo(f"   Ontology: {ont_path}")
     click.echo(f"   Reference models: {ref_models_path}")
     click.echo(f"   Model: {llm_model}")
@@ -1366,7 +1420,7 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_m
             md_path = write_coverage_markdown(report, output_path / "coverage-report.md")
             output_files.append(md_path)
 
-        click.echo(f"\n✅ Coverage report generated!")
+        click.echo("\n✅ Coverage report generated!")
         click.echo(f"   Classes: {report.aligned_classes}/{report.total_classes} "
                    f"({report.class_coverage_pct}%)")
         click.echo(f"   Properties: {report.aligned_properties}/{report.total_properties} "
@@ -1435,7 +1489,7 @@ def update(check, upgrade):
                 content = content.replace("{toolkit_ref}", ref)
                 content = content.replace("{toolkit_version}", version)
                 pyproject.write_text(content, encoding="utf-8")
-                print(f"   ✓ Created pyproject.toml (was missing)")
+                print("   ✓ Created pyproject.toml (was missing)")
             else:
                 print("❌ pyproject.toml not found and cannot generate it")
                 raise SystemExit(1)
@@ -1458,7 +1512,7 @@ def update(check, upgrade):
                 print(f"   ✓ Updated pyproject.toml pin to {ref} (.whl)")
 
         # Lock and sync with uv
-        print(f"   Syncing environment with uv ...")
+        print("   Syncing environment with uv ...")
         result = subprocess.run(["uv", "lock"], capture_output=True, text=True)
         if result.returncode != 0:
             print(f"❌ uv lock failed:\n{result.stderr}")
@@ -2750,7 +2804,7 @@ def init_dataplatform(name, dest, platform, org_override):
         for sys_name in ctx["source_systems"]:
             sources_content += f"  - name: {sys_name}\n"
             sources_content += f'    description: "Bronze source: {sys_name}"\n'
-            sources_content += f'    database: "your_bronze_database"\n'
+            sources_content += '    database: "your_bronze_database"\n'
             sources_content += f'    schema: "raw_{sys_name}"\n'
 
             # Scan for table names in vocabulary TTL
@@ -2850,10 +2904,10 @@ def init_dataplatform(name, dest, platform, org_override):
         click.echo(f"  ⚠️  git init skipped: {e}")
 
     click.echo(f"\n✅ Dataplatform project created at: {repo_dir}")
-    click.echo(f"\n📋 Next steps:")
+    click.echo("\n📋 Next steps:")
     click.echo(f"   cd {name}")
-    click.echo(f"   uv sync")
-    click.echo(f"   # Edit profiles.yml.example → ~/.dbt/profiles.yml")
-    click.echo(f"   # Edit models/_sources.yml with actual database/schema")
-    click.echo(f"   dbt deps")
-    click.echo(f"   dbt build")
+    click.echo("   uv sync")
+    click.echo("   # Edit profiles.yml.example → ~/.dbt/profiles.yml")
+    click.echo("   # Edit models/_sources.yml with actual database/schema")
+    click.echo("   dbt deps")
+    click.echo("   dbt build")
