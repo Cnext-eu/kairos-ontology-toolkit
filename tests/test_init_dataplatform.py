@@ -82,8 +82,6 @@ def dataplatform_output(mock_hub):
     assert result.exit_code == 0, result.output
     return dp_dir
 
-    return tmp_path
-
 
 def _run_in_hub(runner, mock_hub, args):
     """Run CLI command with cwd set to the mock hub directory."""

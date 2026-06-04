@@ -1037,7 +1037,7 @@ def extract_schema(profile_name, target, schema_name, system_name, output,
     if tables:
         click.echo(f"   Tables: {', '.join(tables)}")
     else:
-        click.echo(f"   Tables: all in schema")
+        click.echo("   Tables: all in schema")
     click.echo(f"   Sample size: {sample_size}")
     click.echo()
 
@@ -1398,7 +1398,7 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_m
     else:
         output_path = Path(output)
 
-    click.echo(f"📊 Generating coverage report")
+    click.echo("📊 Generating coverage report")
     click.echo(f"   Ontology: {ont_path}")
     click.echo(f"   Reference models: {ref_models_path}")
     click.echo(f"   Model: {llm_model}")
@@ -1420,7 +1420,7 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_m
             md_path = write_coverage_markdown(report, output_path / "coverage-report.md")
             output_files.append(md_path)
 
-        click.echo(f"\n✅ Coverage report generated!")
+        click.echo("\n✅ Coverage report generated!")
         click.echo(f"   Classes: {report.aligned_classes}/{report.total_classes} "
                    f"({report.class_coverage_pct}%)")
         click.echo(f"   Properties: {report.aligned_properties}/{report.total_properties} "
@@ -1489,7 +1489,7 @@ def update(check, upgrade):
                 content = content.replace("{toolkit_ref}", ref)
                 content = content.replace("{toolkit_version}", version)
                 pyproject.write_text(content, encoding="utf-8")
-                print(f"   ✓ Created pyproject.toml (was missing)")
+                print("   ✓ Created pyproject.toml (was missing)")
             else:
                 print("❌ pyproject.toml not found and cannot generate it")
                 raise SystemExit(1)
@@ -1512,7 +1512,7 @@ def update(check, upgrade):
                 print(f"   ✓ Updated pyproject.toml pin to {ref} (.whl)")
 
         # Lock and sync with uv
-        print(f"   Syncing environment with uv ...")
+        print("   Syncing environment with uv ...")
         result = subprocess.run(["uv", "lock"], capture_output=True, text=True)
         if result.returncode != 0:
             print(f"❌ uv lock failed:\n{result.stderr}")
@@ -2804,7 +2804,7 @@ def init_dataplatform(name, dest, platform, org_override):
         for sys_name in ctx["source_systems"]:
             sources_content += f"  - name: {sys_name}\n"
             sources_content += f'    description: "Bronze source: {sys_name}"\n'
-            sources_content += f'    database: "your_bronze_database"\n'
+            sources_content += '    database: "your_bronze_database"\n'
             sources_content += f'    schema: "raw_{sys_name}"\n'
 
             # Scan for table names in vocabulary TTL
@@ -2904,10 +2904,10 @@ def init_dataplatform(name, dest, platform, org_override):
         click.echo(f"  ⚠️  git init skipped: {e}")
 
     click.echo(f"\n✅ Dataplatform project created at: {repo_dir}")
-    click.echo(f"\n📋 Next steps:")
+    click.echo("\n📋 Next steps:")
     click.echo(f"   cd {name}")
-    click.echo(f"   uv sync")
-    click.echo(f"   # Edit profiles.yml.example → ~/.dbt/profiles.yml")
-    click.echo(f"   # Edit models/_sources.yml with actual database/schema")
-    click.echo(f"   dbt deps")
-    click.echo(f"   dbt build")
+    click.echo("   uv sync")
+    click.echo("   # Edit profiles.yml.example → ~/.dbt/profiles.yml")
+    click.echo("   # Edit models/_sources.yml with actual database/schema")
+    click.echo("   dbt deps")
+    click.echo("   dbt build")
