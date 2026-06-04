@@ -209,7 +209,7 @@ class TestAnalyseSourcesScenario:
         analysis = analyse_source_system(vocab_path, [ref_model_path])
 
         assert analysis.system == "crmsystem"
-        assert analysis.model_used == "gpt-5-mini"
+        assert analysis.model_used == "gpt-5.4-mini"
         assert len(analysis.domain_affinities) >= 1
 
         party_aff = analysis.domain_affinities[0]

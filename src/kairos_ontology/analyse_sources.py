@@ -13,15 +13,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
-from rdflib import Graph, Namespace, RDF, RDFS, OWL, Literal, URIRef
-from rdflib.namespace import XSD
+from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 GITHUB_MODELS_ENDPOINT = "https://models.inference.ai.azure.com"
-DEFAULT_MODEL = "gpt-5-mini"
+DEFAULT_MODEL = "gpt-5.4-mini"
 
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 
@@ -126,20 +124,31 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
 # ---------------------------------------------------------------------------
 
 
-def parse_reference_model(ttl_path: Path) -> dict[str, Any]:
-    """Parse a reference model TTL file into a domain summary.
+def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None = None,
+                          domain_name: str | None = None) -> dict[str, Any]:
+    """Parse a reference model TTL file (or pre-loaded graph) into a domain summary.
 
-    Returns dict with domain_name, classes (with properties and labels).
+    Args:
+        ttl_path: Path to a single TTL file (mutually exclusive with graph)
+        graph: Pre-loaded rdflib Graph (used for merged multi-file domains)
+        domain_name: Override domain name (used with graph parameter)
+
+    Returns dict with domain_name, file, classes (with properties and labels).
     """
-    g = Graph()
-    g.parse(ttl_path, format="turtle")
+    if graph is not None:
+        g = graph
+    elif ttl_path is not None:
+        g = Graph()
+        g.parse(ttl_path, format="turtle")
+    else:
+        raise ValueError("Either ttl_path or graph must be provided")
 
     # Get ontology metadata
-    domain_name = ttl_path.stem
+    resolved_name = domain_name or (ttl_path.stem if ttl_path else "unknown")
     for ont in g.subjects(RDF.type, OWL.Ontology):
         label = g.value(ont, RDFS.label)
         if label:
-            domain_name = str(label)
+            resolved_name = str(label)
         break
 
     classes: list[dict[str, Any]] = []
@@ -175,10 +184,81 @@ def parse_reference_model(ttl_path: Path) -> dict[str, Any]:
         })
 
     return {
-        "domain_name": domain_name,
-        "file": ttl_path.name,
+        "domain_name": resolved_name,
+        "file": ttl_path.name if ttl_path else "(merged)",
         "classes": classes,
     }
+
+
+def resolve_reference_models(ref_models_dir: Path) -> list[dict[str, Any]]:
+    """Discover and resolve reference model TTLs, merging sub-modules by domain.
+
+    Handles modular reference models where root files declare owl:imports
+    to sub-modules containing actual class definitions.
+
+    Strategy:
+    1. Recursively find all .ttl files
+    2. Group by top-level subdirectory (= domain)
+    3. Merge all TTLs in each domain into a single graph
+    4. Skip domains with <=2 classes (likely import stubs only)
+
+    Returns list of domain summaries (same format as parse_reference_model).
+    """
+    all_ttls = sorted(ref_models_dir.glob("**/*.ttl"))
+    if not all_ttls:
+        return []
+
+    # Group by domain: use first-level subdirectory as domain key
+    # Files at root level are their own domain (one file = one domain)
+    domain_groups: dict[str, list[Path]] = {}
+
+    for ttl_path in all_ttls:
+        rel = ttl_path.relative_to(ref_models_dir)
+        parts = rel.parts
+
+        if len(parts) == 1:
+            # Root-level file: domain = stem
+            domain_key = ttl_path.stem
+        else:
+            # Nested: domain = first subdirectory name
+            domain_key = parts[0]
+
+        domain_groups.setdefault(domain_key, []).append(ttl_path)
+
+    # Merge each domain group into a single graph
+    domains: list[dict[str, Any]] = []
+
+    for domain_key, ttl_files in domain_groups.items():
+        if len(ttl_files) == 1:
+            # Single file: parse directly
+            try:
+                result = parse_reference_model(ttl_files[0])
+                if result["classes"]:
+                    domains.append(result)
+            except Exception as e:
+                logger.warning("Failed to parse %s: %s", ttl_files[0], e)
+        else:
+            # Multiple files: merge into single graph
+            merged = Graph()
+            for ttl in ttl_files:
+                try:
+                    merged.parse(ttl, format="turtle")
+                except Exception as e:
+                    logger.warning("Failed to parse %s: %s", ttl, e)
+
+            result = parse_reference_model(graph=merged, domain_name=domain_key)
+            # Skip stub-only domains (<=2 classes are likely just import declarations)
+            if len(result["classes"]) > 2:
+                domains.append(result)
+            elif result["classes"]:
+                # Small but non-empty: include anyway
+                domains.append(result)
+
+    logger.info(
+        "Resolved %d domain(s) from %d TTL file(s) in %s",
+        len(domains), len(all_ttls), ref_models_dir,
+    )
+    return domains
 
 
 # ---------------------------------------------------------------------------
@@ -187,20 +267,9 @@ def parse_reference_model(ttl_path: Path) -> dict[str, Any]:
 
 
 def _get_openai_client():
-    """Create an OpenAI client configured for GitHub Models API."""
-    from openai import OpenAI
-
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise EnvironmentError(
-            "GITHUB_TOKEN environment variable is required for source analysis. "
-            "Set it to a GitHub personal access token."
-        )
-
-    return OpenAI(
-        base_url=GITHUB_MODELS_ENDPOINT,
-        api_key=token,
-    )
+    """Create an OpenAI client configured for the active AI provider."""
+    from kairos_ontology.ai_provider import get_ai_client
+    return get_ai_client()
 
 
 def _build_analysis_prompt(
@@ -393,6 +462,88 @@ def analyse_source_system(
     )
 
 
+def _analyse_source_against_domains(
+    source_vocab_path: Path,
+    ref_domains: list[dict[str, Any]],
+    model: str = DEFAULT_MODEL,
+    threshold: float = 0.3,
+) -> SourceAnalysis:
+    """Analyse one source system against pre-resolved reference model domains.
+
+    Like analyse_source_system but accepts already-parsed domain summaries
+    instead of file paths (used by run_analyse_sources after resolve_reference_models).
+    """
+    client = _get_openai_client()
+
+    tables = parse_source_vocabulary(source_vocab_path)
+    if not tables:
+        logger.warning("No tables found in %s", source_vocab_path)
+        return SourceAnalysis(
+            system=source_vocab_path.stem.replace(".vocabulary", ""),
+            analysed_at=datetime.now(timezone.utc).isoformat(),
+            model_used=model,
+        )
+
+    domain_results: dict[str, DomainAffinity] = {}
+
+    for domain in ref_domains:
+        domain_key = domain["domain_name"]
+        table_matches: list[TableMatch] = []
+        total_relevance = 0.0
+
+        for tbl_name, columns in tables.items():
+            if not columns:
+                continue
+
+            result = analyse_table_against_domain(
+                client, model, tbl_name, columns, domain
+            )
+
+            relevance = result.get("domain_relevance", 0.0)
+            total_relevance += relevance
+
+            if relevance >= threshold:
+                matches = result.get("matches", [])
+                unmatched = result.get("unmatched", [])
+
+                suggestions = [
+                    ColumnSuggestion(
+                        column=m["column"],
+                        ref_property=m["ref_property"],
+                        confidence=m["confidence"],
+                        evidence=m.get("evidence", ""),
+                    )
+                    for m in matches
+                ]
+
+                table_matches.append(TableMatch(
+                    table=tbl_name,
+                    total_columns=len(columns),
+                    matched_columns=len(suggestions),
+                    suggestions=suggestions,
+                    unmatched_columns=unmatched,
+                ))
+
+        if table_matches:
+            avg_relevance = total_relevance / len(tables) if tables else 0.0
+            domain_results[domain_key] = DomainAffinity(
+                domain=domain_key,
+                ref_model_file=domain["file"],
+                confidence=round(avg_relevance, 2),
+                matched_tables=table_matches,
+            )
+
+    sys_name = source_vocab_path.stem.replace(".vocabulary", "")
+    affinities = sorted(domain_results.values(), key=lambda d: d.confidence, reverse=True)
+
+    return SourceAnalysis(
+        system=sys_name,
+        analysed_at=datetime.now(timezone.utc).isoformat(),
+        model_used=model,
+        domain_affinities=affinities,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Output writing
 # ---------------------------------------------------------------------------
@@ -483,6 +634,7 @@ def run_analyse_sources(
     output_dir: Path,
     model: str = DEFAULT_MODEL,
     threshold: float = 0.3,
+    max_domains: int | None = None,
 ) -> list[Path]:
     """Run analysis for all source systems in a hub.
 
@@ -492,6 +644,7 @@ def run_analyse_sources(
         output_dir: Where to write analysis output
         model: LLM model to use
         threshold: Minimum affinity confidence to report
+        max_domains: Maximum number of reference domains to analyse (rate limit protection)
 
     Returns:
         List of output file paths written.
@@ -501,14 +654,21 @@ def run_analyse_sources(
     if not vocab_files:
         raise ValueError(f"No source vocabulary files found in {sources_dir}")
 
-    # Find all reference model TTL files
-    ref_model_files = sorted(ref_models_dir.glob("*.ttl"))
-    if not ref_model_files:
+    # Resolve reference models (recursive discovery + merge)
+    ref_domains = resolve_reference_models(ref_models_dir)
+    if not ref_domains:
         raise ValueError(f"No reference model TTL files found in {ref_models_dir}")
 
+    if max_domains and len(ref_domains) > max_domains:
+        logger.info(
+            "Limiting to %d of %d domains (--max-domains)",
+            max_domains, len(ref_domains),
+        )
+        ref_domains = ref_domains[:max_domains]
+
     logger.info(
-        "Analysing %d source system(s) against %d reference model(s)",
-        len(vocab_files), len(ref_model_files),
+        "Analysing %d source system(s) against %d reference domain(s)",
+        len(vocab_files), len(ref_domains),
     )
 
     analyses: list[SourceAnalysis] = []
@@ -516,8 +676,8 @@ def run_analyse_sources(
 
     for vocab_path in vocab_files:
         logger.info("Analysing source: %s", vocab_path.stem)
-        analysis = analyse_source_system(
-            vocab_path, ref_model_files, model=model, threshold=threshold
+        analysis = _analyse_source_against_domains(
+            vocab_path, ref_domains, model=model, threshold=threshold
         )
         analyses.append(analysis)
 

@@ -3,17 +3,16 @@
 """Post-modeling coverage report — measures ontology alignment to reference models.
 
 Analyses how well the final domain ontology aligns with industry reference models,
-with source evidence tracing. Uses LLM (gpt-5-mini via GitHub Models API) for
-semantic matching beyond simple name comparison.
+with source evidence tracing. Uses LLM (gpt-5.4-mini via configurable AI provider)
+for semantic matching beyond simple name comparison.
 
-Requires GITHUB_TOKEN environment variable.
+Requires AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT + AZURE_AI_KEY).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,13 +20,13 @@ from typing import Any
 
 import yaml
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
-from rdflib.namespace import XSD
 
 from .analyse_sources import (
-    GITHUB_MODELS_ENDPOINT,
     DEFAULT_MODEL,
     parse_reference_model,
+    resolve_reference_models,
 )
+from .ai_provider import get_ai_client
 
 logger = logging.getLogger(__name__)
 
@@ -278,30 +277,14 @@ def run_coverage_report(
     Returns:
         CoverageReport with full alignment details.
     """
-    from openai import OpenAI
-
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise EnvironmentError(
-            "GITHUB_TOKEN environment variable is required for coverage analysis."
-        )
-
-    client = OpenAI(base_url=GITHUB_MODELS_ENDPOINT, api_key=token)
+    client = get_ai_client(model)
 
     # Parse all domain ontologies
     ontology_files = sorted(ontology_dir.glob("*.ttl"))
     ontology_files = [f for f in ontology_files if not f.name.startswith("_")]
 
-    # Parse all reference models
-    ref_model_files = sorted(ref_models_dir.glob("*.ttl"))
-    ref_domains = []
-    for ref_path in ref_model_files:
-        try:
-            domain = parse_reference_model(ref_path)
-            if domain["classes"]:
-                ref_domains.append(domain)
-        except Exception:
-            continue
+    # Resolve reference models (recursive discovery + merge)
+    ref_domains = resolve_reference_models(ref_models_dir)
 
     # Aggregate all reference classes
     all_ref_classes: list[dict] = []

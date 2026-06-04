@@ -1006,9 +1006,11 @@ def generate_staging(from_dir, output, source_name):
               help='Output directory (default: integration/sources/_analysis/).')
 @click.option('--threshold', type=float, default=0.3,
               help='Minimum affinity confidence to include (default: 0.3).')
-@click.option('--model', 'llm_model', default='gpt-5-mini',
-              help='LLM model for semantic matching (default: gpt-5-mini).')
-def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model):
+@click.option('--model', 'llm_model', default='gpt-5.4-mini',
+              help='LLM model for semantic matching (default: gpt-5.4-mini).')
+@click.option('--max-domains', type=int, default=None,
+              help='Maximum reference domains to analyse (rate limit protection).')
+def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_domains):
     """Analyse source vocabularies against reference model domains (LLM-powered).
 
     Semantically matches source table columns against reference model properties
@@ -1080,6 +1082,7 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model):
             output_dir=output_path,
             model=llm_model,
             threshold=threshold,
+            max_domains=max_domains,
         )
         click.echo(f"\n✅ Analysis complete! Written {len(output_files)} file(s) to: {output_path}")
         for f in output_files:
@@ -1103,15 +1106,15 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model):
               help='Output directory (default: output/reports/).')
 @click.option('--format', 'out_format', type=click.Choice(['yaml', 'markdown', 'both']),
               default='both', help='Output format (default: both).')
-@click.option('--model', 'llm_model', default='gpt-5-mini',
-              help='LLM model for semantic matching (default: gpt-5-mini).')
+@click.option('--model', 'llm_model', default='gpt-5.4-mini',
+              help='LLM model for semantic matching (default: gpt-5.4-mini).')
 def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_model):
     """Generate ontology-to-reference-model coverage report (LLM-powered).
 
     Measures how well the domain ontology aligns with industry reference models,
     traces source evidence, and suggests improvements.
 
-    Requires GITHUB_TOKEN environment variable.
+    Requires AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
 
     \b
     Examples:
