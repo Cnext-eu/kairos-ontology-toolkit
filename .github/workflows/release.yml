@@ -15,6 +15,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify version matches tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(grep '__version__' src/kairos_ontology/__init__.py \
+            | sed 's/.*"\(.*\)".*/\1/')
+          echo "Tag version:     $TAG"
+          echo "Package version: $PKG_VERSION"
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "::error::Version mismatch! Tag v$TAG but __version__ is $PKG_VERSION."
+            echo "::error::Bump __version__ in src/kairos_ontology/__init__.py to match the tag."
+            exit 1
+          fi
+          echo "✅ Version matches tag"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -69,7 +83,7 @@ jobs:
         id: prerelease
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          if [[ "$TAG" == *-rc.* ]] || [[ "$TAG" == *-beta.* ]] || [[ "$TAG" == *-alpha.* ]]; then
+          if [[ "$TAG" =~ (rc|beta|alpha) ]]; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
             echo "flags=--prerelease" >> "$GITHUB_OUTPUT"
           else
