@@ -74,13 +74,29 @@ def _resolve_channel(channel: str) -> str | None:
         tags = [t.strip() for t in result.stdout.strip().splitlines() if t.strip()]
         if not tags:
             return None
+
+        # Sort tags by PEP 440 version (numeric comparison, not lexicographic)
+        from packaging.version import Version, InvalidVersion
+
+        def _parse_version(tag: str) -> Version:
+            try:
+                return Version(_tag_to_version(tag))
+            except InvalidVersion:
+                return Version("0.0.0")
+
+        sorted_tags = sorted(tags, key=_parse_version, reverse=True)
+
         if channel == "preview":
-            return tags[0]  # most recent release (may be pre-release)
+            return sorted_tags[0]  # highest version (may be pre-release)
         # stable: skip pre-release tags
-        for tag in tags:
-            if not any(label in tag for label in ("-rc.", "-beta.", "-alpha.")):
-                return tag
-        return tags[0]  # fallback if all are pre-releases
+        for tag in sorted_tags:
+            try:
+                v = Version(_tag_to_version(tag))
+                if not v.is_prerelease:
+                    return tag
+            except InvalidVersion:
+                continue
+        return sorted_tags[0]  # fallback if all are pre-releases
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
 

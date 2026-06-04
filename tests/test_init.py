@@ -8,7 +8,7 @@ from unittest import mock
 from click.testing import CliRunner
 from kairos_ontology.cli.main import (
     cli, _slugify, _stamp_managed, _get_managed_version, _managed_scaffold_map,
-    _tag_to_version, _whl_url,
+    _tag_to_version, _whl_url, _resolve_channel,
 )
 
 
@@ -1289,3 +1289,42 @@ class TestTagToVersion:
         url = _whl_url("v3.9.0-rc.1")
         assert "3.9.0rc1-py3-none-any.whl" in url
         assert "/v3.9.0-rc.1/" in url
+
+
+class TestResolveChannel:
+    """Ensure channel resolution picks the highest version, not lexicographic first."""
+
+    def test_preview_picks_highest_rc(self):
+        """rc12 should be picked over rc9 (numeric sort, not string sort)."""
+        with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=0,
+                stdout="v3.9.0rc9\nv3.9.0rc8\nv3.9.0rc12\nv3.9.0rc11\nv3.9.0rc10\nv3.8.1\n",
+            )
+            result = _resolve_channel("preview")
+            assert result == "v3.9.0rc12"
+
+    def test_stable_skips_prereleases(self):
+        """Stable should skip all rc tags and pick the latest stable."""
+        with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=0,
+                stdout="v3.9.0rc12\nv3.9.0rc9\nv3.8.1\nv3.8.0\nv3.7.0\n",
+            )
+            result = _resolve_channel("stable")
+            assert result == "v3.8.1"
+
+    def test_stable_fallback_when_all_prerelease(self):
+        """If all releases are pre-release, stable falls back to highest."""
+        with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(
+                returncode=0,
+                stdout="v3.9.0rc12\nv3.9.0rc9\nv3.9.0rc1\n",
+            )
+            result = _resolve_channel("stable")
+            assert result == "v3.9.0rc12"
+
+    def test_explicit_ref_passthrough(self):
+        """Explicit refs should be returned as-is."""
+        assert _resolve_channel("v2.16.0") == "v2.16.0"
+        assert _resolve_channel("main") == "main"
