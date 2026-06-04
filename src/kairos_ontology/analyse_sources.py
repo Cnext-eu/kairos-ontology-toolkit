@@ -2,11 +2,11 @@
 # Copyright 2026 Cnext.eu
 """LLM-powered source-to-domain affinity analysis.
 
-Matches source vocabulary columns against reference model properties using
-the GitHub Models API (gpt-5-mini). Produces per-source affinity reports
-that the modeling skill uses to scope context and seed evidence tables.
+Matches source vocabulary tables against reference model domains using
+the configured AI provider. Produces per-source affinity reports that the
+modeling skill uses to scope context and seed evidence tables.
 
-Requires GITHUB_TOKEN environment variable.
+Requires an AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-GITHUB_MODELS_ENDPOINT = "https://models.inference.ai.azure.com"
 DEFAULT_MODEL = "gpt-5.4-mini"
 
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
@@ -38,24 +37,14 @@ KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 
 
 @dataclass
-class ColumnSuggestion:
-    """A suggested mapping from a source column to a reference model property."""
-    column: str
-    ref_property: str
-    confidence: float
-    evidence: str
-    ref_class: str = ""
-
-
-@dataclass
 class TableMatch:
     """Match result for a single source table against a reference model domain."""
     table: str
     total_columns: int
-    matched_columns: int
-    contribution_score: float = 0.0
-    suggestions: list[ColumnSuggestion] = field(default_factory=list)
-    unmatched_columns: list[dict[str, str]] = field(default_factory=list)
+    domain_relevance: float = 0.0
+    rationale: str = ""
+    likely_entity: str = ""
+    indicative_columns: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -194,7 +183,9 @@ def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None =
     }
 
 
-def resolve_reference_models(ref_models_dir: Path) -> list[dict[str, Any]]:
+def resolve_reference_models(
+    ref_models_dir: Path, *, catalog_path: Path | None = None
+) -> list[dict[str, Any]]:
     """Discover and resolve reference model TTLs, merging sub-modules by domain.
 
     Handles modular reference models where root files declare owl:imports
@@ -204,7 +195,12 @@ def resolve_reference_models(ref_models_dir: Path) -> list[dict[str, Any]]:
     1. Recursively find all .ttl files
     2. Group by top-level subdirectory (= domain)
     3. Merge all TTLs in each domain into a single graph
-    4. Skip domains with <=2 classes (likely import stubs only)
+    4. If catalog_path is provided, resolve owl:imports for each root file
+    5. Skip domains with <=2 classes (likely import stubs only)
+
+    Args:
+        ref_models_dir: Directory containing reference model TTL files.
+        catalog_path: Optional XML catalog for resolving owl:imports URIs.
 
     Returns list of domain summaries (same format as parse_reference_model).
     """
@@ -233,8 +229,33 @@ def resolve_reference_models(ref_models_dir: Path) -> list[dict[str, Any]]:
     domains: list[dict[str, Any]] = []
 
     for domain_key, ttl_files in domain_groups.items():
-        if len(ttl_files) == 1:
-            # Single file: parse directly
+        if len(ttl_files) == 1 and catalog_path and catalog_path.exists():
+            # Single file with catalog: resolve owl:imports
+            try:
+                from kairos_ontology.catalog_utils import load_graph_with_catalog
+                catalog_result = load_graph_with_catalog(ttl_files[0], catalog_path)
+                result = parse_reference_model(
+                    graph=catalog_result.graph, domain_name=domain_key
+                )
+                result["ref_source"] = domain_key
+                result["file"] = str(ttl_files[0])
+                if result["classes"]:
+                    domains.append(result)
+            except Exception as e:
+                logger.warning(
+                    "Catalog resolution failed for %s, falling back: %s",
+                    ttl_files[0], e,
+                )
+                # Fall back to simple parse
+                try:
+                    result = parse_reference_model(ttl_files[0])
+                    if result["classes"]:
+                        result["ref_source"] = domain_key
+                        domains.append(result)
+                except Exception as e2:
+                    logger.warning("Failed to parse %s: %s", ttl_files[0], e2)
+        elif len(ttl_files) == 1:
+            # Single file without catalog: parse directly
             try:
                 result = parse_reference_model(ttl_files[0])
                 if result["classes"]:
@@ -251,13 +272,27 @@ def resolve_reference_models(ref_models_dir: Path) -> list[dict[str, Any]]:
                 except Exception as e:
                     logger.warning("Failed to parse %s: %s", ttl, e)
 
+            if catalog_path and catalog_path.exists():
+                # Also resolve owl:imports from merged graph
+                try:
+                    from kairos_ontology.catalog_utils import CatalogResolver
+                    resolver = CatalogResolver(catalog_path)
+                    for import_uri in list(merged.objects(predicate=OWL.imports)):
+                        import_str = str(import_uri)
+                        if import_str.startswith("file://"):
+                            continue
+                        resolved = resolver.resolve(import_str)
+                        if resolved and Path(resolved).exists():
+                            try:
+                                merged.parse(resolved, format="turtle")
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.debug("Catalog import resolution skipped: %s", e)
+
             result = parse_reference_model(graph=merged, domain_name=domain_key)
             result["ref_source"] = domain_key
-            # Skip stub-only domains (<=2 classes are likely just import declarations)
-            if len(result["classes"]) > 2:
-                domains.append(result)
-            elif result["classes"]:
-                # Small but non-empty: include anyway
+            if result["classes"]:
                 domains.append(result)
 
     logger.info(
@@ -283,52 +318,44 @@ def _build_analysis_prompt(
     columns: list[dict[str, Any]],
     domain_summary: dict[str, Any],
 ) -> str:
-    """Build the LLM prompt for matching one table against one domain."""
-    # Format columns
+    """Build the LLM prompt for classifying one table against one domain."""
+    # Format columns as a table with sample data
     col_lines = []
     for col in columns:
-        samples_str = f" (samples: {', '.join(col['samples'][:3])})" if col.get("samples") else ""
-        col_lines.append(f"  - {col['name']} ({col['data_type']}){samples_str}")
+        samples_str = ", ".join(col["samples"][:3]) if col.get("samples") else ""
+        col_lines.append(f"  | {col['name']} | {col['data_type']} | {samples_str} |")
 
     # Format domain classes and properties
     domain_lines = []
     for cls in domain_summary["classes"]:
-        props_str = ", ".join(p["name"] for p in cls["properties"][:15])
-        domain_lines.append(f"  - {cls['name']} ({cls['label']}): [{props_str}]")
+        props_str = ", ".join(p["name"] for p in cls["properties"][:10])
+        comment_str = f" — {cls['comment']}" if cls.get("comment") else ""
+        domain_lines.append(f"  - {cls['name']} ({cls['label']}{comment_str}): [{props_str}]")
 
-    return f"""Analyse this source table and determine how well it maps to the reference model domain.
+    return f"""Determine whether this source table contributes data to the given reference model domain.
+Focus on the TABLE AS A WHOLE — its name, the column names collectively, and the sample data values.
 
 SOURCE TABLE: {table_name}
-COLUMNS:
+COLUMNS AND SAMPLE DATA:
+  | Column | Type | Sample Values |
 {chr(10).join(col_lines)}
 
 REFERENCE MODEL DOMAIN: {domain_summary['domain_name']}
-CLASSES AND PROPERTIES:
+CLASSES:
 {chr(10).join(domain_lines)}
 
-For each source column, determine if it semantically maps to a reference model property.
-Consider: naming variations, abbreviations, sample values, data types, and domain context.
+Answer these questions:
+1. Does this table's subject matter (name + data patterns) belong to this domain?
+2. Which reference model class does this table most likely feed data into?
+3. Which columns are most indicative of domain membership (top 3-5)?
 
-Respond with JSON:
+Respond with JSON only:
 {{
   "domain_relevance": 0.0-1.0,
-  "matches": [
-    {{
-      "column": "source_column_name",
-      "ref_property": "ClassName.propertyName",
-      "confidence": 0.0-1.0,
-      "evidence": "brief explanation"
-    }}
-  ],
-  "unmatched": [
-    {{
-      "column": "column_name",
-      "reason": "why no match"
-    }}
-  ]
-}}
-
-Only include matches with confidence >= 0.5. Be thorough but precise."""
+  "rationale": "1-2 sentence explanation of why this table fits or doesn't fit",
+  "likely_entity": "ClassName or empty string if no clear match",
+  "indicative_columns": ["col1", "col2", "col3"]
+}}"""
 
 
 def analyse_table_against_domain(
@@ -338,7 +365,7 @@ def analyse_table_against_domain(
     columns: list[dict[str, Any]],
     domain_summary: dict[str, Any],
 ) -> dict[str, Any]:
-    """Use LLM to match one source table against one reference model domain."""
+    """Use LLM to classify one source table's affinity to one domain."""
     prompt = _build_analysis_prompt(table_name, columns, domain_summary)
 
     try:
@@ -346,9 +373,10 @@ def analyse_table_against_domain(
             model=model,
             messages=[
                 {"role": "system", "content": (
-                    "You are an expert data architect. You analyse source system columns "
-                    "and match them to industry reference model properties based on semantic "
-                    "meaning, not just name similarity. Always respond with valid JSON."
+                    "You are an expert data architect. You classify source system "
+                    "tables by determining which business domain they belong to, "
+                    "based on table names, column names, and sample data values. "
+                    "Always respond with valid JSON."
                 )},
                 {"role": "user", "content": prompt},
             ],
@@ -359,7 +387,8 @@ def analyse_table_against_domain(
         return json.loads(content)
     except Exception as e:
         logger.warning("LLM analysis failed for table %s: %s", table_name, e)
-        return {"domain_relevance": 0.0, "matches": [], "unmatched": []}
+        return {"domain_relevance": 0.0, "rationale": "", "likely_entity": "",
+                "indicative_columns": []}
 
 
 # ---------------------------------------------------------------------------
@@ -369,115 +398,20 @@ def analyse_table_against_domain(
 
 def analyse_source_system(
     source_vocab_path: Path,
-    ref_model_paths: list[Path],
-    model: str = DEFAULT_MODEL,
-    threshold: float = 0.3,
-) -> SourceAnalysis:
-    """Analyse one source system against all reference model domains.
-
-    Args:
-        source_vocab_path: Path to the source system's .vocabulary.ttl
-        ref_model_paths: List of reference model .ttl files
-        model: LLM model name
-        threshold: Minimum domain relevance to include in output
-
-    Returns:
-        SourceAnalysis with domain affinities and column suggestions.
-    """
-    client = _get_openai_client()
-
-    # Parse source vocabulary
-    tables = parse_source_vocabulary(source_vocab_path)
-    if not tables:
-        logger.warning("No tables found in %s", source_vocab_path)
-        return SourceAnalysis(
-            system=source_vocab_path.stem.replace(".vocabulary", ""),
-            analysed_at=datetime.now(timezone.utc).isoformat(),
-            model_used=model,
-        )
-
-    # Parse reference models
-    ref_domains = []
-    for ref_path in ref_model_paths:
-        try:
-            domain = parse_reference_model(ref_path)
-            if domain["classes"]:
-                ref_domains.append(domain)
-        except Exception as e:
-            logger.warning("Failed to parse reference model %s: %s", ref_path, e)
-
-    # Analyse each table against each domain
-    domain_results: dict[str, DomainAffinity] = {}
-
-    for domain in ref_domains:
-        domain_key = domain["domain_name"]
-        table_matches: list[TableMatch] = []
-        total_relevance = 0.0
-
-        for tbl_name, columns in tables.items():
-            if not columns:
-                continue
-
-            result = analyse_table_against_domain(
-                client, model, tbl_name, columns, domain
-            )
-
-            relevance = result.get("domain_relevance", 0.0)
-            total_relevance += relevance
-
-            if relevance >= threshold:
-                matches = result.get("matches", [])
-                unmatched = result.get("unmatched", [])
-
-                suggestions = [
-                    ColumnSuggestion(
-                        column=m["column"],
-                        ref_property=m["ref_property"],
-                        confidence=m["confidence"],
-                        evidence=m.get("evidence", ""),
-                    )
-                    for m in matches
-                ]
-
-                table_matches.append(TableMatch(
-                    table=tbl_name,
-                    total_columns=len(columns),
-                    matched_columns=len(suggestions),
-                    suggestions=suggestions,
-                    unmatched_columns=unmatched,
-                ))
-
-        if table_matches:
-            avg_relevance = total_relevance / len(tables) if tables else 0.0
-            domain_results[domain_key] = DomainAffinity(
-                domain=domain_key,
-                ref_model_file=domain["file"],
-                confidence=round(avg_relevance, 2),
-                matched_tables=table_matches,
-            )
-
-    # Build final result sorted by confidence
-    sys_name = source_vocab_path.stem.replace(".vocabulary", "")
-    affinities = sorted(domain_results.values(), key=lambda d: d.confidence, reverse=True)
-
-    return SourceAnalysis(
-        system=sys_name,
-        analysed_at=datetime.now(timezone.utc).isoformat(),
-        model_used=model,
-        domain_affinities=affinities,
-    )
-
-
-def _analyse_source_against_domains(
-    source_vocab_path: Path,
     ref_domains: list[dict[str, Any]],
     model: str = DEFAULT_MODEL,
     threshold: float = 0.3,
 ) -> SourceAnalysis:
     """Analyse one source system against pre-resolved reference model domains.
 
-    Like analyse_source_system but accepts already-parsed domain summaries
-    instead of file paths (used by run_analyse_sources after resolve_reference_models).
+    Args:
+        source_vocab_path: Path to the source system's .vocabulary.ttl
+        ref_domains: Pre-parsed domain summaries (from resolve_reference_models)
+        model: LLM model name
+        threshold: Minimum domain relevance to include in output
+
+    Returns:
+        SourceAnalysis with domain affinities and table-level match details.
     """
     client = _get_openai_client()
 
@@ -509,32 +443,13 @@ def _analyse_source_against_domains(
             total_relevance += relevance
 
             if relevance >= threshold:
-                matches = result.get("matches", [])
-                unmatched = result.get("unmatched", [])
-
-                suggestions = [
-                    ColumnSuggestion(
-                        column=m["column"],
-                        ref_property=m["ref_property"],
-                        confidence=m["confidence"],
-                        evidence=m.get("evidence", ""),
-                        ref_class=m.get("ref_property", "").split(".")[0]
-                        if "." in m.get("ref_property", "") else "",
-                    )
-                    for m in matches
-                ]
-
-                contribution_score = (
-                    len(suggestions) / len(columns) if columns else 0.0
-                )
-
                 table_matches.append(TableMatch(
                     table=tbl_name,
                     total_columns=len(columns),
-                    matched_columns=len(suggestions),
-                    contribution_score=round(contribution_score, 2),
-                    suggestions=suggestions,
-                    unmatched_columns=unmatched,
+                    domain_relevance=round(relevance, 2),
+                    rationale=result.get("rationale", ""),
+                    likely_entity=result.get("likely_entity", ""),
+                    indicative_columns=result.get("indicative_columns", []),
                 ))
 
         if table_matches:
@@ -589,22 +504,11 @@ def write_analysis_output(analysis: SourceAnalysis, output_dir: Path) -> Path:
         for tm in aff.matched_tables:
             table_dict: dict[str, Any] = {
                 "table": tm.table,
-                "contribution_score": tm.contribution_score,
-                "matched_columns": f"{tm.matched_columns}/{tm.total_columns}",
-                "top_matches": [
-                    {
-                        "column": s.column,
-                        "ref_class": s.ref_class,
-                        "ref_property": s.ref_property,
-                        "confidence": s.confidence,
-                    }
-                    for s in sorted(
-                        tm.suggestions, key=lambda x: x.confidence, reverse=True
-                    )[:10]  # Top 10 matches per table
-                ],
+                "domain_relevance": tm.domain_relevance,
+                "rationale": tm.rationale,
+                "likely_entity": tm.likely_entity,
+                "indicative_columns": tm.indicative_columns,
             }
-            if tm.unmatched_columns:
-                table_dict["unmatched_columns"] = tm.unmatched_columns
             domain_dict["contributing_tables"].append(table_dict)
         data["domain_contributions"].append(domain_dict)
 
@@ -655,6 +559,7 @@ def run_analyse_sources(
     max_domains: int | None = None,
     domains_filter: list[str] | None = None,
     materialize_dir: Path | None = None,
+    catalog_path: Path | None = None,
 ) -> list[Path]:
     """Run analysis for all source systems in a hub.
 
@@ -667,6 +572,7 @@ def run_analyse_sources(
         max_domains: Maximum number of reference domains to analyse (rate limit protection)
         domains_filter: Optional list of domain names to include (case-insensitive substring)
         materialize_dir: Optional path to write merged TTLs for inspection
+        catalog_path: Optional XML catalog for resolving owl:imports in reference models
 
     Returns:
         List of output file paths written.
@@ -677,7 +583,7 @@ def run_analyse_sources(
         raise ValueError(f"No source vocabulary files found in {sources_dir}")
 
     # Resolve reference models (recursive discovery + merge)
-    ref_domains = resolve_reference_models(ref_models_dir)
+    ref_domains = resolve_reference_models(ref_models_dir, catalog_path=catalog_path)
     if not ref_domains:
         raise ValueError(
             f"No reference model TTL files with classes found in {ref_models_dir}.\n"
@@ -731,7 +637,7 @@ def run_analyse_sources(
 
     for vocab_path in vocab_files:
         logger.info("Analysing source: %s", vocab_path.stem)
-        analysis = _analyse_source_against_domains(
+        analysis = analyse_source_system(
             vocab_path, ref_domains, model=model, threshold=threshold
         )
         analyses.append(analysis)

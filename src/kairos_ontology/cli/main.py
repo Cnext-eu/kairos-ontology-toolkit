@@ -1155,14 +1155,11 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
       kairos-ontology analyse-sources --sources path/to/sources/ --ref-models path/to/refs/
     """
     from ..analyse_sources import run_analyse_sources, resolve_reference_models
+    from ..hub_utils import find_hub_root
 
     # Auto-detect hub paths
     cwd = Path.cwd()
-    hub_root = None
-    for candidate in [cwd / "ontology-hub", cwd]:
-        if (candidate / "model" / "ontologies").is_dir():
-            hub_root = candidate
-            break
+    hub_root = find_hub_root(cwd)
 
     if sources is None:
         if hub_root:
@@ -1206,8 +1203,15 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         click.echo(f"   Domain filter: {domains_filter}")
     click.echo()
 
+    # Detect catalog for owl:imports resolution
+    catalog_file = None
+    if hub_root:
+        candidate_cat = hub_root / "catalog-v001.xml"
+        if candidate_cat.exists():
+            catalog_file = candidate_cat
+
     # Pre-flight: show resolved domains
-    ref_domains = resolve_reference_models(ref_models_path)
+    ref_domains = resolve_reference_models(ref_models_path, catalog_path=catalog_file)
     if ref_domains:
         total_cls = sum(len(d.get("classes", [])) for d in ref_domains)
         total_props = sum(
@@ -1240,6 +1244,7 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
             max_domains=max_domains,
             domains_filter=filter_list,
             materialize_dir=mat_dir,
+            catalog_path=catalog_file,
         )
         click.echo(f"\n✅ Analysis complete! Written {len(output_files)} file(s) to: {output_path}")
         for f in output_files:
@@ -1286,12 +1291,10 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_m
     )
 
     # Auto-detect hub paths
+    from ..hub_utils import find_hub_root
+
     cwd = Path.cwd()
-    hub_root = None
-    for candidate in [cwd / "ontology-hub", cwd]:
-        if (candidate / "model" / "ontologies").is_dir():
-            hub_root = candidate
-            break
+    hub_root = find_hub_root(cwd, require_model=True)
 
     if ontology is None:
         if hub_root:

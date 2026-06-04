@@ -289,6 +289,8 @@ class TestHubRootDetection:
         """When ontology-hub/ exists but model/ontologies/ doesn't, use it."""
         hub_dir = tmp_path / "ontology-hub"
         hub_dir.mkdir()
+        # Need at least one hub marker directory for detection
+        (hub_dir / "model").mkdir()
         csv_file = tmp_path / "data.csv"
         csv_file.write_text("id,name\n1,Alice\n", encoding="utf-8")
 

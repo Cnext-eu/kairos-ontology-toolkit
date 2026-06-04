@@ -188,15 +188,9 @@ class TestAnalyseSourcesScenario:
             response.choices = [MagicMock()]
             response.choices[0].message.content = json.dumps({
                 "domain_relevance": 0.75,
-                "matches": [
-                    {"column": "CustName", "ref_property": "Party.partyName",
-                     "confidence": 0.92, "evidence": "Customer name = party name"},
-                    {"column": "CustEmail", "ref_property": "Party.email",
-                     "confidence": 0.95, "evidence": "Email field"},
-                ],
-                "unmatched": [
-                    {"column": "CustCode", "reason": "Internal code, no ref match"},
-                ],
+                "rationale": "Customer table contains party-related data",
+                "likely_entity": "Party",
+                "indicative_columns": ["CustName", "CustEmail"],
             })
             return response
 
@@ -205,8 +199,9 @@ class TestAnalyseSourcesScenario:
 
         vocab_path = SOURCES_DIR / "crmsystem" / "crmsystem.vocabulary.ttl"
         ref_model_path = REF_MODELS_DIR / "kairos-ref-party.ttl"
+        ref_domains = [parse_reference_model(ref_model_path)]
 
-        analysis = analyse_source_system(vocab_path, [ref_model_path])
+        analysis = analyse_source_system(vocab_path, ref_domains)
 
         assert analysis.system == "crmsystem"
         assert analysis.model_used == "gpt-5.4-mini"
@@ -225,9 +220,9 @@ class TestAnalyseSourcesScenario:
         response.choices = [MagicMock()]
         response.choices[0].message.content = json.dumps({
             "domain_relevance": 0.6,
-            "matches": [{"column": "col1", "ref_property": "Party.partyName",
-                         "confidence": 0.8, "evidence": "test"}],
-            "unmatched": [],
+            "rationale": "Table has some party-related data",
+            "likely_entity": "Party",
+            "indicative_columns": ["col1"],
         })
         mock_client.chat.completions.create.return_value = response
         mock_get_client.return_value = mock_client
