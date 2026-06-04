@@ -9,6 +9,8 @@ from kairos_ontology.import_flatfile import (
     read_csv_table,
     write_source_dir,
     run_import_flatfile,
+    detect_technical_columns,
+    exclude_columns_from_tables,
 )
 
 
@@ -257,6 +259,166 @@ class TestLargeFieldLimit:
         assert result["row_count"] == 1
         col_map = {c["name"]: c for c in result["columns"]}
         assert col_map["payload"]["data_type"] == "varchar(max)"
+
+
+# --------------------------------------------------------------------------- #
+# Fix 1: Windows csv.field_size_limit — no OverflowError on import
+# --------------------------------------------------------------------------- #
+
+
+class TestCsvFieldSizeLimitWindows:
+    """Fix 1: Importing the module must not raise OverflowError on Windows."""
+
+    def test_import_does_not_raise_overflow(self):
+        """csv.field_size_limit(min(sys.maxsize, 2**31-1)) should never overflow."""
+        import importlib
+        import kairos_ontology.import_flatfile as mod
+        # Re-import should succeed without OverflowError
+        importlib.reload(mod)
+
+
+# --------------------------------------------------------------------------- #
+# Fix 2: Hub-root detection — ontology-hub/ dir without model/ontologies/
+# --------------------------------------------------------------------------- #
+
+
+class TestHubRootDetection:
+    """Fix 2: detect ontology-hub/ even without model/ontologies/."""
+
+    def test_detects_ontology_hub_dir(self, tmp_path, monkeypatch):
+        """When ontology-hub/ exists but model/ontologies/ doesn't, use it."""
+        hub_dir = tmp_path / "ontology-hub"
+        hub_dir.mkdir()
+        csv_file = tmp_path / "data.csv"
+        csv_file.write_text("id,name\n1,Alice\n", encoding="utf-8")
+
+        monkeypatch.chdir(tmp_path)
+        result = run_import_flatfile(csv_file, system_name="test")
+
+        expected = hub_dir / "integration" / "sources" / "test"
+        assert result == expected
+        assert (expected / "_manifest.yaml").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Fix 6: Column exclusion (explicit + auto-detect)
+# --------------------------------------------------------------------------- #
+
+
+class TestDetectTechnicalColumns:
+    """Fix 6: Auto-detect lakehouse metadata columns."""
+
+    def test_detects_known_technical_columns(self):
+        tables = [
+            {"columns": [
+                {"name": "id", "distinct_count": 100},
+                {"name": "volume", "distinct_count": 1},
+                {"name": "subfolder", "distinct_count": 1},
+            ]},
+            {"columns": [
+                {"name": "id", "distinct_count": 50},
+                {"name": "volume", "distinct_count": 1},
+                {"name": "subfolder", "distinct_count": 1},
+            ]},
+        ]
+        result = detect_technical_columns(tables)
+        assert result == {"volume", "subfolder"}
+
+    def test_skips_non_universal_columns(self):
+        """Column appearing in only one table is not flagged."""
+        tables = [
+            {"columns": [
+                {"name": "volume", "distinct_count": 1},
+            ]},
+            {"columns": [
+                {"name": "id", "distinct_count": 50},
+            ]},
+        ]
+        result = detect_technical_columns(tables)
+        assert result == set()
+
+    def test_skips_non_singleton_columns(self):
+        """Column with distinctCount > 1 is not flagged."""
+        tables = [
+            {"columns": [{"name": "volume", "distinct_count": 5}]},
+            {"columns": [{"name": "volume", "distinct_count": 3}]},
+        ]
+        result = detect_technical_columns(tables)
+        assert result == set()
+
+    def test_empty_tables(self):
+        assert detect_technical_columns([]) == set()
+
+
+class TestExcludeColumns:
+    """Fix 6: Explicit column exclusion."""
+
+    def test_excludes_columns_from_tables(self):
+        tables = [
+            {
+                "columns": [
+                    {"name": "id", "data_type": "int"},
+                    {"name": "volume", "data_type": "varchar(max)"},
+                ],
+                "sample_rows": [{"id": "1", "volume": "vol1"}],
+            },
+        ]
+        exclude_columns_from_tables(tables, {"volume"})
+        assert len(tables[0]["columns"]) == 1
+        assert tables[0]["columns"][0]["name"] == "id"
+        assert "volume" not in tables[0]["sample_rows"][0]
+
+    def test_case_insensitive_exclusion(self):
+        tables = [
+            {
+                "columns": [
+                    {"name": "ID", "data_type": "int"},
+                    {"name": "Volume", "data_type": "varchar(max)"},
+                ],
+                "sample_rows": [],
+            },
+        ]
+        exclude_columns_from_tables(tables, {"volume"})
+        assert len(tables[0]["columns"]) == 1
+
+    def test_no_exclusion_when_empty(self):
+        tables = [{"columns": [{"name": "id"}], "sample_rows": []}]
+        exclude_columns_from_tables(tables, set())
+        assert len(tables[0]["columns"]) == 1
+
+
+class TestRunImportFlatfileExclusion:
+    """Fix 6: End-to-end exclusion via run_import_flatfile."""
+
+    def test_explicit_exclude_columns(self, tmp_path):
+        csv_file = tmp_path / "data.csv"
+        csv_file.write_text("id,volume,name\n1,vol1,Alice\n", encoding="utf-8")
+        output_dir = tmp_path / "output"
+
+        result = run_import_flatfile(
+            csv_file, output_dir=output_dir, exclude_columns={"volume"},
+        )
+        import yaml
+        tbl = yaml.safe_load((result / "data.yaml").read_text(encoding="utf-8"))
+        col_names = [c["name"] for c in tbl["columns"]]
+        assert "volume" not in col_names
+        assert "id" in col_names
+
+    def test_keep_technical_flag(self, tmp_path):
+        """With --keep-technical, auto-detected columns are kept."""
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        (input_dir / "a.csv").write_text("id,volume\n1,vol1\n", encoding="utf-8")
+        (input_dir / "b.csv").write_text("id,volume\n2,vol1\n", encoding="utf-8")
+        output_dir = tmp_path / "output"
+
+        result = run_import_flatfile(
+            input_dir, system_name="test", output_dir=output_dir, keep_technical=True,
+        )
+        import yaml
+        tbl = yaml.safe_load((result / "a.yaml").read_text(encoding="utf-8"))
+        col_names = [c["name"] for c in tbl["columns"]]
+        assert "volume" in col_names
 
 
 class TestSameFileCopyGuard:

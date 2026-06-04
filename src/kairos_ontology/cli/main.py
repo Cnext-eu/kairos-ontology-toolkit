@@ -916,7 +916,13 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
               help='Number of sample rows to store per table (default: 5).')
 @click.option('--max-rows', type=int, default=1000,
               help='Maximum rows to read for type inference (default: 1000).')
-def import_flatfile(from_path, system_name, output, sample_size, max_rows):
+@click.option('--exclude-columns', default=None,
+              help='Comma-separated list of column names to exclude from output.')
+@click.option('--keep-technical', is_flag=True, default=False,
+              help='Keep auto-detected technical/metadata columns (volume, subfolder, etc.).')
+def import_flatfile(
+    from_path, system_name, output, sample_size, max_rows, exclude_columns, keep_technical,
+):
     """Import CSV/Excel flat files as source schema documentation.
 
     Reads flat files and produces the standard source schema format
@@ -934,6 +940,8 @@ def import_flatfile(from_path, system_name, output, sample_size, max_rows):
       kairos-ontology import-flatfile --from exports/customers.csv --system erp
       kairos-ontology import-flatfile --from data/report.xlsx --system finance
       kairos-ontology import-flatfile --from data-exports/ --system legacy-erp
+      kairos-ontology import-flatfile --from .input/data --system erp \\
+        --exclude-columns "volume,subfolder,table"
 
     \b
     Next step after import-flatfile:
@@ -944,6 +952,11 @@ def import_flatfile(from_path, system_name, output, sample_size, max_rows):
     source_path = Path(from_path)
     output_dir = Path(output) if output else None
 
+    # Parse comma-separated exclusion list
+    exclude_set: set[str] | None = None
+    if exclude_columns:
+        exclude_set = {c.strip() for c in exclude_columns.split(",") if c.strip()}
+
     click.echo(f"📋 Importing flat files from: {source_path}")
 
     try:
@@ -953,6 +966,8 @@ def import_flatfile(from_path, system_name, output, sample_size, max_rows):
             output_dir=output_dir,
             max_rows=max_rows,
             sample_size=sample_size,
+            exclude_columns=exclude_set,
+            keep_technical=keep_technical,
         )
     except (ValueError, ImportError) as e:
         click.echo(f"\n❌ {e}", err=True)

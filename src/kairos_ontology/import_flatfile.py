@@ -22,8 +22,9 @@ from typing import Any
 
 import yaml
 
-# Increase CSV field size limit to handle large fields (e.g., Oracle exports)
-csv.field_size_limit(sys.maxsize)
+# Increase CSV field size limit to handle large fields (e.g., Oracle exports).
+# On Windows 64-bit, sys.maxsize exceeds C long max, so cap at 2^31 - 1.
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_ROWS = 1000
 DEFAULT_SAMPLE_SIZE = 5
 
+# Known lakehouse/ingestion metadata columns that are typically technical noise.
+# Columns matching these names (case-insensitive) and appearing in all tables with
+# distinctCount=1 are auto-excluded unless --keep-technical is set.
+KNOWN_TECHNICAL_COLUMNS = frozenset({
+    "volume", "subfolder", "table", "last_ingest_date", "rowversion",
+})
 
 # --------------------------------------------------------------------------- #
 # Type Inference
@@ -350,6 +357,68 @@ def write_source_dir(
     return output_dir
 
 
+def detect_technical_columns(tables: list[dict[str, Any]]) -> set[str]:
+    """Detect columns that are likely technical/metadata noise.
+
+    A column is flagged as technical if it appears in ALL tables with
+    distinctCount=1 and its name (case-insensitive) matches a known
+    lakehouse metadata pattern.
+
+    Args:
+        tables: List of table data dicts.
+
+    Returns:
+        Set of column names to exclude.
+    """
+    if not tables:
+        return set()
+
+    # Find columns present in every table with distinctCount=1
+    candidates: dict[str, int] = {}
+    for tbl in tables:
+        for col in tbl.get("columns", []):
+            name = col["name"]
+            if col.get("distinct_count", 0) == 1:
+                candidates[name] = candidates.get(name, 0) + 1
+
+    num_tables = len(tables)
+    technical = set()
+    for name, count in candidates.items():
+        if count == num_tables and name.lower() in KNOWN_TECHNICAL_COLUMNS:
+            technical.add(name)
+
+    return technical
+
+
+def exclude_columns_from_tables(
+    tables: list[dict[str, Any]], columns_to_exclude: set[str]
+) -> list[dict[str, Any]]:
+    """Remove specified columns from all tables.
+
+    Args:
+        tables: List of table data dicts (modified in place and returned).
+        columns_to_exclude: Set of column names to remove (case-insensitive).
+
+    Returns:
+        The modified tables list.
+    """
+    if not columns_to_exclude:
+        return tables
+
+    exclude_lower = {c.lower() for c in columns_to_exclude}
+    for tbl in tables:
+        tbl["columns"] = [
+            col for col in tbl["columns"]
+            if col["name"].lower() not in exclude_lower
+        ]
+        # Also strip excluded columns from sample rows
+        tbl["sample_rows"] = [
+            {k: v for k, v in row.items() if k.lower() not in exclude_lower}
+            for row in tbl.get("sample_rows", [])
+        ]
+    return tables
+
+
 # --------------------------------------------------------------------------- #
 # Main Orchestration
 # --------------------------------------------------------------------------- #
@@ -361,6 +430,8 @@ def run_import_flatfile(
     output_dir: Path | None = None,
     max_rows: int = DEFAULT_MAX_ROWS,
     sample_size: int = DEFAULT_SAMPLE_SIZE,
+    exclude_columns: set[str] | None = None,
+    keep_technical: bool = False,
 ) -> Path:
     """Orchestrate the flatfile import workflow.
 
@@ -372,6 +443,8 @@ def run_import_flatfile(
         output_dir: Output directory (default: integration/sources/{system}/).
         max_rows: Maximum rows to read for type inference.
         sample_size: Number of sample rows to store.
+        exclude_columns: Explicit set of column names to exclude.
+        keep_technical: If True, skip auto-detection of technical columns.
 
     Returns:
         Path to the output directory.
@@ -410,6 +483,19 @@ def run_import_flatfile(
     if not system_name:
         system_name = default_name
 
+    # Column exclusion: explicit + auto-detected technical columns
+    all_excluded: set[str] = set(exclude_columns or set())
+    if not keep_technical:
+        auto_technical = detect_technical_columns(tables)
+        if auto_technical:
+            logger.info(
+                "Auto-excluding technical columns: %s (use --keep-technical to override)",
+                ", ".join(sorted(auto_technical)),
+            )
+            all_excluded |= auto_technical
+    if all_excluded:
+        exclude_columns_from_tables(tables, all_excluded)
+
     if output_dir is None:
         # Detect hub root
         cwd = Path.cwd()
@@ -418,11 +504,16 @@ def run_import_flatfile(
             if (candidate / "model" / "ontologies").is_dir():
                 hub_root = candidate
                 break
+        # Fall back: if ontology-hub/ exists as a directory, use it even
+        # without model/ontologies/ (freshly created hub before first model).
+        if hub_root is None and (cwd / "ontology-hub").is_dir():
+            hub_root = cwd / "ontology-hub"
         if hub_root:
             output_dir = hub_root / "integration" / "sources" / system_name
         else:
             logger.warning(
-                "Could not detect ontology-hub root (no model/ontologies/ found). "
+                "Could not detect ontology-hub root (no ontology-hub/ or "
+                "model/ontologies/ found). "
                 "Writing to relative path: integration/sources/%s. "
                 "Use --output to specify an explicit output directory.",
                 system_name,

@@ -4,7 +4,7 @@
 
 import pytest
 from rdflib import Graph, Namespace
-from rdflib.namespace import RDF, OWL
+from rdflib.namespace import RDF, RDFS, OWL
 
 from kairos_ontology.import_source import (
     validate_source_schema,
@@ -15,6 +15,9 @@ from kairos_ontology.import_source import (
     run_import_source,
     ChangeReport,
     KAIROS_BRONZE,
+    _sanitize_uri_part,
+    _column_uri,
+    _table_uri,
 )
 
 
@@ -621,3 +624,152 @@ class TestRunImportSourceSplitTables:
         assert result_path is None
         assert not (output_dir / "vocabulary").exists()
 
+
+# --------------------------------------------------------------------------- #
+# Fix 4: No auto-generated rdfs:comment with "Examples:" text
+# --------------------------------------------------------------------------- #
+
+
+class TestNoExamplesComment:
+    """Fix 4: rdfs:comment should not contain auto-generated 'Examples:' text."""
+
+    def test_vocabulary_ttl_has_no_examples_comment(self):
+        """generate_vocabulary_ttl should not produce rdfs:comment with Examples."""
+        data = {
+            "version": "1.0",
+            "system": "test",
+            "platform": "fabric",
+            "extracted_at": "2026-01-01T00:00:00Z",
+            "connection": {},
+            "tables": [
+                {
+                    "name": "orders",
+                    "columns": [
+                        {
+                            "name": "status",
+                            "data_type": "varchar(max)",
+                            "nullable": False,
+                            "samples": ["active", "closed", "pending"],
+                        },
+                    ],
+                },
+            ],
+        }
+        ttl = generate_vocabulary_ttl(data)
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+
+        # Check no rdfs:comment contains "Examples:"
+        for _, _, comment in g.triples((None, RDFS.comment, None)):
+            assert "Examples:" not in str(comment), (
+                f"Found auto-generated 'Examples:' in rdfs:comment: {comment}"
+            )
+
+    def test_per_table_ttl_has_no_examples_comment(self):
+        """generate_vocabulary_per_table should not produce rdfs:comment with Examples."""
+        data = {
+            "version": "1.1",
+            "system": "test",
+            "platform": "fabric",
+            "extracted_at": "2026-01-01T00:00:00Z",
+            "connection": {},
+            "tables": [
+                {
+                    "name": "items",
+                    "columns": [
+                        {
+                            "name": "sku",
+                            "data_type": "varchar(max)",
+                            "nullable": False,
+                            "samples": ["ABC-001", "XYZ-999"],
+                        },
+                    ],
+                },
+            ],
+        }
+        per_table = generate_vocabulary_per_table(data)
+        for tbl_name, ttl in per_table.items():
+            g = Graph()
+            g.parse(data=ttl, format="turtle")
+            for _, _, comment in g.triples((None, RDFS.comment, None)):
+                assert "Examples:" not in str(comment), (
+                    f"Found auto-generated 'Examples:' in {tbl_name}: {comment}"
+                )
+
+    def test_sample_values_still_present(self):
+        """sampleValues annotation should still be emitted."""
+        data = {
+            "version": "1.0",
+            "system": "test",
+            "platform": "fabric",
+            "extracted_at": "2026-01-01T00:00:00Z",
+            "connection": {},
+            "tables": [
+                {
+                    "name": "t",
+                    "columns": [
+                        {
+                            "name": "c",
+                            "data_type": "varchar(max)",
+                            "nullable": False,
+                            "samples": ["a", "b"],
+                        },
+                    ],
+                },
+            ],
+        }
+        ttl = generate_vocabulary_ttl(data)
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        sample_triples = list(g.triples((None, KAIROS_BRONZE.sampleValues, None)))
+        assert len(sample_triples) > 0
+
+
+# --------------------------------------------------------------------------- #
+# Fix 5: URI sanitization for column names with embedded quotes
+# --------------------------------------------------------------------------- #
+
+
+class TestSanitizeUriPart:
+    """Fix 5: _sanitize_uri_part strips URI-unsafe characters."""
+
+    def test_strips_double_quotes(self):
+        assert _sanitize_uri_part('"ID"') == "ID"
+
+    def test_strips_spaces(self):
+        assert _sanitize_uri_part("My Column") == "MyColumn"
+
+    def test_strips_angle_brackets(self):
+        assert _sanitize_uri_part("<value>") == "value"
+
+    def test_normal_name_unchanged(self):
+        assert _sanitize_uri_part("ClientId") == "ClientId"
+
+    def test_mixed_unsafe_chars(self):
+        assert _sanitize_uri_part('"Col Name"') == "ColName"
+
+
+class TestColumnUriSanitization:
+    """Fix 5: _column_uri and _table_uri handle quoted names."""
+
+    def test_column_uri_strips_quotes(self):
+        ns = Namespace("https://example.com/source#")
+        uri = _column_uri(ns, "tbl", '"ID"')
+        assert '"' not in str(uri)
+        assert str(uri).endswith("tbl_ID")
+
+    def test_table_uri_strips_quotes(self):
+        ns = Namespace("https://example.com/source#")
+        uri = _table_uri(ns, '"MyTable"')
+        assert '"' not in str(uri)
+        assert str(uri).endswith("MyTable")
+
+    def test_oracle_style_column_produces_valid_ttl(self):
+        """A graph with Oracle-style quoted column names should serialize cleanly."""
+        ns = Namespace("https://kairos.cnext.eu/source/oracle-test#")
+        g = Graph()
+        col_uri = _column_uri(ns, "SOL__SREPORTSPATTERN", '"ID"')
+        g.add((col_uri, RDF.type, KAIROS_BRONZE.SourceColumn))
+        # This should NOT raise during serialization
+        ttl = g.serialize(format="turtle")
+        assert "SOL__SREPORTSPATTERN_ID" in ttl

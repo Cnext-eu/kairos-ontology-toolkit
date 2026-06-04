@@ -16,6 +16,7 @@ TTL (maintained in the ontology hub as the semantic bronze contract).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -260,19 +261,24 @@ def _merge_samples_from_file(schema_dir: Path, tbl_name: str, tbl_data: dict) ->
 # --------------------------------------------------------------------------- #
 
 
+def _sanitize_uri_part(name: str) -> str:
+    """Strip characters that are invalid in RDF URIs (e.g., double quotes from Oracle)."""
+    return re.sub(r'["\s<>{}|\\^`]', '', name)
+
+
 def _system_uri(base_ns: Namespace, system_name: str) -> URIRef:
     """Generate a stable URI for the source system."""
-    return base_ns[system_name]
+    return base_ns[_sanitize_uri_part(system_name)]
 
 
 def _table_uri(base_ns: Namespace, table_name: str) -> URIRef:
     """Generate a stable URI for a source table."""
-    return base_ns[table_name]
+    return base_ns[_sanitize_uri_part(table_name)]
 
 
 def _column_uri(base_ns: Namespace, table_name: str, column_name: str) -> URIRef:
     """Generate a stable URI for a source column."""
-    return base_ns[f"{table_name}_{column_name}"]
+    return base_ns[f"{_sanitize_uri_part(table_name)}_{_sanitize_uri_part(column_name)}"]
 
 
 # --------------------------------------------------------------------------- #
@@ -422,11 +428,6 @@ def generate_vocabulary_ttl(data: dict) -> str:
                 g.add((col_uri, KAIROS_BRONZE.suggestedForeignKey, fk_target_uri))
                 fk_confidence = col.get("fk_confidence", "medium")
                 g.add((col_uri, KAIROS_BRONZE.fkConfidence, Literal(fk_confidence)))
-
-            # Enrichment: Comment with samples for context
-            if samples and not col.get("json_detected"):
-                sample_comment = f"Examples: {', '.join(str(s) for s in samples[:3])}"
-                g.add((col_uri, RDFS.comment, Literal(sample_comment)))
 
             # v1.1: JSON structure detection
             if col.get("json_detected"):
@@ -604,10 +605,6 @@ def _add_table_to_graph(
             g.add((col_uri, KAIROS_BRONZE.suggestedForeignKey, fk_target_uri))
             fk_confidence = col.get("fk_confidence", "medium")
             g.add((col_uri, KAIROS_BRONZE.fkConfidence, Literal(fk_confidence)))
-
-        if samples and not col.get("json_detected"):
-            sample_comment = f"Examples: {', '.join(str(s) for s in samples[:3])}"
-            g.add((col_uri, RDFS.comment, Literal(sample_comment)))
 
         if col.get("json_detected"):
             classification = col.get("json_classification", "polymorphic")
