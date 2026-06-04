@@ -769,7 +769,7 @@ def import_tmdl(source, output):
 @click.option('--enum-threshold', type=int, default=25,
               help='Max distinct values to suggest as enumeration (default: 25).')
 @click.option('--split-tables', is_flag=True, default=False,
-              help='Generate one TTL per table in a vocabulary/ subfolder (better for git diffs).')
+              help='ONLY generate per-table files (skip monolithic). By default both are written.')
 def import_source(from_path, system_name, output, dry_run, enrich, enum_threshold, split_tables):
     """Import source schema YAML and generate/refresh bronze vocabulary TTL.
 
@@ -873,11 +873,16 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
         click.echo("\n🔍 Dry-run mode — no files written")
     elif result_path:
         if split_tables:
-            # result_path is the vocabulary/ directory
+            # split-tables-only mode: result_path is the vocabulary/ directory
             n_files = len(list(result_path.glob("*.vocabulary.ttl")))
             click.echo(f"\n✅ Written {n_files} per-table vocabulary files to: {result_path}")
         else:
+            # Default mode: monolithic + per-table
             click.echo(f"\n✅ Written: {result_path}")
+            vocab_dir = result_path.parent / "vocabulary"
+            if vocab_dir.is_dir():
+                n_files = len(list(vocab_dir.glob("*.vocabulary.ttl")))
+                click.echo(f"   📂 Also written {n_files} per-table files to: {vocab_dir}")
 
         # Copy .samples.yaml files from source directory to output directory
         if source_path.is_dir() and result_path:

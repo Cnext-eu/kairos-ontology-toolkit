@@ -986,6 +986,17 @@ def run_import_source(
     output_file.write_text(ttl_content, encoding="utf-8")
     logger.info("Written vocabulary to %s", output_file)
 
+    # Always generate per-table files alongside the monolithic file
+    vocab_dir = output_dir / "vocabulary"
+    vocab_dir.mkdir(parents=True, exist_ok=True)
+    per_table = generate_vocabulary_per_table(data)
+    for tbl_name, tbl_ttl in per_table.items():
+        tbl_file = vocab_dir / f"{tbl_name}.vocabulary.ttl"
+        tbl_file.write_text(tbl_ttl, encoding="utf-8")
+    logger.info(
+        "Written %d per-table vocabulary files to %s", len(per_table), vocab_dir
+    )
+
     return output_file, report
 
 
