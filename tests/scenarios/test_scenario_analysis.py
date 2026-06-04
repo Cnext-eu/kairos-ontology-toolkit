@@ -205,8 +205,9 @@ class TestAnalyseSourcesScenario:
 
         vocab_path = SOURCES_DIR / "crmsystem" / "crmsystem.vocabulary.ttl"
         ref_model_path = REF_MODELS_DIR / "kairos-ref-party.ttl"
+        ref_domains = [parse_reference_model(ref_model_path)]
 
-        analysis = analyse_source_system(vocab_path, [ref_model_path])
+        analysis = analyse_source_system(vocab_path, ref_domains)
 
         assert analysis.system == "crmsystem"
         assert analysis.model_used == "gpt-5.4-mini"

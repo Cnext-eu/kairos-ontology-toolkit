@@ -158,13 +158,14 @@ Use this table to pick the correct skill for a user's intent:
 | "Design silver schema / FK annotations" | **kairos-design-silver** |
 | "Design gold / Power BI model" | **kairos-design-gold** |
 | "Import / extract TMDL or PBIP files" | CLI: `kairos-ontology import-tmdl` |
-| "Analyse sources / pre-model domain contributions" | **kairos-design-domain** (Step 0a handles analysis prerequisite) |
-| "Import CSV/Excel flat files as source" | CLI: `kairos-ontology import-flatfile` |
+| "Analyse sources / pre-model domain contributions" | **kairos-design-source** (Phase 4) |
+| "Import CSV/Excel flat files as source" | **kairos-design-source** (Phase 1) |
 | "Release / upgrade / version check / update reference models" | **kairos-toolkit-ops** |
 | "Map source columns to domain / create SKOS mappings" | **kairos-design-mapping** |
 | "Status / progress / what's missing / where are we" | **kairos-diagnose-status** |
 | "Set up / scaffold a dataplatform dbt repo" | **kairos-setup-dataplatform** |
-| "Import source schema / refresh vocabulary from bronze" | CLI: `kairos-ontology import-source` |
+| "Import source schema / refresh vocabulary from bronze" | **kairos-design-source** (Phase 2) |
+| "Generate coverage report" | CLI: `kairos-ontology coverage-report` |
 
 ### Skill-first enforcement (MANDATORY)
 
@@ -183,7 +184,7 @@ Running CLI directly can produce incomplete or incorrect output without warning.
 - ❌ `python -m kairos_ontology new-repo` → use **kairos-setup-init** skill
 - ❌ Directly editing `.ttl` files without invoking the modeling/mapping skill
 
-**Only exceptions:** The `import-tmdl` and `import-flatfile`
+**Only exceptions:** The `import-tmdl` and `coverage-report`
 commands have no corresponding skill and may be run directly via CLI.
 
 **If you are unsure which skill to use**, invoke **kairos-help** for guidance.

@@ -2,11 +2,11 @@
 # Copyright 2026 Cnext.eu
 """LLM-powered source-to-domain affinity analysis.
 
-Matches source vocabulary columns against reference model properties using
-the GitHub Models API (gpt-5-mini). Produces per-source affinity reports
-that the modeling skill uses to scope context and seed evidence tables.
+Matches source vocabulary tables against reference model domains using
+the configured AI provider. Produces per-source affinity reports that the
+modeling skill uses to scope context and seed evidence tables.
 
-Requires GITHUB_TOKEN environment variable.
+Requires an AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-GITHUB_MODELS_ENDPOINT = "https://models.inference.ai.azure.com"
 DEFAULT_MODEL = "gpt-5.4-mini"
 
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
@@ -369,115 +368,20 @@ def analyse_table_against_domain(
 
 def analyse_source_system(
     source_vocab_path: Path,
-    ref_model_paths: list[Path],
-    model: str = DEFAULT_MODEL,
-    threshold: float = 0.3,
-) -> SourceAnalysis:
-    """Analyse one source system against all reference model domains.
-
-    Args:
-        source_vocab_path: Path to the source system's .vocabulary.ttl
-        ref_model_paths: List of reference model .ttl files
-        model: LLM model name
-        threshold: Minimum domain relevance to include in output
-
-    Returns:
-        SourceAnalysis with domain affinities and column suggestions.
-    """
-    client = _get_openai_client()
-
-    # Parse source vocabulary
-    tables = parse_source_vocabulary(source_vocab_path)
-    if not tables:
-        logger.warning("No tables found in %s", source_vocab_path)
-        return SourceAnalysis(
-            system=source_vocab_path.stem.replace(".vocabulary", ""),
-            analysed_at=datetime.now(timezone.utc).isoformat(),
-            model_used=model,
-        )
-
-    # Parse reference models
-    ref_domains = []
-    for ref_path in ref_model_paths:
-        try:
-            domain = parse_reference_model(ref_path)
-            if domain["classes"]:
-                ref_domains.append(domain)
-        except Exception as e:
-            logger.warning("Failed to parse reference model %s: %s", ref_path, e)
-
-    # Analyse each table against each domain
-    domain_results: dict[str, DomainAffinity] = {}
-
-    for domain in ref_domains:
-        domain_key = domain["domain_name"]
-        table_matches: list[TableMatch] = []
-        total_relevance = 0.0
-
-        for tbl_name, columns in tables.items():
-            if not columns:
-                continue
-
-            result = analyse_table_against_domain(
-                client, model, tbl_name, columns, domain
-            )
-
-            relevance = result.get("domain_relevance", 0.0)
-            total_relevance += relevance
-
-            if relevance >= threshold:
-                matches = result.get("matches", [])
-                unmatched = result.get("unmatched", [])
-
-                suggestions = [
-                    ColumnSuggestion(
-                        column=m["column"],
-                        ref_property=m["ref_property"],
-                        confidence=m["confidence"],
-                        evidence=m.get("evidence", ""),
-                    )
-                    for m in matches
-                ]
-
-                table_matches.append(TableMatch(
-                    table=tbl_name,
-                    total_columns=len(columns),
-                    matched_columns=len(suggestions),
-                    suggestions=suggestions,
-                    unmatched_columns=unmatched,
-                ))
-
-        if table_matches:
-            avg_relevance = total_relevance / len(tables) if tables else 0.0
-            domain_results[domain_key] = DomainAffinity(
-                domain=domain_key,
-                ref_model_file=domain["file"],
-                confidence=round(avg_relevance, 2),
-                matched_tables=table_matches,
-            )
-
-    # Build final result sorted by confidence
-    sys_name = source_vocab_path.stem.replace(".vocabulary", "")
-    affinities = sorted(domain_results.values(), key=lambda d: d.confidence, reverse=True)
-
-    return SourceAnalysis(
-        system=sys_name,
-        analysed_at=datetime.now(timezone.utc).isoformat(),
-        model_used=model,
-        domain_affinities=affinities,
-    )
-
-
-def _analyse_source_against_domains(
-    source_vocab_path: Path,
     ref_domains: list[dict[str, Any]],
     model: str = DEFAULT_MODEL,
     threshold: float = 0.3,
 ) -> SourceAnalysis:
     """Analyse one source system against pre-resolved reference model domains.
 
-    Like analyse_source_system but accepts already-parsed domain summaries
-    instead of file paths (used by run_analyse_sources after resolve_reference_models).
+    Args:
+        source_vocab_path: Path to the source system's .vocabulary.ttl
+        ref_domains: Pre-parsed domain summaries (from resolve_reference_models)
+        model: LLM model name
+        threshold: Minimum domain relevance to include in output
+
+    Returns:
+        SourceAnalysis with domain affinities and table-level match details.
     """
     client = _get_openai_client()
 
@@ -731,7 +635,7 @@ def run_analyse_sources(
 
     for vocab_path in vocab_files:
         logger.info("Analysing source: %s", vocab_path.stem)
-        analysis = _analyse_source_against_domains(
+        analysis = analyse_source_system(
             vocab_path, ref_domains, model=model, threshold=threshold
         )
         analyses.append(analysis)

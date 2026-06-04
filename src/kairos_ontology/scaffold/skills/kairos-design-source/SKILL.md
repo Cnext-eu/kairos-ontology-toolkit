@@ -1,54 +1,58 @@
 ---
 name: kairos-design-source
 description: >
-  Expert guide for creating bronze vocabulary descriptions from source system
-  reference documentation. Reads API specs, SQL DDL, sample data from the
-  sources/ folder and generates kairos-bronze: TTL files alongside the source docs.
+  Expert guide for importing, documenting, and analysing source system data.
+  Covers flat-file import, YAML-to-TTL generation, manual bronze vocabulary
+  creation, enrichment review, and LLM-powered source-to-domain analysis.
 ---
 
-# Kairos Medallion Staging Skill
+# Kairos Source Design Skill
 
-You are helping the user create a **bronze vocabulary description** for a source
-system. The bronze vocabulary uses the `kairos-bronze:` namespace to describe
-tables, columns, and data types from the source system — enabling downstream
-dbt silver model generation.
+You are helping the user **import, document, and analyse source systems** for the
+ontology hub. This skill orchestrates the full source onboarding workflow — from
+raw data files to bronze vocabulary TTL and domain affinity analysis.
+
+## Overview — Source onboarding workflow
+
+```
+Phase 0          Phase 1              Phase 2             Phase 3
+Input type? ──→  Import flat files ──→ Generate vocab ──→  Review & validate
+                 (import-flatfile)     (import-source)
+                      OR                                       │
+                 Manual creation ─────────────────────────────→│
+                                                               ▼
+                                                          Phase 4
+                                                          Analyse sources
+                                                          (analyse-sources)
+                                                               │
+                                                               ▼
+                                                          Phase 5
+                                                          Next steps
+```
 
 ## Prerequisites
 
-- Source system reference docs should be placed in `ontology-hub/integration/sources/{system-name}/`
-- The `kairos-bronze:` vocabulary is defined in the toolkit (`kairos-bronze.ttl`)
-
-## Alternative input: CSV/Excel flat files
-
-If source documentation is available as flat files (CSV exports, Excel workbooks),
-use `import-flatfile` instead of manually creating the vocabulary:
-
-```bash
-kairos-ontology import-flatfile --from exports/my-data.csv --system my-source
-kairos-ontology import-flatfile --from exports/workbook.xlsx --system my-source
-kairos-ontology import-flatfile --from exports/ --system my-source  # directory of files
-```
-
-This auto-generates `_manifest.yaml`, per-table YAML, and `.samples.yaml` files —
-then run `import-source --from integration/sources/{system}/` to produce the TTL.
-
-## Architecture
-
-```
-integration/sources/{system}/
-┌──────────────────────┐
-│ sql-ddl/             │
-│ api-specs/           │  AI skill generates
-│ samples/             │──────────────────→  {system}.vocabulary.ttl
-│ README.md            │                     (in same folder)
-└──────────────────────┘
-```
+- The ontology hub must be initialized (`kairos-ontology init` or `new-repo`)
+- Source data or documentation should be available (CSV/Excel files, SQL DDL,
+  API specs, or sample data)
+- For Phase 4 (analysis): AI provider configured (GITHUB_TOKEN or AZURE_AI_ENDPOINT)
 
 ---
 
-## Phase 1 — Verify source documentation
+## Phase 0 — Determine input type
 
-### 1a — Check for source system folder
+Ask the user what source material they have:
+
+| Input type | Path |
+|---|---|
+| **CSV or Excel files** (exports, data dumps) | → Phase 1 (import-flatfile) |
+| **Pre-extracted YAML** (from `extract-schema` dbt macro or manual) | → Phase 2 (import-source) |
+| **SQL DDL, API specs, or other docs** (no structured data) | → Phase 3 (manual creation) |
+| **Existing vocabulary TTL** (refresh/update) | → Phase 2 (import-source with merge) |
+
+### Pre-flight checks
+
+Before proceeding, verify the hub structure:
 
 ```bash
 ls ontology-hub/integration/sources/
@@ -58,11 +62,119 @@ If the system folder doesn't exist yet, create it:
 
 ```bash
 mkdir -p ontology-hub/integration/sources/{system-name}
-cp ontology-hub/integration/sources/source-system-template/README.md \
-   ontology-hub/integration/sources/{system-name}/README.md
 ```
 
-### 1b — Inventory reference materials
+---
+
+## Phase 1 — Import flat files (`import-flatfile`)
+
+> **When to use:** The user has CSV exports, Excel workbooks, or a directory of
+> flat files from the source system.
+
+### 1a — Determine options
+
+Ask the user:
+1. **Source path** — where are the files? (single file or directory)
+2. **System name** — what to call this source system (default: derived from filename)
+3. **Column exclusions** — any metadata/technical columns to exclude?
+
+### 1b — Run the import
+
+```bash
+kairos-ontology import-flatfile \
+  --from {source-path} \
+  --system {system-name}
+```
+
+**Available options:**
+
+| Option | Default | When to use |
+|---|---|---|
+| `--exclude-columns "col1,col2"` | none | Remove metadata columns (volume, subfolder, etc.) |
+| `--keep-technical` | false | Keep auto-detected technical columns |
+| `--sample-size N` | 5 | More/fewer sample rows per table |
+| `--max-rows N` | 1000 | More rows for better type inference |
+
+### 1c — Review output
+
+The command produces:
+- `_manifest.yaml` — system metadata
+- Per-table YAML files — schema + samples
+- `.samples.yaml` files — sample data rows
+
+```bash
+ls ontology-hub/integration/sources/{system-name}/
+```
+
+**Checkpoint:** Show the user what was generated. Ask if any tables should be
+excluded or if column names need correction before proceeding to Phase 2.
+
+→ Proceed to **Phase 2** to generate the vocabulary TTL.
+
+---
+
+## Phase 2 — Generate vocabulary (`import-source`)
+
+> **When to use:** Source schema YAML files exist (from Phase 1 or from the
+> `extract-schema` dbt macro) and need to be converted to bronze vocabulary TTL.
+
+### 2a — Run the import
+
+```bash
+kairos-ontology import-source \
+  --from ontology-hub/integration/sources/{system-name}/
+```
+
+**Available options:**
+
+| Option | Default | When to use |
+|---|---|---|
+| `--enrich` / `--no-enrich` | enabled | Disable enrichment if source has no sample data |
+| `--enum-threshold N` | 25 | Adjust max distinct values for enum detection |
+| `--dry-run` | false | Preview changes without writing |
+| `--split-tables` | false | Only generate per-table files (skip monolithic) |
+
+### 2b — Review enrichment annotations
+
+If enrichment was enabled, the generated TTL contains inference annotations.
+Review these with the user:
+
+| Annotation | What it tells you | Action |
+|---|---|---|
+| `kairos-bronze:suggestedEnum true` | Low-cardinality column (≤N distinct values) | Ask: "Should this be a code list?" |
+| `kairos-bronze:enumValues "A \| B \| C"` | Actual distinct values observed | Show values for confirmation |
+| `kairos-bronze:formatHint "email"` | Samples match a known format | Suggest `xsd:string` with format constraint |
+| `kairos-bronze:formatHint "date"` | Date-like values stored as string | Suggest `xsd:date` or `xsd:dateTime` |
+| `kairos-bronze:formatHint "uuid"` | UUID identifiers | Likely a natural key or FK reference |
+| `kairos-bronze:suggestedForeignKey <uri>` | Column likely references another table | Ask: "Does this reference [target]?" |
+| `kairos-bronze:fkConfidence "high"` | Name-based match (strong signal) | Present as default recommendation |
+| `kairos-bronze:fkConfidence "medium"` | Cardinality-based match (weaker) | Present as suggestion, ask to confirm |
+| `kairos-bronze:rowCount N` | Table size | Prioritize high-volume tables |
+| `kairos-bronze:sampleValues "val1 \| val2"` | Actual data samples | Show for user to validate semantics |
+
+### 2c — Output review
+
+The command writes:
+- `{system-name}.vocabulary.ttl` — monolithic vocabulary file
+- `vocabulary/` — per-table TTL files
+
+**Checkpoint:** Show the user a summary of tables and columns generated.
+Verify the TTL is valid:
+
+```bash
+kairos-ontology validate
+```
+
+→ Proceed to **Phase 4** (analyse) or **Phase 5** (next steps).
+
+---
+
+## Phase 3 — Manual vocabulary creation
+
+> **When to use:** The user has SQL DDL, API specs, or documentation but no
+> structured data files. The vocabulary must be hand-crafted from reference docs.
+
+### 3a — Verify source documentation
 
 Check what documentation is available in the source folder:
 
@@ -74,89 +186,28 @@ Check what documentation is available in the source folder:
 | Database documentation | `docs/*` | 🔶 Context — business meaning |
 | Notes / observations | `README.md`, `notes.md` | 📝 Context |
 
-### 1c — Review the source system README
+### 3b — Review the source system README
 
 Read `ontology-hub/integration/sources/{system-name}/README.md` for:
 - System name and version
 - Connection type (jdbc, odbc, api, file, lakehouse)
 - Database and schema names
 - Owner and contact info
-- Any known quirks or limitations
 
----
+### 3c — Extract schema information
 
-## Phase 2 — Extract schema information
+**From SQL DDL:** Extract table names, column names, data types, PKs, FKs,
+nullable constraints, defaults.
 
-### 2a — From SQL DDL
+**From API specs:** Map resources/endpoints to tables, properties to columns,
+types to data types, required to NOT NULL.
 
-If `sql-ddl/` contains CREATE TABLE statements, extract:
-- Table names, column names, data types
-- Primary keys, foreign keys
-- Nullable constraints
-- Default values
+**From sample data:** Infer column names from headers/keys, types from values,
+nullable from empty values.
 
-### 2b — From API specs
-
-If `api-specs/` contains OpenAPI/Swagger files, extract:
-- Resource/endpoint names → map to tables
-- Request/response properties → map to columns
-- Property types → map to data types
-- Required properties → map to NOT NULL
-
-### 2c — From sample data
-
-If `samples/` contains CSV or JSON files, infer:
-- Column names from headers / keys
-- Data types from values (inspect patterns)
-- Nullable from presence of empty values
-
-### 2d — From enriched schema YAML (preferred)
-
-If the vocabulary was generated via `import-source --enrich` from an `extract-schema`
-output, the TTL already contains rich inference annotations. **Check these first** before
-manual documentation — they are machine-derived but highly informative:
-
-| Annotation | What it tells you | Design action |
-|---|---|---|
-| `kairos-bronze:suggestedEnum true` | Low-cardinality column (≤25 distinct values) | Propose as `skos:ConceptScheme` with values as concepts |
-| `kairos-bronze:enumValues "A | B | C"` | The actual distinct values observed | Use as concept labels in the scheme |
-| `kairos-bronze:formatHint "email"` | Samples match a known format pattern | Suggest `xsd:string` with format constraint; propose dedicated property name |
-| `kairos-bronze:formatHint "date"` | Date-like values stored as string | Suggest `xsd:date` or `xsd:dateTime` range in domain model |
-| `kairos-bronze:formatHint "uuid"` | UUID identifiers | Likely a natural key or foreign key reference |
-| `kairos-bronze:suggestedForeignKey <uri>` | Column likely references another table | Propose as `owl:ObjectProperty` linking to the target entity |
-| `kairos-bronze:fkConfidence "high"` | Name-based match (strong signal) | High confidence — present as default recommendation |
-| `kairos-bronze:fkConfidence "medium"` | Cardinality-based match (weaker signal) | Present as suggestion, ask user to confirm |
-| `kairos-bronze:rowCount N` | Table size | Prioritize high-volume tables for modeling |
-| `kairos-bronze:sampleValues "val1 | val2 | val3"` | Actual data samples | Show in prompts for user to validate semantics |
-| `rdfs:comment "Examples: ..."` | Concrete value examples | Use to write meaningful property descriptions |
-
-**Workflow when enrichment annotations exist:**
-
-1. List all tables sorted by `rowCount` (high → low) for prioritization
-2. For each table, highlight:
-   - Columns with `suggestedEnum` → ask user: "Should this be a code list?"
-   - Columns with `suggestedForeignKey` → ask user: "Does this reference [target]?"
-   - Columns with `formatHint` → propose appropriate `xsd:` type
-3. Use `sampleValues` in all interactive prompts so user can validate without
-   querying the database
-4. After user confirms/rejects each suggestion, generate the enriched vocabulary
-
----
-
-## Phase 3 — Generate the bronze vocabulary TTL
-
-### 3a — Create the output file
+### 3d — Generate the vocabulary TTL
 
 Create `ontology-hub/integration/sources/{system-name}/{system-name}.vocabulary.ttl`:
-
-```bash
-# Create from scratch in the source system folder following the kairos-bronze: vocabulary.
-touch ontology-hub/integration/sources/{system-name}/{system-name}.vocabulary.ttl
-```
-
-The bronze vocabulary file lives alongside the source system documentation it describes.
-
-### 3b — Fill in the source system
 
 ```turtle
 @prefix bronze-{prefix}: <https://{company-domain}/bronze/{system-name}#> .
@@ -171,9 +222,7 @@ bronze-{prefix}:{SystemName} a kairos-bronze:SourceSystem ;
     kairos-bronze:schema "{SchemaName}" .
 ```
 
-### 3c — Add tables
-
-For each table/resource extracted in Phase 2:
+For each table:
 
 ```turtle
 bronze-{prefix}:{tableName} a kairos-bronze:SourceTable ;
@@ -184,9 +233,7 @@ bronze-{prefix}:{tableName} a kairos-bronze:SourceTable ;
     kairos-bronze:incrementalColumn "{ModifiedDate}" .
 ```
 
-### 3d — Add columns
-
-For each column/property:
+For each column:
 
 ```turtle
 bronze-{prefix}:{tableName}_{columnName} a kairos-bronze:SourceColumn ;
@@ -211,39 +258,91 @@ bronze-{prefix}:{tableName}_{columnName} a kairos-bronze:SourceColumn ;
 | `decimal(P,S)` | `number` | `"decimal(P,S)"` |
 | `uniqueidentifier` | `string (uuid)` | `"uniqueidentifier"` |
 
----
-
-## Phase 4 — Validate the output
-
-### 4a — Syntax check
+### 3e — Validate
 
 ```bash
-python -m kairos_ontology validate
+kairos-ontology validate
 ```
-
-### 4b — Completeness check
 
 Verify:
 - [ ] Every table from the source has a `kairos-bronze:SourceTable` entry
 - [ ] Every column has a `kairos-bronze:SourceColumn` entry
 - [ ] All primary key columns are marked with `kairos-bronze:isPrimaryKey "true"`
 - [ ] Data types are filled in for all columns
-- [ ] The source system README in `integration/sources/` is up to date
+- [ ] The source system README is up to date
+
+→ Proceed to **Phase 4** (analyse) or **Phase 5** (next steps).
+
+---
+
+## Phase 4 — Analyse sources (`analyse-sources`)
+
+> **When to use:** All source vocabularies have been created (via any Phase 1-3
+> path) and you want to understand which reference model domains each source
+> contributes to. **Requires AI provider** (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
+
+### 4a — Pre-flight check
+
+Verify source vocabularies exist:
+
+```bash
+ls ontology-hub/integration/sources/*/*.vocabulary.ttl
+```
+
+Verify reference models are available:
+
+```bash
+ls ontology-reference-models/
+```
+
+### 4b — Run the analysis
+
+```bash
+kairos-ontology analyse-sources
+```
+
+**Available options:**
+
+| Option | Default | When to use |
+|---|---|---|
+| `--domains "party,booking"` | all | Focus on specific domains |
+| `--threshold 0.3` | 0.3 | Minimum affinity confidence |
+| `--model gpt-5.4-mini` | gpt-5.4-mini | LLM model for semantic matching |
+| `--max-domains N` | all | Rate limit protection |
+| `--materialize .resolved/` | none | Write merged TTLs per domain for inspection |
+| `--sources path/` | auto-detect | Override sources directory |
+| `--ref-models path/` | auto-detect | Override reference models directory |
+
+### 4c — Review affinity reports
+
+The command produces `{system}-affinity.yaml` files in
+`integration/sources/_analysis/` with:
+
+- **`domain_contributions`** — ranked list of reference model domains each
+  source feeds
+- **Per-table contribution scores** — how strongly each table maps to a domain
+- **Column-level match suggestions** — specific column↔property matches
+
+**Checkpoint:** Review the affinity reports with the user. Ask:
+- Do the domain assignments make sense?
+- Are there any unexpected matches or missing domains?
+- Should any domains be re-run with different parameters?
+
+→ Proceed to **Phase 5**.
 
 ---
 
 ## Phase 5 — Next steps
 
-After the bronze vocabulary is complete:
+After the source vocabulary and analysis are complete:
 
-1. **Create SKOS mappings** — invoke the **kairos-design-mapping** skill to interactively
-   map source columns to domain ontology properties in `model/mappings/`
-2. **Design silver annotations** — invoke the **kairos-design-silver** skill
-   to create extension annotations for the silver layer
-3. **Generate output** — invoke the **kairos-execute-project** skill to produce
-   dbt models, silver DDL, and ERDs
-
-See the **kairos-design-silver** skill for annotation design guidance.
+1. **Design domain ontology** — invoke the **kairos-design-domain** skill.
+   It uses the affinity reports from Phase 4 as a mandatory prerequisite
+   (Step 0a) to scope which tables to model per domain.
+2. **Create SKOS mappings** — invoke the **kairos-design-mapping** skill to
+   map source columns to domain ontology properties
+3. **Design silver annotations** — invoke the **kairos-design-silver** skill
+4. **Generate output** — invoke the **kairos-execute-project** skill
 
 ---
 
@@ -251,13 +350,18 @@ See the **kairos-design-silver** skill for annotation design guidance.
 
 ```
 ontology-hub/integration/sources/{system-name}/
-  README.md                        # System description, owner, connection details
+  README.md                            # System description, owner, connection details
   {system-name}.vocabulary.ttl         # Source vocabulary (kairos-bronze: TTL)
-  sql-ddl/                         # CREATE TABLE exports from the source database
-  api-specs/                       # OpenAPI / Swagger specification files
-  samples/                         # Sample data files (CSV, JSON, XML)
-  docs/                            # Additional documentation (ERD, data dictionary)
-  notes.md                         # Free-form observations and notes
+  vocabulary/                          # Per-table TTL files
+  _manifest.yaml                       # System metadata (from import-flatfile)
+  *.yaml                               # Per-table schema (from import-flatfile)
+  *.samples.yaml                       # Sample data (from import-flatfile)
+  sql-ddl/                             # CREATE TABLE exports
+  api-specs/                           # OpenAPI / Swagger specs
+  samples/                             # Sample data files (CSV, JSON, XML)
+  docs/                                # Additional documentation
+  _analysis/                           # Affinity reports (from analyse-sources)
+  notes.md                             # Free-form observations
 ```
 
 ---
@@ -288,11 +392,27 @@ Save to `ontology-hub/.sessions-design/source-{system-name}-{YYYY-MM-DD}.md`:
 **Status:** Complete | In Progress
 **Toolkit version:** {version}
 
+## Import Method
+
+{flat-file | yaml-import | manual}
+
 ## Tables Documented
 
 | # | Table | Columns | Data Types Verified | Notes |
 |---|---|---|---|---|
 | 1 | {table_name} | {count} | ✅/❌ | {any notes} |
+
+## Enrichment Review
+
+| # | Table.Column | Annotation | Value | User Decision |
+|---|---|---|---|---|
+| 1 | {table.col} | suggestedEnum | true | ✅ Confirmed / ❌ Rejected |
+
+## Analysis Results
+
+| # | Domain | Affinity | Top Tables | Notes |
+|---|---|---|---|---|
+| 1 | {domain} | {score} | {tables} | {notes} |
 
 ## Deferred / TODO
 
@@ -315,7 +435,7 @@ Save to `ontology-hub/.sessions-design/source-{system-name}-{YYYY-MM-DD}.md`:
 
 ### Saving rules
 
-- **Auto-save** after each table vocabulary is confirmed
+- **Auto-save** after each phase completion
 - Record tables that could not be fully documented with reasons
 - On pause/completion, list remaining gaps and their downstream impact
 
@@ -325,26 +445,8 @@ Save to `ontology-hub/.sessions-design/source-{system-name}-{YYYY-MM-DD}.md`:
 
 | When you need | Invoke |
 |---|---|
-| **Analyse sources against reference models (next step!)** | CLI: `kairos-ontology analyse-sources` |
 | Design/modify domain ontology classes and properties | **kairos-design-domain** |
 | Design silver layer (DDL, SCD, FK annotations) | **kairos-design-silver** |
 | Design gold layer (Power BI star schema, measures) | **kairos-design-gold** |
 | Map source columns to domain properties | **kairos-design-mapping** |
 | Run projections after source vocab is complete | **kairos-execute-project** |
-
-## Next Step — Pre-Model Analysis
-
-After all source vocabularies have been created, run the **analyse-sources** command
-to understand which reference model domains each source contributes to:
-
-```bash
-kairos-ontology analyse-sources \
-  --sources integration/sources \
-  --ref-models ontology-reference-models \
-  --output integration/sources/_analysis
-```
-
-This produces `{system}-affinity.yaml` files with `domain_contributions` — a ranked
-list of reference model domains each source feeds, with per-table contribution scores
-and column-level match suggestions. The **kairos-design-domain** skill uses this
-output as a mandatory prerequisite (Step 0a) to scope which tables to model per domain.

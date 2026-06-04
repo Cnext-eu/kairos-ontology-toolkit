@@ -427,5 +427,6 @@ class TestMissingToken:
         ref_file = tmp_path / "party.ttl"
         ref_file.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
 
+        ref_domains = [parse_reference_model(ref_file)]
         with pytest.raises(EnvironmentError, match="GITHUB_TOKEN"):
-            analyse_source_system(vocab_file, [ref_file])
+            analyse_source_system(vocab_file, ref_domains)
