@@ -268,12 +268,17 @@ def resolve_reference_models(
     if not all_ttls:
         return []
 
-    # Apply exclusion filters
+    # Apply exclusion filters. Match each TTL's relative posix path against the
+    # glob patterns with fnmatch so behaviour is consistent across platforms
+    # (Path.glob("dir/**") matches only directories on POSIX but files on Windows).
     if exclude_patterns:
-        excluded: set[Path] = set()
-        for pattern in exclude_patterns:
-            excluded.update(ref_models_dir.glob(pattern))
-        all_ttls = [t for t in all_ttls if t not in excluded]
+        import fnmatch
+
+        def _is_excluded(ttl: Path) -> bool:
+            rel = ttl.relative_to(ref_models_dir).as_posix()
+            return any(fnmatch.fnmatch(rel, pat) for pat in exclude_patterns)
+
+        all_ttls = [t for t in all_ttls if not _is_excluded(t)]
         if not all_ttls:
             return []
 
