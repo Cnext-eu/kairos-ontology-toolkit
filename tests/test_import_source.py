@@ -10,6 +10,7 @@ from kairos_ontology.import_source import (
     validate_source_schema,
     parse_source_schema,
     generate_vocabulary_ttl,
+    generate_vocabulary_per_table,
     merge_with_existing,
     run_import_source,
     ChangeReport,
@@ -545,3 +546,78 @@ class TestImportSourceHubRootDetection:
         assert "ontology-hub" in str(result_path)
         assert result_path.parent.name == "testapp"
         assert "integration" in str(result_path)
+
+
+# --------------------------------------------------------------------------- #
+# Split-Tables Tests
+# --------------------------------------------------------------------------- #
+
+
+class TestGenerateVocabularyPerTable:
+    def test_generates_one_ttl_per_table(self):
+        """Should return one TTL string per table."""
+        result = generate_vocabulary_per_table(VALID_YAML_DATA)
+        assert len(result) == 2
+        assert "tblClient" in result
+        assert "tblInvoice" in result
+
+    def test_each_ttl_is_valid_turtle(self):
+        """Each per-table TTL should be parseable."""
+        result = generate_vocabulary_per_table(VALID_YAML_DATA)
+        for tbl_name, ttl_str in result.items():
+            g = Graph()
+            g.parse(data=ttl_str, format="turtle")
+            assert len(g) > 0
+
+    def test_per_table_contains_only_own_columns(self):
+        """tblClient TTL should not contain tblInvoice columns."""
+        result = generate_vocabulary_per_table(VALID_YAML_DATA)
+        g = Graph()
+        g.parse(data=result["tblClient"], format="turtle")
+        ns = Namespace("https://kairos.cnext.eu/source/testapp#")
+        # tblClient columns should be present
+        assert (ns["tblClient_ClientId"], None, None) in g
+        # tblInvoice columns should NOT be present
+        assert (ns["tblInvoice_InvoiceId"], None, None) not in g
+
+    def test_per_table_has_ontology_declaration(self):
+        """Each per-table TTL should have an owl:Ontology declaration."""
+        result = generate_vocabulary_per_table(VALID_YAML_DATA)
+        g = Graph()
+        g.parse(data=result["tblClient"], format="turtle")
+        ontologies = list(g.subjects(RDF.type, OWL.Ontology))
+        assert len(ontologies) == 1
+
+    def test_per_table_has_system_reference(self):
+        """Each per-table TTL should reference the source system."""
+        result = generate_vocabulary_per_table(VALID_YAML_DATA)
+        g = Graph()
+        g.parse(data=result["tblClient"], format="turtle")
+        ns = Namespace("https://kairos.cnext.eu/source/testapp#")
+        assert (ns["testapp"], RDF.type, KAIROS_BRONZE.SourceSystem) in g
+
+
+class TestRunImportSourceSplitTables:
+    def test_split_tables_creates_vocabulary_dir(self, valid_yaml_file, tmp_path):
+        """--split-tables should create vocabulary/ subfolder with per-table TTLs."""
+        output_dir = tmp_path / "output"
+        result_path, report = run_import_source(
+            valid_yaml_file, output_dir=output_dir, split_tables=True
+        )
+        assert result_path is not None
+        assert result_path.name == "vocabulary"
+        assert result_path.is_dir()
+        ttl_files = list(result_path.glob("*.vocabulary.ttl"))
+        assert len(ttl_files) == 2
+        names = sorted(f.stem.replace(".vocabulary", "") for f in ttl_files)
+        assert names == ["tblClient", "tblInvoice"]
+
+    def test_split_tables_dry_run(self, valid_yaml_file, tmp_path):
+        """--split-tables --dry-run should not create files."""
+        output_dir = tmp_path / "output"
+        result_path, _ = run_import_source(
+            valid_yaml_file, output_dir=output_dir, split_tables=True, dry_run=True
+        )
+        assert result_path is None
+        assert not (output_dir / "vocabulary").exists()
+
