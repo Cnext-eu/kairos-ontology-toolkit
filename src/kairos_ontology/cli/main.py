@@ -886,6 +886,8 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
             samples_copied = 0
             for samples_file in source_path.glob("*.samples.yaml"):
                 dest_file = dest_dir / samples_file.name
+                if samples_file.resolve() == dest_file.resolve():
+                    continue
                 _shutil.copy2(samples_file, dest_file)
                 samples_copied += 1
             if samples_copied:

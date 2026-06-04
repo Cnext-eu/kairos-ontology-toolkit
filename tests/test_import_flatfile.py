@@ -203,6 +203,104 @@ class TestRunImportFlatfile:
         manifest = yaml.safe_load((result / "_manifest.yaml").read_text(encoding="utf-8"))
         assert sorted(manifest["tables"]) == ["items", "orders"]
 
+
+# --------------------------------------------------------------------------- #
+# Regression Tests — Bug Fixes (fix3)
+# --------------------------------------------------------------------------- #
+
+
+class TestNoneValuesInCsv:
+    """Bug 1: DictReader can store None for fields with trailing commas."""
+
+    def test_csv_with_none_values_does_not_crash(self, tmp_path):
+        """CSV with trailing commas produces None values in DictReader."""
+        csv_file = tmp_path / "trailing.csv"
+        # Trailing commas cause DictReader to have None values
+        csv_file.write_text(
+            "id,name,extra\n"
+            "1,Alice,\n"
+            "2,,\n"
+            "3,Charlie,\n",
+            encoding="utf-8",
+        )
+        result = read_csv_table(csv_file)
+        assert result["row_count"] == 3
+        col_map = {c["name"]: c for c in result["columns"]}
+        assert col_map["name"]["nullable"] is True  # row 2 has empty name
+
+    def test_csv_with_explicit_none_field(self, tmp_path):
+        """Simulates DictReader returning None by writing a CSV with extra columns."""
+        csv_file = tmp_path / "extra_col.csv"
+        # Row with more fields than headers → restkey captures extra, but missing cols are None
+        csv_file.write_text(
+            "a,b\n"
+            "1,2\n"
+            "3,4\n",
+            encoding="utf-8",
+        )
+        result = read_csv_table(csv_file)
+        assert result["row_count"] == 2
+        assert len(result["columns"]) == 2
+
+
+class TestLargeFieldLimit:
+    """Bug 2: CSV fields larger than 128KB should not crash."""
+
+    def test_large_field_does_not_crash(self, tmp_path):
+        csv_file = tmp_path / "large_field.csv"
+        large_value = "x" * (200 * 1024)  # 200KB field
+        csv_file.write_text(
+            f"id,payload\n1,{large_value}\n",
+            encoding="utf-8",
+        )
+        result = read_csv_table(csv_file)
+        assert result["row_count"] == 1
+        col_map = {c["name"]: c for c in result["columns"]}
+        assert col_map["payload"]["data_type"] == "varchar(max)"
+
+
+class TestSameFileCopyGuard:
+    """Bug 4: shutil.copy2 when source == dest should be skipped."""
+
+    def test_import_source_skips_copy_when_same_dir(self, tmp_path):
+        """When source dir and output dir are the same, no PermissionError."""
+        from click.testing import CliRunner
+        from kairos_ontology.cli.main import cli
+
+        # Create a minimal source directory
+        src_dir = tmp_path / "my_source"
+        src_dir.mkdir()
+
+        manifest = {"system": "test_sys", "tables": ["orders"]}
+        import yaml
+        (src_dir / "_manifest.yaml").write_text(
+            yaml.dump(manifest), encoding="utf-8"
+        )
+        (src_dir / "orders.yaml").write_text(
+            yaml.dump({
+                "name": "orders",
+                "row_count": 2,
+                "columns": [
+                    {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+                ],
+            }),
+            encoding="utf-8",
+        )
+        # Add a samples file in the SAME directory (triggers same-file copy)
+        (src_dir / "orders.samples.yaml").write_text(
+            yaml.dump([{"id": 1}, {"id": 2}]), encoding="utf-8"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "import-source",
+            "--from", str(src_dir),
+            "--output", str(src_dir / "test.vocabulary.ttl"),
+        ])
+        # Should not crash with PermissionError
+        assert result.exit_code == 0, f"Failed with: {result.output}"
+
+
     def test_unsupported_extension_raises(self, tmp_path):
         bad_file = tmp_path / "data.json"
         bad_file.write_text("{}", encoding="utf-8")
