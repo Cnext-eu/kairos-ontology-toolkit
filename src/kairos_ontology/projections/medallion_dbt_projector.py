@@ -971,6 +971,11 @@ def _gen_silver_models(
             logger.warning(msg)
             warnings.append(msg)
 
+        # DD-039: Check for silverSourceRef (bronze_expanded staging model override)
+        silver_source_ref = str_val(
+            graph, URIRef(cls_uri), KAIROS_EXT.silverSourceRef
+        )
+
         # ----- Multi-source: generate per-source views + union model -----
         if len(source_refs) > 1:
             source_model_names: list[str] = []
@@ -1021,6 +1026,7 @@ def _gen_silver_models(
                     columns=src_columns,
                     filter_condition=cte_filter,
                     parent_model=model_name,
+                    ref_model=silver_source_ref or None,
                     ontology_metadata=meta,
                 )
                 path = f"models/silver/{ontology_name}/{src_model_name}.sql"
@@ -1136,6 +1142,7 @@ def _gen_silver_models(
         warnings.extend(fk_warnings)
 
         # Build source CTEs that reference bronze tables directly
+        # (or bronze_expanded via ref() when silverSourceRef is set — DD-039)
         source_ctes = []
         filter_conditions = []
         for i, (src, raw_tbl, tbl_uri) in enumerate(source_refs):
@@ -1148,12 +1155,14 @@ def _gen_silver_models(
                     cte_filter = tbl_map["filter_condition"].replace("source.", "")
                     filter_conditions.append(cte_filter)
                     break
-            source_ctes.append({
+            cte = {
                 "source_name": src,
                 "table_name": raw_tbl,
                 "alias": alias,
                 "filter": cte_filter,
-            })
+                "ref_model": silver_source_ref or None,
+            }
+            source_ctes.append(cte)
 
         # When FK JOINs are present, qualify unqualified column expressions with
         # the primary source alias to prevent ambiguous references in T-SQL.

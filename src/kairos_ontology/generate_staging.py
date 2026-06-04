@@ -142,13 +142,12 @@ def _generate_flat_expansion(
     schema='bronze_expanded'
   )
 }}}}
-
 SELECT
     *,
 {chr(10).join(f"{e}," for e in extractions[:-1])}
 {extractions[-1]}
 FROM {{{{ source('{source_name}', '{tbl_name}') }}}}
-WHERE [{col_name}] IS NOT NULL
+FROM {{{{ source('{source_name}', '{tbl_name}') }}}}
 """
 
     return (model_name, sql)

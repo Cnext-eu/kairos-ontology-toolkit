@@ -33,6 +33,12 @@ acme-inv:InvoiceTag a owl:Class ;
     rdfs:comment "Tag/label applied to invoices (many-to-many bridge)." ;
     kairos-ext:naturalKey "tagCode" .
 
+# DD-039: Entity sourced from bronze_expanded (JSON array_object)
+acme-inv:InvoiceLineTax a owl:Class ;
+    rdfs:label "Invoice Line Tax" ;
+    rdfs:comment "Tax detail extracted from JSON line details (DD-039 scenario)." ;
+    kairos-ext:naturalKey "taxCode" .
+
 # ---------------------------------------------------------------------------
 # Datatype properties
 # ---------------------------------------------------------------------------
@@ -104,6 +110,25 @@ acme-inv:tagLabel a owl:DatatypeProperty ;
     rdfs:comment "Human-readable label for the tag." ;
     rdfs:domain acme-inv:InvoiceTag ;
     rdfs:range xsd:string .
+
+# InvoiceLineTax properties (DD-039)
+acme-inv:taxCode a owl:DatatypeProperty ;
+    rdfs:label "tax code" ;
+    rdfs:comment "Tax rate identifier code." ;
+    rdfs:domain acme-inv:InvoiceLineTax ;
+    rdfs:range xsd:string .
+
+acme-inv:taxRate a owl:DatatypeProperty ;
+    rdfs:label "tax rate" ;
+    rdfs:comment "Tax rate percentage." ;
+    rdfs:domain acme-inv:InvoiceLineTax ;
+    rdfs:range xsd:decimal .
+
+acme-inv:discountPct a owl:DatatypeProperty ;
+    rdfs:label "discount percentage" ;
+    rdfs:comment "Applied discount percentage." ;
+    rdfs:domain acme-inv:InvoiceLineTax ;
+    rdfs:range xsd:decimal .
 
 # ---------------------------------------------------------------------------
 # Object properties — cross-domain FK

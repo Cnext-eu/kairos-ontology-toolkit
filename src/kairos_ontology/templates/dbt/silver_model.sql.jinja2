@@ -45,7 +45,11 @@
 
 {% if loop.first %}with {% else %}     {% endif %}{{ cte.alias }} as (
 
+{%- if cte.ref_model %}
+    select * from {{"{{"}} ref('{{ cte.ref_model }}') {{"}}"}}
+{%- else %}
     select * from {{"{{"}} source('{{ cte.source_name }}', '{{ cte.table_name }}') {{"}}"}}
+{%- endif %}
 {%- if cte.filter %}
     where {{ cte.filter }}
 {%- endif %}

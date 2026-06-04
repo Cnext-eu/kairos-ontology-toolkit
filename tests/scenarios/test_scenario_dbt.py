@@ -2017,3 +2017,60 @@ class TestLogicalSourcesMode:
         else:
             pytest.fail("No silver model contains {{ source() }} reference")
 
+
+# ---------------------------------------------------------------------------
+# DD-039: silverSourceRef — bronze_expanded routing tests
+# ---------------------------------------------------------------------------
+
+class TestSilverSourceRef:
+    """Verify silverSourceRef annotation routes to {{ ref() }} in dbt output."""
+
+    def test_invoice_line_tax_uses_ref(self, invoice_dbt_artifacts):
+        """InvoiceLineTax has silverSourceRef → model uses {{ ref() }}."""
+        key = _find_artifact(invoice_dbt_artifacts, "invoice_line_tax.sql")
+        assert key, (
+            f"No invoice_line_tax model found. "
+            f"Available: {[k for k in invoice_dbt_artifacts if 'silver' in k]}"
+        )
+        sql = invoice_dbt_artifacts[key]
+        assert "ref('stg_billingpro_invoice_line_details')" in sql, (
+            f"Expected ref() call in invoice_line_tax model:\n{sql}"
+        )
+
+    def test_invoice_line_tax_no_source_call(self, invoice_dbt_artifacts):
+        """InvoiceLineTax with silverSourceRef should NOT use {{ source() }}."""
+        key = _find_artifact(invoice_dbt_artifacts, "invoice_line_tax.sql")
+        assert key
+        sql = invoice_dbt_artifacts[key]
+        assert "{{ source(" not in sql, (
+            f"Expected no source() call in invoice_line_tax model:\n{sql}"
+        )
+
+    def test_invoice_still_uses_source(self, invoice_dbt_artifacts):
+        """Invoice (no silverSourceRef) still uses {{ source() }}."""
+        # Invoice has multi-source (tblInvoice + tblCreditNote), so look in
+        # per-source views
+        invoice_keys = [
+            k for k in invoice_dbt_artifacts
+            if "invoice" in k and "silver" in k and k.endswith(".sql")
+            and "invoice_line" not in k and "invoice_tag" not in k
+        ]
+        assert invoice_keys, "No invoice silver models found"
+        # At least one model must use source()
+        has_source = any(
+            "{{ source(" in invoice_dbt_artifacts[k] for k in invoice_keys
+        )
+        assert has_source, (
+            "Invoice models should use source() (no silverSourceRef set)"
+        )
+
+    def test_invoice_line_tax_has_mapped_columns(self, invoice_dbt_artifacts):
+        """InvoiceLineTax model contains the mapped column expressions."""
+        key = _find_artifact(invoice_dbt_artifacts, "invoice_line_tax.sql")
+        assert key
+        sql = invoice_dbt_artifacts[key]
+        # Check mapped transform expressions appear
+        assert "TaxCode" in sql or "tax_code" in sql, (
+            f"Expected TaxCode column in invoice_line_tax:\n{sql}"
+        )
+
