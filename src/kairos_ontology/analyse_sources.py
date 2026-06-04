@@ -183,24 +183,82 @@ def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None =
     }
 
 
+def _find_ontology_package_dirs(all_ttls: list[Path], ref_models_dir: Path) -> set[str]:
+    """Scan TTL files and return relative directory paths that contain owl:Ontology."""
+    package_dirs: set[str] = set()
+    for ttl_path in all_ttls:
+        try:
+            g = Graph()
+            g.parse(ttl_path, format="turtle")
+            if any(g.subjects(RDF.type, OWL.Ontology)):
+                rel_dir = ttl_path.parent.relative_to(ref_models_dir).as_posix()
+                package_dirs.add(rel_dir)
+        except Exception:
+            pass  # parse failures handled in main loop
+    return package_dirs
+
+
+def _assign_domain_key(
+    ttl_path: Path,
+    ref_models_dir: Path,
+    package_dirs: set[str],
+) -> str:
+    """Assign a domain grouping key for a TTL file.
+
+    Strategy:
+    1. Root-level files → domain key is the file stem
+    2. Files in an ontology package dir → group by that directory
+    3. Files with a package-dir ancestor → group by nearest ancestor
+    4. Fallback → group by immediate parent directory
+    """
+    rel = ttl_path.relative_to(ref_models_dir)
+    parts = rel.parts
+
+    if len(parts) == 1:
+        return ttl_path.stem
+
+    # Check if file's own directory is a package
+    rel_dir = ttl_path.parent.relative_to(ref_models_dir).as_posix()
+    if rel_dir in package_dirs:
+        return rel_dir
+
+    # Walk up from parent to root looking for nearest package directory
+    current = ttl_path.parent
+    while current != ref_models_dir:
+        candidate = current.relative_to(ref_models_dir).as_posix()
+        if candidate in package_dirs:
+            return candidate
+        current = current.parent
+
+    # Fallback: immediate parent directory
+    return ttl_path.parent.relative_to(ref_models_dir).as_posix()
+
+
+def _domain_display_name(domain_key: str) -> str:
+    """Convert a domain grouping key to a short display name.
+
+    ``derived-ontologies/BSP`` → ``BSP``; ``party`` → ``party``.
+    """
+    return domain_key.rsplit("/", 1)[-1] if "/" in domain_key else domain_key
+
+
 def resolve_reference_models(
-    ref_models_dir: Path, *, catalog_path: Path | None = None
+    ref_models_dir: Path,
+    *,
+    catalog_path: Path | None = None,
+    exclude_patterns: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Discover and resolve reference model TTLs, merging sub-modules by domain.
 
-    Handles modular reference models where root files declare owl:imports
-    to sub-modules containing actual class definitions.
-
-    Strategy:
-    1. Recursively find all .ttl files
-    2. Group by top-level subdirectory (= domain)
-    3. Merge all TTLs in each domain into a single graph
-    4. If catalog_path is provided, resolve owl:imports for each root file
-    5. Skip domains with <=2 classes (likely import stubs only)
+    Uses ontology-aware grouping: directories containing ``owl:Ontology``
+    declarations are treated as domain package roots.  Files are assigned to
+    the nearest ancestor package directory.  Falls back to immediate parent
+    directory when no ontology declarations are found.
 
     Args:
         ref_models_dir: Directory containing reference model TTL files.
         catalog_path: Optional XML catalog for resolving owl:imports URIs.
+        exclude_patterns: Glob patterns to exclude (e.g. ``["archive/**"]``).
 
     Returns list of domain summaries (same format as parse_reference_model).
     """
@@ -208,34 +266,37 @@ def resolve_reference_models(
     if not all_ttls:
         return []
 
-    # Group by domain: use first-level subdirectory as domain key
-    # Files at root level are their own domain (one file = one domain)
+    # Apply exclusion filters
+    if exclude_patterns:
+        excluded: set[Path] = set()
+        for pattern in exclude_patterns:
+            excluded.update(ref_models_dir.glob(pattern))
+        all_ttls = [t for t in all_ttls if t not in excluded]
+        if not all_ttls:
+            return []
+
+    # Phase 1: identify ontology package directories
+    package_dirs = _find_ontology_package_dirs(all_ttls, ref_models_dir)
+
+    # Phase 2: assign each TTL to a domain group
     domain_groups: dict[str, list[Path]] = {}
-
     for ttl_path in all_ttls:
-        rel = ttl_path.relative_to(ref_models_dir)
-        parts = rel.parts
-
-        if len(parts) == 1:
-            # Root-level file: domain = stem
-            domain_key = ttl_path.stem
-        else:
-            # Nested: domain = first subdirectory name
-            domain_key = parts[0]
-
+        domain_key = _assign_domain_key(ttl_path, ref_models_dir, package_dirs)
         domain_groups.setdefault(domain_key, []).append(ttl_path)
 
     # Merge each domain group into a single graph
     domains: list[dict[str, Any]] = []
 
     for domain_key, ttl_files in domain_groups.items():
+        display_name = _domain_display_name(domain_key)
+
         if len(ttl_files) == 1 and catalog_path and catalog_path.exists():
             # Single file with catalog: resolve owl:imports
             try:
                 from kairos_ontology.catalog_utils import load_graph_with_catalog
                 catalog_result = load_graph_with_catalog(ttl_files[0], catalog_path)
                 result = parse_reference_model(
-                    graph=catalog_result.graph, domain_name=domain_key
+                    graph=catalog_result.graph, domain_name=display_name
                 )
                 result["ref_source"] = domain_key
                 result["file"] = str(ttl_files[0])
@@ -290,7 +351,7 @@ def resolve_reference_models(
                 except Exception as e:
                     logger.debug("Catalog import resolution skipped: %s", e)
 
-            result = parse_reference_model(graph=merged, domain_name=domain_key)
+            result = parse_reference_model(graph=merged, domain_name=display_name)
             result["ref_source"] = domain_key
             if result["classes"]:
                 domains.append(result)
@@ -300,6 +361,37 @@ def resolve_reference_models(
         len(domains), len(all_ttls), ref_models_dir,
     )
     return domains
+
+
+def load_data_domains(ref_models_dir: Path) -> dict[str, dict[str, Any]]:
+    """Find and parse data-domains.yaml from accelerator pack blueprints.
+
+    Returns a dict keyed by domain id (e.g. ``"party"``) with ownership metadata:
+    ``{"name": str, "owns": str, "does_not_own": str, "group": str}``.
+
+    Returns empty dict if no data-domains.yaml is found.
+    """
+    for dd_path in ref_models_dir.glob(
+        "accelerator-packs/*/client-hub-blueprint/data-domains.yaml"
+    ):
+        try:
+            with open(dd_path, encoding="utf-8") as f:
+                dd = yaml.safe_load(f)
+            result: dict[str, dict[str, Any]] = {}
+            for group in dd.get("groups", []):
+                group_id = group.get("id", "")
+                for domain in group.get("domains", []):
+                    result[domain["id"]] = {
+                        "name": domain.get("name", domain["id"]),
+                        "owns": domain.get("owns", ""),
+                        "does_not_own": domain.get("does_not_own", ""),
+                        "group": group_id,
+                    }
+            logger.info("Loaded %d data domains from %s", len(result), dd_path)
+            return result
+        except Exception as e:
+            logger.warning("Failed to load data-domains.yaml: %s", e)
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +424,16 @@ def _build_analysis_prompt(
         comment_str = f" — {cls['comment']}" if cls.get("comment") else ""
         domain_lines.append(f"  - {cls['name']} ({cls['label']}{comment_str}): [{props_str}]")
 
+    # Add ownership context from data-domains.yaml if available
+    ownership_section = ""
+    dd_meta = domain_summary.get("data_domain_meta")
+    if dd_meta:
+        ownership_section = f"""
+DOMAIN OWNERSHIP CONTEXT:
+  This domain OWNS: {dd_meta.get('owns', 'not specified')}
+  This domain does NOT own: {dd_meta.get('does_not_own', 'not specified')}
+"""
+
     return f"""Determine whether this source table contributes data to the given reference model domain.
 Focus on the TABLE AS A WHOLE — its name, the column names collectively, and the sample data values.
 
@@ -343,7 +445,7 @@ COLUMNS AND SAMPLE DATA:
 REFERENCE MODEL DOMAIN: {domain_summary['domain_name']}
 CLASSES:
 {chr(10).join(domain_lines)}
-
+{ownership_section}
 Answer these questions:
 1. Does this table's subject matter (name + data patterns) belong to this domain?
 2. Which reference model class does this table most likely feed data into?
@@ -560,6 +662,7 @@ def run_analyse_sources(
     domains_filter: list[str] | None = None,
     materialize_dir: Path | None = None,
     catalog_path: Path | None = None,
+    exclude_patterns: list[str] | None = None,
 ) -> list[Path]:
     """Run analysis for all source systems in a hub.
 
@@ -573,6 +676,7 @@ def run_analyse_sources(
         domains_filter: Optional list of domain names to include (case-insensitive substring)
         materialize_dir: Optional path to write merged TTLs for inspection
         catalog_path: Optional XML catalog for resolving owl:imports in reference models
+        exclude_patterns: Glob patterns to exclude from ref models (e.g. ``["archive/**"]``)
 
     Returns:
         List of output file paths written.
@@ -583,7 +687,9 @@ def run_analyse_sources(
         raise ValueError(f"No source vocabulary files found in {sources_dir}")
 
     # Resolve reference models (recursive discovery + merge)
-    ref_domains = resolve_reference_models(ref_models_dir, catalog_path=catalog_path)
+    ref_domains = resolve_reference_models(
+        ref_models_dir, catalog_path=catalog_path, exclude_patterns=exclude_patterns,
+    )
     if not ref_domains:
         raise ValueError(
             f"No reference model TTL files with classes found in {ref_models_dir}.\n"
@@ -591,6 +697,16 @@ def run_analyse_sources(
             f"The folder may only have owl:imports stubs — sub-module TTLs with "
             f"actual classes should be in subdirectories."
         )
+
+    # Enrich domain summaries with data-domain ownership metadata (if available)
+    data_domains = load_data_domains(ref_models_dir)
+    if data_domains:
+        for domain in ref_domains:
+            domain_name_lower = domain["domain_name"].lower().replace(" ", "-")
+            for dd_id, dd_meta in data_domains.items():
+                if dd_id in domain_name_lower or domain_name_lower in dd_id:
+                    domain["data_domain_meta"] = dd_meta
+                    break
 
     # Apply --domains filter
     if domains_filter:

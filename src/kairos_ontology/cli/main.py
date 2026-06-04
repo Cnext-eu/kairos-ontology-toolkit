@@ -1137,8 +1137,10 @@ def generate_staging(from_dir, output, source_name):
               help='Comma-separated domain names to include (case-insensitive substring match).')
 @click.option('--materialize', 'materialize_dir', type=click.Path(), default=None,
               help='Write merged TTLs per domain to this directory (for inspection).')
+@click.option('--exclude', 'exclude_patterns', multiple=True, default=('archive/**',),
+              help='Glob patterns to exclude from reference models (default: archive/**).')
 def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_domains,
-                        domains_filter, materialize_dir):
+                        domains_filter, materialize_dir, exclude_patterns):
     """Analyse source vocabularies against reference model domains (LLM-powered).
 
     Semantically matches source table columns against reference model properties
@@ -1210,8 +1212,13 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         if candidate_cat.exists():
             catalog_file = candidate_cat
 
+    # Convert exclude_patterns tuple to list
+    excl_list = list(exclude_patterns) if exclude_patterns else None
+
     # Pre-flight: show resolved domains
-    ref_domains = resolve_reference_models(ref_models_path, catalog_path=catalog_file)
+    ref_domains = resolve_reference_models(
+        ref_models_path, catalog_path=catalog_file, exclude_patterns=excl_list,
+    )
     if ref_domains:
         total_cls = sum(len(d.get("classes", [])) for d in ref_domains)
         total_props = sum(
@@ -1245,6 +1252,7 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
             domains_filter=filter_list,
             materialize_dir=mat_dir,
             catalog_path=catalog_file,
+            exclude_patterns=excl_list,
         )
         click.echo(f"\n✅ Analysis complete! Written {len(output_files)} file(s) to: {output_path}")
         for f in output_files:

@@ -14,6 +14,11 @@ from kairos_ontology.analyse_sources import (
     analyse_source_system,
     write_analysis_output,
     write_affinity_matrix,
+    resolve_reference_models,
+    load_data_domains,
+    _find_ontology_package_dirs,
+    _assign_domain_key,
+    _domain_display_name,
     SourceAnalysis,
     DomainAffinity,
     TableMatch,
@@ -127,13 +132,188 @@ acme:customField a owl:DatatypeProperty ;
     rdfs:range xsd:string .
 """
 
+MINIMAL_ONTOLOGY_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.org/{domain}#> .
+
+<http://example.org/{domain}> a owl:Ontology ;
+    rdfs:label "{label}" .
+
+ex:{cls} a owl:Class ;
+    rdfs:label "{cls}" ;
+    rdfs:comment "A {cls} entity" .
+"""
+
+PLAIN_CLASS_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.org/sub#> .
+
+ex:SubClass a owl:Class ;
+    rdfs:label "SubClass" ;
+    rdfs:comment "A sub-module class" .
+"""
+
 
 # ---------------------------------------------------------------------------
-# Tests: Source vocabulary parsing
+# Tests: Domain grouping (resolve_reference_models)
 # ---------------------------------------------------------------------------
 
 
-class TestParseSourceVocabulary:
+class TestDomainGrouping:
+    """Tests for ontology-aware domain grouping in resolve_reference_models."""
+
+    def _write_ontology(self, path, domain="test", label="Test", cls="TestClass"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            MINIMAL_ONTOLOGY_TTL.format(domain=domain, label=label, cls=cls),
+            encoding="utf-8",
+        )
+
+    def _write_plain(self, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(PLAIN_CLASS_TTL, encoding="utf-8")
+
+    def test_flat_layout_each_file_own_domain(self, tmp_path):
+        """Root-level files → each file is its own domain."""
+        self._write_ontology(tmp_path / "party.ttl", "party", "Party", "Party")
+        self._write_ontology(tmp_path / "invoice.ttl", "invoice", "Invoice", "Invoice")
+
+        domains = resolve_reference_models(tmp_path)
+        names = {d["domain_name"] for d in domains}
+        assert "Party" in names
+        assert "Invoice" in names
+        assert len(domains) == 2
+
+    def test_nested_with_ontology_declarations_groups_by_package_dir(self, tmp_path):
+        """Nested dirs with owl:Ontology → group by package directory."""
+        self._write_ontology(
+            tmp_path / "derived" / "BSP" / "root.ttl", "bsp", "BSP Model", "Vessel"
+        )
+        self._write_plain(tmp_path / "derived" / "BSP" / "sub.ttl")
+        self._write_ontology(
+            tmp_path / "derived" / "DCSA" / "root.ttl", "dcsa", "DCSA Model", "Booking"
+        )
+
+        domains = resolve_reference_models(tmp_path)
+        names = {d["domain_name"] for d in domains}
+        # Should produce BSP and DCSA, not "derived"
+        assert "BSP" in names or "BSP Model" in names
+        assert "DCSA" in names or "DCSA Model" in names
+        assert len(domains) == 2
+
+    def test_nested_without_ontology_uses_parent_dir(self, tmp_path):
+        """Nested dirs without owl:Ontology → group by parent directory."""
+        self._write_plain(tmp_path / "group" / "alpha" / "a.ttl")
+        self._write_plain(tmp_path / "group" / "beta" / "b.ttl")
+
+        domains = resolve_reference_models(tmp_path)
+        # Should group by parent dir, producing two domains
+        assert len(domains) == 2
+
+    def test_exclude_patterns_filters_files(self, tmp_path):
+        """--exclude patterns remove files from discovery."""
+        self._write_ontology(
+            tmp_path / "active" / "party.ttl", "party", "Party", "Party"
+        )
+        self._write_ontology(
+            tmp_path / "archive" / "old.ttl", "old", "Archived", "OldClass"
+        )
+
+        domains_all = resolve_reference_models(tmp_path)
+        domains_filtered = resolve_reference_models(
+            tmp_path, exclude_patterns=["archive/**"]
+        )
+
+        assert len(domains_all) == 2
+        assert len(domains_filtered) == 1
+        assert domains_filtered[0]["domain_name"] == "Party"
+
+    def test_display_name_extracts_leaf(self):
+        assert _domain_display_name("derived-ontologies/BSP") == "BSP"
+        assert _domain_display_name("party") == "party"
+        assert _domain_display_name("a/b/c") == "c"
+
+    def test_find_ontology_package_dirs(self, tmp_path):
+        self._write_ontology(tmp_path / "BSP" / "root.ttl", "bsp", "BSP", "V")
+        self._write_plain(tmp_path / "BSP" / "sub.ttl")
+        self._write_plain(tmp_path / "other" / "plain.ttl")
+
+        all_ttls = sorted(tmp_path.glob("**/*.ttl"))
+        pkg_dirs = _find_ontology_package_dirs(all_ttls, tmp_path)
+
+        assert "BSP" in pkg_dirs
+        assert "other" not in pkg_dirs
+
+    def test_assign_domain_key_root_file(self, tmp_path):
+        ttl = tmp_path / "party.ttl"
+        ttl.touch()
+        assert _assign_domain_key(ttl, tmp_path, set()) == "party"
+
+    def test_assign_domain_key_package_dir(self, tmp_path):
+        ttl = tmp_path / "derived" / "BSP" / "sub.ttl"
+        ttl.parent.mkdir(parents=True)
+        ttl.touch()
+        pkg_dirs = {"derived/BSP"}
+        assert _assign_domain_key(ttl, tmp_path, pkg_dirs) == "derived/BSP"
+
+    def test_assign_domain_key_ancestor_package(self, tmp_path):
+        ttl = tmp_path / "derived" / "BSP" / "deep" / "sub.ttl"
+        ttl.parent.mkdir(parents=True)
+        ttl.touch()
+        pkg_dirs = {"derived/BSP"}
+        assert _assign_domain_key(ttl, tmp_path, pkg_dirs) == "derived/BSP"
+
+
+class TestLoadDataDomains:
+    """Tests for load_data_domains() accelerator pack discovery."""
+
+    def test_loads_data_domains_from_accelerator(self, tmp_path):
+        dd_dir = (
+            tmp_path / "accelerator-packs" / "logistics"
+            / "client-hub-blueprint"
+        )
+        dd_dir.mkdir(parents=True)
+        (dd_dir / "data-domains.yaml").write_text(
+            "groups:\n"
+            "  - id: core\n"
+            "    domains:\n"
+            "      - id: party\n"
+            "        name: Party & Relations\n"
+            "        owns: Business partners, contacts, addresses\n"
+            "        does_not_own: Financial transactions\n"
+            "      - id: commercial\n"
+            "        name: Commercial\n"
+            "        owns: Contracts, quotes, pricing\n"
+            "        does_not_own: Operational execution\n",
+            encoding="utf-8",
+        )
+
+        result = load_data_domains(tmp_path)
+        assert "party" in result
+        assert result["party"]["owns"] == "Business partners, contacts, addresses"
+        assert result["party"]["does_not_own"] == "Financial transactions"
+        assert result["party"]["group"] == "core"
+        assert "commercial" in result
+
+    def test_returns_empty_when_no_file(self, tmp_path):
+        result = load_data_domains(tmp_path)
+        assert result == {}
+
+    def test_handles_malformed_yaml(self, tmp_path):
+        dd_dir = (
+            tmp_path / "accelerator-packs" / "test"
+            / "client-hub-blueprint"
+        )
+        dd_dir.mkdir(parents=True)
+        (dd_dir / "data-domains.yaml").write_text(
+            "not: valid: yaml: {{broken",
+            encoding="utf-8",
+        )
+
+        result = load_data_domains(tmp_path)
+        assert result == {}
     def test_parses_tables_and_columns(self, tmp_path):
         vocab_file = tmp_path / "testapp.vocabulary.ttl"
         vocab_file.write_text(SAMPLE_VOCAB_TTL, encoding="utf-8")
