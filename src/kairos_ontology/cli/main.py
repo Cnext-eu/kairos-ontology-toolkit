@@ -604,6 +604,16 @@ def init(domain, company_domain, force):
             shutil.copy2(gitignore_src, gitignore_dst)
             print("  ✓ Installed .gitignore")
 
+    # 4e-bis. Copy .env.example into repo root
+    env_example_src = _SCAFFOLD_DIR / ".env.example"
+    env_example_dst = cwd / ".env.example"
+    if env_example_src.is_file():
+        if env_example_dst.exists() and not force:
+            print("  ⏭  .env.example already exists (use --force to overwrite)")
+        else:
+            shutil.copy2(env_example_src, env_example_dst)
+            print("  ✓ Installed .env.example")
+
     # 4e. Generate pyproject.toml (needed for uv sync)
     pyproject_src = _SCAFFOLD_DIR / "pyproject.toml.template"
     pyproject_dst = cwd / "pyproject.toml"
@@ -1414,6 +1424,14 @@ def update(check, upgrade):
         if not pkg_json.is_file() and pkg_src.is_file():
             shutil.copy2(pkg_src, pkg_json)
             print("  ✓ Created package.json (run 'npm install' for Mermaid CLI SVG export)")
+
+    # --- Ensure .env.example exists (AI provider config) ---------------------
+    if not check:
+        env_example_src = _SCAFFOLD_DIR / ".env.example"
+        env_example_dst = repo_root / ".env.example"
+        if not env_example_dst.is_file() and env_example_src.is_file():
+            shutil.copy2(env_example_src, env_example_dst)
+            print("  ✓ Created .env.example (AI provider configuration template)")
 
     # --- Ensure .devcontainer exists (VS Code Dev Container) -----------------
     if not check:
