@@ -769,6 +769,17 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
     source_path = Path(from_path)
     output_dir = Path(output) if output else None
 
+    # CWD guard: warn if running from a dataplatform repo
+    cwd = Path.cwd()
+    if (cwd / "dbt_project.yml").exists() and not (cwd / "model").is_dir():
+        click.echo(
+            "⚠️  You appear to be in a dataplatform repo (dbt_project.yml found, "
+            "no model/ directory). import-source writes to CWD-relative paths by "
+            "default. Consider running from your ontology-hub repo or using "
+            "--output to specify the hub path.",
+            err=True,
+        )
+
     # Support directory input (v1.1 per-table format)
     tmp_cleanup = None
     if source_path.is_dir():
@@ -832,6 +843,20 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
         click.echo("\n🔍 Dry-run mode — no files written")
     elif result_path:
         click.echo(f"\n✅ Written: {result_path}")
+
+        # Copy .samples.yaml files from source directory to output directory
+        if source_path.is_dir() and result_path:
+            import shutil as _shutil
+            dest_dir = result_path.parent
+            samples_copied = 0
+            for samples_file in source_path.glob("*.samples.yaml"):
+                dest_file = dest_dir / samples_file.name
+                _shutil.copy2(samples_file, dest_file)
+                samples_copied += 1
+            if samples_copied:
+                click.echo(
+                    f"   📋 Copied {samples_copied} .samples.yaml file(s) for row-level context"
+                )
 
     # Clean up temp file if we created one
     if tmp_cleanup and tmp_cleanup.exists():
@@ -2186,9 +2211,10 @@ def _detect_hub_context() -> dict:
     # Detect source systems
     sources_dir = hub_root / "integration" / "sources"
     source_systems = []
+    _skip_dirs = {"source-system-template", "reference-data"}
     if sources_dir.is_dir():
         for d in sorted(sources_dir.iterdir()):
-            if d.is_dir() and not d.name.startswith("."):
+            if d.is_dir() and not d.name.startswith(".") and d.name not in _skip_dirs:
                 source_systems.append(d.name)
 
     return {
@@ -2316,10 +2342,11 @@ def init_dataplatform(name, dest, platform, org_override):
             click.echo(f"  ✓ {dst_name}")
 
     # Copy macros
-    macro_src = _DATAPLATFORM_SCAFFOLD / "macros" / "extract_source_schema.sql"
-    if macro_src.exists():
-        shutil.copy2(macro_src, repo_dir / "macros" / "extract_source_schema.sql")
-        click.echo("  ✓ macros/extract_source_schema.sql")
+    for macro_name in ("extract_source_schema.sql", "print_query.sql"):
+        macro_src = _DATAPLATFORM_SCAFFOLD / "macros" / macro_name
+        if macro_src.exists():
+            shutil.copy2(macro_src, repo_dir / "macros" / macro_name)
+            click.echo(f"  ✓ macros/{macro_name}")
 
     # Generate _sources.yml from detected source systems
     if ctx["source_systems"]:
@@ -2331,7 +2358,6 @@ def init_dataplatform(name, dest, platform, org_override):
             sources_content += f'    description: "Bronze source: {sys_name}"\n'
             sources_content += f'    database: "your_bronze_database"\n'
             sources_content += f'    schema: "raw_{sys_name}"\n'
-            sources_content += "    tables:\n"
 
             # Scan for table names in vocabulary TTL
             vocab_dir = ctx["hub_root"] / "integration" / "sources" / sys_name
@@ -2350,11 +2376,14 @@ def init_dataplatform(name, dest, platform, org_override):
                     tbl_name = str(g.value(tbl_uri, bronze_ns.tableName) or "")
                     if tbl_name:
                         table_names.append(tbl_name)
-                for tbl_name in sorted(table_names):
-                    sources_content += f"      - name: {tbl_name}\n"
+                if table_names:
+                    sources_content += "    tables:\n"
+                    for tbl_name in sorted(table_names):
+                        sources_content += f"      - name: {tbl_name}\n"
+                else:
+                    sources_content += "    # tables: (run schema discovery to populate)\n"
             else:
-                sources_content += "      # Add tables matching the hub vocabulary\n"
-                sources_content += "      # - name: tblExample\n"
+                sources_content += "    # tables: (run schema discovery to populate)\n"
             sources_content += "\n"
 
         (repo_dir / "models" / "_sources.yml").write_text(sources_content, encoding="utf-8")

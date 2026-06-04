@@ -145,9 +145,35 @@ This updates the vocabulary TTL with new/changed/removed columns.
 |-------|----------|
 | `init-dataplatform` can't detect hub | Run from within the hub repo root |
 | `dbt deps` auth error | Ensure CI runner has access to hub repo (PAT or SSH) |
+| `dbt deps` fails with "couldn't find remote ref" | The hub hasn't published a release yet. Leave the package commented out in `packages.yml` until the first tag is available. The `print_query` macro works without packages installed. |
 | Source not found | Check `_sources.yml` table names match hub vocabulary |
 | Type mismatch errors | Run bronze introspection to refresh vocabulary |
 | Missing columns in silver | Update SKOS mappings in hub for new columns |
+| `dbt parse` crashes with TypeError on tables | Ensure `tables:` is `tables: []` (not bare/null) when no tables are listed |
+
+### Introspection Without Packages
+
+If `dbt deps` is blocked (e.g., no hub release yet), you can still discover
+your warehouse schema using the `print_query` macro — it has no package
+dependencies:
+
+```bash
+dbt run-operation print_query \
+  --args '{sql: "SELECT table_schema, table_name FROM INFORMATION_SCHEMA.TABLES"}' \
+  --profiles-dir .dbt
+```
+
+### Source Discovery Workflow
+
+When populating `_sources.yml` from warehouse introspection:
+
+1. Run `print_query` to discover available schemas and tables
+2. Write results to a **proposed** file (e.g., `_sources_discovered.yml`)
+3. Review and merge into your `_sources.yml` manually
+4. Run `dbt run-operation extract_source_schema` for full column metadata
+
+This generate-then-merge approach prevents accidental overwrites of any
+custom configuration in your existing `_sources.yml`.
 
 ## Related Skills
 

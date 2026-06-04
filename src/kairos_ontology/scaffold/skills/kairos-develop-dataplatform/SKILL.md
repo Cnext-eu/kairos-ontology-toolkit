@@ -19,6 +19,10 @@ repository — the downstream consumer of ontology-hub projections.
    `.dbt/profiles.yml.example`.
 2. **Verify packages are installed** — `dbt_packages/` should exist. If not,
    run `dbt deps` first.
+3. **If `dbt deps` fails because the hub package isn't published yet** — this is
+   normal for new projects. Temporarily rename `packages.yml` to `packages.yml.bak`
+   so you can run connection tests and schema discovery without it. Restore it once
+   the hub has its first release tag.
 
 ---
 
@@ -59,6 +63,24 @@ User says: "introspect schema", "what tables are in bronze?", "infer columns",
 "refresh source definitions", "what's in the lakehouse?", "extract schema",
 "discover tables", "import sources"
 
+### ⚠️ MANDATORY: Always use `extract-schema` CLI for extraction
+
+> **NEVER use manual SQL queries or dbt macros (`print_query`, `extract_source_schema`)
+> to extract column metadata or sample values.** These are insufficient — they miss
+> samples, distinct counts, JSON detection, and row counts.
+>
+> The **only** tool for schema extraction is:
+> ```bash
+> kairos-ontology extract-schema \
+>   --profiles-dir .dbt --profile <profile> \
+>   --schema <schema_name> \
+>   --output extracted/<system_name> \
+>   --sample-size 5
+> ```
+>
+> The `print_query` macro is ONLY for interactive schema/table discovery (listing
+> available schemas). It must NEVER be used for column or sample extraction.
+
 ### Overview
 
 Source introspection produces a **schema YAML file** that serves two purposes:
@@ -68,97 +90,69 @@ Source introspection produces a **schema YAML file** that serves two purposes:
    vocabulary TTL for source-to-domain mappings
 
 ```
-┌─────────────────────┐    extract_source_schema     ┌─────────────────────┐
-│ Live Warehouse      │ ─────────────────────────►   │ extracted/<sys>.yaml │
-│ (Fabric/Databricks) │                              └──────────┬──────────┘
-└─────────────────────┘                                         │
-                                                   ┌────────────┼────────────┐
-                                                   ▼                         ▼
-                                        models/_sources.yml      kairos-ontology import-source
-                                        (dataplatform dbt)       (ontology-hub vocabulary)
+┌─────────────────────┐    extract-schema CLI        ┌─────────────────────┐
+│ Live Warehouse      │ ─────────────────────────►   │ extracted/<sys>/     │
+│ (Fabric/Databricks) │                              │   _manifest.yaml    │
+└─────────────────────┘                              │   tblClient.yaml    │
+                                                     │   tblInvoice.yaml   │
+                                                     └──────────┬──────────┘
+                                                    ┌────────────┼────────────┐
+                                                    ▼                         ▼
+                                         models/_sources.yml      kairos-ontology import-source
+                                         (dataplatform dbt)       (ontology-hub vocabulary)
 ```
+
+### Decision Gate
+
+Before starting, determine the right path:
+
+| User knows the schema name? | Action |
+|-----------------------------|--------|
+| **Yes** (e.g., "introspect bronze schema") | → Skip to **Step 1** (extract-schema) |
+| **No** (e.g., "what's in the warehouse?") | → Start at **Step 0** (discover schemas, then extract) |
 
 ### Prerequisites
 
 1. **`.dbt/profiles.yml`** must exist with valid credentials.
-2. **`models/_sources.yml`** must declare the source with at least database + schema:
-   ```yaml
-   version: 2
-   sources:
-     - name: <system_name>
-       database: <your_database>
-       schema: <your_schema>
-       tables:
-         - name: table1
-         - name: table2
-   ```
-   If the user doesn't have this yet, help them create it first (see Step 0 below).
+2. **Connection must work** — run `dbt debug --profiles-dir .dbt` if unsure.
 
-### Step 0 — Discover schemas and tables (interactive selection)
+---
 
-If the user doesn't know what tables exist, or is connecting to a new warehouse,
-guide them through an interactive discovery:
+### Step 0 — Interactive Schema Discovery (only if schema unknown)
 
-**0a. Discover available schemas:**
+Use `print_query` to help the user **select** which schemas to introspect.
+This step produces schema name(s) as input for Step 1 — nothing more.
 
-```sql
-SELECT DISTINCT table_schema
-FROM INFORMATION_SCHEMA.TABLES
-WHERE table_type = 'BASE TABLE'
-ORDER BY table_schema
-```
-
-Run via: `dbt run-operation run_query --args '{sql: "..."}' --profiles-dir .dbt`
-
-Present the list and let the user **select which schemas** are relevant (some may be
-system schemas like `sys`, `INFORMATION_SCHEMA`, etc. — skip those by default).
-
-**0b. Discover tables in selected schemas:**
-
-```sql
-SELECT table_schema, table_name
-FROM INFORMATION_SCHEMA.TABLES
-WHERE table_type = 'BASE TABLE'
-  AND table_schema IN ('<selected_schema_1>', '<selected_schema_2>')
-ORDER BY table_schema, table_name
-```
-
-Present the table list grouped by schema and let the user **select which tables**
-to include. Offer convenience options:
-- "All tables in schema X" (common for source-system schemas like `raw_adminpulse`)
-- "Filter by prefix" (e.g., all tables starting with `tbl`, `dim_`, `fct_`)
-- "Select individually" (for mixed schemas)
-
-**0c. Generate initial `_sources.yml`:**
-
-From the user's selection, generate:
-
-```yaml
-version: 2
-sources:
-  - name: <system_name>        # ask user for logical name
-    database: <database>
-    schema: <selected_schema>
-    tables:
-      - name: tblClient
-      - name: tblInvoice
-      # ... selected tables
-```
-
-Write to `models/_sources.yml` (or append if it already exists with other sources).
-
-### Step 1 — Declare sources in _sources.yml
-
-Ensure `models/_sources.yml` has the source system declared with all known tables.
-If tables are unknown, use a wildcard approach — list the database/schema and let
-the extraction macro discover them.
-
-### Step 2 — Run schema extraction
-
-**Recommended: `extract-schema` CLI** (full metadata including samples + JSON detection):
+**0a. List available schemas:**
 
 ```bash
-# Extract with interactive schema/table discovery
+dbt run-operation print_query \
+  --args '{sql: "SELECT DISTINCT table_schema FROM INFORMATION_SCHEMA.TABLES WHERE table_type = '\''BASE TABLE'\'' ORDER BY table_schema"}' \
+  --profiles-dir .dbt
+```
+
+Present the list and let the user **select which schemas** to include.
+Skip system schemas (`sys`, `INFORMATION_SCHEMA`, `dbo` if empty) by default.
+
+**0b. (Optional) Preview tables in selected schemas:**
+
+```bash
+dbt run-operation print_query \
+  --args '{sql: "SELECT table_schema, table_name FROM INFORMATION_SCHEMA.TABLES WHERE table_schema IN ('\''raw_adminpulse'\'') ORDER BY table_name"}' \
+  --profiles-dir .dbt
+```
+
+This is informational only. The user may want to see what's there before extracting.
+
+**→ Once schemas are selected, proceed to Step 1.**
+
+---
+
+### Step 1 — Run `extract-schema` CLI (with samples)
+
+This is the **primary extraction step**. Run it for each selected schema:
+
+```bash
 kairos-ontology extract-schema \
   --profiles-dir .dbt \
   --profile <profile_name> \
@@ -182,37 +176,21 @@ Each table YAML (v1.1) contains:
 - JSON detection: classification (flat/nested/array_object/polymorphic)
 - JSON structure: keys, types, sample values
 
-**Fallback: dbt macro** (lightweight, no Python deps, only names + types):
+---
 
-```bash
-dbt run-operation extract_source_schema \
-  --args '{source_name: "<system_name>"}' \
-  --profiles-dir .dbt > extracted/<system_name>-schema.yaml
-```
+### Step 2 — Update `_sources.yml` (automatic)
 
-### Step 3 — Generate bronze_expanded staging models (for JSON)
+**Always update `_sources.yml` automatically after extraction** — this file is only
+used in this dataplatform repo (dbt needs it for `{{ source() }}` resolution). The
+ontology hub uses the extracted YAML files directly via `import-source`, so there is
+no risk of side effects.
 
-If JSON columns are detected, generate dbt models that flatten them:
-
-```bash
-kairos-ontology generate-staging \
-  --from extracted/<system_name>/ \
-  --output models/staging
-```
-
-Generated model patterns:
-- **Flat JSON** → `view` with `JSON_VALUE` column extractions
-- **Array of objects** → `table` with `CROSS APPLY OPENJSON` (child table)
-- **Nested objects** → flattened with dotted key naming
-
-### Step 4 — Update _sources.yml (dataplatform use)
-
-Compare the extracted schema against the current `models/_sources.yml`:
+After extraction completes, immediately:
 - Add newly discovered tables
-- Add new columns to existing tables
-- Flag type mismatches or removed columns
+- Add new columns to existing tables (with `data_type`)
+- Flag type mismatches or removed columns (warn but don't auto-delete)
 
-Offer to update `_sources.yml` with the full column definitions:
+Write the updated `_sources.yml` without asking for confirmation:
 
 ```yaml
 sources:
@@ -229,33 +207,69 @@ sources:
             data_type: varchar
 ```
 
-### Step 5 — Export to ontology hub (vocabulary use)
+> **Note:** Only *removals* of tables/columns should be flagged for user review
+> (they may be intentional renames). Additions and type updates are safe to apply.
 
-Copy the extracted directory to the ontology-hub repo and run:
+---
+
+### Step 3 — Generate bronze_expanded staging models (for JSON)
+
+If JSON columns are detected in the extracted YAML, generate dbt models that flatten them:
 
 ```bash
-# In the ontology-hub repo:
+kairos-ontology generate-staging \
+  --from extracted/<system_name>/ \
+  --output models/staging
+```
+
+Generated model patterns:
+- **Flat JSON** → `view` with `JSON_VALUE` column extractions
+- **Array of objects** → `table` with `CROSS APPLY OPENJSON` (child table)
+- **Nested objects** → flattened with dotted key naming
+
+---
+
+### Step 4 — Export to ontology hub (vocabulary use)
+
+> ⚠️ **IMPORTANT: Run this step from the ontology-hub repo, NOT the dataplatform.**
+> The `import-source` command writes output relative to CWD. If you run it from
+> the dataplatform repo, vocabulary files will be created in the wrong location.
+> The CLI will warn you if it detects this situation.
+
+**Option A (recommended) — cd into the hub repo:**
+
+```bash
+cd ../your-ontology-hub/
 kairos-ontology import-source \
-  --from ../dataplatform/extracted/<system_name>/ \
+  --from ../your-dataplatform/extracted/<system_name>/ \
   --system <system_name>
 ```
 
-Or import a single YAML file:
+**Option B — explicit output path:**
+
 ```bash
+# From the dataplatform repo:
 kairos-ontology import-source \
-  --from ../dataplatform/extracted/<system_name>-schema.yaml \
-  --system <system_name>
+  --from extracted/<system_name>/ \
+  --system <system_name> \
+  --output ../your-ontology-hub/integration/sources/<system_name>
 ```
 
-This generates/updates the bronze vocabulary TTL at:
-`integration/sources/<system_name>/<system_name>.vocabulary.ttl`
+This generates/updates in the hub:
+- `integration/sources/<system_name>/<system_name>.vocabulary.ttl` — semantic metadata
+- `integration/sources/<system_name>/*.samples.yaml` — row-level sample data
+  (automatically copied from the extracted directory for ontology modeler reference)
 
 v1.1 YAML with JSON structures generates:
 - Expanded properties for flat JSON keys
 - Linked classes for nested objects and array-of-objects
 - Sample values in `rdfs:comment` annotations
 
-The vocabulary is then used for source-to-domain SKOS mappings.
+The vocabulary is then used for source-to-domain SKOS mappings. The `.samples.yaml`
+files provide row-level context when the `kairos-design-source` skill presents table
+structure to the ontology modeler.
+
+---
 
 ### Schema comparison (refresh workflow)
 
@@ -331,10 +345,12 @@ When creating helper macros, place them in `macros/` and follow these convention
 - Include a docstring block at the top
 - Use `{{ log(...) }}` for debug output
 
-### Available built-in macro
+### Available built-in macros
 
 - **`extract_source_schema`** — introspects a dbt source and returns its schema as
   YAML output. Already included in the scaffold.
+- **`print_query`** — executes arbitrary SQL and prints results to stdout. Use for
+  ad-hoc schema discovery (listing schemas, tables, row counts).
 
 ### Macros you can help create
 

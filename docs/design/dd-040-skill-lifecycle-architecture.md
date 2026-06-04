@@ -1,4 +1,4 @@
-# DD-033: Skill Lifecycle Architecture — Design / Execute Separation
+# DD-040: Skill Lifecycle Architecture — Design / Execute Separation
 
 | Field | Value |
 |-------|-------|

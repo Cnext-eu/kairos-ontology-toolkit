@@ -7,6 +7,41 @@ Kairos Ontology Toolkit. Each decision is recorded as an Architecture Decision R
 > **Maintenance rule:** Update this file in every PR that introduces or modifies a
 > design decision. See `.github/copilot-instructions.md` for the PR checklist.
 
+## How to Keep This File Organised
+
+### Adding a new decision
+
+1. **Assign the next sequential DD number** — check the last entry in the Index below.
+2. **Add a row to the Index table** — keep it in numeric order.
+3. **Add the full entry** at the bottom of the file (above the Template section),
+   using the template provided at the end.
+4. **Companion doc** (optional) — if the decision needs a longer architectural
+   specification, create `docs/design/dd-NNN-short-slug.md` and reference it in
+   the `Implementation:` field. Always prefix the file with `dd-NNN-`.
+
+### Keeping the Index in sync
+
+The Index table below **must** match the `## DD-NNN` headings in the body:
+- Same DD number, same title, same status, same date.
+- The anchor link format is: `#dd-nnn-title-in-lowercase-with-dashes`.
+- When you update a status (e.g., Proposed → Accepted), update **both** the Index
+  row and the `**Status:**` line in the body.
+
+### Superseding a decision
+
+- Set the old decision's status to `~~Superseded by [DD-XXX](#dd-xxx-...)~~`.
+- Keep the old entry in the file (don't delete) — it provides historical context.
+- The new decision should mention what it supersedes in its Context section.
+
+### Companion files naming
+
+Files in `docs/design/` that elaborate on a specific decision **must** be named:
+```
+dd-NNN-descriptive-slug.md
+```
+This makes it immediately clear which decision they belong to. Files without a
+`dd-NNN-` prefix will be considered orphaned and may be removed during cleanup.
+
 ---
 
 ## Index
@@ -45,10 +80,14 @@ Kairos Ontology Toolkit. Each decision is recorded as an Architecture Decision R
 | [DD-030](#dd-030-rewriteuri-catalog-resolution-with-extension-fallback) | rewriteURI Catalog Resolution with Extension Fallback | Accepted | 2026-05-29 |
 | [DD-031](#dd-031-inherit-naturalkey-from-discriminator-parents) | Inherit naturalKey from Discriminator Parents | Accepted | 2026-05-29 |
 | [DD-032](#dd-032-reference-model-inspired--local-pattern-adoption-from-reference-models) | Reference Model Inspired — Local Pattern Adoption from Reference Models | Accepted | 2026-05-30 |
-| [DD-033](#dd-033-skill-lifecycle-architecture--design--execute-separation) | Skill Lifecycle Architecture — Design / Execute Separation | Proposed | 2026-05-30 |
-| [DD-034](#dd-034-uv-as-standard-environment-manager-for-hub-repos) | uv as Standard Environment Manager for Hub Repos | Accepted | 2026-05-31 |
-| [DD-035](#dd-035-bronze-source-introspection--layered-dbt-architecture) | Bronze Source Introspection & Layered dbt Architecture | Proposed | 2026-06-01 |
-| [DD-036](#dd-036-enhanced-schema-extraction-with-json-flattening--bronze-expanded-layer) | Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer | Proposed | 2026-06-02 |
+| [DD-033](#dd-033-replace-alignment-files-with-rdfsseealso-on-inspired-classes) | Replace Alignment Files with rdfs:seeAlso on Inspired Classes | Accepted | 2026-05-30 |
+| [DD-034](#dd-034-extension-vocabulary-is-the-single-source-of-truth-defer-identitystrategy) | Extension Vocabulary is the Single Source of Truth; Defer `identityStrategy` | Accepted | 2026-05-30 |
+| [DD-035](#dd-035-silver-s3-inheritance-gate--respect-inheritancestrategy-annotation) | Silver S3 Inheritance Gate — Respect `inheritanceStrategy` Annotation | Accepted | 2026-05-30 |
+| [DD-036](#dd-036-drop-git-submodules-for-reference-models) | Drop Git Submodules for Reference Models | Accepted | 2026-05-31 |
+| [DD-037](#dd-037-uv-as-standard-environment-manager-for-hub-repos) | uv as Standard Environment Manager for Hub Repos | Accepted | 2026-05-31 |
+| [DD-038](#dd-038-bronze-source-introspection--layered-dbt-architecture) | Bronze Source Introspection & Layered dbt Architecture | Proposed | 2026-06-01 |
+| [DD-039](#dd-039-enhanced-schema-extraction-with-json-flattening--bronze-expanded-layer) | Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer | Proposed | 2026-06-02 |
+| [DD-040](#dd-040-skill-lifecycle-architecture--design--execute-separation) | Skill Lifecycle Architecture — Design / Execute Separation | Accepted | 2026-05-30 |
 
 ---
 
@@ -1232,7 +1271,7 @@ The single-template incremental approach was chosen because:
 - SCD1 classes change from `table` to `incremental` materialization (performance improvement)
 - Scenario tests must be added for SCD2 dbt model generation
 
-See full design: [`docs/design/scd-type-aware-dbt-silver.md`](scd-type-aware-dbt-silver.md)
+See full design: [`docs/design/dd-025-scd-type-aware-dbt-silver.md`](dd-025-scd-type-aware-dbt-silver.md)
 
 ---
 
@@ -1539,7 +1578,7 @@ the raw camelCase literal (used by `_get_nk_property_uris` for property URI reso
 **Status:** Accepted  
 **Date:** 2026-05-30  
 **Affects:** modeling workflow, skill guidance, scaffold, alignment file conventions  
-**Implementation:** No code changes required — Inspired classes are regular local classes already supported by all projectors. Guidance lives in skills and `docs/design/tier-1-5-reference-model-alignment.md`.
+**Implementation:** No code changes required — Inspired classes are regular local classes already supported by all projectors. Guidance lives in skills and `docs/design/dd-032-reference-model-alignment.md`.
 
 ### Context
 
@@ -1652,7 +1691,7 @@ only when a Kairos-managed reference model meets all eligibility criteria.
 **Immediate (this PR):**
 - Reference Model Inspired is the default approach for all reference models
 - Reference Model Enforced is the override for Kairos-managed ref model repos only
-- See `docs/design/tier-1-5-reference-model-alignment.md` for full specification
+- See `docs/design/dd-032-reference-model-alignment.md` for full specification
 
 **Future work (separate PRs):**
 
@@ -1799,184 +1838,184 @@ proposal to add a new `kairos-ext:identityStrategy` annotation for FK-child enti
 - `identityStrategy` / `identityParent` are deferred; revisit only if improved
   warnings prove insufficient. See CR-3 Resolution (2026-05-30).
 - Full conceptual reference for hub authors lives in
-  `docs/design/extension-explanation.md`.
+  `docs/design/dd-034-extension-explanation.md`.
 
 ---
 
-  ## DD-035: Silver S3 Inheritance Gate — Respect `inheritanceStrategy` Annotation
+## DD-035: Silver S3 Inheritance Gate — Respect `inheritanceStrategy` Annotation
 
-  **Status:** Accepted  
-  **Date:** 2026-05-30  
-  **Affects:** `medallion_silver_projector.py`, `medallion_dbt_projector.py`, `gold_model.sql.jinja2`, scenario tests  
-  **Implementation:** Silver pre-scan gate + TPC property inheritance; dbt sources scoping, dim_date CTE, SK validation, FK-child inverse lookup.
+**Status:** Accepted  
+**Date:** 2026-05-30  
+**Affects:** `medallion_silver_projector.py`, `medallion_dbt_projector.py`, `gold_model.sql.jinja2`, scenario tests  
+**Implementation:** Silver pre-scan gate + TPC property inheritance; dbt sources scoping, dim_date CTE, SK validation, FK-child inverse lookup.
 
-  ### Context
+### Context
 
-  The silver projector unconditionally flattened ALL subtype hierarchies (S3 rule),
-  merging every child class into its parent table regardless of the ontology author's
-  intent. This contradicted the dbt and gold projectors, which already gated S3 on
-  `kairos-ext:inheritanceStrategy "discriminator"` — only folding subtypes when
-  explicitly annotated.
+The silver projector unconditionally flattened ALL subtype hierarchies (S3 rule),
+merging every child class into its parent table regardless of the ontology author's
+intent. This contradicted the dbt and gold projectors, which already gated S3 on
+`kairos-ext:inheritanceStrategy "discriminator"` — only folding subtypes when
+explicitly annotated.
 
-  A change request (`cr-remove-s3-discriminator-default.md`) identified this
-  inconsistency plus four additional independent bugs:
+A change request (`cr-remove-s3-discriminator-default.md`) identified this
+inconsistency plus four additional independent bugs:
 
-  1. **Sources YAML scoping** — `_gen_sources` emitted ALL vocabulary tables, not just
-     those with SKOS mappings to the domain.
-  2. **dim_date placeholder** — referenced a non-existent `seed_dim_date` model;
-     emitted all-NULL columns.
-  3. **SK validation** — `naturalKey` columns referenced in the surrogate key hash
-     were never validated against the actual column list.
-  4. **FK-child inverse** — properties with `silverForeignKeyOn` were skipped on the
-     domain class but never emitted on the target class.
+1. **Sources YAML scoping** — `_gen_sources` emitted ALL vocabulary tables, not just
+   those with SKOS mappings to the domain.
+2. **dim_date placeholder** — referenced a non-existent `seed_dim_date` model;
+   emitted all-NULL columns.
+3. **SK validation** — `naturalKey` columns referenced in the surrogate key hash
+   were never validated against the actual column list.
+4. **FK-child inverse** — properties with `silverForeignKeyOn` were skipped on the
+   domain class but never emitted on the target class.
 
-  ### Decision
+### Decision
 
-  1. **Silver S3 gate:** The pre-scan now only folds subtypes into `folded_subtypes`
-     when the parent class has `kairos-ext:inheritanceStrategy "discriminator"`.
-     Without the annotation, subtypes get their own tables (TPC) and inherit parent
-     properties via the `inherit_from` parameter on `_get_class_and_ancestors`.
+1. **Silver S3 gate:** The pre-scan now only folds subtypes into `folded_subtypes`
+   when the parent class has `kairos-ext:inheritanceStrategy "discriminator"`.
+   Without the annotation, subtypes get their own tables (TPC) and inherit parent
+   properties via the `inherit_from` parameter on `_get_class_and_ancestors`.
 
-  2. **Sources YAML scoping:** `_gen_sources` now accepts `mappings` and filters
-     tables to only those whose URI appears in `mappings["table_maps"]`. Empty
-     source systems (no mapped tables) are skipped entirely.
+2. **Sources YAML scoping:** `_gen_sources` now accepts `mappings` and filters
+   tables to only those whose URI appears in `mappings["table_maps"]`. Empty
+   source systems (no mapped tables) are skipped entirely.
 
-  3. **dim_date inline CTE:** Replaced the broken `seed_dim_date` reference with an
-     inline date-spine CTE using `TABLE(GENERATOR(ROWCOUNT => 36525))`. The gold
-     template now supports `cte` (raw SQL) as an alternative to `model` (ref) in
-     `source_ctes`.
+3. **dim_date inline CTE:** Replaced the broken `seed_dim_date` reference with an
+   inline date-spine CTE using `TABLE(GENERATOR(ROWCOUNT => 36525))`. The gold
+   template now supports `cte` (raw SQL) as an alternative to `model` (ref) in
+   `source_ctes`.
 
-  4. **SK validation:** After assembling all columns, a warning is logged if any
-     `naturalKey` column name doesn't appear in the generated column list.
+4. **SK validation:** After assembling all columns, a warning is logged if any
+   `naturalKey` column name doesn't appear in the generated column list.
 
-  5. **FK-child inverse:** New `_infer_fk_on_targets` function collects properties
-     where `silverForeignKeyOn` points to the current class, ensuring FK columns
-     appear on the correct target table.
+5. **FK-child inverse:** New `_infer_fk_on_targets` function collects properties
+   where `silverForeignKeyOn` points to the current class, ensuring FK columns
+   appear on the correct target table.
 
-  ### Rationale
+### Rationale
 
-  - Aligns silver with dbt/gold: all three projectors now use the same opt-in
-    discriminator pattern. TPC (separate tables per concrete class) is the safe
-    default that preserves information.
-  - Sources scoping prevents dbt compilation errors from undeclared source tables.
-  - The dim_date CTE makes the gold model self-contained (no seed dependency).
-  - SK validation catches annotation mistakes early (at projection time).
-  - FK-child inverse completes the DD-022 `silverForeignKeyOn` contract.
+- Aligns silver with dbt/gold: all three projectors now use the same opt-in
+  discriminator pattern. TPC (separate tables per concrete class) is the safe
+  default that preserves information.
+- Sources scoping prevents dbt compilation errors from undeclared source tables.
+- The dim_date CTE makes the gold model self-contained (no seed dependency).
+- SK validation catches annotation mistakes early (at projection time).
+- FK-child inverse completes the DD-022 `silverForeignKeyOn` contract.
 
-  ### Consequences
+### Consequences
 
-  - **Breaking change for silver:** Hubs that relied on unconditional S3 flattening
-    must add `kairos-ext:inheritanceStrategy "discriminator"` to parent classes in
-    their silver extension. The kairos-design-silver skill guides this.
-  - dim_date uses Snowflake-specific `GENERATOR()` syntax; a platform switch may be
-    needed for other warehouses (already guarded by `target_platform` in other code).
-  - The `gold_model.sql.jinja2` template now supports both `cte.model` (ref-based)
-    and `cte.cte` (raw SQL) — backward compatible.
+- **Breaking change for silver:** Hubs that relied on unconditional S3 flattening
+  must add `kairos-ext:inheritanceStrategy "discriminator"` to parent classes in
+  their silver extension. The kairos-design-silver skill guides this.
+- dim_date uses Snowflake-specific `GENERATOR()` syntax; a platform switch may be
+  needed for other warehouses (already guarded by `target_platform` in other code).
+- The `gold_model.sql.jinja2` template now supports both `cte.model` (ref-based)
+  and `cte.cte` (raw SQL) — backward compatible.
 
-  ---
+---
 
-  ## DD-034: uv as Standard Environment Manager for Hub Repos
+## DD-036: Drop Git Submodules for Reference Models
 
-  **Status:** Accepted  
-  **Date:** 2026-05-31  
-  **Affects:** scaffold/setup-env.ps1, scaffold/setup-env.sh, CLI update --upgrade,
-  copilot-setup-steps.yml, kairos-setup-init skill, kairos-toolkit-ops skill
+**Status:** Accepted  
+**Date:** 2026-05-31  
+**Affects:** `cli/main.py` (init, new-repo, update-refmodels), scaffold workflows, hub repos  
+**Implementation:** `_run_reference_models_update()` in cli/main.py
 
-  ### Context
+### Context
 
-  Hub repos are ontology content repositories that depend on the kairos-ontology-toolkit
-  CLI. Previously, environment setup used a custom `setup-env.ps1` that:
-  1. Manually created a `.venv` via `py -m venv`
-  2. Ran `pip install -e ".[dev]"` (wrong — hub repos aren't editable Python packages)
-  3. Was Windows-only (no Linux/macOS/CI support)
-  4. Had no lock file for reproducible installs
-  5. The `update --upgrade` command used `pip install` directly, bypassing any venv
+Reference models were distributed to hub repos as a git submodule at
+`ontology-reference-models/`. This caused friction: CI needed `submodules: true`,
+users forgot `git submodule update`, `.gitmodules` got stale, and the Copilot
+cloud agent couldn't resolve imports without explicit submodule checkout.
 
-  This caused recurring "stale install" issues where `pip install` in one hub
-  silently overwrote the toolkit in a shared global Python environment.
+Meanwhile, the `update-refmodels` CLI command already implemented a cleaner
+approach: sparse-clone the upstream repo, copy files directly, commit them.
 
-  ### Decision
+### Decision
 
-  Adopt **uv** (https://docs.astral.sh/uv/) as the sole environment manager for hub repos:
-  - `uv sync` replaces `py -m venv` + `pip install` (creates `.venv` automatically)
-  - `uv run <cmd>` replaces manual venv activation
-  - `uv.lock` provides reproducible installs (committed to the hub repo)
-  - `update --upgrade` updates `pyproject.toml` then runs `uv lock` + `uv sync`
-  - No backward compatibility with pip-based setup (clean break)
+Remove all git submodule logic. Reference models are committed directly into
+`ontology-reference-models/` as regular files. Updated via `kairos-ontology update-refmodels`.
 
-  ### Rationale
+### Rationale
 
-  - **Cross-platform:** uv works on Windows, Linux, macOS — single workflow for all
-  - **Fast:** 10-100x faster than pip for dependency resolution and install
-  - **Reproducible:** `uv.lock` ensures all developers and CI get identical environments
-  - **No stale installs:** `uv sync` always installs exactly what `pyproject.toml` + lock declare
-  - **PEP 621 compatible:** Our `pyproject.toml` template works with uv natively
-  - **CI-native:** `astral-sh/setup-uv` action provides one-line CI integration
-  - **Eliminates confusion:** `uv run kairos-ontology <cmd>` is clearer than
-    "activate venv, then run python -m kairos_ontology"
+- Simpler developer experience (no submodule commands needed)
+- CI is faster (no recursive submodule checkout)
+- Copilot agent can read reference models without special config
+- Single update mechanism (`update-refmodels`) instead of two (submodule + script)
+- Files are version-controlled in the hub repo — easy to diff/track changes
 
-  Alternatives considered:
-  - **pipx / uv tool:** Only installs CLI tools globally, can't pin per-repo or include pytest
-  - **Keep pip + fix bugs:** Still leaves Windows-only, no lock file, manual venv management
-  - **Docker / devcontainer:** Too heavy for a CLI tool dependency
+### Consequences
 
-  ### Consequences
+- Existing hubs must remove their submodule: `git rm ontology-reference-models`,
+  delete from `.gitmodules`, then run `kairos-ontology update-refmodels`
+- Hub repo size slightly increases (reference model .ttl files are committed)
+- `update-refmodels` becomes the single way to refresh reference models
 
-  - **Breaking change:** Hub repos must install `uv` before using the toolkit.
-    Install instructions provided in setup scripts and skill docs.
-  - `setup-env.ps1` and `setup-env.sh` are now thin wrappers that check uv and run `uv sync`.
-  - `copilot-setup-steps.yml` uses `astral-sh/setup-uv@v4` action.
-  - Existing hub repos need to run `kairos-ontology update --force` to get the new scripts.
-  - The editable install stale-guard in `tests/conftest.py` (toolkit dev repo) remains
-    as a safety net for toolkit development itself (which still uses Poetry).
+---
 
-  ---
+## DD-037: uv as Standard Environment Manager for Hub Repos
 
-  ## DD-036: Drop Git Submodules for Reference Models
+**Status:** Accepted  
+**Date:** 2026-05-31  
+**Affects:** scaffold/setup-env.ps1, scaffold/setup-env.sh, CLI update --upgrade,
+copilot-setup-steps.yml, kairos-setup-init skill, kairos-toolkit-ops skill
 
-  **Status:** Accepted  
-  **Date:** 2026-05-31  
-  **Affects:** `cli/main.py` (init, new-repo, update-refmodels), scaffold workflows, hub repos  
-  **Implementation:** `_run_reference_models_update()` in cli/main.py
+### Context
 
-  ### Context
+Hub repos are ontology content repositories that depend on the kairos-ontology-toolkit
+CLI. Previously, environment setup used a custom `setup-env.ps1` that:
+1. Manually created a `.venv` via `py -m venv`
+2. Ran `pip install -e ".[dev]"` (wrong — hub repos aren't editable Python packages)
+3. Was Windows-only (no Linux/macOS/CI support)
+4. Had no lock file for reproducible installs
+5. The `update --upgrade` command used `pip install` directly, bypassing any venv
 
-  Reference models were distributed to hub repos as a git submodule at
-  `ontology-reference-models/`. This caused friction: CI needed `submodules: true`,
-  users forgot `git submodule update`, `.gitmodules` got stale, and the Copilot
-  cloud agent couldn't resolve imports without explicit submodule checkout.
+This caused recurring "stale install" issues where `pip install` in one hub
+silently overwrote the toolkit in a shared global Python environment.
 
-  Meanwhile, the `update-refmodels` CLI command already implemented a cleaner
-  approach: sparse-clone the upstream repo, copy files directly, commit them.
+### Decision
 
-  ### Decision
+Adopt **uv** (https://docs.astral.sh/uv/) as the sole environment manager for hub repos:
+- `uv sync` replaces `py -m venv` + `pip install` (creates `.venv` automatically)
+- `uv run <cmd>` replaces manual venv activation
+- `uv.lock` provides reproducible installs (committed to the hub repo)
+- `update --upgrade` updates `pyproject.toml` then runs `uv lock` + `uv sync`
+- No backward compatibility with pip-based setup (clean break)
 
-  Remove all git submodule logic. Reference models are committed directly into
-  `ontology-reference-models/` as regular files. Updated via `kairos-ontology update-refmodels`.
+### Rationale
 
-  ### Rationale
+- **Cross-platform:** uv works on Windows, Linux, macOS — single workflow for all
+- **Fast:** 10-100x faster than pip for dependency resolution and install
+- **Reproducible:** `uv.lock` ensures all developers and CI get identical environments
+- **No stale installs:** `uv sync` always installs exactly what `pyproject.toml` + lock declare
+- **PEP 621 compatible:** Our `pyproject.toml` template works with uv natively
+- **CI-native:** `astral-sh/setup-uv` action provides one-line CI integration
+- **Eliminates confusion:** `uv run kairos-ontology <cmd>` is clearer than
+  "activate venv, then run python -m kairos_ontology"
 
-  - Simpler developer experience (no submodule commands needed)
-  - CI is faster (no recursive submodule checkout)
-  - Copilot agent can read reference models without special config
-  - Single update mechanism (`update-refmodels`) instead of two (submodule + script)
-  - Files are version-controlled in the hub repo — easy to diff/track changes
+Alternatives considered:
+- **pipx / uv tool:** Only installs CLI tools globally, can't pin per-repo or include pytest
+- **Keep pip + fix bugs:** Still leaves Windows-only, no lock file, manual venv management
+- **Docker / devcontainer:** Too heavy for a CLI tool dependency
 
-  ### Consequences
+### Consequences
 
-  - Existing hubs must remove their submodule: `git rm ontology-reference-models`,
-    delete from `.gitmodules`, then run `kairos-ontology update-refmodels`
-  - Hub repo size slightly increases (reference model .ttl files are committed)
-  - `update-refmodels` becomes the single way to refresh reference models
+- **Breaking change:** Hub repos must install `uv` before using the toolkit.
+  Install instructions provided in setup scripts and skill docs.
+- `setup-env.ps1` and `setup-env.sh` are now thin wrappers that check uv and run `uv sync`.
+- `copilot-setup-steps.yml` uses `astral-sh/setup-uv@v4` action.
+- Existing hub repos need to run `kairos-ontology update --force` to get the new scripts.
+- The editable install stale-guard in `tests/conftest.py` (toolkit dev repo) remains
+  as a safety net for toolkit development itself (which still uses Poetry).
 
-  ---
+---
 
-## DD-035: Bronze Source Introspection & Layered dbt Architecture
+## DD-038: Bronze Source Introspection & Layered dbt Architecture
 
 **Status:** Proposed  
 **Date:** 2026-06-01  
 **Affects:** `integration/sources/`, `_sources.yml` generation, dataplatform repos, dbt projector  
-**Implementation:** See `docs/design/bronze-introspection-architecture.md` for full ADR
+**Implementation:** See `docs/design/dd-038-bronze-introspection-architecture.md` for full ADR
 
 ### Context
 
@@ -2010,7 +2049,7 @@ database/schema info, coupling the hub to a specific environment.
 
   ---
 
-## DD-036: Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer
+## DD-039: Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer
 
 **Status:** Proposed  
 **Date:** 2026-06-02  
@@ -2103,7 +2142,38 @@ the same fields.
 
 ---
 
-  ## Template for New Decisions
+## DD-040: Skill Lifecycle Architecture — Design / Execute Separation
+
+**Status:** Accepted  
+**Date:** 2026-05-30  
+**Affects:** All Copilot skills, skill naming, routing, scaffold distribution  
+**Implementation:** See `docs/design/dd-040-skill-lifecycle-architecture.md` for full ADR
+
+### Context
+
+Skills were originally monolithic (one skill did both interactive design and code
+generation). This led to confusion: users invoked a "design" skill expecting output,
+or a "generation" skill expecting interactive guidance.
+
+### Decision
+
+Separate all skills into two categories:
+1. **Design skills** (`kairos-design-*`) — interactive, require user confirmation at
+   checkpoints, produce/modify source files (TTL, YAML)
+2. **Execute skills** (`kairos-execute-*`) — run projections/validations/reports,
+   produce output artifacts, no interactive gates
+
+### Consequences
+
+- Clear routing: user intent maps unambiguously to skill category
+- Design skills are never run in autopilot mode (hard gates require user input)
+- Execute skills can be safely automated in CI/CD pipelines
+- Existing skills renamed from long-form (`kairos-ontology-modeling`) to short-form
+  (`kairos-design-domain`)
+
+---
+
+## Template for New Decisions
 
 ```markdown
 ## DD-NNN: Title

@@ -8,6 +8,7 @@
 
 name: '{PROJECT_NAME}'
 version: '1.0.0'
+profile: '{PROJECT_NAME}'
 
 # Ontology-generated models are pulled in as a dbt package
 # See packages.yml for the ontology-hub reference
