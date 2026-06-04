@@ -16,6 +16,11 @@ from kairos_ontology.analyse_sources import (
     write_affinity_matrix,
     resolve_reference_models,
     load_data_domains,
+    build_data_domain_targets,
+    list_accelerator_packs,
+    make_reporter,
+    _build_analysis_prompt,
+    _materialize_context,
     _find_ontology_package_dirs,
     _assign_domain_key,
     _domain_display_name,
@@ -339,6 +344,257 @@ class TestLoadDataDomains:
         )
         tables = parse_source_vocabulary(vocab_file)
         assert tables == {}
+
+
+# ---------------------------------------------------------------------------
+# Tests: Data-domain-first classification
+# ---------------------------------------------------------------------------
+
+
+DATA_DOMAINS_YAML = """\
+schema_version: "1.0"
+groups:
+  - id: party-commercial
+    name: "Party & Commercial"
+    domains:
+      - id: party
+        name: "Party, Role & Organisation"
+        owns: "Legal entities, customers, suppliers."
+        does_not_own: "Contracts, bookings, invoices."
+        imports:
+          - uri: "https://www.kairosflow.ai/ont/bsp/party#"
+            module: "BSP / Party"
+          - uri: "https://www.kairosflow.ai/ont/mmt/party#"
+            module: "MMT / Party"
+      - id: commercial
+        name: "Customer, Contract & Commercial Agreement"
+        owns: "Commercial relationships, service agreements."
+        does_not_own: "Surcharge calculation, invoice posting."
+        imports:
+          - uri: "https://www.kairosflow.ai/ont/bsp/commercial#"
+            module: "BSP / Commercial"
+"""
+
+
+def _write_logistics_pack(root):
+    dd_dir = root / "accelerator-packs" / "logistics" / "client-hub-blueprint"
+    dd_dir.mkdir(parents=True)
+    (dd_dir / "data-domains.yaml").write_text(DATA_DOMAINS_YAML, encoding="utf-8")
+    return dd_dir
+
+
+class TestLoadDataDomainsURIs:
+    """load_data_domains() captures imports URIs/modules + accelerator filter."""
+
+    def test_captures_uris_and_modules(self, tmp_path):
+        _write_logistics_pack(tmp_path)
+        result = load_data_domains(tmp_path)
+        assert result["party"]["uris"] == [
+            "https://www.kairosflow.ai/ont/bsp/party#",
+            "https://www.kairosflow.ai/ont/mmt/party#",
+        ]
+        assert result["party"]["modules"] == ["BSP / Party", "MMT / Party"]
+        assert result["commercial"]["uris"] == [
+            "https://www.kairosflow.ai/ont/bsp/commercial#"
+        ]
+        assert result["party"]["group"] == "party-commercial"
+
+    def test_accelerator_filter_selects_pack(self, tmp_path):
+        _write_logistics_pack(tmp_path)
+        # A second pack without data-domains we want
+        other = tmp_path / "accelerator-packs" / "financial-services" / "client-hub-blueprint"
+        other.mkdir(parents=True)
+        (other / "data-domains.yaml").write_text(
+            "groups:\n  - id: fin\n    domains:\n      - id: instrument\n"
+            "        name: Instrument\n",
+            encoding="utf-8",
+        )
+        result = load_data_domains(tmp_path, accelerator="logistics")
+        assert "party" in result
+        assert "instrument" not in result
+
+    def test_accelerator_filter_no_match_returns_empty(self, tmp_path):
+        _write_logistics_pack(tmp_path)
+        result = load_data_domains(tmp_path, accelerator="does-not-exist")
+        assert result == {}
+
+    def test_handles_missing_imports(self, tmp_path):
+        dd_dir = tmp_path / "accelerator-packs" / "x" / "client-hub-blueprint"
+        dd_dir.mkdir(parents=True)
+        (dd_dir / "data-domains.yaml").write_text(
+            "groups:\n  - id: g\n    domains:\n      - id: party\n        name: Party\n",
+            encoding="utf-8",
+        )
+        result = load_data_domains(tmp_path)
+        assert result["party"]["uris"] == []
+        assert result["party"]["modules"] == []
+
+
+class TestListAcceleratorPacks:
+    def test_lists_packs(self, tmp_path):
+        _write_logistics_pack(tmp_path)
+        fin = tmp_path / "accelerator-packs" / "financial-services" / "client-hub-blueprint"
+        fin.mkdir(parents=True)
+        (fin / "data-domains.yaml").write_text("groups: []\n", encoding="utf-8")
+        packs = list_accelerator_packs(tmp_path)
+        assert packs == ["financial-services", "logistics"]
+
+    def test_empty_when_none(self, tmp_path):
+        assert list_accelerator_packs(tmp_path) == []
+
+
+class TestBuildDataDomainTargets:
+    def test_builds_targets_with_uris(self, tmp_path):
+        _write_logistics_pack(tmp_path)
+        dd = load_data_domains(tmp_path)
+        targets = build_data_domain_targets(dd)
+
+        assert len(targets) == 2
+        party = next(t for t in targets if t["domain_name"] == "party")
+        assert party["display_name"] == "Party, Role & Organisation"
+        assert party["group"] == "party-commercial"
+        assert party["uris"] == [
+            "https://www.kairosflow.ai/ont/bsp/party#",
+            "https://www.kairosflow.ai/ont/mmt/party#",
+        ]
+        # Shallow: no TTL classes resolved
+        assert party["classes"] == []
+        # Ownership metadata available to the prompt
+        assert "Legal entities" in party["data_domain_meta"]["owns"]
+
+
+class TestDataDomainPrompt:
+    def test_prompt_uses_ownership_when_no_classes(self):
+        target = {
+            "domain_name": "commercial",
+            "display_name": "Customer, Contract & Commercial Agreement",
+            "group": "party-commercial",
+            "uris": ["https://www.kairosflow.ai/ont/bsp/commercial#"],
+            "classes": [],
+            "data_domain_meta": {
+                "owns": "Commercial relationships, service agreements.",
+                "does_not_own": "Surcharge calculation, invoice posting.",
+            },
+        }
+        columns = [{"name": "ContractNo", "data_type": "string", "samples": ["C-1"]}]
+        prompt = _build_analysis_prompt("tblContracts", columns, target)
+
+        assert "DATA DOMAIN: commercial" in prompt
+        assert "https://www.kairosflow.ai/ont/bsp/commercial#" in prompt
+        assert "Commercial relationships" in prompt
+        assert "party-commercial" in prompt
+
+    def test_prompt_uses_classes_in_fallback(self):
+        target = {
+            "domain_name": "Party",
+            "classes": [
+                {"name": "Party", "label": "Party", "comment": "A party",
+                 "properties": [{"name": "hasName"}]},
+            ],
+        }
+        columns = [{"name": "Name", "data_type": "string", "samples": ["Acme"]}]
+        prompt = _build_analysis_prompt("tblClient", columns, target)
+        assert "REFERENCE MODEL DOMAIN: Party" in prompt
+        assert "hasName" in prompt
+
+
+class TestMakeReporter:
+    def test_quiet_suppresses_info(self, capsys):
+        report = make_reporter(verbose=False, quiet=True)
+        report("hello")
+        report("oops", level="error")
+        out = capsys.readouterr().out
+        assert "hello" not in out
+        assert "oops" in out
+
+    def test_verbose_shows_verbose_lines(self, capsys):
+        report = make_reporter(verbose=True, quiet=False)
+        report("detail", level="verbose")
+        assert "detail" in capsys.readouterr().out
+
+    def test_default_hides_verbose_lines(self, capsys):
+        report = make_reporter(verbose=False, quiet=False)
+        report("detail", level="verbose")
+        report("phase")
+        out = capsys.readouterr().out
+        assert "detail" not in out
+        assert "phase" in out
+
+
+class TestMaterializeContext:
+    def test_writes_manifest_and_domain_docs(self, tmp_path):
+        targets = [
+            {
+                "domain_name": "commercial",
+                "display_name": "Commercial",
+                "group": "party-commercial",
+                "uris": ["https://www.kairosflow.ai/ont/bsp/commercial#"],
+                "modules": ["BSP / Commercial"],
+                "classes": [],
+                "data_domain_meta": {"owns": "Contracts", "does_not_own": "Invoices"},
+            },
+        ]
+        out = tmp_path / ".resolved"
+        _materialize_context(targets, tmp_path, out, "data-domain-first")
+
+        import yaml
+        manifest = yaml.safe_load((out / "_manifest.yaml").read_text())
+        assert manifest["strategy"] == "data-domain-first"
+        assert manifest["domain_count"] == 1
+        assert "toolkit_version" in manifest
+
+        domain_doc = yaml.safe_load((out / "domains" / "commercial.yaml").read_text())
+        assert domain_doc["domain"] == "commercial"
+        assert domain_doc["uris"] == ["https://www.kairosflow.ai/ont/bsp/commercial#"]
+        assert domain_doc["owns"] == "Contracts"
+
+
+class TestOutputIncludesURIs:
+    def test_affinity_yaml_has_uris_and_group(self, tmp_path):
+        analysis = SourceAnalysis(
+            system="testapp",
+            analysed_at="2026-06-04T12:00:00Z",
+            model_used="gpt-5-mini",
+            domain_affinities=[
+                DomainAffinity(
+                    domain="commercial",
+                    ref_model_file="data-domains.yaml",
+                    confidence=0.82,
+                    group="party-commercial",
+                    domain_uris=["https://www.kairosflow.ai/ont/bsp/commercial#"],
+                    matched_tables=[
+                        TableMatch(table="tblContracts", total_columns=3,
+                                   domain_relevance=0.85, likely_entity="SalesContract"),
+                    ],
+                ),
+            ],
+        )
+        out = write_analysis_output(analysis, tmp_path)
+        import yaml
+        data = yaml.safe_load(out.read_text())
+        contrib = data["domain_contributions"][0]
+        assert contrib["group"] == "party-commercial"
+        assert contrib["domain_uris"] == ["https://www.kairosflow.ai/ont/bsp/commercial#"]
+
+    def test_matrix_includes_uris_and_group(self, tmp_path):
+        analyses = [
+            SourceAnalysis(
+                system="sys1", analysed_at="t", model_used="m",
+                domain_affinities=[
+                    DomainAffinity(
+                        domain="party", ref_model_file="data-domains.yaml",
+                        confidence=0.8, group="party-commercial",
+                        domain_uris=["https://www.kairosflow.ai/ont/bsp/party#"],
+                    ),
+                ],
+            ),
+        ]
+        out = write_affinity_matrix(analyses, tmp_path)
+        import yaml
+        data = yaml.safe_load(out.read_text())
+        dom = data["systems"][0]["domains"][0]
+        assert dom["group"] == "party-commercial"
+        assert dom["domain_uris"] == ["https://www.kairosflow.ai/ont/bsp/party#"]
 
 
 # ---------------------------------------------------------------------------

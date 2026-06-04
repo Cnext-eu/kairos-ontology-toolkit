@@ -298,30 +298,38 @@ ls ontology-reference-models/
 ### 4b — Run the analysis
 
 ```bash
-kairos-ontology analyse-sources
+kairos-ontology analyse-sources --accelerator logistics
 ```
 
 **Available options:**
 
 | Option | Default | When to use |
 |---|---|---|
+| `--accelerator <name>` | none | Classify toward an accelerator pack's **data domains** (party, commercial, ...) with their model URIs — recommended; fast (no owl:imports resolution) |
 | `--domains "party,booking"` | all | Focus on specific domains |
 | `--threshold 0.3` | 0.3 | Minimum affinity confidence |
 | `--model gpt-5.4-mini` | gpt-5.4-mini | LLM model for semantic matching |
 | `--max-domains N` | all | Rate limit protection |
-| `--materialize .resolved/` | none | Write merged TTLs per domain for inspection |
+| `--shallow` | off | Skip owl:imports resolution in the reference-model fallback |
+| `--materialize .resolved/` | none | Write the resolved analysis context (manifest + per-domain YAML) for inspection |
+| `--verbose` / `--quiet` | off | Per-table progress / suppress progress |
 | `--sources path/` | auto-detect | Override sources directory |
 | `--ref-models path/` | auto-detect | Override reference models directory |
+
+Without `--accelerator`, the command falls back to grouping reference-model TTLs
+into model-level domains.
 
 ### 4c — Review affinity reports
 
 The command produces `{system}-affinity.yaml` files in
 `integration/sources/_analysis/` with:
 
-- **`domain_contributions`** — ranked list of reference model domains each
-  source feeds
+- **`domain_contributions`** — ranked list of data domains each source feeds
+- **`domain`** + **`domain_uris`** — the data-domain id and the reference-model
+  module URI(s) to `owl:imports` (data-domain-first mode)
 - **Per-table domain relevance** — how strongly each table belongs to a domain
-- **`likely_entity`** — which reference model class the table most likely maps to
+- **`likely_entity`** — the business entity / reference model class the table most
+  likely maps to
 - **`indicative_columns`** — key columns that signal domain membership
 - **`rationale`** — natural language explanation of why the table fits
 

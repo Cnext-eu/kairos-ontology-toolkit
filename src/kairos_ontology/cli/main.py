@@ -1136,27 +1136,49 @@ def generate_staging(from_dir, output, source_name):
 @click.option('--domains', 'domains_filter', default=None,
               help='Comma-separated domain names to include (case-insensitive substring match).')
 @click.option('--materialize', 'materialize_dir', type=click.Path(), default=None,
-              help='Write merged TTLs per domain to this directory (for inspection).')
+              help='Write the resolved analysis context (manifest + per-domain YAML) '
+                   'to this directory for inspection.')
 @click.option('--exclude', 'exclude_patterns', multiple=True, default=('archive/**',),
               help='Glob patterns to exclude from reference models (default: archive/**).')
+@click.option('--accelerator', default=None,
+              help='Accelerator pack name (e.g. logistics) — classify against its '
+                   'data domains (party, commercial, ...) instead of raw reference models.')
+@click.option('--shallow', is_flag=True, default=False,
+              help='Skip owl:imports resolution in the reference-model fallback (faster).')
+@click.option('--verbose', '-v', is_flag=True, default=False,
+              help='Show per-table classification lines.')
+@click.option('--quiet', '-q', is_flag=True, default=False,
+              help='Suppress progress output (errors still shown).')
 def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_domains,
-                        domains_filter, materialize_dir, exclude_patterns):
+                        domains_filter, materialize_dir, exclude_patterns,
+                        accelerator, shallow, verbose, quiet):
     """Analyse source vocabularies against reference model domains (LLM-powered).
 
-    Semantically matches source table columns against reference model properties
-    using the configured AI provider. Produces per-source affinity reports that the
-    modeling skill uses to scope context and seed evidence tables.
+    Classifies each source table by domain affinity. Two strategies:
+
+    \b
+    - Data-domain-first (recommended): pass --accelerator <name> to classify
+      tables toward the accelerator's data domains (party, commercial, booking,
+      ...), each carrying its model URIs. Fast — no owl:imports resolution.
+    - Reference-model (default): resolves and groups reference model TTLs.
+
+    Produces per-source affinity reports that the modeling skill uses to scope
+    context and seed evidence tables.
 
     Requires AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
 
     \b
     Examples:
-      kairos-ontology analyse-sources
-      kairos-ontology analyse-sources --domains "party,booking"
-      kairos-ontology analyse-sources --materialize .resolved/
+      kairos-ontology analyse-sources --accelerator logistics
+      kairos-ontology analyse-sources --accelerator logistics --domains "party,booking"
+      kairos-ontology analyse-sources --materialize .resolved/ --verbose
       kairos-ontology analyse-sources --sources path/to/sources/ --ref-models path/to/refs/
     """
-    from ..analyse_sources import run_analyse_sources, resolve_reference_models
+    from ..analyse_sources import (
+        run_analyse_sources, resolve_reference_models,
+        build_data_domain_targets, load_data_domains, list_accelerator_packs,
+        make_reporter,
+    )
     from ..hub_utils import find_hub_root
 
     # Auto-detect hub paths
@@ -1197,13 +1219,16 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         click.echo(f"❌ Sources directory not found: {sources_path}", err=True)
         raise SystemExit(1)
 
-    click.echo(f"🔍 Analysing sources in: {sources_path}")
-    click.echo(f"   Reference models: {ref_models_path}")
-    click.echo(f"   Model: {llm_model}")
-    click.echo(f"   Threshold: {threshold}")
-    if domains_filter:
-        click.echo(f"   Domain filter: {domains_filter}")
-    click.echo()
+    if not quiet:
+        click.echo(f"🔍 Analysing sources in: {sources_path}")
+        click.echo(f"   Reference models: {ref_models_path}")
+        click.echo(f"   Model: {llm_model}")
+        click.echo(f"   Threshold: {threshold}")
+        if accelerator:
+            click.echo(f"   Accelerator: {accelerator} (data-domain-first)")
+        if domains_filter:
+            click.echo(f"   Domain filter: {domains_filter}")
+        click.echo()
 
     # Detect catalog for owl:imports resolution
     catalog_file = None
@@ -1215,23 +1240,44 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
     # Convert exclude_patterns tuple to list
     excl_list = list(exclude_patterns) if exclude_patterns else None
 
-    # Pre-flight: show resolved domains
-    ref_domains = resolve_reference_models(
-        ref_models_path, catalog_path=catalog_file, exclude_patterns=excl_list,
-    )
-    if ref_domains:
-        total_cls = sum(len(d.get("classes", [])) for d in ref_domains)
-        total_props = sum(
-            sum(len(c.get("properties", [])) for c in d.get("classes", []))
-            for d in ref_domains
-        )
-        click.echo(f"📊 Resolved {len(ref_domains)} domain(s) "
-                   f"({total_cls} classes, {total_props} properties):")
-        for d in ref_domains:
-            n_cls = len(d.get("classes", []))
-            n_props = sum(len(c.get("properties", [])) for c in d.get("classes", []))
-            click.echo(f"   • {d['domain_name']} ({n_cls} classes, {n_props} properties)")
-        click.echo()
+    # Pre-flight: show resolved domains (skipped in quiet mode)
+    if not quiet:
+        if accelerator:
+            data_domains = load_data_domains(ref_models_path, accelerator=accelerator)
+            if not data_domains:
+                available = list_accelerator_packs(ref_models_path)
+                click.echo(
+                    f"❌ No data-domains.yaml for accelerator '{accelerator}'. "
+                    f"Available: {available or '(none)'}", err=True,
+                )
+                raise SystemExit(1)
+            targets = build_data_domain_targets(data_domains)
+            click.echo(f"📊 {len(targets)} data domain(s) from '{accelerator}':")
+            for d in targets:
+                uris = ", ".join(d.get("uris", [])) or "(no URIs)"
+                click.echo(f"   • {d['domain_name']} [{d.get('group', '')}] → {uris}")
+            click.echo()
+        else:
+            ref_domains = resolve_reference_models(
+                ref_models_path,
+                catalog_path=(None if shallow else catalog_file),
+                exclude_patterns=excl_list,
+            )
+            if ref_domains:
+                total_cls = sum(len(d.get("classes", [])) for d in ref_domains)
+                total_props = sum(
+                    sum(len(c.get("properties", [])) for c in d.get("classes", []))
+                    for d in ref_domains
+                )
+                click.echo(f"📊 Resolved {len(ref_domains)} domain(s) "
+                           f"({total_cls} classes, {total_props} properties):")
+                for d in ref_domains:
+                    n_cls = len(d.get("classes", []))
+                    n_props = sum(len(c.get("properties", [])) for c in d.get("classes", []))
+                    click.echo(
+                        f"   • {d['domain_name']} ({n_cls} classes, {n_props} properties)"
+                    )
+                click.echo()
 
     # Parse domains filter
     filter_list = None
@@ -1242,6 +1288,7 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
     mat_dir = Path(materialize_dir) if materialize_dir else None
 
     try:
+        reporter = make_reporter(verbose=verbose, quiet=quiet)
         output_files = run_analyse_sources(
             sources_dir=sources_path,
             ref_models_dir=ref_models_path,
@@ -1253,10 +1300,17 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
             materialize_dir=mat_dir,
             catalog_path=catalog_file,
             exclude_patterns=excl_list,
+            accelerator=accelerator,
+            shallow=shallow,
+            report=reporter,
         )
-        click.echo(f"\n✅ Analysis complete! Written {len(output_files)} file(s) to: {output_path}")
-        for f in output_files:
-            click.echo(f"   📄 {f.name}")
+        if not quiet:
+            click.echo(
+                f"\n✅ Analysis complete! Written {len(output_files)} file(s) "
+                f"to: {output_path}"
+            )
+            for f in output_files:
+                click.echo(f"   📄 {f.name}")
     except EnvironmentError as e:
         click.echo(f"\n❌ {e}", err=True)
         raise SystemExit(1)
