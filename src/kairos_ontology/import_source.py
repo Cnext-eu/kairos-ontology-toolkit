@@ -481,6 +481,181 @@ def generate_vocabulary_ttl(data: dict) -> str:
     return g.serialize(format="turtle")
 
 
+def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
+    """Generate one TTL file per table from a parsed source-schema YAML.
+
+    Returns a dict mapping table_name → Turtle string. Each file contains the
+    system declaration (SourceSystem) plus one table and its columns.
+    This enables fine-grained git diffs and scoped LLM context loading.
+    """
+    system_name = data["system"]
+    platform = data.get("platform", "unknown")
+    environment = data.get("environment", "")
+    connection = data.get("connection", {})
+    database = connection.get("database", "")
+    schema = connection.get("schema", "dbo")
+    extracted_at = data.get("extracted_at", "")
+
+    base_uri = f"https://kairos.cnext.eu/source/{system_name}#"
+    base_ns = Namespace(base_uri)
+
+    results: dict[str, str] = {}
+
+    for tbl in data.get("tables", []):
+        g = Graph()
+        g.bind("kairos-bronze", KAIROS_BRONZE)
+        g.bind(system_name, base_ns)
+        g.bind("rdfs", RDFS)
+        g.bind("xsd", XSD)
+        g.bind("owl", OWL)
+
+        # Ontology declaration per table
+        ont_uri = URIRef(f"https://kairos.cnext.eu/source/{system_name}/vocabulary/{tbl['name']}")
+        g.add((ont_uri, RDF.type, OWL.Ontology))
+        g.add((ont_uri, RDFS.label, Literal(f"{system_name} — {tbl['name']} Vocabulary")))
+        if extracted_at:
+            g.add((ont_uri, OWL.versionInfo, Literal(f"Extracted {extracted_at}")))
+
+        # Minimal system reference (for context)
+        sys_uri = _system_uri(base_ns, system_name)
+        g.add((sys_uri, RDF.type, KAIROS_BRONZE.SourceSystem))
+        g.add((sys_uri, RDFS.label, Literal(system_name)))
+        if database:
+            g.add((sys_uri, KAIROS_BRONZE.database, Literal(database)))
+        if schema:
+            g.add((sys_uri, KAIROS_BRONZE.schema, Literal(schema)))
+
+        # Generate table + columns (reuse same logic as generate_vocabulary_ttl)
+        _add_table_to_graph(g, tbl, base_ns, sys_uri)
+
+        results[tbl["name"]] = g.serialize(format="turtle")
+
+    return results
+
+
+def _add_table_to_graph(
+    g: Graph, tbl: dict, base_ns: Namespace, sys_uri: URIRef
+) -> None:
+    """Add a single table and its columns to an rdflib Graph."""
+    tbl_name = tbl["name"]
+    tbl_uri = _table_uri(base_ns, tbl_name)
+
+    g.add((tbl_uri, RDF.type, KAIROS_BRONZE.SourceTable))
+    g.add((tbl_uri, RDFS.label, Literal(tbl_name)))
+    g.add((tbl_uri, KAIROS_BRONZE.sourceSystem, sys_uri))
+    g.add((tbl_uri, KAIROS_BRONZE.tableName, Literal(tbl_name)))
+
+    pk_cols = [col["name"] for col in tbl.get("columns", []) if col.get("is_primary_key")]
+    if pk_cols:
+        g.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(pk_cols))))
+
+    row_count = tbl.get("row_count")
+    if row_count is not None:
+        g.add((tbl_uri, KAIROS_BRONZE.rowCount, Literal(row_count, datatype=XSD.integer)))
+
+    inc_col = tbl.get("incremental_column")
+    if inc_col:
+        g.add((tbl_uri, KAIROS_BRONZE.incrementalColumn, Literal(inc_col)))
+
+    for col in tbl.get("columns", []):
+        col_name = col["name"]
+        col_uri = _column_uri(base_ns, tbl_name, col_name)
+
+        g.add((col_uri, RDF.type, KAIROS_BRONZE.SourceColumn))
+        g.add((col_uri, KAIROS_BRONZE.sourceTable, tbl_uri))
+        g.add((col_uri, KAIROS_BRONZE.columnName, Literal(col_name)))
+        g.add((col_uri, KAIROS_BRONZE.dataType, Literal(col["data_type"])))
+
+        nullable = col.get("nullable", True)
+        g.add((col_uri, KAIROS_BRONZE.nullable, Literal(nullable, datatype=XSD.boolean)))
+
+        is_pk = col.get("is_primary_key", False)
+        if is_pk:
+            g.add((col_uri, KAIROS_BRONZE.isPrimaryKey, Literal(True, datatype=XSD.boolean)))
+
+        content_type = col.get("content_type")
+        if content_type:
+            g.add((col_uri, KAIROS_BRONZE.contentType, Literal(content_type)))
+
+        samples = col.get("samples")
+        if samples:
+            g.add((col_uri, KAIROS_BRONZE.sampleValues,
+                   Literal(" | ".join(str(s) for s in samples[:5]))))
+
+        distinct_count = col.get("distinct_count")
+        if distinct_count is not None:
+            g.add((col_uri, KAIROS_BRONZE.distinctCount,
+                   Literal(distinct_count, datatype=XSD.integer)))
+
+        if col.get("suggested_enum"):
+            g.add((col_uri, KAIROS_BRONZE.suggestedEnum, Literal(True, datatype=XSD.boolean)))
+            enum_values = col.get("enum_values", [])
+            if enum_values:
+                g.add((col_uri, KAIROS_BRONZE.enumValues,
+                       Literal(" | ".join(str(v) for v in enum_values))))
+
+        format_hint = col.get("format_hint")
+        if format_hint:
+            g.add((col_uri, KAIROS_BRONZE.formatHint, Literal(format_hint)))
+
+        suggested_fk = col.get("suggested_fk")
+        if suggested_fk:
+            fk_target_uri = _table_uri(base_ns, suggested_fk)
+            g.add((col_uri, KAIROS_BRONZE.suggestedForeignKey, fk_target_uri))
+            fk_confidence = col.get("fk_confidence", "medium")
+            g.add((col_uri, KAIROS_BRONZE.fkConfidence, Literal(fk_confidence)))
+
+        if samples and not col.get("json_detected"):
+            sample_comment = f"Examples: {', '.join(str(s) for s in samples[:3])}"
+            g.add((col_uri, RDFS.comment, Literal(sample_comment)))
+
+        if col.get("json_detected"):
+            classification = col.get("json_classification", "polymorphic")
+            g.add((col_uri, KAIROS_BRONZE.contentType, Literal("json")))
+            g.add((col_uri, KAIROS_BRONZE.jsonClassification, Literal(classification)))
+
+            json_structure = col.get("json_structure", [])
+            if classification in ("flat", "nested") and json_structure:
+                for js in json_structure:
+                    key_name = js.get("key", "")
+                    if not key_name:
+                        continue
+                    prop_uri = _column_uri(base_ns, tbl_name, f"{col_name}__{key_name}")
+                    g.add((prop_uri, RDF.type, KAIROS_BRONZE.SourceColumn))
+                    g.add((prop_uri, KAIROS_BRONZE.sourceTable, tbl_uri))
+                    g.add((prop_uri, KAIROS_BRONZE.columnName,
+                           Literal(f"{col_name}.{key_name}")))
+                    g.add((prop_uri, KAIROS_BRONZE.dataType,
+                           Literal(_json_type_to_sql(js.get("type", "string")))))
+                    g.add((prop_uri, KAIROS_BRONZE.derivedFromJson, col_uri))
+                    if js.get("sample") is not None:
+                        g.add((prop_uri, KAIROS_BRONZE.sampleValues,
+                               Literal(str(js["sample"]))))
+
+            elif classification == "array_object" and json_structure:
+                child_tbl_name = f"{tbl_name}_{col_name}"
+                child_uri = _table_uri(base_ns, child_tbl_name)
+                g.add((child_uri, RDF.type, KAIROS_BRONZE.SourceTable))
+                g.add((child_uri, RDFS.label, Literal(child_tbl_name)))
+                g.add((child_uri, KAIROS_BRONZE.sourceSystem, sys_uri))
+                g.add((child_uri, KAIROS_BRONZE.tableName, Literal(child_tbl_name)))
+                g.add((child_uri, KAIROS_BRONZE.derivedFromJson, col_uri))
+                g.add((child_uri, RDFS.comment, Literal(
+                    f"Virtual table derived from JSON array column "
+                    f"{tbl_name}.{col_name}"
+                )))
+                for js in json_structure:
+                    key_name = js.get("key", "")
+                    if not key_name:
+                        continue
+                    prop_uri = _column_uri(base_ns, child_tbl_name, key_name)
+                    g.add((prop_uri, RDF.type, KAIROS_BRONZE.SourceColumn))
+                    g.add((prop_uri, KAIROS_BRONZE.sourceTable, child_uri))
+                    g.add((prop_uri, KAIROS_BRONZE.columnName, Literal(key_name)))
+                    g.add((prop_uri, KAIROS_BRONZE.dataType,
+                           Literal(_json_type_to_sql(js.get("type", "string")))))
+
+
 # --------------------------------------------------------------------------- #
 # Merge with Existing Vocabulary
 # --------------------------------------------------------------------------- #
@@ -732,6 +907,7 @@ def run_import_source(
     dry_run: bool = False,
     enrich: bool = True,
     enum_threshold: int = 25,
+    split_tables: bool = False,
 ) -> tuple[Path | None, ChangeReport | None]:
     """Orchestrate the import-source workflow.
 
@@ -742,9 +918,10 @@ def run_import_source(
         dry_run: If True, show changes but don't write files.
         enrich: If True, run inference enrichment (enum/format/FK detection).
         enum_threshold: Max distinct values for enum detection.
+        split_tables: If True, generate one TTL per table in a vocabulary/ subfolder.
 
     Returns:
-        Tuple of (output file path or None if dry-run, ChangeReport or None if fresh).
+        Tuple of (output file/dir path or None if dry-run, ChangeReport or None if fresh).
     """
     data = parse_source_schema(yaml_path)
 
@@ -771,6 +948,25 @@ def run_import_source(
         else:
             output_dir = Path("integration/sources") / sys_name
 
+    # --- Split-tables mode: one TTL per table ---
+    if split_tables:
+        vocab_dir = output_dir / "vocabulary"
+        if dry_run:
+            logger.info("Dry-run: would write per-table TTLs to %s", vocab_dir)
+            return None, None
+
+        vocab_dir.mkdir(parents=True, exist_ok=True)
+        per_table = generate_vocabulary_per_table(data)
+        for tbl_name, ttl_content in per_table.items():
+            tbl_file = vocab_dir / f"{tbl_name}.vocabulary.ttl"
+            tbl_file.write_text(ttl_content, encoding="utf-8")
+
+        logger.info(
+            "Written %d per-table vocabulary files to %s", len(per_table), vocab_dir
+        )
+        return vocab_dir, None
+
+    # --- Standard single-file mode ---
     output_file = output_dir / f"{sys_name}.vocabulary.ttl"
 
     if output_file.exists():

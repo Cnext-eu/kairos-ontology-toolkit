@@ -158,6 +158,8 @@ Use this table to pick the correct skill for a user's intent:
 | "Design silver schema / FK annotations" | **kairos-design-silver** |
 | "Design gold / Power BI model" | **kairos-design-gold** |
 | "Import / extract TMDL or PBIP files" | CLI: `kairos-ontology import-tmdl` |
+| "Analyse sources / pre-model domain contributions" | CLI: `kairos-ontology analyse-sources` |
+| "Import CSV/Excel flat files as source" | CLI: `kairos-ontology import-flatfile` |
 | "Release / upgrade / version check / update reference models" | **kairos-toolkit-ops** |
 | "Map source columns to domain / create SKOS mappings" | **kairos-design-mapping** |
 | "Status / progress / what's missing / where are we" | **kairos-diagnose-status** |
@@ -181,8 +183,8 @@ Running CLI directly can produce incomplete or incorrect output without warning.
 - ❌ `python -m kairos_ontology new-repo` → use **kairos-setup-init** skill
 - ❌ Directly editing `.ttl` files without invoking the modeling/mapping skill
 
-**Only exception:** The `import-tmdl` command has no corresponding skill and may be
-run directly via CLI.
+**Only exceptions:** The `import-tmdl`, `analyse-sources`, and `import-flatfile`
+commands have no corresponding skill and may be run directly via CLI.
 
 **If you are unsure which skill to use**, invoke **kairos-help** for guidance.
 

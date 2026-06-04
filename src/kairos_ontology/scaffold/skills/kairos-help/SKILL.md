@@ -184,8 +184,13 @@ kairos-ontology catalog-test
 # Import TMDL/PBIP files for ontology modeling input
 kairos-ontology import-tmdl <source> [--output PATH]
 
+# Import CSV/Excel flat files as source documentation
+kairos-ontology import-flatfile --from <path> [--system NAME] [--output PATH] \
+  [--sample-size 5] [--max-rows 1000]
+
 # Analyse sources against reference models (LLM-powered, pre-modeling)
-kairos-ontology analyse-sources [--sources PATH] [--ref-models PATH] [--model gpt-5-mini]
+kairos-ontology analyse-sources [--sources PATH] [--ref-models PATH] [--output PATH] \
+  [--model gpt-5.4-mini] [--domains "Domain1,Domain2"] [--max-domains N] [--materialize PATH]
 
 # Generate coverage report (LLM-powered, post-modeling)
 kairos-ontology coverage-report [--ontology PATH] [--ref-models PATH] [--format both]

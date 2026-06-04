@@ -18,6 +18,20 @@ dbt silver model generation.
 - Source system reference docs should be placed in `ontology-hub/integration/sources/{system-name}/`
 - The `kairos-bronze:` vocabulary is defined in the toolkit (`kairos-bronze.ttl`)
 
+## Alternative input: CSV/Excel flat files
+
+If source documentation is available as flat files (CSV exports, Excel workbooks),
+use `import-flatfile` instead of manually creating the vocabulary:
+
+```bash
+kairos-ontology import-flatfile --from exports/my-data.csv --system my-source
+kairos-ontology import-flatfile --from exports/workbook.xlsx --system my-source
+kairos-ontology import-flatfile --from exports/ --system my-source  # directory of files
+```
+
+This auto-generates `_manifest.yaml`, per-table YAML, and `.samples.yaml` files —
+then run `import-source --from integration/sources/{system}/` to produce the TTL.
+
 ## Architecture
 
 ```
@@ -311,8 +325,26 @@ Save to `ontology-hub/.sessions-design/source-{system-name}-{YYYY-MM-DD}.md`:
 
 | When you need | Invoke |
 |---|---|
+| **Analyse sources against reference models (next step!)** | CLI: `kairos-ontology analyse-sources` |
 | Design/modify domain ontology classes and properties | **kairos-design-domain** |
 | Design silver layer (DDL, SCD, FK annotations) | **kairos-design-silver** |
 | Design gold layer (Power BI star schema, measures) | **kairos-design-gold** |
 | Map source columns to domain properties | **kairos-design-mapping** |
 | Run projections after source vocab is complete | **kairos-execute-project** |
+
+## Next Step — Pre-Model Analysis
+
+After all source vocabularies have been created, run the **analyse-sources** command
+to understand which reference model domains each source contributes to:
+
+```bash
+kairos-ontology analyse-sources \
+  --sources integration/sources \
+  --ref-models ontology-reference-models \
+  --output integration/sources/_analysis
+```
+
+This produces `{system}-affinity.yaml` files with `domain_contributions` — a ranked
+list of reference model domains each source feeds, with per-table contribution scores
+and column-level match suggestions. The **kairos-design-domain** skill uses this
+output as a mandatory prerequisite (Step 0a) to scope which tables to model per domain.

@@ -752,7 +752,9 @@ def import_tmdl(source, output):
               help='Run inference enrichment (enum/format/FK detection). Default: enabled.')
 @click.option('--enum-threshold', type=int, default=25,
               help='Max distinct values to suggest as enumeration (default: 25).')
-def import_source(from_path, system_name, output, dry_run, enrich, enum_threshold):
+@click.option('--split-tables', is_flag=True, default=False,
+              help='Generate one TTL per table in a vocabulary/ subfolder (better for git diffs).')
+def import_source(from_path, system_name, output, dry_run, enrich, enum_threshold, split_tables):
     """Import source schema YAML and generate/refresh bronze vocabulary TTL.
 
     Reads a standardized source-schema YAML file (produced by the
@@ -773,6 +775,7 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
       kairos-ontology import-source --from extracted/adminpulse/
       kairos-ontology import-source --from schema.yaml --system myapp --dry-run
       kairos-ontology import-source --from extracted/nms/ --no-enrich
+      kairos-ontology import-source --from extracted/nms/ --split-tables
     """
     from ..import_source import run_import_source, parse_source_schema_dir
 
@@ -820,6 +823,7 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
             dry_run=dry_run,
             enrich=enrich,
             enum_threshold=enum_threshold,
+            split_tables=split_tables,
         )
     except ValueError as e:
         click.echo(f"\n❌ {e}", err=True)
@@ -852,12 +856,17 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
     if dry_run:
         click.echo("\n🔍 Dry-run mode — no files written")
     elif result_path:
-        click.echo(f"\n✅ Written: {result_path}")
+        if split_tables:
+            # result_path is the vocabulary/ directory
+            n_files = len(list(result_path.glob("*.vocabulary.ttl")))
+            click.echo(f"\n✅ Written {n_files} per-table vocabulary files to: {result_path}")
+        else:
+            click.echo(f"\n✅ Written: {result_path}")
 
         # Copy .samples.yaml files from source directory to output directory
         if source_path.is_dir() and result_path:
             import shutil as _shutil
-            dest_dir = result_path.parent
+            dest_dir = result_path.parent if not split_tables else result_path.parent
             samples_copied = 0
             for samples_file in source_path.glob("*.samples.yaml"):
                 dest_file = dest_dir / samples_file.name
@@ -873,7 +882,73 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
         tmp_cleanup.unlink()
 
 
-@cli.command(name='extract-schema')
+@cli.command(name='import-flatfile')
+@click.option('--from', 'from_path', type=click.Path(exists=True), required=True,
+              help='Path to CSV file, Excel file, or directory containing flat files.')
+@click.option('--system', 'system_name', default=None,
+              help='System name (default: derived from filename/directory).')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Output directory (default: integration/sources/{system}/).')
+@click.option('--sample-size', type=int, default=5,
+              help='Number of sample rows to store per table (default: 5).')
+@click.option('--max-rows', type=int, default=1000,
+              help='Maximum rows to read for type inference (default: 1000).')
+def import_flatfile(from_path, system_name, output, sample_size, max_rows):
+    """Import CSV/Excel flat files as source schema documentation.
+
+    Reads flat files and produces the standard source schema format
+    (_manifest.yaml + per-table YAML + samples). Use import-source afterwards
+    to generate the bronze vocabulary TTL.
+
+    \b
+    Supported inputs:
+      - Single .csv file → 1 table
+      - Single .xlsx file → 1 table per worksheet
+      - Directory of .csv/.xlsx files → 1 table per file/sheet
+
+    \b
+    Examples:
+      kairos-ontology import-flatfile --from exports/customers.csv --system erp
+      kairos-ontology import-flatfile --from data/report.xlsx --system finance
+      kairos-ontology import-flatfile --from data-exports/ --system legacy-erp
+
+    \b
+    Next step after import-flatfile:
+      kairos-ontology import-source --from integration/sources/{system}/
+    """
+    from ..import_flatfile import run_import_flatfile
+
+    source_path = Path(from_path)
+    output_dir = Path(output) if output else None
+
+    click.echo(f"📋 Importing flat files from: {source_path}")
+
+    try:
+        result_dir = run_import_flatfile(
+            source_path=source_path,
+            system_name=system_name,
+            output_dir=output_dir,
+            max_rows=max_rows,
+            sample_size=sample_size,
+        )
+    except (ValueError, ImportError) as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+    # Count outputs
+    yaml_count = len(list(result_dir.glob("*.yaml"))) - 1  # exclude _manifest.yaml
+    samples_count = len(list(result_dir.glob("*.samples.yaml")))
+
+    click.echo(f"\n✅ Written to: {result_dir}")
+    click.echo(f"   📊 {yaml_count} table(s) documented")
+    if samples_count:
+        click.echo(f"   📋 {samples_count} sample file(s) created")
+    click.echo(
+        f"\n💡 Next step: kairos-ontology import-source --from {result_dir}"
+    )
+
+
+
 @click.option('--profile', 'profile_name', required=True,
               help='dbt profile name (from profiles.yml).')
 @click.option('--target', default='dev',
