@@ -501,6 +501,53 @@ identify relevant systems:
 find ontology-hub/integration/sources/ -name "*.vocabulary.ttl"
 ```
 
+**Step 0c.1b — Load reference model semantics (MANDATORY when affinity reports exist):**
+
+After identifying the target domain from the affinity report, resolve the
+`domain_uris` to their local reference model TTL files via the OASIS XML catalog
+and **read those TTLs** to extract the reference model vocabulary into your context.
+
+1. **Resolve URIs via the catalog chain:**
+   ```bash
+   # The hub catalog chains to the reference-models catalog
+   cat ontology-hub/catalog-v001.xml
+   # → find <nextCatalog catalog="../ontology-reference-models/catalog-v001.xml"/>
+   cat ontology-reference-models/catalog-v001.xml
+   # → find <rewriteURI uriStartString="https://www.kairosflow.ai/ont/bsp/commercial"
+   #          rewritePrefix="derived-ontologies/BSP/current/commercial/commercial.ttl"/>
+   ```
+
+2. **Read the resolved module TTL(s):**
+   For each `domain_uris` entry from the affinity report, find the corresponding
+   local TTL file via the catalog mapping, then read it:
+   ```bash
+   # Example: domain_uris contains https://www.kairosflow.ai/ont/bsp/commercial#
+   # Catalog resolves to: ontology-reference-models/derived-ontologies/BSP/current/commercial/commercial.ttl
+   cat ontology-reference-models/derived-ontologies/BSP/current/commercial/commercial.ttl
+   ```
+
+3. **Extract the reference model vocabulary:**
+   From the TTL, build a **Reference Model Class Inventory** listing all
+   `owl:Class` subjects with their `rdfs:label`, `rdfs:comment`, and declared
+   properties (`rdfs:domain` pointing to the class):
+
+   > "**Reference Model Class Inventory** (from `bsp/commercial`):
+   >
+   > | # | Class URI | Label | Properties | Comment |
+   > |---|-----------|-------|------------|---------|
+   > | 1 | `bsp:SalesContract` | Sales Contract | `contractIdentifier`, `effectiveDate`, `expiryDate` | A commercial agreement… |
+   > | 2 | `bsp:TradeTerms` | Trade Terms | `incoterm`, `paymentTerms` | Terms governing a transaction… |
+   > | … | … | … | … | … |
+   >
+   > These classes are already available via `owl:imports` — **do NOT recreate
+   > them as local classes.** Use them directly or subclass them."
+
+**Why this matters:** Without this inventory in your context, you will rely on
+naming heuristics and risk creating custom classes (`Client`, `Agreement`) when
+equivalent reference model classes (`TradeParty`, `SalesContract`) already exist.
+The inventory ensures every class/property proposal in the Source Evidence Table
+is matched against what the reference model already provides.
+
 **Step 0c.2 — Extract source table and column inventory:**
 
 For each relevant source system, extract the complete column list:
@@ -534,24 +581,48 @@ For each relevant TMDL table:
 
 **Step 0c.4 — Produce the Source Evidence Table:**
 
-Build this table BEFORE proposing any classes or properties:
+Build this table BEFORE proposing any classes or properties. **Use the Reference
+Model Class Inventory from Step 0c.1b** to match source columns against known
+reference model properties — do NOT guess candidate properties from naming alone.
+
+For each source column, check:
+1. Does a reference model property already exist for this concept? → Use it (⚪ Inherited)
+2. Does a source column map to a known reference model class? → Note the ref class
+3. Only propose a custom property name when NO reference model match exists
 
 > "**Source Evidence Table** (extracted from client data):
 >
-> | # | Source Column | Source Table | System | Data Type | Candidate Property | Candidate Class | Evidence Strength |
-> |---|---|---|---|---|---|---|---|
-> | 1 | `MAFINR` | `gooddetails2` | RoRoNet | nvarchar(50) | `mafiNumber` | MafiTrailer | 🟢 Direct |
-> | 2 | `LICENSEPLATE` | `equips` | RoRoNet | nvarchar(50) | `licensePlate` | (shared) | 🟢 Direct |
-> | 3 | `EQUIPMENTCODE` | `gooddetails2` | RoRoNet | nvarchar(50) | _(discriminator)_ | _(subclass selector)_ | 🟢 Direct |
-> | 4 | `TransportMediumTypeDescr` | `d_UnitTypes` | TMDL | string | _(discriminator)_ | _(confirms subclasses)_ | 🟡 TMDL |
-> | … | … | … | … | … | … | … | … |
+> | # | Source Column | Source Table | System | Data Type | Candidate Property | Candidate Class | Ref Match | Evidence |
+> |---|---|---|---|---|---|---|---|---|
+> | 1 | `ContractNo` | `tblContracts` | Admin | nvarchar(50) | `contractIdentifier` | `bsp:SalesContract` | ✅ Ref | 🟢 Direct |
+> | 2 | `ValidFrom` | `tblContracts` | Admin | datetime | `effectiveDate` | `bsp:SalesContract` | ✅ Ref | 🟢 Direct |
+> | 3 | `InternalCode` | `tblContracts` | Admin | nvarchar(20) | `internalCode` | `bsp:SalesContract` | ❌ Custom | 🟢 Direct |
+> | 4 | `TransportMediumTypeDescr` | `d_UnitTypes` | TMDL | string | _(discriminator)_ | _(subclass selector)_ | — | 🟡 TMDL |
+> | … | … | … | … | … | … | … | … | … |
+>
+> **Ref Match legend:**
+> - ✅ Ref — candidate property exists in reference model (from Step 0c.1b inventory)
+> - ❌ Custom — no reference model property found; will be a local extension
+> - — (dash) — discriminator or structural column, not a direct property match
 >
 > **Evidence strength legend:**
 > - 🟢 Direct — column exists in source system bronze vocabulary
 > - 🟡 TMDL — column exists in Power BI semantic model
 > - 🟠 Cross-validated — appears in both source AND TMDL
-> - ⚪ Inherited — property comes from reference model
+> - ⚪ Inherited — property comes from reference model (no source column; include for completeness)
 > - 🔵 Inferred — suggested by domain knowledge, no source evidence"
+
+**After the table, add a Reference Model Coverage Summary:**
+
+> "**Reference model coverage for this domain:**
+>
+> | Ref Class | Ref Properties | Matched to Source | Unmatched | Coverage |
+> |-----------|---------------|-------------------|-----------|----------|
+> | `bsp:SalesContract` | 5 | 3 (60%) | `contractType`, `partyRole` | 🟡 Partial |
+> | `bsp:TradeTerms` | 3 | 0 (0%) | all | 🔴 No source data |
+>
+> Unmatched reference properties are included as ⚪ Inherited in the property
+> design phase — they exist via `owl:imports` but have no source column yet."
 
 **Step 0c.5 — Detect subclass candidates from source data:**
 
@@ -1121,8 +1192,29 @@ only in [Quick-edit mode](#quick-edit-mode).
 
 ### Checkpoint 1: Naming Alignment (MANDATORY before creating any class)
 
-**Prerequisite:** Step 0c (Source Evidence Table) must be complete before
-reaching this checkpoint. Class proposals must be grounded in source evidence.
+**Prerequisite:** Step 0c (Source Evidence Table) AND the Reference Model Class
+Inventory (Step 0c.1b) must be complete before reaching this checkpoint. Class
+proposals must be grounded in source evidence AND checked against the reference
+model vocabulary.
+
+**Anti-local-class check (MANDATORY):** Before proposing ANY new class, first
+present the reference model classes that are already available via `owl:imports`
+for this domain:
+
+> "**Reference model classes available for this domain** (from Step 0c.1b):
+>
+> | # | Ref Class | Label | Source Tables Feeding It | Coverage |
+> |---|-----------|-------|--------------------------|----------|
+> | 1 | `bsp:SalesContract` | Sales Contract | `tblContracts` (Admin) | 3/5 props matched |
+> | 2 | `bsp:TradeTerms` | Trade Terms | _(none)_ | 0/3 — no source data |
+>
+> These classes are **already imported** and should be used directly (or
+> subclassed) rather than creating new local classes with similar names."
+
+**Only propose a NEW local class when ALL of these conditions are met:**
+1. No reference model class covers this concept (check the inventory)
+2. The source evidence shows a distinct entity not represented in the ref model
+3. You can articulate the semantic difference from any similar ref-model class
 
 For every new class, **explicitly cite the source evidence and ask**:
 
