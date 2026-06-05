@@ -359,6 +359,51 @@ ls integration/sources/_analysis/
 - Without it, the modeler tends to create too many custom classes instead of
   reusing proven reference model concepts
 
+**Step 0a.2 — Check for column-level alignment reports:**
+
+```bash
+ls integration/sources/_analysis/*-alignment.yaml
+```
+
+- If `*-alignment.yaml` files exist → these provide **pre-computed column→property
+  alignments** from `kairos-ontology propose-alignment`. Read the alignment for the
+  target domain to pre-populate the Source Evidence Table:
+
+  ```yaml
+  # Example: commercial-alignment.yaml
+  schema_version: 1
+  domain: commercial
+  tables:
+    - system: adminpulse
+      table: tblContracts
+      ref_class: SalesContract
+      columns:
+        - column: ContractNo
+          ref_property: contractIdentifier
+          alignment: semantic
+          confidence: 0.92
+      custom_columns:
+        - column: InternalCode
+          suggested_property: internalCode
+  reference_rollup:
+    - ref_class: SalesContract
+      matched_properties: 2
+      ref_properties_total: 5
+      coverage_pct: 40.0
+  ```
+
+  Use alignment data to:
+  - Pre-fill the **Ref Match** column in the Source Evidence Table (Step 0c.4)
+  - Identify which ref-model properties are already matched vs unmatched
+  - Focus manual review on `custom_columns` (no ref-model match) and low-confidence alignments
+  - The `reference_rollup` shows coverage gaps per ref class
+
+- If `*-alignment.yaml` is **missing** → instruct the user to run:
+  ```bash
+  kairos-ontology propose-alignment
+  ```
+  This requires affinity reports (`analyse-sources`) to exist first.
+
 **Using the affinity report during modeling:**
 
 The report is **table-centric** (`schema_version: 2`): a flat `tables` list assigns each

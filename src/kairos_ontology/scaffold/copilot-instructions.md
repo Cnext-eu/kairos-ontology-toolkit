@@ -166,6 +166,7 @@ Use this table to pick the correct skill for a user's intent:
 | "Set up / scaffold a dataplatform dbt repo" | **kairos-setup-dataplatform** |
 | "Import source schema / refresh vocabulary from bronze" | **kairos-design-source** (Phase 2) |
 | "Generate coverage report" | CLI: `kairos-ontology coverage-report` |
+| "Propose column-to-property alignment" | CLI: `kairos-ontology propose-alignment` |
 
 ### Skill-first enforcement (MANDATORY)
 

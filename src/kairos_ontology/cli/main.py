@@ -1318,7 +1318,135 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         raise SystemExit(1)
 
 
-@cli.command(name='coverage-report')
+@cli.command(name='propose-alignment')
+@click.option('--analysis', type=click.Path(exists=True), default=None,
+              help='Path to _analysis/ directory with affinity reports (default: auto-detect).')
+@click.option('--sources', type=click.Path(exists=True), default=None,
+              help='Path to integration/sources/ directory (default: auto-detect).')
+@click.option('--catalog', type=click.Path(exists=True), default=None,
+              help='Path to catalog-v001.xml (default: auto-detect from hub).')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Output directory (default: same as --analysis).')
+@click.option('--model', 'llm_model', default='gpt-5.4-mini',
+              help='LLM model for semantic alignment (default: gpt-5.4-mini).')
+@click.option('--domains', 'domains_filter', default=None,
+              help='Comma-separated domain names to include (case-insensitive substring match).')
+@click.option('--verbose', '-v', is_flag=True, default=False,
+              help='Show per-table alignment details.')
+@click.option('--quiet', '-q', is_flag=True, default=False,
+              help='Suppress progress output (errors still shown).')
+def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
+                          domains_filter, verbose, quiet):
+    """Propose source-column → reference-model-property alignment (LLM-powered).
+
+    Pre-modeling step that analyses how source columns map to reference model
+    classes and properties. Requires affinity reports from analyse-sources.
+
+    \b
+    Produces per-domain alignment YAML files that the modeling skill uses
+    to pre-populate the Source Evidence Table with reference model matches.
+
+    \b
+    Examples:
+      kairos-ontology propose-alignment
+      kairos-ontology propose-alignment --domains "commercial,party" --verbose
+      kairos-ontology propose-alignment --analysis path/to/_analysis/
+    """
+    from ..propose_alignment import run_propose_alignment
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+
+    # Auto-detect analysis directory
+    if analysis is None:
+        for candidate in [
+            (hub_root / "integration" / "sources" / "_analysis") if hub_root else None,
+            cwd / "integration" / "sources" / "_analysis",
+            cwd / "_analysis",
+        ]:
+            if candidate and candidate.is_dir():
+                analysis_path = candidate
+                break
+        else:
+            click.echo(
+                "❌ Cannot find _analysis/ directory with affinity reports. "
+                "Run 'kairos-ontology analyse-sources' first, or use --analysis.",
+                err=True,
+            )
+            raise SystemExit(1)
+    else:
+        analysis_path = Path(analysis)
+
+    # Auto-detect sources directory
+    if sources is None:
+        if hub_root:
+            sources_path = hub_root / "integration" / "sources"
+        else:
+            sources_path = cwd / "integration" / "sources"
+    else:
+        sources_path = Path(sources)
+
+    # Auto-detect catalog
+    if catalog is None:
+        catalog_path = None
+        if hub_root:
+            candidate_cat = hub_root / "catalog-v001.xml"
+            if candidate_cat.exists():
+                catalog_path = candidate_cat
+    else:
+        catalog_path = Path(catalog)
+
+    # Output defaults to same dir as analysis
+    if output is None:
+        output_path = analysis_path
+    else:
+        output_path = Path(output)
+
+    if not quiet:
+        click.echo("📐 Proposing column→property alignment")
+        click.echo(f"   Analysis: {analysis_path}")
+        click.echo(f"   Sources: {sources_path}")
+        click.echo(f"   Catalog: {catalog_path or '(none)'}")
+        click.echo(f"   Model: {llm_model}")
+        if domains_filter:
+            click.echo(f"   Domain filter: {domains_filter}")
+        click.echo()
+
+    filter_list = None
+    if domains_filter:
+        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
+
+    def reporter(msg, level="normal"):
+        if quiet:
+            return
+        if level == "verbose" and not verbose:
+            return
+        click.echo(msg)
+
+    try:
+        output_files = run_propose_alignment(
+            analysis_dir=analysis_path,
+            sources_dir=sources_path,
+            catalog_path=catalog_path,
+            output_dir=output_path,
+            model=llm_model,
+            domains_filter=filter_list,
+            report=reporter,
+        )
+        if not quiet:
+            click.echo(
+                f"\n✅ Alignment complete! Written {len(output_files)} file(s) "
+                f"to: {output_path}"
+            )
+            for f in output_files:
+                click.echo(f"   📄 {f.name}")
+    except EnvironmentError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+    except ValueError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
 @click.option('--ontology', type=click.Path(exists=True), default=None,
               help='Path to model/ontologies/ directory (default: auto-detect from hub).')
 @click.option('--ref-models', type=click.Path(exists=True), default=None,
