@@ -91,6 +91,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-041](#dd-041-llm-powered-source-affinity-analysis--coverage-reporting) | LLM-powered Source Affinity Analysis & Coverage Reporting | Accepted | 2026-06-04 |
 | [DD-042](#dd-042-table-centric-source-classification-with-module-class-grounding) | Table-centric source classification with module-class grounding | Accepted | 2026-06-05 |
 | [DD-043](#dd-043-propose-alignment--pre-modeling-column-to-property-matching) | Propose-alignment — pre-modeling column-to-property matching | Accepted | 2026-06-05 |
+| [DD-044](#dd-044-integration-dapr-and-n8n-projection-targets) | Integration, Dapr, and n8n projection targets | Accepted | 2026-06-06 |
 
 ---
 
@@ -2370,6 +2371,63 @@ Design choices:
 - `custom_columns` entries (alignment=custom) identify source columns that will need
   new local properties — the modeling skill can focus review there
 - Output is additive: does not modify or replace affinity reports
+
+---
+
+## DD-044: Integration, Dapr, and n8n projection targets
+
+**Status:** Accepted  
+**Date:** 2026-06-06  
+**Affects:** `projector.py`, `projections/integration_projector.py`, `projections/dapr_projector.py`, `projections/n8n_projector.py`, `projections/mapping_parser.py`  
+**Implementation:** Three new projection targets + shared mapping parser
+
+### Context
+
+The toolkit generates data pipeline artifacts (dbt, silver, gold) and search/API
+schemas (neo4j, azure-search, a2ui), but has no support for generating integration
+pipeline code that connects source systems to the silver layer at runtime. Users
+building on Dapr or n8n had to manually translate SKOS mappings into binding configs
+and workflow definitions.
+
+### Decision
+
+Add a **three-layer integration projection architecture**:
+
+1. **Layer 1: `integration` target** — Generates target-agnostic mapping JSON files
+   from SKOS mappings + bronze vocabulary + silver-ext annotations. Each file
+   describes one source-table → silver-entity mapping with column-level transforms.
+   Consumable by any integration runtime.
+
+2. **Layer 2a: `dapr` target** — Consumes Layer 1 mappings and generates Dapr
+   component YAMLs (input/output bindings, pub/sub, state store) plus a Python app
+   skeleton with entity-aware routing and a generic `mapper.py` engine.
+
+3. **Layer 2b: `n8n` target** — Consumes Layer 1 mappings and generates importable
+   n8n workflow JSON with webhook trigger → set node (transform) → database write
+   node topology, one workflow per source system.
+
+**Shared infrastructure:** The SKOS mapping parser (`_parse_skos_mappings` and
+`_parse_split_annotations`) was extracted from `medallion_dbt_projector.py` into
+`projections/mapping_parser.py` for reuse across dbt, integration, dapr, and n8n
+projectors.
+
+### Rationale
+
+- Layer 1 (mapping JSON) is **runtime-agnostic** — the same mapping files work for
+  Dapr, n8n, Logic Apps, Data Factory, or custom code
+- Layer 2 targets are thin wrappers generating runtime-specific scaffolding around
+  the shared mappings, reducing duplication
+- Extracting the mapping parser enables consistent SKOS interpretation across all
+  projectors that consume source-to-domain mappings
+
+### Consequences
+
+- Three new valid targets: `integration`, `dapr`, `n8n`
+- `VALID_TARGETS` list extended in `projector.py`
+- dbt projector's `_parse_skos_mappings` now delegates to the shared module
+  (backward compatible — same behavior, different code location)
+- Future runtime targets (Logic Apps, Data Factory) only need a new Layer 2
+  wrapper around the same Layer 1 mapping JSON
 
 ---
 
