@@ -307,12 +307,12 @@ kairos-ontology analyse-sources --accelerator logistics
 |---|---|---|
 | `--accelerator <name>` | none | Classify toward an accelerator pack's **data domains** (party, commercial, ...) with their model URIs — recommended; fast (no owl:imports resolution) |
 | `--domains "party,booking"` | all | Focus on specific domains |
-| `--threshold 0.3` | 0.3 | Minimum affinity confidence |
 | `--model gpt-5.4-mini` | gpt-5.4-mini | LLM model for semantic matching |
 | `--max-domains N` | all | Rate limit protection |
-| `--shallow` | off | Skip owl:imports resolution in the reference-model fallback |
+| `--shallow` | off | Skip module-class grounding + owl:imports resolution (faster) |
 | `--materialize .resolved/` | none | Write the resolved analysis context (manifest + per-domain YAML) for inspection |
 | `--verbose` / `--quiet` | off | Per-table progress / suppress progress |
+| `--threshold` | 0.3 | Deprecated; ignored in table-centric (schema_version 2) analysis |
 | `--sources path/` | auto-detect | Override sources directory |
 | `--ref-models path/` | auto-detect | Override reference models directory |
 
@@ -322,16 +322,19 @@ into model-level domains.
 ### 4c — Review affinity reports
 
 The command produces `{system}-affinity.yaml` files in
-`integration/sources/_analysis/` with:
+`integration/sources/_analysis/`. Each report is **table-centric** (`schema_version: 2`):
 
-- **`domain_contributions`** — ranked list of data domains each source feeds
-- **`domain`** + **`domain_uris`** — the data-domain id and the reference-model
-  module URI(s) to `owl:imports` (data-domain-first mode)
-- **Per-table domain relevance** — how strongly each table belongs to a domain
+- **`tables`** — one entry per source table, each assigned to exactly ONE primary
+  data domain
+- **`domain`** + **`domain_uris`** — the table's primary data-domain id and the
+  reference-model module URI(s) to `owl:imports` (data-domain-first mode)
+- **`secondary_domains`** — up to two additional domains the table also feeds
+- **`confidence`** — how strongly the table belongs to its primary domain
 - **`likely_entity`** — the business entity / reference model class the table most
   likely maps to
 - **`indicative_columns`** — key columns that signal domain membership
-- **`rationale`** — natural language explanation of why the table fits
+- **`rationale`** — natural language explanation of the primary choice
+- **`domain_summary`** — a rollup grouping tables by primary domain (with `table_count`)
 
 **Checkpoint:** Review the affinity reports with the user. Ask:
 - Do the domain assignments make sense?

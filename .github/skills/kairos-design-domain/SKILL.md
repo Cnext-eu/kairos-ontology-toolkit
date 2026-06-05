@@ -353,42 +353,51 @@ ls integration/sources/_analysis/
 
 **Why this matters:**
 - The contribution report tells you WHICH data domains are relevant (with their URIs)
-- It classifies source tables by domain affinity and identifies likely entities
-- It scopes context: only load tables with ≥30% domain_relevance to the target domain
+- It classifies each source table into ONE primary data domain and identifies its likely entity
+- It scopes context: for a target domain, load the tables assigned to it (as primary or
+  secondary)
 - Without it, the modeler tends to create too many custom classes instead of
   reusing proven reference model concepts
 
-**Using the domain contributions report during modeling:**
+**Using the affinity report during modeling:**
 
-When loading source evidence for a domain, read the relevant `{system}-affinity.yaml`:
+The report is **table-centric** (`schema_version: 2`): a flat `tables` list assigns each
+source table to exactly ONE primary `domain` (plus optional `secondary_domains`), and a
+`domain_summary` rollup groups tables by primary domain. Read the relevant
+`{system}-affinity.yaml`:
 
 ```yaml
-# Example: adminpulse-affinity.yaml shows 82% confidence to the "commercial" data domain
-domain_contributions:
-  - domain: commercial
-    group: party-commercial
+# Example: adminpulse-affinity.yaml — each table classified into ONE primary domain
+schema_version: 2
+tables:
+  - table: tblContracts
+    total_columns: 12
+    domain: commercial
+    domain_group: party-commercial
     domain_uris:
       - https://www.kairosflow.ai/ont/bsp/commercial#
-    ref_source: party-commercial
-    confidence: 0.82
-    contributing_tables:
-      - table: tblContracts
-        domain_relevance: 0.85
-        rationale: "Contains contract numbers, trade terms, and validity dates"
-        likely_entity: SalesContract
-        indicative_columns: [ContractNo, TradeTerms, ValidFrom]
-      - table: tblPricing
-        domain_relevance: 0.71
-        rationale: "Pricing conditions tied to commercial agreements"
-        likely_entity: PricingCondition
-        indicative_columns: [RateCode, Amount, Currency]
+    confidence: 0.85
+    likely_entity: SalesContract
+    rationale: "Contains contract numbers, trade terms, and validity dates"
+    indicative_columns: [ContractNo, TradeTerms, ValidFrom]
+    secondary_domains:
+      - domain: financial
+        domain_group: party-commercial
+        domain_uris: [https://www.kairosflow.ai/ont/bsp/financial#]
+domain_summary:
+  - domain: commercial
+    domain_group: party-commercial
+    domain_uris:
+      - https://www.kairosflow.ai/ont/bsp/commercial#
+    table_count: 1
+    tables: [tblContracts]
 ```
 
-The `domain` is the data-domain id and `domain_uris` tells you which reference-model
-module(s) to `owl:imports` for that domain (e.g. `bsp/commercial`). Use the
-pre-classified tables as the **starting point** for your Source Evidence Table
-(Step 0c). The `likely_entity` tells you which class each table feeds, and
-`indicative_columns` highlights the most relevant columns to consider.
+When modeling a domain `X`, select the tables where `domain == X` (primary) plus any whose
+`secondary_domains[].domain == X`. The `domain_uris` tell you which reference-model
+module(s) to `owl:imports` for that domain (e.g. `bsp/commercial`). Use those tables as the
+**starting point** for your Source Evidence Table (Step 0c). The `likely_entity` tells you
+which class each table feeds, and `indicative_columns` highlights the most relevant columns.
 
 ### Step 0b — Inventory available inputs (Source Systems & TMDL)
 
@@ -477,9 +486,11 @@ If `_analysis/` contains `*-affinity.yaml` files, use them to scope:
 # Check for affinity reports
 ls ontology-hub/_analysis/*-affinity.yaml
 
-# Each report lists contributing_tables per domain with domain_relevance scores.
-# Only load tables with domain_relevance ≥ 0.3 for the target domain.
-# The likely_entity field tells you which class each table feeds.
+# Each report (schema_version 2) is table-centric: the `tables` list assigns each
+# source table to ONE primary `domain` (plus optional `secondary_domains`).
+# For the target domain X, load the tables where `domain == X`, plus any whose
+# `secondary_domains[].domain == X`. The `likely_entity` field tells you which
+# class each table feeds.
 ```
 
 If no affinity reports exist, use naming heuristics and the user's input to
