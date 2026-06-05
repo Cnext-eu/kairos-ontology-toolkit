@@ -216,7 +216,7 @@ design decisions.
 
 ## Projection targets
 
-Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`, `powerbi`, `report`.
+Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`, `powerbi`, `report`, `integration`, `dapr`, `n8n`.
 Each ontology domain produces separate output artifacts per target.
 
 > **Silver FK annotations:** When a domain ontology imports reference models via
