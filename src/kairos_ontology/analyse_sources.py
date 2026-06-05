@@ -31,33 +31,45 @@ DEFAULT_MODEL = "gpt-5.4-mini"
 
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 
+# Maximum number of reference/module class labels surfaced per candidate domain
+# in the single-call classification prompt. The full owl:imports closure (incl.
+# FIBO) is intentionally NOT expanded — only the directly-imported module classes
+# are summarised, capped here to keep the prompt bounded.
+MAX_DOMAIN_CLASSES = 18
+
+# Maximum number of secondary (non-primary) domains retained per table.
+MAX_SECONDARY_DOMAINS = 2
+
+# Deterministic fallback domain ids, in priority order, used when the model
+# returns an id that is not among the candidate domains. The first id that is
+# present in the candidate set is chosen; if none is present the table is left
+# ``unclassified``.
+FALLBACK_DOMAIN_IDS = ["mdm", "reference-data"]
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class TableMatch:
-    """Match result for a single source table against a reference model domain."""
+class TableAssignment:
+    """Table-centric classification result.
+
+    Each source table is assigned to exactly ONE primary data domain, with
+    optional secondary domains. URIs and group are resolved server-side from the
+    chosen candidate domain.
+    """
     table: str
     total_columns: int
-    domain_relevance: float = 0.0
-    rationale: str = ""
-    likely_entity: str = ""
-    indicative_columns: list[str] = field(default_factory=list)
-
-
-@dataclass
-class DomainAffinity:
-    """Affinity score of a source system to a reference model domain."""
     domain: str
-    ref_model_file: str
-    confidence: float
-    total_classes: int = 0
-    ref_source: str = ""
-    matched_tables: list[TableMatch] = field(default_factory=list)
+    domain_group: str = ""
     domain_uris: list[str] = field(default_factory=list)
-    group: str = ""
+    confidence: float = 0.0
+    likely_entity: str = ""
+    rationale: str = ""
+    indicative_columns: list[str] = field(default_factory=list)
+    # Each entry: {"domain", "domain_group", "domain_uris"}
+    secondary_domains: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -66,7 +78,7 @@ class SourceAnalysis:
     system: str
     analysed_at: str
     model_used: str
-    domain_affinities: list[DomainAffinity] = field(default_factory=list)
+    table_assignments: list[TableAssignment] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +464,207 @@ def build_data_domain_targets(
 
 
 # ---------------------------------------------------------------------------
+# Semantic grounding — resolve directly-imported module classes
+# ---------------------------------------------------------------------------
+
+
+def _module_format(path: Path) -> str:
+    """Best-effort RDF format from a file suffix (defaults to turtle)."""
+    return {".ttl": "turtle", ".owl": "xml", ".rdf": "xml",
+            ".jsonld": "json-ld", ".nt": "nt"}.get(path.suffix.lower(), "turtle")
+
+
+def _resolve_module_classes(
+    path: Path, cache: dict[str, list[dict[str, str]]],
+) -> list[dict[str, str]]:
+    """Extract the ``owl:Class`` definitions *declared in a single module file*.
+
+    Provenance-based: only the classes asserted in ``path`` itself are returned
+    (the file's ``owl:imports`` are NOT followed), so transitive FIBO classes do
+    not leak in. Results are cached by file path so each module is parsed once per
+    run and shared across all candidate domains that import it.
+    """
+    key = str(path)
+    if key in cache:
+        return cache[key]
+    classes: list[dict[str, str]] = []
+    try:
+        g = Graph()
+        g.parse(path, format=_module_format(path))
+        for cls_uri in g.subjects(RDF.type, OWL.Class):
+            if not isinstance(cls_uri, URIRef):
+                continue
+            name = cls_uri.split("#")[-1].split("/")[-1]
+            label = str(g.value(cls_uri, RDFS.label) or name)
+            comment = str(g.value(cls_uri, RDFS.comment) or "")
+            classes.append({"name": name, "label": label, "comment": comment})
+    except Exception as e:  # pragma: no cover - parse error path
+        logger.debug("Module parse failed for %s: %s", path, e)
+    cache[key] = classes
+    return classes
+
+
+def _resolve_uris_to_classes(
+    uris: list[str],
+    resolver,
+    module_cache: dict[str, list[dict[str, str]]],
+    cap: int = MAX_DOMAIN_CLASSES,
+) -> list[dict[str, str]]:
+    """Resolve a domain's import URIs to a capped, de-duplicated class summary."""
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for uri in uris:
+        try:
+            path = resolver.resolve(uri)
+        except Exception as e:  # pragma: no cover - resolver error path
+            logger.debug("Catalog resolve failed for %s: %s", uri, e)
+            continue
+        if not path or not Path(path).exists():
+            logger.debug("No catalog mapping for data-domain URI %s", uri)
+            continue
+        for c in _resolve_module_classes(Path(path), module_cache):
+            if c["name"] in seen:
+                continue
+            seen.add(c["name"])
+            out.append(c.copy())
+    return out[:cap]
+
+
+def resolve_domain_class_summaries(
+    ref_domains: list[dict[str, Any]],
+    catalog_path: Path | None,
+    cap: int = MAX_DOMAIN_CLASSES,
+    report=None,
+) -> None:
+    """Attach a capped ``class_summary`` to each data-domain target in place.
+
+    For every target that carries import ``uris`` but no resolved ``classes``
+    (the data-domain-first path), resolve those URIs to their local module TTLs
+    via the XML catalog and extract the directly-declared classes. Resolution is
+    done **once per run** with a module-level cache shared across all domains,
+    tables and source systems. Unresolvable URIs are skipped gracefully so the
+    classifier falls back to ``owns``/``does_not_own`` text alone.
+    """
+    if report is None:
+        report = _noop_report
+    if not catalog_path or not Path(catalog_path).exists():
+        logger.debug("No catalog available; skipping semantic grounding")
+        return
+    try:
+        from kairos_ontology.catalog_utils import CatalogResolver
+        resolver = CatalogResolver(Path(catalog_path))
+    except Exception as e:
+        logger.warning("Catalog load failed (%s); skipping semantic grounding", e)
+        return
+
+    module_cache: dict[str, list[dict[str, str]]] = {}
+    grounded = 0
+    for domain in ref_domains:
+        if domain.get("classes"):
+            continue  # reference-model path already carries classes
+        uris = domain.get("uris", [])
+        if not uris:
+            continue
+        summary = _resolve_uris_to_classes(uris, resolver, module_cache, cap)
+        if summary:
+            domain["class_summary"] = summary
+            grounded += 1
+    if grounded:
+        report(
+            f"  Grounded {grounded} domain(s) with module class semantics "
+            f"({len(module_cache)} module file(s) resolved)."
+        )
+
+
+def _summarize_classes(
+    classes: list[dict[str, Any]], cap: int = MAX_DOMAIN_CLASSES,
+) -> list[dict[str, str]]:
+    """Trim a full class list down to a capped {name,label,comment} summary."""
+    out: list[dict[str, str]] = []
+    for c in classes[:cap]:
+        out.append({
+            "name": c.get("name", ""),
+            "label": c.get("label", "") or c.get("name", ""),
+            "comment": c.get("comment", ""),
+        })
+    return out
+
+
+def _build_candidates(ref_domains: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the normalized candidate-domain list used for single-call prompts.
+
+    Unifies both strategies: data-domain-first targets carry ``data_domain_meta``
+    (owns/does_not_own) and a resolved ``class_summary``; reference-model targets
+    carry full ``classes`` which are summarised here.
+    """
+    candidates: list[dict[str, Any]] = []
+    for d in ref_domains:
+        dd_meta = d.get("data_domain_meta") or {}
+        class_summary = d.get("class_summary")
+        if class_summary is None:
+            class_summary = _summarize_classes(d.get("classes", []))
+        candidates.append({
+            "id": d["domain_name"],
+            "group": d.get("group", ""),
+            "uris": d.get("uris", []),
+            "owns": dd_meta.get("owns", ""),
+            "does_not_own": dd_meta.get("does_not_own", ""),
+            "class_summary": class_summary,
+        })
+    return candidates
+
+
+def _pick_fallback(valid_ids: set[str], fallback_ids: list[str]) -> str:
+    """Return the first fallback id present in the candidate set, else 'unclassified'."""
+    for fid in fallback_ids:
+        if fid in valid_ids:
+            return fid
+    return "unclassified"
+
+
+def _normalize_id(s: str) -> str:
+    """Lowercase alphanumeric-only form, for tolerant candidate-id matching."""
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+
+def _resolve_domain_id(raw: str, candidate_ids: list[str]) -> str | None:
+    """Match a model-returned domain value to a candidate id.
+
+    Exact match first; otherwise a normalized (case/space/punctuation-insensitive)
+    match, but only when it is unambiguous. Returns None if no confident match —
+    important for reference-model candidate ids that may contain spaces/slashes.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    if raw in candidate_ids:
+        return raw
+    norm = _normalize_id(raw)
+    if not norm:
+        return None
+    matches = [cid for cid in candidate_ids if _normalize_id(cid) == norm]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _coerce_confidence(val: Any) -> float:
+    """Parse a confidence value defensively and clamp to [0.0, 1.0]."""
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(max(0.0, min(1.0, f)), 2)
+
+
+def _as_str_list(val: Any) -> list[str]:
+    """Coerce an arbitrary JSON value into a list of strings."""
+    if isinstance(val, list):
+        return [str(x) for x in val]
+    if val:
+        return [str(val)]
+    return []
+
+
+# ---------------------------------------------------------------------------
 # LLM client
 # ---------------------------------------------------------------------------
 
@@ -462,101 +675,87 @@ def _get_openai_client():
     return get_ai_client()
 
 
-def _build_analysis_prompt(
-    table_name: str,
-    columns: list[dict[str, Any]],
-    domain_summary: dict[str, Any],
-) -> str:
-    """Build the LLM prompt for classifying one table against one domain."""
-    # Format columns as a table with sample data
+def _format_columns(columns: list[dict[str, Any]]) -> str:
+    """Render columns as a markdown-ish table with up to 3 sample values each."""
     col_lines = []
     for col in columns:
         samples_str = ", ".join(col["samples"][:3]) if col.get("samples") else ""
         col_lines.append(f"  | {col['name']} | {col['data_type']} | {samples_str} |")
+    return "\n".join(col_lines)
 
-    dd_meta = domain_summary.get("data_domain_meta")
-    classes = domain_summary.get("classes", [])
 
-    # Build the domain description block. Two modes:
-    #   1. Data-domain-first (no classes): describe the domain via its ownership.
-    #   2. Reference-model (has classes): list classes + properties.
-    if not classes and dd_meta:
-        display = domain_summary.get("display_name") or domain_summary["domain_name"]
-        group = domain_summary.get("group", "")
-        uris = domain_summary.get("uris", [])
-        group_line = f"\nDOMAIN GROUP: {group}" if group else ""
-        uri_line = (
-            "\nMODEL URIs: " + ", ".join(uris) if uris else ""
-        )
-        domain_block = f"""DATA DOMAIN: {domain_summary['domain_name']} — {display}{group_line}{uri_line}
+def _build_single_call_prompt(
+    table_name: str,
+    columns: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+) -> str:
+    """Build a single prompt that classifies one table against ALL candidates.
 
-This domain OWNS: {dd_meta.get('owns', 'not specified')}
-This domain does NOT own: {dd_meta.get('does_not_own', 'not specified')}
+    The model picks exactly ONE primary domain id (plus optional secondaries)
+    from the candidate ids listed in the prompt.
+    """
+    cand_blocks = []
+    for c in candidates:
+        header = f"### {c['id']}" + (f"  (group: {c['group']})" if c.get("group") else "")
+        lines = [header]
+        if c.get("owns"):
+            lines.append(f"  OWNS: {c['owns']}")
+        if c.get("does_not_own"):
+            lines.append(f"  DOES NOT OWN: {c['does_not_own']}")
+        cs = c.get("class_summary") or []
+        if cs:
+            labels = ", ".join(x.get("label") or x.get("name", "") for x in cs)
+            lines.append(f"  KEY CONCEPTS: {labels}")
+        cand_blocks.append("\n".join(lines))
 
-Classify the table against this DATA DOMAIN based on its subject matter and
-the ownership boundaries above — not against individual classes."""
-        entity_question = (
-            "2. If it belongs, what business entity name best describes the table's "
-            "subject (free text, e.g. \"SalesContract\", \"PartyAddress\")?"
-        )
-        entity_hint = "Business entity name or empty string if no clear match"
-    else:
-        domain_lines = []
-        for cls in classes:
-            props_str = ", ".join(p["name"] for p in cls["properties"][:10])
-            comment_str = f" — {cls['comment']}" if cls.get("comment") else ""
-            domain_lines.append(
-                f"  - {cls['name']} ({cls['label']}{comment_str}): [{props_str}]"
-            )
+    candidate_ids = ", ".join(c["id"] for c in candidates)
 
-        ownership_section = ""
-        if dd_meta:
-            ownership_section = f"""
-DOMAIN OWNERSHIP CONTEXT:
-  This domain OWNS: {dd_meta.get('owns', 'not specified')}
-  This domain does NOT own: {dd_meta.get('does_not_own', 'not specified')}
-"""
-        domain_block = f"""REFERENCE MODEL DOMAIN: {domain_summary['domain_name']}
-CLASSES:
-{chr(10).join(domain_lines)}
-{ownership_section}"""
-        entity_question = (
-            "2. Which reference model class does this table most likely feed data into?"
-        )
-        entity_hint = "ClassName or empty string if no clear match"
-
-    return f"""Determine whether this source table contributes data to the given reference model domain.
+    return f"""Classify this source database table into exactly ONE primary business data domain.
 Focus on the TABLE AS A WHOLE — its name, the column names collectively, and the sample data values.
 
 SOURCE TABLE: {table_name}
 COLUMNS AND SAMPLE DATA:
   | Column | Type | Sample Values |
-{chr(10).join(col_lines)}
+{_format_columns(columns)}
 
-{domain_block}
-Answer these questions:
-1. Does this table's subject matter (name + data patterns) belong to this domain?
-{entity_question}
-3. Which columns are most indicative of domain membership (top 3-5)?
+CANDIDATE DATA DOMAINS (choose the single best PRIMARY fit):
+{chr(10).join(cand_blocks)}
+
+Instructions:
+- Pick the ONE primary domain whose subject matter and ownership boundaries best match the table.
+- The primary `domain` MUST be exactly one of these ids: {candidate_ids}
+- Optionally list up to {MAX_SECONDARY_DOMAINS} secondary domains (also from the ids above) only if the table clearly also feeds them. Use [] if none.
+- Identify the likely business entity the table represents and the columns most indicative of the chosen domain.
 
 Respond with JSON only:
 {{
-  "domain_relevance": 0.0-1.0,
-  "rationale": "1-2 sentence explanation of why this table fits or doesn't fit",
-  "likely_entity": "{entity_hint}",
+  "domain": "<one of the candidate ids>",
+  "secondary_domains": ["<id>", "..."],
+  "confidence": 0.0-1.0,
+  "likely_entity": "Business entity name (e.g. SalesContract, PartyAddress)",
+  "rationale": "1-2 sentence explanation of the primary choice",
   "indicative_columns": ["col1", "col2", "col3"]
 }}"""
 
 
-def analyse_table_against_domain(
+def analyse_table_single_call(
     client,
     model: str,
     table_name: str,
     columns: list[dict[str, Any]],
-    domain_summary: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    fallback_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Use LLM to classify one source table's affinity to one domain."""
-    prompt = _build_analysis_prompt(table_name, columns, domain_summary)
+    """Classify one source table against all candidate domains in a single LLM call.
+
+    Returns a normalized dict ``{domain, secondary_domains, confidence,
+    likely_entity, rationale, indicative_columns}``. The returned ``domain`` is
+    always a valid candidate id, the configured fallback, or ``"unclassified"``.
+    """
+    fallback_ids = fallback_ids if fallback_ids is not None else FALLBACK_DOMAIN_IDS
+    candidate_ids = [c["id"] for c in candidates]
+    valid_ids = set(candidate_ids)
+    prompt = _build_single_call_prompt(table_name, columns, candidates)
 
     try:
         response = client.chat.completions.create(
@@ -564,21 +763,55 @@ def analyse_table_against_domain(
             messages=[
                 {"role": "system", "content": (
                     "You are an expert data architect. You classify source system "
-                    "tables by determining which business domain they belong to, "
-                    "based on table names, column names, and sample data values. "
-                    "Always respond with valid JSON."
+                    "tables into business data domains based on table names, column "
+                    "names, and sample data values. You always pick exactly one "
+                    "primary domain. Always respond with valid JSON."
                 )},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
             response_format={"type": "json_object"},
         )
-        content = response.choices[0].message.content
-        return json.loads(content)
+        result = json.loads(response.choices[0].message.content)
     except Exception as e:
-        logger.warning("LLM analysis failed for table %s: %s", table_name, e)
-        return {"domain_relevance": 0.0, "rationale": "", "likely_entity": "",
-                "indicative_columns": []}
+        logger.warning("LLM single-call analysis failed for table %s: %s", table_name, e)
+        result = {}
+    if not isinstance(result, dict):
+        result = {}
+
+    matched = _resolve_domain_id(result.get("domain", ""), candidate_ids)
+    if matched is not None:
+        domain_id = matched
+        confidence = _coerce_confidence(result.get("confidence"))
+        likely_entity = str(result.get("likely_entity", "") or "")
+        rationale = str(result.get("rationale", "") or "")
+        indicative = _as_str_list(result.get("indicative_columns"))
+    else:
+        domain_id = _pick_fallback(valid_ids, fallback_ids)
+        confidence = 0.0
+        likely_entity = ""
+        rationale = (
+            str(result.get("rationale", "") or "")
+            or f"Model returned no valid domain; fell back to '{domain_id}'."
+        )
+        indicative = []
+
+    secondaries: list[str] = []
+    for raw_sid in _as_str_list(result.get("secondary_domains")):
+        sid = _resolve_domain_id(raw_sid, candidate_ids)
+        if sid and sid != domain_id and sid not in secondaries:
+            secondaries.append(sid)
+        if len(secondaries) >= MAX_SECONDARY_DOMAINS:
+            break
+
+    return {
+        "domain": domain_id,
+        "secondary_domains": secondaries,
+        "confidence": confidence,
+        "likely_entity": likely_entity,
+        "rationale": rationale,
+        "indicative_columns": indicative,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -615,85 +848,83 @@ def analyse_source_system(
     threshold: float = 0.3,
     report=None,
 ) -> SourceAnalysis:
-    """Analyse one source system against pre-resolved reference model domains.
+    """Analyse one source system against candidate domains, table by table.
+
+    Table-centric: each source table is classified in a SINGLE LLM call against
+    all candidate domains, yielding exactly one primary domain (plus optional
+    secondaries). Group and URIs are resolved server-side from the chosen
+    candidate.
 
     Args:
         source_vocab_path: Path to the source system's .vocabulary.ttl
-        ref_domains: Pre-parsed domain summaries (from resolve_reference_models)
+        ref_domains: Pre-resolved domain targets (data-domain-first or
+            reference-model). Each may carry ``class_summary``/``classes``.
         model: LLM model name
-        threshold: Minimum domain relevance to include in output
+        threshold: Reserved for backward compatibility (unused — one primary
+            domain is always returned per table).
         report: Optional progress reporter (see make_reporter)
 
     Returns:
-        SourceAnalysis with domain affinities and table-level match details.
+        SourceAnalysis with one TableAssignment per (non-empty) source table.
     """
     if report is None:
         report = _noop_report
-    client = _get_openai_client()
 
+    sys_name = source_vocab_path.stem.replace(".vocabulary", "")
     tables = parse_source_vocabulary(source_vocab_path)
     if not tables:
         logger.warning("No tables found in %s", source_vocab_path)
         return SourceAnalysis(
-            system=source_vocab_path.stem.replace(".vocabulary", ""),
+            system=sys_name,
             analysed_at=datetime.now(timezone.utc).isoformat(),
             model_used=model,
         )
 
-    domain_results: dict[str, DomainAffinity] = {}
+    client = _get_openai_client()
+    candidates = _build_candidates(ref_domains)
+    meta_by_id = {c["id"]: c for c in candidates}
 
-    for domain in ref_domains:
-        domain_key = domain["domain_name"]
-        table_matches: list[TableMatch] = []
-        total_relevance = 0.0
+    assignments: list[TableAssignment] = []
+    for tbl_name, columns in tables.items():
+        if not columns:
+            continue
 
-        for tbl_name, columns in tables.items():
-            if not columns:
-                continue
+        res = analyse_table_single_call(client, model, tbl_name, columns, candidates)
+        domain_id = res["domain"]
+        meta = meta_by_id.get(domain_id, {})
 
-            result = analyse_table_against_domain(
-                client, model, tbl_name, columns, domain
-            )
+        secondary: list[dict[str, Any]] = []
+        for sid in res["secondary_domains"]:
+            smeta = meta_by_id.get(sid, {})
+            secondary.append({
+                "domain": sid,
+                "domain_group": smeta.get("group", ""),
+                "domain_uris": smeta.get("uris", []),
+            })
 
-            relevance = result.get("domain_relevance", 0.0)
-            total_relevance += relevance
-
-            if relevance >= threshold:
-                report(
-                    f"      ├─ {tbl_name} → {domain_key} "
-                    f"({relevance:.2f}) {result.get('likely_entity', '')}",
-                    level="verbose",
-                )
-                table_matches.append(TableMatch(
-                    table=tbl_name,
-                    total_columns=len(columns),
-                    domain_relevance=round(relevance, 2),
-                    rationale=result.get("rationale", ""),
-                    likely_entity=result.get("likely_entity", ""),
-                    indicative_columns=result.get("indicative_columns", []),
-                ))
-
-        if table_matches:
-            avg_relevance = total_relevance / len(tables) if tables else 0.0
-            domain_results[domain_key] = DomainAffinity(
-                domain=domain_key,
-                ref_model_file=domain["file"],
-                confidence=round(avg_relevance, 2),
-                total_classes=len(domain.get("classes", [])),
-                ref_source=domain.get("ref_source", ""),
-                matched_tables=table_matches,
-                domain_uris=domain.get("uris", []),
-                group=domain.get("group", ""),
-            )
-
-    sys_name = source_vocab_path.stem.replace(".vocabulary", "")
-    affinities = sorted(domain_results.values(), key=lambda d: d.confidence, reverse=True)
+        report(
+            f"      ├─ {tbl_name} → {domain_id} "
+            f"({res['confidence']:.2f}) {res['likely_entity']}",
+            level="verbose",
+        )
+        assignments.append(TableAssignment(
+            table=tbl_name,
+            total_columns=len(columns),
+            domain=domain_id,
+            domain_group=meta.get("group", ""),
+            domain_uris=meta.get("uris", []),
+            confidence=res["confidence"],
+            likely_entity=res["likely_entity"],
+            rationale=res["rationale"],
+            indicative_columns=res["indicative_columns"],
+            secondary_domains=secondary,
+        ))
 
     return SourceAnalysis(
         system=sys_name,
         analysed_at=datetime.now(timezone.utc).isoformat(),
         model_used=model,
-        domain_affinities=affinities,
+        table_assignments=assignments,
     )
 
 
@@ -703,7 +934,11 @@ def analyse_source_system(
 
 
 def write_analysis_output(analysis: SourceAnalysis, output_dir: Path) -> Path:
-    """Write analysis results to YAML in domain_contributions format.
+    """Write table-centric analysis results to YAML.
+
+    Schema (``schema_version: 2``): a flat ``tables[]`` list (one entry per source
+    table, each with its single primary ``domain`` + optional ``secondary_domains``)
+    plus a ``domain_summary[]`` rollup grouping tables by primary domain.
 
     Returns the path to the written system affinity file.
     """
@@ -713,31 +948,40 @@ def write_analysis_output(analysis: SourceAnalysis, output_dir: Path) -> Path:
         "system": analysis.system,
         "analysed_at": analysis.analysed_at,
         "model_used": analysis.model_used,
-        "domain_contributions": [],
+        "schema_version": 2,
+        "tables": [],
     }
 
-    for aff in analysis.domain_affinities:
-        domain_dict: dict[str, Any] = {
-            "domain": aff.domain,
-            "ref_source": aff.ref_source or aff.ref_model_file,
-            "confidence": aff.confidence,
-            "total_classes": aff.total_classes,
-            "contributing_tables": [],
+    summary: dict[str, dict[str, Any]] = {}
+    for ta in analysis.table_assignments:
+        table_dict: dict[str, Any] = {
+            "table": ta.table,
+            "total_columns": ta.total_columns,
+            "domain": ta.domain,
+            "domain_group": ta.domain_group,
+            "domain_uris": ta.domain_uris,
+            "confidence": ta.confidence,
+            "likely_entity": ta.likely_entity,
+            "rationale": ta.rationale,
+            "indicative_columns": ta.indicative_columns,
         }
-        if aff.group:
-            domain_dict["group"] = aff.group
-        if aff.domain_uris:
-            domain_dict["domain_uris"] = aff.domain_uris
-        for tm in aff.matched_tables:
-            table_dict: dict[str, Any] = {
-                "table": tm.table,
-                "domain_relevance": tm.domain_relevance,
-                "rationale": tm.rationale,
-                "likely_entity": tm.likely_entity,
-                "indicative_columns": tm.indicative_columns,
-            }
-            domain_dict["contributing_tables"].append(table_dict)
-        data["domain_contributions"].append(domain_dict)
+        if ta.secondary_domains:
+            table_dict["secondary_domains"] = ta.secondary_domains
+        data["tables"].append(table_dict)
+
+        entry = summary.setdefault(ta.domain, {
+            "domain": ta.domain,
+            "domain_group": ta.domain_group,
+            "domain_uris": ta.domain_uris,
+            "table_count": 0,
+            "tables": [],
+        })
+        entry["table_count"] += 1
+        entry["tables"].append(ta.table)
+
+    data["domain_summary"] = sorted(
+        summary.values(), key=lambda e: e["table_count"], reverse=True
+    )
 
     output_file = output_dir / f"{analysis.system}-affinity.yaml"
     with open(output_file, "w", encoding="utf-8") as f:
@@ -747,7 +991,7 @@ def write_analysis_output(analysis: SourceAnalysis, output_dir: Path) -> Path:
 
 
 def write_affinity_matrix(analyses: list[SourceAnalysis], output_dir: Path) -> Path:
-    """Write a summary affinity matrix across all analysed sources."""
+    """Write a summary affinity matrix (per-system primary-domain table counts)."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     matrix: dict[str, Any] = {
@@ -756,19 +1000,22 @@ def write_affinity_matrix(analyses: list[SourceAnalysis], output_dir: Path) -> P
     }
 
     for analysis in analyses:
-        sys_entry: dict[str, Any] = {
-            "system": analysis.system,
-            "domains": [
-                {
-                    "domain": a.domain,
-                    "confidence": a.confidence,
-                    **({"group": a.group} if a.group else {}),
-                    **({"domain_uris": a.domain_uris} if a.domain_uris else {}),
-                }
-                for a in analysis.domain_affinities
-            ],
-        }
-        matrix["systems"].append(sys_entry)
+        counts: dict[str, int] = {}
+        meta: dict[str, tuple[str, list[str]]] = {}
+        for ta in analysis.table_assignments:
+            counts[ta.domain] = counts.get(ta.domain, 0) + 1
+            meta[ta.domain] = (ta.domain_group, ta.domain_uris)
+
+        domains = [
+            {
+                "domain": dom,
+                **({"domain_group": meta[dom][0]} if meta[dom][0] else {}),
+                **({"domain_uris": meta[dom][1]} if meta[dom][1] else {}),
+                "table_count": cnt,
+            }
+            for dom, cnt in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+        matrix["systems"].append({"system": analysis.system, "domains": domains})
 
     output_file = output_dir / "affinity-matrix.yaml"
     with open(output_file, "w", encoding="utf-8") as f:
@@ -850,6 +1097,10 @@ def run_analyse_sources(
         ref_domains = build_data_domain_targets(data_domains)
         strategy = "data-domain-first"
         report(f"  Loaded {len(ref_domains)} data domain(s) from '{accelerator}'.")
+        # Ground each data domain with the classes from its directly-imported
+        # module TTLs (resolved once per run via the catalog and shared cache).
+        if not shallow:
+            resolve_domain_class_summaries(ref_domains, catalog_path, report=report)
     else:
         report("▶ Phase 1/3 — Resolving reference models")
         effective_catalog = None if shallow else catalog_path
@@ -898,7 +1149,10 @@ def run_analyse_sources(
         ref_domains = ref_domains[:max_domains]
 
     # Pre-flight summary
-    total_classes = sum(len(d.get("classes", [])) for d in ref_domains)
+    total_classes = sum(
+        len(d.get("classes", [])) or len(d.get("class_summary", []))
+        for d in ref_domains
+    )
     logger.info(
         "Strategy=%s — %d domain(s), %d classes",
         strategy, len(ref_domains), total_classes,
@@ -930,9 +1184,12 @@ def run_analyse_sources(
 
         output_file = write_analysis_output(analysis, output_dir)
         output_files.append(output_file)
-        n_dom = len(analysis.domain_affinities)
-        top = analysis.domain_affinities[0].domain if analysis.domain_affinities else "—"
-        report(f"    → {n_dom} domain(s) matched (top: {top}) → {output_file.name}")
+        n_tables = len(analysis.table_assignments)
+        domains_hit = {ta.domain for ta in analysis.table_assignments}
+        report(
+            f"    → {n_tables} table(s) classified into {len(domains_hit)} "
+            f"domain(s) → {output_file.name}"
+        )
 
     # Write summary matrix
     if analyses:
@@ -967,6 +1224,7 @@ def _materialize_context(
         name = domain["domain_name"]
         safe = name.replace(" ", "-").replace("/", "_").lower()
         dd_meta = domain.get("data_domain_meta", {})
+        resolved_classes = domain.get("classes") or domain.get("class_summary", [])
         domain_doc: dict[str, Any] = {
             "domain": name,
             "display_name": domain.get("display_name", name),
@@ -975,7 +1233,7 @@ def _materialize_context(
             "modules": domain.get("modules", []),
             "owns": dd_meta.get("owns", ""),
             "does_not_own": dd_meta.get("does_not_own", ""),
-            "classes": [c.get("name") for c in domain.get("classes", [])],
+            "classes": [c.get("name") for c in resolved_classes],
         }
         with open(domains_dir / f"{safe}.yaml", "w", encoding="utf-8") as f:
             yaml.dump(domain_doc, f, default_flow_style=False, sort_keys=False,
@@ -983,7 +1241,7 @@ def _materialize_context(
         manifest_domains.append({
             "domain": name,
             "uris": domain.get("uris", []),
-            "n_classes": len(domain.get("classes", [])),
+            "n_classes": len(resolved_classes),
         })
 
     manifest = {

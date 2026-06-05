@@ -10,7 +10,7 @@ import pytest
 from kairos_ontology.analyse_sources import (
     parse_source_vocabulary,
     parse_reference_model,
-    analyse_table_against_domain,
+    analyse_table_single_call,
     analyse_source_system,
     write_analysis_output,
     write_affinity_matrix,
@@ -19,14 +19,20 @@ from kairos_ontology.analyse_sources import (
     build_data_domain_targets,
     list_accelerator_packs,
     make_reporter,
-    _build_analysis_prompt,
+    _build_single_call_prompt,
+    _build_candidates,
+    _summarize_classes,
+    _pick_fallback,
+    _resolve_module_classes,
+    _resolve_uris_to_classes,
+    resolve_domain_class_summaries,
     _materialize_context,
     _find_ontology_package_dirs,
     _assign_domain_key,
     _domain_display_name,
     SourceAnalysis,
-    DomainAffinity,
-    TableMatch,
+    TableAssignment,
+    FALLBACK_DOMAIN_IDS,
 )
 from kairos_ontology.coverage_report import (
     parse_domain_ontology,
@@ -158,6 +164,26 @@ PLAIN_CLASS_TTL = """\
 ex:SubClass a owl:Class ;
     rdfs:label "SubClass" ;
     rdfs:comment "A sub-module class" .
+"""
+
+PARTY_MODULE_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix party: <https://www.kairosflow.ai/ont/bsp/party#> .
+
+party:TradeParty a owl:Class ;
+    rdfs:label "Trade Party" ;
+    rdfs:comment "A party to a trade." .
+
+party:Consignee a owl:Class ;
+    rdfs:label "Consignee" .
+"""
+
+PARTY_CATALOG_XML = """\
+<?xml version="1.0"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="https://www.kairosflow.ai/ont/bsp/party#" uri="party.ttl"/>
+</catalog>
 """
 
 
@@ -463,39 +489,94 @@ class TestBuildDataDomainTargets:
         assert "Legal entities" in party["data_domain_meta"]["owns"]
 
 
-class TestDataDomainPrompt:
-    def test_prompt_uses_ownership_when_no_classes(self):
-        target = {
-            "domain_name": "commercial",
-            "display_name": "Customer, Contract & Commercial Agreement",
-            "group": "party-commercial",
-            "uris": ["https://www.kairosflow.ai/ont/bsp/commercial#"],
-            "classes": [],
-            "data_domain_meta": {
+class TestSingleCallPrompt:
+    def _candidates(self):
+        return [
+            {
+                "id": "commercial",
+                "group": "party-commercial",
+                "uris": ["https://www.kairosflow.ai/ont/bsp/commercial#"],
                 "owns": "Commercial relationships, service agreements.",
                 "does_not_own": "Surcharge calculation, invoice posting.",
+                "class_summary": [
+                    {"name": "SalesContract", "label": "Sales Contract", "comment": ""},
+                ],
             },
-        }
+            {
+                "id": "party",
+                "group": "party-commercial",
+                "uris": ["https://www.kairosflow.ai/ont/bsp/party#"],
+                "owns": "Legal entities and roles.",
+                "does_not_own": "Contracts.",
+                "class_summary": [
+                    {"name": "TradeParty", "label": "Trade Party", "comment": ""},
+                ],
+            },
+        ]
+
+    def test_prompt_lists_all_candidates_and_concepts(self):
         columns = [{"name": "ContractNo", "data_type": "string", "samples": ["C-1"]}]
-        prompt = _build_analysis_prompt("tblContracts", columns, target)
+        prompt = _build_single_call_prompt("tblContracts", columns, self._candidates())
 
-        assert "DATA DOMAIN: commercial" in prompt
-        assert "https://www.kairosflow.ai/ont/bsp/commercial#" in prompt
+        # Both candidate ids and their key concepts appear once, in a single prompt.
+        assert "### commercial" in prompt
+        assert "### party" in prompt
+        assert "Sales Contract" in prompt
+        assert "Trade Party" in prompt
         assert "Commercial relationships" in prompt
-        assert "party-commercial" in prompt
+        assert "exactly one of these ids: commercial, party" in prompt
+        assert "tblContracts" in prompt
+        assert "ContractNo" in prompt
 
-    def test_prompt_uses_classes_in_fallback(self):
-        target = {
+    def test_prompt_omits_concepts_when_absent(self):
+        cands = [{"id": "mdm", "group": "", "uris": [], "owns": "Master data.",
+                  "does_not_own": "", "class_summary": []}]
+        prompt = _build_single_call_prompt("tbl", [], cands)
+        assert "### mdm" in prompt
+        assert "KEY CONCEPTS" not in prompt
+
+
+class TestBuildCandidates:
+    def test_uses_class_summary_for_data_domain_path(self):
+        ref_domains = [{
+            "domain_name": "party",
+            "group": "party-commercial",
+            "uris": ["https://www.kairosflow.ai/ont/bsp/party#"],
+            "classes": [],
+            "class_summary": [{"name": "TradeParty", "label": "Trade Party", "comment": ""}],
+            "data_domain_meta": {"owns": "Parties", "does_not_own": "Contracts"},
+        }]
+        cands = _build_candidates(ref_domains)
+        assert cands[0]["id"] == "party"
+        assert cands[0]["owns"] == "Parties"
+        assert cands[0]["class_summary"][0]["label"] == "Trade Party"
+
+    def test_summarizes_full_classes_for_reference_model_path(self):
+        ref_domains = [{
             "domain_name": "Party",
             "classes": [
-                {"name": "Party", "label": "Party", "comment": "A party",
-                 "properties": [{"name": "hasName"}]},
+                {"name": f"C{i}", "label": f"L{i}", "comment": "", "properties": []}
+                for i in range(30)
             ],
-        }
-        columns = [{"name": "Name", "data_type": "string", "samples": ["Acme"]}]
-        prompt = _build_analysis_prompt("tblClient", columns, target)
-        assert "REFERENCE MODEL DOMAIN: Party" in prompt
-        assert "hasName" in prompt
+        }]
+        cands = _build_candidates(ref_domains)
+        # Capped to MAX_DOMAIN_CLASSES (18)
+        assert len(cands[0]["class_summary"]) == 18
+
+    def test_summarize_classes_caps_and_falls_back_label(self):
+        out = _summarize_classes([{"name": "X", "comment": "c"}], cap=5)
+        assert out[0]["label"] == "X"  # falls back to name
+
+
+class TestPickFallback:
+    def test_picks_first_present(self):
+        assert _pick_fallback({"mdm", "party"}, FALLBACK_DOMAIN_IDS) == "mdm"
+
+    def test_picks_reference_data_when_no_mdm(self):
+        assert _pick_fallback({"reference-data", "party"}, FALLBACK_DOMAIN_IDS) == "reference-data"
+
+    def test_unclassified_when_no_fallback_present(self):
+        assert _pick_fallback({"party", "cargo"}, FALLBACK_DOMAIN_IDS) == "unclassified"
 
 
 class TestMakeReporter:
@@ -555,35 +636,53 @@ class TestOutputIncludesURIs:
             system="testapp",
             analysed_at="2026-06-04T12:00:00Z",
             model_used="gpt-5-mini",
-            domain_affinities=[
-                DomainAffinity(
+            table_assignments=[
+                TableAssignment(
+                    table="tblContracts",
+                    total_columns=3,
                     domain="commercial",
-                    ref_model_file="data-domains.yaml",
-                    confidence=0.82,
-                    group="party-commercial",
+                    domain_group="party-commercial",
                     domain_uris=["https://www.kairosflow.ai/ont/bsp/commercial#"],
-                    matched_tables=[
-                        TableMatch(table="tblContracts", total_columns=3,
-                                   domain_relevance=0.85, likely_entity="SalesContract"),
-                    ],
+                    confidence=0.85,
+                    likely_entity="SalesContract",
+                    secondary_domains=[{
+                        "domain": "party",
+                        "domain_group": "party-commercial",
+                        "domain_uris": ["https://www.kairosflow.ai/ont/bsp/party#"],
+                    }],
                 ),
             ],
         )
         out = write_analysis_output(analysis, tmp_path)
         import yaml
         data = yaml.safe_load(out.read_text())
-        contrib = data["domain_contributions"][0]
-        assert contrib["group"] == "party-commercial"
-        assert contrib["domain_uris"] == ["https://www.kairosflow.ai/ont/bsp/commercial#"]
+
+        assert data["schema_version"] == 2
+        tbl = data["tables"][0]
+        assert tbl["table"] == "tblContracts"
+        assert tbl["domain"] == "commercial"
+        assert tbl["domain_group"] == "party-commercial"
+        assert tbl["domain_uris"] == ["https://www.kairosflow.ai/ont/bsp/commercial#"]
+        assert tbl["secondary_domains"][0]["domain"] == "party"
+
+        rollup = data["domain_summary"][0]
+        assert rollup["domain"] == "commercial"
+        assert rollup["table_count"] == 1
+        assert rollup["tables"] == ["tblContracts"]
 
     def test_matrix_includes_uris_and_group(self, tmp_path):
         analyses = [
             SourceAnalysis(
                 system="sys1", analysed_at="t", model_used="m",
-                domain_affinities=[
-                    DomainAffinity(
-                        domain="party", ref_model_file="data-domains.yaml",
-                        confidence=0.8, group="party-commercial",
+                table_assignments=[
+                    TableAssignment(
+                        table="tblA", total_columns=2, domain="party",
+                        domain_group="party-commercial",
+                        domain_uris=["https://www.kairosflow.ai/ont/bsp/party#"],
+                    ),
+                    TableAssignment(
+                        table="tblB", total_columns=2, domain="party",
+                        domain_group="party-commercial",
                         domain_uris=["https://www.kairosflow.ai/ont/bsp/party#"],
                     ),
                 ],
@@ -593,8 +692,10 @@ class TestOutputIncludesURIs:
         import yaml
         data = yaml.safe_load(out.read_text())
         dom = data["systems"][0]["domains"][0]
-        assert dom["group"] == "party-commercial"
+        assert dom["domain"] == "party"
+        assert dom["domain_group"] == "party-commercial"
         assert dom["domain_uris"] == ["https://www.kairosflow.ai/ont/bsp/party#"]
+        assert dom["table_count"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -642,50 +743,105 @@ class TestParseDomainOntology:
 # ---------------------------------------------------------------------------
 
 
-class TestAnalyseTableAgainstDomain:
-    def test_calls_llm_and_parses_response(self):
+class TestAnalyseTableSingleCall:
+    def _candidates(self):
+        return [
+            {"id": "party", "group": "party-commercial",
+             "uris": ["u-party"], "owns": "", "does_not_own": "", "class_summary": []},
+            {"id": "commercial", "group": "party-commercial",
+             "uris": ["u-comm"], "owns": "", "does_not_own": "", "class_summary": []},
+            {"id": "mdm", "group": "master-data-management",
+             "uris": [], "owns": "", "does_not_own": "", "class_summary": []},
+        ]
+
+    def _client_returning(self, payload):
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = json.dumps({
-            "domain_relevance": 0.85,
-            "rationale": "Client table contains party-related data",
-            "likely_entity": "Party",
-            "indicative_columns": ["ClientName", "VATNumber"],
-        })
+        mock_response.choices[0].message.content = json.dumps(payload)
         mock_client.chat.completions.create.return_value = mock_response
+        return mock_client
 
-        columns = [
-            {"name": "ClientName", "data_type": "varchar(200)", "samples": ["Acme NV"]},
-            {"name": "VATNumber", "data_type": "varchar(50)", "samples": ["BE0123456789"]},
-            {"name": "Email", "data_type": "varchar(100)", "samples": []},
-        ]
-        domain_summary = {
-            "domain_name": "Party",
-            "classes": [{"name": "Party", "label": "Party", "properties": [
-                {"name": "partyName", "label": "Party name", "range": "string"},
-                {"name": "taxIdentifier", "label": "Tax identifier", "range": "string"},
-            ]}],
-        }
-
-        result = analyse_table_against_domain(
-            mock_client, "gpt-5-mini", "tblClient", columns, domain_summary
+    def test_valid_primary_and_secondaries(self):
+        client = self._client_returning({
+            "domain": "party",
+            "secondary_domains": ["commercial", "mdm", "party"],
+            "confidence": 0.9,
+            "likely_entity": "Party",
+            "rationale": "party-like",
+            "indicative_columns": ["Name"],
+        })
+        res = analyse_table_single_call(
+            client, "gpt-5-mini", "tblClient", [], self._candidates()
         )
+        assert res["domain"] == "party"
+        assert res["confidence"] == 0.9
+        assert res["likely_entity"] == "Party"
+        # secondaries: deduped, primary removed, capped to 2
+        assert res["secondary_domains"] == ["commercial", "mdm"]
 
-        assert result["domain_relevance"] == 0.85
-        assert result["likely_entity"] == "Party"
-        assert "ClientName" in result["indicative_columns"]
+    def test_invalid_domain_falls_back_to_mdm(self):
+        client = self._client_returning({
+            "domain": "nonsense", "confidence": 0.7, "likely_entity": "X",
+        })
+        res = analyse_table_single_call(
+            client, "gpt-5-mini", "tbl", [], self._candidates()
+        )
+        assert res["domain"] == "mdm"
+        assert res["confidence"] == 0.0
+        assert res["likely_entity"] == ""
+
+    def test_invalid_domain_unclassified_when_no_fallback(self):
+        cands = [c for c in self._candidates() if c["id"] != "mdm"]
+        client = self._client_returning({"domain": "nope"})
+        res = analyse_table_single_call(client, "gpt-5-mini", "tbl", [], cands)
+        assert res["domain"] == "unclassified"
+
+    def test_secondaries_filtered_to_valid_ids(self):
+        client = self._client_returning({
+            "domain": "party",
+            "secondary_domains": ["bogus", "commercial"],
+            "confidence": 0.5,
+        })
+        res = analyse_table_single_call(client, "gpt-5-mini", "tbl", [], self._candidates())
+        assert res["secondary_domains"] == ["commercial"]
 
     def test_handles_llm_error_gracefully(self):
         mock_client = MagicMock()
         mock_client.chat.completions.create.side_effect = Exception("API error")
-
-        result = analyse_table_against_domain(
-            mock_client, "gpt-5-mini", "tblClient", [], {"domain_name": "X", "classes": []}
+        res = analyse_table_single_call(
+            mock_client, "gpt-5-mini", "tbl", [], self._candidates()
         )
+        # Empty result → fallback to first available fallback id (mdm)
+        assert res["domain"] == "mdm"
+        assert res["confidence"] == 0.0
+        assert res["indicative_columns"] == []
 
-        assert result["domain_relevance"] == 0.0
-        assert result["indicative_columns"] == []
+    def test_normalized_id_match_for_reference_model_labels(self):
+        cands = [
+            {"id": "BSP Party", "group": "", "uris": ["u"], "owns": "",
+             "does_not_own": "", "class_summary": []},
+        ]
+        client = self._client_returning({"domain": "bsp party", "confidence": 0.8})
+        res = analyse_table_single_call(client, "gpt-5-mini", "tbl", [], cands)
+        assert res["domain"] == "BSP Party"
+        assert res["confidence"] == 0.8
+
+    def test_non_numeric_confidence_coerces_to_zero(self):
+        client = self._client_returning({"domain": "party", "confidence": "high"})
+        res = analyse_table_single_call(client, "gpt-5-mini", "tbl", [], self._candidates())
+        assert res["domain"] == "party"
+        assert res["confidence"] == 0.0
+
+    def test_confidence_clamped_to_unit_interval(self):
+        client = self._client_returning({"domain": "party", "confidence": 1.7})
+        res = analyse_table_single_call(client, "gpt-5-mini", "tbl", [], self._candidates())
+        assert res["confidence"] == 1.0
+
+    def test_non_dict_json_falls_back(self):
+        client = self._client_returning(["not", "a", "dict"])
+        res = analyse_table_single_call(client, "gpt-5-mini", "tbl", [], self._candidates())
+        assert res["domain"] == "mdm"
 
 
 # ---------------------------------------------------------------------------
@@ -699,21 +855,16 @@ class TestWriteAnalysisOutput:
             system="testapp",
             analysed_at="2026-06-04T12:00:00Z",
             model_used="gpt-5-mini",
-            domain_affinities=[
-                DomainAffinity(
-                    domain="Party",
-                    ref_model_file="party.ttl",
+            table_assignments=[
+                TableAssignment(
+                    table="tblClient",
+                    total_columns=3,
+                    domain="party",
+                    domain_group="party-commercial",
                     confidence=0.82,
-                    matched_tables=[
-                        TableMatch(
-                            table="tblClient",
-                            total_columns=3,
-                            domain_relevance=0.82,
-                            rationale="Client table maps to Party domain",
-                            likely_entity="Party",
-                            indicative_columns=["ClientName", "ClientEmail"],
-                        ),
-                    ],
+                    rationale="Client table maps to Party domain",
+                    likely_entity="Party",
+                    indicative_columns=["ClientName", "ClientEmail"],
                 ),
             ],
         )
@@ -729,9 +880,11 @@ class TestWriteAnalysisOutput:
 
         assert data["system"] == "testapp"
         assert data["model_used"] == "gpt-5-mini"
-        assert len(data["domain_contributions"]) == 1
-        assert data["domain_contributions"][0]["domain"] == "Party"
-        assert data["domain_contributions"][0]["confidence"] == 0.82
+        assert data["schema_version"] == 2
+        assert len(data["tables"]) == 1
+        assert data["tables"][0]["domain"] == "party"
+        assert data["tables"][0]["confidence"] == 0.82
+        assert data["domain_summary"][0]["domain"] == "party"
 
     def test_writes_affinity_matrix(self, tmp_path):
         analyses = [
@@ -739,8 +892,8 @@ class TestWriteAnalysisOutput:
                 system="sys1",
                 analysed_at="2026-06-04T12:00:00Z",
                 model_used="gpt-5-mini",
-                domain_affinities=[
-                    DomainAffinity(domain="Party", ref_model_file="party.ttl", confidence=0.8),
+                table_assignments=[
+                    TableAssignment(table="tblA", total_columns=2, domain="party"),
                 ],
             ),
         ]
@@ -846,3 +999,67 @@ class TestMissingToken:
         ref_domains = [parse_reference_model(ref_file)]
         with pytest.raises(EnvironmentError, match="GITHUB_TOKEN"):
             analyse_source_system(vocab_file, ref_domains)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Semantic grounding (resolve module classes via catalog)
+# ---------------------------------------------------------------------------
+
+
+class TestSemanticGrounding:
+    PARTY_URI = "https://www.kairosflow.ai/ont/bsp/party#"
+
+    def _setup(self, tmp_path):
+        (tmp_path / "party.ttl").write_text(PARTY_MODULE_TTL, encoding="utf-8")
+        catalog = tmp_path / "catalog-v001.xml"
+        catalog.write_text(PARTY_CATALOG_XML, encoding="utf-8")
+        return catalog
+
+    def test_resolve_module_classes_and_cache(self, tmp_path):
+        self._setup(tmp_path)
+        cache: dict = {}
+        classes = _resolve_module_classes(tmp_path / "party.ttl", cache)
+        names = {c["name"] for c in classes}
+        assert "TradeParty" in names and "Consignee" in names
+        # Cached: a second call returns the same list object (parsed once).
+        assert _resolve_module_classes(tmp_path / "party.ttl", cache) is classes
+
+    def test_resolve_uris_to_classes(self, tmp_path):
+        catalog = self._setup(tmp_path)
+        from kairos_ontology.catalog_utils import CatalogResolver
+        resolver = CatalogResolver(catalog)
+        out = _resolve_uris_to_classes([self.PARTY_URI], resolver, {}, cap=18)
+        assert {c["name"] for c in out} == {"TradeParty", "Consignee"}
+
+    def test_resolve_uris_caps_results(self, tmp_path):
+        catalog = self._setup(tmp_path)
+        from kairos_ontology.catalog_utils import CatalogResolver
+        resolver = CatalogResolver(catalog)
+        out = _resolve_uris_to_classes([self.PARTY_URI], resolver, {}, cap=1)
+        assert len(out) == 1
+
+    def test_resolve_uris_skips_unmapped(self, tmp_path):
+        catalog = self._setup(tmp_path)
+        from kairos_ontology.catalog_utils import CatalogResolver
+        resolver = CatalogResolver(catalog)
+        out = _resolve_uris_to_classes(["https://unknown.example/x#"], resolver, {}, cap=18)
+        assert out == []
+
+    def test_resolve_domain_class_summaries_attaches(self, tmp_path):
+        catalog = self._setup(tmp_path)
+        ref_domains = [{"domain_name": "party", "classes": [], "uris": [self.PARTY_URI]}]
+        resolve_domain_class_summaries(ref_domains, catalog)
+        assert "class_summary" in ref_domains[0]
+        labels = {c["label"] for c in ref_domains[0]["class_summary"]}
+        assert "Trade Party" in labels
+
+    def test_grounding_skips_without_catalog(self, tmp_path):
+        ref_domains = [{"domain_name": "party", "classes": [], "uris": [self.PARTY_URI]}]
+        resolve_domain_class_summaries(ref_domains, None)
+        assert "class_summary" not in ref_domains[0]
+
+    def test_grounding_skips_reference_model_domains(self, tmp_path):
+        catalog = self._setup(tmp_path)
+        ref_domains = [{"domain_name": "X", "classes": [{"name": "A"}], "uris": []}]
+        resolve_domain_class_summaries(ref_domains, catalog)
+        assert "class_summary" not in ref_domains[0]

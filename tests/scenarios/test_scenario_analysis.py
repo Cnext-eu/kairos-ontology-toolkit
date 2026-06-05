@@ -134,62 +134,20 @@ class TestAcmeHubOntologyParsing:
 class TestAnalyseSourcesScenario:
     """End-to-end analysis with mocked LLM calls."""
 
-    def _mock_llm_response(self, table_name, columns, domain):
-        """Generate a realistic mock LLM response."""
-        matches = []
-        if domain["domain_name"] == "Party":
-            for col in columns:
-                col_lower = col["name"].lower()
-                if "name" in col_lower or "custname" in col_lower:
-                    matches.append({
-                        "column": col["name"],
-                        "ref_property": "Party.partyName",
-                        "confidence": 0.92,
-                        "evidence": "Name field maps to party name",
-                    })
-                elif "email" in col_lower:
-                    matches.append({
-                        "column": col["name"],
-                        "ref_property": "Party.email",
-                        "confidence": 0.95,
-                        "evidence": "Email address field",
-                    })
-                elif "vat" in col_lower:
-                    matches.append({
-                        "column": col["name"],
-                        "ref_property": "Party.taxIdentifier",
-                        "confidence": 0.90,
-                        "evidence": "VAT is a tax identifier",
-                    })
-
-        relevance = min(len(matches) / max(len(columns), 1), 1.0)
-        return {
-            "domain_relevance": round(relevance, 2),
-            "matches": matches,
-            "unmatched": [
-                {"column": c["name"], "reason": "No match"}
-                for c in columns
-                if not any(m["column"] == c["name"] for m in matches)
-            ],
-        }
-
     @patch("kairos_ontology.analyse_sources._get_openai_client")
     def test_analyse_crmsystem_against_party(self, mock_get_client):
-        """CRM system should show high affinity to Party reference model."""
+        """CRM tables should be assigned to the Party domain (single-call)."""
         mock_client = MagicMock()
 
         def side_effect(**kwargs):
-            # Parse the prompt to extract table and domain info
-            messages = kwargs.get("messages", [])
-            user_msg = messages[-1]["content"] if messages else ""
-
-            # Simple mock: always return party-like matches
             response = MagicMock()
             response.choices = [MagicMock()]
             response.choices[0].message.content = json.dumps({
-                "domain_relevance": 0.75,
-                "rationale": "Customer table contains party-related data",
+                "domain": "Party",
+                "secondary_domains": [],
+                "confidence": 0.75,
                 "likely_entity": "Party",
+                "rationale": "Customer table contains party-related data",
                 "indicative_columns": ["CustName", "CustEmail"],
             })
             return response
@@ -205,12 +163,12 @@ class TestAnalyseSourcesScenario:
 
         assert analysis.system == "crmsystem"
         assert analysis.model_used == "gpt-5.4-mini"
-        assert len(analysis.domain_affinities) >= 1
+        assert len(analysis.table_assignments) >= 1
 
-        party_aff = analysis.domain_affinities[0]
-        assert party_aff.domain == "Party"
-        assert party_aff.confidence > 0
-        assert len(party_aff.matched_tables) >= 1
+        first = analysis.table_assignments[0]
+        assert first.domain == "Party"
+        assert first.confidence > 0
+        assert first.likely_entity == "Party"
 
     @patch("kairos_ontology.analyse_sources._get_openai_client")
     def test_run_analyse_all_sources(self, mock_get_client, tmp_path):
@@ -219,9 +177,11 @@ class TestAnalyseSourcesScenario:
         response = MagicMock()
         response.choices = [MagicMock()]
         response.choices[0].message.content = json.dumps({
-            "domain_relevance": 0.6,
-            "rationale": "Table has some party-related data",
+            "domain": "Party",
+            "secondary_domains": [],
+            "confidence": 0.6,
             "likely_entity": "Party",
+            "rationale": "Table has some party-related data",
             "indicative_columns": ["col1"],
         })
         mock_client.chat.completions.create.return_value = response

@@ -1128,7 +1128,7 @@ def generate_staging(from_dir, output, source_name):
 @click.option('--output', '-o', type=click.Path(), default=None,
               help='Output directory (default: integration/sources/_analysis/).')
 @click.option('--threshold', type=float, default=0.3,
-              help='Minimum affinity confidence to include (default: 0.3).')
+              help='Deprecated; ignored in table-centric (schema_version 2) analysis.')
 @click.option('--model', 'llm_model', default='gpt-5.4-mini',
               help='LLM model for semantic matching (default: gpt-5.4-mini).')
 @click.option('--max-domains', type=int, default=None,
@@ -1223,7 +1223,6 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         click.echo(f"🔍 Analysing sources in: {sources_path}")
         click.echo(f"   Reference models: {ref_models_path}")
         click.echo(f"   Model: {llm_model}")
-        click.echo(f"   Threshold: {threshold}")
         if accelerator:
             click.echo(f"   Accelerator: {accelerator} (data-domain-first)")
         if domains_filter:
