@@ -13,6 +13,7 @@ from rdflib.namespace import RDFS
 
 from kairos_ontology.projections.medallion_dbt_projector import (
     _build_silver_model_registry,
+    _build_sk_iri_columns,
     _camel_to_snake,
     _parse_bronze,
     _parse_skos_mappings,
@@ -2270,3 +2271,382 @@ class TestNKPropertyURIsInheritance:
         g.parse(data=NK_CLASS_PER_TABLE_TTL, format="turtle")
         result = _get_nk_property_uris(g, "http://example.com/ont#Vehicle")
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# CR-002: composite naturalKey parsing
+# ---------------------------------------------------------------------------
+
+COMPOSITE_NK_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "Composite NK Test" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:Address a owl:Class ;
+        rdfs:label "Address" ;
+        rdfs:comment "An address entity" ;
+        kairos-ext:naturalKey "addressStreet,addressZipCode" .
+
+    ex:AddressSpaced a owl:Class ;
+        rdfs:label "Address Spaced" ;
+        rdfs:comment "NK declared with space after comma" ;
+        kairos-ext:naturalKey "addressStreet, addressZipCode" .
+
+    ex:addressStreet a owl:DatatypeProperty ;
+        rdfs:label "address street" ;
+        rdfs:domain ex:Address ;
+        rdfs:range xsd:string .
+
+    ex:addressZipCode a owl:DatatypeProperty ;
+        rdfs:label "address zip code" ;
+        rdfs:domain ex:Address ;
+        rdfs:range xsd:string .
+""")
+
+
+class TestCompositeNaturalKey:
+    """CR-002 — composite naturalKey must split on commas, not only whitespace."""
+
+    def _graph(self):
+        g = Graph()
+        g.parse(data=COMPOSITE_NK_ONTOLOGY_TTL, format="turtle")
+        return g
+
+    def test_comma_no_space_splits_into_two(self):
+        """'addressStreet,addressZipCode' should yield two separate snake_case keys."""
+        g = self._graph()
+        result = _get_natural_key(g, "http://kairos.example/ontology/Address")
+        assert result == ["address_street", "address_zip_code"], (
+            f"Expected ['address_street', 'address_zip_code'], got {result}"
+        )
+
+    def test_comma_with_space_splits_into_two(self):
+        """'addressStreet, addressZipCode' (space after comma) should also split cleanly."""
+        g = self._graph()
+        result = _get_natural_key(g, "http://kairos.example/ontology/AddressSpaced")
+        assert result == ["address_street", "address_zip_code"], (
+            f"Expected ['address_street', 'address_zip_code'], got {result}"
+        )
+
+    def test_composite_sk_has_two_quoted_elements(self):
+        """Surrogate key expression should contain both NK columns as separate list items."""
+        from kairos_ontology.projections.medallion_dbt_projector import _build_sk_iri_columns
+        g = self._graph()
+        nk = _get_natural_key(g, "http://kairos.example/ontology/Address")
+        cols = _build_sk_iri_columns(
+            g, "http://kairos.example/ontology/Address",
+            "http://kairos.example/ontology/",
+            nk,
+        )
+        sk_expr = next(c["expression"] for c in cols if c["target_name"] == "address_sk")
+        assert "'address_street', 'address_zip_code'" in sk_expr, (
+            f"SK expression should list both keys separately:\n{sk_expr}"
+        )
+        # Must NOT have a comma inside a single quoted string
+        assert "'address_street,address_zip_code'" not in sk_expr
+
+    def test_composite_iri_uses_underscore_separator(self):
+        """IRI CONCAT for composite NK should join parts with '_', not '/'."""
+        from kairos_ontology.projections.medallion_dbt_projector import _build_sk_iri_columns
+        g = self._graph()
+        nk = _get_natural_key(g, "http://kairos.example/ontology/Address")
+        cols = _build_sk_iri_columns(
+            g, "http://kairos.example/ontology/Address",
+            "http://kairos.example/ontology/",
+            nk,
+        )
+        iri_expr = next(c["expression"] for c in cols if c["target_name"] == "address_iri")
+        assert "'_'" in iri_expr, (
+            f"IRI CONCAT should separate composite NK parts with '_':\n{iri_expr}"
+        )
+        assert "address_street" in iri_expr
+        assert "address_zip_code" in iri_expr
+
+
+# ---------------------------------------------------------------------------
+# CR-003: dbt.type_string() replaces dbt_utils.type_string()
+# ---------------------------------------------------------------------------
+
+class TestDbtTypeStringMacro:
+    """CR-003 — NULL SK/IRI fallback must use dbt.type_string(), not dbt_utils.type_string()."""
+
+    def test_null_sk_uses_dbt_type_string(self):
+        """_build_sk_iri_columns with no natural key should emit dbt.type_string()."""
+        from kairos_ontology.projections.medallion_dbt_projector import _build_sk_iri_columns
+        g = Graph()
+        g.parse(data=textwrap.dedent("""\
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix ex: <http://ex.com/> .
+            <http://ex.com/> a owl:Ontology ; rdfs:label "t" ; owl:versionInfo "1.0" .
+            ex:Foo a owl:Class ; rdfs:label "Foo" ; rdfs:comment "f" .
+        """), format="turtle")
+        cols = _build_sk_iri_columns(g, "http://ex.com/Foo", "http://ex.com/", [])
+        for col in cols:
+            expr = col["expression"]
+            assert "dbt_utils.type_string" not in expr, (
+                f"Should use dbt.type_string(), got: {expr}"
+            )
+            assert "dbt.type_string()" in expr
+
+    def test_null_sk_not_using_deprecated_macro(self, template_dir, tmp_path):
+        """Full artifact generation: NULL SK should not reference dbt_utils.type_string()."""
+        no_nk_ttl = textwrap.dedent("""\
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+            @prefix ex: <http://kairos.example/ontology/> .
+
+            <http://kairos.example/ontology> a owl:Ontology ;
+                rdfs:label "T" ; owl:versionInfo "1.0.0" .
+
+            ex:Item a owl:Class ;
+                rdfs:label "Item" ; rdfs:comment "An item with no naturalKey" .
+
+            ex:itemCode a owl:DatatypeProperty ;
+                rdfs:label "item code" ;
+                rdfs:domain ex:Item ;
+                rdfs:range xsd:string .
+        """)
+        g = Graph()
+        g.parse(data=no_nk_ttl, format="turtle")
+        classes = [{"uri": "http://kairos.example/ontology/Item",
+                     "name": "Item", "label": "Item", "comment": "An item"}]
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="item",
+        )
+        all_sql = "\n".join(v for v in artifacts.values() if v)
+        assert "dbt_utils.type_string" not in all_sql, (
+            "Generated SQL must not use deprecated dbt_utils.type_string()"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CR-004: dim_date.sql must not have nested duplicate CTE label
+# ---------------------------------------------------------------------------
+
+class TestDimDateNoDuplicateCte:
+    """CR-004 — generated dim_date.sql must not embed a duplicate 'date_spine AS ('."""
+
+    def test_no_duplicate_cte_label(self, gold_ontology_graph, template_dir,
+                                    gold_bronze_dir, gold_mappings_dir):
+        """dim_date.sql must have exactly one occurrence of 'date_spine as (' (case-insensitive)."""
+        artifacts = generate_dbt_artifacts(
+            classes=GOLD_CLASSES,
+            graph=gold_ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="sales",
+            bronze_dir=gold_bronze_dir,
+            mappings_dir=gold_mappings_dir,
+        )
+        date_key = next(k for k in artifacts if "dim_date.sql" in k)
+        content = artifacts[date_key].lower()
+        count = content.count("date_spine as (")
+        assert count == 1, (
+            f"Expected exactly 1 'date_spine as (' in dim_date.sql, found {count}:\n"
+            + artifacts[date_key]
+        )
+
+    def test_dim_date_select_is_top_level(self, gold_ontology_graph, template_dir,
+                                          gold_bronze_dir, gold_mappings_dir):
+        """The SELECT inside the date_spine CTE must not be wrapped in another CTE body."""
+        artifacts = generate_dbt_artifacts(
+            classes=GOLD_CLASSES,
+            graph=gold_ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="sales",
+            bronze_dir=gold_bronze_dir,
+            mappings_dir=gold_mappings_dir,
+        )
+        date_key = next(k for k in artifacts if "dim_date.sql" in k)
+        content = artifacts[date_key]
+        # Should NOT contain 'date_spine AS (' as a nested string inside the CTE
+        # (i.e. the body after 'with date_spine as (' should start with SELECT)
+        import re as _re
+        match = _re.search(r'with\s+date_spine\s+as\s*\((.+?)^\)', content,
+                           _re.DOTALL | _re.MULTILINE | _re.IGNORECASE)
+        if match:
+            inner = match.group(1)
+            assert "date_spine as (" not in inner.lower(), (
+                "CTE body must not start with another 'date_spine as (' wrapper"
+            )
+
+
+# ---------------------------------------------------------------------------
+# CR-001: SK/IRI must use source expression, not alias (T-SQL alias-before-definition)
+# ---------------------------------------------------------------------------
+
+# Ontology: BankAccount with naturalKey "bankIBAN"
+BANK_ACCOUNT_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "Bank Test" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:BankAccount a owl:Class ;
+        rdfs:label "BankAccount" ;
+        rdfs:comment "A bank account" ;
+        kairos-ext:naturalKey "bankIBAN" .
+
+    ex:bankIBAN a owl:DatatypeProperty ;
+        rdfs:label "bank IBAN" ;
+        rdfs:domain ex:BankAccount ;
+        rdfs:range xsd:string .
+""")
+
+# Bronze: source table with bankIBAN column (using original camelCase name)
+BANK_ACCOUNT_BRONZE_TTL = textwrap.dedent("""\
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+    bronze-ap:AdminPulse a kairos-bronze:SourceSystem ;
+        rdfs:label "AdminPulse" ;
+        kairos-bronze:connectionType "jdbc" ;
+        kairos-bronze:database "AP_Prod" ;
+        kairos-bronze:schema "dbo" .
+
+    bronze-ap:tblBankAccount a kairos-bronze:SourceTable ;
+        rdfs:label "adminpulse_relations" ;
+        kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+        kairos-bronze:tableName "adminpulse_relations" ;
+        kairos-bronze:primaryKeyColumns "bankIBAN" .
+
+    bronze-ap:tblBankAccount_bankIBAN a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblBankAccount ;
+        kairos-bronze:columnName "bankIBAN" ;
+        kairos-bronze:dataType "nvarchar" ;
+        kairos-bronze:nullable "false"^^xsd:boolean ;
+        kairos-bronze:isPrimaryKey "true"^^xsd:boolean .
+""")
+
+# SKOS mapping: source bankIBAN → domain bankIBAN property
+BANK_ACCOUNT_MAPPING_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix ex: <http://kairos.example/ontology/> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+
+    bronze-ap:tblBankAccount skos:exactMatch ex:BankAccount ;
+        kairos-map:mappingType "direct" .
+
+    bronze-ap:tblBankAccount_bankIBAN skos:exactMatch ex:bankIBAN ;
+        kairos-map:transform "source.adminpulse_relations.bankIBAN" .
+""")
+
+
+class TestSkIriUsesSourceExpression:
+    """CR-001 — SK and IRI expressions in single-source silver must use source column,
+    not the snake_case output alias, to avoid T-SQL alias-before-definition errors."""
+
+    @pytest.fixture
+    def bank_sources_dir(self, tmp_path):
+        d = tmp_path / "sources" / "adminpulse"
+        d.mkdir(parents=True)
+        (d / "adminpulse.vocabulary.ttl").write_text(
+            BANK_ACCOUNT_BRONZE_TTL, encoding="utf-8"
+        )
+        return tmp_path / "sources"
+
+    @pytest.fixture
+    def bank_mappings_dir(self, tmp_path):
+        d = tmp_path / "mappings"
+        d.mkdir(parents=True)
+        (d / "bank_account.ttl").write_text(
+            BANK_ACCOUNT_MAPPING_TTL, encoding="utf-8"
+        )
+        return d
+
+    def test_sk_expression_uses_source_column_not_alias(
+        self, template_dir, bank_sources_dir, bank_mappings_dir
+    ):
+        """SK generate_surrogate_key must reference the source column, not the alias."""
+        g = Graph()
+        g.parse(data=BANK_ACCOUNT_ONTOLOGY_TTL, format="turtle")
+        classes = [{"uri": "http://kairos.example/ontology/BankAccount",
+                     "name": "BankAccount", "label": "BankAccount",
+                     "comment": "A bank account"}]
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="bank",
+            sources_dir=bank_sources_dir,
+            mappings_dir=bank_mappings_dir,
+        )
+        sql_key = next(k for k in artifacts if "bank_account.sql" in k)
+        sql = artifacts[sql_key]
+        # The SK must reference the source expression, not the snake_case alias
+        assert "adminpulse_relations.bankIBAN" in sql, (
+            "SK expression must contain the source column reference, got:\n" + sql
+        )
+        assert "generate_surrogate_key(['bank_iban'])" not in sql, (
+            "SK must NOT use the output alias 'bank_iban' — that's alias-before-definition"
+        )
+
+    def test_iri_expression_uses_source_column_not_alias(
+        self, template_dir, bank_sources_dir, bank_mappings_dir
+    ):
+        """IRI CONCAT must reference the source column, not the snake_case alias."""
+        g = Graph()
+        g.parse(data=BANK_ACCOUNT_ONTOLOGY_TTL, format="turtle")
+        classes = [{"uri": "http://kairos.example/ontology/BankAccount",
+                     "name": "BankAccount", "label": "BankAccount",
+                     "comment": "A bank account"}]
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="bank",
+            sources_dir=bank_sources_dir,
+            mappings_dir=bank_mappings_dir,
+        )
+        sql_key = next(k for k in artifacts if "bank_account.sql" in k)
+        sql = artifacts[sql_key]
+        # IRI must use source column, not alias
+        assert "CONCAT(" in sql and "adminpulse_relations.bankIBAN" in sql, (
+            "IRI CONCAT must contain the source column reference, got:\n" + sql
+        )
+        # bank_iban alias should only appear as the column alias (after AS), not in CONCAT
+        import re as _re
+        iri_concat = _re.search(r"CONCAT\([^)]+\) as bank_account_iri", sql)
+        if iri_concat:
+            assert "bank_iban)" not in iri_concat.group(0), (
+                "IRI CONCAT must not use the output alias 'bank_iban'"
+            )
+
+    def test_no_source_lookup_falls_back_to_alias(self):
+        """Without a source lookup, _build_sk_iri_columns falls back to the alias (safe default)."""
+        from kairos_ontology.projections.medallion_dbt_projector import _build_sk_iri_columns
+        g = Graph()
+        g.parse(data=BANK_ACCOUNT_ONTOLOGY_TTL, format="turtle")
+        nk = _get_natural_key(g, "http://kairos.example/ontology/BankAccount")
+        cols = _build_sk_iri_columns(
+            g, "http://kairos.example/ontology/BankAccount",
+            "http://kairos.example/ontology/",
+            nk,
+            nk_source_exprs=None,
+        )
+        sk_expr = next(c["expression"] for c in cols if c["target_name"] == "bank_account_sk")
+        # Without source lookup, falls back to alias
+        assert "bank_iban" in sk_expr

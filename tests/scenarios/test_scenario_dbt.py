@@ -2074,3 +2074,44 @@ class TestSilverSourceRef:
             f"Expected TaxCode column in invoice_line_tax:\n{sql}"
         )
 
+
+# ---------------------------------------------------------------------------
+# CR-002 scenario: composite naturalKey on acme-hub Identifier class
+# ---------------------------------------------------------------------------
+
+class TestCompositeNaturalKeyScenario:
+    """CR-002 — acme-hub Identifier has naturalKey 'identifierValue, identifierScheme'.
+    After the fix the surrogate key expression must reference both columns separately."""
+
+    def test_identifier_sk_has_two_separate_columns(self, client_dbt_artifacts):
+        """generate_surrogate_key for Identifier must list both NK columns as separate items."""
+        from kairos_ontology.projections.medallion_dbt_projector import _get_natural_key
+        from tests.scenarios.conftest import _load_ontology
+
+        g, _, _ = _load_ontology("client")
+        # Verify the NK is parsed as two elements, not one malformed string
+        identifier_uri = None
+        for uri in [u for u in [str(c) for c in g.subjects()] if "Identifier" in u]:
+            if "acme" in uri.lower() or "example" in uri.lower():
+                identifier_uri = uri
+                break
+
+        if identifier_uri:
+            nk = _get_natural_key(g, identifier_uri)
+            assert len(nk) == 2, (
+                f"Identifier naturalKey should yield 2 columns, got {nk}"
+            )
+            assert "identifier_value" in nk
+            assert "identifier_scheme" in nk
+
+    def test_identifier_sk_expr_no_comma_in_single_quote(self, client_dbt_artifacts):
+        """The surrogate key expression must not contain a comma inside a single-quoted string."""
+        key = _find_artifact(client_dbt_artifacts, "identifier.sql")
+        if key is None:
+            pytest.skip("Identifier model not generated (may be unmapped)")
+        sql = client_dbt_artifacts[key]
+        # Ensure no malformed composite like ['identifier_value,identifier_scheme']
+        assert "'identifier_value,identifier_scheme'" not in sql, (
+            "SK expression must not have comma inside a single-quoted NK string:\n" + sql
+        )
+

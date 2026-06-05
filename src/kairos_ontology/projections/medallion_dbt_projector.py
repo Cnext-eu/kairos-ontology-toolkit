@@ -1286,7 +1286,7 @@ def _build_sk_expression(
     if natural_key_cols:
         sk_cols_str = "', '".join(natural_key_cols)
         return f"{{{{ dbt_utils.generate_surrogate_key(['{sk_cols_str}']) }}}}"
-    return "CAST(NULL AS {{ dbt_utils.type_string() }})"
+    return "CAST(NULL AS {{ dbt.type_string() }})"
 
 
 def _build_iri_expression(
@@ -1300,11 +1300,11 @@ def _build_iri_expression(
                 f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', "
                 f"{natural_key_cols[0]})"
             )
-        parts = ", '/', ".join(natural_key_cols)
+        parts = ", '_', ".join(natural_key_cols)
         return (
             f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
         )
-    return "CAST(NULL AS {{ dbt_utils.type_string() }})"
+    return "CAST(NULL AS {{ dbt.type_string() }})"
 
 
 def _build_sk_iri_columns(
@@ -1312,34 +1312,53 @@ def _build_sk_iri_columns(
     class_uri: str,
     namespace: str,
     natural_key_cols: list[str],
+    nk_source_exprs: dict[str, str] | None = None,
 ) -> list[dict]:
-    """Build the SK and IRI column dicts for a silver model."""
+    """Build the SK and IRI column dicts for a silver model.
+
+    Args:
+        nk_source_exprs: Optional mapping of snake_case NK alias → source SQL expression
+            (e.g. ``{"bank_iban": "adminpulse_relations.bankIBAN"}``).  When provided,
+            the source expression is used in the surrogate-key and IRI CONCAT so that
+            T-SQL engines (which evaluate all SELECT expressions against FROM, not
+            sibling aliases) can resolve the column without an alias-before-definition
+            error.  Falls back to the alias when no entry is found.
+    """
     columns: list[dict] = []
     model_name = _camel_to_snake(extract_local_name(class_uri))
 
+    def _resolve(alias: str) -> str:
+        """Return source expression for alias when available, else the alias itself."""
+        if nk_source_exprs:
+            return nk_source_exprs.get(alias, alias)
+        return alias
+
     # SK column: use surrogate key generation if natural key is known
     if natural_key_cols:
-        sk_cols_str = "', '".join(natural_key_cols)
+        resolved_sk = [_resolve(nk) for nk in natural_key_cols]
+        sk_cols_str = "', '".join(resolved_sk)
         sk_expr = f"{{{{ dbt_utils.generate_surrogate_key(['{sk_cols_str}']) }}}}"
     else:
-        sk_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
+        sk_expr = "CAST(NULL AS {{ dbt.type_string() }})"
 
     columns.append({"expression": sk_expr, "target_name": f"{model_name}_sk"})
 
     # IRI column: construct from namespace + natural key
     if natural_key_cols:
         if len(natural_key_cols) == 1:
+            resolved_0 = _resolve(natural_key_cols[0])
             iri_expr = (
                 f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', "
-                f"{natural_key_cols[0]})"
+                f"{resolved_0})"
             )
         else:
-            parts = ", '/', ".join(natural_key_cols)
+            resolved_parts = [_resolve(nk) for nk in natural_key_cols]
+            parts = ", '_', ".join(resolved_parts)
             iri_expr = (
                 f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
             )
     else:
-        iri_expr = "CAST(NULL AS {{ dbt_utils.type_string() }})"
+        iri_expr = "CAST(NULL AS {{ dbt.type_string() }})"
 
     columns.append({"expression": iri_expr, "target_name": f"{model_name}_iri"})
     return columns
@@ -1521,19 +1540,25 @@ def _extract_silver_columns(
     # Determine natural key columns from kairos-ext:naturalKey annotation or PK columns
     natural_key_cols = _get_natural_key(graph, class_uri)
 
+    # Resolve mapped data columns first so we can build a source-expression lookup
+    # for the natural key — required to avoid alias-before-definition errors in T-SQL
+    # (T-SQL resolves all SELECT expressions against FROM, not sibling aliases).
+    mapped_cols = _resolve_mapped_columns(
+        graph, class_uri, mappings, platform,
+        bronze_col_lookup, enum_lookup, table_column_uris,
+        mapping_ns=mapping_ns,
+    )
+
     if include_sk_iri:
+        # Build lookup: alias → source expression for NK columns
+        nk_source_exprs = {c["target_name"]: c["expression"] for c in mapped_cols}
         columns.extend(
-            _build_sk_iri_columns(graph, class_uri, namespace, natural_key_cols)
+            _build_sk_iri_columns(
+                graph, class_uri, namespace, natural_key_cols, nk_source_exprs
+            )
         )
 
-    # Resolve mapped data columns
-    columns.extend(
-        _resolve_mapped_columns(
-            graph, class_uri, mappings, platform,
-            bronze_col_lookup, enum_lookup, table_column_uris,
-            mapping_ns=mapping_ns,
-        )
-    )
+    columns.extend(mapped_cols)
 
     # Validate that naturalKey columns are present in the generated column list.
     # If missing, add them as pass-through from the source table so that SK/IRI
@@ -1915,7 +1940,7 @@ def _extract_fk_columns_and_joins(
             # No explicit mapping and auto-inference failed — emit NULL placeholder
             prop_local = extract_local_name(str(prop))
             fk_columns.append({
-                "expression": "CAST(NULL AS {{ dbt_utils.type_string() }})",
+                "expression": "CAST(NULL AS {{ dbt.type_string() }})",
                 "target_name": fk_col_name,
             })
             remediation = (
@@ -1938,7 +1963,7 @@ def _extract_fk_columns_and_joins(
         if len(target_nk) == 0:
             # No natural key — cannot generate join
             fk_columns.append({
-                "expression": "CAST(NULL AS {{ dbt_utils.type_string() }})",
+                "expression": "CAST(NULL AS {{ dbt.type_string() }})",
                 "target_name": fk_col_name,
             })
             msg = (
@@ -2033,7 +2058,8 @@ def _get_natural_key(
     # Direct annotation on this class — always wins
     nk = graph.value(URIRef(class_uri), KAIROS_EXT.naturalKey)
     if nk:
-        return [_camel_to_snake(c) for c in str(nk).split()]
+        # Split on commas and/or whitespace to support both "a,b" and "a b" and "a, b"
+        return [_camel_to_snake(c) for c in re.split(r'[,\s]+', str(nk).strip()) if c.strip()]
 
     # Walk up rdfs:subClassOf to inherit from discriminator parents
     for parent in graph.objects(URIRef(class_uri), RDFS.subClassOf):
@@ -2534,10 +2560,8 @@ def _gen_gold_models(
         if tbl.name == "dim_date":
             # The date spine CTE uses dbt macros for cross-platform compatibility
             date_spine_cte = (
-                "date_spine AS (\n"
-                "    SELECT CAST(value AS DATE) AS date_key\n"
-                "    FROM {{ kairos_date_spine(36525) }}\n"
-                ")"
+                "SELECT CAST(value AS DATE) AS date_key\n"
+                "    FROM {{ kairos_date_spine(36525) }}"
             )
             columns = []
             for col in tbl.columns:
