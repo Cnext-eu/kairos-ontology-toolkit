@@ -1098,6 +1098,7 @@ def _gen_silver_models(
             source_refs=source_refs, systems=systems,
             table_column_uris=primary_col_uris or None,
             mapping_ns=mapping_ns,
+            scd_type=scd_type,
         )
 
         # Cross-table column detection: warn if mapped columns reference source
@@ -1497,6 +1498,7 @@ def _extract_silver_columns(
     table_column_uris: set[str] | None = None,
     include_sk_iri: bool = True,
     mapping_ns: dict[str, str] | None = None,
+    scd_type: str | None = None,
 ) -> list[dict]:
     """Extract silver-layer columns for a class from the ontology graph.
 
@@ -1511,6 +1513,9 @@ def _extract_silver_columns(
             extraction in multi-source scenarios.
         include_sk_iri: When False, SK and IRI columns are omitted.  Used for
             per-source models where SK/IRI are computed in the parent union model.
+        scd_type: When ``"2"``, SK and IRI expressions in ``source_data`` must use
+            the aliased column names (not the source expressions) because
+            ``source_data`` reads ``FROM mapped`` where only aliases are visible.
 
     Features:
     - SK uses dbt_utils.generate_surrogate_key() based on natural key columns
@@ -1550,8 +1555,14 @@ def _extract_silver_columns(
     )
 
     if include_sk_iri:
-        # Build lookup: alias → source expression for NK columns
-        nk_source_exprs = {c["target_name"]: c["expression"] for c in mapped_cols}
+        # For SCD2 models, source_data reads FROM mapped so only aliased names are
+        # visible — do not substitute source expressions or the column won't resolve.
+        # For all other models, pass the source expressions to avoid T-SQL
+        # alias-before-definition errors in a single SELECT list.
+        if scd_type == "2":
+            nk_source_exprs = None
+        else:
+            nk_source_exprs = {c["target_name"]: c["expression"] for c in mapped_cols}
         columns.extend(
             _build_sk_iri_columns(
                 graph, class_uri, namespace, natural_key_cols, nk_source_exprs

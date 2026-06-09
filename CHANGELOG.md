@@ -5,6 +5,17 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.2] — 2026-06-08
+
+### Fixed
+- **CR-005 — SCD2 `source_data` CTE uses aliased column names for SK/IRI** — in SCD2
+  silver models, the `source_data` CTE reads `FROM mapped`, where columns are already
+  aliased. The projector previously used the original source column name (e.g.
+  `uniqueIdentifier`) in `generate_surrogate_key()` and the IRI `CONCAT`, causing a
+  runtime T-SQL error (`Invalid column name`). The fix passes `scd_type` into
+  `_extract_silver_columns` and skips the source-expression substitution for SCD2 models,
+  so SK/IRI correctly reference the aliased names available in `mapped`.
+
 ## [3.6.2] — 2026-05-31
 
 ### Fixed

@@ -2554,8 +2554,9 @@ BANK_ACCOUNT_MAPPING_TTL = textwrap.dedent("""\
 
 
 class TestSkIriUsesSourceExpression:
-    """CR-001 — SK and IRI expressions in single-source silver must use source column,
-    not the snake_case output alias, to avoid T-SQL alias-before-definition errors."""
+    """CR-001 — In SCD2 silver models, the mapped CTE must use source column expressions
+    (to avoid T-SQL alias-before-definition in the mapping CTE), while source_data
+    must use the aliased column names (since it reads FROM mapped)."""
 
     @pytest.fixture
     def bank_sources_dir(self, tmp_path):
@@ -2575,10 +2576,7 @@ class TestSkIriUsesSourceExpression:
         )
         return d
 
-    def test_sk_expression_uses_source_column_not_alias(
-        self, template_dir, bank_sources_dir, bank_mappings_dir
-    ):
-        """SK generate_surrogate_key must reference the source column, not the alias."""
+    def _get_sql(self, template_dir, bank_sources_dir, bank_mappings_dir):
         g = Graph()
         g.parse(data=BANK_ACCOUNT_ONTOLOGY_TTL, format="turtle")
         classes = [{"uri": "http://kairos.example/ontology/BankAccount",
@@ -2594,45 +2592,52 @@ class TestSkIriUsesSourceExpression:
             mappings_dir=bank_mappings_dir,
         )
         sql_key = next(k for k in artifacts if "bank_account.sql" in k)
-        sql = artifacts[sql_key]
-        # The SK must reference the source expression, not the snake_case alias
-        assert "adminpulse_relations.bankIBAN" in sql, (
-            "SK expression must contain the source column reference, got:\n" + sql
-        )
-        assert "generate_surrogate_key(['bank_iban'])" not in sql, (
-            "SK must NOT use the output alias 'bank_iban' — that's alias-before-definition"
+        return artifacts[sql_key]
+
+    def test_mapped_cte_uses_source_expression(
+        self, template_dir, bank_sources_dir, bank_mappings_dir
+    ):
+        """In the mapped CTE, the column expression must reference the source column
+        (adminpulse_relations.bankIBAN), not the snake_case alias."""
+        import re as _re
+        sql = self._get_sql(template_dir, bank_sources_dir, bank_mappings_dir)
+        # BankAccount defaults to SCD2 — model must have a mapped CTE
+        assert "mapped as (" in sql, "SCD2 model must have a mapped CTE"
+        mapped_block = _re.search(r"mapped\s+as\s+\((.+?)\),\s*\n\s*source_data", sql, _re.DOTALL)
+        assert mapped_block, "mapped CTE block not found before source_data"
+        assert "adminpulse_relations.bankIBAN" in mapped_block.group(1), (
+            "mapped CTE must use the source column expression, got:\n" + mapped_block.group(1)
         )
 
-    def test_iri_expression_uses_source_column_not_alias(
+    def test_source_data_sk_uses_aliased_name(
         self, template_dir, bank_sources_dir, bank_mappings_dir
     ):
-        """IRI CONCAT must reference the source column, not the snake_case alias."""
-        g = Graph()
-        g.parse(data=BANK_ACCOUNT_ONTOLOGY_TTL, format="turtle")
-        classes = [{"uri": "http://kairos.example/ontology/BankAccount",
-                     "name": "BankAccount", "label": "BankAccount",
-                     "comment": "A bank account"}]
-        artifacts = generate_dbt_artifacts(
-            classes=classes,
-            graph=g,
-            template_dir=template_dir,
-            namespace="http://kairos.example/ontology/",
-            ontology_name="bank",
-            sources_dir=bank_sources_dir,
-            mappings_dir=bank_mappings_dir,
+        """In source_data (which reads FROM mapped), the SK must use the aliased column
+        name — the source expression is no longer visible there."""
+        sql = self._get_sql(template_dir, bank_sources_dir, bank_mappings_dir)
+        assert "source_data" in sql, "SCD2 model must have a source_data CTE"
+        assert "generate_surrogate_key(['bank_iban'])" in sql, (
+            "source_data SK must use aliased column 'bank_iban' (FROM mapped), got:\n" + sql
         )
-        sql_key = next(k for k in artifacts if "bank_account.sql" in k)
-        sql = artifacts[sql_key]
-        # IRI must use source column, not alias
-        assert "CONCAT(" in sql and "adminpulse_relations.bankIBAN" in sql, (
-            "IRI CONCAT must contain the source column reference, got:\n" + sql
-        )
-        # bank_iban alias should only appear as the column alias (after AS), not in CONCAT
+
+    def test_iri_expression_uses_source_column_in_mapped(
+        self, template_dir, bank_sources_dir, bank_mappings_dir
+    ):
+        """The IRI CONCAT in source_data must use the aliased column name."""
         import re as _re
-        iri_concat = _re.search(r"CONCAT\([^)]+\) as bank_account_iri", sql)
-        if iri_concat:
-            assert "bank_iban)" not in iri_concat.group(0), (
-                "IRI CONCAT must not use the output alias 'bank_iban'"
+        sql = self._get_sql(template_dir, bank_sources_dir, bank_mappings_dir)
+        # Source expression still appears somewhere (in the mapped CTE column expression)
+        assert "adminpulse_relations.bankIBAN" in sql, (
+            "Source column expression must appear in the mapped CTE, got:\n" + sql
+        )
+        # The IRI CONCAT in source_data must use the alias
+        source_data_block = _re.search(
+            r"source_data\s+as\s+\((.+?)\)\s*\n", sql, _re.DOTALL
+        )
+        if source_data_block:
+            block = source_data_block.group(1)
+            assert "bank_iban" in block, (
+                "source_data IRI must use aliased column 'bank_iban':\n" + block
             )
 
     def test_no_source_lookup_falls_back_to_alias(self):
@@ -2650,3 +2655,197 @@ class TestSkIriUsesSourceExpression:
         sk_expr = next(c["expression"] for c in cols if c["target_name"] == "bank_account_sk")
         # Without source lookup, falls back to alias
         assert "bank_iban" in sk_expr
+
+
+# ---------------------------------------------------------------------------
+# CR-005: SCD2 source_data CTE must use aliased column names for SK/IRI
+# ---------------------------------------------------------------------------
+
+_CR005_PARTY_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix party: <http://kairos.example/ontology/party#> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology/party> a owl:Ontology ;
+        rdfs:label "Party Test" ;
+        owl:versionInfo "1.0.0" .
+
+    party:Party a owl:Class ;
+        rdfs:label "Party" ;
+        rdfs:comment "A party" ;
+        kairos-ext:naturalKey "partyIdentifier" .
+
+    party:partyIdentifier a owl:DatatypeProperty ;
+        rdfs:label "party identifier" ;
+        rdfs:domain party:Party ;
+        rdfs:range xsd:string .
+
+    party:remark a owl:DatatypeProperty ;
+        rdfs:label "remark" ;
+        rdfs:domain party:Party ;
+        rdfs:range xsd:string .
+""")
+
+_CR005_PARTY_SILVER_EXT_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix party: <http://kairos.example/ontology/party#> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology/party-silver-ext> a owl:Ontology ;
+        rdfs:label "Party Silver Ext" ;
+        owl:versionInfo "1.0.0" .
+
+    party:Party kairos-ext:scdType "2" .
+""")
+
+_CR005_PARTY_BRONZE_TTL = textwrap.dedent("""\
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+    bronze-ap:AdminPulse a kairos-bronze:SourceSystem ;
+        rdfs:label "AdminPulse" ;
+        kairos-bronze:connectionType "jdbc" .
+
+    bronze-ap:tblRelations a kairos-bronze:SourceTable ;
+        rdfs:label "adminpulse_relations" ;
+        kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+        kairos-bronze:tableName "adminpulse_relations" .
+
+    bronze-ap:tblRelations_uniqueIdentifier a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblRelations ;
+        kairos-bronze:columnName "uniqueIdentifier" ;
+        kairos-bronze:dataType "nvarchar" ;
+        kairos-bronze:nullable "false"^^xsd:boolean .
+
+    bronze-ap:tblRelations_remark a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblRelations ;
+        kairos-bronze:columnName "remark" ;
+        kairos-bronze:dataType "nvarchar" ;
+        kairos-bronze:nullable "true"^^xsd:boolean .
+""")
+
+# uniqueIdentifier (source) → partyIdentifier (domain) — name mismatch triggers the bug
+_CR005_PARTY_MAPPING_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix party: <http://kairos.example/ontology/party#> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+
+    bronze-ap:tblRelations skos:exactMatch party:Party ;
+        kairos-map:mappingType "direct" .
+
+    bronze-ap:tblRelations_uniqueIdentifier skos:closeMatch party:partyIdentifier ;
+        kairos-map:transform "source.adminpulse_relations.uniqueIdentifier" .
+
+    bronze-ap:tblRelations_remark skos:exactMatch party:remark .
+""")
+
+
+class TestScd2SourceDataUsesAliasedColumns:
+    """CR-005 — In SCD2 models, SK and IRI in source_data must use the aliased column
+    name (from mapped CTE), not the original source column name."""
+
+    @pytest.fixture
+    def party_sources_dir(self, tmp_path):
+        d = tmp_path / "sources" / "adminpulse"
+        d.mkdir(parents=True)
+        (d / "adminpulse.vocabulary.ttl").write_text(
+            _CR005_PARTY_BRONZE_TTL, encoding="utf-8"
+        )
+        return tmp_path / "sources"
+
+    @pytest.fixture
+    def party_mappings_dir(self, tmp_path):
+        d = tmp_path / "mappings"
+        d.mkdir(parents=True)
+        (d / "adminpulse-to-party.ttl").write_text(
+            _CR005_PARTY_MAPPING_TTL, encoding="utf-8"
+        )
+        return d
+
+    @pytest.fixture
+    def party_silver_ext_path(self, tmp_path):
+        ext_file = tmp_path / "party-silver-ext.ttl"
+        ext_file.write_text(_CR005_PARTY_SILVER_EXT_TTL, encoding="utf-8")
+        return ext_file
+
+    def _get_sql(self, template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path):
+        g = Graph()
+        g.parse(data=_CR005_PARTY_ONTOLOGY_TTL, format="turtle")
+        classes = [{"uri": "http://kairos.example/ontology/party#Party",
+                    "name": "Party", "label": "Party", "comment": "A party"}]
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/party#",
+            ontology_name="party",
+            sources_dir=party_sources_dir,
+            mappings_dir=party_mappings_dir,
+            silver_ext_path=party_silver_ext_path,
+        )
+        sql_key = next(k for k in artifacts if "party.sql" in k)
+        return artifacts[sql_key]
+
+    def test_source_data_sk_uses_aliased_name(
+        self, template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
+    ):
+        """In source_data CTE, generate_surrogate_key must use the aliased column
+        name (party_identifier), not the original source name (uniqueIdentifier)."""
+        sql = self._get_sql(
+            template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
+        )
+        assert "source_data" in sql, "SCD2 model must have a source_data CTE"
+        # The source_data CTE must use the aliased name
+        assert "generate_surrogate_key(['party_identifier'])" in sql, (
+            "source_data SK must reference aliased column 'party_identifier', got:\n" + sql
+        )
+        # The original source column must NOT appear in the SK expression
+        assert "generate_surrogate_key(['uniqueIdentifier'])" not in sql, (
+            "source_data SK must NOT use original source column 'uniqueIdentifier':\n" + sql
+        )
+
+    def test_source_data_iri_uses_aliased_name(
+        self, template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
+    ):
+        """In source_data CTE, the IRI CONCAT must use the aliased column name."""
+        sql = self._get_sql(
+            template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
+        )
+        import re as _re
+        # Find the IRI expression inside source_data block
+        source_data_block = _re.search(
+            r"source_data\s+as\s+\((.+?)\)\s*\n", sql, _re.DOTALL
+        )
+        assert source_data_block, "source_data CTE not found in SQL"
+        block = source_data_block.group(1)
+        assert "uniqueIdentifier" not in block, (
+            "source_data IRI must NOT reference 'uniqueIdentifier' — "
+            "that column doesn't exist in 'mapped':\n" + block
+        )
+        assert "party_identifier" in block, (
+            "source_data IRI must reference aliased column 'party_identifier':\n" + block
+        )
+
+    def test_mapped_cte_still_uses_source_expression(
+        self, template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
+    ):
+        """The mapped CTE must still use the source expression (not the alias) to
+        avoid T-SQL alias-before-definition — this behaviour must not regress."""
+        sql = self._get_sql(
+            template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
+        )
+        import re as _re
+        mapped_block = _re.search(
+            r"mapped\s+as\s+\((.+?)\),\s*\n\s*source_data", sql, _re.DOTALL
+        )
+        assert mapped_block, "mapped CTE not found before source_data in SQL"
+        block = mapped_block.group(1)
+        assert "uniqueIdentifier" in block, (
+            "mapped CTE must use source column 'uniqueIdentifier' in its expression:\n" + block
+        )
