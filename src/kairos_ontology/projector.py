@@ -638,7 +638,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     report.targets_requested = list(targets_to_run)
 
     # Clear dbt entity metadata cache from prior runs (prevents stale data leaking
-    # across invocations in long-lived processes like the FastAPI service).
+    # across invocations when the projector is called multiple times in the same process).
     from .projections.medallion_dbt_projector import _last_entity_metadata
     _last_entity_metadata.clear()
 

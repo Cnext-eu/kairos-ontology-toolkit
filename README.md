@@ -46,7 +46,6 @@ and AI prompt context — with built-in validation and a single CLI command.
 | 📦 **Hub Scaffolding** | `kairos init` bootstraps a complete ontology repository with CI, skills, and config |
 | 🔗 **Full Traceability** | SKOS-based source→domain lineage in every generated SQL comment and schema YAML |
 | 🌐 **Multi-Domain** | Each domain deploys independently; cross-domain FK joins resolve automatically |
-| 🤖 **AI Chat Service** | FastAPI + GitHub Copilot SDK for conversational ontology management |
 | 📊 **Power BI** | Star-schema gold layer, TMDL import/export, DAX measures, hierarchies, RLS |
 
 ## 🚀 Quick Start
@@ -95,12 +94,8 @@ kairos-ontology-toolkit/
 │   ├── templates/                    # Jinja2 output templates per target
 │   ├── validator.py                  # 3-level validation pipeline
 │   └── projector.py                  # Multi-domain projection orchestrator
-├── service/                          # FastAPI REST API + AI chat
-│   ├── app/routers/                  # Endpoints: ontology, validate, project, chat
-│   └── app/services/                 # GitHub integration, Copilot SDK
-└── tests/                            # pytest test suite (700+ tests)
-    ├── scenarios/                    # Full-pipeline scenario tests (acme-hub)
-    └── service/                      # API endpoint tests
+└── tests/                            # pytest test suite (1000+ tests)
+    └── scenarios/                    # Full-pipeline scenario tests (acme-hub)
 ```
 
 ## 📂 Hub Repository Structure
@@ -124,27 +119,13 @@ my-ontology-hub/
 └── .github/skills/          # Copilot agent skills for interactive modeling
 ```
 
-## 🌐 Web Service
-
-The toolkit ships with a FastAPI service for REST-based ontology management and an
-AI chat interface powered by the GitHub Copilot SDK.
-
-```bash
-KAIROS_DEV_MODE=true uvicorn service.app.main:app --reload
-```
-
-Key endpoints: `/api/validate`, `/api/project`, `/api/ontology/query`, `/api/chat`
-
-➡️ See the [User Guide — Service section](docs/USER_GUIDE.md) for full endpoint
-documentation and setup instructions.
-
 ## 🛠️ Development
 
 ```bash
 git clone https://github.com/Cnext-eu/kairos-ontology-toolkit.git
 cd kairos-ontology-toolkit
 uv sync --all-groups              # install all deps
-uv run pytest                     # 700+ tests
+uv run pytest                     # 1000+ tests
 ```
 
 [uv](https://docs.astral.sh/uv/) manages dependencies, environments, and builds.
