@@ -28,6 +28,7 @@ def generate_dapr_artifacts(
     sources_dir: Path = None,
     mappings_dir: Path = None,
     silver_ext_path: Path = None,
+    integration_ext_path: Path = None,
     **kwargs,
 ) -> dict[str, str]:
     """Generate Dapr component and app artifacts.
@@ -54,11 +55,14 @@ def generate_dapr_artifacts(
         sources_dir=sources_dir,
         mappings_dir=mappings_dir,
         silver_ext_path=silver_ext_path,
+        integration_ext_path=integration_ext_path,
     )
 
     # Collect mapping files and extract source systems + entities
     systems: set[str] = set()
     entities: list[dict[str, str]] = []
+    system_schedules: dict[str, str] = {}
+    system_retry_policies: dict[str, str] = {}
 
     for file_key, content in mapping_artifacts.items():
         if file_key.endswith("-mapping.json"):
@@ -72,6 +76,15 @@ def generate_dapr_artifacts(
                 entity = mapping.get("metadata", {}).get("entity", "Entity")
                 systems.add(system)
                 entities.append({"system": system, "entity": entity})
+
+                # Extract integration metadata for Dapr config
+                int_meta = mapping.get("integration", {})
+                schedule = int_meta.get("schedule")
+                if schedule and system not in system_schedules:
+                    system_schedules[system] = schedule
+                retry = int_meta.get("retry_policy")
+                if retry and system not in system_retry_policies:
+                    system_retry_policies[system] = retry
             except (json.JSONDecodeError, KeyError):
                 pass
         elif file_key.endswith("manifest.json"):
@@ -79,12 +92,19 @@ def generate_dapr_artifacts(
 
     # Generate Dapr components
     for system in sorted(systems):
+        schedule = system_schedules.get(system)
         artifacts[f"{domain}/components/binding-{system}.yaml"] = _input_binding(
-            system
+            system, schedule=schedule,
         )
     artifacts[f"{domain}/components/binding-silver.yaml"] = _output_binding(domain)
     artifacts[f"{domain}/components/statestore.yaml"] = _state_store()
     artifacts[f"{domain}/components/pubsub.yaml"] = _pubsub()
+
+    # Generate resiliency policy if retry annotations present
+    if system_retry_policies:
+        artifacts[f"{domain}/components/resiliency.yaml"] = _resiliency_policy(
+            system_retry_policies
+        )
 
     # Generate app
     artifacts[f"{domain}/app/app.py"] = _generate_app(domain, entities)
@@ -102,7 +122,8 @@ def generate_dapr_artifacts(
 # ---------------------------------------------------------------------------
 
 
-def _input_binding(system: str) -> str:
+def _input_binding(system: str, schedule: str = None) -> str:
+    sched = schedule or "@every 5m"
     return f"""apiVersion: dapr.io/v1alpha1
 kind: Component
 metadata:
@@ -112,7 +133,7 @@ spec:
   version: v1
   metadata:
     - name: schedule
-      value: "@every 5m"
+      value: "{sched}"
   # Replace with your actual binding type:
   # bindings.azure.cosmosdb, bindings.postgresql, bindings.azure.eventhubs, etc.
   # See: https://docs.dapr.io/reference/components-reference/supported-bindings/
@@ -170,6 +191,47 @@ spec:
     - name: redisPassword
       value: ""
   # Replace with your pub/sub: pubsub.azure.servicebus.topics, pubsub.kafka, etc.
+"""
+
+
+def _resiliency_policy(retry_policies: dict[str, str]) -> str:
+    """Generate a Dapr resiliency policy from kairos-int:retryPolicy annotations."""
+    policies = []
+    targets = []
+    for system, policy_str in sorted(retry_policies.items()):
+        # Parse structured string: maxRetries=3,backoff=exponential,initialDelay=1s
+        parts = dict(
+            p.split("=", 1)
+            for p in policy_str.split(",")
+            if "=" in p
+        )
+        max_retries = parts.get("maxRetries", "3")
+        backoff = parts.get("backoff", "exponential")
+        initial_delay = parts.get("initialDelay", "1s")
+        policies.append(
+            f"      {system}Retry:\n"
+            f"        policy: constant\n"
+            f"        duration: {initial_delay}\n"
+            f"        maxRetries: {max_retries}"
+        )
+        targets.append(
+            f"      {system}:\n"
+            f"        retry: {system}Retry"
+        )
+
+    policies_block = "\n".join(policies)
+    targets_block = "\n".join(targets)
+    return f"""apiVersion: dapr.io/v1alpha1alpha1
+kind: Resiliency
+metadata:
+  name: integration-resiliency
+spec:
+  policies:
+    retries:
+{policies_block}
+  targets:
+    components:
+{targets_block}
 """
 
 

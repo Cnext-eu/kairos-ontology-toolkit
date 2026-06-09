@@ -1,0 +1,47 @@
+@prefix acme: <https://acme.example/ontology/client#> .
+@prefix kairos-int: <https://kairos.cnext.eu/integration#> .
+
+# ---------------------------------------------------------------------------
+# Integration-layer annotations for Client domain (scenario testing)
+# ---------------------------------------------------------------------------
+
+# Ontology-level defaults
+<https://acme.example/ontology/client>
+    kairos-int:defaultBatchSize 500 ;
+    kairos-int:defaultErrorStrategy "dead-letter" ;
+    kairos-int:defaultRetryPolicy "maxRetries=5,backoff=exponential,initialDelay=2s" ;
+    kairos-int:defaultSchedule "0 */4 * * *" .
+
+# Class-level
+acme:Client
+    kairos-int:loadStrategy "incremental" ;
+    kairos-int:incrementalWatermark "createdAt" ;
+    kairos-int:batchSize 1000 ;
+    kairos-int:priority 10 ;
+    kairos-int:validationMode "strict" ;
+    kairos-int:postLoadHook "notify-downstream" .
+
+acme:CorporateClient
+    kairos-int:loadStrategy "full" ;
+    kairos-int:errorStrategy "fail-batch" ;
+    kairos-int:schedule "@every 6h" .
+
+acme:ClientType
+    kairos-int:loadStrategy "full" ;
+    kairos-int:priority 1 ;
+    kairos-int:validationMode "none" .
+
+# Property-level
+acme:clientId
+    kairos-int:validationRule "value IS NOT NULL" ;
+    kairos-int:validationAction "reject" .
+
+acme:email
+    kairos-int:validationRule "LENGTH(value) <= 254" ;
+    kairos-int:validationAction "nullify" ;
+    kairos-int:sensitiveData "true" .
+
+acme:vatNumber
+    kairos-int:coercionRule "TRIM(UPPER(value))" ;
+    kairos-int:validationRule "LENGTH(value) >= 5" ;
+    kairos-int:validationAction "warn" .

@@ -20,7 +20,7 @@ from rdflib.namespace import OWL, RDF
 
 from .mapping_parser import parse_skos_mappings, KAIROS_BRONZE
 from .uri_utils import extract_local_name, camel_to_snake
-from .shared import KAIROS_EXT, merge_ext_graph, str_val
+from .shared import KAIROS_EXT, KAIROS_INT, merge_ext_graph, str_val, int_val
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,98 @@ def _extract_silver_metadata(
     }
 
 
+def _extract_integration_metadata(
+    graph: Graph, class_uri: str, ontology_uri: str | None,
+) -> dict[str, Any]:
+    """Extract kairos-int: annotations for a class + ontology-level defaults."""
+    from rdflib import URIRef
+    cls = URIRef(class_uri)
+
+    # Ontology-level defaults
+    ont_defaults: dict[str, Any] = {}
+    if ontology_uri:
+        ont = URIRef(ontology_uri)
+        ont_defaults = {
+            "default_batch_size": int_val(graph, ont, KAIROS_INT.defaultBatchSize, 1000),
+            "default_error_strategy": str_val(
+                graph, ont, KAIROS_INT.defaultErrorStrategy) or "skip-row",
+            "default_retry_policy": str_val(
+                graph, ont, KAIROS_INT.defaultRetryPolicy) or None,
+            "default_schedule": str_val(
+                graph, ont, KAIROS_INT.defaultSchedule) or None,
+        }
+
+    # Class-level (override ontology defaults where present)
+    load_strategy = str_val(graph, cls, KAIROS_INT.loadStrategy) or "full"
+    batch_raw = int_val(graph, cls, KAIROS_INT.batchSize, 0)
+    error_raw = str_val(graph, cls, KAIROS_INT.errorStrategy)
+    retry_raw = str_val(graph, cls, KAIROS_INT.retryPolicy)
+    schedule_raw = str_val(graph, cls, KAIROS_INT.schedule)
+
+    result: dict[str, Any] = {
+        "load_strategy": load_strategy,
+        "batch_size": batch_raw or ont_defaults.get("default_batch_size", 1000),
+        "error_strategy": error_raw or ont_defaults.get("default_error_strategy", "skip-row"),
+        "retry_policy": retry_raw or ont_defaults.get("default_retry_policy"),
+        "schedule": schedule_raw or ont_defaults.get("default_schedule"),
+        "priority": int_val(graph, cls, KAIROS_INT.priority, 100),
+        "validation_mode": str_val(graph, cls, KAIROS_INT.validationMode) or "lenient",
+    }
+
+    watermark = str_val(graph, cls, KAIROS_INT.incrementalWatermark)
+    if watermark:
+        result["incremental_watermark"] = watermark
+
+    pre_hook = str_val(graph, cls, KAIROS_INT.preLoadHook)
+    if pre_hook:
+        result["pre_load_hook"] = pre_hook
+
+    post_hook = str_val(graph, cls, KAIROS_INT.postLoadHook)
+    if post_hook:
+        result["post_load_hook"] = post_hook
+
+    dlt = str_val(graph, cls, KAIROS_INT.deadLetterTopic)
+    if dlt:
+        result["dead_letter_topic"] = dlt
+
+    # Strip None values for cleaner JSON
+    return {k: v for k, v in result.items() if v is not None}
+
+
+def _extract_property_integration(
+    graph: Graph, prop_uri: str,
+) -> dict[str, Any]:
+    """Extract kairos-int: property-level annotations."""
+    from rdflib import URIRef
+    prop = URIRef(prop_uri)
+    result: dict[str, Any] = {}
+
+    val_rule = str_val(graph, prop, KAIROS_INT.validationRule)
+    if val_rule:
+        result["validation_rule"] = val_rule
+
+    val_action = str_val(graph, prop, KAIROS_INT.validationAction)
+    if val_action:
+        result["validation_action"] = val_action
+
+    if str_val(graph, prop, KAIROS_INT.sensitiveData).lower() in ("true", "1", "yes"):
+        result["sensitive_data"] = True
+
+    lookup_entity = str_val(graph, prop, KAIROS_INT.lookupEntity)
+    if lookup_entity:
+        result["lookup_entity"] = lookup_entity
+
+    lookup_key = str_val(graph, prop, KAIROS_INT.lookupKey)
+    if lookup_key:
+        result["lookup_key"] = lookup_key
+
+    coercion = str_val(graph, prop, KAIROS_INT.coercionRule)
+    if coercion:
+        result["coercion_rule"] = coercion
+
+    return result
+
+
 def generate_integration_artifacts(
     classes: list,
     graph: Graph,
@@ -88,6 +180,7 @@ def generate_integration_artifacts(
     sources_dir: Path = None,
     mappings_dir: Path = None,
     silver_ext_path: Path = None,
+    integration_ext_path: Path = None,
     **kwargs,
 ) -> dict[str, str]:
     """Generate integration mapping JSON artifacts.
@@ -102,6 +195,7 @@ def generate_integration_artifacts(
         sources_dir: Path to integration/sources/ directory.
         mappings_dir: Path to mappings/ directory with SKOS mapping TTLs.
         silver_ext_path: Path to *-silver-ext.ttl.
+        integration_ext_path: Path to *-integration-ext.ttl.
 
     Returns:
         Dictionary of {file_path: content} for all generated artifacts.
@@ -116,7 +210,25 @@ def generate_integration_artifacts(
     for triple in graph:
         working_graph.add(triple)
     if silver_ext_path and silver_ext_path.exists():
-        merge_ext_graph(working_graph, silver_ext_path)
+        working_graph = merge_ext_graph(working_graph, silver_ext_path)
+
+    # Merge integration-ext if available
+    if integration_ext_path and integration_ext_path.exists():
+        working_graph = merge_ext_graph(working_graph, integration_ext_path)
+
+    # Detect ontology URI for ontology-level defaults
+    from rdflib import URIRef
+    from rdflib.namespace import OWL as _OWL
+    ontology_uri = None
+    for s in working_graph.subjects(_RDF_TYPE := RDF.type, _OWL.Ontology):
+        ns_str = str(s)
+        if namespace and ns_str.startswith(namespace.rstrip("#/")):
+            ontology_uri = ns_str
+            break
+    if not ontology_uri:
+        for s in working_graph.subjects(RDF.type, _OWL.Ontology):
+            ontology_uri = str(s)
+            break
 
     # Parse SKOS mappings
     mappings, ns_bindings = parse_skos_mappings(mappings_dir)
@@ -158,6 +270,11 @@ def generate_integration_artifacts(
         silver = _extract_silver_metadata(working_graph, cls_uri)
         silver_table = f"silver_{domain}.{camel_to_snake(cls_name)}"
 
+        # Integration metadata (kairos-int: annotations)
+        integration = _extract_integration_metadata(
+            working_graph, cls_uri, ontology_uri
+        )
+
         for src_info in matched_sources:
             src_uri = src_info["source_uri"]
             src_name = extract_local_name(src_uri)
@@ -180,7 +297,7 @@ def generate_integration_artifacts(
                     target_prop = target_prop_map.get(cmap["target_uri"])
                     if not target_prop:
                         continue
-                    col_mappings.append({
+                    col_entry: dict[str, Any] = {
                         "source_column": src_col_name,
                         "target_property": target_prop["name"],
                         "target_type": target_prop["type"],
@@ -188,7 +305,14 @@ def generate_integration_artifacts(
                         "transform": cmap.get("transform"),
                         "source_columns": cmap.get("source_columns"),
                         "default_value": cmap.get("default_value"),
-                    })
+                    }
+                    # Property-level integration annotations
+                    prop_int = _extract_property_integration(
+                        working_graph, target_prop["uri"]
+                    )
+                    if prop_int:
+                        col_entry["integration"] = prop_int
+                    col_mappings.append(col_entry)
                     mapped_source_cols.add(src_col_name)
                     mapped_target_props.add(target_prop["name"])
 
@@ -201,7 +325,7 @@ def generate_integration_artifacts(
             ]
 
             mapping_doc = {
-                "$schema": "https://kairos.cnext.eu/schemas/integration-mapping/v1",
+                "$schema": "https://kairos.cnext.eu/schemas/integration-mapping/v2",
                 "metadata": {
                     "domain": domain,
                     "entity": cls_name,
@@ -224,6 +348,7 @@ def generate_integration_artifacts(
                     "natural_key": silver["natural_key"],
                     "scd_type": silver["scd_type"],
                 },
+                "integration": integration,
                 "column_mappings": col_mappings,
                 "unmapped_source_columns": unmapped_source,
                 "unmapped_target_properties": unmapped_target,

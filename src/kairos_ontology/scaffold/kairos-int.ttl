@@ -1,0 +1,193 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+#
+# kairos-int: Kairos Integration Extension Vocabulary
+#
+# Namespace: https://kairos.cnext.eu/integration#
+# Prefix:    kairos-int:
+#
+# Annotation properties for the integration projection layer. These drive
+# runtime behaviour of integration pipelines (Dapr, n8n, Logic Apps, Data
+# Factory, Azure Functions) generated from the integration / dapr / n8n
+# projection targets.
+#
+# These annotations belong in SEPARATE integration extension files
+# (e.g. customer-integration-ext.ttl) alongside the silver/gold extensions.
+# Domain ontologies must remain free of integration concerns.
+#
+# The integration projector continues to consume naturalKey and scdType from
+# kairos-ext:. This vocabulary adds integration-specific concerns that are
+# orthogonal to physical storage layout.
+#
+# Naming convention: all local names are unprefixed (no layer prefix) since
+# every annotation in this vocabulary is integration-specific by definition.
+# Never reuse a local name across kairos-ext / kairos-bronze / kairos-map /
+# kairos-int vocabularies.
+
+@prefix kairos-int: <https://kairos.cnext.eu/integration#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/integration> a owl:Ontology ;
+    rdfs:label "Kairos Integration Extension Vocabulary"@en ;
+    rdfs:comment "Annotation properties for integration pipeline projection (Dapr, n8n, Logic Apps, Data Factory)."@en ;
+    owl:versionInfo "1.0.0" .
+
+# ===========================================================================
+# Ontology-level annotations (defaults for all entities in a domain)
+# ===========================================================================
+
+kairos-int:defaultBatchSize a owl:AnnotationProperty ;
+    rdfs:label "default batch size"@en ;
+    rdfs:comment "Default number of rows per batch for entity loads. Overridable per class with kairos-int:batchSize. Default: 1000."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:integer .
+
+kairos-int:defaultErrorStrategy a owl:AnnotationProperty ;
+    rdfs:label "default error strategy"@en ;
+    rdfs:comment """Default error handling strategy for failed rows. Overridable per class.
+  skip-row    — log and skip the failing row (default)
+  fail-batch  — abort the entire batch on first error
+  dead-letter — route failing rows to a dead-letter topic/queue"""@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
+kairos-int:defaultRetryPolicy a owl:AnnotationProperty ;
+    rdfs:label "default retry policy"@en ;
+    rdfs:comment """Default retry policy for transient failures. Structured string:
+  maxRetries=3,backoff=exponential,initialDelay=1s
+Overridable per class with kairos-int:retryPolicy."""@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
+kairos-int:defaultSchedule a owl:AnnotationProperty ;
+    rdfs:label "default schedule"@en ;
+    rdfs:comment "Default schedule for entity loads. Cron expression or interval (e.g. '@every 5m', '0 */6 * * *'). Overridable per class."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
+# ===========================================================================
+# Class-level annotations (per-entity integration behaviour)
+# ===========================================================================
+
+kairos-int:loadStrategy a owl:AnnotationProperty ;
+    rdfs:label "load strategy"@en ;
+    rdfs:comment """How this entity is loaded from source:
+  full        — full table dump every run (default)
+  incremental — high-watermark incremental load (requires incrementalWatermark)
+  cdc         — change data capture / event stream"""@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-int:incrementalWatermark a owl:AnnotationProperty ;
+    rdfs:label "incremental watermark"@en ;
+    rdfs:comment "Property name (camelCase) used as high-watermark column for incremental loads. Only used when loadStrategy = 'incremental'."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-int:batchSize a owl:AnnotationProperty ;
+    rdfs:label "batch size"@en ;
+    rdfs:comment "Number of rows per batch for this entity. Overrides ontology-level defaultBatchSize."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:integer .
+
+kairos-int:errorStrategy a owl:AnnotationProperty ;
+    rdfs:label "error strategy"@en ;
+    rdfs:comment "Error handling strategy for this entity. Values: 'skip-row', 'fail-batch', 'dead-letter'. Overrides ontology-level default."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-int:retryPolicy a owl:AnnotationProperty ;
+    rdfs:label "retry policy"@en ;
+    rdfs:comment "Retry policy for transient failures loading this entity. Same format as defaultRetryPolicy. Overrides ontology-level default."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-int:schedule a owl:AnnotationProperty ;
+    rdfs:label "schedule"@en ;
+    rdfs:comment "Load schedule for this entity. Cron expression or interval. Overrides ontology-level default."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-int:priority a owl:AnnotationProperty ;
+    rdfs:label "priority"@en ;
+    rdfs:comment "Load order priority (lower number = loaded earlier). Useful for FK dependency ordering. Default: 100."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:integer .
+
+kairos-int:preLoadHook a owl:AnnotationProperty ;
+    rdfs:label "pre-load hook"@en ;
+    rdfs:comment "Named hook or script to execute before loading this entity (e.g. 'truncate-staging', 'disable-constraints')."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-int:postLoadHook a owl:AnnotationProperty ;
+    rdfs:label "post-load hook"@en ;
+    rdfs:comment "Named hook or script to execute after loading this entity (e.g. 'rebuild-indexes', 'notify-downstream')."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-int:deadLetterTopic a owl:AnnotationProperty ;
+    rdfs:label "dead-letter topic"@en ;
+    rdfs:comment "Topic or queue name for rejected rows when errorStrategy = 'dead-letter'. If absent, uses '{domain}.{entity}.dead-letter'."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-int:validationMode a owl:AnnotationProperty ;
+    rdfs:label "validation mode"@en ;
+    rdfs:comment """How to handle validation failures for this entity:
+  strict  — reject rows that fail any validationRule
+  lenient — coerce values and log warnings (default)
+  none    — skip all validation"""@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+# ===========================================================================
+# Property-level annotations (per-column integration behaviour)
+# ===========================================================================
+
+kairos-int:validationRule a owl:AnnotationProperty ;
+    rdfs:label "validation rule"@en ;
+    rdfs:comment """Validation expression applied to this property's value before loading.
+Use 'value' as placeholder for the column value.
+Examples:
+  LENGTH(value) <= 50
+  value > 0
+  value IN ('A', 'B', 'C')
+  value IS NOT NULL"""@en ;
+    rdfs:range xsd:string .
+
+kairos-int:validationAction a owl:AnnotationProperty ;
+    rdfs:label "validation action"@en ;
+    rdfs:comment """Action when validationRule fails for this property:
+  reject  — reject the entire row (default when validationMode = 'strict')
+  nullify — set the column to NULL
+  default — apply the defaultValue from kairos-map:defaultValue
+  warn    — keep the value but log a warning"""@en ;
+    rdfs:range xsd:string .
+
+kairos-int:sensitiveData a owl:AnnotationProperty ;
+    rdfs:label "sensitive data"@en ;
+    rdfs:comment "If true, this property contains sensitive/PII data. Integration runtimes should mask or encrypt the value in transit, logs, and dead-letter output."@en ;
+    rdfs:range xsd:boolean .
+
+kairos-int:lookupEntity a owl:AnnotationProperty ;
+    rdfs:label "lookup entity"@en ;
+    rdfs:comment "Domain entity name (PascalCase) to resolve FK values via runtime lookup. Supplements kairos-ext:silverForeignKey which only declares the DDL column — this tells the integration runtime HOW to resolve the FK."@en ;
+    rdfs:range xsd:string .
+
+kairos-int:lookupKey a owl:AnnotationProperty ;
+    rdfs:label "lookup key"@en ;
+    rdfs:comment "Property name (camelCase) on the lookup entity to match against the source value. Used with lookupEntity to perform FK resolution at load time."@en ;
+    rdfs:range xsd:string .
+
+kairos-int:coercionRule a owl:AnnotationProperty ;
+    rdfs:label "coercion rule"@en ;
+    rdfs:comment """Type coercion expression applied before validation. Use 'value' as placeholder.
+Examples:
+  TRIM(UPPER(value))
+  CAST(value AS INTEGER)
+  COALESCE(value, '0')"""@en ;
+    rdfs:range xsd:string .

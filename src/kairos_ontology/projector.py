@@ -440,14 +440,15 @@ def _discover_extensions(
     onto_name: str,
     onto_info: dict,
     extensions_dir: Optional[Path],
-) -> tuple[Optional[Path], Optional[Path]]:
+) -> tuple[Optional[Path], Optional[Path], Optional[Path]]:
     """Discover extension files for a given target and ontology domain.
 
     Returns:
-        (ext_path, gold_ext_path) tuple. Either may be None.
+        (ext_path, gold_ext_path, integration_ext_path) tuple. Any may be None.
     """
     ext_path: Optional[Path] = None
     gold_ext_path: Optional[Path] = None
+    integration_ext_path: Optional[Path] = None
     src_file: Path = onto_info["file"]
 
     if target_name == "silver":
@@ -492,7 +493,34 @@ def _discover_extensions(
             candidates += list(src_file.parent.glob("*-gold-ext.ttl"))
             gold_ext_path = candidates[0] if candidates else None
 
-    return ext_path, gold_ext_path
+    # Integration targets need silver-ext (for naturalKey/scdType) + integration-ext
+    if target_name in ("integration", "dapr", "n8n"):
+        # Silver-ext (reused for naturalKey/scdType)
+        if not ext_path:
+            if extensions_dir and extensions_dir.exists():
+                candidates = list(extensions_dir.glob(f"{onto_name}-silver-ext.ttl"))
+                candidates += list(extensions_dir.glob("*-silver-ext.ttl"))
+                ext_path = candidates[0] if candidates else None
+            if not ext_path:
+                candidates = list(src_file.parent.glob(f"{onto_name}-silver-ext.ttl"))
+                candidates += list(src_file.parent.glob("*-silver-ext.ttl"))
+                ext_path = candidates[0] if candidates else None
+
+        # Integration-ext
+        if extensions_dir and extensions_dir.exists():
+            candidates = list(
+                extensions_dir.glob(f"{onto_name}-integration-ext.ttl")
+            )
+            candidates += list(extensions_dir.glob("*-integration-ext.ttl"))
+            integration_ext_path = candidates[0] if candidates else None
+        if not integration_ext_path:
+            candidates = list(
+                src_file.parent.glob(f"{onto_name}-integration-ext.ttl")
+            )
+            candidates += list(src_file.parent.glob("*-integration-ext.ttl"))
+            integration_ext_path = candidates[0] if candidates else None
+
+    return ext_path, gold_ext_path, integration_ext_path
 
 
 def _write_artifacts(artifacts: dict[str, str], target_output: Path) -> int:
@@ -693,7 +721,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             
             try:
                 # Discover extension files for this target/domain
-                ext_path, gold_ext_path = _discover_extensions(
+                ext_path, gold_ext_path, integration_ext_path = _discover_extensions(
                     target_name, onto_name, onto_info, extensions_dir
                 )
                 if ext_path:
@@ -705,6 +733,16 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                     print(f"  [{onto_name}] Using gold ext: {gold_ext_path.name}")
                     report.record("info", f"Using gold ext: {gold_ext_path.name}",
                                   domain=onto_name, target=target_name)
+                if integration_ext_path:
+                    print(
+                        f"  [{onto_name}] Using integration ext:"
+                        f" {integration_ext_path.name}"
+                    )
+                    report.record(
+                        "info",
+                        f"Using integration ext: {integration_ext_path.name}",
+                        domain=onto_name, target=target_name,
+                    )
 
                 # DD-023: Discover reference model default extensions
                 ref_defaults = _discover_ref_model_defaults(
@@ -733,6 +771,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                         onto_namespace, shapes_dir, onto_name,
                         projection_ext_path=ext_path,
                         gold_ext_path=gold_ext_path,
+                        integration_ext_path=integration_ext_path,
                         ontology_metadata=onto_meta,
                         sources_dir=sources_dir,
                         mappings_dir=mappings_dir,
@@ -1375,6 +1414,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
                     namespace: str, shapes_dir: Path = None, ontology_name: str = None,
                     projection_ext_path: Optional[Path] = None,
                     gold_ext_path: Optional[Path] = None,
+                    integration_ext_path: Optional[Path] = None,
                     ontology_metadata: Optional[dict] = None,
                     sources_dir: Optional[Path] = None,
                     mappings_dir: Optional[Path] = None,
@@ -1393,6 +1433,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         ontology_name: Name of the ontology file (without extension)
         projection_ext_path: Optional path to *-silver-ext.ttl (silver target only)
         gold_ext_path: Optional path to *-gold-ext.ttl (dbt target — for gold models)
+        integration_ext_path: Optional path to *-integration-ext.ttl
         ontology_metadata: Provenance metadata from extract_ontology_metadata()
         sources_dir: Optional path to integration/sources/ directory (dbt target)
         mappings_dir: Optional path to mappings/ SKOS directory (dbt target)
@@ -1542,6 +1583,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             sources_dir=sources_dir,
             mappings_dir=mappings_dir,
             silver_ext_path=projection_ext_path,
+            integration_ext_path=integration_ext_path,
         )
     elif target == 'dapr':
         from .projections.dapr_projector import generate_dapr_artifacts
@@ -1555,6 +1597,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             sources_dir=sources_dir,
             mappings_dir=mappings_dir,
             silver_ext_path=projection_ext_path,
+            integration_ext_path=integration_ext_path,
         )
     elif target == 'n8n':
         from .projections.n8n_projector import generate_n8n_artifacts
@@ -1568,6 +1611,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             sources_dir=sources_dir,
             mappings_dir=mappings_dir,
             silver_ext_path=projection_ext_path,
+            integration_ext_path=integration_ext_path,
         )
     
     return {}

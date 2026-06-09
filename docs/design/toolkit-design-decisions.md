@@ -92,6 +92,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-042](#dd-042-table-centric-source-classification-with-module-class-grounding) | Table-centric source classification with module-class grounding | Accepted | 2026-06-05 |
 | [DD-043](#dd-043-propose-alignment--pre-modeling-column-to-property-matching) | Propose-alignment — pre-modeling column-to-property matching | Accepted | 2026-06-05 |
 | [DD-044](#dd-044-integration-dapr-and-n8n-projection-targets) | Integration, Dapr, and n8n projection targets | Accepted | 2026-06-06 |
+| [DD-045](#dd-045-kairos-int-integration-extension-vocabulary) | `kairos-int:` Integration Extension Vocabulary | Accepted | 2026-06-09 |
 
 ---
 
@@ -2428,6 +2429,74 @@ projectors.
   (backward compatible — same behavior, different code location)
 - Future runtime targets (Logic Apps, Data Factory) only need a new Layer 2
   wrapper around the same Layer 1 mapping JSON
+
+---
+
+## DD-045: `kairos-int:` Integration Extension Vocabulary
+
+**Status:** Accepted  
+**Date:** 2026-06-09  
+**Affects:** `projections/integration_projector.py`, `projections/dapr_projector.py`, `projections/n8n_projector.py`, `projections/shared.py`, `projector.py`, `scaffold/kairos-int.ttl`  
+**Implementation:** New vocabulary + integration projector consumption + Layer 2 projector pass-through
+
+### Context
+
+DD-044 introduced the integration / Dapr / n8n projection targets, which generate
+runtime-agnostic mapping JSON from SKOS mappings + bronze vocabulary + silver-ext
+annotations. However, the integration projector only reuses two annotations from
+`kairos-ext:` — `naturalKey` and `scdType`. All other integration-specific concerns
+(load strategy, batching, error handling, retry, scheduling, data validation, FK
+resolution at runtime, sensitive data masking) had no annotation support and were
+either absent from the generated JSON or hardcoded in the Layer 2 projectors.
+
+### Decision
+
+Introduce a dedicated **`kairos-int:`** vocabulary (`https://kairos.cnext.eu/integration#`)
+with integration-specific annotation properties at three levels:
+
+**Ontology-level** (domain-wide defaults):
+- `defaultBatchSize`, `defaultErrorStrategy`, `defaultRetryPolicy`, `defaultSchedule`
+
+**Class-level** (per-entity overrides):
+- `loadStrategy` (full / incremental / cdc), `incrementalWatermark`, `batchSize`,
+  `errorStrategy`, `retryPolicy`, `schedule`, `priority`, `preLoadHook`,
+  `postLoadHook`, `deadLetterTopic`, `validationMode`
+
+**Property-level** (per-column behaviour):
+- `validationRule`, `validationAction`, `sensitiveData`, `lookupEntity`,
+  `lookupKey`, `coercionRule`
+
+The integration projector merges `*-integration-ext.ttl` files (discovered alongside
+silver/gold extensions) and emits a new `"integration"` section in the mapping JSON
+(schema bumped to v2). Property-level annotations appear as `"integration"` sub-objects
+within each `column_mappings` entry. Layer 2 projectors (Dapr, n8n) consume these
+for schedule, retry, and error routing configuration.
+
+### Rationale
+
+- **Separate namespace** — integration concerns (retry, batching, error routing) are
+  orthogonal to physical storage layout (silver) and BI modeling (gold). A separate
+  vocabulary and file (`*-integration-ext.ttl`) means separate review cycles and no
+  pollution of the already-large `kairos-ext:` vocabulary (50+ annotations).
+- **Continues reusing `kairos-ext:` for shared concerns** — `naturalKey` and `scdType`
+  remain in `kairos-ext:` since they serve both silver DDL and integration semantics.
+  No duplication.
+- **Runtime-agnostic** — annotations describe *what* the integration should do, not
+  *how*. Layer 2 projectors translate to runtime-specific config (Dapr resiliency
+  policies, n8n cron triggers, etc.).
+- **Fully backward compatible** — all annotations have sensible defaults. Hubs without
+  `*-integration-ext.ttl` files produce identical output to before (with empty/default
+  `integration` sections in the JSON).
+
+### Consequences
+
+- New vocabulary file: `scaffold/kairos-int.ttl` (distributed to hub repos)
+- New extension file convention: `{domain}-integration-ext.ttl` in `model/extensions/`
+- Integration mapping JSON schema bumped from v1 to v2 (new `integration` section)
+- `_discover_extensions()` returns a 3-tuple: `(ext_path, gold_ext_path, integration_ext_path)`
+- Dapr projector uses `schedule` annotation for cron bindings and generates resiliency
+  policies from `retryPolicy` annotations
+- `KAIROS_INT` namespace added to `projections/shared.py`
 
 ---
 

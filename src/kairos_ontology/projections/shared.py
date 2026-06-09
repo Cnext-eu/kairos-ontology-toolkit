@@ -56,6 +56,7 @@ class OntologyMetadata:
 # kairos-ext namespace (shared across all medallion projectors)
 # ---------------------------------------------------------------------------
 KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
+KAIROS_INT = Namespace("https://kairos.cnext.eu/integration#")
 
 
 # ---------------------------------------------------------------------------

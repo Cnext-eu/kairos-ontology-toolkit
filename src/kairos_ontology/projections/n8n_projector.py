@@ -28,6 +28,7 @@ def generate_n8n_artifacts(
     sources_dir: Path = None,
     mappings_dir: Path = None,
     silver_ext_path: Path = None,
+    integration_ext_path: Path = None,
     **kwargs,
 ) -> dict[str, str]:
     """Generate n8n workflow JSON artifacts.
@@ -55,6 +56,7 @@ def generate_n8n_artifacts(
         sources_dir=sources_dir,
         mappings_dir=mappings_dir,
         silver_ext_path=silver_ext_path,
+        integration_ext_path=integration_ext_path,
     )
 
     # Copy mapping files
