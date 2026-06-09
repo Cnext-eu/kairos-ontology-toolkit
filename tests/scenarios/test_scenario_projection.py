@@ -41,6 +41,28 @@ def projected_hub(tmp_path_factory):
     return hub
 
 
+@pytest.fixture(scope="module")
+def integration_hub(tmp_path_factory):
+    """Copy acme-hub → tmp, run integration projections (dapr, logic-apps, azure-functions).
+
+    ``target="all"`` only covers the medallion + standard targets.  The three
+    runtime-integration targets must be projected explicitly.
+    """
+    hub = tmp_path_factory.mktemp("acme-hub-integration")
+    shutil.copytree(HUB_ROOT, hub, dirs_exist_ok=True)
+
+    from kairos_ontology.projector import run_projections
+
+    for target in ("dapr", "logic-apps", "azure-functions"):
+        run_projections(
+            ontologies_path=hub / "model" / "ontologies",
+            catalog_path=hub / "catalog-v001.xml",  # does not exist — graceful fallback
+            output_path=hub / "output",
+            target=target,
+        )
+    return hub
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -985,3 +1007,279 @@ class TestRewriteURIScenario:
         assert len(info_events) >= 1, (
             "Expected info diagnostic about extension fallback resolution"
         )
+
+
+# ===========================================================================
+# Dapr output tree
+# ===========================================================================
+
+class TestDaprOutputTree:
+    """Verify the Dapr projection produces the expected file tree for acme-hub.
+
+    The acme-hub has:
+      - client domain  → sources: adminpulse, crmsystem
+      - invoice domain → source:  billingpro
+      - logistics domain → source: logisticspro
+
+    Expected per-domain layout under ``output/dapr/<domain>/``:
+      components/binding-<system>.yaml  (one per source system)
+      components/binding-silver.yaml
+      components/statestore.yaml
+      components/pubsub.yaml
+      app/app.py
+      app/mapper.py
+      app/requirements.txt
+      app/Dockerfile
+      docker-compose.yaml
+      README.md
+    """
+
+    def test_dapr_output_dir_exists(self, integration_hub):
+        assert (integration_hub / "output" / "dapr").is_dir()
+
+    def test_client_domain_components_dir(self, integration_hub):
+        components = integration_hub / "output" / "dapr" / "client" / "components"
+        assert components.is_dir(), f"Missing: {components}"
+
+    def test_client_input_bindings_per_source(self, integration_hub):
+        """Each client source system should have its own input binding."""
+        components = integration_hub / "output" / "dapr" / "client" / "components"
+        for system in ("adminpulse", "crmsystem"):
+            binding = components / f"binding-{system}.yaml"
+            assert binding.is_file(), f"Missing input binding for {system}: {binding}"
+
+    def test_client_silver_output_binding(self, integration_hub):
+        binding = integration_hub / "output" / "dapr" / "client" / "components" / "binding-silver.yaml"
+        assert binding.is_file(), f"Missing silver output binding: {binding}"
+
+    def test_client_statestore_and_pubsub(self, integration_hub):
+        components = integration_hub / "output" / "dapr" / "client" / "components"
+        assert (components / "statestore.yaml").is_file()
+        assert (components / "pubsub.yaml").is_file()
+
+    def test_client_app_artifacts(self, integration_hub):
+        app = integration_hub / "output" / "dapr" / "client" / "app"
+        assert (app / "app.py").is_file()
+        assert (app / "mapper.py").is_file()
+        assert (app / "requirements.txt").is_file()
+        assert (app / "Dockerfile").is_file()
+
+    def test_client_docker_compose_and_readme(self, integration_hub):
+        domain_dir = integration_hub / "output" / "dapr" / "client"
+        assert (domain_dir / "docker-compose.yaml").is_file()
+        assert (domain_dir / "README.md").is_file()
+
+    def test_invoice_domain_exists(self, integration_hub):
+        invoice_dir = integration_hub / "output" / "dapr" / "invoice"
+        assert invoice_dir.is_dir(), f"Missing invoice domain dir: {invoice_dir}"
+
+    def test_invoice_input_binding_billingpro(self, integration_hub):
+        binding = integration_hub / "output" / "dapr" / "invoice" / "components" / "binding-billingpro.yaml"
+        assert binding.is_file(), f"Missing billingpro input binding: {binding}"
+
+    def test_invoice_app_artifacts(self, integration_hub):
+        app = integration_hub / "output" / "dapr" / "invoice" / "app"
+        assert (app / "app.py").is_file()
+        assert (app / "mapper.py").is_file()
+
+    def test_binding_yaml_is_valid_yaml(self, integration_hub):
+        """Input binding files must be parseable YAML."""
+        import yaml
+        binding = integration_hub / "output" / "dapr" / "client" / "components" / "binding-adminpulse.yaml"
+        content = yaml.safe_load(binding.read_text(encoding="utf-8"))
+        assert content is not None
+
+    def test_docker_compose_references_domain(self, integration_hub):
+        """docker-compose.yaml should reference the client domain app."""
+        compose = integration_hub / "output" / "dapr" / "client" / "docker-compose.yaml"
+        text = compose.read_text(encoding="utf-8")
+        assert "client" in text
+
+    def test_client_mappings_manifest_exists(self, integration_hub):
+        manifest = integration_hub / "output" / "dapr" / "client" / "mappings" / "manifest.json"
+        assert manifest.is_file(), f"Missing mappings manifest: {manifest}"
+
+    def test_client_mappings_manifest_valid_json(self, integration_hub):
+        import json
+        manifest = integration_hub / "output" / "dapr" / "client" / "mappings" / "manifest.json"
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        assert isinstance(data, (dict, list))
+
+
+# ===========================================================================
+# Logic Apps output tree
+# ===========================================================================
+
+class TestLogicAppsOutputTree:
+    """Verify the Logic Apps projection produces the expected file tree for acme-hub.
+
+    Expected per-domain layout under ``output/logic-apps/<domain>/``:
+      <system>/workflow.json   (one per source system)
+      connections.json
+      host.json
+      local.settings.json
+      README.md
+    """
+
+    def test_logic_apps_output_dir_exists(self, integration_hub):
+        assert (integration_hub / "output" / "logic-apps").is_dir()
+
+    def test_client_domain_exists(self, integration_hub):
+        client_dir = integration_hub / "output" / "logic-apps" / "client"
+        assert client_dir.is_dir(), f"Missing client domain dir: {client_dir}"
+
+    def test_client_workflow_per_source_system(self, integration_hub):
+        """Each client source system should have its own workflow.json."""
+        for system in ("adminpulse", "crmsystem"):
+            wf = integration_hub / "output" / "logic-apps" / "client" / system / "workflow.json"
+            assert wf.is_file(), f"Missing workflow for {system}: {wf}"
+
+    def test_client_shared_artifacts(self, integration_hub):
+        client_dir = integration_hub / "output" / "logic-apps" / "client"
+        assert (client_dir / "connections.json").is_file()
+        assert (client_dir / "host.json").is_file()
+        assert (client_dir / "local.settings.json").is_file()
+        assert (client_dir / "README.md").is_file()
+
+    def test_invoice_domain_exists(self, integration_hub):
+        invoice_dir = integration_hub / "output" / "logic-apps" / "invoice"
+        assert invoice_dir.is_dir(), f"Missing invoice domain dir: {invoice_dir}"
+
+    def test_invoice_workflow_billingpro(self, integration_hub):
+        wf = integration_hub / "output" / "logic-apps" / "invoice" / "billingpro" / "workflow.json"
+        assert wf.is_file(), f"Missing billingpro workflow: {wf}"
+
+    def test_workflow_json_is_valid_json(self, integration_hub):
+        import json
+        wf = integration_hub / "output" / "logic-apps" / "client" / "adminpulse" / "workflow.json"
+        data = json.loads(wf.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+
+    def test_workflow_json_has_schema(self, integration_hub):
+        """Logic Apps workflow.json should declare the standard schema inside definition."""
+        import json
+        wf = integration_hub / "output" / "logic-apps" / "client" / "adminpulse" / "workflow.json"
+        data = json.loads(wf.read_text(encoding="utf-8"))
+        assert "definition" in data, "workflow.json must contain 'definition' key"
+        assert "$schema" in data["definition"], "workflow.json definition must contain $schema"
+
+    def test_connections_json_is_valid_json(self, integration_hub):
+        import json
+        conn = integration_hub / "output" / "logic-apps" / "client" / "connections.json"
+        data = json.loads(conn.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+
+    def test_host_json_is_valid_json(self, integration_hub):
+        import json
+        host = integration_hub / "output" / "logic-apps" / "client" / "host.json"
+        data = json.loads(host.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+
+    def test_local_settings_references_domain(self, integration_hub):
+        """local.settings.json should include the client domain name."""
+        local = integration_hub / "output" / "logic-apps" / "client" / "local.settings.json"
+        text = local.read_text(encoding="utf-8")
+        assert "client" in text
+
+    def test_workflow_references_source_system(self, integration_hub):
+        """workflow.json should reference the source system name in its actions."""
+        import json
+        wf = integration_hub / "output" / "logic-apps" / "client" / "crmsystem" / "workflow.json"
+        text = wf.read_text(encoding="utf-8")
+        assert "crmsystem" in text
+
+
+# ===========================================================================
+# Azure Functions output tree
+# ===========================================================================
+
+class TestAzureFunctionsOutputTree:
+    """Verify the Azure Functions projection produces the expected file tree for acme-hub.
+
+    Expected per-domain layout under ``output/azure-functions/<domain>/``:
+      function_app.py   (one HTTP function per source system)
+      mapper.py
+      silver_client.py
+      host.json
+      local.settings.json
+      requirements.txt
+      README.md
+    """
+
+    def test_azure_functions_output_dir_exists(self, integration_hub):
+        assert (integration_hub / "output" / "azure-functions").is_dir()
+
+    def test_client_domain_exists(self, integration_hub):
+        client_dir = integration_hub / "output" / "azure-functions" / "client"
+        assert client_dir.is_dir(), f"Missing client domain dir: {client_dir}"
+
+    def test_client_function_app_py_exists(self, integration_hub):
+        fn = integration_hub / "output" / "azure-functions" / "client" / "function_app.py"
+        assert fn.is_file(), f"Missing function_app.py: {fn}"
+
+    def test_client_shared_modules(self, integration_hub):
+        client_dir = integration_hub / "output" / "azure-functions" / "client"
+        assert (client_dir / "mapper.py").is_file()
+        assert (client_dir / "silver_client.py").is_file()
+        assert (client_dir / "requirements.txt").is_file()
+        assert (client_dir / "README.md").is_file()
+
+    def test_client_host_and_settings(self, integration_hub):
+        client_dir = integration_hub / "output" / "azure-functions" / "client"
+        assert (client_dir / "host.json").is_file()
+        assert (client_dir / "local.settings.json").is_file()
+
+    def test_invoice_domain_exists(self, integration_hub):
+        invoice_dir = integration_hub / "output" / "azure-functions" / "invoice"
+        assert invoice_dir.is_dir(), f"Missing invoice domain dir: {invoice_dir}"
+
+    def test_invoice_function_app_py_exists(self, integration_hub):
+        fn = integration_hub / "output" / "azure-functions" / "invoice" / "function_app.py"
+        assert fn.is_file(), f"Missing invoice function_app.py: {fn}"
+
+    def test_host_json_is_valid_json(self, integration_hub):
+        import json
+        host = integration_hub / "output" / "azure-functions" / "client" / "host.json"
+        data = json.loads(host.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+
+    def test_local_settings_is_valid_json(self, integration_hub):
+        import json
+        settings = integration_hub / "output" / "azure-functions" / "client" / "local.settings.json"
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+
+    def test_function_app_references_source_systems(self, integration_hub):
+        """function_app.py should contain HTTP functions for all client source systems."""
+        fn = integration_hub / "output" / "azure-functions" / "client" / "function_app.py"
+        text = fn.read_text(encoding="utf-8")
+        for system in ("adminpulse", "crmsystem"):
+            assert system in text, f"function_app.py should reference {system}"
+
+    def test_function_app_is_valid_python(self, integration_hub):
+        """function_app.py must be syntactically valid Python."""
+        import ast
+        fn = integration_hub / "output" / "azure-functions" / "client" / "function_app.py"
+        src = fn.read_text(encoding="utf-8")
+        try:
+            ast.parse(src)
+        except SyntaxError as exc:
+            pytest.fail(f"function_app.py has syntax errors: {exc}")
+
+    def test_mapper_py_is_valid_python(self, integration_hub):
+        import ast
+        mapper = integration_hub / "output" / "azure-functions" / "client" / "mapper.py"
+        src = mapper.read_text(encoding="utf-8")
+        try:
+            ast.parse(src)
+        except SyntaxError as exc:
+            pytest.fail(f"mapper.py has syntax errors: {exc}")
+
+    def test_silver_client_is_valid_python(self, integration_hub):
+        import ast
+        sc = integration_hub / "output" / "azure-functions" / "client" / "silver_client.py"
+        src = sc.read_text(encoding="utf-8")
+        try:
+            ast.parse(src)
+        except SyntaxError as exc:
+            pytest.fail(f"silver_client.py has syntax errors: {exc}")

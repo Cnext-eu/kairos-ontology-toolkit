@@ -107,6 +107,23 @@ class TestDaprArtifacts:
         assert any("app.py" in f for f in app_files)
         assert any("mapper.py" in f for f in app_files)
         assert any("requirements.txt" in f for f in app_files)
+        assert any("Dockerfile" in f for f in app_files)
+
+    def test_produces_readme(
+        self, domain_graph, classes, mappings_dir, sources_dir
+    ):
+        artifacts = generate_dapr_artifacts(
+            classes=classes,
+            graph=domain_graph,
+            template_dir=Path("."),
+            namespace=NS,
+            ontology_name="test",
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+        )
+        readme_files = [k for k in artifacts if k.endswith("README.md")]
+        assert len(readme_files) == 1
+        assert "Run locally" in artifacts[readme_files[0]]
 
     def test_produces_docker_compose(
         self, domain_graph, classes, mappings_dir, sources_dir
@@ -167,3 +184,45 @@ class TestDaprArtifacts:
         )
         app_key = [k for k in artifacts if k.endswith("app.py")][0]
         assert "Customer" in artifacts[app_key]
+
+    def test_sanitizes_source_system_in_handler_name(self, domain_graph, classes, tmp_path):
+        maps_dir = tmp_path / "mappings"
+        maps_dir.mkdir()
+        src_dir = tmp_path / "sources" / "erp_core"
+        src_dir.mkdir(parents=True)
+
+        vocab = """
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix erp: <https://kairos.cnext.eu/bronze/erp-core#> .
+
+erp:customers rdf:type kairos-bronze:SourceTable .
+erp:customers_name rdf:type kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "name" ;
+    kairos-bronze:belongsToTable erp:customers .
+"""
+        (src_dir / "erp_core.vocabulary.ttl").write_text(vocab, encoding="utf-8")
+
+        mapping_ttl = f"""
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix ex: <{NS}> .
+@prefix erp: <https://kairos.cnext.eu/bronze/erp-core#> .
+
+erp:customers skos:exactMatch ex:Customer ; kairos-map:mappingType "direct" .
+erp:customers_name skos:exactMatch ex:customerName .
+"""
+        (maps_dir / "erp-core-mapping.ttl").write_text(mapping_ttl, encoding="utf-8")
+
+        artifacts = generate_dapr_artifacts(
+            classes=classes,
+            graph=domain_graph,
+            template_dir=Path("."),
+            namespace=NS,
+            ontology_name="test",
+            sources_dir=tmp_path / "sources",
+            mappings_dir=maps_dir,
+        )
+
+        app_key = [k for k in artifacts if k.endswith("app.py")][0]
+        assert "def on_erp_core_data" in artifacts[app_key]

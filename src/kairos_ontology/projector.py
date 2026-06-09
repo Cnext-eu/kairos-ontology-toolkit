@@ -16,7 +16,7 @@ from .projections.shared import OntologyClassInfo
 
 VALID_TARGETS = [
     "dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report",
-    "integration", "dapr", "n8n",
+    "integration", "dapr", "n8n", "logic-apps", "azure-functions",
 ]
 
 # Public-to-internal target name mapping (user-facing aliases → dispatch names).
@@ -1613,5 +1613,31 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             silver_ext_path=projection_ext_path,
             integration_ext_path=integration_ext_path,
         )
-    
+    elif target == 'logic-apps':
+        from .projections.logic_apps_projector import generate_logic_apps_artifacts
+        return generate_logic_apps_artifacts(
+            classes=classes,
+            graph=graph,
+            template_dir=template_base,
+            namespace=namespace,
+            ontology_name=ontology_name,
+            ontology_metadata=meta,
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            silver_ext_path=projection_ext_path,
+        )
+    elif target == 'azure-functions':
+        from .projections.azure_functions_projector import generate_azure_functions_artifacts
+        return generate_azure_functions_artifacts(
+            classes=classes,
+            graph=graph,
+            template_dir=template_base,
+            namespace=namespace,
+            ontology_name=ontology_name,
+            ontology_metadata=meta,
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            silver_ext_path=projection_ext_path,
+        )
+
     return {}
