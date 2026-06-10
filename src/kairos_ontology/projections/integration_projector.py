@@ -44,22 +44,41 @@ def _xsd_to_simple_type(xsd_type: str) -> str:
 
 
 def _extract_properties(graph: Graph, class_uri: str) -> list[dict[str, Any]]:
-    """Extract all properties with rdfs:domain pointing to this class."""
+    """Extract all properties with rdfs:domain pointing to this class or any subclass.
+
+    When a class uses discriminator inheritance (e.g. Party with LegalEntity /
+    NaturalPerson subtypes flattened into one table), subtype properties are
+    included so that their column mappings are resolved correctly.
+    """
+    from rdflib import URIRef, RDFS as _RDFS
+
+    def _collect_subclasses(cls: URIRef) -> set:
+        subs = {cls}
+        for sub in graph.subjects(_RDFS.subClassOf, cls):
+            subs.update(_collect_subclasses(sub))
+        return subs
+
+    target_classes = _collect_subclasses(URIRef(class_uri))
+
+    seen: set = set()
     props = []
-    from rdflib import URIRef
-    for prop_uri in graph.subjects(RDFS.domain, URIRef(class_uri)):
-        name = extract_local_name(str(prop_uri))
-        label = str(graph.value(prop_uri, RDFS.label) or name)
-        range_val = graph.value(prop_uri, RDFS.range)
-        prop_type = _xsd_to_simple_type(str(range_val)) if range_val else "string"
-        is_object = (prop_uri, RDF.type, OWL.ObjectProperty) in graph
-        props.append({
-            "name": name,
-            "label": label,
-            "type": prop_type,
-            "is_object_property": is_object,
-            "uri": str(prop_uri),
-        })
+    for target_cls in target_classes:
+        for prop_uri in graph.subjects(RDFS.domain, target_cls):
+            if prop_uri in seen:
+                continue
+            seen.add(prop_uri)
+            name = extract_local_name(str(prop_uri))
+            label = str(graph.value(prop_uri, RDFS.label) or name)
+            range_val = graph.value(prop_uri, RDFS.range)
+            prop_type = _xsd_to_simple_type(str(range_val)) if range_val else "string"
+            is_object = (prop_uri, RDF.type, OWL.ObjectProperty) in graph
+            props.append({
+                "name": name,
+                "label": label,
+                "type": prop_type,
+                "is_object_property": is_object,
+                "uri": str(prop_uri),
+            })
     return props
 
 
