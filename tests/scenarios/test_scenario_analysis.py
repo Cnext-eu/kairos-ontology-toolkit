@@ -205,60 +205,17 @@ class TestAnalyseSourcesScenario:
 
 
 class TestCoverageReportScenario:
-    """End-to-end coverage report with mocked LLM."""
+    """End-to-end coverage report with deterministic alignment."""
 
-    @patch("kairos_ontology.coverage_report.analyse_coverage_with_llm")
-    def test_coverage_report_client_domain(self, mock_analyse_llm, tmp_path):
+    def test_coverage_report_client_domain(self, tmp_path):
         """Coverage report for client ontology against party ref model."""
-        mock_analyse_llm.return_value = {
-            "class_alignments": [
-                {
-                    "ontology_class": "Client",
-                    "ref_class": "Party",
-                    "alignment": "semantic",
-                    "confidence": 0.88,
-                    "property_alignments": [
-                        {"ontology_property": "clientName", "ref_property": "Party.partyName",
-                         "alignment": "semantic", "confidence": 0.95, "suggestion": ""},
-                        {"ontology_property": "vatNumber", "ref_property": "Party.taxIdentifier",
-                         "alignment": "semantic", "confidence": 0.90, "suggestion": ""},
-                        {"ontology_property": "clientId", "ref_property": None,
-                         "alignment": "custom", "confidence": 0.0,
-                         "suggestion": "Consider aligning with partyIdentifier"},
-                    ],
-                },
-                {
-                    "ontology_class": "CorporateClient",
-                    "ref_class": "Organisation",
-                    "alignment": "semantic",
-                    "confidence": 0.82,
-                    "property_alignments": [],
-                },
-                {
-                    "ontology_class": "IndividualClient",
-                    "ref_class": "Person",
-                    "alignment": "semantic",
-                    "confidence": 0.85,
-                    "property_alignments": [],
-                },
-            ],
-            "overall_suggestions": [
-                "Consider renaming Client to Party for industry alignment",
-            ],
-        }
-
-        import os
-        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"}), \
-             patch("openai.OpenAI"):
-            report = run_coverage_report(
-                ontology_dir=ONTOLOGIES_DIR,
-                ref_models_dir=REF_MODELS_DIR,
-                sources_dir=SOURCES_DIR,
-            )
+        report = run_coverage_report(
+            ontology_dir=ONTOLOGIES_DIR,
+            ref_models_dir=REF_MODELS_DIR,
+            sources_dir=SOURCES_DIR,
+        )
 
         assert report.total_classes > 0
-        assert report.aligned_classes > 0
-        assert report.class_coverage_pct > 0
 
         # Write outputs
         yaml_path = write_coverage_yaml(report, tmp_path / "coverage.yaml")

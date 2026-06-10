@@ -913,7 +913,6 @@ class TestCoverageReportOutput:
     def test_writes_coverage_yaml(self, tmp_path):
         report = CoverageReport(
             generated_at="2026-06-04T12:00:00Z",
-            model_used="gpt-5-mini",
             total_classes=5,
             aligned_classes=3,
             class_coverage_pct=60.0,
@@ -961,7 +960,6 @@ class TestCoverageReportOutput:
     def test_writes_coverage_markdown(self, tmp_path):
         report = CoverageReport(
             generated_at="2026-06-04T12:00:00Z",
-            model_used="gpt-5-mini",
             total_classes=5,
             aligned_classes=3,
             class_coverage_pct=60.0,

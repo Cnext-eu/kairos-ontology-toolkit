@@ -3,15 +3,12 @@
 """Post-modeling coverage report — measures ontology alignment to reference models.
 
 Analyses how well the final domain ontology aligns with industry reference models,
-with source evidence tracing. Uses LLM (gpt-5.4-mini via configurable AI provider)
-for semantic matching beyond simple name comparison.
-
-Requires AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT + AZURE_AI_KEY).
+with source evidence tracing. Uses deterministic alignment based on owl:imports,
+rdfs:seeAlso links, and name matching — no LLM required.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -22,10 +19,8 @@ import yaml
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 
 from .analyse_sources import (
-    DEFAULT_MODEL,
     resolve_reference_models,
 )
-from .ai_provider import get_ai_client
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +68,6 @@ class DomainCoverage:
 class CoverageReport:
     """Complete coverage report."""
     generated_at: str
-    model_used: str
     total_classes: int = 0
     aligned_classes: int = 0
     class_coverage_pct: float = 0.0
@@ -90,15 +84,23 @@ class CoverageReport:
 
 
 def parse_domain_ontology(ttl_path: Path) -> dict[str, Any]:
-    """Parse a domain ontology into classes and properties."""
+    """Parse a domain ontology into classes and properties.
+
+    Also extracts ``rdfs:seeAlso`` links (for "Inspired" strategy) and
+    ``owl:imports`` IRIs (for "Enforced" strategy) to enable deterministic
+    alignment against reference models.
+    """
     g = Graph()
     g.parse(ttl_path, format="turtle")
 
     domain_name = ttl_path.stem
+    imports: list[str] = []
     for ont in g.subjects(RDF.type, OWL.Ontology):
         label = g.value(ont, RDFS.label)
         if label:
             domain_name = str(label)
+        for imp in g.objects(ont, OWL.imports):
+            imports.append(str(imp))
         break
 
     classes: list[dict[str, Any]] = []
@@ -109,107 +111,176 @@ def parse_domain_ontology(ttl_path: Path) -> dict[str, Any]:
         cls_name = cls_uri.split("#")[-1].split("/")[-1]
         cls_label = str(g.value(cls_uri, RDFS.label) or cls_name)
 
-        properties: list[dict[str, str]] = []
+        # Collect rdfs:seeAlso links for this class
+        see_also: list[str] = []
+        for sa in g.objects(cls_uri, RDFS.seeAlso):
+            see_also.append(str(sa))
+
+        properties: list[dict[str, Any]] = []
         for prop_uri in g.subjects(RDFS.domain, cls_uri):
             if not isinstance(prop_uri, URIRef):
                 continue
             prop_name = prop_uri.split("#")[-1].split("/")[-1]
             prop_label = str(g.value(prop_uri, RDFS.label) or prop_name)
-            properties.append({"name": prop_name, "label": prop_label})
+            prop_see_also = [str(sa) for sa in g.objects(prop_uri, RDFS.seeAlso)]
+            properties.append({
+                "name": prop_name,
+                "label": prop_label,
+                "see_also": prop_see_also,
+            })
 
         classes.append({
             "name": cls_name,
             "label": cls_label,
+            "uri": str(cls_uri),
+            "see_also": see_also,
             "properties": properties,
         })
 
-    return {"domain_name": domain_name, "file": ttl_path.name, "classes": classes}
+    return {
+        "domain_name": domain_name,
+        "file": ttl_path.name,
+        "imports": imports,
+        "classes": classes,
+    }
 
 
 # ---------------------------------------------------------------------------
-# LLM-powered alignment
+# Deterministic alignment
 # ---------------------------------------------------------------------------
 
 
-def _build_coverage_prompt(
-    ontology_classes: list[dict],
-    ref_classes: list[dict],
-) -> str:
-    """Build LLM prompt for ontology-to-reference alignment."""
-    ont_lines = []
-    for cls in ontology_classes:
-        props = ", ".join(p["name"] for p in cls["properties"][:20])
-        ont_lines.append(f"  - {cls['name']} ({cls['label']}): [{props}]")
-
-    ref_lines = []
-    for cls in ref_classes:
-        props = ", ".join(p["name"] for p in cls["properties"][:20])
-        ref_lines.append(f"  - {cls['name']} ({cls['label']}): [{props}]")
-
-    return f"""Compare this domain ontology against the reference model.
-For each ontology class and property, determine if it aligns with a reference model concept.
-
-DOMAIN ONTOLOGY:
-{chr(10).join(ont_lines)}
-
-REFERENCE MODEL:
-{chr(10).join(ref_lines)}
-
-Respond with JSON:
-{{
-  "class_alignments": [
-    {{
-      "ontology_class": "ClassName",
-      "ref_class": "RefClassName" or null,
-      "alignment": "exact|semantic|partial|custom",
-      "confidence": 0.0-1.0,
-      "property_alignments": [
-        {{
-          "ontology_property": "propName",
-          "ref_property": "RefClass.refPropName" or null,
-          "alignment": "exact|semantic|partial|custom",
-          "confidence": 0.0-1.0,
-          "suggestion": "" (improvement suggestion if custom)
-        }}
-      ]
-    }}
-  ],
-  "overall_suggestions": ["suggestion1", "suggestion2"]
-}}
-
-Be thorough. Consider semantic meaning, not just name matching.
-"exact" = same concept and name; "semantic" = same concept, different name;
-"partial" = related but not equivalent; "custom" = no reference model counterpart."""
+def _uri_local_name(uri: str) -> str:
+    """Extract the local name from a URI (after # or last /)."""
+    return uri.split("#")[-1].split("/")[-1]
 
 
-def analyse_coverage_with_llm(
-    client,
-    model: str,
-    ontology_classes: list[dict],
-    ref_classes: list[dict],
-) -> dict[str, Any]:
-    """Use LLM to align ontology classes against reference model."""
-    prompt = _build_coverage_prompt(ontology_classes, ref_classes)
+def _build_ref_index(ref_domains: list[dict]) -> dict[str, dict]:
+    """Build a lookup index from reference model classes.
 
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": (
-                    "You are an expert ontologist. You compare domain ontologies against "
-                    "industry reference models to assess coverage and alignment. "
-                    "Always respond with valid JSON."
-                )},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content
-        return json.loads(content)
-    except Exception as e:
-        logger.warning("LLM coverage analysis failed: %s", e)
-        return {"class_alignments": [], "overall_suggestions": []}
+    Returns dict: lowercased class name → {name, label, domain, uri, properties}.
+    Also indexes by full URI for seeAlso matching.
+    """
+    by_name: dict[str, dict] = {}
+    by_uri: dict[str, dict] = {}
+    for domain in ref_domains:
+        for cls in domain["classes"]:
+            entry = {**cls, "domain": domain["domain_name"]}
+            by_name[cls["name"].lower()] = entry
+            if "uri" in cls:
+                by_uri[cls["uri"]] = entry
+    return {"by_name": by_name, "by_uri": by_uri}
+
+
+def align_classes_deterministic(
+    ont_data: dict[str, Any],
+    ref_index: dict[str, dict],
+) -> list[dict[str, Any]]:
+    """Align ontology classes to reference model using deterministic rules.
+
+    Alignment priority:
+    1. **linked** — class has ``rdfs:seeAlso`` pointing to a reference class URI
+    2. **imported** — class name matches a ref class and the domain imports the ref ontology
+    3. **name-match** — class name matches a ref class name (case-insensitive)
+    4. **custom** — no reference model counterpart
+    """
+    by_name = ref_index["by_name"]
+    by_uri = ref_index["by_uri"]
+    imports = set(ont_data.get("imports", []))
+
+    results: list[dict[str, Any]] = []
+
+    for cls in ont_data["classes"]:
+        ref_cls = None
+        alignment = "custom"
+        confidence = 0.0
+
+        # 1. Check rdfs:seeAlso links
+        for sa_uri in cls.get("see_also", []):
+            if sa_uri in by_uri:
+                ref_cls = by_uri[sa_uri]
+                alignment = "linked"
+                confidence = 1.0
+                break
+            # Also try matching by local name from seeAlso URI
+            sa_name = _uri_local_name(sa_uri).lower()
+            if sa_name in by_name:
+                ref_cls = by_name[sa_name]
+                alignment = "linked"
+                confidence = 0.9
+                break
+
+        # 2. Check name match + imports
+        if ref_cls is None:
+            cls_lower = cls["name"].lower()
+            if cls_lower in by_name:
+                ref_cls = by_name[cls_lower]
+                if imports:
+                    alignment = "imported"
+                    confidence = 0.8
+                else:
+                    alignment = "name-match"
+                    confidence = 0.6
+
+        # Align properties
+        prop_alignments = _align_properties(cls, ref_cls, ref_index)
+
+        results.append({
+            "ontology_class": cls["name"],
+            "ref_class": ref_cls["name"] if ref_cls else None,
+            "ref_domain": ref_cls["domain"] if ref_cls else None,
+            "alignment": alignment,
+            "confidence": confidence,
+            "property_alignments": prop_alignments,
+        })
+
+    return results
+
+
+def _align_properties(
+    ont_cls: dict,
+    ref_cls: dict | None,
+    ref_index: dict,
+) -> list[dict[str, Any]]:
+    """Align ontology properties to reference class properties."""
+    ref_props_by_name: dict[str, dict] = {}
+    if ref_cls:
+        for p in ref_cls.get("properties", []):
+            ref_props_by_name[p["name"].lower()] = p
+
+    results = []
+    for prop in ont_cls.get("properties", []):
+        ref_prop = None
+        alignment = "custom"
+        confidence = 0.0
+
+        # Check rdfs:seeAlso on property
+        for sa_uri in prop.get("see_also", []):
+            sa_name = _uri_local_name(sa_uri).lower()
+            if sa_name in ref_props_by_name:
+                ref_prop = ref_props_by_name[sa_name]
+                alignment = "linked"
+                confidence = 1.0
+                break
+
+        # Check name match within the matched ref class
+        if ref_prop is None:
+            prop_lower = prop["name"].lower()
+            if prop_lower in ref_props_by_name:
+                ref_prop = ref_props_by_name[prop_lower]
+                alignment = "name-match"
+                confidence = 0.7
+
+        ref_name = f"{ref_cls['name']}.{ref_prop['name']}" if ref_cls and ref_prop else None
+
+        results.append({
+            "ontology_property": prop["name"],
+            "ref_property": ref_name,
+            "alignment": alignment,
+            "confidence": confidence,
+        })
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -261,52 +332,44 @@ def run_coverage_report(
     ontology_dir: Path,
     ref_models_dir: Path,
     sources_dir: Path | None = None,
-    model: str = DEFAULT_MODEL,
     output_format: str = "both",
 ) -> CoverageReport:
     """Generate a coverage report for the ontology against reference models.
+
+    Uses deterministic alignment based on ``rdfs:seeAlso`` links,
+    ``owl:imports``, and name matching — no LLM required.
 
     Args:
         ontology_dir: Path to model/ontologies/ directory
         ref_models_dir: Path to ontology-reference-models/ directory
         sources_dir: Path to integration/sources/ (for evidence tracing)
-        model: LLM model to use
         output_format: "yaml", "markdown", or "both"
 
     Returns:
         CoverageReport with full alignment details.
     """
-    client = get_ai_client(model)
-
-    # Parse all domain ontologies
-    ontology_files = sorted(ontology_dir.glob("*.ttl"))
+    # Parse all domain ontologies (supports subdirectory layout)
+    ontology_files = sorted(ontology_dir.glob("**/*.ttl"))
     ontology_files = [f for f in ontology_files if not f.name.startswith("_")]
 
     # Resolve reference models (recursive discovery + merge)
     ref_domains = resolve_reference_models(ref_models_dir)
 
-    # Aggregate all reference classes
-    all_ref_classes: list[dict] = []
-    for domain in ref_domains:
-        all_ref_classes.extend(domain["classes"])
+    # Build lookup index for deterministic alignment
+    ref_index = _build_ref_index(ref_domains)
 
     # Analyse each domain ontology
     report = CoverageReport(
         generated_at=datetime.now(timezone.utc).isoformat(),
-        model_used=model,
     )
-
-    all_suggestions: list[str] = []
 
     for ont_file in ontology_files:
         ont_data = parse_domain_ontology(ont_file)
         if not ont_data["classes"]:
             continue
 
-        # LLM analysis (batch by domain file, max ~20 classes per call)
-        result = analyse_coverage_with_llm(
-            client, model, ont_data["classes"], all_ref_classes
-        )
+        # Deterministic alignment
+        class_alignments = align_classes_deterministic(ont_data, ref_index)
 
         # Source evidence
         evidence = {}
@@ -316,7 +379,7 @@ def run_coverage_report(
         # Build domain coverage
         domain_cov = DomainCoverage(domain=ont_data["domain_name"])
 
-        for cls_align in result.get("class_alignments", []):
+        for cls_align in class_alignments:
             props = []
             for pa in cls_align.get("property_alignments", []):
                 prop_name = pa["ontology_property"]
@@ -327,7 +390,6 @@ def run_coverage_report(
                     alignment=pa.get("alignment", "custom"),
                     confidence=pa.get("confidence", 0.0),
                     source_columns=evidence.get(prop_name, []),
-                    suggestion=pa.get("suggestion", ""),
                 ))
 
             domain_cov.classes.append(ClassAlignment(
@@ -359,8 +421,6 @@ def run_coverage_report(
         report.total_properties += total_props
         report.aligned_properties += aligned_props
 
-        all_suggestions.extend(result.get("overall_suggestions", []))
-
     # Final percentages
     report.class_coverage_pct = round(
         report.aligned_classes / report.total_classes * 100
@@ -368,7 +428,6 @@ def run_coverage_report(
     report.property_coverage_pct = round(
         report.aligned_properties / report.total_properties * 100
     ) if report.total_properties else 0.0
-    report.suggestions = all_suggestions
 
     return report
 
@@ -394,7 +453,6 @@ def write_coverage_yaml(report: CoverageReport, output_path: Path) -> Path:
     data: dict[str, Any] = {
         "report_type": "coverage",
         "generated_at": report.generated_at,
-        "model_used": report.model_used,
         "summary": {
             "total_classes": report.total_classes,
             "aligned_classes": report.aligned_classes,
@@ -462,7 +520,6 @@ def write_coverage_markdown(report: CoverageReport, output_path: Path) -> Path:
         "# Ontology Coverage Report",
         "",
         f"Generated: {report.generated_at}  ",
-        f"Model: {report.model_used}",
         "",
         "## Summary",
         "",
