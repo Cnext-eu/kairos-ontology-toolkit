@@ -172,6 +172,14 @@ projection output or downstream issues.
 | `owl:imports` for cross-domain references | If class A references class B from another domain, the ontology must import B's namespace |
 | `_master.ttl` includes all domains | Every domain `.ttl` must be listed in `_master.ttl` via `owl:imports` |
 
+### Reference model strategy consistency (DD-032)
+
+| Check | Rule |
+|-------|------|
+| Enforced domains have `silverInclude` or `silverIncludeImports` | 🐛 If a domain uses `owl:imports` of external ref models (Enforced strategy), imported classes need explicit whitelisting via `silverInclude` / `silverIncludeImports` in the silver-ext file — otherwise imported classes are silently excluded from projection |
+| Inspired domains have `rdfs:seeAlso` back-references | 💡 If a domain uses locally-adopted patterns from a reference model (Inspired strategy), classes should have `rdfs:seeAlso` pointing to the reference model URI for traceability |
+| No mixed strategy for same reference model | 💡 A domain should not both `owl:imports` a ref model AND locally re-declare the same classes — pick one strategy per reference model |
+
 ---
 
 ## Level 4 — Extension & mapping review
@@ -211,6 +219,15 @@ This is where most "it generated wrong output" bugs originate.
 | `gdprSatelliteOf` points to valid class | 🐛 URI must match an existing `owl:Class` in the domain |
 | `partitionBy` / `clusterBy` reference valid properties | 💡 Column name must exist in the class |
 | `junctionTableName` on M:N object properties | 💡 Required for bridge table generation |
+| `silverForeignKey` points to valid object property | 🐛 Must be set on an `owl:ObjectProperty` — silently ignored on datatype properties (DD-022) |
+| `silverForeignKeyOn` is domain or range of the property | 🐛 Must reference either the domain or range class of the annotated object property — other values are silently ignored (DD-022) |
+| `inheritanceStrategy` has valid value | 🐛 Must be `"class-per-table"` or `"discriminator"` — invalid values silently fall back to default |
+| `silverTableName` is snake_case | 💡 Should follow SQL naming convention |
+| `silverSourceRef` references a plausible model name | 💡 Hard to validate statically — flag for review (DD-039) |
+| `inlineRefThreshold` is positive integer | 💡 Ontology-level setting; non-integer values cause parse errors |
+| `populationRequirement` has valid value | 🐛 Must be `"required"`, `"optional"`, `"derived"`, or `"unmapped"` — invalid values silently treated as optional |
+| `derived` properties have `derivationFormula` | 🐛 A property with `populationRequirement "derived"` MUST have a `derivationFormula` — otherwise column is always NULL |
+| `required` properties have source mapping | 🐛 A property with `populationRequirement "required"` should have a corresponding `skos:exactMatch` source mapping — missing mapping = required column is always NULL |
 
 #### Property-level
 
@@ -242,6 +259,15 @@ This is where most "it generated wrong output" bugs originate.
 | `measureExpression` on properties of fact classes | 💡 Facts without measures have no aggregatable columns |
 | `hierarchyName` + `hierarchyLevel` are paired | 🐛 One without the other is incomplete |
 | `perspective` references consistent group name | 💡 Typos create orphan perspectives |
+| `goldTableName` is snake_case (without dim_/fact_ prefix) | 💡 Prefix is auto-added by G2 — don't include it in the override |
+| `goldColumnName` is snake_case | 💡 Should follow SQL naming convention |
+| `goldDataType` is valid SQL type | 🐛 Must be a recognized Fabric Warehouse type (INT, DECIMAL, NVARCHAR, etc.) |
+| `measureFormatString` is paired with `measureExpression` | 🐛 A format string without a measure expression is meaningless — flag if orphaned |
+| `degenerateDimension` only on properties of fact classes | 💡 Only meaningful on properties whose owning class is a fact table — on dimension properties it has no effect |
+| `olsRestricted` on sensitive columns | 💡 Verify property is on a fact or dimension class — OLS only applies to columns visible in the semantic model |
+| RESERVED: `rolePlayingAs` used but not yet consumed | ⚠️ If set, warn that the gold projector does not yet render role-playing dimensions — annotation is declared but inactive |
+| RESERVED: `incrementalColumn` used but not yet consumed | ⚠️ If set, warn that the gold projector does not yet render incremental refresh policies — annotation is declared but inactive |
+| RESERVED: `surrogateKeyStrategy` used but not yet consumed | ⚠️ If set, warn that surrogate keys are currently generated unconditionally — annotation is declared but inactive |
 
 ### Mapping file review (`kairos-map:`)
 
@@ -256,6 +282,9 @@ This is where most "it generated wrong output" bugs originate.
 | Column mappings: `skos:exactMatch` per property | Each domain property has a source column mapping | 💡 Unmapped properties become NULL |
 | Column `transform` expressions are valid SQL | `"CAST(source.id AS STRING)"` etc. | 💡 Hard to validate statically — flag for review |
 | `defaultValue` is appropriate type | String default for string column, numeric for numeric | 💡 Type mismatch may cause runtime cast errors |
+| `deduplicationKey` references valid source column(s) | Space-separated column names for ROW_NUMBER dedup — columns must exist in the source table | 🐛 Invalid column names cause dbt compilation errors |
+| `deduplicationOrder` is valid SQL ORDER BY expression | Expression for dedup window function ordering (e.g. `"modified_date DESC"`) | 🐛 Invalid expression causes dbt compilation errors |
+| `deduplicationKey` and `deduplicationOrder` are paired | If one is set, the other should be too — dedup key without order produces non-deterministic results | 💡 Warn if only one is present |
 | `sourceColumns` count matches target NK | For composite FK joins, source column count must match | 🐛 Mismatch = incomplete join |
 | Bronze vocabulary exists for referenced source | `integration/sources/<system>/<system>.vocabulary.ttl` | 🐛 Missing bronze = column lookups fail |
 | Mapped column URIs match bronze vocabulary | Column URIs in mapping must exist in bronze `.ttl` | 🐛 Typo in URI = silently unmapped |
@@ -283,7 +312,25 @@ These checks require analysing **all domains together**, not independently.
 |-------|---------------|----------|
 | Property name collisions across namespaces | If two domains define properties with the same local name (e.g., `client:status` and `invoice:status`), flag for review — may cause confusion in downstream SQL where snake_case names collide | 💡 Not always a bug, but worth flagging for explicit acknowledgement |
 | Cross-domain FK targets are importable | If an `owl:ObjectProperty` range points to a class in another domain, that domain's ontology must be importable (present in `_master.ttl` or `owl:imports`) | 🐛 Broken cross-domain FK = NULL placeholder in dbt model |
+| Cross-domain FK peer extension available | If a cross-domain FK references another domain, that domain's `*-silver-ext.ttl` must exist with a `naturalKey` on the target class — otherwise the FK join cannot resolve the target's surrogate key | 🐛 Missing peer ext = FK column generated but join produces NULL |
 | Cross-domain `skos:exactMatch` targets resolve | If a mapping targets a property in a different domain namespace, that property must exist in the other domain's ontology | 🐛 Same as target-URI issue but across domain boundaries |
+
+### Population coverage cross-check
+
+These checks combine extension and mapping data to identify data quality risks.
+
+| Check | What to verify | Severity |
+|-------|---------------|----------|
+| `required` properties have source mappings | For every property with `populationRequirement "required"`, verify at least one source mapping exists (`skos:exactMatch` target) | 🐛 Required column always NULL = data quality blocker |
+| `derived` properties have formulas | For every property with `populationRequirement "derived"`, verify `derivationFormula` is set | 🐛 Derived column without formula = always NULL |
+| High NULL-column ratio per entity | If > 50% of an entity's properties have no source mapping and no derivation formula, flag the entity | 💡 May indicate incomplete mapping or over-modeled entity |
+
+### DD-023 shared defaults validation
+
+| Check | What to verify | Severity |
+|-------|---------------|----------|
+| Default extension files parse successfully | If `*-silver-defaults.ttl` or `*-gold-defaults.ttl` exist in a reference model, verify they parse | 🐛 Syntax errors in defaults silently break projection |
+| No conflicting annotations between defaults and hub ext | If a hub extension and a ref-model default both annotate the same class/property, the hub extension wins — flag the overlap for awareness | 💡 Unintentional overlap may indicate stale defaults |
 
 ### CLI output incorporation
 

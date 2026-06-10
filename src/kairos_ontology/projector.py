@@ -664,6 +664,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         # Track which domains produce artifacts for dbt project config
         dbt_domain_names: list[str] = []
         dbt_gold_domains: list[str] = []
+        # Collect per-domain coverage data for merged coverage-report.json
+        dbt_coverage_data: dict[str, dict] = {}
 
         # Collect all silver extension file paths for cross-domain NK resolution.
         # For dbt/silver targets, peer_ext_paths allows FK resolution across domains.
@@ -743,6 +745,10 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                             onto_name, target_name, warn_handler.records
                         )
                 if artifacts:
+                    # Extract coverage data before writing (not a real file artifact)
+                    if target_name == "dbt" and "__coverage_data__" in artifacts:
+                        dbt_coverage_data[onto_name] = artifacts.pop("__coverage_data__")
+
                     total_files += _write_artifacts(artifacts, target_output)
                     print(f"  [{onto_name}] ✓ Generated {len(artifacts)} file(s)")
                     report.record_projection(
@@ -798,6 +804,19 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             )
             total_files += _write_artifacts(project_config, target_output)
             _logger.info("Generated project config for %d domain(s)", len(dbt_domain_names))
+
+        # After all domains: merge per-domain coverage data into a single report
+        if target_name == "dbt" and dbt_coverage_data:
+            import json as _json
+            merged_coverage = {
+                "domains": dbt_coverage_data,
+                "summary": _build_coverage_summary(dbt_coverage_data),
+            }
+            coverage_content = _json.dumps(merged_coverage, indent=2, ensure_ascii=False)
+            coverage_artifacts = {"coverage-report.json": coverage_content}
+            total_files += _write_artifacts(coverage_artifacts, target_output)
+            print(f"  ✓ Merged coverage report for {len(dbt_coverage_data)} domain(s)")
+            report.record_post_step("coverage_report", status="ok")
 
         # After all domains: generate master ERD for silver target
         if target_name == "silver" and total_files > 0:
@@ -1005,6 +1024,29 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 )
                 if dbt_path:
                     print(f"   📝 dbt session log: {dbt_path.name}")
+
+
+def _build_coverage_summary(domain_data: dict[str, dict]) -> dict:
+    """Aggregate per-domain coverage stats into an overall summary."""
+    total_properties = 0
+    total_populated = 0
+    total_always_null = 0
+    total_missing_required = 0
+    for entities in domain_data.values():
+        for entity in entities.values():
+            total_properties += entity.get("ontology_properties_total", 0)
+            total_populated += entity.get("populated_from_source", 0)
+            total_always_null += entity.get("always_null", 0)
+            total_missing_required += len(entity.get("missing_required_mappings", []))
+    return {
+        "domains_count": len(domain_data),
+        "total_properties": total_properties,
+        "populated_from_source": total_populated,
+        "always_null": total_always_null,
+        "missing_required_mappings": total_missing_required,
+        "populated_pct": round(total_populated / total_properties * 100)
+        if total_properties else 0,
+    }
 
 
 def extract_ontology_metadata(graph: Graph, namespace: str) -> dict:

@@ -128,6 +128,81 @@ done
 cat output/medallion/dbt/coverage-report.json 2>/dev/null | python -m json.tool | head -30
 ```
 
+### 5. Reference Model Strategy
+
+Determine which reference model alignment strategy each domain uses (see DD-032).
+
+| Strategy | How to detect |
+|----------|---------------|
+| **Reference Model Enforced** | The domain ontology contains `owl:imports` pointing to an **external** reference model namespace (e.g., `https://refmodel.example/...`, `https://referencemodels.kairos.cnext.eu/...`). Ignore imports between hub-internal domains (same hub namespace). |
+| **Reference Model Inspired** | One or more `owl:Class` definitions in the domain ontology have `rdfs:seeAlso` pointing to an external reference model URI. No `owl:imports` of that reference model. |
+| **Pure Local** | No `owl:imports` of external reference models AND no `rdfs:seeAlso` back-references to external reference model URIs. |
+
+**Steps:**
+1. For each domain TTL file in `model/ontologies/`:
+   a. Check for `owl:imports` statements — filter out hub-internal imports (same base namespace).
+      Any remaining external imports indicate **Enforced**.
+   b. If no external imports, check for `rdfs:seeAlso` on class definitions.
+      If found with external URIs, the domain is **Inspired**.
+   c. If neither, the domain is **Pure Local**.
+2. For Enforced domains, note which reference model(s) are imported.
+3. For Inspired domains, note which reference model(s) are referenced via `rdfs:seeAlso`.
+
+**Commands to run:**
+```bash
+# Check for owl:imports per domain (external reference models)
+for f in model/ontologies/*.ttl; do
+  echo "=== $f ==="
+  grep "owl:imports" "$f" 2>/dev/null || echo "(none)"
+done
+
+# Check for rdfs:seeAlso back-references on classes
+for f in model/ontologies/*.ttl; do
+  echo "=== $f ==="
+  grep "rdfs:seeAlso" "$f" 2>/dev/null || echo "(none)"
+done
+```
+
+### 6. Coverage Summary
+
+If coverage artifacts have been generated (by running projections or the
+`coverage-report` CLI), read them and surface key metrics. Do NOT regenerate
+coverage data — only report what already exists.
+
+| What to check | Where | What it tells you |
+|---------------|-------|-------------------|
+| Domain coverage (silver NULL columns) | `output/medallion/dbt/coverage-report.json` | Per-entity: total properties, populated from source, always-NULL columns, missing required mappings |
+| Industry alignment (ontology vs ref model) | `output/coverage-report.yaml` or `output/coverage-report.md` | Per-domain: class/property alignment % against reference models, custom vs aligned fields |
+| Source mapping reports | `output/report/*.html` | Per-source-system: mapped vs unmapped columns, match types, action items |
+
+**Steps:**
+1. Check if `output/medallion/dbt/coverage-report.json` exists. If so:
+   a. Read the `summary` section for overall stats (populated_pct, missing_required).
+   b. Per domain in `domains`, identify entities with high `always_null` counts.
+   c. Flag entities with `missing_required_mappings` > 0 as blockers.
+2. Check if `output/coverage-report.yaml` or `output/coverage-report.md` exists. If so:
+   a. Read `class_coverage_pct` and `property_coverage_pct` per domain.
+   b. Identify domains with low alignment (< 50%) — these have many custom fields.
+3. Check if `output/report/` contains HTML reports. Count them.
+4. If none of these artifacts exist, note that projections/coverage have not been run.
+
+**Commands to run:**
+```bash
+# Check for coverage artifacts
+ls output/medallion/dbt/coverage-report.json 2>/dev/null
+ls output/coverage-report.yaml output/coverage-report.md 2>/dev/null
+ls output/report/*.html 2>/dev/null | wc -l
+
+# Read dbt coverage summary (if exists)
+python -c "
+import json, pathlib
+p = pathlib.Path('output/medallion/dbt/coverage-report.json')
+if p.exists():
+    data = json.loads(p.read_text())
+    print(json.dumps(data.get('summary', {}), indent=2))
+" 2>/dev/null
+```
+
 ---
 
 ## Output Format
@@ -168,6 +243,24 @@ Produce a structured Markdown report:
 | Domain | Last Run | Entities | Skipped | Warnings |
 |--------|----------|----------|---------|----------|
 | {name} | {date} / Never | N/M | N | N |
+
+## 5. Reference Model Strategy
+
+| Domain | Strategy | Reference Model(s) | Detail |
+|--------|----------|---------------------|--------|
+| {name} | Enforced / Inspired / Pure Local | {ref model name or "—"} | {e.g., "owl:imports party ref model" or "rdfs:seeAlso → FIBO Identifier" or "No reference model"} |
+
+**Summary:** N domains Enforced, N domains Inspired, N domains Pure Local.
+
+## 6. Coverage Summary
+
+| Domain | Silver Populated % | Always-NULL Columns | Missing Required | Industry Alignment % |
+|--------|--------------------|---------------------|------------------|----------------------|
+| {name} | N% | N | N | N% or "Not run" |
+
+**Overall:** N% silver properties populated across all domains. N missing required mappings.
+**Industry alignment:** N% class coverage, N% property coverage (or "Not run").
+**Mapping reports:** N source report(s) available in output/report/.
 
 ## 📋 Recommendations
 
@@ -225,4 +318,22 @@ Based on the findings, suggest the appropriate next skill:
 | Missing extensions | **kairos-design-silver** or **kairos-design-gold** |
 | Missing mappings | **kairos-design-mapping** |
 | Projections not run | **kairos-execute-project** |
+| Coverage artifacts missing or stale | **kairos-execute-project** (re-run projections) or CLI: `kairos-ontology coverage-report` |
+| Low industry alignment (many custom fields) | **kairos-design-domain** (consider reference model patterns) |
 | Hub not set up | **kairos-setup-config** |
+| Want to switch strategy (Enforced ↔ Inspired) | **kairos-design-domain** (see DD-032 migration paths) |
+
+---
+
+## Follow-up recommendation (MANDATORY)
+
+After presenting the status report, **always** ask the user:
+
+> 🔍 Want a deeper quality check? I can run a **detailed validation** (all 4 levels:
+> syntax, SHACL, modeling best practices, and extension/mapping correctness) to catch
+> issues that the status review doesn't cover.
+>
+> → Invoke **kairos-execute-validate** in **Detailed** mode (Level 4)
+
+If the user accepts, invoke the `kairos-execute-validate` skill and instruct it to
+run in **Detailed** mode (all 4 levels).
