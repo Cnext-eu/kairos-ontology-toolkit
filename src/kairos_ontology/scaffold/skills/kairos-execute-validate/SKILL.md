@@ -405,6 +405,25 @@ End with a summary:
 
 ---
 
+## Report persistence (MANDATORY)
+
+After displaying the validation report in chat, **always** save it as a Markdown file:
+
+- **Path:** `output/reports/validation-{YYYY-MM-DD-HHmmss}.md` (relative to the hub root).
+  Use the current UTC timestamp for `{YYYY-MM-DD-HHmmss}` (e.g. `validation-2026-06-10-205500.md`).
+- **Content:** The full rendered report (all levels + summary table) exactly as
+  displayed in chat.
+- **History:** Each run creates a new file — previous reports are preserved for
+  comparison and audit trail.
+- **Git:** Do NOT commit the file automatically. The user decides when to commit.
+
+**Steps:**
+1. After assembling the full report, write it to `output/reports/validation-{ts}.md`
+   using the `create` or `edit` tool.
+2. Tell the user: "📄 Report saved to `output/reports/validation-{ts}.md`."
+
+---
+
 ## Remediation workflow
 
 1. Fix all 🐛 **Issues** first — these will cause projection failures.

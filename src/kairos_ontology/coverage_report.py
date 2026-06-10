@@ -379,7 +379,16 @@ def run_coverage_report(
 
 
 def write_coverage_yaml(report: CoverageReport, output_path: Path) -> Path:
-    """Write coverage report as YAML."""
+    """Write coverage report as YAML.
+
+    If *output_path* points to a **directory**, a timestamped filename is generated
+    automatically (``coverage-{YYYY-MM-DD-HHmmss}.yaml``).  If it points to a
+    **file**, that exact path is used (backwards-compatible).
+    """
+    if output_path.is_dir() or not output_path.suffix:
+        from datetime import datetime as _dt, timezone as _tz
+        ts = _dt.now(_tz.utc).strftime("%Y-%m-%d-%H%M%S")
+        output_path = output_path / f"coverage-{ts}.yaml"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     data: dict[str, Any] = {
@@ -437,7 +446,16 @@ def write_coverage_yaml(report: CoverageReport, output_path: Path) -> Path:
 
 
 def write_coverage_markdown(report: CoverageReport, output_path: Path) -> Path:
-    """Write coverage report as human-readable markdown."""
+    """Write coverage report as human-readable markdown.
+
+    If *output_path* points to a **directory**, a timestamped filename is generated
+    automatically (``coverage-{YYYY-MM-DD-HHmmss}.md``).  If it points to a
+    **file**, that exact path is used (backwards-compatible).
+    """
+    if output_path.is_dir() or not output_path.suffix:
+        from datetime import datetime as _dt, timezone as _tz
+        ts = _dt.now(_tz.utc).strftime("%Y-%m-%d-%H%M%S")
+        output_path = output_path / f"coverage-{ts}.md"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     lines = [

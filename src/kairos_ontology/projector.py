@@ -808,13 +808,17 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         # After all domains: merge per-domain coverage data into a single report
         if target_name == "dbt" and dbt_coverage_data:
             import json as _json
+            from datetime import datetime as _dt, timezone as _tz
             merged_coverage = {
                 "domains": dbt_coverage_data,
                 "summary": _build_coverage_summary(dbt_coverage_data),
             }
             coverage_content = _json.dumps(merged_coverage, indent=2, ensure_ascii=False)
-            coverage_artifacts = {"coverage-report.json": coverage_content}
-            total_files += _write_artifacts(coverage_artifacts, target_output)
+            ts = _dt.now(_tz.utc).strftime("%Y-%m-%d-%H%M%S")
+            reports_dir = output_path / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            coverage_artifacts = {f"coverage-dbt-{ts}.json": coverage_content}
+            total_files += _write_artifacts(coverage_artifacts, reports_dir)
             print(f"  ✓ Merged coverage report for {len(dbt_coverage_data)} domain(s)")
             report.record_post_step("coverage_report", status="ok")
 
@@ -892,7 +896,9 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     # ── Post-domain targets (span all ontology domains) ──────────────────
     if "report" in targets_to_run:
         print("📦 Generating report projection...")
-        report_output = output_path / "report"
+        from datetime import datetime as _rdt, timezone as _rtz
+        _report_ts = _rdt.now(_rtz.utc).strftime("%Y-%m-%d-%H%M%S")
+        report_output = output_path / "reports"
         report_output.mkdir(parents=True, exist_ok=True)
 
         # Merge all domain ontology graphs for cross-domain property lookup
@@ -909,6 +915,12 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 merged_classes.update(domain_classes)
 
         from .projections.report_projector import generate_mapping_report
+
+        def _ts_fname(name: str) -> str:
+            """Inject timestamp before the file extension."""
+            stem, _, ext = name.rpartition(".")
+            return f"{stem}-{_report_ts}.{ext}" if stem else f"{name}-{_report_ts}"
+
         report_artifacts = generate_mapping_report(
             ontology_classes=merged_classes,
             sources_dir=sources_dir,
@@ -917,10 +929,11 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         )
         report_count = 0
         for fname, html in report_artifacts.items():
-            out_file = report_output / fname
+            ts_name = _ts_fname(fname)
+            out_file = report_output / ts_name
             out_file.write_text(html, encoding="utf-8")
             report_count += 1
-            print(f"  ✓ {fname}")
+            print(f"  ✓ {ts_name}")
         print(f"  ✓ report projection completed: {report_count} total files\n")
         report.record_post_step("mapping_report", status="ok")
 
@@ -933,10 +946,11 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 template_dir=template_base,
             )
             for fname, content in overview_artifacts.items():
-                out_file = report_output / fname
+                ts_name = _ts_fname(fname)
+                out_file = report_output / ts_name
                 out_file.write_text(content, encoding="utf-8")
                 report_count += 1
-                print(f"  ✓ {fname}")
+                print(f"  ✓ {ts_name}")
 
         # Generate source landscape report
         from .projections.report_projector import generate_source_landscape_report
@@ -948,10 +962,11 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 template_dir=template_base,
             )
             for fname, content in landscape_artifacts.items():
-                out_file = report_output / fname
+                ts_name = _ts_fname(fname)
+                out_file = report_output / ts_name
                 out_file.write_text(content, encoding="utf-8")
                 report_count += 1
-                print(f"  ✓ {fname}")
+                print(f"  ✓ {ts_name}")
 
         # Generate mapping progress dashboard
         from .projections.report_projector import generate_mapping_progress_report
@@ -963,10 +978,11 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 template_dir=template_base,
             )
             for fname, content in progress_artifacts.items():
-                out_file = report_output / fname
+                ts_name = _ts_fname(fname)
+                out_file = report_output / ts_name
                 out_file.write_text(content, encoding="utf-8")
                 report_count += 1
-                print(f"  ✓ {fname}")
+                print(f"  ✓ {ts_name}")
     
     print("✅ Projection generation completed!")
     print(f"   Generated artifacts for {len(ontology_graphs)} data domain(s)")
