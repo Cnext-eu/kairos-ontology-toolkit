@@ -29,6 +29,30 @@ def _ensure_utf8_stdio() -> None:
 
 _ensure_utf8_stdio()
 
+
+def _warn_if_outside_venv() -> None:
+    """Emit a warning if running outside the project's .venv.
+
+    Detects when the user invokes ``python -m kairos_ontology`` using a system
+    Python while a local ``.venv`` exists (created by ``uv``).  This avoids
+    silently running a stale toolkit version installed globally.
+    """
+    if sys.prefix != sys.base_prefix:
+        return  # already inside a venv — nothing to warn about
+
+    cwd = Path.cwd()
+    candidates = [cwd / ".venv", cwd.parent / ".venv"]
+    if not any(p.is_dir() for p in candidates):
+        return  # no local venv found — probably intentional
+
+    click.echo(
+        "⚠️  Running outside the project .venv — you may be using a different\n"
+        "   toolkit version than the one pinned in this hub.\n"
+        "   Fix: activate the venv or use `uv run kairos-ontology`.\n",
+        err=True,
+    )
+
+
 # Resolve scaffold data directory bundled with the package
 _SCAFFOLD_DIR = Path(__file__).resolve().parent.parent / "scaffold"
 
@@ -258,7 +282,7 @@ def _check_not_inside_git_repo(parent: Path, name: str) -> None:
 @click.version_option(version=_toolkit_version, package_name="kairos-ontology-toolkit")
 def cli():
     """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
-    pass
+    _warn_if_outside_venv()
 
 
 _LIFECYCLE_TABLE = """\
