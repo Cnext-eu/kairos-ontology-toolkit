@@ -642,8 +642,6 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     from .projections.medallion_dbt_projector import _last_entity_metadata
     _last_entity_metadata.clear()
 
-    # Accumulate per-domain manifest data: {domain_name: {meta, targets: {target: [files]}}}
-    manifests: dict[str, dict] = {}
 
     for target_name in targets_to_run:
         # Report target is handled after the per-domain loop (spans all domains)
@@ -756,14 +754,6 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                         status="ok",
                         files=sorted(artifacts.keys()),
                     )
-
-                    # Track for manifest
-                    if onto_name not in manifests:
-                        manifests[onto_name] = {
-                            "meta": onto_meta,
-                            "targets": {},
-                        }
-                    manifests[onto_name]["targets"][target_name] = sorted(artifacts.keys())
 
                     # Track dbt domains for project config generation
                     if target_name == "dbt":
@@ -989,25 +979,6 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     
     print("✅ Projection generation completed!")
     print(f"   Generated artifacts for {len(ontology_graphs)} data domain(s)")
-
-    # Write per-domain projection manifests
-    for domain_name, mdata in manifests.items():
-        manifest = {
-            "domain": domain_name,
-            "ontology_iri": mdata["meta"]["iri"],
-            "ontology_version": mdata["meta"]["version"],
-            "ontology_label": mdata["meta"]["label"],
-            "namespace": mdata["meta"]["namespace"],
-            "toolkit_version": mdata["meta"]["toolkit_version"],
-            "generated_at": mdata["meta"]["generated_at"],
-            "targets": mdata["targets"],
-        }
-        manifest_path = output_path / f"{domain_name}-projection-manifest.json"
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        print(f"   📋 Manifest: {manifest_path.name}")
 
     # Write the projection report
     report_path = report.write(output_path)

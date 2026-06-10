@@ -311,13 +311,6 @@ class TestCrossDomainConsistency:
             f"{[e for e in data.get('events', []) if e.get('level') == 'error']}"
         )
 
-    def test_domain_manifests_exist(self, projected_hub):
-        """Per-domain projection manifests should be written."""
-        output = projected_hub / "output"
-        manifests = list(output.glob("*-projection-manifest.json"))
-        assert len(manifests) >= 2, (
-            f"Expected manifests for client + invoice, found: {[m.name for m in manifests]}"
-        )
 
 
 # ===========================================================================
