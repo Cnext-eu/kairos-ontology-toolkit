@@ -64,6 +64,9 @@ def generate_dapr_artifacts(
     entities: list[dict[str, str]] = []
     system_schedules: dict[str, str] = {}
     system_retry_policies: dict[str, str] = {}
+    system_binding_types: dict[str, str] = {}
+    system_input_topics: dict[str, str] = {}
+    system_conn_refs: dict[str, str] = {}
 
     for file_key, content in mapping_artifacts.items():
         if file_key.endswith("-mapping.json"):
@@ -86,6 +89,15 @@ def generate_dapr_artifacts(
                 retry = int_meta.get("retry_policy")
                 if retry and system not in system_retry_policies:
                     system_retry_policies[system] = retry
+                binding_type = int_meta.get("input_binding_type")
+                if binding_type and system not in system_binding_types:
+                    system_binding_types[system] = binding_type
+                input_topic = int_meta.get("input_topic")
+                if input_topic and system not in system_input_topics:
+                    system_input_topics[system] = input_topic
+                conn_ref = int_meta.get("input_connection_string_ref")
+                if conn_ref and system not in system_conn_refs:
+                    system_conn_refs[system] = conn_ref
             except (json.JSONDecodeError, KeyError):
                 pass
         elif file_key.endswith("manifest.json"):
@@ -93,10 +105,23 @@ def generate_dapr_artifacts(
 
     # Generate Dapr components
     for system in sorted(systems):
+        binding_type = system_binding_types.get(system, "cron")
         schedule = system_schedules.get(system)
-        artifacts[f"{domain}/components/binding-{system}.yaml"] = _input_binding(
-            system, schedule=schedule,
-        )
+        conn_ref = system_conn_refs.get(system)
+        topic = system_input_topics.get(system, f"{system}-events")
+
+        if binding_type == "azure.servicebus.topics":
+            artifacts[f"{domain}/components/pubsub-{system}.yaml"] = (
+                _pubsub_service_bus(system, topic, conn_ref)
+            )
+        elif binding_type in ("azure.servicebus.queues", "azure.eventhubs"):
+            artifacts[f"{domain}/components/binding-{system}.yaml"] = (
+                _input_binding_azure(system, binding_type, topic, conn_ref)
+            )
+        else:
+            artifacts[f"{domain}/components/binding-{system}.yaml"] = _input_binding(
+                system, schedule=schedule,
+            )
     artifacts[f"{domain}/components/binding-silver.yaml"] = _output_binding(domain)
     artifacts[f"{domain}/components/statestore.yaml"] = _state_store()
     artifacts[f"{domain}/components/pubsub.yaml"] = _pubsub()
@@ -107,8 +132,10 @@ def generate_dapr_artifacts(
             system_retry_policies
         )
 
-    # Generate app
-    artifacts[f"{domain}/app/app.py"] = _generate_app(domain, entities)
+    # Generate app — pass binding type info so handler style matches component
+    artifacts[f"{domain}/app/app.py"] = _generate_app(
+        domain, entities, system_binding_types, system_input_topics
+    )
     artifacts[f"{domain}/app/mapper.py"] = _generate_mapper()
     artifacts[f"{domain}/app/requirements.txt"] = _generate_requirements()
     artifacts[f"{domain}/app/Dockerfile"] = _generate_dockerfile()
@@ -144,6 +171,88 @@ spec:
 
 
 def _output_binding(domain: str) -> str:
+    return f"""apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: silver-warehouse
+spec:
+  type: bindings.postgresql
+  version: v1
+  metadata:
+    - name: connectionString
+      secretKeyRef:
+        name: silver-connection
+        key: connectionString
+  # Configure for your silver layer target:
+  # bindings.azure.cosmosdb, bindings.postgresql, bindings.azure.storage.queues, etc.
+  # Domain: {domain}
+"""
+
+
+def _pubsub_service_bus(system: str, topic: str, conn_ref: str = None) -> str:
+    """Generate a Dapr pubsub component for Azure Service Bus topics."""
+    secret_block = ""
+    if conn_ref:
+        secret_block = f"""    - name: connectionString
+      secretKeyRef:
+        name: {conn_ref}
+        key: connectionString"""
+    else:
+        secret_block = f"""    - name: connectionString
+      value: "# Set via secret: {system}-servicebus"
+  # Add to secrets store and replace value with secretKeyRef"""
+    return f"""apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: pubsub-{system}
+spec:
+  type: pubsub.azure.servicebus.topics
+  version: v1
+  metadata:
+{secret_block}
+  # Topic: {topic}
+  # Consumers subscribe via @app.subscribe(pubsub_name='pubsub-{system}', topic='{topic}')
+  # See: https://docs.dapr.io/reference/components-reference/supported-pubsub/setup-azure-servicebus-topics/
+"""
+
+
+def _input_binding_azure(
+    system: str, binding_type: str, topic: str, conn_ref: str = None,
+) -> str:
+    """Generate a Dapr input binding for Azure Service Bus queues or Event Hubs."""
+    secret_block = ""
+    if conn_ref:
+        secret_block = f"""    - name: connectionString
+      secretKeyRef:
+        name: {conn_ref}
+        key: connectionString"""
+    else:
+        secret_block = f"""    - name: connectionString
+      value: "# Set via secret: {system}-binding"
+  # Add to secrets store and replace value with secretKeyRef"""
+
+    if binding_type == "azure.eventhubs":
+        entity_field = f"""    - name: eventHub
+      value: "{topic}" """
+    else:
+        entity_field = f"""    - name: queueName
+      value: "{topic}" """
+
+    return f"""apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: {system}
+spec:
+  type: bindings.{binding_type}
+  version: v1
+  metadata:
+{secret_block}
+{entity_field}
+  # See: https://docs.dapr.io/reference/components-reference/supported-bindings/
+"""
+
+
+
     return f"""apiVersion: dapr.io/v1alpha1
 kind: Component
 metadata:
@@ -243,8 +352,15 @@ spec:
 # ---------------------------------------------------------------------------
 
 
-def _generate_app(domain: str, entities: list[dict[str, str]]) -> str:
+def _generate_app(
+    domain: str,
+    entities: list[dict[str, str]],
+    system_binding_types: dict[str, str] = None,
+    system_input_topics: dict[str, str] = None,
+) -> str:
     """Generate the main Dapr app entry point."""
+    system_binding_types = system_binding_types or {}
+    system_input_topics = system_input_topics or {}
     handler_imports = []
     for e in entities:
         system = e["system"]
@@ -259,6 +375,11 @@ def _generate_app(domain: str, entities: list[dict[str, str]]) -> str:
 
     systems_list = sorted({e["system"] for e in entities})
     binding_handlers = []
+    uses_pubsub = any(
+        system_binding_types.get(s) == "azure.servicebus.topics"
+        for s in systems_list
+    )
+
     for system in systems_list:
         safe_system = _safe_identifier(system)
         system_entities = [e for e in entities if e["system"] == system]
@@ -269,7 +390,47 @@ def _generate_app(domain: str, entities: list[dict[str, str]]) -> str:
                 f'        "{e["entity"]}": "mappings/{system}-{snake}-mapping.json",'
             )
         cases_str = "\n".join(entity_cases)
-        binding_handlers.append(f"""
+
+        btype = system_binding_types.get(system, "cron")
+        topic = system_input_topics.get(system, f"{system}-events")
+
+        if btype == "azure.servicebus.topics":
+            # Pubsub subscribe handler
+            binding_handlers.append(f"""
+@app.subscribe(pubsub_name='pubsub-{system}', topic='{topic}')
+def on_{safe_system}_message(event) -> None:
+    \"\"\"Handle inbound Service Bus message from {system} (topic: {topic}).\"\"\"
+    try:
+        record = event.data if isinstance(event.data, dict) else json.loads(event.data)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("Invalid payload for source %s", '{system}')
+        return
+
+    if not isinstance(record, dict):
+        logger.warning("Payload for source %s is not an object", '{system}')
+        return
+
+    # Route to the correct canonical entity mapping
+    entity_mappings = {{
+{cases_str}
+    }}
+    for entity_name, mapping_file in entity_mappings.items():
+        mapping = mapper.load_mapping(mapping_file)
+        if mapper.matches_source(record, mapping):
+            canonical = mapper.transform(record, mapping)
+            with DaprClient() as client:
+                # Write canonical entity to silver via output binding
+                client.invoke_binding('silver-warehouse', 'create', json.dumps(canonical))
+                # Publish enriched entity event downstream
+                client.publish_event('entity-events', entity_name, json.dumps(canonical))
+            logger.info("Mapped %s record from %s → %s", entity_name, '{system}', canonical.get('_entity', '?'))
+            break
+    else:
+        logger.info("No mapping matched payload from %s", '{system}')
+""")
+        else:
+            # Input binding handler (cron / queue / eventhubs)
+            binding_handlers.append(f"""
 @app.binding('{system}')
 def on_{safe_system}_data(request):
     \"\"\"Handle incoming data from {system}.\"\"\"
@@ -304,6 +465,12 @@ def on_{safe_system}_data(request):
 
     handlers_str = "\n".join(binding_handlers)
 
+    # Import CloudEvent for pubsub subscribe handlers
+    cloudevent_import = (
+        "\nfrom cloudevents.sdk.event import v1 as CloudEvent  # noqa: F401"
+        if uses_pubsub else ""
+    )
+
     return f'''"""Dapr integration app for {domain} domain.
 
 Auto-generated by kairos-ontology-toolkit. Customize as needed.
@@ -315,7 +482,7 @@ import json
 import logging
 
 from dapr.clients import DaprClient
-from dapr.ext.grpc import App
+from dapr.ext.grpc import App{cloudevent_import}
 
 import mapper
 
@@ -429,6 +596,7 @@ def _generate_requirements() -> str:
     return """# Dapr integration app dependencies
 dapr>=1.14.0
 dapr-ext-grpc>=1.14.0
+cloudevents>=1.10.0
 """
 
 

@@ -132,6 +132,27 @@ def _extract_integration_metadata(
     if dlt:
         result["dead_letter_topic"] = dlt
 
+    # Dapr binding configuration — class-level overrides ontology-level default
+    binding_type_raw = str_val(graph, cls, KAIROS_INT.inputBindingType)
+    if not binding_type_raw and ontology_uri:
+        binding_type_raw = str_val(graph, URIRef(ontology_uri), KAIROS_INT.inputBindingType)
+    if binding_type_raw:
+        result["input_binding_type"] = binding_type_raw
+
+    input_topic_raw = str_val(graph, cls, KAIROS_INT.inputTopic)
+    if not input_topic_raw and ontology_uri:
+        input_topic_raw = str_val(graph, URIRef(ontology_uri), KAIROS_INT.inputTopic)
+    if input_topic_raw:
+        result["input_topic"] = input_topic_raw
+
+    conn_ref_raw = str_val(graph, cls, KAIROS_INT.inputConnectionStringRef)
+    if not conn_ref_raw and ontology_uri:
+        conn_ref_raw = str_val(
+            graph, URIRef(ontology_uri), KAIROS_INT.inputConnectionStringRef
+        )
+    if conn_ref_raw:
+        result["input_connection_string_ref"] = conn_ref_raw
+
     # Strip None values for cleaner JSON
     return {k: v for k, v in result.items() if v is not None}
 
