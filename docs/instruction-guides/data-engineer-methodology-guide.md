@@ -21,7 +21,7 @@ tables, write ETL, then hope the BI layer makes sense. This leads to:
 the toolkit *generates* your warehouse schemas, dbt models, BI semantic models,
 and documentation from that single source of truth.
 
-```
+```text
                     ┌─────────────────┐
                     │  Domain Ontology │  ← You design this
                     │    (OWL/Turtle)  │
@@ -124,7 +124,7 @@ reach your warehouse.
 
 ### The Sequence Matters
 
-```
+```text
 Step 1: Create the domain ontology
         ↓
 Step 2: Create silver extensions (FK annotations, schema config)
@@ -138,6 +138,8 @@ Step 5: Generate gold layer (Power BI TMDL + DDL)
 Step 6: Create source mappings (SKOS)
         ↓
 Step 7: Generate dbt bronze-to-silver models
+        ↓
+Step 8: Set up dataplatform runtime repo and consume generated dbt package
 ```
 
 **Why this order?**
@@ -165,7 +167,7 @@ Before designing classes, collect these inputs:
 
 When these inputs disagree (and they will), follow this priority:
 
-```
+```text
 🟢 Reference model structure    — Highest (industry best practice)
 🟡 Source system reality         — High (what actually exists)
 🟠 TMDL / existing BI           — Medium (legacy, may have shortcuts)
@@ -245,7 +247,7 @@ The domain ontology is **platform-agnostic** — it describes the business, not 
 warehouse. Silver extensions add **physical implementation decisions** that would
 pollute the pure domain model:
 
-```
+```text
 Domain ontology (pure business):     "An Order is placed by a Customer"
 Silver extension (physical):          "The silver_orders table has FK_Customer
                                        referencing silver_customers.SK_Customer"
@@ -292,7 +294,7 @@ This generates:
 
 ### What you get in the dbt project
 
-```
+```text
 output/medallion/dbt/
   models/
     silver/
@@ -342,7 +344,39 @@ which source columns to select and how to transform them.
 
 ---
 
-## 9. Why the Sequence Matters — A Summary
+## 9. Step 8 — Set Up the Dataplatform Runtime Repo (dbt Consumer)
+
+The ontology hub is design-time; the **dataplatform repo is your dbt runtime**.
+After generating `output/medallion/dbt/`, consume it from a separate dataplatform
+repository that owns profiles, source bindings, orchestration, and deployments.
+
+Use the template/scaffold workflow for consistency:
+
+- Set up the runtime repo via the **kairos-setup-dataplatform** skill
+- Configure `packages.yml` to consume the hub dbt project by pinned revision
+- Run `dbt deps` in the runtime repo to pull generated models
+- Add runtime-owned models/tests/macros on top of hub-generated package models
+
+Example package reference:
+
+```yaml
+packages:
+  - git: https://github.com/your-org/your-ontology-hub.git
+    revision: v1.3.0
+    subdirectory: output/medallion/dbt
+```
+
+Runtime split:
+
+| Ontology hub (design-time) | Dataplatform repo (runtime) |
+|---|---|
+| OWL model, extensions, mappings | dbt profile, `_sources.yml`, CI/CD |
+| Generate dbt package artifacts | Consume package via `dbt deps` |
+| Publish versioned releases | Pin/upgrade package revisions |
+
+---
+
+## 10. Why the Sequence Matters — A Summary
 
 | If you skip... | What breaks |
 |---|---|
@@ -351,6 +385,7 @@ which source columns to select and how to transform them.
 | Silver extensions before generating | Missing FKs, wrong schema names, incomplete tables |
 | Silver before gold | Gold references silver tables that don't exist |
 | Source mappings before dbt | dbt models don't know which columns to select |
+| Dataplatform runtime setup | No governed runtime to consume and operationalize dbt output |
 
 **The ontology is the keystone.** Everything downstream is derived from it.
 If the ontology is wrong, *everything* generated from it will be wrong — but
@@ -358,9 +393,9 @@ at least it will be *consistently* wrong and fixable in one place.
 
 ---
 
-## 10. Quick Reference: What Lives Where
+## 11. Quick Reference: What Lives Where
 
-```
+```text
 ontology-hub/
 ├── model/
 │   ├── ontologies/          ← Your domain models (.ttl)
@@ -373,11 +408,17 @@ ontology-hub/
     └── medallion/
         ├── dbt/             ← dbt project
         └── gold/            ← Power BI TMDL + DDL
+
+dataplatform/
+├── dbt_project.yml          ← Runtime dbt project
+├── packages.yml             ← Pins ontology-hub dbt package revision
+├── models/                  ← Runtime-owned models/extensions
+└── _sources.yml             ← Physical source bindings
 ```
 
 ---
 
-## 11. Getting Started Checklist
+## 12. Getting Started Checklist
 
 - [ ] Collect your inputs (reference models, source DDL, existing TMDL)
 - [ ] Run `kairos-ontology import-tmdl` on any existing Power BI models
@@ -389,6 +430,8 @@ ontology-hub/
 - [ ] Generate gold: `kairos-ontology project --target powerbi`
 - [ ] Create source mappings (SKOS)
 - [ ] Generate dbt: `kairos-ontology project --target dbt`
+- [ ] Set up dataplatform runtime repo (use `kairos-setup-dataplatform`)
+- [ ] Add/pin ontology hub package in `packages.yml` and run `dbt deps`
 - [ ] Review generated artifacts, iterate on ontology if needed
 
 ---
