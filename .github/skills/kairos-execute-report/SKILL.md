@@ -91,7 +91,7 @@ kairos-ontology project --target report
 kairos-ontology project --target all
 ```
 
-Output goes to: `output/report/{system}-mapping-report.html`
+Output goes to: `output/reports/{system}-mapping-report-{YYYY-MM-DD-HHmmss}.html`
 
 ## Understanding the report
 

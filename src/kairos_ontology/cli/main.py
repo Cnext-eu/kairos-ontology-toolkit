@@ -1541,10 +1541,10 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_m
 
         output_files = []
         if out_format in ("yaml", "both"):
-            yaml_path = write_coverage_yaml(report, output_path / "coverage-report.yaml")
+            yaml_path = write_coverage_yaml(report, output_path)
             output_files.append(yaml_path)
         if out_format in ("markdown", "both"):
-            md_path = write_coverage_markdown(report, output_path / "coverage-report.md")
+            md_path = write_coverage_markdown(report, output_path)
             output_files.append(md_path)
 
         click.echo("\n✅ Coverage report generated!")
