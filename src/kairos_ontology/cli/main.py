@@ -1484,15 +1484,12 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
               help='Output directory (default: output/reports/).')
 @click.option('--format', 'out_format', type=click.Choice(['yaml', 'markdown', 'both']),
               default='both', help='Output format (default: both).')
-@click.option('--model', 'llm_model', default='gpt-5.4-mini',
-              help='LLM model for semantic matching (default: gpt-5.4-mini).')
-def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_model):
-    """Generate ontology-to-reference-model coverage report (LLM-powered).
+def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
+    """Generate ontology-to-reference-model coverage report.
 
-    Measures how well the domain ontology aligns with industry reference models,
-    traces source evidence, and suggests improvements.
-
-    Requires AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
+    Measures how well the domain ontology aligns with industry reference models
+    using deterministic matching (rdfs:seeAlso, owl:imports, name matching).
+    No LLM or API keys required.
 
     \b
     Examples:
@@ -1555,7 +1552,6 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_m
     click.echo("📊 Generating coverage report")
     click.echo(f"   Ontology: {ont_path}")
     click.echo(f"   Reference models: {ref_models_path}")
-    click.echo(f"   Model: {llm_model}")
     click.echo()
 
     try:
@@ -1563,7 +1559,6 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format, llm_m
             ontology_dir=ont_path,
             ref_models_dir=ref_models_path,
             sources_dir=sources_path,
-            model=llm_model,
         )
 
         output_files = []

@@ -192,7 +192,7 @@ kairos-ontology import-flatfile --from <path> [--system NAME] [--output PATH] \
 kairos-ontology analyse-sources [--sources PATH] [--ref-models PATH] [--output PATH] \
   [--model gpt-5.4-mini] [--domains "Domain1,Domain2"] [--max-domains N] [--materialize PATH]
 
-# Generate coverage report (LLM-powered, post-modeling)
+# Generate coverage report (deterministic alignment, post-modeling)
 kairos-ontology coverage-report [--ontology PATH] [--ref-models PATH] [--format both]
 ```
 
