@@ -388,7 +388,7 @@ def write_coverage_yaml(report: CoverageReport, output_path: Path) -> Path:
     if output_path.is_dir() or not output_path.suffix:
         from datetime import datetime as _dt, timezone as _tz
         ts = _dt.now(_tz.utc).strftime("%Y-%m-%d-%H%M%S")
-        output_path = output_path / f"coverage-{ts}.yaml"
+        output_path = output_path / f"coverage-industry-{ts}.yaml"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     data: dict[str, Any] = {
@@ -455,7 +455,7 @@ def write_coverage_markdown(report: CoverageReport, output_path: Path) -> Path:
     if output_path.is_dir() or not output_path.suffix:
         from datetime import datetime as _dt, timezone as _tz
         ts = _dt.now(_tz.utc).strftime("%Y-%m-%d-%H%M%S")
-        output_path = output_path / f"coverage-{ts}.md"
+        output_path = output_path / f"coverage-industry-{ts}.md"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     lines = [
