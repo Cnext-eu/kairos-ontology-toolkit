@@ -1447,6 +1447,9 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
     except ValueError as e:
         click.echo(f"\n❌ {e}", err=True)
         raise SystemExit(1)
+
+
+@cli.command('coverage-report')
 @click.option('--ontology', type=click.Path(exists=True), default=None,
               help='Path to model/ontologies/ directory (default: auto-detect from hub).')
 @click.option('--ref-models', type=click.Path(exists=True), default=None,
