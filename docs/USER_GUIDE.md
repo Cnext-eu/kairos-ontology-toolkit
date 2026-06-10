@@ -80,12 +80,6 @@ TABLE / ALTER TABLE), **Mermaid ERD diagrams**, and **SVG exports**. Designed
 for Snowflake-style analytics databases with SCD Type 1/2, surrogate keys,
 audit envelopes, and GDPR satellite tables.
 
-### Projection Manifest
-
-A `projection-manifest.json` file generated alongside your artifacts. It
-records which ontology IRI and version produced each output file — enabling
-controlled upgrades in both directions.
-
 ---
 
 ## 3. Getting Started
@@ -319,8 +313,7 @@ ontology-hub/output/
 ├── prompt/
 │   ├── customer-context.json
 │   └── customer-context-detailed.json
-├── customer-projection-manifest.json  # Provenance manifest
-└── order-projection-manifest.json
+└── reports/
 ```
 
 ---
@@ -443,34 +436,13 @@ source ontology:
 -- Generated at: 2026-04-21T00:18:00Z
 ```
 
-### Projection Manifest
-
-Each domain gets a `<domain>-projection-manifest.json`:
-
-```json
-{
-  "domain": "customer",
-  "ontology_iri": "https://mycompany.com/ontology/customer",
-  "ontology_version": "1.2.0",
-  "ontology_label": "Customer Domain",
-  "namespace": "https://mycompany.com/ontology/customer#",
-  "toolkit_version": "1.9.0",
-  "generated_at": "2026-04-21T00:18:00Z",
-  "targets": {
-    "silver": ["customer/customer-ddl.sql", "customer/customer-alter.sql", "customer/customer-erd.mmd"],
-    "dbt": ["customer/models/silver/customer.sql", "customer/models/silver/schema_customer.yml"]
-  }
-}
-```
-
 ### Why This Matters
 
-- **Forward upgrade**: ontology version changed → compare with manifest → know
-  which artifacts to regenerate
-- **Backward lookup**: found a DDL file → check header or manifest → know
+- **Forward upgrade**: ontology version changed → regenerate projections
+- **Backward lookup**: found a DDL file → check the SQL header comment to know
   exactly which ontology version produced it
-- **Drift detection**: CI can compare `owl:versionInfo` vs manifest
-  `ontology_version` to flag stale projections
+- **Drift detection**: CI can compare `owl:versionInfo` vs generated file headers
+  to flag stale projections
 
 ---
 
