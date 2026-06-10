@@ -35,10 +35,53 @@ Check these directories and files:
 | Accelerator / Reference model | `catalog-v001.xml` | Look for `<uri>` entries pointing to external reference models (e.g. `kairos-ref-*`) |
 | Hub config | `pyproject.toml` `[tool.kairos]` | Channel, toolkit version pin |
 
+#### Source onboarding completeness
+
+For **each** source system folder in `integration/sources/` (exclude `_analysis/`),
+check which onboarding phases have been completed:
+
+| Phase | Artifact to check | Status |
+|-------|--------------------|--------|
+| Phase 1 — Flat-file import | `_manifest.yaml` + `*.yaml` schema files (not `.samples.yaml`) | ✅ if present, ⏭️ if skipped (manual/DDL source) |
+| Phase 2 — Vocabulary generated | `{system}.vocabulary.ttl` exists | ✅/❌ |
+| Phase 2 — Vocabulary quality | TTL contains `kairos-bronze:SourceSystem`, `kairos-bronze:SourceTable`, `kairos-bronze:SourceColumn` declarations | ✅/❌ |
+| Phase 2 — Table coverage | Count of `SourceTable` instances vs schema YAML files (if Phase 1 was used) | N tables / M schemas |
+| Phase 2 — Column completeness | Every `SourceColumn` has `kairos-bronze:dataType` and `kairos-bronze:columnName` | ✅/❌ |
+| Phase 4 — Source analysis | `_analysis/{system}-affinity.yaml` exists | ✅/❌ |
+
+**How to check vocabulary quality:**
+1. For each source folder, parse the `*.vocabulary.ttl` file.
+2. Count `kairos-bronze:SourceTable` entries — each should represent one table.
+3. Count `kairos-bronze:SourceColumn` entries — each should have `dataType` and `columnName`.
+4. Flag sources with 0 tables or 0 columns as **❌ Empty vocabulary**.
+5. Flag columns missing `dataType` as **⚠️ Incomplete vocabulary**.
+
+**How to check analysis status:**
+1. List files in `integration/sources/_analysis/` (if it exists).
+2. For each source system, check if `{system}-affinity.yaml` exists.
+3. Sources without an affinity report have not been analyzed (Phase 4 not run).
+
 **Commands to run:**
 ```bash
 # Count source systems
 ls integration/sources/ 2>/dev/null || echo "No sources directory"
+
+# Per-source vocabulary check
+for d in integration/sources/*/; do
+  name=$(basename "$d")
+  [ "$name" = "_analysis" ] && continue
+  vocab=$(ls "$d"*.vocabulary.ttl 2>/dev/null | head -1)
+  if [ -n "$vocab" ]; then
+    tables=$(grep -c 'kairos-bronze:SourceTable' "$vocab" 2>/dev/null || echo 0)
+    cols=$(grep -c 'kairos-bronze:SourceColumn' "$vocab" 2>/dev/null || echo 0)
+    echo "$name: ✅ vocabulary ($tables tables, $cols columns)"
+  else
+    echo "$name: ❌ NO vocabulary.ttl"
+  fi
+done
+
+# Check analysis reports
+ls integration/sources/_analysis/*-affinity.yaml 2>/dev/null || echo "No analysis reports — Phase 4 not run"
 
 # Check for TMDL files
 find integration/ -name "*.tmdl" -o -name "*.tmd" 2>/dev/null | head -5
@@ -262,6 +305,17 @@ Produce a structured Markdown report:
 | TMDL definitions | ✅/❌ | {found or not} |
 | Accelerator | ✅/❌ | {name + version, or "None — custom hub"} |
 
+### Source Onboarding Status
+
+| Source | Vocabulary | Tables | Columns | Data Types | Analysis |
+|--------|-----------|--------|---------|------------|----------|
+| {name} | ✅/❌ | N | N | ✅ all / ⚠️ N missing | ✅/❌ |
+
+> {If any source has ❌ Vocabulary: "⚠️ Source {name} has no vocabulary — run
+> **kairos-design-source** to onboard."}
+> {If any source has ❌ Analysis: "ℹ️ Source analysis not run for {names} — run
+> `kairos-ontology analyse-sources` or **kairos-design-source** Phase 4."}
+
 ## 2. Domain Modeling
 
 | Domain | Classes | Properties | Version | Type |
@@ -328,11 +382,14 @@ When generating recommendations, use this priority order:
    - Domains with incomplete class definitions (missing labels/comments)
    - Source systems with no mapping files
    - Domains without gold extensions (if Power BI is desired)
+   - Vocabulary columns missing `dataType` (incomplete onboarding)
+   - Source analysis not run (no `_analysis/*-affinity.yaml`)
 
 3. **Improvements** (ℹ️ nice to have):
    - Run projections if output is stale or missing
    - Add TMDL for Power BI reverse-engineering
    - Consider accelerator for uncovered standard domains
+   - Run source analysis for better domain affinity insights
 
 ---
 
@@ -360,6 +417,8 @@ Based on the findings, suggest the appropriate next skill:
 | Gap found | Recommend |
 |-----------|-----------|
 | No source vocabularies | **kairos-design-source** |
+| Incomplete vocabulary (missing dataType, 0 columns) | **kairos-design-source** (Phase 2/3 — re-run import or fix manually) |
+| Source analysis not run | **kairos-design-source** (Phase 4 — `analyse-sources`) |
 | Missing domain ontologies | **kairos-design-domain** |
 | Missing extensions | **kairos-design-silver** or **kairos-design-gold** |
 | Missing mappings | **kairos-design-mapping** |
