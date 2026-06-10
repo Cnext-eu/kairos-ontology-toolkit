@@ -22,18 +22,16 @@ then answer.
 
 ## Project overview
 
-This is a Python toolkit + FastAPI service for managing OWL/Turtle ontologies.
+This is a Python toolkit for managing OWL/Turtle ontologies.
 It provides validation (syntax + SHACL), multi-target projections (dbt, neo4j,
-azure-search, a2ui, prompt), and an AI chat interface via the GitHub Models API.
+azure-search, a2ui, prompt), and CLI-based ontology management.
 
 ## Code conventions
 
 - Python 3.12+, src-layout (`src/kairos_ontology/`).
 - Line length: 100 characters (black + ruff).
 - Use `rdflib.Graph` for all RDF operations. Never serialize RDF by string concatenation.
-- Async endpoints in FastAPI routers; sync helpers in the core toolkit.
-- Service code lives under `service/app/`.
-- Tests live under `tests/` (toolkit) and `tests/service/` (API endpoints).
+- Tests live under `tests/`.
 
 ## Open-source & licensing
 
@@ -89,12 +87,12 @@ When reviewing or creating a pull request, verify:
 
 ## Testing rules
 
-- **Every new function, service, or endpoint MUST have unit tests.**
-- Toolkit tests go in `tests/`, service/API tests go in `tests/service/`.
+- **Every new function or feature MUST have unit tests.**
+- Tests live under `tests/`.
 - Mock external calls (GitHub API, OpenAI client) with `unittest.mock` — never hit real APIs in tests.
 - Use `pytest-asyncio` with `asyncio_mode = "auto"` for async test functions.
 - Run tests with `py -m pytest` (Windows) or `python -m pytest` (Unix).
-- Aim for coverage of: happy path, auth failure (401), and at least one edge/error case per endpoint.
+- Aim for coverage of: happy path and at least one edge/error case per feature.
 
 ### Scenario testing rules
 

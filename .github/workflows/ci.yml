@@ -25,7 +25,7 @@ jobs:
         run: uv sync --all-groups
 
       - name: Lint (ruff)
-        run: uv run ruff check src/ tests/ service/
+        run: uv run ruff check src/ tests/
 
       - name: Test
         run: uv run pytest tests/ -v --tb=short

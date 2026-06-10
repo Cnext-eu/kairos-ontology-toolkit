@@ -5,6 +5,25 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- **FastAPI service** — removed the `service/` directory and `tests/service/` tests.
+  The REST API backend (ontology CRUD, validation, projection, AI chat endpoints) was
+  built to support a frontend UI that has been removed. The toolkit CLI and Copilot
+  skills are the primary interfaces. (DD-045)
+
+### Added
+- **`kairos-int:` integration extension vocabulary** — new `kairos-int:` namespace
+  (`https://kairos.cnext.eu/integration#`) with 22 annotation properties for
+  integration pipeline behaviour: load strategy, batching, error handling, retry,
+  scheduling, data validation, FK lookup, and sensitive data masking. (DD-045)
+- Integration projector emits a new `"integration"` section in mapping JSON (schema v2)
+- Dapr projector uses `schedule` and `retryPolicy` annotations for cron bindings
+  and resiliency policies
+- Scenario tests for integration extension annotations (`test_scenario_integration.py`)
+- Vocabulary coverage test for `kairos-int:` annotations
+
 ## [3.9.2] — 2026-06-08
 
 ### Fixed
