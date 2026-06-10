@@ -817,7 +817,10 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             ts = _dt.now(_tz.utc).strftime("%Y-%m-%d-%H%M%S")
             reports_dir = output_path / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
-            coverage_artifacts = {f"coverage-dbt-{ts}.json": coverage_content}
+            coverage_artifacts = {f"coverage-silver-{ts}.json": coverage_content}
+            # Generate human-readable Markdown rendering
+            md_content = _render_silver_coverage_md(merged_coverage)
+            coverage_artifacts[f"coverage-silver-{ts}.md"] = md_content
             total_files += _write_artifacts(coverage_artifacts, reports_dir)
             print(f"  ✓ Merged coverage report for {len(dbt_coverage_data)} domain(s)")
             report.record_post_step("coverage_report", status="ok")
@@ -898,7 +901,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         print("📦 Generating report projection...")
         from datetime import datetime as _rdt, timezone as _rtz
         _report_ts = _rdt.now(_rtz.utc).strftime("%Y-%m-%d-%H%M%S")
-        report_output = output_path / "reports"
+        report_output = output_path / "reports" / "details"
         report_output.mkdir(parents=True, exist_ok=True)
 
         # Merge all domain ontology graphs for cross-domain property lookup
@@ -1063,6 +1066,56 @@ def _build_coverage_summary(domain_data: dict[str, dict]) -> dict:
         "populated_pct": round(total_populated / total_properties * 100)
         if total_properties else 0,
     }
+
+
+def _render_silver_coverage_md(merged: dict) -> str:
+    """Render merged silver coverage data as human-readable Markdown."""
+    from datetime import datetime, timezone
+    summary = merged.get("summary", {})
+    domains = merged.get("domains", {})
+    lines = [
+        "# Silver Layer Coverage Report",
+        "",
+        f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}  ",
+        f"**Domains:** {summary.get('domains_count', 0)}  ",
+        f"**Overall populated:** {summary.get('populated_pct', 0)}%"
+        f" ({summary.get('populated_from_source', 0)}"
+        f"/{summary.get('total_properties', 0)} properties)  ",
+        f"**Always NULL:** {summary.get('always_null', 0)}  ",
+        f"**Missing required:** {summary.get('missing_required_mappings', 0)}",
+        "",
+    ]
+    for domain_name, entities in domains.items():
+        lines.append(f"## {domain_name}")
+        lines.append("")
+        lines.append("| Entity | Properties | Populated | NULL | Missing Required |")
+        lines.append("|--------|-----------|-----------|------|-----------------|")
+        for entity_name, stats in entities.items():
+            total = stats.get("ontology_properties_total", 0)
+            pop = stats.get("populated_from_source", 0)
+            null = stats.get("always_null", 0)
+            missing = stats.get("missing_required_mappings", [])
+            pct = round(pop / total * 100) if total else 0
+            missing_str = ", ".join(missing) if missing else "—"
+            lines.append(
+                f"| {entity_name} | {total} | {pop} ({pct}%) | {null} | {missing_str} |"
+            )
+        lines.append("")
+
+        # Show NULL columns detail
+        has_nulls = any(
+            stats.get("null_columns") for stats in entities.values()
+        )
+        if has_nulls:
+            lines.append("### Columns that will be NULL")
+            lines.append("")
+            for entity_name, stats in entities.items():
+                null_cols = stats.get("null_columns", [])
+                if null_cols:
+                    lines.append(f"**{entity_name}:** {', '.join(null_cols)}")
+            lines.append("")
+
+    return "\n".join(lines)
 
 
 def extract_ontology_metadata(graph: Graph, namespace: str) -> dict:
