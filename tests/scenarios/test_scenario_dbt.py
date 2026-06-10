@@ -2115,3 +2115,55 @@ class TestCompositeNaturalKeyScenario:
             "SK expression must not have comma inside a single-quoted NK string:\n" + sql
         )
 
+
+# ---------------------------------------------------------------------------
+# Multi-domain coverage report merge
+# ---------------------------------------------------------------------------
+
+class TestCoverageReportMerge:
+    """coverage-report.json must contain data for ALL projected domains."""
+
+    def test_coverage_data_returned_per_domain(
+        self, client_dbt_artifacts, invoice_dbt_artifacts
+    ):
+        """Each domain's artifacts should carry __coverage_data__ for merging."""
+        client_cov = client_dbt_artifacts.get("__coverage_data__")
+        invoice_cov = invoice_dbt_artifacts.get("__coverage_data__")
+        assert client_cov is not None, "Client domain missing __coverage_data__"
+        assert invoice_cov is not None, "Invoice domain missing __coverage_data__"
+
+    def test_coverage_data_has_entity_keys(self, client_dbt_artifacts):
+        """Coverage data should have an entry per projected entity."""
+        cov = client_dbt_artifacts.get("__coverage_data__", {})
+        assert len(cov) > 0, "Coverage data is empty — expected entity entries"
+        for entity_name, stats in cov.items():
+            assert "ontology_properties_total" in stats, (
+                f"Entity {entity_name} missing ontology_properties_total"
+            )
+            assert "populated_from_source" in stats
+            assert "always_null" in stats
+
+    def test_merged_summary_across_domains(
+        self, client_dbt_artifacts, invoice_dbt_artifacts
+    ):
+        """_build_coverage_summary should aggregate stats across domains."""
+        from kairos_ontology.projector import _build_coverage_summary
+
+        domain_data = {
+            "client": client_dbt_artifacts.get("__coverage_data__", {}),
+            "invoice": invoice_dbt_artifacts.get("__coverage_data__", {}),
+        }
+        summary = _build_coverage_summary(domain_data)
+        assert summary["domains_count"] == 2
+        assert summary["total_properties"] > 0
+        assert 0 <= summary["populated_pct"] <= 100
+
+    def test_no_coverage_report_json_in_per_domain_artifacts(
+        self, client_dbt_artifacts
+    ):
+        """Per-domain artifacts must NOT include coverage-report.json (merged later)."""
+        assert "coverage-report.json" not in client_dbt_artifacts, (
+            "coverage-report.json should not appear in per-domain artifacts — "
+            "it is merged as a post-domain step"
+        )
+

@@ -3042,14 +3042,15 @@ def generate_dbt_artifacts(
         )
         artifacts.update(project)
 
-    # 7. Coverage report
+    # 7. Coverage report — data is collected here but the merged JSON file
+    #    is written by the projector orchestrator after all domains are done.
     if systems:
-        coverage = _gen_coverage_report(
+        coverage_data = generate_coverage_data(
             classes, graph, namespace, systems, mappings, onto_name,
         )
-        if coverage:
-            artifacts.update(coverage)
-            logger.info("Generated coverage report")
+        if coverage_data:
+            artifacts["__coverage_data__"] = coverage_data
+            logger.info("Collected coverage data (%d entities)", len(coverage_data))
 
     # 8. Platform macros
     macros = _gen_macros(template_dir)
@@ -3206,23 +3207,22 @@ def _gen_macros(template_dir) -> dict[str, str]:
 # Coverage report generation
 # ---------------------------------------------------------------------------
 
-def _gen_coverage_report(
+def generate_coverage_data(
     classes: list[dict],
     graph: Graph,
     namespace: str,
     systems: list[dict],
     mappings: dict,
     ontology_name: str,
-) -> dict[str, str]:
-    """Generate a JSON coverage report showing mapping completeness.
+) -> dict[str, dict]:
+    """Return per-entity coverage data for a single domain.
 
-    Reports for each ontology entity:
-    - Total properties vs mapped vs unmapped
-    - Required properties that are missing mappings
-    - Source column utilization (consumed vs unused)
+    The returned dict is keyed by snake_case entity name with stats on
+    mapped vs unmapped properties and source column utilization.
+
+    This function is called by the projector orchestrator which merges
+    results from all domains into a single ``coverage-report.json``.
     """
-    import json
-
     report: dict = {}
 
     # Build column_maps reverse: target_uri → source column URI
@@ -3318,10 +3318,7 @@ def _gen_coverage_report(
             "source_coverage": source_coverage,
         }
 
-    content = json.dumps(
-        {ontology_name: report}, indent=2, ensure_ascii=False,
-    )
-    return {"coverage-report.json": content}
+    return report
 
 
 # ---------------------------------------------------------------------------
