@@ -276,7 +276,9 @@ def generate_integration_artifacts(
     column_maps = mappings.get("column_maps", {})
 
     # Parse source vocabularies
-    source_tables = _parse_all_source_vocabs(sources_dir) if sources_dir else {}
+    source_tables, col_uri_to_name = (
+        _parse_all_source_vocabs(sources_dir) if sources_dir else ({}, {})
+    )
 
     # Build mappings per class
     manifest_entries = []
@@ -337,8 +339,12 @@ def generate_integration_artifacts(
                     target_prop = target_prop_map.get(cmap["target_uri"])
                     if not target_prop:
                         continue
+                    # Use the actual API field name (kairos-bronze:columnName) rather
+                    # than the table-qualified URI local name so runtime mappers can
+                    # match against raw API/webhook payloads directly.
+                    actual_col_name = col_uri_to_name.get(src_col_uri, src_col_name)
                     col_entry: dict[str, Any] = {
-                        "source_column": src_col_name,
+                        "source_column": actual_col_name,
                         "target_property": target_prop["name"],
                         "target_type": target_prop["type"],
                         "match_type": cmap["match_type"],
@@ -437,14 +443,19 @@ def generate_integration_artifacts(
 
 def _parse_all_source_vocabs(
     sources_dir: Path,
-) -> dict[str, dict[str, list[str]]]:
+) -> tuple[dict[str, dict[str, list[str]]], dict[str, str]]:
     """Parse all source vocabulary TTLs into a lookup.
 
-    Returns: {system_name: {table_uri: [column_names]}}
+    Returns:
+        Tuple of:
+        - source_tables: {system_name: {table_uri: [actual_column_names]}}
+        - col_uri_to_name: {col_uri: actual_column_name} — for resolving
+          column-mapping source_column to the real API field name.
     """
     result: dict[str, dict[str, list[str]]] = {}
+    col_uri_to_name: dict[str, str] = {}
     if not sources_dir or not sources_dir.is_dir():
-        return result
+        return result, col_uri_to_name
 
     for vocab_file in sources_dir.rglob("*.vocabulary.ttl"):
         sys_name = vocab_file.stem.replace(".vocabulary", "")
@@ -465,10 +476,11 @@ def _parse_all_source_vocabs(
                     or extract_local_name(str(col_uri))
                 )
                 cols.append(col_name)
+                col_uri_to_name[str(col_uri)] = col_name
             tables[str(tbl_uri)] = sorted(cols)
 
         result[sys_name] = tables
-    return result
+    return result, col_uri_to_name
 
 
 def _extract_system_name(
