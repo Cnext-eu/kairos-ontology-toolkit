@@ -160,16 +160,18 @@ The runtime flow should be predictable and replay-safe:
 6. On failure, retry policy applies; terminal failures go to DLQ
 
 ```mermaid
-graph TD
-    A[Receive] --> B[Publish]
-    B --> C[LoadState]
-    C --> D[Map]
-    D --> E[Route]
-    E --> F[Deliver]
-    F --> G[Checkpoint]
-    D --> H[Failure]
-    H --> I[Retry]
-    I --> J[DLQ]
+flowchart TD
+    A[Ingress adapter receives source event] --> B[Publish to canonical topic]
+    B --> C[Orchestrator loads idempotency key/status from state store]
+    C --> D[Orchestrator calls ontology-generated mapping function]
+    D --> E{Mapping success?}
+    E -->|Yes| F[Invoke egress adapter or publish outbound event]
+    F --> G[Commit state]
+    G --> H[Emit telemetry spans]
+    E -->|No| I[Apply retry policy]
+    I --> J{Terminal failure?}
+    J -->|No| C
+    J -->|Yes| K[Send to DLQ]
 ```
 
 ---

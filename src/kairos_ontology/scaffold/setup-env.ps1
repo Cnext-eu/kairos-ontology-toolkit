@@ -1,5 +1,6 @@
 # Setup script for Kairos ontology hub development environment.
 # Uses uv to create an isolated .venv and install the toolkit + dev dependencies.
+# Also installs Node dev dependencies (Mermaid CLI) when package.json is present.
 #
 # Usage:
 #   .\setup-env.ps1            # Create/sync the virtual environment
@@ -40,6 +41,21 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "uv sync failed" }
 } finally {
     Pop-Location
+}
+
+# --- Install Node dependencies (optional, for Mermaid SVG rendering) ---
+if (Test-Path (Join-Path $PSScriptRoot "package.json")) {
+    Write-Host "Installing Node dependencies with npm (Mermaid CLI) ..." -ForegroundColor Cyan
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        throw "package.json found but 'npm' is not installed. Install Node.js, then re-run setup-env.ps1."
+    }
+    Push-Location $PSScriptRoot
+    try {
+        npm install
+        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+    } finally {
+        Pop-Location
+    }
 }
 
 # --- Validate ---
