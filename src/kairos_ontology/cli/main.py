@@ -2853,6 +2853,8 @@ def init_dataplatform(name, dest, platform, org_override):
       - macros/extract_source_schema.sql for bronze introspection
       - _sources.yml template with physical binding placeholders
       - pyproject.toml with uv + toolkit dependency
+      - .github/workflows/deploy-powerbi-semantic-model.yml (fabric-cicd)
+      - .github/fabric/deployment-settings.json.example
       - README.md with setup instructions
 
     \b
@@ -2898,6 +2900,7 @@ def init_dataplatform(name, dest, platform, org_override):
     repo_dir.mkdir(parents=True)
     (repo_dir / "models" / "custom").mkdir(parents=True)
     (repo_dir / "macros").mkdir(parents=True)
+    (repo_dir / "scripts").mkdir(parents=True)
     (repo_dir / "tests").mkdir(parents=True)
     (repo_dir / "seeds").mkdir(parents=True)
     (repo_dir / "snapshots").mkdir(parents=True)
@@ -2944,6 +2947,13 @@ def init_dataplatform(name, dest, platform, org_override):
         if macro_src.exists():
             shutil.copy2(macro_src, repo_dir / "macros" / macro_name)
             click.echo(f"  ✓ macros/{macro_name}")
+
+    # Copy helper scripts
+    for script_name in ("package_fabric_semantic_model.py",):
+        script_src = _DATAPLATFORM_SCAFFOLD / "scripts" / script_name
+        if script_src.exists():
+            shutil.copy2(script_src, repo_dir / "scripts" / script_name)
+            click.echo(f"  ✓ scripts/{script_name}")
 
     # Generate _sources.yml from detected source systems
     if ctx["source_systems"]:
@@ -3016,6 +3026,37 @@ def init_dataplatform(name, dest, platform, org_override):
         _copy_managed(dp_instructions, github_dir / "copilot-instructions.md")
         click.echo("  ✓ .github/copilot-instructions.md")
 
+    # Scaffold Fabric semantic-model deployment workflow (Phase 1: fabric-cicd)
+    deploy_wf_src = (
+        _DATAPLATFORM_SCAFFOLD
+        / ".github"
+        / "workflows"
+        / "deploy-powerbi-semantic-model.yml.template"
+    )
+    deploy_wf_dst = github_dir / "workflows" / "deploy-powerbi-semantic-model.yml"
+    if deploy_wf_src.is_file():
+        wf_content = deploy_wf_src.read_text(encoding="utf-8")
+        for placeholder, value in subs.items():
+            wf_content = wf_content.replace(placeholder, value)
+        deploy_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+        deploy_wf_dst.write_text(wf_content, encoding="utf-8")
+        click.echo("  ✓ .github/workflows/deploy-powerbi-semantic-model.yml")
+
+    deploy_cfg_src = (
+        _DATAPLATFORM_SCAFFOLD
+        / ".github"
+        / "fabric"
+        / "deployment-settings.json.example.template"
+    )
+    deploy_cfg_dst = github_dir / "fabric" / "deployment-settings.json.example"
+    if deploy_cfg_src.is_file():
+        cfg_content = deploy_cfg_src.read_text(encoding="utf-8")
+        for placeholder, value in subs.items():
+            cfg_content = cfg_content.replace(placeholder, value)
+        deploy_cfg_dst.parent.mkdir(parents=True, exist_ok=True)
+        deploy_cfg_dst.write_text(cfg_content, encoding="utf-8")
+        click.echo("  ✓ .github/fabric/deployment-settings.json.example")
+
     skills_src = _SCAFFOLD_DIR / "skills"
     for skill_name in _DATAPLATFORM_SKILLS:
         skill_file = skills_src / skill_name / "SKILL.md"
@@ -3060,3 +3101,4 @@ def init_dataplatform(name, dest, platform, org_override):
     click.echo("   # Edit models/_sources.yml with actual database/schema")
     click.echo("   dbt deps")
     click.echo("   dbt build")
+    click.echo("   # Configure Fabric secrets and run .github/workflows/deploy-powerbi-semantic-model.yml")

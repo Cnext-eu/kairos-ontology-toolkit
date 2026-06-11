@@ -148,12 +148,16 @@ gh release download v1.3.0 --pattern "powerbi-semantic-model.zip" \
 unzip powerbi-semantic-model.zip -d semantic-model/
 ```
 
-Deployment options:
-- **fabric-cicd** Python package (Microsoft's official CI/CD tool)
-- **Fabric REST API** / Power BI ALM Toolkit (programmatic)
-- **Power BI Desktop** import (local development)
+Phase 1 default deployment path:
+- In the dataplatform repo, run the scaffolded workflow:
+  `.github/workflows/deploy-powerbi-semantic-model.yml`
+- It downloads `powerbi-semantic-model.zip` from the selected hub release and
+  runs `scripts/package_fabric_semantic_model.py` (adds `.platform` +
+  `definition.pbism`), then publishes `SemanticModel` items via **fabric-cicd**.
 
-> **Status:** This deliverable's packaging and deployment mechanism is being refined.
+Alternative options:
+- **Fabric REST API** / Power BI ALM Toolkit (programmatic custom path)
+- **Power BI Desktop** import (local development)
 
 ---
 

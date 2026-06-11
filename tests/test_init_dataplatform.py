@@ -164,6 +164,32 @@ class TestInitDataplatform:
         assert not (skills_dir / "kairos-design-domain").exists()
         assert not (skills_dir / "kairos-execute-project").exists()
 
+    def test_fabric_deploy_workflow_created(self, dataplatform_output):
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        assert wf.exists()
+        content = wf.read_text(encoding="utf-8")
+        assert "powerbi-semantic-model.zip" in content
+        assert "fabric-cicd" in content
+        assert "package_fabric_semantic_model.py" in content
+        assert "TestOrg" in content
+        assert "test-ontology-hub" in content
+        assert "v1.2.0" in content
+
+    def test_fabric_deploy_settings_example_created(self, dataplatform_output):
+        cfg = dataplatform_output / ".github" / "fabric" / "deployment-settings.json.example"
+        assert cfg.exists()
+        content = cfg.read_text(encoding="utf-8")
+        assert "FABRIC_WORKSPACE_ID" in content
+        assert "test-ontology-hub" in content
+        assert "v1.2.0" in content
+
+    def test_fabric_package_script_created(self, dataplatform_output):
+        script = dataplatform_output / "scripts" / "package_fabric_semantic_model.py"
+        assert script.exists()
+        content = script.read_text(encoding="utf-8")
+        assert "definition.pbism" in content
+        assert ".platform" in content
+
 
 class TestInitDataplatformEdgeCases:
     def test_pyproject_includes_dbt_adapter(self, mock_hub):
