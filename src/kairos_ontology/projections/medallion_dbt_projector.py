@@ -1554,6 +1554,44 @@ def _extract_silver_columns(
         mapping_ns=mapping_ns,
     )
 
+    # Pre-compute pass-through columns for missing NK cols.
+    # Done before SK/IRI generation so that SCD1 nk_source_exprs can include
+    # the resolved bronze expressions, avoiding T-SQL alias-before-definition errors.
+    pass_through_cols: list[dict] = []
+    if natural_key_cols and include_sk_iri:
+        col_names_in_mapped = {c["target_name"] for c in mapped_cols}
+        missing_nk = [nk for nk in natural_key_cols if nk not in col_names_in_mapped]
+        if missing_nk:
+            class_name = extract_local_name(class_uri)
+            logger.warning(
+                "SK validation: naturalKey column(s) %s not found in model "
+                "columns for %s — adding as pass-through",
+                missing_nk, class_name,
+            )
+            # Resolve each missing NK column to its actual bronze source column name
+            # by scanning SKOS mappings for any property whose snake_case name matches.
+            # This handles cross-entity NK references (property belongs to another entity).
+            prop_name_to_bronze: dict[str, str] = {}
+            for col_uri_m, col_maps_list in mappings.get("column_maps", {}).items():
+                for col_map in col_maps_list:
+                    target_uri = col_map.get("target_uri")
+                    if target_uri:
+                        prop_sn = _camel_to_snake(extract_local_name(target_uri))
+                        bronze_col = bronze_col_lookup.get(col_uri_m)
+                        if bronze_col and prop_sn not in prop_name_to_bronze:
+                            prop_name_to_bronze[prop_sn] = bronze_col["name"]
+            for nk_col in missing_nk:
+                bronze_name = prop_name_to_bronze.get(nk_col)
+                if bronze_name and bronze_name != nk_col:
+                    logger.debug(
+                        "Pass-through: resolved %s → bronze column %s",
+                        nk_col, bronze_name,
+                    )
+                    expression = _quote_identifier_if_reserved(bronze_name)
+                else:
+                    expression = nk_col
+                pass_through_cols.append({"expression": expression, "target_name": nk_col})
+
     if include_sk_iri:
         # For SCD2 models, source_data reads FROM mapped so only aliased names are
         # visible — do not substitute source expressions or the column won't resolve.
@@ -1563,6 +1601,9 @@ def _extract_silver_columns(
             nk_source_exprs = None
         else:
             nk_source_exprs = {c["target_name"]: c["expression"] for c in mapped_cols}
+            # Include pass-through bronze expressions for T-SQL alias-before-definition safety.
+            for pt in pass_through_cols:
+                nk_source_exprs[pt["target_name"]] = pt["expression"]
         columns.extend(
             _build_sk_iri_columns(
                 graph, class_uri, namespace, natural_key_cols, nk_source_exprs
@@ -1570,27 +1611,7 @@ def _extract_silver_columns(
         )
 
     columns.extend(mapped_cols)
-
-    # Validate that naturalKey columns are present in the generated column list.
-    # If missing, add them as pass-through from the source table so that SK/IRI
-    # expressions in the staged CTE can reference them.
-    if natural_key_cols and include_sk_iri:
-        col_names = {c["target_name"] for c in columns}
-        missing = [nk for nk in natural_key_cols if nk not in col_names]
-        if missing:
-            class_name = extract_local_name(class_uri)
-            logger.warning(
-                "SK validation: naturalKey column(s) %s not found in model "
-                "columns for %s — adding as pass-through",
-                missing, class_name,
-            )
-            for nk_col in missing:
-                # Attempt to find the source column name via bronze lookup
-                # (natural key is snake_case of the property local name)
-                columns.append({
-                    "expression": nk_col,
-                    "target_name": nk_col,
-                })
+    columns.extend(pass_through_cols)
 
     return columns
 
@@ -2204,19 +2225,32 @@ def _gen_schema_yaml(
             if shapes_dir else {}
         )
 
+        # SCD Type 2 entities store multiple rows per entity (current + history),
+        # so a bare unique test would produce false failures on _sk and _iri.
+        # Use a where-clause variant to scope uniqueness to current rows only.
+        is_ref = bool_val(graph, URIRef(cls["uri"]), KAIROS_EXT.isReferenceData, False)
+        scd_type = str_val(
+            graph, URIRef(cls["uri"]), KAIROS_EXT.scdType, "1" if is_ref else "2"
+        )
+        unique_test: str | dict = (
+            {"unique": {"config": {"where": "is_current = 1"}}}
+            if scd_type == "2"
+            else "unique"
+        )
+
         cols = []
         # SK + IRI columns
         cols.append({
             "name": f"{model_name}_sk",
             "description": "Surrogate key (PK)",
             "meta": {"is_pk": "true"},
-            "tests": ["not_null", "unique"],
+            "tests": ["not_null", unique_test],
         })
         cols.append({
             "name": f"{model_name}_iri",
             "description": "OWL IRI lineage",
             "meta": {},
-            "tests": ["not_null", "unique"],
+            "tests": ["not_null", unique_test],
         })
 
         # Datatype properties (including inherited from parent classes)
