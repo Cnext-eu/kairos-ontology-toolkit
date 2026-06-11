@@ -50,6 +50,25 @@ dbt run-operation extract_source_schema --args '{source_name: "your_system"}'
 #    kairos-ontology import-source --from extracted-schema.yaml --system your_system
 ```
 
+## Power BI Semantic Model Deployment (Fabric)
+
+This scaffold includes `.github/workflows/deploy-powerbi-semantic-model.yml` to
+publish TMDL semantic models to Microsoft Fabric using `fabric-cicd`.
+
+The workflow pulls `powerbi-semantic-model.zip` from the ontology-hub release,
+unpacks it, runs `scripts/package_fabric_semantic_model.py` to add Fabric
+package metadata, and deploys `SemanticModel` items to the target workspace.
+
+Required secrets:
+- `HUB_REPO_TOKEN` (recommended for private ontology-hub repos)
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+- `FABRIC_WORKSPACE_ID`
+
+Run it via **Actions → Deploy Power BI Semantic Model → Run workflow** and pick
+the hub release tag to deploy.
+
 ## Source Binding
 
 The ontology-hub generates dbt models with logical `{{ source() }}` references.

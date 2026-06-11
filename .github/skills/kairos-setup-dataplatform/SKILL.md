@@ -56,6 +56,9 @@ This creates a sibling directory with:
 - `models/_sources.yml` pre-populated from hub vocabulary
 - `macros/extract_source_schema.sql` for bronze introspection
 - `pyproject.toml` with uv + kairos-ontology-toolkit dependency
+- `.github/workflows/deploy-powerbi-semantic-model.yml` (fabric-cicd publish flow)
+- `.github/fabric/deployment-settings.json.example` (deployment config checklist)
+- `scripts/package_fabric_semantic_model.py` (prepares Fabric package metadata)
 - `profiles.yml.example` with platform-specific connection template
 - `README.md` with setup instructions
 

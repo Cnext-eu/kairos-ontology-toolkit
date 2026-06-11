@@ -1,0 +1,91 @@
+name: Deploy Power BI Semantic Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      hub_release_tag:
+        description: "Ontology-hub release tag containing powerbi-semantic-model.zip"
+        required: true
+        default: "{HUB_VERSION}"
+      target_environment:
+        description: "Fabric environment key (used by fabric-cicd parameterization)"
+        required: true
+        default: "DEV"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  HUB_ORG: "{ORG}"
+  HUB_REPO: "{HUB_REPO}"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download semantic model package from ontology-hub release
+        env:
+          GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN || github.token }}
+        run: |
+          gh release download "${{ inputs.hub_release_tag }}" \
+            --repo "${HUB_ORG}/${HUB_REPO}" \
+            --pattern "powerbi-semantic-model.zip" \
+            --output powerbi-semantic-model.zip
+
+      - name: Unpack semantic model package
+        run: |
+          mkdir -p semantic-model
+          unzip -q powerbi-semantic-model.zip -d semantic-model
+
+      - name: Prepare Fabric semantic-model package structure
+        run: |
+          python scripts/package_fabric_semantic_model.py --input semantic-model
+
+      - name: Azure login (service principal)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install fabric-cicd
+        run: |
+          pip install --upgrade pip
+          pip install fabric-cicd azure-identity
+
+      - name: Publish semantic model to Fabric workspace
+        env:
+          FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from azure.identity import AzureCliCredential
+          from fabric_cicd import FabricWorkspace, publish_all_items
+
+          workspace_id = os.environ["FABRIC_WORKSPACE_ID"]
+          target_env = os.environ["TARGET_ENVIRONMENT"]
+          model_dir = Path("semantic-model").resolve()
+
+          target_workspace = FabricWorkspace(
+              workspace_id=workspace_id,
+              environment=target_env,
+              repository_directory=str(model_dir),
+              item_type_in_scope=["SemanticModel"],
+              token_credential=AzureCliCredential(),
+          )
+
+          publish_all_items(target_workspace)
+          print(f"Published SemanticModel items from: {model_dir}")
+          PY

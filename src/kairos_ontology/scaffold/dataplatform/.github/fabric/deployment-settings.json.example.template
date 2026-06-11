@@ -1,0 +1,25 @@
+{
+  "hub": {
+    "org": "{ORG}",
+    "repo": "{HUB_REPO}",
+    "default_release_tag": "{HUB_VERSION}",
+    "artifact_name": "powerbi-semantic-model.zip"
+  },
+  "fabric": {
+    "workspace_id": "<set in secret FABRIC_WORKSPACE_ID>",
+    "environment": "DEV",
+    "item_type_in_scope": [
+      "SemanticModel"
+    ]
+  },
+  "github": {
+    "workflow": ".github/workflows/deploy-powerbi-semantic-model.yml",
+    "required_secrets": [
+      "HUB_REPO_TOKEN",
+      "AZURE_CLIENT_ID",
+      "AZURE_TENANT_ID",
+      "AZURE_SUBSCRIPTION_ID",
+      "FABRIC_WORKSPACE_ID"
+    ]
+  }
+}
