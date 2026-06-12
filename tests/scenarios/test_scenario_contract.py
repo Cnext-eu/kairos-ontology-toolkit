@@ -122,6 +122,29 @@ def _camel_to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
+def _load_silver_column_overrides(domain: str) -> dict[str, str]:
+    """Load silverColumnName overrides: {property_local_name: override_name}.
+
+    Reads the silver-ext file for the given domain and returns a mapping from
+    property local names to their declared silverColumnName values.
+    """
+    ext_path = HUB_ROOT / "model" / "extensions" / f"{domain}-silver-ext.ttl"
+    if not ext_path.exists():
+        return {}
+    g = Graph()
+    g.parse(ext_path, format="turtle")
+    overrides: dict[str, str] = {}
+    for subj, _, col_name in g.triples((None, KAIROS_EXT.silverColumnName, None)):
+        prop_local = str(subj).split("#")[-1].split("/")[-1]
+        overrides[prop_local] = str(col_name)
+    return overrides
+
+
+def _resolve_expected_col_name(prop_local: str, overrides: dict[str, str]) -> str:
+    """Resolve expected column name using silverColumnName override or snake_case."""
+    return overrides.get(prop_local, _camel_to_snake(prop_local))
+
+
 def _find_artifact(artifacts: dict, suffix: str) -> str | None:
     """Find artifact key ending with suffix."""
     return next((k for k in artifacts if k.endswith(suffix)), None)
@@ -167,6 +190,7 @@ class TestMappingToSqlCompleteness:
         domain_ns = "https://acme.example/ontology/client#"
         col_maps = _extract_column_maps(g, domain_ns)
         all_props = col_maps.get("_all_", set())
+        overrides = _load_silver_column_overrides("client")
 
         # Collect all column names across all SQL artifacts
         all_sql_columns: set[str] = set()
@@ -179,16 +203,16 @@ class TestMappingToSqlCompleteness:
             c for k, c in client_dbt_artifacts.items() if k.endswith(".sql")
         ).lower()
 
-        # Each mapped property should appear as a snake_case column
+        # Each mapped property should appear using silverColumnName or snake_case
         missing = []
         for prop in all_props:
-            snake_name = _camel_to_snake(prop)
+            col_name = _resolve_expected_col_name(prop, overrides)
             # Accept exact match, or FK-style variants (_sk, _fk suffix)
-            if (snake_name not in all_sql_columns
-                    and f"{snake_name}_sk" not in all_sql_columns
-                    and f"{snake_name}_fk" not in all_sql_columns
-                    and snake_name not in all_sql_text):
-                missing.append(f"{prop} (expected: {snake_name})")
+            if (col_name not in all_sql_columns
+                    and f"{col_name}_sk" not in all_sql_columns
+                    and f"{col_name}_fk" not in all_sql_columns
+                    and col_name not in all_sql_text):
+                missing.append(f"{prop} (expected: {col_name})")
 
         assert not missing, (
             "Mapped properties missing from dbt SQL:\n"
@@ -317,9 +341,12 @@ class TestNoPhantomColumns:
         domain_ns = "https://acme.example/ontology/client#"
         col_maps = _extract_column_maps(g, domain_ns)
         all_props = col_maps.get("_all_", set())
+        overrides = _load_silver_column_overrides("client")
 
-        # Expected column names from mappings (snake_case)
-        expected_from_mapping = {_camel_to_snake(p) for p in all_props}
+        # Expected column names from mappings (silverColumnName override or snake_case)
+        expected_from_mapping = {
+            _resolve_expected_col_name(p, overrides) for p in all_props
+        }
 
         # Get all columns from per-source SQL models
         per_source_columns: set[str] = set()
@@ -378,6 +405,8 @@ class TestSilverExtTypesMatchCasts:
         if not type_annotations:
             pytest.skip("No silverDataType annotations found")
 
+        overrides = _load_silver_column_overrides("client")
+
         # Get all SQL content (exclude macros)
         all_sql = ""
         for key, content in client_dbt_artifacts.items():
@@ -387,10 +416,10 @@ class TestSilverExtTypesMatchCasts:
         # Check 1: Every annotated column should appear as an alias in SQL
         missing_columns = []
         for prop in type_annotations:
-            snake_name = _camel_to_snake(prop)
-            # Column should appear as "as <snake_name>" somewhere in the SQL
-            if not re.search(rf"\bas\s+{re.escape(snake_name)}\b", all_sql, re.IGNORECASE):
-                missing_columns.append(f"{prop} (expected column '{snake_name}')")
+            col_name = _resolve_expected_col_name(prop, overrides)
+            # Column should appear as "as <col_name>" somewhere in the SQL
+            if not re.search(rf"\bas\s+{re.escape(col_name)}\b", all_sql, re.IGNORECASE):
+                missing_columns.append(f"{prop} (expected column '{col_name}')")
 
         assert not missing_columns, (
             "silverDataType-annotated columns missing from SQL output:\n"
@@ -400,11 +429,11 @@ class TestSilverExtTypesMatchCasts:
         # Check 2: Where CAST exists for a column, verify it uses the correct type
         type_mismatches = []
         for prop, expected_type in type_annotations.items():
-            snake_name = _camel_to_snake(prop)
-            # Find any CAST(...AS <TYPE>) ... as <snake_name> pattern
+            col_name = _resolve_expected_col_name(prop, overrides)
+            # Find any CAST(...AS <TYPE>) ... as <col_name> pattern
             cast_pattern = (
                 rf"(?i)(?:cast|try_cast)\s*\(.*?\bas\s+(\w+)\s*\)"
-                rf".*?\bas\s+{re.escape(snake_name)}\b"
+                rf".*?\bas\s+{re.escape(col_name)}\b"
             )
             match = re.search(cast_pattern, all_sql)
             if match:

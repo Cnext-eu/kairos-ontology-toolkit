@@ -1918,6 +1918,60 @@ class TestCrossDomainRefValidation:
             f"{ref_warnings}"
         )
 
+
+# ---------------------------------------------------------------------------
+# silverColumnName override tests — dbt must respect column name annotations
+# ---------------------------------------------------------------------------
+
+class TestSilverColumnNameOverride:
+    """Verify dbt projector uses kairos-ext:silverColumnName for datatype properties."""
+
+    def test_city_alias_in_sql(self, client_dbt_artifacts):
+        """clientCity has silverColumnName 'city' — dbt SQL should use 'city' not 'client_city'."""
+        # City is on the Client class — appears in per-source or union model
+        key = _find_artifact(client_dbt_artifacts, "corporate_client.sql")
+        if key is None:
+            key = _find_artifact(client_dbt_artifacts, "/client.sql")
+        assert key is not None, "No client model generated"
+        sql = client_dbt_artifacts[key].lower()
+        # The overridden alias 'city' should appear, not the default 'client_city'
+        assert " city" in sql or "\tcity" in sql or ",city" in sql or "as city" in sql, (
+            f"Expected 'city' alias from silverColumnName override in SQL:\n{sql}"
+        )
+
+    def test_country_alias_in_sql(self, client_dbt_artifacts):
+        """clientCountry has silverColumnName 'country' — not 'client_country'."""
+        key = _find_artifact(client_dbt_artifacts, "corporate_client.sql")
+        if key is None:
+            key = _find_artifact(client_dbt_artifacts, "/client.sql")
+        assert key is not None, "No client model generated"
+        sql = client_dbt_artifacts[key].lower()
+        assert "as country" in sql or " country" in sql, (
+            f"Expected 'country' alias from silverColumnName override:\n{sql}"
+        )
+
+    def test_default_snake_case_without_override(self, invoice_dbt_artifacts):
+        """Properties without silverColumnName should still use camelCase→snake_case."""
+        # invoiceNumber has silverColumnName "invoice_number" (same as default),
+        # but lineTotal doesn't — verify fallback works
+        key = _find_artifact(invoice_dbt_artifacts, "invoice_line.sql")
+        assert key is not None, "No invoice_line model generated"
+        sql = invoice_dbt_artifacts[key].lower()
+        # line_total is the snake_case of lineTotal (fallback behaviour)
+        assert "line_total" in sql, (
+            f"Expected default snake_case 'line_total' for property without override:\n{sql}"
+        )
+
+    def test_schema_yaml_uses_override(self, client_dbt_artifacts):
+        """Schema YAML column descriptions should use overridden name."""
+        key = _find_artifact(client_dbt_artifacts, "_models.yml")
+        assert key is not None, "_models.yml not generated"
+        content = client_dbt_artifacts[key].lower()
+        # 'city' should appear as a column name, not 'client_city'
+        assert "- name: city" in content or "- name: \"city\"" in content, (
+            f"Schema YAML should use silverColumnName 'city':\n{content[:2000]}"
+        )
+
     def test_real_typo_still_triggers_warning(self):
         """ref() targets that are genuinely missing still get warned about."""
         from kairos_ontology.projections.medallion_dbt_projector import (

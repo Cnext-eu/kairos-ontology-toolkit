@@ -231,6 +231,18 @@ def _camel_to_snake(name: str) -> str:
     return camel_to_snake(name)
 
 
+def _resolve_column_name(graph: Graph, prop_uri: str) -> str:
+    """Resolve the silver column name for a property.
+
+    Uses ``kairos-ext:silverColumnName`` if declared (from silver-ext or ref-model
+    defaults), otherwise falls back to camelCase→snake_case of the URI local name.
+    """
+    override = graph.value(URIRef(prop_uri), KAIROS_EXT.silverColumnName)
+    if override:
+        return str(override)
+    return _camel_to_snake(extract_local_name(prop_uri))
+
+
 def _source_type_to_databricks(src_type: str) -> str:
     """Map a source system data type string to Databricks (Spark SQL) type."""
     base = re.sub(r"\(.*\)", "", src_type.strip().lower())
@@ -633,13 +645,15 @@ def _load_shacl_graph(shapes_dir: Path) -> Graph | None:
 
 
 def _extract_shacl_tests(shapes_dir: Path, class_uri: str,
-                          shacl_graph: Graph | None = None) -> dict[str, list]:
+                          shacl_graph: Graph | None = None,
+                          ontology_graph: Graph | None = None) -> dict[str, list]:
     """Extract dbt tests from SHACL shapes for a given class.
 
     Args:
         shapes_dir: Path to shapes directory (used only if shacl_graph is None).
         class_uri: URI of the class to extract tests for.
         shacl_graph: Pre-parsed SHACL graph. If provided, avoids re-parsing.
+        ontology_graph: Main ontology graph for resolving silverColumnName overrides.
 
     Returns ``{column_name: [test_strings]}``.
     """
@@ -687,34 +701,41 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str,
         if shape_target and str(shape_target) != str(target_class):
             continue
         for ps in sg.objects(node_shape, SH.property):
-            _extract_property_shape_tests(sg, ps, tests_by_col)
+            _extract_property_shape_tests(sg, ps, tests_by_col, ontology_graph)
 
     # Also handle property shapes attached via sh:property without NodeShape typing
     for ps in sg.objects(predicate=SH.property):
         path = sg.value(ps, SH.path)
         if not path:
             continue
-        col_name = _camel_to_snake(extract_local_name(str(path)))
+        col_name = (
+            _resolve_column_name(ontology_graph, str(path))
+            if ontology_graph else _camel_to_snake(extract_local_name(str(path)))
+        )
         if col_name in tests_by_col:
             continue  # already extracted via NodeShape path
         # Check if this property shape belongs to a shape targeting our class
         for subj in sg.subjects(SH.property, ps):
             shape_target = sg.value(subj, SH.targetClass)
             if shape_target and str(shape_target) == str(target_class):
-                _extract_property_shape_tests(sg, ps, tests_by_col)
+                _extract_property_shape_tests(sg, ps, tests_by_col, ontology_graph)
                 break
 
     return tests_by_col
 
 
 def _extract_property_shape_tests(
-    sg: Graph, ps, tests_by_col: dict[str, list]
+    sg: Graph, ps, tests_by_col: dict[str, list],
+    ontology_graph: Graph | None = None,
 ) -> None:
     """Extract dbt tests from a single SHACL property shape node."""
     path = sg.value(ps, SH.path)
     if not path:
         return
-    col_name = _camel_to_snake(extract_local_name(str(path)))
+    col_name = (
+        _resolve_column_name(ontology_graph, str(path))
+        if ontology_graph else _camel_to_snake(extract_local_name(str(path)))
+    )
     if col_name in tests_by_col:
         return  # already processed
 
@@ -1390,8 +1411,7 @@ def _resolve_mapped_columns(
     for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
         domain = graph.value(prop, RDFS.domain)
         if domain and str(domain) in domain_classes:
-            prop_name = extract_local_name(str(prop))
-            col_name = _camel_to_snake(prop_name)
+            col_name = _resolve_column_name(graph, str(prop))
             # Deduplicate: skip if column already added (child overrides parent)
             if col_name in seen_col_names:
                 continue
@@ -2200,7 +2220,10 @@ def _gen_schema_yaml(
             continue
         model_name = _camel_to_snake(cls["name"])
         shacl_tests = (
-            _extract_shacl_tests(shapes_dir, cls["uri"], shacl_graph=shacl_graph)
+            _extract_shacl_tests(
+                shapes_dir, cls["uri"], shacl_graph=shacl_graph,
+                ontology_graph=graph,
+            )
             if shapes_dir else {}
         )
 
@@ -2226,7 +2249,7 @@ def _gen_schema_yaml(
             domain = graph.value(prop, RDFS.domain)
             if domain and str(domain) in domain_classes:
                 prop_name = extract_local_name(str(prop))
-                col_name = _camel_to_snake(prop_name)
+                col_name = _resolve_column_name(graph, str(prop))
                 if col_name in seen_schema_cols:
                     continue
                 seen_schema_cols.add(col_name)
@@ -3257,8 +3280,7 @@ def generate_coverage_data(
             if domain and str(domain) in domain_classes:
                 total += 1
                 prop_str = str(prop)
-                prop_name = extract_local_name(prop_str)
-                col_name = _camel_to_snake(prop_name)
+                col_name = _resolve_column_name(graph, prop_str)
 
                 pop_req = graph.value(URIRef(prop_str), KAIROS_EXT.populationRequirement)
                 population = str(pop_req) if pop_req else "optional"
