@@ -381,6 +381,22 @@ def _to_snake_case(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
+def _load_silver_column_overrides(domain: str) -> dict[str, str]:
+    """Load silverColumnName overrides for a domain: {prop_local: override_name}."""
+    from .conftest import HUB_ROOT as _HUB
+    KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
+    ext_path = _HUB / "model" / "extensions" / f"{domain}-silver-ext.ttl"
+    if not ext_path.exists():
+        return {}
+    g = Graph()
+    g.parse(ext_path, format="turtle")
+    overrides: dict[str, str] = {}
+    for subj, _, col_name in g.triples((None, KAIROS_EXT.silverColumnName, None)):
+        prop_local = str(subj).split("#")[-1].split("/")[-1]
+        overrides[prop_local] = str(col_name)
+    return overrides
+
+
 class TestMappingToSqlConsistency:
     """Cross-validate: every column mapping in TTL → column in dbt SQL output."""
 
@@ -388,6 +404,7 @@ class TestMappingToSqlConsistency:
         """All AdminPulse column mappings should produce columns in dbt SQL."""
         mapping_file = MAPPINGS_DIR / "adminpulse-to-client.ttl"
         expected = _parse_expected_mappings(mapping_file)
+        overrides = _load_silver_column_overrides("client")
 
         client_dir = (
             projected_hub / "output" / "medallion" / "dbt"
@@ -401,10 +418,10 @@ class TestMappingToSqlConsistency:
 
         missing = []
         for _bronze_col, target_prop, transform in expected["column_mappings"]:
-            # The target property should appear as a snake_case column alias
-            snake_col = _to_snake_case(target_prop)
-            if snake_col not in all_sql_lower:
-                missing.append(f"{target_prop} → {snake_col}")
+            # Use silverColumnName override if declared, otherwise snake_case
+            col_name = overrides.get(target_prop, _to_snake_case(target_prop))
+            if col_name not in all_sql_lower:
+                missing.append(f"{target_prop} → {col_name}")
 
         assert not missing, (
             "Mapping columns not found in dbt SQL output:\n"
