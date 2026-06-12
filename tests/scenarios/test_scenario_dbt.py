@@ -2530,3 +2530,48 @@ class TestCrossEntityNaturalKeyPassThrough:
             f"'ownerCode' not alias 'owner_id'. SK expr: {sk_col['expression']!r}"
         )
 
+
+# ---------------------------------------------------------------------------
+# Regression: DATETIME2 precision for Fabric SQL (CR: datetime2-precision)
+# ---------------------------------------------------------------------------
+
+class TestDatetimePrecisionInFabricSQL:
+    """Fabric SQL rejects bare DATETIME2 — projector must emit DATETIME2(6).
+
+    The acme-hub has:
+      - tblClient_CreatedDate / tblClient_ModifiedDate with kairos-bronze:dataType "datetime"
+      - acme:createdAt with rdfs:range xsd:dateTime
+
+    Both paths must produce DATETIME2(6) in the generated client.sql, never
+    bare DATETIME2 without precision (Fabric error 24597).
+    """
+
+    def test_no_bare_datetime2_in_client_sql(self, client_dbt_artifacts):
+        """Generated client.sql must not contain bare DATETIME2 without precision."""
+        key = _find_artifact(client_dbt_artifacts, "/client.sql")
+        assert key is not None, "client.sql not found in dbt artifacts"
+        sql = client_dbt_artifacts[key]
+        # Match DATETIME2 that is NOT followed by '('  — the broken form
+        import re
+        bare = re.findall(r"DATETIME2(?!\()", sql, re.IGNORECASE)
+        assert not bare, (
+            f"Found {len(bare)} bare DATETIME2 (without precision) in client.sql — "
+            f"Fabric SQL requires DATETIME2(6). Occurrences: {bare}"
+        )
+
+    def test_datetime_columns_use_datetime2_6(self, client_dbt_artifacts):
+        """Bronze 'datetime' source columns must be cast to DATETIME2(6) in per-source models.
+
+        tblClient_ModifiedDate (kairos-bronze:dataType "datetime") maps to acme:lastModifiedAt
+        without an explicit transform, so the projector must auto-emit
+        TRY_CAST(ModifiedDate AS DATETIME2(6)). The TRY_CAST is emitted in the per-source
+        view (corporate_client__from_admin_pulse.sql), not the union wrapper.
+        """
+        key = _find_artifact(client_dbt_artifacts, "corporate_client__from_admin_pulse.sql")
+        assert key is not None, "corporate_client__from_admin_pulse.sql not found in dbt artifacts"
+        sql = client_dbt_artifacts[key].upper()
+        assert "DATETIME2(6)" in sql, (
+            "Expected TRY_CAST(... AS DATETIME2(6)) for datetime source columns in "
+            "corporate_client__from_admin_pulse.sql, but DATETIME2(6) was not found. "
+            "Check _SOURCE_TO_FABRIC in medallion_dbt_projector.py."
+        )
