@@ -45,6 +45,10 @@ bronze-ap:tblClient_IsActive skos:exactMatch acme:isActive ;
 bronze-ap:tblClient_CreatedDate skos:exactMatch acme:createdAt ;
     kairos-map:transform "CAST(source.CreatedDate AS TIMESTAMP)" .
 
+# Direct mapping (no transform) — exercises the auto TRY_CAST path for datetime columns.
+# Regression guard: projector must emit TRY_CAST(ModifiedDate AS DATETIME2(6)), not bare DATETIME2.
+bronze-ap:tblClient_ModifiedDate skos:exactMatch acme:lastModifiedAt .
+
 # ---------------------------------------------------------------------------
 # Table-level: tblRelation → Client with dedup (many relations per client)
 # ---------------------------------------------------------------------------

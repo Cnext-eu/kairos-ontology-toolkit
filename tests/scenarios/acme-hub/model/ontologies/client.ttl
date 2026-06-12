@@ -99,6 +99,12 @@ acme:createdAt a owl:DatatypeProperty ;
     rdfs:domain acme:Client ;
     rdfs:range xsd:dateTime .
 
+acme:lastModifiedAt a owl:DatatypeProperty ;
+    rdfs:label "last modified at" ;
+    rdfs:comment "Timestamp when the client record was last modified." ;
+    rdfs:domain acme:Client ;
+    rdfs:range xsd:dateTime .
+
 # City/country — exercises hierarchyName/hierarchyLevel in gold
 acme:clientCity a owl:DatatypeProperty ;
     rdfs:label "city" ;

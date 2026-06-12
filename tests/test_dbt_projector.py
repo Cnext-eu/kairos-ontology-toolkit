@@ -20,6 +20,8 @@ from kairos_ontology.projections.medallion_dbt_projector import (
     _extract_shacl_tests,
     _silver_model_name_for_class,
     _source_type_to_databricks,
+    _source_type_to_target,
+    _xsd_to_target,
     _extract_fk_columns_and_joins,
     _get_natural_key,
     _get_nk_property_uris,
@@ -207,6 +209,17 @@ class TestHelpers:
         assert _source_type_to_databricks("datetime2") == "TIMESTAMP"
         assert _source_type_to_databricks("decimal(18,4)") == "DECIMAL(18,4)"
         assert _source_type_to_databricks("unknown_type") == "STRING"
+
+    def test_source_type_to_fabric_datetime_has_precision(self):
+        # Regression: Fabric SQL rejects bare DATETIME2 — must include precision (error 24597)
+        assert _source_type_to_target("datetime", "fabric") == "DATETIME2(6)"
+        assert _source_type_to_target("datetime2", "fabric") == "DATETIME2(6)"
+        assert _source_type_to_target("datetime2(7)", "fabric") == "DATETIME2(6)"
+
+    def test_xsd_datetime_to_fabric_has_precision(self):
+        # Regression: xsd:dateTime must map to DATETIME2(6) for Fabric, not bare DATETIME2
+        from rdflib.namespace import XSD
+        assert _xsd_to_target(XSD.dateTime, "fabric") == "DATETIME2(6)"
 
 
 # ---------------------------------------------------------------------------
