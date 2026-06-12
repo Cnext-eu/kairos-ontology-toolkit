@@ -2221,3 +2221,312 @@ class TestCoverageReportMerge:
             "it is merged as a post-domain step"
         )
 
+
+# ---------------------------------------------------------------------------
+# CR-006 fix: SCD2 unique test uses where clause — false failure prevention
+# ---------------------------------------------------------------------------
+
+class TestSCDTypeAwareSchemaYaml:
+    """Schema YAML must use `unique: config: where: "is_current = 1"` for SCD2 entities.
+
+    SCD Type 2 silver tables store multiple rows per entity (current + N historical),
+    so a bare `unique` test scans all rows and produces false failures.
+    CR-006 fix: the projector must check scdType before emitting the test.
+    """
+
+    def test_scd2_sk_has_where_clause_unique(self, client_dbt_artifacts):
+        """client_pii (scdType=2) _sk column must use unique with where clause."""
+        import yaml
+
+        key = _find_artifact(client_dbt_artifacts, "_models.yml")
+        assert key is not None, "_models.yml not generated"
+        parsed = yaml.safe_load(client_dbt_artifacts[key])
+
+        sk_tests = _find_column_tests(parsed, "client_pii_sk")
+        assert sk_tests is not None, "client_pii_sk column not found in schema YAML"
+        unique_test = _find_unique_test(sk_tests)
+        assert unique_test is not None, (
+            f"client_pii_sk missing 'unique' test. Tests found: {sk_tests}"
+        )
+        assert isinstance(unique_test, dict), (
+            "SCD2 unique test must be a dict with config, not a bare string. "
+            f"Got: {unique_test!r}"
+        )
+        where = (unique_test.get("unique") or {}).get("config", {}).get("where")
+        assert where == "is_current = 1", (
+            f"SCD2 unique test must have where='is_current = 1'. Got: {where!r}"
+        )
+
+    def test_scd2_iri_has_where_clause_unique(self, client_dbt_artifacts):
+        """client_pii (scdType=2) _iri column must also use unique with where clause."""
+        import yaml
+
+        key = _find_artifact(client_dbt_artifacts, "_models.yml")
+        assert key is not None
+        parsed = yaml.safe_load(client_dbt_artifacts[key])
+
+        iri_tests = _find_column_tests(parsed, "client_pii_iri")
+        assert iri_tests is not None, "client_pii_iri column not found in schema YAML"
+        unique_test = _find_unique_test(iri_tests)
+        assert isinstance(unique_test, dict), (
+            "SCD2 _iri unique test must be a dict with config. "
+            f"Got: {unique_test!r}"
+        )
+        where = (unique_test.get("unique") or {}).get("config", {}).get("where")
+        assert where == "is_current = 1", (
+            f"SCD2 _iri unique test must have where='is_current = 1'. Got: {where!r}"
+        )
+
+    def test_scd1_sk_uses_bare_unique(self, client_dbt_artifacts):
+        """sole_proprietor_client (scdType=1) _sk must use bare `unique` test (no where)."""
+        import yaml
+
+        key = _find_artifact(client_dbt_artifacts, "_models.yml")
+        assert key is not None
+        parsed = yaml.safe_load(client_dbt_artifacts[key])
+
+        sk_tests = _find_column_tests(parsed, "sole_proprietor_client_sk")
+        assert sk_tests is not None, (
+            "sole_proprietor_client_sk column not found in schema YAML"
+        )
+        unique_test = _find_unique_test(sk_tests)
+        assert unique_test == "unique", (
+            "SCD1 unique test must be the bare string 'unique'. "
+            f"Got: {unique_test!r}"
+        )
+
+    def test_scd2_identifier_sk_has_where_clause(self, client_dbt_artifacts):
+        """identifier (scdType=2) _sk must also use unique with where clause."""
+        import yaml
+
+        key = _find_artifact(client_dbt_artifacts, "_models.yml")
+        if key is None:
+            pytest.skip("_models.yml not generated")
+        parsed = yaml.safe_load(client_dbt_artifacts[key])
+
+        sk_tests = _find_column_tests(parsed, "identifier_sk")
+        if sk_tests is None:
+            pytest.skip("identifier_sk not in schema YAML (model may be unmapped)")
+        unique_test = _find_unique_test(sk_tests)
+        assert isinstance(unique_test, dict), (
+            f"identifier_sk (SCD2) unique test must be a dict. Got: {unique_test!r}"
+        )
+        where = (unique_test.get("unique") or {}).get("config", {}).get("where")
+        assert where == "is_current = 1", (
+            f"identifier_sk unique test must have where='is_current = 1'. Got: {where!r}"
+        )
+
+
+def _find_column_tests(parsed_yaml: dict, column_name: str) -> list | None:
+    """Find the tests list for a named column across all models in a schema YAML."""
+    for model in parsed_yaml.get("models", []):
+        for col in model.get("columns", []):
+            if col.get("name") == column_name:
+                return col.get("tests") or []
+    return None
+
+
+def _find_unique_test(tests: list):
+    """Return the unique test entry (string or dict) from a column tests list."""
+    for t in tests:
+        if t == "unique":
+            return t
+        if isinstance(t, dict) and "unique" in t:
+            return t
+    return None
+
+
+# ---------------------------------------------------------------------------
+# CR-006 fix: cross-entity naturalKey pass-through bronze column resolution
+# ---------------------------------------------------------------------------
+
+class TestCrossEntityNaturalKeyPassThrough:
+    """When a naturalKey column belongs to a different entity, the pass-through
+    expression must resolve to the actual bronze column name via SKOS mappings,
+    not use the domain snake_case property name (which doesn't exist in bronze).
+
+    CR-006 secondary issue: bronze lookup was annotated as TODO and never implemented.
+    """
+
+    def test_passthrough_resolves_to_bronze_column_name(self):
+        """Pass-through expression must use actual bronze column name, not domain name.
+
+        Scenario:
+        - Entity 'Address' has naturalKey 'ownerId'
+        - 'ownerId' is a property of 'Owner' (cross-entity)
+        - Bronze table maps source column 'ownerCode' (not 'owner_id') to 'ownerId'
+        - Expected: pass-through expression = 'ownerCode', alias = 'owner_id'
+        - Broken:   pass-through expression = 'owner_id' (no such column in bronze)
+        """
+        from rdflib import Graph, Literal, Namespace, URIRef
+        from rdflib.namespace import OWL, RDF, RDFS, XSD
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            _extract_silver_columns,
+        )
+
+        NS = "https://test.example/ont#"
+        g = Graph()
+        g.add((URIRef(NS + "Address"), RDF.type, OWL.Class))
+        g.add((URIRef(NS + "Owner"), RDF.type, OWL.Class))
+
+        # ownerId is a property of Owner, not Address — cross-entity reference
+        g.add((URIRef(NS + "ownerId"), RDF.type, OWL.DatatypeProperty))
+        g.add((URIRef(NS + "ownerId"), RDFS.domain, URIRef(NS + "Owner")))
+        g.add((URIRef(NS + "ownerId"), RDFS.range, XSD.string))
+
+        # Address has naturalKey = "ownerId" (cross-entity)
+        KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
+        g.add((URIRef(NS + "Address"), KAIROS_EXT.naturalKey, Literal("ownerId")))
+
+        # Bronze column 'ownerCode' maps to Owner.ownerId
+        bronze_col_uri = "https://test.example/bronze#tbl_address_col_owner"
+        systems = [{
+            "system_label": "TestSystem",
+            "tables": [{
+                "uri": "https://test.example/bronze#tblAddress",
+                "columns": [
+                    {"uri": bronze_col_uri, "name": "ownerCode",
+                     "data_type": "nvarchar(50)"},
+                ],
+            }],
+        }]
+
+        # SKOS mappings: bronze_col_uri → ownerId
+        mappings = {
+            "table_maps": {},
+            "column_maps": {
+                bronze_col_uri: [
+                    {
+                        "target_uri": NS + "ownerId",
+                        "match_type": "exactMatch",
+                        "transform": None,
+                    }
+                ]
+            },
+        }
+
+        cols = _extract_silver_columns(
+            graph=g,
+            class_uri=NS + "Address",
+            namespace=NS,
+            mappings=mappings,
+            systems=systems,
+            include_sk_iri=True,
+            scd_type="1",
+        )
+
+        # Find the pass-through column for owner_id
+        pt_col = next((c for c in cols if c.get("target_name") == "owner_id"), None)
+        assert pt_col is not None, (
+            f"Pass-through column 'owner_id' not found in columns: "
+            f"{[c.get('target_name') for c in cols]}"
+        )
+        assert pt_col["expression"] == "ownerCode", (
+            f"Pass-through expression must resolve to bronze column 'ownerCode', "
+            f"not domain name 'owner_id'. Got: {pt_col['expression']!r}"
+        )
+
+    def test_passthrough_fallback_when_no_mapping(self):
+        """When no bronze mapping exists, pass-through falls back to domain name."""
+        from rdflib import Graph, Literal, Namespace, URIRef
+        from rdflib.namespace import OWL, RDF, RDFS, XSD
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            _extract_silver_columns,
+        )
+
+        NS = "https://test.example/ont#"
+        g = Graph()
+        g.add((URIRef(NS + "Address"), RDF.type, OWL.Class))
+        g.add((URIRef(NS + "Owner"), RDF.type, OWL.Class))
+        g.add((URIRef(NS + "ownerId"), RDF.type, OWL.DatatypeProperty))
+        g.add((URIRef(NS + "ownerId"), RDFS.domain, URIRef(NS + "Owner")))
+        g.add((URIRef(NS + "ownerId"), RDFS.range, XSD.string))
+
+        KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
+        g.add((URIRef(NS + "Address"), KAIROS_EXT.naturalKey, Literal("ownerId")))
+
+        cols = _extract_silver_columns(
+            graph=g,
+            class_uri=NS + "Address",
+            namespace=NS,
+            mappings={"table_maps": {}, "column_maps": {}},
+            systems=None,
+            include_sk_iri=True,
+            scd_type="1",
+        )
+
+        pt_col = next((c for c in cols if c.get("target_name") == "owner_id"), None)
+        assert pt_col is not None, (
+            "Pass-through column 'owner_id' should still be generated even without mapping"
+        )
+        # Falls back to domain name when no bronze mapping found
+        assert pt_col["expression"] == "owner_id", (
+            f"Fallback pass-through must use domain name 'owner_id'. "
+            f"Got: {pt_col['expression']!r}"
+        )
+
+    def test_scd1_sk_uses_bronze_expression_for_cross_entity_nk(self):
+        """For SCD1 models, SK expression must use the bronze column name for cross-entity NK.
+
+        T-SQL does not allow referencing an alias defined in the same SELECT list,
+        so the SK/IRI expression must reference the actual source expression.
+        """
+        from rdflib import Graph, Literal, Namespace, URIRef
+        from rdflib.namespace import OWL, RDF, RDFS, XSD
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            _extract_silver_columns,
+        )
+
+        NS = "https://test.example/ont#"
+        g = Graph()
+        g.add((URIRef(NS + "Address"), RDF.type, OWL.Class))
+        g.add((URIRef(NS + "Owner"), RDF.type, OWL.Class))
+        g.add((URIRef(NS + "ownerId"), RDF.type, OWL.DatatypeProperty))
+        g.add((URIRef(NS + "ownerId"), RDFS.domain, URIRef(NS + "Owner")))
+        g.add((URIRef(NS + "ownerId"), RDFS.range, XSD.string))
+
+        KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
+        g.add((URIRef(NS + "Address"), KAIROS_EXT.naturalKey, Literal("ownerId")))
+
+        bronze_col_uri = "https://test.example/bronze#tbl_owner_code"
+        systems = [{
+            "system_label": "TestSystem",
+            "tables": [{
+                "uri": "https://test.example/bronze#tblAddress",
+                "columns": [
+                    {"uri": bronze_col_uri, "name": "ownerCode",
+                     "data_type": "nvarchar(50)"},
+                ],
+            }],
+        }]
+        mappings = {
+            "table_maps": {},
+            "column_maps": {
+                bronze_col_uri: [
+                    {"target_uri": NS + "ownerId", "match_type": "exactMatch",
+                     "transform": None}
+                ]
+            },
+        }
+
+        cols = _extract_silver_columns(
+            graph=g,
+            class_uri=NS + "Address",
+            namespace=NS,
+            mappings=mappings,
+            systems=systems,
+            include_sk_iri=True,
+            scd_type="1",
+        )
+
+        # SK expression must reference 'ownerCode' (not the alias 'owner_id')
+        # to avoid T-SQL alias-before-definition errors
+        sk_col = next((c for c in cols if c.get("target_name") == "address_sk"), None)
+        assert sk_col is not None, (
+            f"address_sk not found in cols: {[c.get('target_name') for c in cols]}"
+        )
+        assert "ownerCode" in sk_col["expression"], (
+            f"SK expression for SCD1 with cross-entity NK must use bronze column "
+            f"'ownerCode' not alias 'owner_id'. SK expr: {sk_col['expression']!r}"
+        )
+
