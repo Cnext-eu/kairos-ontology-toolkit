@@ -91,6 +91,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-041](#dd-041-llm-powered-source-affinity-analysis--coverage-reporting) | LLM-powered Source Affinity Analysis & Coverage Reporting | Accepted | 2026-06-04 |
 | [DD-042](#dd-042-table-centric-source-classification-with-module-class-grounding) | Table-centric source classification with module-class grounding | Accepted | 2026-06-05 |
 | [DD-043](#dd-043-propose-alignment--pre-modeling-column-to-property-matching) | Propose-alignment — pre-modeling column-to-property matching | Accepted | 2026-06-05 |
+| [DD-044](#dd-044-reference-model-specialization-discovery--materialized-inventories) | Reference Model Specialization Discovery & Materialized Inventories | Proposed | 2026-06-12 |
 
 ---
 
@@ -1604,22 +1605,27 @@ ontology.
 
 ### Decision
 
-Introduce **Reference Model Inspired** as the **default** strategy for reference model
-alignment. **Reference Model Enforced** (full `owl:imports`) is the override, available
-only when a Kairos-managed reference model meets all eligibility criteria.
+> **⚠ AMENDED by DD-044 (2026-06-12):** The default strategy has been flipped.
+> **Enforced** (`owl:imports` + `silverInclude`) is now the default for all reference
+> models. **Inspired** is an opt-in override for cases where import is impossible or
+> undesirable. See DD-044 for full rationale.
+
+Introduce **Reference Model Inspired** as the ~~**default**~~ **opt-in** strategy for
+reference model alignment. **Reference Model Enforced** (full `owl:imports`) is the
+~~override~~ **default**, with `silverInclude` whitelisting (DD-021) ensuring only
+claimed classes are projected.
 
 **Reference Model Inspired definition:**
 
-> Mirror reference model structural patterns as local classes (own namespace), with a
-> formal SKOS alignment file declaring correspondence to the source vocabulary. No
-> `owl:imports` at runtime.
+> Mirror reference model structural patterns as local classes (own namespace), with
+> `rdfs:seeAlso` back-references (DD-033). No `owl:imports` at runtime.
 
 **The simplified strategy model (2 strategies):**
 
 | Strategy | When | What |
 |----------|------|------|
-| **Reference Model Inspired** (default) | All reference models; large/complex models; alignment-only documentation | Local patterns + SKOS alignment file |
-| **Reference Model Enforced** (override) | Small, projection-compatible Kairos ref models only | `owl:imports` + DD-021/DD-023 |
+| **Reference Model Enforced** (default — amended by DD-044) | All reference models; `silverInclude` whitelisting prevents projection noise | `owl:imports` + DD-021 whitelist |
+| **Reference Model Inspired** (opt-in) | When import is impossible (proprietary model, no TTL); deliberate structural deviation | Local patterns + `rdfs:seeAlso` |
 
 **Enforced eligibility** (ALL must be true):
 - Published in `ontology-reference-models/` central repo
@@ -2370,6 +2376,65 @@ Design choices:
 - `custom_columns` entries (alignment=custom) identify source columns that will need
   new local properties — the modeling skill can focus review there
 - Output is additive: does not modify or replace affinity reports
+
+---
+
+## DD-044: Reference Model Specialization Discovery & Materialized Inventories
+
+**Status:** Proposed  
+**Date:** 2026-06-12  
+**Affects:** `analyse_sources.py`, `propose_alignment.py`, `coverage_report.py`, `inventory.py` (new), `cli/main.py`, DD-032 (amended)  
+**Implementation:** `src/kairos_ontology/inventory.py`, `src/kairos_ontology/analyse_sources.py`
+
+### Context
+
+Design-time tools (`analyse-sources`, `propose-alignment`, `coverage-report`) only collect
+properties where `rdfs:domain` directly equals a class URI. Properties defined on
+**subclasses** of a reference model class are invisible to designers, preventing them from
+discovering specialization patterns (e.g., that `registrationNumber` belongs to
+`Organisation`, a subclass of `Party`).
+
+Additionally, multiple LLM-based tools re-parse the same reference model TTL files
+independently, which is wasteful and opaque.
+
+### Decision
+
+1. **Enforced as default strategy** (amends DD-032): `owl:imports` + `silverInclude`
+   whitelisting becomes the default for all reference models. Inspired (`rdfs:seeAlso`)
+   becomes an opt-in override. This is safe because `silverInclude` (DD-021) prevents
+   projection noise from unused imported classes.
+
+2. **Materialized YAML inventories**: A `generate-inventory` CLI command produces YAML
+   files in `model/inventory/` containing classes, properties, and specialization trees.
+   These are committed to git and consumed by LLM tools.
+
+3. **Specialization semantics**: Descendant properties are **specialization evidence**,
+   not inherited properties. In OWL/RDFS, `rdfs:domain ref:Organisation` does not mean
+   Party has that property. Specializations produce refinement suggestions
+   ("consider aligning to Organisation") but do NOT inflate coverage percentages.
+
+4. **Validation warnings**: Two new checks — "mapped but not whitelisted" and
+   "whitelisted but not mapped" — catch mismatches between `silverInclude` annotations
+   and SKOS source mappings.
+
+### Rationale
+
+| Alternative | Why rejected |
+|-------------|-------------|
+| Treat descendant properties as inherited | Semantically wrong in OWL; inflates coverage |
+| PropertyIndex + projector refactor | Over-engineered; projectors work correctly |
+| Implicit projection from mappings | Risk of "surprise tables" undermines shift-left |
+| On-the-fly computation only | Wasteful re-parsing; no designer visibility |
+
+### Consequences
+
+- `parse_reference_model()` gains an `include_specializations` parameter
+- `resolve_reference_models()` gains an `include_specializations` parameter
+- `coverage-report` has a new "specialization" alignment category (not counted in coverage %)
+- `propose-alignment` prompt includes specialization properties for better LLM matching
+- `validate_whitelist_mapping()` function added to `validator.py`
+- Hub scaffold should include `model/inventory/` directory
+- Skills guidance should default to Enforced strategy
 
 ---
 

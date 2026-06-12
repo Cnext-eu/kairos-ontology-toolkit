@@ -295,6 +295,11 @@ Verify reference models are available:
 ls ontology-reference-models/
 ```
 
+> **Tip (DD-044):** Run `kairos-ontology generate-inventory` first to create
+> materialized YAML inventories in `model/inventory/`. These give `analyse-sources`
+> and `propose-alignment` visibility into subclass properties (specialization
+> patterns) that raw TTL parsing would miss.
+
 ### 4b — Run the analysis
 
 ```bash

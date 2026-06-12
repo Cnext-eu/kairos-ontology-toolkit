@@ -78,3 +78,27 @@ ref-party:postalCode a owl:DatatypeProperty ;
     rdfs:comment "Postal/ZIP code of the party address." ;
     rdfs:domain ref-party:Party ;
     rdfs:range xsd:string .
+
+# ---------------------------------------------------------------------------
+# Data Properties — Organisation (subclass-specific)
+# ---------------------------------------------------------------------------
+ref-party:registrationNumber a owl:DatatypeProperty ;
+    rdfs:label "Registration number" ;
+    rdfs:comment "Official company registration number." ;
+    rdfs:domain ref-party:Organisation ;
+    rdfs:range xsd:string .
+
+# ---------------------------------------------------------------------------
+# Data Properties — Person (subclass-specific)
+# ---------------------------------------------------------------------------
+ref-party:firstName a owl:DatatypeProperty ;
+    rdfs:label "First name" ;
+    rdfs:comment "Given name of the person." ;
+    rdfs:domain ref-party:Person ;
+    rdfs:range xsd:string .
+
+ref-party:lastName a owl:DatatypeProperty ;
+    rdfs:label "Last name" ;
+    rdfs:comment "Family name of the person." ;
+    rdfs:domain ref-party:Person ;
+    rdfs:range xsd:string .

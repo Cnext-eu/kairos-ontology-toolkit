@@ -260,3 +260,44 @@ class TestGdprValidation:
         captured = capsys.readouterr()
         assert result == 0
         assert "No unprotected PII detected" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Tests: Whitelist / mapping mismatch validation (DD-044)
+# ---------------------------------------------------------------------------
+
+
+class TestWhitelistMappingValidation:
+
+    def test_whitelisted_not_mapped_warning(self, tmp_path):
+        from kairos_ontology.validator import validate_whitelist_mapping
+
+        ext_dir = tmp_path / "extensions"
+        ext_dir.mkdir()
+        (ext_dir / "client-silver-ext.ttl").write_text("""\
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix ref: <https://ref.example/party#> .
+ref:Person kairos-ext:silverInclude true .
+""", encoding="utf-8")
+
+        # No mappings directory
+        warnings = validate_whitelist_mapping(
+            ontology_path=tmp_path,
+            extensions_dir=ext_dir,
+        )
+
+        assert len(warnings) == 1
+        assert warnings[0]["warning_type"] == "whitelisted_not_mapped"
+        assert "Person" in warnings[0]["message"]
+
+    def test_no_warnings_when_both_empty(self, tmp_path):
+        from kairos_ontology.validator import validate_whitelist_mapping
+
+        ext_dir = tmp_path / "extensions"
+        ext_dir.mkdir()
+
+        warnings = validate_whitelist_mapping(
+            ontology_path=tmp_path,
+            extensions_dir=ext_dir,
+        )
+        assert warnings == []

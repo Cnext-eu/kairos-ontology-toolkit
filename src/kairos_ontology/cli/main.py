@@ -472,6 +472,7 @@ def init(domain, company_domain, force):
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
+        hub / "model" / "inventory",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -1586,6 +1587,122 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
         raise SystemExit(1)
 
 
+@cli.command(name='generate-inventory')
+@click.option('--ontology-dir', type=click.Path(exists=True), default=None,
+              help='Path to model/ontologies/ directory (default: auto-detect from hub).')
+@click.option('--ref-models-dir', type=click.Path(exists=True), default=None,
+              help='Path to model/reference-models/ directory (default: auto-detect).')
+@click.option('--output-dir', '-o', type=click.Path(), default=None,
+              help='Output directory (default: model/inventory/).')
+@click.option('--catalog', type=click.Path(exists=True), default=None,
+              help='Path to catalog-v001.xml for import resolution.')
+def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, catalog):
+    """Generate materialized YAML inventories for ontologies and reference models.
+
+    Produces one YAML file per domain/reference model containing classes, properties,
+    and specialization trees (DD-044).  Inventories are consumed by analyse-sources,
+    propose-alignment, and coverage-report as a cached alternative to re-parsing TTL.
+
+    Files are written to model/inventory/ and should be committed to git.
+
+    \\b
+    Examples:
+      kairos-ontology generate-inventory
+      kairos-ontology generate-inventory --output-dir model/inventory/
+      kairos-ontology generate-inventory --ref-models-dir path/to/refs/
+    """
+    from ..inventory import generate_inventory, write_inventory
+    from ..analyse_sources import resolve_reference_models
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=True)
+
+    # Resolve ontology directory
+    if ontology_dir:
+        ont_path = Path(ontology_dir)
+    elif hub_root:
+        ont_path = hub_root / "model" / "ontologies"
+    else:
+        ont_path = None
+
+    # Resolve reference models directory
+    if ref_models_dir:
+        ref_path = Path(ref_models_dir)
+    elif hub_root:
+        ref_path = hub_root / "model" / "reference-models"
+        if not ref_path.is_dir():
+            ref_path = None
+    else:
+        ref_path = None
+
+    if not ont_path and not ref_path:
+        click.echo("❌ No ontology or reference model directories found. "
+                    "Use --ontology-dir or --ref-models-dir.", err=True)
+        raise SystemExit(1)
+
+    # Resolve output directory
+    if output_dir:
+        out_path = Path(output_dir)
+    elif hub_root:
+        out_path = hub_root / "model" / "inventory"
+    else:
+        out_path = Path("model/inventory")
+
+    # Resolve catalog
+    catalog_path = None
+    if catalog:
+        catalog_path = Path(catalog)
+    elif hub_root and (hub_root / "catalog-v001.xml").exists():
+        catalog_path = hub_root / "catalog-v001.xml"
+
+    click.echo("📦 Generating materialized inventories")
+    written: list[Path] = []
+
+    # Process reference models
+    if ref_path and ref_path.is_dir():
+        click.echo(f"   Reference models: {ref_path}")
+        ref_ttls = sorted(ref_path.glob("**/*.ttl"))
+        for ttl_file in ref_ttls:
+            try:
+                inv = generate_inventory(ttl_file)
+                if not inv["classes"]:
+                    continue
+                stem = ttl_file.stem
+                yaml_path = out_path / f"{stem}-inventory.yaml"
+                write_inventory(inv, yaml_path)
+                written.append(yaml_path)
+                n_classes = len(inv["classes"])
+                n_specs = sum(
+                    len(c.get("specializations", []))
+                    for c in inv["classes"]
+                )
+                click.echo(
+                    f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations"
+                )
+            except Exception as e:
+                click.echo(f"   ⚠ Failed to process {ttl_file.name}: {e}", err=True)
+
+    # Process domain ontologies
+    if ont_path and ont_path.is_dir():
+        click.echo(f"   Ontologies: {ont_path}")
+        ont_ttls = sorted(ont_path.glob("**/*.ttl"))
+        for ttl_file in ont_ttls:
+            try:
+                inv = generate_inventory(ttl_file, include_specializations=False)
+                if not inv["classes"]:
+                    continue
+                stem = ttl_file.stem
+                yaml_path = out_path / f"{stem}-inventory.yaml"
+                write_inventory(inv, yaml_path)
+                written.append(yaml_path)
+                click.echo(f"   ✅ {stem}: {len(inv['classes'])} classes")
+            except Exception as e:
+                click.echo(f"   ⚠ Failed to process {ttl_file.name}: {e}", err=True)
+
+    click.echo(f"\n✅ Generated {len(written)} inventory file(s) in {out_path}")
+
+
 @cli.command()
 @click.option("--check", is_flag=True,
               help="Report outdated files without modifying anything (exit 1 on drift).")
@@ -1877,6 +1994,7 @@ def migrate(check, hub_path):
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
+        hub / "model" / "inventory",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -2116,6 +2234,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
+        hub / "model" / "inventory",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",

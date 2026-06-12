@@ -342,3 +342,83 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
         exit(1)
     else:
         print("\n✅ All validations passed!")
+
+
+# ---------------------------------------------------------------------------
+# DD-044: Whitelist / mapping mismatch validation
+# ---------------------------------------------------------------------------
+
+
+def validate_whitelist_mapping(
+    ontology_path: Path,
+    extensions_dir: Path,
+    mappings_dir: Optional[Path] = None,
+) -> list[dict]:
+    """Check for mismatches between silverInclude annotations and SKOS mappings.
+
+    Returns a list of warning dicts with keys: ``class_uri``, ``class_name``,
+    ``warning_type`` ("mapped_not_whitelisted" | "whitelisted_not_mapped"),
+    and ``message``.
+    """
+    warnings: list[dict] = []
+
+    # 1. Collect silverInclude'd classes from extension files
+    whitelisted: set[str] = set()
+    for ext_file in extensions_dir.glob("**/*-silver-ext.ttl"):
+        try:
+            g = Graph()
+            g.parse(ext_file, format="turtle")
+            for subj in g.subjects(KAIROS_EXT.silverInclude, None):
+                val = g.value(subj, KAIROS_EXT.silverInclude)
+                if val is not None and str(val).lower() in ("true", "1"):
+                    whitelisted.add(str(subj))
+        except Exception:
+            pass
+
+    # 2. Collect mapped classes from SKOS mapping files
+    mapped: set[str] = set()
+    if mappings_dir and mappings_dir.is_dir():
+        SKOS_NS = Namespace("http://www.w3.org/2004/02/skos/core#")
+        for mapping_file in mappings_dir.glob("*.ttl"):
+            try:
+                g = Graph()
+                g.parse(mapping_file, format="turtle")
+                for _s, _p, o in g.triples((None, SKOS_NS.broadMatch, None)):
+                    # The object is typically a domain property URI — extract class
+                    uri_str = str(o)
+                    if "#" in uri_str:
+                        mapped.add(uri_str.rsplit("#", 1)[0] + "#")
+                    elif "/" in uri_str:
+                        mapped.add(uri_str.rsplit("/", 1)[0] + "/")
+            except Exception:
+                pass
+
+    if not whitelisted and not mapped:
+        return warnings
+
+    # 3. Check for mismatches
+    for cls_uri in mapped - whitelisted:
+        cls_name = cls_uri.split("#")[-1].split("/")[-1] if cls_uri else cls_uri
+        warnings.append({
+            "class_uri": cls_uri,
+            "class_name": cls_name,
+            "warning_type": "mapped_not_whitelisted",
+            "message": (
+                f"Class {cls_name} has SKOS source mappings but no "
+                f"silverInclude annotation. It will not be projected to silver."
+            ),
+        })
+
+    for cls_uri in whitelisted - mapped:
+        cls_name = cls_uri.split("#")[-1].split("/")[-1] if cls_uri else cls_uri
+        warnings.append({
+            "class_uri": cls_uri,
+            "class_name": cls_name,
+            "warning_type": "whitelisted_not_mapped",
+            "message": (
+                f"Class {cls_name} has silverInclude but no source mappings. "
+                f"It will produce an empty silver table."
+            ),
+        })
+
+    return warnings

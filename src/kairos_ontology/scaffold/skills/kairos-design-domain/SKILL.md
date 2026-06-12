@@ -297,10 +297,11 @@ curated, industry-aligned OWL ontologies bundled into **accelerator packs** —
 sector-specific collections of ontologies (e.g., Financial Services, Supply
 Chain, Healthcare) that provide a proven starting point.
 
-> **Two alignment strategies:** The default strategy is **Reference Model Inspired**
-> — model locally with selective pattern adoption and a SKOS alignment file. If the
-> user's domain uses a Kairos-managed reference model (small, projection-ready, ships
-> defaults), they can override to **Reference Model Enforced** which uses `owl:imports`.
+> **Two alignment strategies:** The default strategy is **Reference Model Enforced**
+> — use `owl:imports` with `silverInclude` whitelisting (DD-044). This gives designers
+> the full reference model graph while only projecting claimed classes. If the
+> reference model cannot be imported (proprietary, no TTL), use **Reference Model
+> Inspired** as an opt-in override.
 > See [Standard model alignment](#standard-model-alignment) for details.
 
 ### Step 0 — Ask the user
@@ -904,10 +905,11 @@ When incorporating **Kairos reference model** ontologies into the hub, **use
 `owl:imports` via the catalog** — never copy or recreate the reference model
 TTL files inside the hub.
 
-> **Important:** This applies only to the **Reference Model Enforced** strategy
-> (Kairos-managed reference models: small, < 50 classes, include `-defaults.ttl`).
-> For large **external standards** (FIBO, DCSA, GS1, schema.org), use the default
-> [Reference Model Inspired](#reference-model-inspired-default-strategy) strategy below.
+> **Important:** This is the **default** strategy (DD-044). Use `owl:imports` for any
+> reference model available as TTL. Add `silverInclude` annotations to whitelist only
+> the classes you need projected.
+> For standards **without TTL distribution**, use the opt-in
+> [Reference Model Inspired](#reference-model-inspired-opt-in-strategy) strategy below.
 
 The reference models ship with a `catalog-v001.xml` that maps logical URIs to
 local file paths.  Your domain ontology imports the reference model by URI:
@@ -1119,34 +1121,31 @@ standard ontology (FIBO, DCSA, GS1, PROV-O, schema.org, etc.):
 Ask the user to confirm:
 - The exact standard or vocabulary (name + version/edition if relevant).
 - Whether the standard is available as a **Kairos reference model** (Enforced-eligible)
-  or is an **external standard** (Inspired — the default).
+  or is an **external standard** with no TTL distribution (Inspired — opt-in override).
 
 ### Step 2 — Determine the strategy
 
 | Strategy | When to use | Approach |
 |----------|-------------|----------|
-| **Reference Model Inspired** (default) | All external standards AND any reference model where you want selective adoption. This is the default — use unless overridden. | Model locally + selective pattern adoption + SKOS alignment file |
-| **Reference Model Enforced** (override) | Kairos-managed reference models in `ontology-reference-models/`. Small (< 50 classes), projection-optimized, ships `-defaults.ttl`. | `owl:imports` + `rdfs:subClassOf` + DD-021 whitelist + DD-023 defaults |
+| **Reference Model Enforced** (default — DD-044) | All reference models. `silverInclude` whitelisting ensures only claimed classes are projected, making even large imports safe. | `owl:imports` + `rdfs:subClassOf` + DD-021 whitelist + DD-023 defaults |
+| **Reference Model Inspired** (opt-in) | When import is impossible (proprietary, no TTL distribution) or the designer deliberately wants to deviate from the reference model's structure. | Model locally + `rdfs:seeAlso` traceability |
 
-> **Default rule:** Always start with **Reference Model Inspired** unless the user
-> explicitly requests Enforced and the reference model meets all eligibility criteria.
+> **Default rule:** Always start with **Reference Model Enforced** unless import is
+> impossible or the user explicitly requests Inspired.
 
-**Enforced eligibility** (ALL must be true):
-- Found in `ontology-reference-models/accelerator-packs/`
+**Enforced eligibility** (preferred — DD-044 makes this the default):
+- Available as TTL (either Kairos-managed or external with TTL distribution)
 - Has a catalog entry mapping its URI to a local `.ttl` file
-- Typically < 50 classes, focused on a specific domain
-- Ships `*-silver-defaults.ttl` (DD-023 compatible)
-- No transitive imports pulling in unrequested concepts
-- Examples: BSP-Party, BSP-Billing, MMT modules
+- Use `silverInclude` to whitelist only the classes you need projected
+- Examples: BSP-Party, BSP-Billing, MMT modules, FIBO (with whitelist)
 
-**Inspired indicators** (anything not meeting Enforced criteria):
-- Large (100+ classes) or depends on large transitive imports
-- Externally maintained — versioned independently of your hub
-- Not projection-optimized (no `kairos-ext:` annotations, no `-defaults.ttl`)
-- Examples: FIBO, DCSA, GS1, PROV-O, schema.org
+**Inspired indicators** (opt-in override — use only when import is impossible):
+- No TTL distribution available (proprietary API-only standards)
+- Designer wants deliberate structural deviation from the reference
+- Examples: proprietary vendor APIs, standards without RDF serialization
 
-> **Rule of thumb:** If importing the standard would add > 50 classes to the
-> merged graph that you'll never project, use Reference Model Inspired (the default).
+> **Rule of thumb:** If the reference model is available as TTL, use Enforced with
+> `silverInclude` whitelisting. Only fall back to Inspired when import is impossible.
 
 ### Step 3 — Alignment patterns
 
@@ -1163,7 +1162,7 @@ Ask the user to confirm:
     rdfs:comment "A high-value customer — extends the reference model."@en .
 ```
 
-#### Reference Model Inspired (default strategy)
+#### Reference Model Inspired (opt-in strategy)
 
 **Do NOT import the external standard.** Instead:
 

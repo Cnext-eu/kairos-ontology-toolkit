@@ -128,13 +128,24 @@ def load_affinity_reports(
 def extract_ref_model_inventory(
     domain_uris: list[str],
     catalog_path: Path | None,
+    *,
+    inventory_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve domain URIs and extract full class+property inventory.
 
+    If *inventory_dir* contains pre-generated YAML inventories (DD-044), those
+    are preferred over re-parsing TTL files.
+
     Returns list of class dicts with:
     {name, uri, label, comment, properties: [{name, uri, label, range, range_label,
-     prop_type, comment}]}
+     prop_type, comment}], specializations: [...]}
     """
+    # DD-044: Try cached inventories first
+    if inventory_dir and inventory_dir.is_dir():
+        inv_classes = _load_inventory_classes(inventory_dir)
+        if inv_classes:
+            return inv_classes
+
     if not catalog_path or not catalog_path.exists():
         return []
 
@@ -156,7 +167,7 @@ def extract_ref_model_inventory(
         if not path or not Path(path).exists():
             continue
 
-        ref = parse_reference_model(Path(path))
+        ref = parse_reference_model(Path(path), include_specializations=True)
         for cls in ref.get("classes", []):
             cls_name = cls.get("name", "")
             if cls_name in seen_classes:
@@ -173,12 +184,38 @@ def extract_ref_model_inventory(
                     "comment": "",
                 })
 
-            all_classes.append({
+            cls_dict: dict[str, Any] = {
                 "name": cls_name,
                 "label": cls.get("label", cls_name),
                 "comment": cls.get("comment", ""),
                 "properties": props,
-            })
+            }
+            if "specializations" in cls:
+                cls_dict["specializations"] = cls["specializations"]
+            all_classes.append(cls_dict)
+
+    return all_classes
+
+
+def _load_inventory_classes(inventory_dir: Path) -> list[dict[str, Any]]:
+    """Load all classes from YAML inventory files in a directory (DD-044)."""
+    from .inventory import load_inventory
+
+    all_classes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for yaml_file in sorted(inventory_dir.glob("*.yaml")):
+        try:
+            inv = load_inventory(yaml_file)
+        except Exception as e:
+            logger.warning("Failed to load inventory %s: %s", yaml_file, e)
+            continue
+        for cls in inv.get("classes", []):
+            cls_name = cls.get("name", "")
+            if cls_name in seen:
+                continue
+            seen.add(cls_name)
+            all_classes.append(cls)
 
     return all_classes
 
@@ -196,8 +233,8 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
         prop_lines = []
         for p in props[:MAX_REF_PROPERTIES_PER_PROMPT]:
             range_str = f" ({p['range']})" if p.get("range") else ""
-            prop_lines.append(f"    - {p['name']} [{p['label']}]{range_str}")
-        lines.append(f"  CLASS: {cls['name']} ({cls['label']})")
+            prop_lines.append(f"    - {p['name']} [{p.get('label', p['name'])}]{range_str}")
+        lines.append(f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])})")
         if cls.get("comment"):
             lines.append(f"    Description: {cls['comment']}")
         if prop_lines:
@@ -205,6 +242,21 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
             lines.extend(prop_lines)
         else:
             lines.append("    Properties: (none declared)")
+        # DD-044: Include specialization properties as hints
+        specs = cls.get("specializations", [])
+        if specs:
+            lines.append("    Specializations (subclass patterns):")
+            for spec in specs:
+                spec_props = spec.get("properties", [])
+                if spec_props:
+                    spec_prop_names = ", ".join(
+                        p.get("name", "") for p in spec_props[:10]
+                    )
+                    lines.append(
+                        f"      - {spec['class']}: {spec_prop_names}"
+                    )
+                else:
+                    lines.append(f"      - {spec['class']}: (no own properties)")
     return "\n".join(lines)
 
 
