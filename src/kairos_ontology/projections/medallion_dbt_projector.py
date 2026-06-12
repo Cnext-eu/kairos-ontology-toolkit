@@ -231,6 +231,18 @@ def _camel_to_snake(name: str) -> str:
     return camel_to_snake(name)
 
 
+def _resolve_column_name(graph: Graph, prop_uri: str) -> str:
+    """Resolve the silver column name for a property.
+
+    Uses ``kairos-ext:silverColumnName`` if declared (from silver-ext or ref-model
+    defaults), otherwise falls back to camelCase→snake_case of the URI local name.
+    """
+    override = graph.value(URIRef(prop_uri), KAIROS_EXT.silverColumnName)
+    if override:
+        return str(override)
+    return _camel_to_snake(extract_local_name(prop_uri))
+
+
 def _source_type_to_databricks(src_type: str) -> str:
     """Map a source system data type string to Databricks (Spark SQL) type."""
     base = re.sub(r"\(.*\)", "", src_type.strip().lower())
@@ -633,13 +645,15 @@ def _load_shacl_graph(shapes_dir: Path) -> Graph | None:
 
 
 def _extract_shacl_tests(shapes_dir: Path, class_uri: str,
-                          shacl_graph: Graph | None = None) -> dict[str, list]:
+                          shacl_graph: Graph | None = None,
+                          ontology_graph: Graph | None = None) -> dict[str, list]:
     """Extract dbt tests from SHACL shapes for a given class.
 
     Args:
         shapes_dir: Path to shapes directory (used only if shacl_graph is None).
         class_uri: URI of the class to extract tests for.
         shacl_graph: Pre-parsed SHACL graph. If provided, avoids re-parsing.
+        ontology_graph: Main ontology graph for resolving silverColumnName overrides.
 
     Returns ``{column_name: [test_strings]}``.
     """
@@ -687,34 +701,41 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str,
         if shape_target and str(shape_target) != str(target_class):
             continue
         for ps in sg.objects(node_shape, SH.property):
-            _extract_property_shape_tests(sg, ps, tests_by_col)
+            _extract_property_shape_tests(sg, ps, tests_by_col, ontology_graph)
 
     # Also handle property shapes attached via sh:property without NodeShape typing
     for ps in sg.objects(predicate=SH.property):
         path = sg.value(ps, SH.path)
         if not path:
             continue
-        col_name = _camel_to_snake(extract_local_name(str(path)))
+        col_name = (
+            _resolve_column_name(ontology_graph, str(path))
+            if ontology_graph else _camel_to_snake(extract_local_name(str(path)))
+        )
         if col_name in tests_by_col:
             continue  # already extracted via NodeShape path
         # Check if this property shape belongs to a shape targeting our class
         for subj in sg.subjects(SH.property, ps):
             shape_target = sg.value(subj, SH.targetClass)
             if shape_target and str(shape_target) == str(target_class):
-                _extract_property_shape_tests(sg, ps, tests_by_col)
+                _extract_property_shape_tests(sg, ps, tests_by_col, ontology_graph)
                 break
 
     return tests_by_col
 
 
 def _extract_property_shape_tests(
-    sg: Graph, ps, tests_by_col: dict[str, list]
+    sg: Graph, ps, tests_by_col: dict[str, list],
+    ontology_graph: Graph | None = None,
 ) -> None:
     """Extract dbt tests from a single SHACL property shape node."""
     path = sg.value(ps, SH.path)
     if not path:
         return
-    col_name = _camel_to_snake(extract_local_name(str(path)))
+    col_name = (
+        _resolve_column_name(ontology_graph, str(path))
+        if ontology_graph else _camel_to_snake(extract_local_name(str(path)))
+    )
     if col_name in tests_by_col:
         return  # already processed
 
@@ -1390,8 +1411,7 @@ def _resolve_mapped_columns(
     for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
         domain = graph.value(prop, RDFS.domain)
         if domain and str(domain) in domain_classes:
-            prop_name = extract_local_name(str(prop))
-            col_name = _camel_to_snake(prop_name)
+            col_name = _resolve_column_name(graph, str(prop))
             # Deduplicate: skip if column already added (child overrides parent)
             if col_name in seen_col_names:
                 continue
@@ -1554,6 +1574,44 @@ def _extract_silver_columns(
         mapping_ns=mapping_ns,
     )
 
+    # Pre-compute pass-through columns for missing NK cols.
+    # Done before SK/IRI generation so that SCD1 nk_source_exprs can include
+    # the resolved bronze expressions, avoiding T-SQL alias-before-definition errors.
+    pass_through_cols: list[dict] = []
+    if natural_key_cols and include_sk_iri:
+        col_names_in_mapped = {c["target_name"] for c in mapped_cols}
+        missing_nk = [nk for nk in natural_key_cols if nk not in col_names_in_mapped]
+        if missing_nk:
+            class_name = extract_local_name(class_uri)
+            logger.warning(
+                "SK validation: naturalKey column(s) %s not found in model "
+                "columns for %s — adding as pass-through",
+                missing_nk, class_name,
+            )
+            # Resolve each missing NK column to its actual bronze source column name
+            # by scanning SKOS mappings for any property whose snake_case name matches.
+            # This handles cross-entity NK references (property belongs to another entity).
+            prop_name_to_bronze: dict[str, str] = {}
+            for col_uri_m, col_maps_list in mappings.get("column_maps", {}).items():
+                for col_map in col_maps_list:
+                    target_uri = col_map.get("target_uri")
+                    if target_uri:
+                        prop_sn = _camel_to_snake(extract_local_name(target_uri))
+                        bronze_col = bronze_col_lookup.get(col_uri_m)
+                        if bronze_col and prop_sn not in prop_name_to_bronze:
+                            prop_name_to_bronze[prop_sn] = bronze_col["name"]
+            for nk_col in missing_nk:
+                bronze_name = prop_name_to_bronze.get(nk_col)
+                if bronze_name and bronze_name != nk_col:
+                    logger.debug(
+                        "Pass-through: resolved %s → bronze column %s",
+                        nk_col, bronze_name,
+                    )
+                    expression = _quote_identifier_if_reserved(bronze_name)
+                else:
+                    expression = nk_col
+                pass_through_cols.append({"expression": expression, "target_name": nk_col})
+
     if include_sk_iri:
         # For SCD2 models, source_data reads FROM mapped so only aliased names are
         # visible — do not substitute source expressions or the column won't resolve.
@@ -1563,6 +1621,9 @@ def _extract_silver_columns(
             nk_source_exprs = None
         else:
             nk_source_exprs = {c["target_name"]: c["expression"] for c in mapped_cols}
+            # Include pass-through bronze expressions for T-SQL alias-before-definition safety.
+            for pt in pass_through_cols:
+                nk_source_exprs[pt["target_name"]] = pt["expression"]
         columns.extend(
             _build_sk_iri_columns(
                 graph, class_uri, namespace, natural_key_cols, nk_source_exprs
@@ -1570,27 +1631,7 @@ def _extract_silver_columns(
         )
 
     columns.extend(mapped_cols)
-
-    # Validate that naturalKey columns are present in the generated column list.
-    # If missing, add them as pass-through from the source table so that SK/IRI
-    # expressions in the staged CTE can reference them.
-    if natural_key_cols and include_sk_iri:
-        col_names = {c["target_name"] for c in columns}
-        missing = [nk for nk in natural_key_cols if nk not in col_names]
-        if missing:
-            class_name = extract_local_name(class_uri)
-            logger.warning(
-                "SK validation: naturalKey column(s) %s not found in model "
-                "columns for %s — adding as pass-through",
-                missing, class_name,
-            )
-            for nk_col in missing:
-                # Attempt to find the source column name via bronze lookup
-                # (natural key is snake_case of the property local name)
-                columns.append({
-                    "expression": nk_col,
-                    "target_name": nk_col,
-                })
+    columns.extend(pass_through_cols)
 
     return columns
 
@@ -2200,8 +2241,24 @@ def _gen_schema_yaml(
             continue
         model_name = _camel_to_snake(cls["name"])
         shacl_tests = (
-            _extract_shacl_tests(shapes_dir, cls["uri"], shacl_graph=shacl_graph)
+            _extract_shacl_tests(
+                shapes_dir, cls["uri"], shacl_graph=shacl_graph,
+                ontology_graph=graph,
+            )
             if shapes_dir else {}
+        )
+
+        # SCD Type 2 entities store multiple rows per entity (current + history),
+        # so a bare unique test would produce false failures on _sk and _iri.
+        # Use a where-clause variant to scope uniqueness to current rows only.
+        is_ref = bool_val(graph, URIRef(cls["uri"]), KAIROS_EXT.isReferenceData, False)
+        scd_type = str_val(
+            graph, URIRef(cls["uri"]), KAIROS_EXT.scdType, "1" if is_ref else "2"
+        )
+        unique_test: str | dict = (
+            {"unique": {"config": {"where": "is_current = 1"}}}
+            if scd_type == "2"
+            else "unique"
         )
 
         cols = []
@@ -2210,13 +2267,13 @@ def _gen_schema_yaml(
             "name": f"{model_name}_sk",
             "description": "Surrogate key (PK)",
             "meta": {"is_pk": "true"},
-            "tests": ["not_null", "unique"],
+            "tests": ["not_null", unique_test],
         })
         cols.append({
             "name": f"{model_name}_iri",
             "description": "OWL IRI lineage",
             "meta": {},
-            "tests": ["not_null", "unique"],
+            "tests": ["not_null", unique_test],
         })
 
         # Datatype properties (including inherited from parent classes)
@@ -2226,7 +2283,7 @@ def _gen_schema_yaml(
             domain = graph.value(prop, RDFS.domain)
             if domain and str(domain) in domain_classes:
                 prop_name = extract_local_name(str(prop))
-                col_name = _camel_to_snake(prop_name)
+                col_name = _resolve_column_name(graph, str(prop))
                 if col_name in seen_schema_cols:
                     continue
                 seen_schema_cols.add(col_name)
@@ -3257,8 +3314,7 @@ def generate_coverage_data(
             if domain and str(domain) in domain_classes:
                 total += 1
                 prop_str = str(prop)
-                prop_name = extract_local_name(prop_str)
-                col_name = _camel_to_snake(prop_name)
+                col_name = _resolve_column_name(graph, prop_str)
 
                 pop_req = graph.value(URIRef(prop_str), KAIROS_EXT.populationRequirement)
                 population = str(pop_req) if pop_req else "optional"
