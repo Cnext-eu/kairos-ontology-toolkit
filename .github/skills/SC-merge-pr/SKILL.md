@@ -16,6 +16,11 @@ to merge into `main`.
 2. Check for uncommitted changes.
 3. Ask if they want to run validation before creating the PR:
    `python -m kairos_ontology validate`
+4. **Release intent (toolkit repo only):** if this change will ship a release,
+   decide the version bump **now** and commit it to the feature branch *before*
+   creating the PR — see [Step 7b](#step-7b--tag-the-release-version-bump-already-on-the-branch).
+   Because `main` is protected, bundling the bump into the feature PR avoids a
+   separate bump-only PR and keeps the release tag reachable from `main`.
 
 ## Workflow
 
@@ -170,12 +175,20 @@ Do NOT ask for confirmation — the branch was already merged, so `-d`
 (safe delete) will succeed.  If the user is already on `main`, detect
 the merged branch from context or the PR URL and delete it.
 
-### Step 7b — Bump version and release
+### Step 7b — Tag the release (version bump already on the branch)
 
 > **Only applies to the `kairos-ontology-toolkit` repo itself.**
 > Skip this step for ontology hub repos (they don't publish packages).
 
-After switching to `main`, ask the user which version bump to apply:
+> ⚠️ **`main` is a protected branch** — you CANNOT `git push` commits directly to
+> it, and you must NOT create a separate "bump-only" PR after merge (it produces a
+> tag that is not reachable from `main`). The version bump belongs **in the feature
+> branch, before the PR** (see the pre-flight below), so the bump lands on `main`
+> in the same merge. After merge you only **tag the merged commit**.
+
+**Pre-flight (do this on the feature branch, before Step 5 "Create the PR"):**
+If this change should ship a release, ask the user which bump to apply, then commit
+the bump as part of the feature branch so it is included in the PR:
 
 | Type | When |
 |------|------|
@@ -183,23 +196,35 @@ After switching to `main`, ask the user which version bump to apply:
 | `minor` | New features, new projections, new CLI commands |
 | `major` | Breaking API changes |
 
-Then perform the release:
+```bash
+# On the feature branch, BEFORE creating the PR:
+# 1. Bump __version__ in src/kairos_ontology/__init__.py to X.Y.Z
+# 2. Move CHANGELOG [Unreleased] items under a new [X.Y.Z] — YYYY-MM-DD heading
+# 3. Refresh the lock + sanity-build
+uv lock && uv build
+git add uv.lock src/kairos_ontology/__init__.py CHANGELOG.md
+git commit -m "chore: bump version to X.Y.Z"
+```
+
+**After the PR is merged** (Step 5b) and local `main` is synced (Step 7a),
+tag the merged commit on `main` and push only the tag:
 
 ```bash
-# 1. Bump version in __init__.py
-# 2. Lock and build
-uv lock && uv build
-# 3. Commit, tag, push
-git add uv.lock src/kairos_ontology/__init__.py
-git commit -m "chore: bump version to X.Y.Z"
+git checkout main && git pull origin main      # main now contains the bump
 git tag -a vX.Y.Z -m "Release vX.Y.Z"
-git push && git push --tags
+git push origin vX.Y.Z                          # tag only — never push to main
 ```
+
+This keeps the tag reachable from `main` and needs no extra branch.
 
 The tag push triggers the **release.yml** workflow which:
 - Builds the package
 - Publishes to **PyPI**
 - Creates a **GitHub Release**
+
+> **If you forgot to bump on the branch** and already merged: do NOT push to `main`.
+> Open a small `chore/bump-X.Y.Z` PR with the bump, merge it, then tag the merged
+> commit on `main`. (This is the fallback, not the default path.)
 
 Wait for the release workflow to complete and confirm success:
 
@@ -225,6 +250,7 @@ Print a summary:
 | PR already exists for branch | Show URL: `gh pr view --web` |
 | Push rejected (behind remote) | `git pull --rebase origin <branch>` then retry |
 | Merge conflicts with main | Help resolve: `git fetch origin main && git rebase origin/main` |
+| Push to `main` rejected (protected branch hook) | Expected — never push to `main`. Land changes via a PR; for a release, only `git push origin vX.Y.Z` (tag) after merge. |
 
 ## Ontology-specific checklist
 
