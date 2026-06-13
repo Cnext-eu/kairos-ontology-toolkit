@@ -214,6 +214,15 @@ Running CLI directly can produce incomplete or incorrect output without warning.
 **Only exceptions:** The `import-tmdl` and `coverage-report`
 commands have no corresponding skill and may be run directly via CLI.
 
+**CLI soft skill-gate:** Skill-managed commands (`validate`, `project`, `init`,
+`new-repo`, `migrate`, `update`, `update-refmodels`, `import-source`,
+`import-flatfile`, `generate-staging`, `analyse-sources`, `init-dataplatform`)
+emit a loud stderr warning when run directly, redirecting to the owning skill,
+then still run (soft gate — see DD entry in the design-decisions log). When a
+skill legitimately wraps one of these commands, it sets `KAIROS_SKILL_CONTEXT=1`
+to silence the warning. If you see this warning, you bypassed a skill — stop and
+invoke the named skill instead.
+
 **If you are unsure which skill to use**, invoke **kairos-help** for guidance.
 
 ### No-autopilot for design skills (MANDATORY)

@@ -64,3 +64,32 @@ jobs:
           fi
 
           echo "✅ Version bumped: $MAIN_VERSION → $PR_VERSION"
+
+      - name: Require CHANGELOG entry for the bumped version
+        if: steps.labels.outputs.skip == 'false' && steps.changes.outputs.src_changed == 'true'
+        run: |
+          PR_VERSION=$(grep '__version__' src/kairos_ontology/__init__.py \
+            | sed 's/.*"\(.*\)".*/\1/')
+          MAIN_VERSION=$(git show origin/main:src/kairos_ontology/__init__.py \
+            | grep '__version__' | sed 's/.*"\(.*\)".*/\1/')
+
+          # Only enforce when the version actually changed (the bump check above
+          # already fails the unchanged case).
+          if [ "$MAIN_VERSION" = "$PR_VERSION" ]; then
+            exit 0
+          fi
+
+          # Pre-release versions (PEP 440 rc/b/a suffix) don't need an entry.
+          if [[ "$PR_VERSION" =~ (rc|b|a)[0-9] ]]; then
+            echo "Pre-release version $PR_VERSION — CHANGELOG entry optional."
+            exit 0
+          fi
+
+          if ! grep -qE "^## \[${PR_VERSION}\]" CHANGELOG.md; then
+            echo "::error::Version bumped to ${PR_VERSION} but CHANGELOG.md has no"
+            echo "::error::'## [${PR_VERSION}]' entry. Promote the [Unreleased] section to a"
+            echo "::error::dated '## [${PR_VERSION}]' heading, or add the 'skip-version' label."
+            exit 1
+          fi
+
+          echo "✅ CHANGELOG entry present for ${PR_VERSION}"

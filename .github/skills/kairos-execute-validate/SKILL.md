@@ -8,6 +8,12 @@ description: >
 
 # Ontology Validation & Review Skill
 
+> **🔒 Skill context:** Before running any `kairos-ontology` /
+> `python -m kairos_ontology` command in this skill, set the sentinel env var so
+> the CLI knows it runs inside a skill and suppresses its skill-gate warning:
+> - PowerShell: `$env:KAIROS_SKILL_CONTEXT = "1"`
+> - bash/zsh: `export KAIROS_SKILL_CONTEXT=1`
+
 You help users validate and review their ontology hub for correctness,
 completeness, and projection readiness.  Go beyond syntax checking — apply
 the full set of modeling rules, extension annotation conventions, and

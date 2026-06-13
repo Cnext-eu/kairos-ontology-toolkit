@@ -9,6 +9,12 @@ description: >
 
 # Toolkit Operations Skill
 
+> **🔒 Skill context:** Before running any `kairos-ontology` /
+> `python -m kairos_ontology` command in this skill, set the sentinel env var so
+> the CLI knows it runs inside a skill and suppresses its skill-gate warning:
+> - PowerShell: `$env:KAIROS_SKILL_CONTEXT = "1"`
+> - bash/zsh: `export KAIROS_SKILL_CONTEXT=1`
+
 You are helping a user with **kairos-ontology-toolkit operations** — releasing,
 upgrading, diagnosing versions, or updating reference models.
 
@@ -39,16 +45,27 @@ Release steps (all done manually or by Copilot):
 # 1. Bump version in __init__.py (single source of truth)
 #    Edit src/kairos_ontology/__init__.py: __version__ = "X.Y.Z"
 
-# 2. Update lock and build
+# 2. Update CHANGELOG.md — promote the [Unreleased] section to a dated
+#    release heading so it ships with the tag (enforced by CI, see below):
+#      ## [X.Y.Z] — YYYY-MM-DD
+#    Leave a fresh, empty [Unreleased] section above it for the next cycle.
+
+# 3. Update lock and build
 uv lock
 uv build
 
-# 3. Commit, tag, and push
-git add uv.lock src/kairos_ontology/__init__.py
+# 4. Commit, tag, and push
+git add uv.lock src/kairos_ontology/__init__.py CHANGELOG.md
 git commit -m "chore: bump version to X.Y.Z"
 git tag -a vX.Y.Z -m "Release vX.Y.Z"
 git push && git push --tags
 ```
+
+> **CHANGELOG is enforced, not optional.** `version-check.yml` fails a PR that
+> bumps `__version__` without a matching `## [X.Y.Z]` CHANGELOG entry, and
+> `release.yml` fails the tagged release itself if `CHANGELOG.md` has no
+> `## [X.Y.Z]` section. Pre-releases (`rc`/`beta`/`alpha`) are exempt. This keeps
+> CHANGELOG.md in lock-step with every GA release.
 
 #### Release levels explained
 
@@ -270,7 +287,7 @@ kairos-ontology update-refmodels --ref v1.2.1
 
 1. Performs a sparse shallow clone of `Cnext-eu/kairos-ontology-referencemodels`
 2. Extracts only the `ontology-reference-models/` subfolder
-3. Replaces the local `model/reference-models/` folder with the fetched version
+3. Replaces the local `ontology-reference-models/` folder with the fetched version
 4. Reports the commit SHA and version (if a VERSION file is present)
 5. Cleans up the temporary clone (no git history left behind)
 
@@ -285,7 +302,7 @@ After updating reference models:
 4. **Commit** — commit the updated reference models
 
 ```bash
-git add model/reference-models/
+git add ontology-reference-models/
 git commit -m "chore: update reference models to <version/sha>"
 ```
 

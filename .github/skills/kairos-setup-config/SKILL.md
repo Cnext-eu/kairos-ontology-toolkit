@@ -8,6 +8,12 @@ description: >
 
 # Hub Setup Skill
 
+> **🔒 Skill context:** Before running any `kairos-ontology` /
+> `python -m kairos_ontology` command in this skill, set the sentinel env var so
+> the CLI knows it runs inside a skill and suppresses its skill-gate warning:
+> - PowerShell: `$env:KAIROS_SKILL_CONTEXT = "1"`
+> - bash/zsh: `export KAIROS_SKILL_CONTEXT=1`
+
 You guide users through setting up a new Kairos ontology hub.
 
 > **IMPORTANT:** Always use the `python -m kairos_ontology` CLI commands to scaffold

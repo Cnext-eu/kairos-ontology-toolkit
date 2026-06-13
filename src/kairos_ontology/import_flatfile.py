@@ -664,4 +664,26 @@ def run_import_flatfile(
             )
             output_dir = Path("integration/sources") / system_name
 
-    return write_source_dir(tables, system_name, output_dir)
+    result_dir = write_source_dir(tables, system_name, output_dir)
+
+    # Best-effort: write an import-results session file under the hub root.
+    from .hub_utils import find_hub_root
+    from .import_session import write_import_session
+
+    hub_root = find_hub_root(Path.cwd())
+    if hub_root is None:
+        parts = result_dir.resolve().parts
+        if "integration" in parts:
+            idx = len(parts) - 1 - list(reversed(parts)).index("integration")
+            if idx > 0:
+                hub_root = Path(*parts[:idx])
+    write_import_session(
+        hub_root,
+        system_name,
+        "flatfile",
+        tables,
+        output_paths=[str(result_dir)],
+        next_step=f"Generate bronze vocabulary: kairos-ontology import-source --from {result_dir}",
+    )
+
+    return result_dir

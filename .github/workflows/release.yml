@@ -29,6 +29,23 @@ jobs:
           fi
           echo "✅ Version matches tag"
 
+      - name: Verify CHANGELOG has an entry for the release
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          # Pre-releases (rc/beta/alpha) are throwaway test builds — exempt.
+          if [[ "$TAG" =~ (rc|beta|alpha) ]]; then
+            echo "Pre-release $TAG — skipping CHANGELOG entry check."
+            exit 0
+          fi
+          if ! grep -qE "^## \[${VERSION}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${VERSION}]' section."
+            echo "::error::Promote the [Unreleased] section to a dated '## [${VERSION}]'"
+            echo "::error::heading and commit it before tagging the release."
+            exit 1
+          fi
+          echo "✅ CHANGELOG entry found for ${VERSION}"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

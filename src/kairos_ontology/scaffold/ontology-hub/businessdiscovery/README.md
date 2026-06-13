@@ -22,7 +22,7 @@ The domain `.ttl` files are never edited.
 ## File convention
 
 ```
-model/glossary/{company}-glossary.ttl
+businessdiscovery/{company}-glossary.ttl
 ```
 
 Each entry is a `skos:Concept`:

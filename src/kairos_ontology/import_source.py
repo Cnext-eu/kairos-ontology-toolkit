@@ -964,6 +964,14 @@ def run_import_source(
         logger.info(
             "Written %d per-table vocabulary files to %s", len(per_table), vocab_dir
         )
+        _write_import_session(
+            output_dir,
+            sys_name,
+            data,
+            report=None,
+            enrich=enrich,
+            output_paths=[str(vocab_dir)],
+        )
         return vocab_dir, None
 
     # --- Standard single-file mode ---
@@ -997,7 +1005,59 @@ def run_import_source(
         "Written %d per-table vocabulary files to %s", len(per_table), vocab_dir
     )
 
+    _write_import_session(
+        output_dir,
+        sys_name,
+        data,
+        report=report,
+        enrich=enrich,
+        output_paths=[str(output_file), str(vocab_dir)],
+    )
+
     return output_file, report
+
+
+def _write_import_session(
+    output_dir: Path,
+    system_name: str,
+    data: dict,
+    *,
+    report,
+    enrich: bool,
+    output_paths: list[str],
+) -> None:
+    """Best-effort write of the import-results session file under the hub root."""
+    from .hub_utils import find_hub_root
+    from .import_session import write_import_session
+
+    hub_root = find_hub_root(Path.cwd())
+    if hub_root is None:
+        hub_root = _hub_root_from_output(output_dir)
+    write_import_session(
+        hub_root,
+        system_name,
+        "yaml-import",
+        data.get("tables"),
+        change_report=report,
+        enrich=enrich,
+        output_paths=output_paths,
+        next_step=(
+            "Map source columns to the domain ontology with the "
+            "kairos-design-mapping skill."
+        ),
+    )
+
+
+def _hub_root_from_output(output_dir: Path) -> Path | None:
+    """Infer the hub root from an integration/sources/{system} output path."""
+    parts = output_dir.resolve().parts
+    try:
+        idx = len(parts) - 1 - list(reversed(parts)).index("integration")
+    except ValueError:
+        return None
+    if idx == 0:
+        return None
+    return Path(*parts[:idx])
 
 
 def _has_enrichable_data(data: dict) -> bool:

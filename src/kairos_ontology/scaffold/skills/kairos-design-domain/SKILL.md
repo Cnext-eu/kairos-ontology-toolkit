@@ -352,13 +352,19 @@ already imported/analysed.
    All new ontologies MUST use the namespace pattern documented there.
 2a. **Read business-discovery context (if present)** — check for the latest
    `ontology-hub/.sessions-design/businessdiscovery-*.md` and any
-   `ontology-hub/model/glossary/*.ttl` produced by the **kairos-design-discovery**
+   `ontology-hub/businessdiscovery/*.ttl` produced by the **kairos-design-discovery**
    skill. Use them as **background context** (what the company does, its sector,
    and its alternative terminology) to inform naming proposals and to spot terms the
    business flagged for modeling. This is context only — it does **not** relax
    Gate 6: source data (bronze vocab + TMDL) remains the authoritative evidence for
    which classes/properties exist. Do not copy glossary `skos:altLabel`s into the
    domain ontology (they belong in the glossary overlay).
+   > **Glossary terms may point at reference-model IRIs.** Discovery links a term to
+   > an existing **reference-model** IRI when no hub class exists yet (it materializes
+   > the full ref-model breadth first). When you **claim** such a class into this hub
+   > (e.g. via `owl:imports` + `silverInclude`), the glossary's `rdfs:seeAlso` can be
+   > reconciled to the new hub IRI on the next **kairos-design-discovery** rerun —
+   > you don't edit the glossary here (Gate 4 of that skill owns it).
 3. **Ask: Are we starting from a reference model?** — this is the FIRST question
    to ask the user before any modeling work.  See the
    [Reference-model-first workflow](#reference-model-first-workflow) section
@@ -650,7 +656,7 @@ and **read those TTLs** to extract the reference model vocabulary into your cont
 > ```bash
 > kairos-ontology check-inventory
 > ```
-> This deterministically verifies that `model/inventory/*-inventory.yaml` exists
+> This deterministically verifies that `referencemodels-unpacked/*-inventory.yaml` exists
 > for every source TTL **and** is up to date (the stored `source_sha256` matches
 > the current file). **If the command exits non-zero (missing or stale), STOP** —
 > do not propose any class or property. Run `kairos-ontology generate-inventory`,
@@ -658,8 +664,8 @@ and **read those TTLs** to extract the reference model vocabulary into your cont
 > Only continue past this point when the check is green. This guarantees the
 > specialization tree you reason over below reflects the current reference models.
 
-> **Prefer materialized inventories (DD-046 / DD-044).** Once the pre-flight gate
-> is green, read `model/inventory/*.yaml` **first** — they already unpack the full
+> **Prefer materialized inventories (DD-046 / DD-044 / DD-054).** Once the pre-flight
+> gate is green, read `referencemodels-unpacked/*.yaml` **first** — they already unpack the full
 > **specialization tree** (subclasses of each reference class) and the
 > **subclass-specific properties** (e.g. `registrationNumber` on `Organisation`, a
 > subclass of `Party`). Raw TTL reading (below) only surfaces properties whose
@@ -668,6 +674,13 @@ and **read those TTLs** to extract the reference model vocabulary into your cont
 > a local class/property that already exists on a subclass. Use the raw TTL steps
 > below only as a fallback when no inventory exists **and** the pre-flight gate was
 > run in `--warn-only` mode by an operator who accepts the degraded view.
+>
+> **A single domain may have several inventories — read them all (DD-054).** A
+> module name like `party` exists in multiple reference models, so the inventory is
+> namespaced per model: `bsp-party-inventory.yaml`, `imo-party-inventory.yaml`,
+> `dcsa-party-inventory.yaml`, … Glob `referencemodels-unpacked/*party*-inventory.yaml` (not
+> just `party-inventory.yaml`) and merge them, or you will miss reuse candidates
+> such as `bsp:TradeParty` and the maritime/transport role classes.
 
 1. **Resolve URIs via the catalog chain:**
    ```bash
