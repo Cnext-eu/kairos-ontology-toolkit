@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.3] — 2026-06-13
+
+### Fixed
+- **`validate` / `project` now resolve paths from the hub root, not the CWD (DD-064).**
+  Both commands hardcoded option defaults relative to the current directory
+  (`ontology-hub/model/...`, `ontology-hub/output`), assuming you ran them from the
+  repo root. Run from inside `ontology-hub/` (or in a hub without a `shapes/` dir),
+  `validate` hard-errored with Click exit 2 ("Path '…' does not exist") before
+  running, and `project` wrote artifacts to a doubly-nested
+  `ontology-hub/ontology-hub/output/`. Defaults are now resolved via
+  `find_hub_root()` (like `coverage-report`), so both work whether invoked from the
+  repo root or inside the hub; `--shapes` is optional (SHACL skipped if absent);
+  catalog auto-detection is hub-root-aware. Explicit `--ontologies`/`--shapes`/
+  `--output`/`--catalog` still win. Note: this prevents *future* nesting — a hub
+  with an existing stray `ontology-hub/ontology-hub/output/` should delete it and
+  regenerate.
+
+### Added
+- **Deterministic SKOS glossary builder (DD-063).** New read-only, AI-free CLI
+  command `kairos-ontology build-glossary` reads the confirmed business-discovery
+  extraction files (`businessdiscovery/_extractions/*.extraction.yaml`) and emits
+  the company glossary overlay (`businessdiscovery/{company}-glossary.ttl`) as a
+  SKOS `ConceptScheme` via `rdflib`. It aggregates `extracted_terms` into
+  deduplicated concepts (grouped by `linked_iri`, else `prefLabel`), maps
+  `linked_iri` to `rdfs:seeAlso` (or `skos:relatedMatch` when a term sets
+  `link_relation: relatedMatch`), and auto-detects the company namespace from the
+  hub `README.md`. The `kairos-design-discovery` skill now calls this command
+  instead of hand-writing a one-off `rdflib` script each run. The domain ontology
+  is never modified (overlay only).
+
 ## [3.15.2] — 2026-06-13
 
 ### Fixed

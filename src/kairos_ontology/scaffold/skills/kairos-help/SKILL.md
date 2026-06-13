@@ -260,6 +260,10 @@ kairos-ontology analyse-sources [--sources PATH] [--ref-models PATH] [--output P
 
 # Generate coverage report (deterministic alignment, post-modeling)
 kairos-ontology coverage-report [--ontology PATH] [--ref-models PATH] [--format both]
+
+# Build the SKOS company glossary from confirmed discovery extractions (deterministic)
+kairos-ontology build-glossary [--company-specific-only] [--company-domain acme.com] \
+  [--glossary-namespace IRI] [--output PATH]
 ```
 
 Default paths:

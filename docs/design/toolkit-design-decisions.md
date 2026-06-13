@@ -110,6 +110,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-060](#dd-060-per-document-extraction-tracking-for-business-discovery) | Per-Document Extraction Tracking for Business Discovery | Accepted | 2026-06-13 |
 | [DD-061](#dd-061-deterministic-source-coverage-gates-check-alignment--check-source-coverage) | Deterministic Source-Coverage Gates (check-alignment + check-source-coverage) | Accepted | 2026-06-13 |
 | [DD-062](#dd-062-update-resolves-an-upward-walked-managed-root-no-silent-split-hub) | `update` Resolves an Upward-Walked Managed Root (No Silent Split-Hub) | Accepted | 2026-06-13 |
+| [DD-063](#dd-063-deterministic-skos-glossary-builder-build-glossary) | Deterministic SKOS Glossary Builder (`build-glossary`) | Accepted | 2026-06-13 |
+| [DD-064](#dd-064-validate--project-resolve-paths-from-the-hub-root-not-cwd) | `validate` / `project` Resolve Paths From the Hub Root (Not CWD) | Accepted | 2026-06-13 |
 
 ---
 
@@ -3571,6 +3573,135 @@ fix is scoped to `update`'s managed-root resolution.
   hub and never creates a second one.
 - Running in a non-hub directory hard-errors instead of silently scaffolding.
 - Legacy hubs (managed `.github`, no pin) still get a generated `pyproject.toml`.
+
+---
+
+## DD-063: Deterministic SKOS Glossary Builder (`build-glossary`)
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `src/kairos_ontology/glossary_builder.py`, `src/kairos_ontology/cli/main.py` (`build-glossary`), `kairos-design-discovery` skill  
+**Implementation:** `build_glossary()` + helpers in `glossary_builder.py`; `build_glossary_cmd` in `cli/main.py`
+
+### Context
+
+The `kairos-design-discovery` skill (Phase 2) captures a company's
+alternative/business terminology as structured records in per-document extraction
+files (`businessdiscovery/_extractions/*.extraction.yaml`, DD-060). Each
+`extracted_terms` entry already carries `altLabel`, `prefLabel`, `definition`,
+`category`, `company_specific` and a resolved `linked_iri`.
+
+To turn those records into the company glossary TTL, the skill instructed the
+agent to **hand-write a one-off `rdflib` script every run**. That serialization is
+purely mechanical and identical each time, yet being agent-authored it was
+non-deterministic, untestable, and risked drift (PascalCase local names,
+`rdfs:seeAlso` vs `skos:relatedMatch`, splitting/grouping, deduping altLabels).
+This mirrors the bookkeeping that DD-060 already moved out of the skill into a
+deterministic, unit-tested module.
+
+### Decision
+
+Add a deterministic, AI-free `kairos-ontology build-glossary` command backed by a
+new `glossary_builder.py` module. It reads the confirmed extraction files,
+aggregates `extracted_terms` into deduplicated SKOS concepts (grouped by
+`linked_iri`, else normalized `prefLabel`), and emits
+`businessdiscovery/{company}-glossary.ttl` as a SKOS `ConceptScheme` overlay via
+`rdflib` (never string concatenation). `linked_iri` becomes `rdfs:seeAlso`, or
+`skos:relatedMatch` when the term sets `link_relation: relatedMatch` (e.g. a
+reference-model cross-reference). Company name/domain and the glossary namespace
+(`https://{company-domain}/glossary#`) are auto-detected from the hub `README.md`
+and overridable via flags.
+
+The *judgement* (prefLabel choice, IRI resolution, multi-IRI splitting, term
+confirmation) stays interactive in the skill; only the TTL writing is delegated to
+the command. Like `discovery-status` and the `check-*` gates, `build-glossary` is a
+deterministic helper and is **not** in `_SKILL_COVERED_COMMANDS` (no soft
+skill-gate warning).
+
+### Rationale
+
+Splitting "decide" (agent) from "serialize" (toolkit) yields consistent, testable,
+idempotent output and removes a recurring source of agent-authored variance. It
+keeps the glossary an overlay (Gate 4 — the domain `.ttl` is never touched) and
+reuses the existing extraction schema as the single source of truth.
+
+### Consequences
+
+- The discovery skill now calls `build-glossary` instead of hand-writing Python.
+- Glossary serialization is unit-tested (`tests/test_glossary_builder.py`) and
+  reruns are idempotent.
+- The extraction schema gains an optional `link_relation` field
+  (`seeAlso` default | `relatedMatch`).
+
+---
+
+## DD-064: `validate` / `project` Resolve Paths From the Hub Root (Not CWD)
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `src/kairos_ontology/cli/main.py` (`validate`, `project`, `_resolve_catalog`)  
+**Implementation:** `find_hub_root()`-based default resolution in the `validate`/`project` command bodies; hub-root-aware `_resolve_catalog()`
+
+### Context
+
+The `validate` and `project` commands hardcoded CLI option defaults relative to the
+current working directory, assuming invocation from the **repo root**:
+
+- `validate`: `--ontologies ontology-hub/model/ontologies`, `--shapes ontology-hub/model/shapes`
+- `project`: `--ontologies ontology-hub/model/ontologies`, `--output ontology-hub/output`
+- shared `_resolve_catalog` candidates: `ontology-hub/catalog-v001.xml`,
+  `ontology-reference-models/catalog-v001.xml`
+
+Running from **inside** `ontology-hub/` (a common workflow) broke both commands
+through the same cwd-relative root cause, with two observed symptoms:
+
+1. **`validate` hard-errored before running.** `--ontologies`/`--shapes` used
+   `click.Path(exists=True)`, so Click validated the (now wrong) **default** and
+   exited 2 ("Path '…' does not exist") before the body ran. The same failure hit
+   any hub legitimately lacking a `shapes/` directory (SHACL shapes are optional).
+2. **`project` nested its output.** `--output ontology-hub/output` resolved to
+   `ontology-hub/ontology-hub/output/`, so generated silver/dbt/powerbi artifacts
+   and `projection-report.json` landed doubly-nested instead of under
+   `ontology-hub/output/medallion/…`.
+
+Newer commands (`coverage-report`, `discovery-status`, `build-glossary`,
+`generate-inventory`) already avoid this by resolving from `find_hub_root()`, which
+detects the hub whether cwd is the repo root or the hub itself.
+
+### Decision
+
+Resolve `validate`/`project` default paths from `find_hub_root(cwd)` (mirroring
+`coverage-report`):
+
+- Change `--ontologies` / `--shapes` / `--output` / `--catalog` defaults to `None`
+  and resolve them in the command body from the detected hub root
+  (`hub_root/model/ontologies`, `hub_root/model/shapes`, `hub_root/output`).
+- Drop `exists=True` on `--shapes` (optional; `run_validation` already guards with
+  `shapes_path.exists()`) and on `--ontologies` (replaced by a manual existence
+  check that emits a clear, actionable error).
+- Make `_resolve_catalog(explicit, hub_root, cwd)` search the hub catalog
+  (`hub_root/catalog-v001.xml`) and the reference-models catalog (via
+  `_resolve_ref_models_dir`) first, keeping the legacy cwd-relative candidates as a
+  fallback.
+- Explicit user-supplied paths always win.
+
+### Rationale
+
+Reusing the established `find_hub_root` pattern makes both commands work identically
+from the repo root or from inside `ontology-hub/`, matching the rest of the CLI.
+Dropping `exists=True` in favour of manual checks turns Click's opaque
+default-validation `UsageError` into a clear message and supports shapes-less hubs.
+`project` output anchored at `hub_root/output` permanently eliminates the
+doubly-nested output directory.
+
+### Consequences
+
+- `validate` no longer exits 2 when run inside `ontology-hub/` or in a hub without
+  `shapes/`; `project` writes to `<hub>/output` regardless of cwd.
+- Regression coverage in `tests/test_cli_path_resolution.py` exercises both commands
+  from the repo root and from inside the hub, with/without a `shapes/` dir.
+- This fixes only *future* runs; a hub that already has a stray nested
+  `ontology-hub/ontology-hub/output/` should delete it and regenerate.
 
 ---
 

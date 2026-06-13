@@ -532,39 +532,64 @@ def lifecycle():
     print()
 
 
-# Catalog search order: hub-local catalog first, then shared reference-models.
+# Catalog filename used by hubs and the shared reference-models repo.
+_CATALOG_FILENAME = "catalog-v001.xml"
+
+# Legacy cwd-relative search order (repo-root invocation), kept as a fallback.
 _CATALOG_CANDIDATES = [
     Path("ontology-hub/catalog-v001.xml"),
     Path("ontology-reference-models/catalog-v001.xml"),
 ]
 
 
-def _resolve_catalog(explicit: str | None) -> Path | None:
+def _resolve_catalog(
+    explicit: str | None,
+    hub_root: Path | None = None,
+    cwd: Path | None = None,
+) -> Path | None:
     """Return the catalog path to use.
 
     If *explicit* is given (user passed ``--catalog``), use it directly.
-    Otherwise, search ``_CATALOG_CANDIDATES`` in order and return the
-    first one that exists, or ``None`` if no catalog is found.
+    Otherwise search, in order:
+
+    1. ``hub_root/catalog-v001.xml`` (the hub-local catalog),
+    2. the reference-models catalog (``_resolve_ref_models_dir``),
+    3. the legacy cwd-relative ``_CATALOG_CANDIDATES`` (repo-root invocation).
+
+    Resolving from *hub_root* makes catalog auto-detection work whether the command
+    is run from the repo root or from inside ``ontology-hub/`` (DD-064).  Returns
+    the first existing candidate, or ``None`` if no catalog is found.
     """
     if explicit:
         return Path(explicit)
-    for candidate in _CATALOG_CANDIDATES:
+
+    if cwd is None:
+        cwd = Path.cwd()
+
+    candidates: list[Path] = []
+    if hub_root is not None:
+        candidates.append(hub_root / _CATALOG_FILENAME)
+    ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
+    if ref_models_dir is not None:
+        candidates.append(ref_models_dir / _CATALOG_FILENAME)
+    candidates.extend(_CATALOG_CANDIDATES)
+
+    for candidate in candidates:
         if candidate.exists():
             return candidate
     return None
 
 
 @cli.command()
-@click.option('--ontologies', type=click.Path(exists=True),
-              default='ontology-hub/model/ontologies',
-              help='Path to ontologies directory')
-@click.option('--shapes', type=click.Path(exists=True),
-              default='ontology-hub/model/shapes',
-              help='Path to SHACL shapes directory')
+@click.option('--ontologies', type=click.Path(exists=True), default=None,
+              help='Path to ontologies directory (default: auto-detect from hub).')
+@click.option('--shapes', type=click.Path(), default=None,
+              help='Path to SHACL shapes directory (default: auto-detect from hub; '
+                   'optional — SHACL is skipped if it does not exist).')
 @click.option('--catalog', type=click.Path(exists=True),
               default=None,
               help='Path to catalog file for resolving imports '
-                   '(default: ontology-hub/catalog-v001.xml or '
+                   '(default: <hub>/catalog-v001.xml or '
                    'ontology-reference-models/catalog-v001.xml)')
 @click.option('--all', 'validate_all', is_flag=True,
               help='Validate all: syntax + SHACL + consistency')
@@ -574,10 +599,35 @@ def _resolve_catalog(explicit: str | None) -> Path | None:
 @click.option('--gdpr', is_flag=True, help='Scan for PII properties without GDPR satellite protection')
 def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consistency, gdpr):
     """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan)."""
-    ontologies_path = Path(ontologies)
-    shapes_path = Path(shapes)
-    catalog_path = _resolve_catalog(catalog)
-    
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+
+    if ontologies is not None:
+        ontologies_path = Path(ontologies)
+    elif hub_root is not None:
+        ontologies_path = hub_root / "model" / "ontologies"
+    else:
+        ontologies_path = cwd / "ontology-hub" / "model" / "ontologies"
+
+    if not ontologies_path.is_dir():
+        click.echo(
+            f"❌ Cannot find ontologies directory at {ontologies_path}. "
+            "Run from the hub root (or inside ontology-hub/), or pass --ontologies.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if shapes is not None:
+        shapes_path = Path(shapes)
+    elif hub_root is not None:
+        shapes_path = hub_root / "model" / "shapes"
+    else:
+        shapes_path = cwd / "ontology-hub" / "model" / "shapes"
+
+    catalog_path = _resolve_catalog(catalog, hub_root, cwd)
+
     # Default to all if nothing specified
     if not any([validate_all, syntax, shacl, consistency, gdpr]):
         validate_all = True
@@ -601,27 +651,50 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
 
 
 @cli.command()
-@click.option('--ontologies', type=click.Path(exists=True),
-              default='ontology-hub/model/ontologies',
-              help='Path to ontologies directory')
+@click.option('--ontologies', type=click.Path(exists=True), default=None,
+              help='Path to ontologies directory (default: auto-detect from hub).')
 @click.option('--catalog', type=click.Path(exists=True),
               default=None,
               help='Path to catalog file for resolving imports '
-                   '(default: ontology-hub/catalog-v001.xml or '
+                   '(default: <hub>/catalog-v001.xml or '
                    'ontology-reference-models/catalog-v001.xml)')
-@click.option('--output', type=click.Path(),
-              default='ontology-hub/output',
-              help='Output directory for projections')
+@click.option('--output', type=click.Path(), default=None,
+              help='Output directory for projections (default: <hub>/output).')
 @click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report']),
               default='all', help='Projection target')
 @click.option('--namespace', type=str, default=None,
               help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
 def project(ontologies, catalog, output, target, namespace):
     """Generate projections from ontologies."""
-    ontologies_path = Path(ontologies)
-    catalog_path = _resolve_catalog(catalog)
-    output_path = Path(output)
-    
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+
+    if ontologies is not None:
+        ontologies_path = Path(ontologies)
+    elif hub_root is not None:
+        ontologies_path = hub_root / "model" / "ontologies"
+    else:
+        ontologies_path = cwd / "ontology-hub" / "model" / "ontologies"
+
+    if not ontologies_path.is_dir():
+        click.echo(
+            f"❌ Cannot find ontologies directory at {ontologies_path}. "
+            "Run from the hub root (or inside ontology-hub/), or pass --ontologies.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    catalog_path = _resolve_catalog(catalog, hub_root, cwd)
+
+    if output is not None:
+        output_path = Path(output)
+    elif hub_root is not None:
+        output_path = hub_root / "output"
+    else:
+        output_path = cwd / "ontology-hub" / "output"
+
     run_projections(
         ontologies_path=ontologies_path,
         catalog_path=catalog_path,
@@ -2304,6 +2377,112 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
         click.echo("\n⚠ Discovery documents checked with warnings (not blocking).")
     else:
         click.echo("\n✅ All discovery documents are processed and up to date.")
+
+
+@cli.command(name='build-glossary')
+@click.option('--extraction-dir', type=click.Path(), default=None,
+              help='Path to businessdiscovery/_extractions/ (default: auto-detect from hub).')
+@click.option('--output', 'output_path', type=click.Path(), default=None,
+              help='Output glossary TTL path (default: businessdiscovery/{company}-glossary.ttl).')
+@click.option('--company-domain', 'company_domain', type=str, default=None,
+              help='Company domain (e.g. acme.com). Default: auto-detect from hub README.')
+@click.option('--company-name', 'company_name', type=str, default=None,
+              help='Company display name for the scheme label. Default: auto-detect from hub README.')
+@click.option('--glossary-namespace', 'glossary_namespace', type=str, default=None,
+              help='Glossary namespace IRI. Default: https://{company-domain}/glossary#.')
+@click.option('--company-specific-only', is_flag=True, default=False,
+              help='Only include terms flagged company_specific in the extractions.')
+def build_glossary_cmd(extraction_dir, output_path, company_domain, company_name,
+                       glossary_namespace, company_specific_only):
+    """Build the SKOS company glossary TTL from confirmed extractions (DD-062).
+
+    Deterministic, AI-free serializer for the ``kairos-design-discovery`` skill:
+    reads the per-document extraction files under ``businessdiscovery/_extractions/``
+    and aggregates their ``extracted_terms`` into a SKOS ``ConceptScheme`` glossary
+    overlay.  Terms are grouped by their resolved ``linked_iri`` (or ``prefLabel``),
+    ``altLabel`` values are deduplicated, and ``linked_iri`` becomes ``rdfs:seeAlso``
+    (or ``skos:relatedMatch`` when the term sets ``link_relation: relatedMatch``).
+
+    The domain ontology is never touched — this writes only the glossary overlay.
+
+    \\b
+    Examples:
+      kairos-ontology build-glossary
+      kairos-ontology build-glossary --company-specific-only
+      kairos-ontology build-glossary --company-domain acme.com --output glossary.ttl
+    """
+    from ..glossary_builder import build_glossary, derive_glossary_namespace, read_company_info
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+
+    if extraction_dir:
+        ext_path = Path(extraction_dir)
+    elif hub_root:
+        ext_path = hub_root / "businessdiscovery" / "_extractions"
+    else:
+        ext_path = cwd / "businessdiscovery" / "_extractions"
+
+    # Resolve company name + domain (CLI flags win, else parse the hub README).
+    readme_name, readme_domain = (None, None)
+    if hub_root and (not company_name or not company_domain):
+        readme_name, readme_domain = read_company_info(hub_root)
+    company_name = company_name or readme_name
+    company_domain = company_domain or readme_domain
+
+    if not glossary_namespace:
+        if not company_domain:
+            click.echo(
+                "❌ Could not determine the company domain. Pass --company-domain "
+                "or --glossary-namespace (no hub README value found).",
+                err=True,
+            )
+            raise SystemExit(1)
+        glossary_namespace = derive_glossary_namespace(company_domain)
+
+    scheme_label = f"{company_name} Business Glossary" if company_name else "Business Glossary"
+    scheme_description = (
+        "Company-specific terminology overlay for source-to-domain mapping. "
+        "Does not modify the domain ontology."
+    )
+
+    if output_path:
+        out_path = Path(output_path)
+    else:
+        slug = (company_domain.split(".")[0] if company_domain else "company").lower()
+        base = hub_root / "businessdiscovery" if hub_root else cwd / "businessdiscovery"
+        out_path = base / f"{slug}-glossary.ttl"
+
+    click.echo("🛠  Building business glossary")
+    click.echo(f"   Extraction dir: {ext_path}")
+    click.echo(f"   Namespace:      {glossary_namespace}")
+    click.echo(f"   Output:         {out_path}")
+
+    if not ext_path.is_dir():
+        click.echo(
+            "   ⚠ No _extractions/ directory found — run the kairos-design-discovery "
+            "skill first to extract terminology.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    result = build_glossary(
+        extraction_dir=ext_path,
+        output_path=out_path,
+        glossary_namespace=glossary_namespace,
+        scheme_label=scheme_label,
+        scheme_description=scheme_description,
+        company_specific_only=company_specific_only,
+    )
+
+    click.echo(
+        f"   ✓ Wrote {len(result.concepts)} concept(s) from "
+        f"{len(result.sources)} extraction file(s)."
+    )
+    if result.skipped_terms:
+        click.echo(f"   ⏭ Skipped {result.skipped_terms} term(s) (no prefLabel or filtered).")
+    click.echo("\n✅ Glossary built.")
 
 
 @cli.command()
