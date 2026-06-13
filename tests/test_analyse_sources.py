@@ -845,7 +845,7 @@ class TestFindSpecializations:
 
     def test_cycle_protection(self):
         """A circular subClassOf should not cause infinite loop."""
-        from rdflib import Graph, URIRef, Namespace
+        from rdflib import Graph, Namespace
         g = Graph()
         ns = Namespace("http://example.org/")
         g.add((ns.A, RDF.type, OWL.Class))
