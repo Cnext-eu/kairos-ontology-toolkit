@@ -1008,7 +1008,7 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
 
 @cli.command(name='import-flatfile')
 @click.option('--from', 'from_path', type=click.Path(exists=True), required=True,
-              help='Path to CSV file, Excel file, or directory containing flat files.')
+              help='Path to CSV file, Excel file, Parquet file, or directory of flat files.')
 @click.option('--system', 'system_name', default=None,
               help='System name (default: derived from filename/directory).')
 @click.option('--output', '-o', type=click.Path(), default=None,
@@ -1024,7 +1024,7 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
 def import_flatfile(
     from_path, system_name, output, sample_size, max_rows, exclude_columns, keep_technical,
 ):
-    """Import CSV/Excel flat files as source schema documentation.
+    """Import CSV/Excel/Parquet flat files as source schema documentation.
 
     Reads flat files and produces the standard source schema format
     (_manifest.yaml + per-table YAML + samples). Use import-source afterwards
@@ -1034,12 +1034,14 @@ def import_flatfile(
     Supported inputs:
       - Single .csv file → 1 table
       - Single .xlsx file → 1 table per worksheet
-      - Directory of .csv/.xlsx files → 1 table per file/sheet
+      - Single .parquet file → 1 table
+      - Directory of .csv/.xlsx/.parquet files → 1 table per file/sheet
 
     \b
     Examples:
       kairos-ontology import-flatfile --from exports/customers.csv --system erp
       kairos-ontology import-flatfile --from data/report.xlsx --system finance
+      kairos-ontology import-flatfile --from exports/orders.parquet --system wms
       kairos-ontology import-flatfile --from data-exports/ --system legacy-erp
       kairos-ontology import-flatfile --from .input/data --system erp \\
         --exclude-columns "volume,subfolder,table"

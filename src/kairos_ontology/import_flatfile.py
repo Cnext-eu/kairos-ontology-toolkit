@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Import-Flatfile — create source schema YAML from CSV/Excel flat files.
+"""Import-Flatfile — create source schema YAML from CSV/Excel/Parquet flat files.
 
-Reads CSV or Excel files and produces the same intermediate YAML + samples format
-that extract-schema generates from live databases. The output directory can then be
-passed to ``import-source`` to generate bronze vocabulary TTL.
+Reads CSV, Excel, or Parquet files and produces the same intermediate YAML + samples
+format that extract-schema generates from live databases. The output directory can then
+be passed to ``import-source`` to generate bronze vocabulary TTL.
 
-Pipeline: CSV/XLSX → _manifest.yaml + {table}.yaml + {table}.samples.yaml
+Pipeline: CSV/XLSX/Parquet → _manifest.yaml + {table}.yaml + {table}.samples.yaml
           → import-source → .vocabulary.ttl → analyse-sources
 """
 
@@ -285,6 +285,151 @@ def read_xlsx_tables(
 
 
 # --------------------------------------------------------------------------- #
+# Parquet Reading
+# --------------------------------------------------------------------------- #
+
+
+def _arrow_type_to_sql(arrow_type: Any) -> str:
+    """Map a pyarrow data type to the SQL-like type vocabulary.
+
+    Parquet carries a reliable typed schema, so types are mapped directly
+    rather than inferred from string values.
+
+    Args:
+        arrow_type: A ``pyarrow.DataType`` instance.
+
+    Returns:
+        One of: bigint, int, decimal, date, datetime, bit, varchar(max).
+    """
+    import pyarrow as pa
+
+    if pa.types.is_boolean(arrow_type):
+        return "bit"
+    if pa.types.is_int64(arrow_type) or pa.types.is_uint64(arrow_type):
+        return "bigint"
+    if pa.types.is_integer(arrow_type):
+        # int8/16/32 and uint8/16/32
+        if pa.types.is_uint32(arrow_type):
+            return "bigint"
+        return "int"
+    if (
+        pa.types.is_floating(arrow_type)
+        or pa.types.is_decimal(arrow_type)
+    ):
+        return "decimal"
+    if pa.types.is_timestamp(arrow_type):
+        return "datetime"
+    if pa.types.is_date(arrow_type):
+        return "date"
+    return "varchar(max)"
+
+
+def read_parquet_table(
+    path: Path, max_rows: int = DEFAULT_MAX_ROWS, sample_size: int = DEFAULT_SAMPLE_SIZE
+) -> dict[str, Any]:
+    """Read a single Parquet file into a table data dict.
+
+    Only sample data is read — at most ``max_rows`` rows are pulled (a single
+    Arrow batch). The full Parquet body is never loaded into memory, mirroring
+    the CSV/Excel readers. Column data types come directly from the Parquet
+    schema; sample values are stringified to match the YAML output format.
+
+    Args:
+        path: Path to the .parquet file.
+        max_rows: Maximum rows to read for sampling.
+        sample_size: Number of sample rows to store.
+
+    Returns:
+        Dict with keys: name, row_count, columns, sample_rows.
+    """
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        raise ImportError(
+            "pyarrow is required for Parquet support. "
+            "Install with: pip install kairos-ontology-toolkit[parquet]"
+        )
+
+    table_name = path.stem
+    pf = pq.ParquetFile(path)
+
+    # Read at most max_rows rows (a single batch) — never the whole file.
+    batch = None
+    for b in pf.iter_batches(batch_size=max_rows):
+        batch = b
+        break
+
+    schema = pf.schema_arrow
+    headers = list(schema.names)
+
+    if batch is None:
+        # Empty parquet file: still emit columns from the schema.
+        columns = [
+            {
+                "name": name,
+                "data_type": _arrow_type_to_sql(schema.field(name).type),
+                "ordinal_position": pos,
+                "nullable": True,
+            }
+            for pos, name in enumerate(headers, start=1)
+        ]
+        return {
+            "name": table_name,
+            "row_count": 0,
+            "columns": columns,
+            "sample_rows": [],
+        }
+
+    row_count = batch.num_rows
+
+    # Build per-row string dicts for samples (mirrors CSV/XLSX format).
+    column_values: dict[str, list] = {
+        name: batch.column(i).to_pylist() for i, name in enumerate(headers)
+    }
+
+    columns = []
+    for pos, col_name in enumerate(headers, start=1):
+        raw_values = column_values[col_name]
+        non_empty_values = [
+            str(v).strip()
+            for v in raw_values
+            if v is not None and str(v).strip()
+        ]
+        distinct_values = list(dict.fromkeys(non_empty_values))
+        nullable = len(non_empty_values) < row_count
+
+        col_dict: dict[str, Any] = {
+            "name": col_name,
+            "data_type": _arrow_type_to_sql(schema.field(col_name).type),
+            "ordinal_position": pos,
+            "nullable": nullable,
+        }
+        if distinct_values:
+            col_dict["distinct_count"] = len(distinct_values)
+            col_dict["samples"] = distinct_values[:sample_size]
+
+        columns.append(col_dict)
+
+    # Sample rows (raw dicts for .samples.yaml), stringified, empties dropped.
+    sample_rows = []
+    for r in range(min(sample_size, row_count)):
+        row = {
+            col_name: str(column_values[col_name][r]).strip()
+            for col_name in headers
+            if column_values[col_name][r] is not None
+            and str(column_values[col_name][r]).strip()
+        }
+        sample_rows.append(row)
+
+    return {
+        "name": table_name,
+        "row_count": row_count,
+        "columns": columns,
+        "sample_rows": sample_rows,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Output Writing
 # --------------------------------------------------------------------------- #
 
@@ -435,7 +580,8 @@ def run_import_flatfile(
 ) -> Path:
     """Orchestrate the flatfile import workflow.
 
-    Accepts a single CSV, single XLSX, or a directory containing CSV/XLSX files.
+    Accepts a single CSV, single XLSX, single Parquet, or a directory containing
+    CSV/XLSX/Parquet files.
 
     Args:
         source_path: Path to CSV, XLSX file, or directory.
@@ -459,9 +605,11 @@ def run_import_flatfile(
             tables.append(read_csv_table(source_path, max_rows, sample_size))
         elif suffix in (".xlsx", ".xls"):
             tables.extend(read_xlsx_tables(source_path, max_rows, sample_size))
+        elif suffix == ".parquet":
+            tables.append(read_parquet_table(source_path, max_rows, sample_size))
         else:
             raise ValueError(
-                f"Unsupported file type: {suffix}. Use .csv or .xlsx"
+                f"Unsupported file type: {suffix}. Use .csv, .xlsx, or .parquet"
             )
 
     elif source_path.is_dir():
@@ -472,10 +620,12 @@ def run_import_flatfile(
                 tables.append(read_csv_table(f, max_rows, sample_size))
             elif f.suffix.lower() in (".xlsx", ".xls"):
                 tables.extend(read_xlsx_tables(f, max_rows, sample_size))
+            elif f.suffix.lower() == ".parquet":
+                tables.append(read_parquet_table(f, max_rows, sample_size))
 
         if not tables:
             raise ValueError(
-                f"No CSV or Excel files found in: {source_path}"
+                f"No CSV, Excel, or Parquet files found in: {source_path}"
             )
     else:
         raise ValueError(f"Path does not exist: {source_path}")

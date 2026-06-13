@@ -7,10 +7,12 @@ import pytest
 from kairos_ontology.import_flatfile import (
     infer_column_type,
     read_csv_table,
+    read_parquet_table,
     write_source_dir,
     run_import_flatfile,
     detect_technical_columns,
     exclude_columns_from_tables,
+    _arrow_type_to_sql,
 )
 
 
@@ -474,7 +476,7 @@ class TestSameFileCopyGuard:
     def test_empty_directory_raises(self, tmp_path):
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
-        with pytest.raises(ValueError, match="No CSV or Excel"):
+        with pytest.raises(ValueError, match="No CSV, Excel, or Parquet"):
             run_import_flatfile(empty_dir, output_dir=tmp_path / "out")
 
     def test_system_name_derived_from_filename(self, tmp_path):
@@ -523,3 +525,171 @@ class TestFlatfileToImportSourcePipeline:
 
         # Should have the accounts table
         assert "accounts" in ttl.lower() or "Accounts" in ttl
+
+
+# --------------------------------------------------------------------------- #
+# Parquet Reading Tests
+# --------------------------------------------------------------------------- #
+
+pa = pytest.importorskip("pyarrow")
+
+
+def _write_parquet(path, columns: dict):
+    """Helper: write a dict of column -> pyarrow array/list to a parquet file."""
+    import pyarrow.parquet as pq
+
+    table = pa.table(columns)
+    pq.write_table(table, path)
+    return path
+
+
+class TestArrowTypeToSql:
+    def test_bool_maps_to_bit(self):
+        assert _arrow_type_to_sql(pa.bool_()) == "bit"
+
+    def test_int32_maps_to_int(self):
+        assert _arrow_type_to_sql(pa.int32()) == "int"
+
+    def test_int16_maps_to_int(self):
+        assert _arrow_type_to_sql(pa.int16()) == "int"
+
+    def test_int64_maps_to_bigint(self):
+        assert _arrow_type_to_sql(pa.int64()) == "bigint"
+
+    def test_uint32_maps_to_bigint(self):
+        assert _arrow_type_to_sql(pa.uint32()) == "bigint"
+
+    def test_float_maps_to_decimal(self):
+        assert _arrow_type_to_sql(pa.float64()) == "decimal"
+
+    def test_decimal_maps_to_decimal(self):
+        assert _arrow_type_to_sql(pa.decimal128(10, 2)) == "decimal"
+
+    def test_date_maps_to_date(self):
+        assert _arrow_type_to_sql(pa.date32()) == "date"
+
+    def test_timestamp_maps_to_datetime(self):
+        assert _arrow_type_to_sql(pa.timestamp("s")) == "datetime"
+
+    def test_string_maps_to_varchar(self):
+        assert _arrow_type_to_sql(pa.string()) == "varchar(max)"
+
+
+class TestReadParquetTable:
+    def test_basic_parquet(self, tmp_path):
+        pq_file = tmp_path / "customers.parquet"
+        _write_parquet(pq_file, {
+            "id": pa.array([1, 2, 3], type=pa.int64()),
+            "name": pa.array(["Alice", "Bob", "Carol"], type=pa.string()),
+            "active": pa.array([True, False, True], type=pa.bool_()),
+            "score": pa.array([1.5, 2.5, 3.5], type=pa.float64()),
+        })
+
+        table = read_parquet_table(pq_file)
+
+        assert table["name"] == "customers"
+        assert table["row_count"] == 3
+        by_name = {c["name"]: c for c in table["columns"]}
+        assert by_name["id"]["data_type"] == "bigint"
+        assert by_name["name"]["data_type"] == "varchar(max)"
+        assert by_name["active"]["data_type"] == "bit"
+        assert by_name["score"]["data_type"] == "decimal"
+        assert by_name["id"]["ordinal_position"] == 1
+        assert by_name["name"]["distinct_count"] == 3
+        assert "Alice" in by_name["name"]["samples"]
+        assert len(table["sample_rows"]) == 3
+
+    def test_nullable_column(self, tmp_path):
+        pq_file = tmp_path / "data.parquet"
+        _write_parquet(pq_file, {
+            "id": pa.array([1, 2, 3], type=pa.int64()),
+            "email": pa.array(["a@x.com", None, "c@x.com"], type=pa.string()),
+        })
+
+        table = read_parquet_table(pq_file)
+        by_name = {c["name"]: c for c in table["columns"]}
+        assert by_name["id"]["nullable"] is False
+        assert by_name["email"]["nullable"] is True
+
+    def test_max_rows_caps_sampling(self, tmp_path):
+        """Only sample data is read — never the whole file."""
+        pq_file = tmp_path / "huge.parquet"
+        _write_parquet(pq_file, {
+            "id": pa.array(list(range(5000)), type=pa.int64()),
+        })
+
+        table = read_parquet_table(pq_file, max_rows=100)
+        assert table["row_count"] == 100
+
+    def test_sample_rows_limited(self, tmp_path):
+        pq_file = tmp_path / "big.parquet"
+        _write_parquet(pq_file, {
+            "id": pa.array(list(range(50)), type=pa.int64()),
+        })
+
+        table = read_parquet_table(pq_file, sample_size=3)
+        assert len(table["sample_rows"]) == 3
+
+    def test_date_and_timestamp_columns(self, tmp_path):
+        import datetime as dt
+
+        pq_file = tmp_path / "events.parquet"
+        _write_parquet(pq_file, {
+            "d": pa.array([dt.date(2024, 1, 15)], type=pa.date32()),
+            "ts": pa.array([dt.datetime(2024, 1, 15, 10, 30)], type=pa.timestamp("s")),
+        })
+
+        table = read_parquet_table(pq_file)
+        by_name = {c["name"]: c for c in table["columns"]}
+        assert by_name["d"]["data_type"] == "date"
+        assert by_name["ts"]["data_type"] == "datetime"
+
+    def test_missing_pyarrow_raises_importerror(self, tmp_path, monkeypatch):
+        pq_file = tmp_path / "x.parquet"
+        _write_parquet(pq_file, {"id": pa.array([1], type=pa.int64())})
+
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "pyarrow.parquet":
+                raise ImportError("no pyarrow")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        with pytest.raises(ImportError, match=r"\[parquet\]"):
+            read_parquet_table(pq_file)
+
+
+class TestRunImportFlatfileParquet:
+    def test_single_parquet(self, tmp_path):
+        pq_file = tmp_path / "input" / "orders.parquet"
+        pq_file.parent.mkdir()
+        _write_parquet(pq_file, {
+            "id": pa.array([1, 2], type=pa.int64()),
+            "total": pa.array([99.5, 12.0], type=pa.float64()),
+        })
+
+        output_dir = tmp_path / "output" / "orders"
+        result = run_import_flatfile(pq_file, output_dir=output_dir)
+
+        assert result == output_dir
+        assert (output_dir / "_manifest.yaml").exists()
+        assert (output_dir / "orders.yaml").exists()
+        assert (output_dir / "orders.samples.yaml").exists()
+
+    def test_directory_mixed_csv_and_parquet(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        input_dir.mkdir()
+        (input_dir / "items.csv").write_text("id,sku\n1,ABC\n", encoding="utf-8")
+        _write_parquet(input_dir / "orders.parquet", {
+            "id": pa.array([1], type=pa.int64()),
+        })
+
+        output_dir = tmp_path / "output" / "legacy"
+        result = run_import_flatfile(input_dir, system_name="legacy", output_dir=output_dir)
+
+        import yaml
+        manifest = yaml.safe_load((result / "_manifest.yaml").read_text(encoding="utf-8"))
+        assert sorted(manifest["tables"]) == ["items", "orders"]

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.0] — 2026-06-13
+
+### Added
+- **Parquet source import.** `import-flatfile` now accepts `.parquet` files
+  (single file or mixed into a directory of CSV/Excel/Parquet). Column types are
+  mapped directly from the Parquet schema, and only sample data (`--max-rows`) is
+  read — the full file is never loaded. Requires the new optional `[parquet]`
+  extra (`pyarrow`). (DD-050)
+
 ## [3.12.1] — 2026-06-13
 
 ### Fixed
