@@ -218,6 +218,14 @@ This will:
 > differs from the `pyproject.toml` pin — if you see that warning, re-run the
 > command with `uv run kairos-ontology …` (or `uv sync`). (DD-049)
 
+> **Run from anywhere in the hub (DD-062).** `update`/`--upgrade` resolves the
+> real hub root by walking **up** from the current directory (anchored on the
+> `[tool.kairos]` / toolkit pin or the managed `.github/copilot-instructions.md`
+> marker). If you run it from a content subdirectory (e.g. `ontology-hub/`), it
+> prints `↪ Detected hub root at … — operating there.` and re-roots automatically —
+> it will **not** scaffold a second hub. In a directory that is not a hub (no pin /
+> managed `.github` anywhere up the tree) it hard-errors instead of fabricating one.
+
 ### Refreshing managed files
 
 `update --upgrade` already refreshes managed files automatically (step 6 above).
@@ -411,3 +419,4 @@ gh release list --repo Cnext-eu/kairos-ontology-toolkit --limit 1
 | `uv` not found | uv not installed | `irm https://astral.sh/uv/install.ps1 \| iex` (Windows) |
 | Tag already exists | Duplicate release attempt | Delete with `git tag -d vX.Y.Z` and retry |
 | Release workflow didn't trigger | Tag not pushed | `git push --tags` |
+| `update` created a second hub (`.github/`, `pyproject.toml`, `.venv`) in a subdir | Pre-DD-062 toolkit, run from a content subdir | Upgrade the toolkit; DD-062 now re-roots to the real hub. Delete the spurious untracked files and re-run from the hub root |

@@ -2334,6 +2334,21 @@ def update(check, upgrade):
       .github/copilot-instructions.md
       .github/skills/*/SKILL.md
     """
+    # --- Re-root to the real managed hub root (DD-062) -----------------------
+    # `update` only ever touches the toolkit pin + managed .github/ files, which
+    # live at the managed root.  Running from a content subdirectory (e.g. the
+    # ontology-hub/ folder) must NOT scaffold a second hub — walk up to the real
+    # root and operate there.
+    from ..hub_utils import find_managed_root
+
+    managed_root = find_managed_root(Path.cwd())
+    if managed_root is not None and managed_root != Path.cwd().resolve():
+        print(
+            f"↪ Detected hub root at {managed_root} "
+            f"(you ran from {Path.cwd()}) — operating there."
+        )
+        os.chdir(managed_root)
+
     # --- Upgrade toolkit dependency via uv ------------------------------------
     if upgrade:
         channel = _read_hub_channel()
@@ -2348,7 +2363,17 @@ def update(check, upgrade):
         pyproject = Path.cwd() / "pyproject.toml"
         version = _tag_to_version(ref)
         if not pyproject.is_file():
-            # Auto-generate pyproject.toml from scaffold template for legacy hubs
+            # Auto-generate pyproject.toml from scaffold template only for a
+            # legacy managed hub (positive .github marker but no pin file yet).
+            # When no managed root was found anywhere up the tree, refuse —
+            # fabricating here would manufacture a spurious second hub (DD-062).
+            if managed_root is None:
+                print(
+                    f"❌ No ontology hub found at {Path.cwd()} or any parent directory.\n"
+                    "   Run this command from a hub root, or use "
+                    "'kairos-ontology new-repo' / 'init' to create one."
+                )
+                raise SystemExit(1)
             template = _SCAFFOLD_DIR / "pyproject.toml.template"
             if template.is_file():
                 repo_name = Path.cwd().name
