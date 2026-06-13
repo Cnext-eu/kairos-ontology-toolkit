@@ -9,6 +9,12 @@ description: >
 
 # Quickstart — New Ontology Hub
 
+> **🔒 Skill context:** Before running any `kairos-ontology` /
+> `python -m kairos_ontology` command in this skill, set the sentinel env var so
+> the CLI knows it runs inside a skill and suppresses its skill-gate warning:
+> - PowerShell: `$env:KAIROS_SKILL_CONTEXT = "1"`
+> - bash/zsh: `export KAIROS_SKILL_CONTEXT=1`
+
 This guide walks through creating a brand-new ontology hub repo for a client
 or project using the **kairos-ontology-toolkit** CLI.
 
@@ -264,7 +270,7 @@ discovery → source → domain → mapping → silver → gold → validate →
 
 | Phase | Invoke skill | Produces |
 |-------|--------------|----------|
-| Design — discovery | **kairos-design-discovery** | Company context + business glossary (`model/glossary/`) |
+| Design — discovery | **kairos-design-discovery** | Company context + business glossary (`businessdiscovery/`) |
 | Design — source | **kairos-design-source** | Bronze vocabulary (`*.vocabulary.ttl`) |
 | Design — domain | **kairos-design-domain** | OWL classes + properties |
 | Design — mapping | **kairos-design-mapping** | SKOS source→domain mappings |

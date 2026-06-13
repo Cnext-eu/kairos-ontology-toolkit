@@ -85,7 +85,7 @@ discovery → source → domain → mapping → silver → gold → validate →
 | 1 | **Orient** | `kairos-help` | Understanding of the toolkit | — |
 | 2 | **Setup — create repo** | `kairos-setup-init` | GitHub repo + scaffold + first domain | ✅ |
 | 3 | **Setup — configure** (optional) | `kairos-setup-config` | Folder/config/SHACL tuning | — |
-| 4 | **Design — discovery** | `kairos-design-discovery` | Company context (`.sessions-design/businessdiscovery-*.md`) + business glossary (`model/glossary/`) | — (recommended first) |
+| 4 | **Design — discovery** | `kairos-design-discovery` | Company context (`.sessions-design/businessdiscovery-*.md`) + business glossary (`businessdiscovery/`) | — (recommended first) |
 | 5 | **Design — source** | `kairos-design-source` | Bronze vocabulary (`*.vocabulary.ttl`) | Needed for `dbt` |
 | 6 | **Design — domain** | `kairos-design-domain` | OWL classes + properties (`*.ttl`) | ✅ |
 | 7 | **Design — mapping** | `kairos-design-mapping` | SKOS source→domain mappings (uses the glossary) | Needed for `dbt` |
@@ -176,7 +176,7 @@ ontology-hub/
 └── README.md                       # Domain catalog
 
 # At the REPO ROOT (not under ontology-hub/):
-.imports/
+.import/
 └── businessdiscovery/              # Drop-in artifacts (notes, decks) for discovery
 ontology-reference-models/          # Imported industry reference models
 ```

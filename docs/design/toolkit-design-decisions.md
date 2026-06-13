@@ -99,6 +99,11 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-049](#dd-049-self-upgrade-re-exec--running-vs-pinned-version-guard) | Self-Upgrade Re-exec & Running-vs-Pinned Version Guard | Accepted | 2026-06-13 |
 | [DD-050](#dd-050-parquet-source-import) | Parquet Source Import | Accepted | 2026-06-13 |
 | [DD-051](#dd-051-start-modeling-routes-to-lifecycle-start--restart-pre-flight) | Start-Modeling Routes to Lifecycle Start & Restart Pre-flight | Accepted | 2026-06-13 |
+| [DD-052](#dd-052-import-commands-auto-write-an-import-results-session-file) | Import Commands Auto-Write an Import-Results Session File | Accepted | 2026-06-13 |
+| [DD-053](#dd-053-cli-soft-skill-gate) | CLI Soft Skill-Gate | Accepted | 2026-06-13 |
+| [DD-054](#dd-054-reference-model-inventories-namespaced-by-owning-model) | Reference-Model Inventories Namespaced by Owning Model | Accepted | 2026-06-13 |
+| [DD-055](#dd-055-business-discovery-materializes-reference-model-breadth--links-glossary-to-ref-model-iris) | Business Discovery Materializes Reference-Model Breadth & Links Glossary to Ref-Model IRIs | Accepted | 2026-06-13 |
+| [DD-056](#dd-056-relocate-glossary--inventory-folders-to-hub-root-new-hubs-only) | Relocate Glossary & Inventory Folders to Hub Root (New Hubs Only) | Accepted | 2026-06-13 |
 
 ---
 
@@ -2647,8 +2652,13 @@ now made by code, not by the model.
 
 **Status:** Accepted  
 **Date:** 2026-06-13  
-**Affects:** new `kairos-design-discovery` skill (both copies), `kairos-design-mapping`, `kairos-design-domain`, `kairos-help`, `kairos-setup-init`, `copilot-instructions.md` (both copies), `cli/main.py` (`init` + `new-repo`), scaffold (`imports/businessdiscovery/`, `ontology-hub/model/glossary/`)  
-**Implementation:** `.github/skills/kairos-design-discovery/SKILL.md`, `src/kairos_ontology/scaffold/skills/kairos-design-discovery/SKILL.md`, `src/kairos_ontology/cli/main.py`, `src/kairos_ontology/scaffold/ontology-hub/model/glossary/`, `src/kairos_ontology/scaffold/imports/businessdiscovery/`
+**Affects:** new `kairos-design-discovery` skill (both copies), `kairos-design-mapping`, `kairos-design-domain`, `kairos-help`, `kairos-setup-init`, `copilot-instructions.md` (both copies), `cli/main.py` (`init` + `new-repo`), scaffold (`import/businessdiscovery/`, `ontology-hub/model/glossary/`)  
+**Implementation:** `.github/skills/kairos-design-discovery/SKILL.md`, `src/kairos_ontology/scaffold/skills/kairos-design-discovery/SKILL.md`, `src/kairos_ontology/cli/main.py`, `src/kairos_ontology/scaffold/ontology-hub/model/glossary/`, `src/kairos_ontology/scaffold/import/businessdiscovery/`
+
+> **Update 2026-06-13:** the repo-root artifacts folder was renamed from
+> `.imports/` (plural) to **`.import/`** (singular); the dotless scaffold source
+> folder is correspondingly `scaffold/import/`. All references below use the
+> new name.
 
 ### Context
 
@@ -2675,7 +2685,7 @@ a new interactive skill **`kairos-design-discovery`**:
 
 Two artifact locations (both git-committed):
 
-- **Raw artifacts** → `.imports/businessdiscovery/` at the **repository root**
+- **Raw artifacts** → `.import/businessdiscovery/` at the **repository root**
   (alongside `ontology-reference-models/`, since both are *imported inputs* rather
   than hub deliverables — NOT under `ontology-hub/`).
 - **Synthesized context** → `ontology-hub/.sessions-design/businessdiscovery-*.md`
@@ -2693,7 +2703,7 @@ diagnose → consume`.
 
 A SKOS **overlay** keeps alternative names out of the canonical ontology while still
 making them machine-readable for tooling (and reusable later by projections such as
-azure-search synonyms or prompt). Placing `.imports/` at the repo root reuses the
+azure-search synonyms or prompt). Placing `.import/` at the repo root reuses the
 existing `ontology-reference-models/` precedent for imported inputs and keeps the
 hub deliverable tree clean. Discovery is interactive/no-autopilot because company
 facts and glossary terms require human confirmation; web-sourced claims stay marked
@@ -2701,7 +2711,7 @@ inferred until approved.
 
 ### Consequences
 
-- `kairos-ontology init` and `new-repo` now create `.imports/businessdiscovery/`
+- `kairos-ontology init` and `new-repo` now create `.import/businessdiscovery/`
   (repo root) and `ontology-hub/model/glossary/` and install the glossary template +
   READMEs.
 - New skill is distributed via the scaffold; routing/no-autopilot/lifecycle tables
@@ -2882,6 +2892,283 @@ blocking gate** — Gate 6 remains the hard constraint):
 - No behavioural/code change — instructions + skill guidance only, distributed to
   hubs via the sync-managed scaffold copies. Parity is enforced by
   `tests/test_scaffold_sync.py`.
+
+---
+
+## DD-052: Import Commands Auto-Write an Import-Results Session File
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `import_session.py` (new), `import_source.py`, `import_flatfile.py`,
+`cli/main.py` (init/new-repo), `kairos-design-source` skill
+
+### Context
+
+The `import-flatfile` and `import-source` CLI commands produced vocabulary/YAML
+artifacts but left **no audit record** of what each run imported. Every
+interactive design skill (`kairos-design-source`, `-domain`, `-discovery`)
+already drops a markdown session file under `ontology-hub/.sessions-design/`, but
+the *non-interactive* import commands did not.
+
+### Decision
+
+The import commands now **auto-write a machine-generated import-results file** to
+a dedicated hub folder, using a template consistent with the existing session
+files:
+
+```
+ontology-hub/.sessions-design-import/
+  └── import-{system-name}-{YYYY-MM-DD}.md
+```
+
+- A new module `import_session.py` provides a pure `render_import_session_md()`
+  renderer and a best-effort `write_import_session()` writer.
+- `run_import_source` (method `yaml-import`, including the change report and
+  enrichment flag) and `run_import_flatfile` (method `flatfile`) call the writer
+  after writing their artifacts.
+- The write is **best-effort and hub-root-gated**: it is skipped (never raised)
+  when no hub is detected, so it cannot break an import or pollute unit tests
+  that run outside a hub.
+- `.sessions-design-import/` is created at hub `init`/`new-repo` with a
+  `.gitkeep`, consistent with `.sessions-design/`.
+
+### Rationale
+
+- Separates the **auto-generated import audit log** from the **interactive
+  design session file**, keeping each concern in its own folder.
+- Same-day re-runs overwrite the file, mirroring the session-file convention.
+- Best-effort gating preserves the existing pure behaviour of the import
+  functions outside a hub.
+
+---
+
+## DD-053: CLI Soft Skill-Gate
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `cli/main.py` (group + skill-covered commands), gated `*/SKILL.md`
+files, `.github/copilot-instructions.md` (+ scaffold copy)  
+**Implementation:** `_warn_if_no_skill_context()` + `_SKILL_COVERED_COMMANDS`
+in `src/kairos_ontology/cli/main.py`
+
+### Context
+
+The toolkit's "skill-first" rule lived **only in prose**
+(`copilot-instructions.md`). Prose guardrails are advisory and are weakest
+exactly when the raw CLI succeeds, because nothing pushes back: Copilot runs
+e.g. `python -m kairos_ontology project` directly, gets a correct result, and
+silently bypasses the skill's pre-flight checks and interactive validation
+gates. Reliable skill adoption needs **friction at the CLI layer**, not just
+more instructions.
+
+### Decision
+
+Add a **soft skill-gate** to the CLI. Skill-managed commands (`validate`,
+`project`, `init`, `new-repo`, `migrate`, `update`, `update-refmodels`,
+`import-source`, `import-flatfile`, `generate-staging`, `analyse-sources`,
+`init-dataplatform`) emit a loud stderr warning that names the owning skill,
+then **still run** (soft, non-blocking). The check is wired once into the Click
+group via `ctx.invoked_subcommand`, so individual command bodies are untouched.
+
+A sentinel env var (`KAIROS_SKILL_CONTEXT`, also `KAIROS_VIA_SKILL`) suppresses
+the warning. Each gated `SKILL.md` instructs setting it, so the **skill path is
+silent and only the raw path nags**. CLI-only commands (`import-tmdl`,
+`coverage-report`, `propose-alignment`, `generate-inventory`, `check-inventory`,
+`catalog-test`, `lifecycle`) are not gated.
+
+### Rationale
+
+- A soft gate redirects the agent without breaking automation, scripts, or CI.
+- Single insertion point (group context) keeps the map declarative and testable.
+- The env-var escape hatch lets skills, power users, and CI opt out explicitly.
+- Chosen over a hard gate (exit non-zero) — selected by the maintainer — to avoid
+  breaking existing non-interactive flows.
+
+### Consequences
+
+- New gated commands must be added to `_SKILL_COVERED_COMMANDS`, and the owning
+  `SKILL.md` must set `KAIROS_SKILL_CONTEXT=1` (else it warns during legit use).
+- Skill edits must be mirrored to `scaffold/skills/` via `sync_dev_skills.py`.
+
+---
+
+## DD-054: Reference-Model Inventories Namespaced by Owning Model
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `generate-inventory`, `check-inventory`, `model/inventory/*.yaml`  
+**Implementation:** `inventory.py` (`inventory_filename`, `check_inventories`),
+`cli/main.py` (`generate-inventory` command)
+
+### Context
+
+Materialized inventories (DD-044) were named purely from the source TTL **stem**
+(`{stem}-inventory.yaml`). Many reference models contribute a same-named module —
+e.g. `party.ttl` exists in BSP, DCSA, IMO, MMT, TIC, and WCO. All six mapped to a
+single `party-inventory.yaml`, so generation was **last-write-wins** (alphabetical
+→ WCO survived) and the other five models' classes (`bsp:TradeParty` and its role
+subclasses, `imo:MaritimeParty`, `mmt:TransportParty`, …) were silently dropped.
+The collision also affected `documents`, `locations`, `events`, and `equipment`.
+
+A modeler trusting the inventory (per DD-046) would conclude those classes don't
+exist and recreate them locally — exactly the Gate-6 anti-pattern inventories are
+meant to prevent. Contrary to the original bug report, the DD-047 staleness gate
+did **not** report a false green: it surfaced the collision as *spurious* `STALE`
+entries (the single file's stored hash matched only one source), producing an
+**unfixable deadlock** — re-running `generate-inventory` could never clear it —
+and a reporting glitch where the same stem appeared in both the `ok` and `stale`
+lists.
+
+### Decision
+
+Namespace reference-model inventory files by their owning model via a single
+shared helper `inventory_filename(ttl_path, *, ref_models_dir)`:
+
+- Reference-model TTL under `derived-ontologies/` →
+  `{model}-{stem}-inventory.yaml` (e.g. `bsp-party-inventory.yaml`), where *model*
+  is the path segment directly after `derived-ontologies` (intermediate segments
+  such as DCSA's `shared-kernel` are ignored).
+- Hub-owned ontologies (`model/ontologies/`) keep `{stem}-inventory.yaml` — their
+  stems are unique within a hub.
+
+Both `generate-inventory` and `check_inventories` use this helper so the
+source→inventory mapping always agrees, which removes the deadlock and the
+double-listing glitch. `generate-inventory` gains a default `--prune` that removes
+inventory files no longer produced by any source (self-heals legacy stem-named
+files), and aborts loudly on any residual same-name collision rather than silently
+overwriting.
+
+### Rationale
+
+Per-model filenames give each source TTL a 1:1, sha-verifiable inventory — the
+simplest scheme that keeps the DD-047 freshness check sound. The alternative
+(merging same-domain modules into one file with per-class provenance) was rejected
+as more complex for the freshness gate. Consumers (`propose-alignment`,
+`coverage-report`) already glob and merge **all** `*.yaml` in `model/inventory/`,
+so they transparently pick up the now-complete set with no code change.
+
+### Consequences
+
+- Existing hubs must re-run `generate-inventory`; `--prune` deletes the stale
+  stem-named files and writes the per-model set (commit the result).
+- Supersedes the stem-keyed naming established in DD-044 and hardens DD-047.
+- Any future same-model/same-stem collision is a loud error (a deterministic
+  disambiguation guard can be added if such a case ever arises).
+
+---
+
+## DD-055: Business Discovery Materializes Reference-Model Breadth & Links Glossary to Ref-Model IRIs
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `kairos-design-discovery` skill (+ scaffold copy), `kairos-design-domain`
+skill (step 2a note)  
+**Implementation:** `.github/skills/kairos-design-discovery/SKILL.md` (Phase 1a,
+Phase 1 breadth, Phase 2 IRI resolution, Phase 4 rerun), mirrored to
+`src/kairos_ontology/scaffold/skills/`
+
+### Context
+
+Business discovery (DD-048) is meant to be a **company-wide** first step, but its
+glossary linking was scoped to the hub: Phase 2 confirmed a term's IRI only against
+`model/ontologies/`. Early in a hub only the *first* domain is modeled, so terms
+belonging to later domains could not be linked — they all fell into "flagged for
+domain modeling". Discovery had no view of the **full** domain model, so the user's
+business understanding and terminology capture were implicitly narrowed to the first
+domain, risking lost information when subsequent domains were modeled. Materialized
+reference-model inventories (DD-044/DD-054) already provide a complete, read-only map
+of every available class/property but discovery did not use them.
+
+### Decision
+
+1. **Materialize first (read-only).** Add **Phase 1a** to discovery: run
+   `generate-inventory` over `ontology-reference-models/` so discovery has the full
+   reference-model breadth as `referencemodels-unpacked/*.yaml` before research. Read-only —
+   no hub-graph import, no `.ttl` edits (discovery Gate 4 intact).
+2. **Breadth over depth.** Phase 1 research is explicitly company-wide — cover the
+   whole offering/operating model and capture out-of-scope-for-now terms.
+3. **Three-tier IRI resolution.** Phase 2 resolves a term's IRI in priority order:
+   hub IRI (`model/ontologies/`) → existing **reference-model** IRI (from Phase 1a
+   inventories) → flag as truly novel. Linking to an existing ref-model IRI is now
+   allowed and preferred; only inventing IRIs remains forbidden.
+4. **Idempotent reruns.** Add **Phase 4**: on rerun, re-materialize, re-link flagged
+   terms to hub IRIs once their domain is modeled, and append new terms. Handoff
+   tells the user to revisit discovery on each new domain.
+
+### Rationale
+
+The reference-model inventories are the canonical full-breadth view, and they are
+already read-only and sha-verifiable — using them for glossary linking costs nothing
+extra and resolves links immediately rather than deferring everything to "flagged".
+Keeping it skill-content only (no `generate-inventory` change) is the smallest change
+that closes the gap. Importing all reference models into the hub graph was rejected:
+it would violate discovery's read-only Gate 4 and bloat the hub with unclaimed classes.
+
+### Consequences
+
+- Discovery now depends on `generate-inventory` having run; the skill invokes it
+  (and instructs `update-referencemodels.ps1` if the reference models are absent).
+- Supersedes the hub-only linking constraint of DD-048; builds on DD-044/DD-054.
+- Glossary entries may carry `rdfs:seeAlso` to a ref-model IRI; these are reconciled
+  to hub IRIs on later reruns as domains are modeled — nothing is lost across domains.
+- `kairos-design-domain` step 2a notes that glossary terms may point at ref-model
+  IRIs and that reconciliation happens on the next discovery rerun (not in the domain
+  skill).
+
+---
+
+## DD-056: Relocate Glossary & Inventory Folders to Hub Root (New Hubs Only)
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `init`, `new-repo`, `migrate`, `generate-inventory`, `check-inventory`,
+hub scaffold layout, design skills (discovery/domain/mapping/source/help/setup-init)  
+**Implementation:** `src/kairos_ontology/cli/main.py`,
+`src/kairos_ontology/scaffold/ontology-hub/businessdiscovery/` (moved),
+skills (both copies), `CHANGELOG.md`
+
+### Context
+
+Two hub folders lived under `model/`: the company business glossary
+(`model/glossary/`, DD-048) and the materialized reference-model inventories
+(`model/inventory/`, DD-044/DD-054). Neither is part of the **domain model** itself —
+the glossary is a business-discovery artifact (a SKOS overlay) and the inventory is an
+unpacked, read-only view of the reference models. Nesting them under `model/` (which
+holds the authored ontologies, shapes, extensions, mappings) blurred that distinction.
+
+### Decision
+
+Move both folders up to the hub root and rename them to reflect their purpose:
+
+| Old | New |
+|-----|-----|
+| `ontology-hub/model/glossary/` | `ontology-hub/businessdiscovery/` |
+| `ontology-hub/model/inventory/` | `ontology-hub/referencemodels-unpacked/` |
+
+`init`/`new-repo` scaffolding, the `generate-inventory`/`check-inventory` default
+paths, and all design skills now use the new locations. The `migrate` command creates
+the new inventory directory name for layout consistency.
+
+Scope is **new hubs only** — no automatic relocation of existing-hub data. Existing
+hubs move the two folders manually (the inventory can simply be regenerated with
+`generate-inventory`).
+
+### Rationale
+
+The names are self-describing: `businessdiscovery/` pairs with the
+`.sessions-design/businessdiscovery-*.md` session files and the repo-root
+`.import/businessdiscovery/` inputs, and `referencemodels-unpacked/` makes clear the
+folder is a derived/unpacked view rather than authored model content. Limiting the
+change to new hubs avoids destructive moves in existing repos; an explicit
+auto-migration was rejected as out of scope and risky for committed data.
+
+### Consequences
+
+- New hubs no longer have `model/glossary/` or `model/inventory/`.
+- `referencemodels-unpacked/` continues to hold **both** hub-ontology and
+  reference-model inventories (single-folder behaviour unchanged; only the path moved).
+- Existing hubs keep working only after a manual move/regeneration; the CHANGELOG
+  documents the manual step.
 
 ---
 

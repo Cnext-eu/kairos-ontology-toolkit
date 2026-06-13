@@ -8,6 +8,12 @@ description: >
 
 # Kairos Source Design Skill
 
+> **🔒 Skill context:** Before running any `kairos-ontology` /
+> `python -m kairos_ontology` command in this skill, set the sentinel env var so
+> the CLI knows it runs inside a skill and suppresses its skill-gate warning:
+> - PowerShell: `$env:KAIROS_SKILL_CONTEXT = "1"`
+> - bash/zsh: `export KAIROS_SKILL_CONTEXT=1`
+
 You are helping the user **import, document, and analyse source systems** for the
 ontology hub. This skill orchestrates the full source onboarding workflow — from
 raw data files to bronze vocabulary TTL and domain affinity analysis.
@@ -301,7 +307,7 @@ ls ontology-reference-models/
 ```
 
 > **Tip (DD-044):** Run `kairos-ontology generate-inventory` first to create
-> materialized YAML inventories in `model/inventory/`. These give `analyse-sources`
+> materialized YAML inventories in `referencemodels-unpacked/`. These give `analyse-sources`
 > and `propose-alignment` visibility into subclass properties (specialization
 > patterns) that raw TTL parsing would miss.
 
@@ -469,6 +475,23 @@ Save to `ontology-hub/.sessions-design/source-{system-name}-{YYYY-MM-DD}.md`:
 - **Auto-save** after each phase completion
 - Record tables that could not be fully documented with reasons
 - On pause/completion, list remaining gaps and their downstream impact
+
+### Automatic import audit log
+
+In addition to this interactive session file, the `import-flatfile` and
+`import-source` CLI commands **automatically** write a machine-generated
+import-results file to a separate folder:
+
+```
+ontology-hub/.sessions-design-import/
+  └── import-{system-name}-{YYYY-MM-DD}.md
+```
+
+This audit file records what each import run produced (tables, columns, change
+report, enrichment) using a template consistent with the session files above.
+It is written best-effort whenever a command runs inside a detected hub, and is
+distinct from the interactive `.sessions-design/source-*.md` session file you
+maintain.
 
 ---
 

@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.14.0] — 2026-06-13
+
+### Changed
+- **Business discovery now materializes the full reference-model breadth and links
+  glossary terms to reference-model IRIs (DD-055).** The `kairos-design-discovery`
+  skill gains a read-only "Phase 1a" that runs `generate-inventory` over the
+  reference models first, makes Phase 1 research explicitly company-wide, and
+  resolves glossary IRIs in priority order hub → reference-model → flag-as-novel.
+  Reruns are idempotent: previously-flagged terms are re-linked to hub IRIs as each
+  domain is modeled, so terminology is no longer lost across domains.
+- **Hub folders relocated & renamed (new hubs only, DD-056).** The business
+  glossary folder moved from `ontology-hub/model/glossary/` to
+  `ontology-hub/businessdiscovery/`, and the materialized inventory folder from
+  `ontology-hub/model/inventory/` to `ontology-hub/referencemodels-unpacked/`.
+  `init`/`new-repo` scaffolding, `generate-inventory`/`check-inventory` default
+  paths, and all design skills now use the new locations. Existing hubs are **not**
+  auto-migrated — move the two folders manually (or recreate the inventory with
+  `kairos-ontology generate-inventory`).
+- **CHANGELOG is now enforced as part of the release process.** Previously
+  `release.yml` generated GitHub Release notes purely from merged PRs
+  (`--generate-notes`) and never consulted or updated `CHANGELOG.md`, so the file
+  silently drifted (e.g. `3.10.x`/`3.11.x` shipped with no entry). Now
+  `release.yml` fails a tagged GA release whose version has no `## [X.Y.Z]`
+  `CHANGELOG.md` section, and `version-check.yml` fails a PR that bumps
+  `__version__` without the matching entry. Pre-releases (`rc`/`beta`/`alpha`) are
+  exempt. The `kairos-toolkit-ops` release steps now include promoting
+  `[Unreleased]` to a dated heading.
+
+### Fixed
+- **Reference-model inventories are now namespaced by their owning model
+  (DD-054).** `generate-inventory` previously named every inventory from the TTL
+  stem (`{stem}-inventory.yaml`), so same-named modules across reference models
+  (e.g. `party.ttl` in BSP, DCSA, IMO, MMT, TIC, WCO) collapsed into one
+  last-write-wins file and silently dropped five models' classes (`TradeParty`,
+  `MaritimeParty`, `TransportParty`, …); `documents`, `locations`, `events`, and
+  `equipment` were affected too. Reference-model files are now written as
+  `{model}-{stem}-inventory.yaml` (e.g. `bsp-party-inventory.yaml`) via a shared
+  `inventory_filename()` helper used by both `generate-inventory` and
+  `check-inventory`. This also fixes the DD-047 staleness **deadlock** (colliding
+  stems reported as permanently `STALE` with no way to clear them) and the glitch
+  where a stem appeared in both the `ok` and `stale` lists. `generate-inventory`
+  gains a default `--prune` that removes inventory files no longer produced by any
+  source (self-heals legacy stem-named files). Re-run `generate-inventory` and
+  commit the regenerated `model/inventory/`.
+- **Reference-model auto-detection now consistently uses the repo-root
+  `ontology-reference-models/` directory.** `generate-inventory` and
+  `check-inventory` previously defaulted to the non-existent
+  `model/reference-models/`, so the `kairos-design-domain` pre-flight silently
+  found zero reference models. All four commands (`generate-inventory`,
+  `check-inventory`, `analyse-sources`, `coverage-report`) now share a single
+  `_resolve_ref_models_dir()` resolver that prefers the repo-root location
+  (legacy `model/reference-models/` kept as a last-resort fallback). Help text
+  and the `kairos-toolkit-ops` skill corrected accordingly.
+
+### Added
+- **Import commands auto-write an import-results session file.** `import-flatfile`
+  and `import-source` now write a machine-generated
+  `import-{system}-{YYYY-MM-DD}.md` to `ontology-hub/.sessions-design-import/`
+  (created at `init`/`new-repo`), capturing tables, columns, change report, and
+  enrichment using a template consistent with the existing session files. The
+  write is best-effort and skipped when no hub root is detected. (DD-052)
+- **CLI soft skill-gate.** Skill-managed commands (`validate`, `project`, `init`,
+  `new-repo`, `migrate`, `update`, `update-refmodels`, `import-source`,
+  `import-flatfile`, `generate-staging`, `analyse-sources`, `init-dataplatform`)
+  now emit a loud stderr warning redirecting to the owning Copilot skill when run
+  directly, then still run (soft gate). Set `KAIROS_SKILL_CONTEXT=1` to silence
+  it; gated skills set it automatically. (DD-053)
+
+### Changed
+- **Renamed the business-discovery artifacts folder `.imports/` → `.import/`**
+  (singular). `kairos-ontology init` / `new-repo` now create
+  `.import/businessdiscovery/` at the repo root; the dotless scaffold source
+  folder is `scaffold/import/`. Skills, docs (DD-048), and tests updated. (DD-048)
+
 ## [3.13.2] — 2026-06-13
 
 ### Changed

@@ -66,7 +66,7 @@ The user can override any auto-approved mapping.
 3. Ask user which domain(s) to target (list available from `model/ontologies/`)
 4. Create session file: `ontology-hub/.sessions-design/mapping-{source}-to-{domain}-{YYYY-MM-DD}.md`
 5. **Load the business glossary (if present):** check
-   `ontology-hub/model/glossary/*.ttl` (produced by the **kairos-design-discovery**
+   `ontology-hub/businessdiscovery/*.ttl` (produced by the **kairos-design-discovery**
    skill). Index each `skos:Concept`'s `skos:altLabel`s and the domain IRI it links
    to via `rdfs:seeAlso`. These are **advisory** alternative names used to match
    source columns whose names use the company's own vocabulary — see Phase 2.
@@ -328,7 +328,7 @@ bronze:{transformedColumn}
 ### Typical pipeline order
 
 ```
-0. kairos-design-discovery → company context + business glossary (model/glossary/)
+0. kairos-design-discovery → company context + business glossary (businessdiscovery/)
 1. kairos-design-source   → bronze vocabulary (.vocabulary.ttl)
 2. kairos-design-domain   → domain ontology (.ttl)
 3. kairos-design-mapping  → SKOS mapping files (model/mappings/)

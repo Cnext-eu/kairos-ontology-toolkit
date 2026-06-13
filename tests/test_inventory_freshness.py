@@ -151,6 +151,46 @@ class TestCheckInventories:
         assert report.has_warnings
 
 
+class TestCollisionFreshness:
+    """DD-054: same-named modules across reference models stay individually fresh
+    (no spurious stale, no double-listing of a stem in both ok and stale)."""
+
+    def _write(self, ref_root: Path, model: str, cls: str) -> Path:
+        ttl = ref_root / "derived-ontologies" / model / "current" / "party" / "party.ttl"
+        ttl.parent.mkdir(parents=True, exist_ok=True)
+        ttl.write_text(
+            f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://kairos.cnext.eu/ref/{cls}> a owl:Ontology ; rdfs:label "{model}" .
+<https://kairos.cnext.eu/ref/{cls}#{cls}> a owl:Class ; rdfs:label "{cls}" .
+""",
+            encoding="utf-8",
+        )
+        return ttl
+
+    def test_all_models_fresh_no_spurious_stale(self, tmp_path):
+        from kairos_ontology.inventory import inventory_filename
+
+        ref_root = tmp_path / "ontology-reference-models"
+        inv_dir = tmp_path / "model" / "inventory"
+        inv_dir.mkdir(parents=True)
+        models = {"BSP": "TradeParty", "IMO": "MaritimeParty", "WCO": "Declarant"}
+        for model, cls in models.items():
+            ttl = self._write(ref_root, model, cls)
+            inv = generate_inventory(ttl)
+            write_inventory(inv, inv_dir / inventory_filename(ttl, ref_models_dir=ref_root))
+
+        report = check_inventories(
+            ontology_dir=None, ref_models_dir=ref_root, inventory_dir=inv_dir
+        )
+        assert sorted(report.ok) == ["bsp-party", "imo-party", "wco-party"]
+        assert report.stale == []
+        assert not report.is_blocking
+        # No key may appear in both ok and stale (the old double-listing glitch).
+        assert set(report.ok).isdisjoint(report.stale)
+
+
 class TestCheckInventoryCLI:
 
     def test_cli_passes_when_fresh(self, tmp_path):

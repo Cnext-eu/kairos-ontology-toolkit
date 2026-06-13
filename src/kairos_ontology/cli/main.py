@@ -3,6 +3,7 @@
 """Main CLI entry point for kairos-ontology toolkit."""
 
 import json
+import os
 import re
 import sys
 import click
@@ -56,6 +57,65 @@ def _warn_if_outside_venv() -> None:
 # Resolve scaffold data directory bundled with the package
 _SCAFFOLD_DIR = Path(__file__).resolve().parent.parent / "scaffold"
 
+# ---------------------------------------------------------------------------
+# Skill-first soft gate
+#
+# These commands are *skill-managed*: each is wrapped by a Copilot skill that
+# runs pre-flight checks and interactive validation gates the raw CLI skips.
+# When invoked directly (outside a skill context) we emit a loud warning that
+# redirects to the skill, but still run the command (soft gate).  Skills set the
+# ``KAIROS_SKILL_CONTEXT`` env var so the skill path stays silent and only the
+# raw path nags.  See DD-053 in docs/design/toolkit-design-decisions.md.
+# ---------------------------------------------------------------------------
+_SKILL_COVERED_COMMANDS = {
+    "validate": "kairos-execute-validate",
+    "project": "kairos-execute-project",
+    "init": "kairos-setup-config",
+    "new-repo": "kairos-setup-init",
+    "migrate": "kairos-setup-migrate",
+    "update": "kairos-toolkit-ops",
+    "update-refmodels": "kairos-toolkit-ops",
+    "import-source": "kairos-design-source",
+    "import-flatfile": "kairos-design-source",
+    "generate-staging": "kairos-design-source",
+    "analyse-sources": "kairos-design-source",
+    "init-dataplatform": "kairos-setup-dataplatform",
+}
+
+# Env vars that signal the command was launched from within a skill context.
+_SKILL_CONTEXT_ENV_VARS = ("KAIROS_SKILL_CONTEXT", "KAIROS_VIA_SKILL")
+
+
+def _in_skill_context() -> bool:
+    """Return True if a skill-context sentinel env var is set (truthy)."""
+    return any(os.environ.get(var) for var in _SKILL_CONTEXT_ENV_VARS)
+
+
+def _warn_if_no_skill_context(subcommand: str | None) -> None:
+    """Emit a soft skill-gate warning for skill-managed commands.
+
+    If *subcommand* is covered by a Copilot skill and the process is not running
+    inside a skill context (no sentinel env var), print a loud warning to stderr
+    that redirects the operator to the skill.  The command still runs afterwards
+    — this is a soft gate, not a hard block.
+    """
+    if not subcommand:
+        return
+    skill = _SKILL_COVERED_COMMANDS.get(subcommand)
+    if skill is None:
+        return  # not a skill-managed command (e.g. import-tmdl, coverage-report)
+    if _in_skill_context():
+        return  # launched from within a skill — stay quiet
+
+    click.echo(
+        f"⚠️  `{subcommand}` is skill-managed.\n"
+        f"   Prefer the **{skill}** skill in GitHub Copilot Chat — it runs\n"
+        f"   pre-flight checks and validation gates this raw command skips.\n"
+        f"   Continuing anyway… (set KAIROS_SKILL_CONTEXT=1 to silence)\n",
+        err=True,
+    )
+
+
 # Skills subset for dataplatform repos (used by init-dataplatform and update)
 _DATAPLATFORM_SKILLS = [
     "kairos-develop-dataplatform",
@@ -70,6 +130,29 @@ _DATAPLATFORM_SKILLS = [
 
 # Reference models folder name (at hub root)
 _REF_MODELS_PATH = "ontology-reference-models"
+
+
+def _resolve_ref_models_dir(cwd: Path, hub_root: Path | None) -> Path | None:
+    """Locate the reference-models directory.
+
+    Reference models live at the **repository root** in
+    ``ontology-reference-models/`` (a sibling of ``model/``), not under
+    ``model/reference-models/``.  Returns the first existing candidate, or
+    ``None`` if none are found.  The legacy ``model/reference-models/`` location
+    is kept as a last-resort fallback for backward compatibility.
+    """
+    candidates = [
+        cwd / _REF_MODELS_PATH,
+        (hub_root / _REF_MODELS_PATH) if hub_root else None,
+        (hub_root.parent / _REF_MODELS_PATH) if hub_root else None,
+        cwd / "ontology-hub" / _REF_MODELS_PATH,
+        (hub_root / "model" / "reference-models") if hub_root else None,
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_dir():
+            return candidate
+    return None
+
 
 # Toolkit GitHub repo for channel resolution
 _TOOLKIT_REPO = "Cnext-eu/kairos-ontology-toolkit"
@@ -339,10 +422,12 @@ def _check_not_inside_git_repo(parent: Path, name: str) -> None:
 
 @click.group()
 @click.version_option(version=_toolkit_version, package_name="kairos-ontology-toolkit")
-def cli():
+@click.pass_context
+def cli(ctx):
     """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
     _warn_if_outside_venv()
     _warn_if_version_mismatch()
+    _warn_if_no_skill_context(ctx.invoked_subcommand)
 
 
 _LIFECYCLE_TABLE = """\
@@ -532,8 +617,8 @@ def init(domain, company_domain, force):
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
-        hub / "model" / "inventory",
-        hub / "model" / "glossary",
+        hub / "referencemodels-unpacked",
+        hub / "businessdiscovery",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -544,14 +629,15 @@ def init(domain, company_domain, force):
         hub / "output" / "report",
         hub / ".sessions-projection",
         hub / ".sessions-design",
+        hub / ".sessions-design-import",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
     # Business-discovery imports live at the REPO ROOT (like ontology-reference-models),
     # not under ontology-hub/. Created on init so it's ready to receive artifacts.
-    imports_bd = cwd / ".imports" / "businessdiscovery"
+    imports_bd = cwd / ".import" / "businessdiscovery"
     imports_bd.mkdir(parents=True, exist_ok=True)
-    imports_readme_src = _SCAFFOLD_DIR / "imports" / "businessdiscovery" / "README.md"
+    imports_readme_src = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "README.md"
     if imports_readme_src.is_file() and (not (imports_bd / "README.md").exists() or force):
         shutil.copy2(imports_readme_src, imports_bd / "README.md")
 
@@ -568,6 +654,7 @@ def init(domain, company_domain, force):
     for session_folder in [
         ".sessions-projection",
         ".sessions-design",
+        ".sessions-design-import",
     ]:
         sk = hub / session_folder / ".gitkeep"
         if not sk.exists():
@@ -578,7 +665,7 @@ def init(domain, company_domain, force):
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
-        "model/glossary": "model/glossary",
+        "businessdiscovery": "businessdiscovery",
         "integration/sources": "integration/sources",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
@@ -587,9 +674,9 @@ def init(domain, company_domain, force):
         if readme_src.is_file() and (not readme_dst.exists() or force):
             shutil.copy2(readme_src, readme_dst)
 
-    # 2a. Copy the business glossary template into model/glossary/
-    glossary_tpl_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "glossary" / "glossary-template.ttl"
-    glossary_tpl_dst = hub / "model" / "glossary" / "glossary-template.ttl"
+    # 2a. Copy the business glossary template into businessdiscovery/
+    glossary_tpl_src = _SCAFFOLD_DIR / "ontology-hub" / "businessdiscovery" / "glossary-template.ttl"
+    glossary_tpl_dst = hub / "businessdiscovery" / "glossary-template.ttl"
     if glossary_tpl_src.is_file() and (not glossary_tpl_dst.exists() or force):
         shutil.copy2(glossary_tpl_src, glossary_tpl_dst)
 
@@ -1297,16 +1384,8 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         sources_path = Path(sources)
 
     if ref_models is None:
-        # Check common locations
-        for candidate_rm in [
-            cwd / "ontology-reference-models",
-            (hub_root / "ontology-reference-models") if hub_root else None,
-            cwd / "ontology-hub" / "ontology-reference-models",
-        ]:
-            if candidate_rm and candidate_rm.is_dir():
-                ref_models_path = candidate_rm
-                break
-        else:
+        ref_models_path = _resolve_ref_models_dir(cwd, hub_root)
+        if ref_models_path is None:
             click.echo("❌ Cannot find ontology-reference-models/ directory. "
                        "Use --ref-models to specify.", err=True)
             raise SystemExit(1)
@@ -1605,15 +1684,8 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
         ont_path = Path(ontology)
 
     if ref_models is None:
-        for candidate_rm in [
-            cwd / "ontology-reference-models",
-            (hub_root / "ontology-reference-models") if hub_root else None,
-            cwd / "ontology-hub" / "ontology-reference-models",
-        ]:
-            if candidate_rm and candidate_rm.is_dir():
-                ref_models_path = candidate_rm
-                break
-        else:
+        ref_models_path = _resolve_ref_models_dir(cwd, hub_root)
+        if ref_models_path is None:
             click.echo("❌ Cannot find ontology-reference-models/ directory. "
                        "Use --ref-models to specify.", err=True)
             raise SystemExit(1)
@@ -1675,25 +1747,32 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
 @click.option('--ontology-dir', type=click.Path(exists=True), default=None,
               help='Path to model/ontologies/ directory (default: auto-detect from hub).')
 @click.option('--ref-models-dir', type=click.Path(exists=True), default=None,
-              help='Path to model/reference-models/ directory (default: auto-detect).')
+              help='Path to ontology-reference-models/ directory (default: auto-detect).')
 @click.option('--output-dir', '-o', type=click.Path(), default=None,
-              help='Output directory (default: model/inventory/).')
-def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir):
+              help='Output directory (default: referencemodels-unpacked/).')
+@click.option('--prune/--no-prune', default=True,
+              help='Remove orphaned inventory files no longer produced by any '
+                   'source (default: prune). Self-heals legacy stem-named files.')
+def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
     """Generate materialized YAML inventories for ontologies and reference models.
 
     Produces one YAML file per domain/reference model containing classes, properties,
     and specialization trees (DD-044).  Inventories are consumed by analyse-sources,
     propose-alignment, and coverage-report as a cached alternative to re-parsing TTL.
 
-    Files are written to model/inventory/ and should be committed to git.
+    Reference-model modules are namespaced by their owning model (DD-054), e.g.
+    ``bsp-party-inventory.yaml``, so same-named modules from different models no
+    longer overwrite each other.
+
+    Files are written to referencemodels-unpacked/ and should be committed to git.
 
     \\b
     Examples:
       kairos-ontology generate-inventory
-      kairos-ontology generate-inventory --output-dir model/inventory/
+      kairos-ontology generate-inventory --output-dir referencemodels-unpacked/
       kairos-ontology generate-inventory --ref-models-dir path/to/refs/
     """
-    from ..inventory import generate_inventory, write_inventory
+    from ..inventory import generate_inventory, inventory_filename, write_inventory
     from ..hub_utils import find_hub_root
 
     cwd = Path.cwd()
@@ -1710,12 +1789,8 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir):
     # Resolve reference models directory
     if ref_models_dir:
         ref_path = Path(ref_models_dir)
-    elif hub_root:
-        ref_path = hub_root / "model" / "reference-models"
-        if not ref_path.is_dir():
-            ref_path = None
     else:
-        ref_path = None
+        ref_path = _resolve_ref_models_dir(cwd, hub_root)
 
     if not ont_path and not ref_path:
         click.echo("❌ No ontology or reference model directories found. "
@@ -1726,14 +1801,15 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir):
     if output_dir:
         out_path = Path(output_dir)
     elif hub_root:
-        out_path = hub_root / "model" / "inventory"
+        out_path = hub_root / "referencemodels-unpacked"
     else:
-        out_path = Path("model/inventory")
+        out_path = Path("referencemodels-unpacked")
 
     click.echo("📦 Generating materialized inventories")
     written: list[Path] = []
 
     # Process reference models
+    produced_by: dict[str, Path] = {}
     if ref_path and ref_path.is_dir():
         click.echo(f"   Reference models: {ref_path}")
         ref_ttls = sorted(ref_path.glob("**/*.ttl"))
@@ -1743,7 +1819,17 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir):
                 if not inv["classes"]:
                     continue
                 stem = ttl_file.stem
-                yaml_path = out_path / f"{stem}-inventory.yaml"
+                fname = inventory_filename(ttl_file, ref_models_dir=ref_path)
+                if fname in produced_by and produced_by[fname] != ttl_file:
+                    click.echo(
+                        f"   ❌ Inventory name collision: {fname} already written "
+                        f"from {produced_by[fname]}; skipping {ttl_file}. "
+                        "Report this (DD-054 disambiguation gap).",
+                        err=True,
+                    )
+                    continue
+                produced_by[fname] = ttl_file
+                yaml_path = out_path / fname
                 write_inventory(inv, yaml_path)
                 written.append(yaml_path)
                 n_classes = len(inv["classes"])
@@ -1767,12 +1853,19 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir):
                 if not inv["classes"]:
                     continue
                 stem = ttl_file.stem
-                yaml_path = out_path / f"{stem}-inventory.yaml"
+                yaml_path = out_path / inventory_filename(ttl_file)
                 write_inventory(inv, yaml_path)
                 written.append(yaml_path)
                 click.echo(f"   ✅ {stem}: {len(inv['classes'])} classes")
             except Exception as e:
                 click.echo(f"   ⚠ Failed to process {ttl_file.name}: {e}", err=True)
+
+    if prune and out_path.is_dir():
+        produced = {p.name for p in written}
+        for existing in sorted(out_path.glob("*-inventory.yaml")):
+            if existing.name not in produced:
+                existing.unlink()
+                click.echo(f"   🧹 Pruned orphaned inventory: {existing.name}")
 
     click.echo(f"\n✅ Generated {len(written)} inventory file(s) in {out_path}")
 
@@ -1781,9 +1874,9 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir):
 @click.option('--ontology-dir', type=click.Path(exists=True), default=None,
               help='Path to model/ontologies/ directory (default: auto-detect from hub).')
 @click.option('--ref-models-dir', type=click.Path(exists=True), default=None,
-              help='Path to model/reference-models/ directory (default: auto-detect).')
+              help='Path to ontology-reference-models/ directory (default: auto-detect).')
 @click.option('--inventory-dir', type=click.Path(), default=None,
-              help='Path to model/inventory/ directory (default: auto-detect).')
+              help='Path to referencemodels-unpacked/ directory (default: auto-detect).')
 @click.option('--strict', is_flag=True, default=False,
               help='Also fail when an inventory cannot be verified (no stored hash).')
 @click.option('--warn-only', is_flag=True, default=False,
@@ -1792,7 +1885,7 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, war
     """Verify that materialized inventories exist and are up to date (DD-047).
 
     Deterministic pre-flight gate for ``design-domain``: confirms that every source
-    TTL has a matching ``model/inventory/*-inventory.yaml`` and that the stored
+    TTL has a matching ``referencemodels-unpacked/*-inventory.yaml`` and that the stored
     ``source_sha256`` matches the current file content.  Exits non-zero (blocking)
     when an inventory is **missing** or **stale**, so a modeler never works against
     an out-of-date view of the reference model's specialization tree.
@@ -1806,7 +1899,8 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, war
     from ..inventory import check_inventories
     from ..hub_utils import find_hub_root
 
-    hub_root = find_hub_root(Path.cwd(), require_model=True)
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=True)
 
     if ontology_dir:
         ont_path: Path | None = Path(ontology_dir)
@@ -1817,19 +1911,15 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, war
 
     if ref_models_dir:
         ref_path: Path | None = Path(ref_models_dir)
-    elif hub_root:
-        ref_path = hub_root / "model" / "reference-models"
-        if not ref_path.is_dir():
-            ref_path = None
     else:
-        ref_path = None
+        ref_path = _resolve_ref_models_dir(cwd, hub_root)
 
     if inventory_dir:
         inv_path = Path(inventory_dir)
     elif hub_root:
-        inv_path = hub_root / "model" / "inventory"
+        inv_path = hub_root / "referencemodels-unpacked"
     else:
-        inv_path = Path("model/inventory")
+        inv_path = Path("referencemodels-unpacked")
 
     if not ont_path and not ref_path:
         click.echo("❌ No ontology or reference model directories found. "
@@ -2180,7 +2270,7 @@ def migrate(check, hub_path):
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
-        hub / "model" / "inventory",
+        hub / "referencemodels-unpacked",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -2420,8 +2510,8 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
-        hub / "model" / "inventory",
-        hub / "model" / "glossary",
+        hub / "referencemodels-unpacked",
+        hub / "businessdiscovery",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -2432,14 +2522,15 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "output" / "report",
         hub / ".sessions-projection",
         hub / ".sessions-design",
+        hub / ".sessions-design-import",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
     # Business-discovery imports live at the REPO ROOT (like ontology-reference-models),
     # not under ontology-hub/. Created on new-repo so it's ready to receive artifacts.
-    imports_bd = repo_dir / ".imports" / "businessdiscovery"
+    imports_bd = repo_dir / ".import" / "businessdiscovery"
     imports_bd.mkdir(parents=True, exist_ok=True)
-    imports_readme_src = _SCAFFOLD_DIR / "imports" / "businessdiscovery" / "README.md"
+    imports_readme_src = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "README.md"
     if imports_readme_src.is_file():
         shutil.copy2(imports_readme_src, imports_bd / "README.md")
 
@@ -2456,6 +2547,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     for session_folder in [
         ".sessions-projection",
         ".sessions-design",
+        ".sessions-design-import",
     ]:
         sk = hub / session_folder / ".gitkeep"
         if not sk.exists():
@@ -2466,7 +2558,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
-        "model/glossary": "model/glossary",
+        "businessdiscovery": "businessdiscovery",
         "integration/sources": "integration/sources",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
@@ -2475,10 +2567,10 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         if src.is_file():
             shutil.copy2(src, dst)
 
-    # Business glossary template into model/glossary/
-    glossary_tpl_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "glossary" / "glossary-template.ttl"
+    # Business glossary template into businessdiscovery/
+    glossary_tpl_src = _SCAFFOLD_DIR / "ontology-hub" / "businessdiscovery" / "glossary-template.ttl"
     if glossary_tpl_src.is_file():
-        shutil.copy2(glossary_tpl_src, hub / "model" / "glossary" / "glossary-template.ttl")
+        shutil.copy2(glossary_tpl_src, hub / "businessdiscovery" / "glossary-template.ttl")
 
     # Source-system-template into integration/sources/
     src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "integration" / "sources" / "source-system-template"

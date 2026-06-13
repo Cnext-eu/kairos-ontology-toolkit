@@ -7,6 +7,7 @@ import pytest
 
 from kairos_ontology.inventory import (
     generate_inventory,
+    inventory_filename,
     write_inventory,
     load_inventory,
     INVENTORY_VERSION,
@@ -130,3 +131,46 @@ class TestWriteAndLoadInventory:
         )
         prop_names = {p["name"] for p in org_spec["properties"]}
         assert "registrationNumber" in prop_names
+
+
+class TestInventoryFilename:
+    """DD-054: reference-model inventories are namespaced by owning model."""
+
+    def test_ref_model_is_namespaced_by_model(self, tmp_path):
+        ref_root = tmp_path / "ontology-reference-models"
+        ttl = ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        assert (
+            inventory_filename(ttl, ref_models_dir=ref_root)
+            == "bsp-party-inventory.yaml"
+        )
+
+    def test_ref_model_ignores_intermediate_segments(self, tmp_path):
+        # DCSA has an extra shared-kernel segment that must not affect the name.
+        ref_root = tmp_path / "ontology-reference-models"
+        ttl = (
+            ref_root / "derived-ontologies" / "DCSA" / "current"
+            / "shared-kernel" / "party" / "party.ttl"
+        )
+        assert (
+            inventory_filename(ttl, ref_models_dir=ref_root)
+            == "dcsa-party-inventory.yaml"
+        )
+
+    def test_same_stem_different_models_do_not_collide(self, tmp_path):
+        ref_root = tmp_path / "ontology-reference-models"
+        bsp = ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        imo = ref_root / "derived-ontologies" / "IMO" / "current" / "party" / "party.ttl"
+        assert inventory_filename(bsp, ref_models_dir=ref_root) != inventory_filename(
+            imo, ref_models_dir=ref_root
+        )
+
+    def test_hub_ontology_keeps_stem_naming(self, tmp_path):
+        ttl = tmp_path / "model" / "ontologies" / "client.ttl"
+        assert inventory_filename(ttl) == "client-inventory.yaml"
+
+    def test_ref_ttl_without_marker_falls_back_to_stem(self, tmp_path):
+        ref_root = tmp_path / "refs"
+        ttl = ref_root / "party.ttl"
+        assert (
+            inventory_filename(ttl, ref_models_dir=ref_root) == "party-inventory.yaml"
+        )

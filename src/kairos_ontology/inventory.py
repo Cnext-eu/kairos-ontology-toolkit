@@ -7,7 +7,7 @@ trees.  These inventories are consumed by LLM-based tools (``analyse-sources``,
 ``propose-alignment``) and ``coverage-report`` as a cached, designer-reviewable
 alternative to re-parsing TTL files on every run.
 
-Inventory files live in ``model/inventory/`` and are committed to git.
+Inventory files live in ``referencemodels-unpacked/`` and are committed to git.
 """
 
 from __future__ import annotations
@@ -34,6 +34,59 @@ def compute_source_hash(path: Path) -> str:
     h = hashlib.sha256()
     h.update(Path(path).read_bytes())
     return h.hexdigest()
+
+
+def inventory_filename(
+    ttl_path: Path,
+    *,
+    ref_models_dir: Path | None = None,
+) -> str:
+    """Return the inventory filename for a source TTL (DD-054).
+
+    Reference-model modules are namespaced by their owning model so that
+    same-named modules from different models (e.g. ``party.ttl`` in BSP, IMO,
+    DCSA…) no longer collide into a single ``{stem}-inventory.yaml`` (the
+    last-write-wins data-loss bug).  Hub-owned ontologies keep plain stem naming
+    because their stems are unique within a hub.
+
+    Naming rules:
+      - Reference-model TTL under ``derived-ontologies/`` →
+        ``{model}-{stem}-inventory.yaml`` (model = the path segment directly
+        after ``derived-ontologies``, lower-cased).
+      - Anything else → ``{stem}-inventory.yaml``.
+
+    The result is deterministic and used by both ``generate-inventory`` and
+    ``check_inventories`` so source→inventory mapping always agrees.
+    """
+    stem = ttl_path.stem
+    model = _ref_model_id(ttl_path, ref_models_dir=ref_models_dir)
+    if model:
+        return f"{model}-{stem}-inventory.yaml"
+    return f"{stem}-inventory.yaml"
+
+
+def _ref_model_id(ttl_path: Path, *, ref_models_dir: Path | None) -> str | None:
+    """Return the lower-cased reference-model id owning *ttl_path*, or None.
+
+    The model id is the path segment immediately following ``derived-ontologies``
+    (e.g. ``BSP``, ``DCSA``).  Intermediate segments such as DCSA's
+    ``shared-kernel`` are ignored — only the model directory disambiguates.
+    """
+    parts: tuple[str, ...]
+    if ref_models_dir is not None:
+        try:
+            parts = ttl_path.resolve().relative_to(ref_models_dir.resolve()).parts
+        except ValueError:
+            parts = ttl_path.parts
+    else:
+        parts = ttl_path.parts
+
+    marker = "derived-ontologies"
+    if marker in parts:
+        idx = parts.index(marker)
+        if idx + 1 < len(parts):
+            return parts[idx + 1].lower()
+    return None
 
 
 def generate_inventory(
@@ -113,7 +166,8 @@ def load_inventory(path: Path) -> dict[str, Any]:
 class InventoryCheckReport:
     """Result of a deterministic inventory freshness check (DD-047).
 
-    Each list holds source TTL stems (or inventory file names for *orphan*).
+    Each list holds the inventory key (filename without the ``-inventory.yaml``
+    suffix, e.g. ``bsp-party``); *orphan* holds full inventory file names.
     """
 
     missing: list[str] = field(default_factory=list)
@@ -152,11 +206,12 @@ def check_inventories(
     ref_models_dir: Path | None,
     inventory_dir: Path,
 ) -> InventoryCheckReport:
-    """Deterministically verify that ``model/inventory/`` is present and fresh (DD-047).
+    """Deterministically verify that ``referencemodels-unpacked/`` is present and fresh (DD-047).
 
     For every source TTL under *ontology_dir* / *ref_models_dir* that would yield
-    classes, checks that a matching ``{stem}-inventory.yaml`` exists and that its
-    stored ``source_sha256`` matches the current file content.
+    classes, checks that a matching inventory file (named via
+    :func:`inventory_filename`, e.g. ``bsp-party-inventory.yaml``) exists and that
+    its stored ``source_sha256`` matches the current file content.
 
     Classification:
       - **missing**  — source has classes but no inventory file → blocking.
@@ -166,7 +221,7 @@ def check_inventories(
       - **orphan**   — inventory file with no corresponding source TTL → warn.
     """
     report = InventoryCheckReport()
-    seen_stems: set[str] = set()
+    seen_files: set[str] = set()
 
     sources: list[tuple[Path, bool]] = []
     if ref_models_dir and ref_models_dir.is_dir():
@@ -175,37 +230,40 @@ def check_inventories(
         sources += [(p, False) for p in sorted(ontology_dir.glob("**/*.ttl"))]
 
     for ttl_file, include_specializations in sources:
-        stem = ttl_file.stem
-        yaml_path = inventory_dir / f"{stem}-inventory.yaml"
-        seen_stems.add(stem)
+        fname = inventory_filename(
+            ttl_file,
+            ref_models_dir=ref_models_dir if include_specializations else None,
+        )
+        key = fname[: -len("-inventory.yaml")]
+        yaml_path = inventory_dir / fname
+        seen_files.add(fname)
 
         if not yaml_path.exists():
             if _source_has_classes(
                 ttl_file, include_specializations=include_specializations
             ):
-                report.missing.append(stem)
+                report.missing.append(key)
             continue
 
         try:
             inv = load_inventory(yaml_path)
         except Exception:
-            report.stale.append(stem)
+            report.stale.append(key)
             continue
 
         stored = inv.get("source_sha256")
         if not stored:
-            report.unverifiable.append(stem)
+            report.unverifiable.append(key)
             continue
 
         if stored != compute_source_hash(ttl_file):
-            report.stale.append(stem)
+            report.stale.append(key)
         else:
-            report.ok.append(stem)
+            report.ok.append(key)
 
     if inventory_dir.is_dir():
         for inv_file in sorted(inventory_dir.glob("*-inventory.yaml")):
-            stem = inv_file.name[: -len("-inventory.yaml")]
-            if stem not in seen_stems:
+            if inv_file.name not in seen_files:
                 report.orphan.append(inv_file.name)
 
     return report

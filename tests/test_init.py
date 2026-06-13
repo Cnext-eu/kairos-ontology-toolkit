@@ -35,11 +35,11 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/output/a2ui").is_dir()
             assert Path("ontology-hub/output/prompt").is_dir()
 
-            # Business discovery (DD-048): glossary under hub, .imports at repo root
-            assert Path("ontology-hub/model/glossary").is_dir()
-            assert Path(".imports/businessdiscovery").is_dir()
-            # .imports must NOT live under ontology-hub
-            assert not Path("ontology-hub/.imports").exists()
+            # Business discovery (DD-048/DD-056): glossary under hub, .import at repo root
+            assert Path("ontology-hub/businessdiscovery").is_dir()
+            assert Path(".import/businessdiscovery").is_dir()
+            # .import must NOT live under ontology-hub
+            assert not Path("ontology-hub/.import").exists()
 
             # Check README files
             assert Path("ontology-hub/model/ontologies/README.md").is_file()
@@ -174,10 +174,10 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / "ontology-hub" / "model" / "mappings" / "README.md").is_file()
     assert (repo / "ontology-hub" / "output" / "medallion" / "dbt").is_dir()
 
-    # Business discovery (DD-048): glossary under hub, .imports at repo root
-    assert (repo / "ontology-hub" / "model" / "glossary").is_dir()
-    assert (repo / ".imports" / "businessdiscovery").is_dir()
-    assert not (repo / "ontology-hub" / ".imports").exists()
+    # Business discovery (DD-048/DD-056): glossary under hub, .import at repo root
+    assert (repo / "ontology-hub" / "businessdiscovery").is_dir()
+    assert (repo / ".import" / "businessdiscovery").is_dir()
+    assert not (repo / "ontology-hub" / ".import").exists()
 
     # Sparse-clone was called for reference models (no submodule)
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
@@ -1350,7 +1350,7 @@ def test_scaffold_glossary_template_parses():
     from rdflib.namespace import SKOS
 
     scaffold = Path(kairos_ontology.__file__).parent / "scaffold"
-    template = scaffold / "ontology-hub" / "model" / "glossary" / "glossary-template.ttl"
+    template = scaffold / "ontology-hub" / "businessdiscovery" / "glossary-template.ttl"
     assert template.is_file()
 
     g = Graph()
@@ -1360,9 +1360,9 @@ def test_scaffold_glossary_template_parses():
 
 
 def test_scaffold_imports_businessdiscovery_readme_present():
-    """The repo-root .imports/businessdiscovery scaffold README (DD-048) must exist."""
+    """The repo-root .import/businessdiscovery scaffold README (DD-048) must exist."""
     import kairos_ontology
 
     scaffold = Path(kairos_ontology.__file__).parent / "scaffold"
-    readme = scaffold / "imports" / "businessdiscovery" / "README.md"
+    readme = scaffold / "import" / "businessdiscovery" / "README.md"
     assert readme.is_file()

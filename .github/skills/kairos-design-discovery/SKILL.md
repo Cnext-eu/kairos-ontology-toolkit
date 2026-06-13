@@ -20,7 +20,7 @@ This skill produces two things:
 1. A **company-context summary** in
    `ontology-hub/.sessions-design/businessdiscovery-{YYYY-MM-DD}.md`.
 2. A **company business glossary** in
-   `ontology-hub/model/glossary/{company}-glossary.ttl` (SKOS overlay — the domain
+   `ontology-hub/businessdiscovery/{company}-glossary.ttl` (SKOS overlay — the domain
    ontology is never modified).
 
 > **Why this matters (logistics example):** freight-forwarding and logistics
@@ -80,12 +80,13 @@ company facts or glossary terms.
 
 | Source | Location | Notes |
 |--------|----------|-------|
-| Raw artifacts (notes, decks, PPT/PDF) | **`.imports/businessdiscovery/`** at the **repo root** | User drops these in; read them first |
+| Raw artifacts (notes, decks, PPT/PDF) | **`.import/businessdiscovery/`** at the **repo root** | User drops these in; read them first |
 | Public web research | web search / fetch | Mark findings `[INFERRED — public web]` until confirmed |
 | Hub README | `ontology-hub/README.md` | Company name + domain context |
+| **Reference-model inventories** | **`ontology-hub/referencemodels-unpacked/*.yaml`** | **Materialized in Phase 1a — read-only view of the *full* domain breadth used to link glossary terms** |
 | User statements | conversation | Highest-confidence input |
 
-> **Location note:** `.imports/` lives at the **repository root** (alongside
+> **Location note:** `.import/` lives at the **repository root** (alongside
 > `ontology-reference-models/`), NOT under `ontology-hub/`. It is created
 > automatically by `kairos-ontology init` / `new-repo`.
 
@@ -101,20 +102,71 @@ company facts or glossary terms.
    > fresh**, or **review** it first?"
 3. If none exists, create one immediately (Gate 1), even if sparse.
 
+> **Discovery is incremental and idempotent — reruns are expected.** A hub grows
+> one domain at a time, but discovery is **company-wide** and runs *before* the
+> first domain is modeled, so it deliberately captures terminology for domains that
+> don't exist in the hub yet. When you rerun discovery (e.g. before modeling the
+> next domain), treat it as a **continue**: re-materialize the inventories
+> (Phase 1a), re-link any previously **flagged** terms to the hub IRIs that now
+> exist, and append newly discovered terms. Never start from scratch unless the user
+> explicitly asks. See [Phase 4 — Rerun / incremental](#phase-4--rerun--incremental).
+
+### Phase 1a — Materialize reference-model breadth (read-only)
+
+> **Why:** Business understanding and glossary linking must happen against the
+> **full domain model**, not just the one domain currently modeled in the hub.
+> Materializing the reference models gives discovery a complete, queryable view of
+> every available class/property so terminology can be linked correctly up front —
+> even for domains that will only be modeled later.
+
+1. **Check the reference models are present.** Confirm
+   `ontology-reference-models/` exists at the **repo root**. If it is missing,
+   instruct the user to fetch it (read-only, no hub changes):
+   ```powershell
+   .\update-referencemodels.ps1          # from ontology-hub root
+   # or pin a version: .\update-referencemodels.ps1 -Ref v1.2.1
+   ```
+2. **Materialize the inventories.** Run `generate-inventory` so the *full*
+   reference-model breadth (plus any already-modeled hub ontologies) is written as
+   read-only YAML:
+   ```bash
+   kairos-ontology generate-inventory
+   # writes ontology-hub/referencemodels-unpacked/*.yaml
+   ```
+   If `referencemodels-unpacked/*.yaml` already exists and is fresh, you may reuse it; on a
+   **rerun** always regenerate so newly-modeled hub classes appear.
+3. **Read the inventories** under `ontology-hub/referencemodels-unpacked/` to build an
+   in-context map of available domain IRIs (classes + properties) across **all**
+   reference-model domains. This map is what Phase 2 uses to link glossary terms.
+
+> **Gate 4 still holds:** materialization is **read-only**. It only generates the
+> `referencemodels-unpacked/` YAML and reads the reference models — it never imports them
+> into the hub graph and never modifies any domain `.ttl`.
+
 ### Phase 1 — Company research
 
-1. **Read the artifacts** in `.imports/businessdiscovery/` (repo root). Summarise
+> **Breadth over depth — go company-wide, not first-domain-scoped.** Discovery runs
+> once, up front, and is shared across **every** domain the hub will ever model.
+> Cover the company's *entire* offering and operating model — all business areas,
+> product lines, and processes — not just the domain you happen to be modeling next.
+> Use the materialized reference-model breadth (Phase 1a) as a checklist of domains
+> the company might touch. Capturing out-of-scope-for-now context here is what
+> prevents losing information when later domains are modeled.
+
+1. **Read the artifacts** in `.import/businessdiscovery/` (repo root). Summarise
    each briefly.
 2. **Read** `ontology-hub/README.md` for the company name and stated context.
-3. **Research** the company on the public web (only if the user agrees). Capture:
+3. **Research** the company on the public web (only if the user agrees). Capture
+   the **full** business, breadth-first:
    - What the company does (core activity, sector)
    - Business model (how they make money)
-   - Offerings / products / services
+   - Offerings / products / services — **all** lines, not only the first domain's
    - Key operational processes and the entities involved
    - Sector specifics (e.g. freight forwarder vs carrier vs 3PL)
 4. Present a **Company Context Proposal** and ask the user to confirm/correct each
    point. Tag every web-sourced claim `[INFERRED — public web]` (Gate 2).
-5. Save confirmed context to the session file.
+5. Save confirmed context to the session file — **including** terms and areas that
+   are out of scope for the current domain but will matter for later ones.
 
 ### Phase 2 — Terminology capture (the glossary)
 
@@ -128,11 +180,21 @@ company facts or glossary terms.
 | `House Bill`, `HBL` | Transport Document | `…#TransportDocument` | Broader than strict industry meaning |
 | `Leg` | Shipment Movement | `…#ShipmentMovement` | One origin→destination segment |
 
-3. Wait for user confirmation on **each** entry (Gate 3). Confirm the linked domain
-   IRI exists (read `model/ontologies/`); if the domain class/property does not yet
-   exist, record the term and flag it for **kairos-design-domain** rather than
-   inventing an IRI.
-4. Write confirmed entries to `ontology-hub/model/glossary/{company}-glossary.ttl`
+3. Wait for user confirmation on **each** entry (Gate 3). **Resolve the linked IRI
+   against the full domain breadth**, in this order:
+   1. **Hub class/property** — read `model/ontologies/`. If a matching hub IRI
+      exists, link to it (highest priority — it's already claimed by this hub).
+   2. **Reference-model class/property** — otherwise look it up in the materialized
+      inventories from Phase 1a (`referencemodels-unpacked/*.yaml`). If a matching
+      reference-model IRI exists, **link to that ref-model IRI** (`rdfs:seeAlso` /
+      `skos:relatedMatch`). Nothing is lost and the link resolves immediately, even
+      though the class isn't modeled into the hub yet. Also note the term under
+      **"Terms flagged for domain modeling"** so the class gets claimed when its
+      domain is modeled.
+   3. **Truly novel** — only when there is **no** hub *and* **no** ref-model match,
+      record the term **without** an IRI and flag it for **kairos-design-domain**.
+      Never invent an IRI.
+4. Write confirmed entries to `ontology-hub/businessdiscovery/{company}-glossary.ttl`
    using `rdflib` patterns (never modify the domain `.ttl` — Gate 4):
 
 ```turtle
@@ -151,7 +213,7 @@ glossary:TransportDocument a skos:Concept ;
     rdfs:seeAlso <https://{company}.com/ont/logistics#TransportDocument> .
 ```
 
-   Start from `model/glossary/glossary-template.ttl` (installed by the scaffold).
+   Start from `businessdiscovery/glossary-template.ttl` (installed by the scaffold).
 
 ### Phase 3 — Persist & handoff
 
@@ -160,12 +222,36 @@ glossary:TransportDocument a skos:Concept ;
 2. Hand off:
    > "Business discovery is captured.
    > - Company context → `.sessions-design/businessdiscovery-{date}.md`
-   > - Glossary → `model/glossary/{company}-glossary.ttl`
+   > - Glossary → `businessdiscovery/{company}-glossary.ttl`
    >
    > Next: design the bronze vocabulary with **kairos-design-source**, then model
    > the domain with **kairos-design-domain** (it will read this context). The
    > **kairos-design-mapping** skill will use the glossary's alternative names to
-   > match source columns to domain properties."
+   > match source columns to domain properties.
+   >
+   > 🔁 **Revisit discovery on each new domain.** When you start modeling the next
+   > domain, rerun this skill in **continue** mode — it will re-link the terms now
+   > flagged for modeling to their freshly-created hub IRIs and capture anything new."
+
+### Phase 4 — Rerun / incremental
+
+Discovery is **idempotent and incremental**. On any rerun (typically before modeling
+the next domain), do **continue**, not start-fresh:
+
+1. **Re-materialize** (Phase 1a) — regenerate `referencemodels-unpacked/*.yaml` so newly
+   modeled hub classes appear in the breadth map.
+2. **Re-link flagged terms** — for each entry under **"Terms flagged for domain
+   modeling"** whose class now exists in `model/ontologies/`, update its glossary
+   `rdfs:seeAlso` from the reference-model IRI (or "needs domain class") to the new
+   **hub IRI**, and clear the flag. Use `rdflib` (Gate 4 — glossary only).
+3. **Append new terms** — capture any terminology discovered since the last run,
+   resolving IRIs with the same hub → ref-model → flag priority (Phase 2 step 3).
+4. **Update the session file** — bump `Last updated`, keep `Status` accurate, and
+   record what changed this run.
+
+> This is what guarantees no information is lost across domains: terms are captured
+> company-wide up front, linked to ref-model IRIs immediately, and reconciled to hub
+> IRIs as each domain is modeled.
 
 ---
 
@@ -190,15 +276,20 @@ Save to `ontology-hub/.sessions-design/businessdiscovery-{YYYY-MM-DD}.md`:
 | Offerings | {products/services} | … | ✅/❓ |
 | Key processes | {process → entities} | … | ✅/❓ |
 
-## Glossary Entries (→ model/glossary/{company}-glossary.ttl)
+## Glossary Entries (→ businessdiscovery/{company}-glossary.ttl)
 
-| # | Business term(s) | Canonical term | Linked domain IRI | Meaning note | Status |
-|---|------------------|----------------|-------------------|--------------|--------|
-| 1 | {altLabel(s)} | {prefLabel} | {IRI or "needs domain class"} | {note} | ✅/❓ |
+| # | Business term(s) | Canonical term | Linked IRI (hub or ref-model) | Source of IRI | Meaning note | Status |
+|---|------------------|----------------|-------------------------------|---------------|--------------|--------|
+| 1 | {altLabel(s)} | {prefLabel} | {IRI or "needs domain class"} | hub / ref-model / — | {note} | ✅/❓ |
 
 ## Terms flagged for domain modeling
 
-- [ ] {term} — no domain class/property yet → invoke kairos-design-domain
+> Terms linked to a **reference-model** IRI (class not yet in the hub) and terms
+> with **no** match. On each rerun, re-link these to the hub IRI once their domain
+> is modeled (Phase 4).
+
+- [ ] {term} — linked to ref-model `{IRI}`, not yet a hub class → claim via kairos-design-domain
+- [ ] {term} — no class/property yet (hub or ref-model) → invoke kairos-design-domain
 
 ## Open Questions
 
@@ -217,8 +308,12 @@ Auto-save after each confirmed decision.
 
 - Do NOT add alternative names to the domain ontology — use the glossary overlay.
 - Do NOT present public-web findings as confirmed facts.
-- Do NOT invent a domain IRI for a `rdfs:seeAlso` link; if the class/property does
-  not exist, flag it for kairos-design-domain.
+- Do NOT **invent** an IRI for a `rdfs:seeAlso` link. Linking to an IRI that
+  **exists** in the hub (`model/ontologies/`) or in a materialized reference-model
+  inventory (Phase 1a) is fine and preferred; only when neither exists do you flag
+  the term for kairos-design-domain instead of inventing one.
+- Do NOT scope discovery to the first domain — capture the company's full breadth
+  (see Phase 1), including terms whose domain isn't modeled yet.
 - Do NOT write glossary TTL by string concatenation — use `rdflib`.
 - Do NOT commit secrets or PII from imported artifacts.
 

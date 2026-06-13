@@ -7,6 +7,12 @@ description: >
 
 # Projection Generation Skill
 
+> **🔒 Skill context:** Before running any `kairos-ontology` /
+> `python -m kairos_ontology` command in this skill, set the sentinel env var so
+> the CLI knows it runs inside a skill and suppresses its skill-gate warning:
+> - PowerShell: `$env:KAIROS_SKILL_CONTEXT = "1"`
+> - bash/zsh: `export KAIROS_SKILL_CONTEXT=1`
+
 You help users generate and understand projection artifacts.
 
 > **When to use this skill vs design skills (DD-033):**
