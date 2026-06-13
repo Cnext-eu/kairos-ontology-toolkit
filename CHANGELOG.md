@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.1] — 2026-06-13
+
+### Added
+- **Deterministic source-coverage gates (DD-061).** Two new read-only, AI-free CLI
+  commands close the asymmetry where reference-model coverage was hard-gated
+  (`check-inventory`) but source coverage was only advisory.
+  `kairos-ontology check-alignment` (pre-modeling) verifies that every data domain
+  in the affinity reports has a `{domain}-alignment.yaml` from `propose-alignment`
+  that **covers all** the domain's tables and is **fresh** — blocking on
+  *missing / incomplete / stale*. `kairos-ontology check-source-coverage`
+  (pre-silver) verifies that every affinity-assigned source table is mapped to a
+  domain entity (a SKOS match on the bronze table or one of its columns) — blocking
+  on any unmapped table. Both hard-block by default with a `--warn-only` escape
+  hatch and stay out of the soft skill-gate set (like `check-inventory`).
+  `check-alignment` is wired as a hard pre-flight in `kairos-design-domain`
+  (Step 0a.2); `check-source-coverage` as a mandatory pre-flight before silver in
+  `kairos-design-silver` and `kairos-execute-project`.
+
+### Changed
+- **`propose-alignment` output is versioned and carries a freshness hash (DD-061).**
+  Alignment YAML `schema_version` is bumped 1 → 2 and now stores a `source_sha256`
+  digest of the affinity `(system, table)` set so `check-alignment` can detect
+  staleness. Pre-existing v1 alignment files remain valid and are reported as
+  *unverifiable* (warn, non-blocking) until regenerated.
+- **`pypdf` and `pyarrow` are now core dependencies.** Business-discovery document
+  parsing (DD-060) needs to extract text from PDF artifacts in
+  `.import/businessdiscovery/`, and Parquet source import needs `pyarrow`. Because
+  hubs install the toolkit as a bare wheel, optional extras don't reach them — so
+  both libraries are promoted to core `[project.dependencies]` and now arrive
+  automatically on `update --upgrade`. `pyarrow` remains exposed via the `[parquet]`
+  extra for backward compatibility. (pypdf: BSD-3-Clause; pyarrow: Apache-2.0 —
+  both Apache-2.0-compatible.)
+
 ## [3.15.0] — 2026-06-13
 
 ### Added

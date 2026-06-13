@@ -62,6 +62,28 @@ that prerequisite files exist. Non-medallion targets (`prompt`, `neo4j`, `azure-
 4. **If files are present:** proceed with projection normally.
 5. **For bare `project` (all targets):** run non-medallion targets immediately; apply the pre-flight check only for the medallion subset.
 
+### Source-coverage gate (silver / dbt — MANDATORY, DD-061)
+
+When the hub has affinity reports (`integration/sources/_analysis/*-affinity.yaml`),
+**also** run the deterministic source-coverage gate before projecting `silver` or
+`dbt`, so the silver layer is built against a **complete** ontology rather than a
+partial one:
+
+```bash
+kairos-ontology check-source-coverage
+```
+
+- **Exit 0** → every affinity-assigned source table is mapped to a domain entity.
+  Proceed with projection.
+- **Exit 1** → STOP. The listed `(system.table)` pairs have domain affinity but no
+  source-to-domain mapping. Hand off to **kairos-design-mapping** (and
+  **kairos-design-domain** if classes are missing) to close the gaps, then re-run
+  the gate. Override only deliberately with `--warn-only`.
+
+`check-source-coverage` is read-only and deterministic (no AI). Skip it only when
+no affinity reports exist yet (the hub hasn't run `analyse-sources`).
+
+
 ### Example interaction
 
 ```

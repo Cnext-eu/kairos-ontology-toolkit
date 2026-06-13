@@ -2016,6 +2016,213 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, war
         click.echo("\n✅ Inventories are present and up to date.")
 
 
+def _autodetect_analysis_dir(cwd: Path, hub_root: Path | None) -> Path | None:
+    """Locate the ``_analysis/`` directory holding affinity/alignment reports."""
+    for candidate in [
+        (hub_root / "integration" / "sources" / "_analysis") if hub_root else None,
+        cwd / "integration" / "sources" / "_analysis",
+        cwd / "_analysis",
+    ]:
+        if candidate and candidate.is_dir():
+            return candidate
+    return None
+
+
+@cli.command(name='check-alignment')
+@click.option('--analysis-dir', type=click.Path(exists=True), default=None,
+              help='Path to _analysis/ directory with affinity + alignment reports '
+                   '(default: auto-detect).')
+@click.option('--domains', 'domains_filter', default=None,
+              help='Comma-separated domain names to include (case-insensitive substring match).')
+@click.option('--warn-only', is_flag=True, default=False,
+              help='Report problems but always exit 0 (never block).')
+def check_alignment_cmd(analysis_dir, domains_filter, warn_only):
+    """Verify that every domain has a complete, fresh alignment (DD-061).
+
+    Deterministic pre-flight gate for ``design-domain``: confirms that every data
+    domain enumerated in the affinity reports has a ``{domain}-alignment.yaml``
+    from ``propose-alignment`` that covers **all** of the domain's tables and is
+    still fresh (its stored ``source_sha256`` matches the current affinity table
+    set).  Exits non-zero (blocking) when an alignment is **missing**,
+    **incomplete**, or **stale**, so a modeler never hand-reads a subset of tables.
+
+    \\b
+    Examples:
+      kairos-ontology check-alignment
+      kairos-ontology check-alignment --domains party,commercial
+      kairos-ontology check-alignment --warn-only
+    """
+    from ..alignment_coverage import check_alignment_coverage
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+
+    if analysis_dir:
+        analysis_path: Path | None = Path(analysis_dir)
+    else:
+        analysis_path = _autodetect_analysis_dir(cwd, hub_root)
+
+    if not analysis_path:
+        click.echo(
+            "❌ Cannot find _analysis/ directory with affinity reports. "
+            "Run 'kairos-ontology analyse-sources' first, or use --analysis-dir.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    filter_list = None
+    if domains_filter:
+        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
+
+    report = check_alignment_coverage(
+        analysis_dir=analysis_path, domains_filter=filter_list,
+    )
+
+    click.echo("🔎 Checking source-to-domain alignment coverage")
+    click.echo(f"   Analysis dir: {analysis_path}")
+    for domain in report.ok:
+        click.echo(f"   ✓ {domain}: aligned and up to date")
+    for domain in report.missing:
+        gaps = report.uncovered_tables.get(domain, [])
+        click.echo(f"   ❌ {domain}: MISSING alignment ({len(gaps)} table(s) "
+                   "unaligned)", err=True)
+    for domain in report.incomplete:
+        gaps = report.uncovered_tables.get(domain, [])
+        click.echo(f"   ❌ {domain}: INCOMPLETE — {len(gaps)} affinity table(s) "
+                   "not aligned", err=True)
+        for tbl in gaps[:10]:
+            click.echo(f"        • {tbl}", err=True)
+        if len(gaps) > 10:
+            click.echo(f"        … and {len(gaps) - 10} more", err=True)
+    for domain in report.stale:
+        click.echo(f"   ❌ {domain}: STALE (affinity tables changed since "
+                   "alignment was generated)", err=True)
+    for domain in report.unverifiable:
+        click.echo(f"   ⚠ {domain}: cannot verify freshness (no stored hash — "
+                   "regenerate with propose-alignment)")
+    for name in report.orphan:
+        click.echo(f"   ⚠ {name}: orphan alignment (no matching affinity domain)")
+
+    if report.is_blocking and not warn_only:
+        click.echo(
+            "\n❌ Alignment check failed. Run "
+            "`kairos-ontology propose-alignment` (no domain filter) and commit the "
+            "result before modeling.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if report.is_blocking or report.has_warnings:
+        click.echo("\n⚠ Alignment check completed with warnings (not blocking).")
+    else:
+        click.echo("\n✅ Alignments are present, complete, and up to date.")
+
+
+@cli.command(name='check-source-coverage')
+@click.option('--analysis-dir', type=click.Path(exists=True), default=None,
+              help='Path to _analysis/ directory with affinity reports (default: auto-detect).')
+@click.option('--sources', type=click.Path(exists=True), default=None,
+              help='Path to integration/sources/ directory (default: auto-detect).')
+@click.option('--mappings', type=click.Path(exists=True), default=None,
+              help='Path to model/mappings/ directory (default: auto-detect).')
+@click.option('--domains', 'domains_filter', default=None,
+              help='Comma-separated domain names to include (case-insensitive substring match).')
+@click.option('--warn-only', is_flag=True, default=False,
+              help='Report problems but always exit 0 (never block).')
+def check_source_coverage_cmd(analysis_dir, sources, mappings, domains_filter, warn_only):
+    """Verify every affinity-assigned source table is mapped (DD-061).
+
+    Deterministic pre-silver gate: confirms that every source table the affinity
+    reports assign to an in-scope domain is represented by a source-to-domain
+    mapping (a SKOS match on the bronze table or one of its columns).  Exits
+    non-zero (blocking) when any domain table is unmapped, so silver is only run
+    against a complete ontology.
+
+    \\b
+    Examples:
+      kairos-ontology check-source-coverage
+      kairos-ontology check-source-coverage --domains party
+      kairos-ontology check-source-coverage --warn-only
+    """
+    from ..source_coverage import check_source_coverage
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+
+    if analysis_dir:
+        analysis_path: Path | None = Path(analysis_dir)
+    else:
+        analysis_path = _autodetect_analysis_dir(cwd, hub_root)
+
+    if not analysis_path:
+        click.echo(
+            "❌ Cannot find _analysis/ directory with affinity reports. "
+            "Run 'kairos-ontology analyse-sources' first, or use --analysis-dir.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if sources:
+        sources_path = Path(sources)
+    elif hub_root:
+        sources_path = hub_root / "integration" / "sources"
+    else:
+        sources_path = cwd / "integration" / "sources"
+
+    if mappings:
+        mappings_path = Path(mappings)
+    elif hub_root:
+        mappings_path = hub_root / "model" / "mappings"
+    else:
+        mappings_path = cwd / "model" / "mappings"
+
+    filter_list = None
+    if domains_filter:
+        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
+
+    report = check_source_coverage(
+        analysis_dir=analysis_path,
+        sources_dir=sources_path,
+        mappings_dir=mappings_path,
+        domains_filter=filter_list,
+    )
+
+    click.echo("🔎 Checking source-to-domain coverage")
+    click.echo(f"   Analysis dir: {analysis_path}")
+    click.echo(f"   Sources: {sources_path}")
+    click.echo(f"   Mappings: {mappings_path}")
+    for domain in sorted(report.domain_counts):
+        covered, total = report.domain_counts[domain]
+        gaps = report.uncovered.get(domain, [])
+        if not gaps:
+            click.echo(f"   ✓ {domain}: {covered}/{total} tables mapped "
+                       f"({report.coverage_pct(domain):.0f}%)")
+        else:
+            click.echo(f"   ❌ {domain}: {covered}/{total} tables mapped "
+                       f"({report.coverage_pct(domain):.0f}%) — "
+                       f"{len(gaps)} unmapped", err=True)
+            for tbl in gaps[:10]:
+                click.echo(f"        • {tbl}", err=True)
+            if len(gaps) > 10:
+                click.echo(f"        … and {len(gaps) - 10} more", err=True)
+
+    if report.is_blocking and not warn_only:
+        click.echo(
+            f"\n❌ Source-coverage check failed: {report.total_uncovered} "
+            "affinity table(s) are not mapped to any domain entity. Complete the "
+            "mappings (kairos-design-mapping) before running silver.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if report.is_blocking:
+        click.echo("\n⚠ Source-coverage check completed with warnings (not blocking).")
+    else:
+        click.echo("\n✅ Every affinity-assigned source table is mapped.")
+
+
 @cli.command(name='discovery-status')
 @click.option('--import-dir', type=click.Path(), default=None,
               help='Path to .import/businessdiscovery/ (default: auto-detect from hub).')
