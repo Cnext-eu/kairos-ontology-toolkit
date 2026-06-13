@@ -133,6 +133,21 @@ interactive configurator (business alignment checkpoints, session persistence in
 edits (adding a property, fixing a label) it supports a quick-edit mode that
 skips checkpoints.
 
+> **Modeling is a mid-lifecycle step, not the start.** The canonical lifecycle is
+> `discovery → source → domain → mapping → silver → gold → validate → project`.
+> `kairos-design-domain` is **data-first**: it needs imported, analysed sources as
+> evidence (Gate 6 / Source Evidence Table). So when a user asks to **"start
+> modeling"**:
+> - **Fresh hub / no sources yet** → this means starting at the **beginning of the
+>   lifecycle**. Point the user to **kairos-help** §2 and begin with
+>   **kairos-design-discovery** + **kairos-design-source** (import + `analyse-sources`)
+>   *before* `kairos-design-domain`. Don't model classes against an empty
+>   `integration/sources/`.
+> - **Extending / restarting an existing model** → before modeling, confirm whether
+>   **new/additional source systems** need importing (back to
+>   **kairos-design-source**, then re-run `analyse-sources`) so the evidence base is
+>   current. This is **guidance**, not a blocking gate.
+
 ### Skill routing guide
 
 Use this table to pick the correct skill for a user's intent:
@@ -145,10 +160,17 @@ Use this table to pick the correct skill for a user's intent:
 > from those files — it's the single entry point for producing output artifacts.
 > Design first, then project. See DD-033 for the full lifecycle architecture.
 
+> **Start of lifecycle:** the canonical order is
+> `discovery → source → domain → mapping → silver → gold → validate → project →
+> diagnose → consume` (see kairos-help §2). `kairos-design-domain` sits **after**
+> discovery + source — it consumes imported, analysed source evidence. Treat
+> "start modeling" on a fresh hub as "start the lifecycle": route to
+> **kairos-design-discovery** / **kairos-design-source** first.
+
 | User intent | Correct skill |
 |---|---|
 | "Explore company / business model / capture business terminology" | **kairos-design-discovery** |
-| "Model / design / create classes / add properties / extend ontology" | **kairos-design-domain** |
+| "Model / design / create classes / add properties / extend ontology" | **kairos-design-domain** (fresh hub → begin at lifecycle start: discovery + source first; extending → confirm sources are current) |
 | "Create a new hub repo from scratch" | **kairos-setup-init** |
 | "Set up folder structure / configure hub" | **kairos-setup-config** |
 | "How does Kairos work? / What is this?" | **kairos-help** |

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.1] — 2026-06-13
+
+### Changed
+- **"Start modeling" now points to the lifecycle start.** The Copilot instructions
+  and the `kairos-design-domain` skill now frame domain modeling as a mid-lifecycle
+  step (`discovery → source → domain → …`): on a fresh hub, "start modeling" routes
+  the user to discovery + source import first. The modeling skill gains advanced
+  pre-flight checks — a *fresh* mode (empty `integration/sources/` → go import
+  sources) and a *restart/extension* mode (prompt to import additional sources and
+  re-run `analyse-sources` before continuing). Guidance only; Gate 6 unchanged.
+  (DD-051)
+
 ## [3.13.0] — 2026-06-13
 
 ### Added
