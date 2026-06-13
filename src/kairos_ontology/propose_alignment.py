@@ -44,6 +44,8 @@ MAX_REF_PROPERTIES_PER_PROMPT = 60
 MAX_REF_CLASSES_PER_PROMPT = 18
 RETRY_MIN_CONFIDENCE = 0.75
 RETRY_MIN_MAPPED_RATIO = 0.55
+MAX_SAMPLE_CHARS = 48
+MAX_SAMPLES_PER_COLUMN = 3
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -282,13 +284,71 @@ def _format_source_columns(columns: list[dict[str, Any]]) -> str:
     """Format source columns for the LLM prompt."""
     lines = []
     for col in columns[:MAX_COLUMNS_PER_PROMPT]:
-        samples_str = ", ".join(col.get("samples", [])[:3])
+        prompt_samples = _compact_prompt_samples(col.get("samples", []))
+        samples_str = ", ".join(prompt_samples)
         samples_part = f" | samples: {samples_str}" if samples_str else ""
         lines.append(f"  - {col['name']} ({col.get('data_type', 'unknown')}){samples_part}")
     return "\n".join(lines)
 
 
 _TOKEN_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
+
+
+def _clip_sample_text(value: str, max_chars: int = MAX_SAMPLE_CHARS) -> str:
+    """Clip sample text to a bounded size for prompt efficiency."""
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 1] + "…"
+
+
+def _is_noisy_sample(value: str) -> bool:
+    """Return True for high-entropy or ID-like samples with low semantic value."""
+    if not value:
+        return True
+
+    text = value.strip()
+    if not text:
+        return True
+
+    if _UUID_RE.match(text):
+        return True
+
+    compact = text.replace("-", "").replace("_", "")
+    if (
+        len(compact) >= 16
+        and any(ch.isdigit() for ch in compact)
+        and all(ch in "0123456789abcdefABCDEF" for ch in compact)
+    ):
+        return True
+
+    if " " in text:
+        return False
+
+    has_alpha = any(ch.isalpha() for ch in text)
+    has_digit = any(ch.isdigit() for ch in text)
+    if has_alpha and has_digit and len(text) >= 20:
+        distinct_ratio = len(set(text)) / len(text)
+        if distinct_ratio >= 0.6:
+            return True
+
+    return False
+
+
+def _compact_prompt_samples(samples: list[Any]) -> list[str]:
+    """Keep semantically useful, bounded sample values for prompts."""
+    kept: list[str] = []
+    for raw in samples:
+        text = str(raw).strip()
+        if _is_noisy_sample(text):
+            continue
+        kept.append(_clip_sample_text(text))
+        if len(kept) >= MAX_SAMPLES_PER_COLUMN:
+            break
+    return kept
 
 
 def _tokenize_text(value: str) -> set[str]:
@@ -462,14 +522,13 @@ def _should_retry_with_full_inventory(
         return True
 
     confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
-    if confidence < min_confidence:
-        return True
-
     if total_columns <= 0:
-        return False
+        return confidence < min_confidence
+
     mapped = _count_non_custom_alignments(result)
     mapped_ratio = mapped / total_columns
-    return mapped_ratio < min_mapped_ratio
+    # Retry only when both quality signals are weak to avoid unnecessary full passes.
+    return confidence < min_confidence and mapped_ratio < min_mapped_ratio
 
 
 def _alignment_result_score(result: dict[str, Any], total_columns: int) -> float:

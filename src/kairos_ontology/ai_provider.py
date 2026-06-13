@@ -30,16 +30,33 @@ logger = logging.getLogger(__name__)
 def _load_dotenv_from_hub():
     """Load .env file from repo root or hub subfolder (whichever is found first)."""
     cwd = Path.cwd()
-    candidates = [
-        cwd / ".env",
-    ]
-    # Also walk up looking for hub structure
-    for parent in [cwd] + list(cwd.parents)[:3]:
-        if (parent / "ontology-hub").is_dir() or (parent / "model" / "ontologies").is_dir():
-            candidates.insert(0, parent / ".env")
+    candidates: list[Path] = [cwd / ".env"]
+
+    hub_dir: Path | None = None
+    # Walk up to detect either:
+    # 1) we're inside ontology-hub itself (has model/ontologies), or
+    # 2) we're in repo root (has ontology-hub/ child)
+    for parent in [cwd] + list(cwd.parents)[:5]:
+        if (parent / "model" / "ontologies").is_dir():
+            hub_dir = parent
+            break
+        if (parent / "ontology-hub").is_dir():
+            hub_dir = parent / "ontology-hub"
             break
 
+    if hub_dir is not None:
+        candidates.append(hub_dir / ".env")
+        candidates.append(hub_dir.parent / ".env")
+
+    ordered_candidates: list[Path] = []
+    seen: set[Path] = set()
     for env_file in candidates:
+        if env_file in seen:
+            continue
+        seen.add(env_file)
+        ordered_candidates.append(env_file)
+
+    for env_file in ordered_candidates:
         if env_file.is_file():
             load_dotenv(env_file, override=False)
             logger.debug("Loaded .env from %s", env_file)

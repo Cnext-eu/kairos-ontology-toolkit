@@ -16,6 +16,8 @@ from kairos_ontology.propose_alignment import (
     TableAlignment,
     _build_reference_rollup,
     _clamp_confidence,
+    _compact_prompt_samples,
+    _format_source_columns,
     _select_ref_classes_for_table,
     _should_retry_with_full_inventory,
     align_table,
@@ -357,8 +359,8 @@ class TestRetryPolicy:
             total_columns=5,
         )
 
-    def test_retry_when_mapped_ratio_too_low(self):
-        assert _should_retry_with_full_inventory(
+    def test_no_retry_when_only_mapped_ratio_is_low(self):
+        assert not _should_retry_with_full_inventory(
             {
                 "ref_class": "SalesContract",
                 "ref_class_confidence": 0.95,
@@ -367,6 +369,51 @@ class TestRetryPolicy:
             total_columns=4,
             min_mapped_ratio=0.5,
         )
+
+    def test_retry_when_confidence_and_mapped_ratio_are_both_low(self):
+        assert _should_retry_with_full_inventory(
+            {
+                "ref_class": "SalesContract",
+                "ref_class_confidence": 0.40,
+                "column_alignments": [{"alignment": "custom"}],
+            },
+            total_columns=4,
+            min_confidence=0.75,
+            min_mapped_ratio=0.5,
+        )
+
+
+class TestPromptSampleCompaction:
+    def test_compact_prompt_samples_filters_uuid_and_long_hex(self):
+        samples = [
+            "550e8400-e29b-41d4-a716-446655440000",
+            "4f3e2d1c0b9a887766554433221100ff",
+            "Valid business text",
+        ]
+        out = _compact_prompt_samples(samples)
+        assert out == ["Valid business text"]
+
+    def test_compact_prompt_samples_clips_long_text(self):
+        long_text = "A" * 120
+        out = _compact_prompt_samples([long_text])
+        assert len(out) == 1
+        assert len(out[0]) <= 48
+        assert out[0].endswith("…")
+
+    def test_format_source_columns_uses_compacted_samples(self):
+        columns = [
+            {
+                "name": "Comment",
+                "data_type": "nvarchar(200)",
+                "samples": [
+                    "550e8400-e29b-41d4-a716-446655440000",
+                    "Customer asked for delayed invoice processing with split billing",
+                ],
+            }
+        ]
+        prompt_cols = _format_source_columns(columns)
+        assert "550e8400-e29b-41d4-a716-446655440000" not in prompt_cols
+        assert "Customer asked for delayed invoice processing" in prompt_cols
 
 
 # ---------------------------------------------------------------------------
