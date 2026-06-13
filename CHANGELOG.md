@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.4] — 2026-06-13
+
+### Changed
+- **`propose-alignment` prompt payload is now token-optimized with quality safeguards.**
+  Per table, the first pass now uses a deterministic shortlist of reference classes
+  (`--max-prompt-classes`, default `18`) instead of always sending the full class
+  inventory. If the shortlist result is weak, the command retries once against the
+  full inventory using configurable gates
+  (`--retry-min-confidence`, `--retry-min-mapped-ratio`). This keeps default behavior
+  quality-safe while reducing runtime/token cost on large domains.
+
 ## [3.15.3] — 2026-06-13
 
 ### Fixed

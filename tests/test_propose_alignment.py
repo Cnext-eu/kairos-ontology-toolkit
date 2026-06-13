@@ -16,6 +16,8 @@ from kairos_ontology.propose_alignment import (
     TableAlignment,
     _build_reference_rollup,
     _clamp_confidence,
+    _select_ref_classes_for_table,
+    _should_retry_with_full_inventory,
     align_table,
     build_alignment_prompt,
     load_affinity_reports,
@@ -315,6 +317,58 @@ class TestAlignTable:
         assert result["column_alignments"] == []
 
 
+class TestPromptClassShortlist:
+    def test_shortlist_is_deterministic_even_if_input_order_changes(self):
+        ref_classes = [
+            {"name": "TradeTerms", "label": "Trade Terms", "comment": "", "properties": []},
+            {"name": "SalesContract", "label": "Sales Contract", "comment": "", "properties": []},
+            {"name": "Address", "label": "Address", "comment": "", "properties": []},
+        ]
+        columns = [{"name": "ContractNo", "data_type": "nvarchar(50)", "samples": ["C-1"]}]
+
+        selected_a = _select_ref_classes_for_table(
+            "tblContracts", columns, ref_classes, max_classes=2
+        )
+        selected_b = _select_ref_classes_for_table(
+            "tblContracts", columns, list(reversed(ref_classes)), max_classes=2
+        )
+        assert [c["name"] for c in selected_a] == [c["name"] for c in selected_b]
+
+    def test_shortlist_pins_likely_entity_when_present(self):
+        ref_classes = [
+            {"name": "TradeTerms", "label": "Trade Terms", "comment": "", "properties": []},
+            {"name": "Address", "label": "Address", "comment": "", "properties": []},
+            {"name": "SalesContract", "label": "Sales Contract", "comment": "", "properties": []},
+        ]
+        selected = _select_ref_classes_for_table(
+            "tblX",
+            [{"name": "X", "data_type": "string", "samples": []}],
+            ref_classes,
+            likely_entity="SalesContract",
+            max_classes=1,
+        )
+        assert [c["name"] for c in selected] == ["SalesContract"]
+
+
+class TestRetryPolicy:
+    def test_retry_when_ref_class_missing(self):
+        assert _should_retry_with_full_inventory(
+            {"ref_class": "", "ref_class_confidence": 0.9, "column_alignments": []},
+            total_columns=5,
+        )
+
+    def test_retry_when_mapped_ratio_too_low(self):
+        assert _should_retry_with_full_inventory(
+            {
+                "ref_class": "SalesContract",
+                "ref_class_confidence": 0.95,
+                "column_alignments": [{"alignment": "custom"}],
+            },
+            total_columns=4,
+            min_mapped_ratio=0.5,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tests: _clamp_confidence
 # ---------------------------------------------------------------------------
@@ -580,3 +634,72 @@ class TestRunProposeAlignment:
                 output_dir=tmp_path,
                 domains_filter=["nonexistent"],
             )
+
+    def test_retries_with_full_inventory_on_weak_shortlist(self, analysis_dir, sources_dir, tmp_path):
+        calls: list[str] = []
+
+        def create_completion(**kwargs):
+            prompt = kwargs["messages"][1]["content"]
+            calls.append(prompt)
+            if "TradeTerms" in prompt:
+                payload = {
+                    "ref_class": "SalesContract",
+                    "ref_class_confidence": 0.92,
+                    "column_alignments": [
+                        {
+                            "column": "ContractNo",
+                            "ref_class": "SalesContract",
+                            "ref_property": "contractIdentifier",
+                            "alignment": "semantic",
+                            "confidence": 0.9,
+                            "rationale": "id",
+                        }
+                    ],
+                }
+            else:
+                payload = {
+                    "ref_class": "",
+                    "ref_class_confidence": 0.1,
+                    "column_alignments": [],
+                }
+            return mock.MagicMock(
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        ref_classes = [
+            {
+                "name": "SalesContract",
+                "label": "Sales Contract",
+                "comment": "",
+                "properties": [{"name": "contractIdentifier", "label": "Contract ID", "range": "string"}],
+            },
+            {
+                "name": "TradeTerms",
+                "label": "Trade Terms",
+                "comment": "",
+                "properties": [{"name": "incoterm", "label": "Incoterm", "range": "string"}],
+            },
+        ]
+
+        with mock.patch(
+            "kairos_ontology.propose_alignment.get_ai_client", return_value=client
+        ), mock.patch(
+            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            return_value=ref_classes,
+        ):
+            files = run_propose_alignment(
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
+                output_dir=tmp_path,
+                domains_filter=["commercial"],
+                max_prompt_classes=1,
+            )
+
+        assert len(files) == 1
+        # first call shortlist (no TradeTerms), second call full inventory (includes TradeTerms)
+        assert len(calls) == 2
+        assert "TradeTerms" not in calls[0]
+        assert "TradeTerms" in calls[1]

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 MAX_COLUMNS_PER_PROMPT = 80
 MAX_REF_PROPERTIES_PER_PROMPT = 60
+MAX_REF_CLASSES_PER_PROMPT = 18
+RETRY_MIN_CONFIDENCE = 0.75
+RETRY_MIN_MAPPED_RATIO = 0.55
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -284,6 +288,95 @@ def _format_source_columns(columns: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+_TOKEN_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+
+
+def _tokenize_text(value: str) -> set[str]:
+    """Tokenize identifier/text into a lowercase token set."""
+    if not value:
+        return set()
+    value = value.replace("_", " ").replace("-", " ")
+    return {t.lower() for t in _TOKEN_RE.findall(value) if t}
+
+
+def _score_ref_class(
+    ref_class: dict[str, Any],
+    *,
+    table_tokens: set[str],
+    column_tokens: set[str],
+    likely_entity_tokens: set[str],
+    indicative_tokens: set[str],
+) -> float:
+    """Compute a deterministic lexical relevance score for one ref class."""
+    score = 0.0
+
+    cls_tokens = _tokenize_text(
+        f"{ref_class.get('name', '')} {ref_class.get('label', '')} {ref_class.get('comment', '')}"
+    )
+    score += len(cls_tokens & table_tokens) * 2.0
+    score += len(cls_tokens & column_tokens) * 1.5
+    score += len(cls_tokens & indicative_tokens) * 1.5
+    score += len(cls_tokens & likely_entity_tokens) * 2.2
+
+    for p in ref_class.get("properties", [])[:MAX_REF_PROPERTIES_PER_PROMPT]:
+        prop_tokens = _tokenize_text(f"{p.get('name', '')} {p.get('label', '')}")
+        score += len(prop_tokens & column_tokens) * 1.0
+        score += len(prop_tokens & indicative_tokens) * 1.2
+
+    return score
+
+
+def _select_ref_classes_for_table(
+    table_name: str,
+    columns: list[dict[str, Any]],
+    ref_classes: list[dict[str, Any]],
+    *,
+    likely_entity: str = "",
+    indicative_columns: list[str] | None = None,
+    max_classes: int = MAX_REF_CLASSES_PER_PROMPT,
+) -> list[dict[str, Any]]:
+    """Select a deterministic, high-relevance ref-class subset for one table."""
+    if max_classes <= 0 or len(ref_classes) <= max_classes:
+        return ref_classes
+
+    if indicative_columns is None:
+        indicative_columns = []
+
+    table_tokens = _tokenize_text(table_name)
+    column_tokens: set[str] = set()
+    for col in columns:
+        column_tokens.update(_tokenize_text(str(col.get("name", ""))))
+        for sample in col.get("samples", [])[:2]:
+            column_tokens.update(_tokenize_text(str(sample)))
+
+    likely_entity_tokens = _tokenize_text(likely_entity)
+    indicative_tokens = _tokenize_text(" ".join(indicative_columns))
+
+    scored: list[tuple[float, str, dict[str, Any]]] = []
+    for cls in ref_classes:
+        score = _score_ref_class(
+            cls,
+            table_tokens=table_tokens,
+            column_tokens=column_tokens,
+            likely_entity_tokens=likely_entity_tokens,
+            indicative_tokens=indicative_tokens,
+        )
+        scored.append((score, str(cls.get("name", "")), cls))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    selected = [cls for _, _, cls in scored[:max_classes]]
+
+    # Pin likely-entity class when present to avoid dropping high-value context.
+    if likely_entity:
+        likely = next(
+            (c for c in ref_classes if str(c.get("name", "")).lower() == likely_entity.lower()),
+            None,
+        )
+        if likely is not None and likely not in selected:
+            selected[-1] = likely
+
+    return selected
+
+
 def build_alignment_prompt(
     table_name: str,
     columns: list[dict[str, Any]],
@@ -346,6 +439,46 @@ Respond with JSON only:
     }}
   ]
 }}"""
+
+
+def _count_non_custom_alignments(result: dict[str, Any]) -> int:
+    """Count mapped (non-custom) column alignments in an alignment result."""
+    alignments = result.get("column_alignments", [])
+    if not isinstance(alignments, list):
+        return 0
+    return sum(1 for a in alignments if isinstance(a, dict) and a.get("alignment") != "custom")
+
+
+def _should_retry_with_full_inventory(
+    result: dict[str, Any],
+    total_columns: int,
+    *,
+    min_confidence: float = RETRY_MIN_CONFIDENCE,
+    min_mapped_ratio: float = RETRY_MIN_MAPPED_RATIO,
+) -> bool:
+    """Decide if shortlist result is weak enough to warrant full-inventory retry."""
+    ref_class = str(result.get("ref_class", "") or "")
+    if not ref_class:
+        return True
+
+    confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
+    if confidence < min_confidence:
+        return True
+
+    if total_columns <= 0:
+        return False
+    mapped = _count_non_custom_alignments(result)
+    mapped_ratio = mapped / total_columns
+    return mapped_ratio < min_mapped_ratio
+
+
+def _alignment_result_score(result: dict[str, Any], total_columns: int) -> float:
+    """Compute a comparison score for two alignment outputs."""
+    ref_class = str(result.get("ref_class", "") or "")
+    confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
+    mapped = _count_non_custom_alignments(result)
+    mapped_ratio = (mapped / total_columns) if total_columns > 0 else 0.0
+    return (1.0 if ref_class else 0.0) + confidence + mapped_ratio
 
 
 def align_table(
@@ -717,6 +850,9 @@ def run_propose_alignment(
     domains_filter: list[str] | None = None,
     report=None,
     include_mapping_hints: bool = False,
+    max_prompt_classes: int = MAX_REF_CLASSES_PER_PROMPT,
+    retry_min_confidence: float = RETRY_MIN_CONFIDENCE,
+    retry_min_mapped_ratio: float = RETRY_MIN_MAPPED_RATIO,
 ) -> list[Path]:
     """Run alignment for all domains found in affinity reports.
 
@@ -732,6 +868,9 @@ def run_propose_alignment(
             deterministic transform hint and each table with structural hints.
             Default output (False) is unchanged, preserving the design-domain
             pre-modeling contract.
+        max_prompt_classes: Max number of reference classes in first pass prompt.
+        retry_min_confidence: Retry threshold for ref class confidence.
+        retry_min_mapped_ratio: Retry threshold for mapped column ratio.
 
     Returns list of written output file paths.
     """
@@ -823,10 +962,45 @@ def run_propose_alignment(
                 report(f"     ⚠ No columns found for {system}.{table}", level="verbose")
                 continue
 
-            result = align_table(
-                client, model, table, columns, ref_classes,
-                likely_entity=tbl_info.get("likely_entity", ""),
+            likely_entity = tbl_info.get("likely_entity", "")
+            indicative_columns = tbl_info.get("indicative_columns", [])
+            shortlist_classes = _select_ref_classes_for_table(
+                table,
+                columns,
+                ref_classes,
+                likely_entity=likely_entity,
+                indicative_columns=indicative_columns,
+                max_classes=max_prompt_classes,
             )
+            result = align_table(
+                client,
+                model,
+                table,
+                columns,
+                shortlist_classes,
+                likely_entity=likely_entity,
+            )
+            if (
+                len(shortlist_classes) < len(ref_classes)
+                and _should_retry_with_full_inventory(
+                    result,
+                    len(columns),
+                    min_confidence=retry_min_confidence,
+                    min_mapped_ratio=retry_min_mapped_ratio,
+                )
+            ):
+                full_result = align_table(
+                    client,
+                    model,
+                    table,
+                    columns,
+                    ref_classes,
+                    likely_entity=likely_entity,
+                )
+                if _alignment_result_score(full_result, len(columns)) >= _alignment_result_score(
+                    result, len(columns)
+                ):
+                    result = full_result
 
             # Build TableAlignment
             col_alignments = []

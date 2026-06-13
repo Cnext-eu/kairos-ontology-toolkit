@@ -1649,8 +1649,17 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
 @click.option('--include-mapping-hints', is_flag=True, default=False,
               help='DD-045: add deterministic transform + structural mapping hints '
                    '(advisory, human-confirmed). Default output is unchanged.')
+@click.option('--max-prompt-classes', type=int, default=18,
+              help='Max reference classes in first-pass table prompt (default: 18).')
+@click.option('--retry-min-confidence', type=click.FloatRange(0.0, 1.0), default=0.75,
+              help='Retry with full reference inventory when ref_class confidence is below this '
+                   'threshold (default: 0.75).')
+@click.option('--retry-min-mapped-ratio', type=click.FloatRange(0.0, 1.0), default=0.55,
+              help='Retry with full reference inventory when non-custom mapped column ratio is '
+                   'below this threshold (default: 0.55).')
 def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
-                          domains_filter, verbose, quiet, include_mapping_hints):
+                          domains_filter, verbose, quiet, include_mapping_hints,
+                          max_prompt_classes, retry_min_confidence, retry_min_mapped_ratio):
     """Propose source-column → reference-model-property alignment (LLM-powered).
 
     Pre-modeling step that analyses how source columns map to reference model
@@ -1750,6 +1759,9 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             domains_filter=filter_list,
             report=reporter,
             include_mapping_hints=include_mapping_hints,
+            max_prompt_classes=max_prompt_classes,
+            retry_min_confidence=retry_min_confidence,
+            retry_min_mapped_ratio=retry_min_mapped_ratio,
         )
         if not quiet:
             click.echo(
