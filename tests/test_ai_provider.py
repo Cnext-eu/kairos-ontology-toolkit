@@ -12,7 +12,49 @@ from kairos_ontology.ai_provider import (
     get_ai_client,
     GITHUB_MODELS_ENDPOINT,
     DEFAULT_MODEL,
+    _load_dotenv_from_hub,
 )
+
+
+class TestDotenvAutoLoad:
+    def test_loads_repo_root_env_when_running_from_ontology_hub(self, tmp_path, monkeypatch):
+        repo_root = tmp_path / "repo"
+        hub_dir = repo_root / "ontology-hub"
+        (hub_dir / "model" / "ontologies").mkdir(parents=True)
+        root_env = repo_root / ".env"
+        root_env.write_text("AZURE_AI_ENDPOINT=https://example\n", encoding="utf-8")
+
+        monkeypatch.chdir(hub_dir)
+        with patch("kairos_ontology.ai_provider.load_dotenv") as load_dotenv_mock:
+            _load_dotenv_from_hub()
+
+        load_dotenv_mock.assert_called_once_with(root_env, override=False)
+
+    def test_prefers_cwd_env_over_repo_root(self, tmp_path, monkeypatch):
+        repo_root = tmp_path / "repo"
+        hub_dir = repo_root / "ontology-hub"
+        (hub_dir / "model" / "ontologies").mkdir(parents=True)
+        root_env = repo_root / ".env"
+        root_env.write_text("AZURE_AI_ENDPOINT=https://root\n", encoding="utf-8")
+        hub_env = hub_dir / ".env"
+        hub_env.write_text("AZURE_AI_ENDPOINT=https://hub\n", encoding="utf-8")
+
+        monkeypatch.chdir(hub_dir)
+        with patch("kairos_ontology.ai_provider.load_dotenv") as load_dotenv_mock:
+            _load_dotenv_from_hub()
+
+        load_dotenv_mock.assert_called_once_with(hub_env, override=False)
+
+    def test_no_env_files_does_not_call_load(self, tmp_path, monkeypatch):
+        repo_root = tmp_path / "repo"
+        hub_dir = repo_root / "ontology-hub"
+        (hub_dir / "model" / "ontologies").mkdir(parents=True)
+
+        monkeypatch.chdir(hub_dir)
+        with patch("kairos_ontology.ai_provider.load_dotenv") as load_dotenv_mock:
+            _load_dotenv_from_hub()
+
+        load_dotenv_mock.assert_not_called()
 
 
 class TestResolveProviderConfig:

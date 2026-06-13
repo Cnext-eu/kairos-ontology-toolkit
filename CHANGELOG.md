@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **AI provider `.env` auto-loading now resolves repo-root settings when running from `ontology-hub/`.**
+  AI-dependent commands could miss credentials when only repo-root `.env` existed.
+  Dotenv discovery now checks cwd, hub dir, and repo root deterministically.
+
+### Changed
+- **`propose-alignment` retry + prompt payload optimized further for runtime.**
+  Full-inventory retry now triggers only when shortlist output is truly weak
+  (both low confidence and low mapped-column ratio, or missing class). Source
+  sample values in prompts are also compacted by filtering noisy ID-like values
+  and clipping long text, reducing token payload while preserving semantic signal.
+
 ## [3.15.4] — 2026-06-13
 
 ### Changed
