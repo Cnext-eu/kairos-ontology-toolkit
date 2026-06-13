@@ -383,7 +383,7 @@ class TestWriteAlignmentOutput:
         with open(out_path) as f:
             data = yaml.safe_load(f)
 
-        assert data["schema_version"] == 1
+        assert data["schema_version"] == 2
         assert data["domain"] == "commercial"
         assert len(data["tables"]) == 1
         assert data["tables"][0]["ref_class"] == "SalesContract"
@@ -523,7 +523,7 @@ class TestRunProposeAlignment:
         # Verify commercial alignment content
         with open(output / "commercial-alignment.yaml") as f:
             data = yaml.safe_load(f)
-        assert data["schema_version"] == 1
+        assert data["schema_version"] == 2
         assert data["domain"] == "commercial"
         assert len(data["tables"]) == 1
         tbl = data["tables"][0]

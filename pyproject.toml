@@ -23,6 +23,11 @@ dependencies = [
     "openai>=1.0.0,<3.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
     "packaging>=23.0",
+    # Document parsing for business discovery (DD-060) and Parquet source import:
+    #   pypdf   — extract text from PDF artifacts in .import/businessdiscovery/
+    #   pyarrow — read Parquet source/data files (also exposed via the [parquet] extra)
+    "pypdf>=4.0.0",
+    "pyarrow>=14.0.0",
 ]
 
 [project.urls]

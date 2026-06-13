@@ -531,20 +531,40 @@ ls integration/sources/_analysis/
 - Without it, the modeler tends to create too many custom classes instead of
   reusing proven reference model concepts
 
-**Step 0a.2 — Check for column-level alignment reports:**
+**Step 0a.2 — Alignment-coverage gate (MANDATORY — DD-061):**
+
+> **BLOCKING GATE (symmetric to the Step 0c.1b inventory gate).** Before building
+> the Source Evidence Table, verify that `propose-alignment` was run **completely**
+> for the target domain. This is the deterministic guard that prevents
+> hand-reading a subset of tables (e.g. mining 2 of 67 domain tables):
 
 ```bash
-ls integration/sources/_analysis/*-alignment.yaml
+kairos-ontology check-alignment --domains <target-domain>
 ```
 
-- If `*-alignment.yaml` files exist → these provide **pre-computed column→property
-  alignments** from `kairos-ontology propose-alignment`. Read the alignment for the
-  target domain to pre-populate the Source Evidence Table:
+- **Exit 0** → every affinity table for the domain has a fresh, complete
+  `{domain}-alignment.yaml`. Proceed.
+- **Exit 1 (missing / incomplete / stale)** → STOP. Run the full alignment pass
+  (no domain filter so every domain table is covered), then re-check:
+  ```bash
+  kairos-ontology propose-alignment
+  kairos-ontology check-alignment --domains <target-domain>
+  ```
+  `propose-alignment` requires affinity reports (`analyse-sources`) to exist first.
+  Do **not** proceed to the Source Evidence Table while this gate is red — a red
+  gate means some domain tables would be invisible to modeling.
+
+`check-alignment` is read-only and deterministic (no AI). Use `--warn-only` only
+as a deliberate, documented override.
+
+Once the gate is green, read the alignment for the target domain to pre-populate
+the Source Evidence Table:
 
   ```yaml
   # Example: commercial-alignment.yaml
-  schema_version: 1
+  schema_version: 2
   domain: commercial
+  source_sha256: <digest of the affinity (system, table) set>   # DD-061 freshness
   tables:
     - system: adminpulse
       table: tblContracts
@@ -570,11 +590,10 @@ ls integration/sources/_analysis/*-alignment.yaml
   - Focus manual review on `custom_columns` (no ref-model match) and low-confidence alignments
   - The `reference_rollup` shows coverage gaps per ref class
 
-- If `*-alignment.yaml` is **missing** → instruct the user to run:
-  ```bash
-  kairos-ontology propose-alignment
-  ```
-  This requires affinity reports (`analyse-sources`) to exist first.
+> **Legacy alignment files:** a `schema_version: 1` alignment (no `source_sha256`)
+> is reported by `check-alignment` as *unverifiable* (a warning, not a block).
+> Regenerate it with `propose-alignment` to restore freshness checking.
+
 
 **Using the affinity report during modeling:**
 

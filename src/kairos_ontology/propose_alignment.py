@@ -21,6 +21,10 @@ from typing import Any
 
 import yaml
 
+from .alignment_coverage import (
+    ALIGNMENT_HASH_SCHEMA_VERSION,
+    compute_affinity_hash,
+)
 from .analyse_sources import (
     DEFAULT_MODEL,
     parse_source_vocabulary,
@@ -81,6 +85,9 @@ class DomainAlignment:
     model_used: str
     tables: list[TableAlignment] = field(default_factory=list)
     reference_rollup: list[dict[str, Any]] = field(default_factory=list)
+    #: DD-061 — SHA-256 over the affinity ``(system, table)`` set this run saw,
+    #: enabling the deterministic ``check-alignment`` freshness gate.
+    affinity_sha256: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +810,9 @@ def run_propose_alignment(
             domain_uris=domain_uris,
             generated_at=datetime.now(timezone.utc).isoformat(),
             model_used=model,
+            affinity_sha256=compute_affinity_hash(
+                (t["system"], t["table"]) for t in tables
+            ),
         )
 
         for tbl_info in tables:
@@ -971,11 +981,13 @@ def write_alignment_output(alignment: DomainAlignment, output_dir: Path) -> Path
     output_dir.mkdir(parents=True, exist_ok=True)
 
     data: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": ALIGNMENT_HASH_SCHEMA_VERSION,
         "domain": alignment.domain,
         "domain_uris": alignment.domain_uris,
         "generated_at": alignment.generated_at,
         "model_used": alignment.model_used,
+        # DD-061: digest of the affinity (system, table) set for the freshness gate.
+        "source_sha256": alignment.affinity_sha256,
         "tables": [],
         "reference_rollup": alignment.reference_rollup,
     }
