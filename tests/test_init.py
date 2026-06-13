@@ -35,6 +35,12 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/output/a2ui").is_dir()
             assert Path("ontology-hub/output/prompt").is_dir()
 
+            # Business discovery (DD-048): glossary under hub, .imports at repo root
+            assert Path("ontology-hub/model/glossary").is_dir()
+            assert Path(".imports/businessdiscovery").is_dir()
+            # .imports must NOT live under ontology-hub
+            assert not Path("ontology-hub/.imports").exists()
+
             # Check README files
             assert Path("ontology-hub/model/ontologies/README.md").is_file()
             assert Path("ontology-hub/model/shapes/README.md").is_file()
@@ -43,6 +49,7 @@ def test_init_creates_hub_structure(tmp_path):
             # Check skills installed
             assert Path(".github/skills/kairos-setup-config/SKILL.md").is_file()
             assert Path(".github/skills/kairos-design-domain/SKILL.md").is_file()
+            assert Path(".github/skills/kairos-design-discovery/SKILL.md").is_file()
             assert Path(".github/skills/kairos-execute-validate/SKILL.md").is_file()
             assert Path(".github/skills/kairos-execute-project/SKILL.md").is_file()
 
@@ -167,6 +174,11 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / "ontology-hub" / "model" / "mappings" / "README.md").is_file()
     assert (repo / "ontology-hub" / "output" / "medallion" / "dbt").is_dir()
 
+    # Business discovery (DD-048): glossary under hub, .imports at repo root
+    assert (repo / "ontology-hub" / "model" / "glossary").is_dir()
+    assert (repo / ".imports" / "businessdiscovery").is_dir()
+    assert not (repo / "ontology-hub" / ".imports").exists()
+
     # Sparse-clone was called for reference models (no submodule)
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
     submodule_calls = [c for c in call_args_list if "submodule" in c and "add" in c]
@@ -175,6 +187,7 @@ def test_new_repo_creates_full_structure(tmp_path):
     # Copilot
     assert (repo / ".github" / "copilot-instructions.md").is_file()
     assert (repo / ".github" / "skills" / "kairos-setup-config" / "SKILL.md").is_file()
+    assert (repo / ".github" / "skills" / "kairos-design-discovery" / "SKILL.md").is_file()
 
     # Repo-level files
     assert (repo / "pyproject.toml").is_file()
@@ -1328,3 +1341,28 @@ class TestResolveChannel:
         """Explicit refs should be returned as-is."""
         assert _resolve_channel("v2.16.0") == "v2.16.0"
         assert _resolve_channel("main") == "main"
+
+
+def test_scaffold_glossary_template_parses():
+    """The scaffold glossary template (DD-048) must be valid Turtle with altLabels."""
+    import kairos_ontology
+    from rdflib import Graph
+    from rdflib.namespace import SKOS
+
+    scaffold = Path(kairos_ontology.__file__).parent / "scaffold"
+    template = scaffold / "ontology-hub" / "model" / "glossary" / "glossary-template.ttl"
+    assert template.is_file()
+
+    g = Graph()
+    g.parse(template, format="turtle")
+    alt_labels = list(g.triples((None, SKOS.altLabel, None)))
+    assert alt_labels, "glossary template should contain skos:altLabel triples"
+
+
+def test_scaffold_imports_businessdiscovery_readme_present():
+    """The repo-root .imports/businessdiscovery scaffold README (DD-048) must exist."""
+    import kairos_ontology
+
+    scaffold = Path(kairos_ontology.__file__).parent / "scaffold"
+    readme = scaffold / "imports" / "businessdiscovery" / "README.md"
+    assert readme.is_file()

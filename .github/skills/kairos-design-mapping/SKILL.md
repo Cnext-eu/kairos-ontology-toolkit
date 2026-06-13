@@ -65,7 +65,12 @@ The user can override any auto-approved mapping.
 2. Ask user which source system to map
 3. Ask user which domain(s) to target (list available from `model/ontologies/`)
 4. Create session file: `ontology-hub/.sessions-design/mapping-{source}-to-{domain}-{YYYY-MM-DD}.md`
-5. **Check for mapping hints (DD-045):** if a `*-alignment.yaml` produced with
+5. **Load the business glossary (if present):** check
+   `ontology-hub/model/glossary/*.ttl` (produced by the **kairos-design-discovery**
+   skill). Index each `skos:Concept`'s `skos:altLabel`s and the domain IRI it links
+   to via `rdfs:seeAlso`. These are **advisory** alternative names used to match
+   source columns whose names use the company's own vocabulary — see Phase 2.
+6. **Check for mapping hints (DD-045):** if a `*-alignment.yaml` produced with
    `propose-alignment --include-mapping-hints` exists for the domain, load it. Its
    `transform_hint` / `structural_hints` fields give you a richer starting point.
    They are **advisory** — see "Consuming Mapping Hints (DD-045)" below. If no hint
@@ -120,6 +125,15 @@ For each confirmed table→entity pair:
 6. Wait for user to confirm/correct remaining rows
 7. Only generate TTL after full chunk confirmation
 8. Proceed to next chunk
+
+> **If a business glossary is loaded (Phase 0, step 5):** when a source column name
+> or description matches a concept's `skos:altLabel`, surface the concept's linked
+> domain property (`rdfs:seeAlso` IRI) as a **candidate** target — this is how the
+> company's own jargon (e.g. logistics terms) gets resolved to the canonical
+> property. Glossary matches are **advisory only**: present them with the evidence
+> ("matched altLabel 'House Bill'"), and require explicit user confirmation before
+> writing TTL (never auto-approve a glossary-derived mapping). Record glossary-based
+> decisions in the session file.
 
 > **If DD-045 hints are loaded:** pre-fill the *Transform* column from each
 > column's `transform_hint`, and mark the row's source as machine-suggested. A
@@ -303,6 +317,7 @@ bronze:{transformedColumn}
 
 | Skill | Relationship |
 |---|---|
+| `kairos-design-discovery` | **Upstream** — creates the business glossary of alternative names (consumed in Phase 0/2) |
 | `kairos-design-source` | **Upstream** — creates bronze vocabulary (input to this skill) |
 | `kairos-design-domain` | **Upstream** — creates domain ontology (target for mappings) |
 | **`kairos-design-mapping`** (this) | Creates SKOS mapping files interactively |
@@ -313,12 +328,16 @@ bronze:{transformedColumn}
 ### Typical pipeline order
 
 ```
-1. kairos-design-domain        → domain ontology (.ttl)
-2. kairos-design-source → bronze vocabulary (.vocabulary.ttl)
-3. kairos-design-mapping          → SKOS mapping files (model/mappings/)
-4. kairos-design-silver → silver extension annotations
-5. kairos-execute-project       → dbt/silver/powerbi output
+0. kairos-design-discovery → company context + business glossary (model/glossary/)
+1. kairos-design-source   → bronze vocabulary (.vocabulary.ttl)
+2. kairos-design-domain   → domain ontology (.ttl)
+3. kairos-design-mapping  → SKOS mapping files (model/mappings/)
+4. kairos-design-silver   → silver extension annotations
+5. kairos-design-gold     → gold extension annotations (for Power BI)
+6. kairos-execute-project → dbt/silver/powerbi output
 ```
+
+> This matches the canonical **Fresh Hub Lifecycle** in the **kairos-help** skill.
 
 ---
 

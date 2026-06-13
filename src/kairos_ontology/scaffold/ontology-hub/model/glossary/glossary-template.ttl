@@ -1,0 +1,49 @@
+@prefix skos:    <http://www.w3.org/2004/02/skos/core#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix dct:     <http://purl.org/dc/terms/> .
+@prefix glossary: <https://example.com/glossary#> .
+
+#################################################################
+#  Company Business Glossary (TEMPLATE)
+#
+#  Produced by the kairos-design-discovery skill (Phase 2).
+#  Consumed by the kairos-design-mapping skill to match source
+#  columns to domain properties via skos:altLabel.
+#
+#  RULES:
+#  - This is an OVERLAY. Never edit the domain ontology to add
+#    these alternative names — capture them here instead.
+#  - skos:prefLabel = canonical / domain-aligned term.
+#  - skos:altLabel  = the company's alternative name(s).
+#  - rdfs:seeAlso   = IRI of the related domain class/property
+#                     (reference only — the domain .ttl is untouched).
+#
+#  Replace the example namespace and concepts below with the real
+#  company values. Rename the file to {company}-glossary.ttl.
+#################################################################
+
+glossary: a skos:ConceptScheme ;
+    rdfs:label "Acme Logistics Business Glossary" ;
+    dct:description "Company-specific terminology overlay for source-to-domain mapping. Does not modify the domain ontology." .
+
+#  --- Worked logistics example -----------------------------------
+#  The business says "house bill" when they mean the domain concept
+#  TransportDocument; their source columns use HBL / HAWB.
+
+glossary:TransportDocument a skos:Concept ;
+    skos:inScheme glossary: ;
+    skos:prefLabel "Transport Document"@en ;
+    skos:altLabel  "House Bill"@en ,
+                   "HBL"@en ,
+                   "HAWB"@en ;
+    skos:definition "Here the business uses 'house bill' for any carrier transport document, broader than the strict industry meaning." ;
+    rdfs:seeAlso <https://example.com/ont/logistics#TransportDocument> .
+
+#  The business says "leg" for a single ShipmentMovement segment.
+glossary:ShipmentLeg a skos:Concept ;
+    skos:inScheme glossary: ;
+    skos:prefLabel "Shipment Movement"@en ;
+    skos:altLabel  "Leg"@en ,
+                   "Routing Leg"@en ;
+    skos:definition "A single origin-to-destination segment of a shipment's journey." ;
+    rdfs:seeAlso <https://example.com/ont/logistics#ShipmentMovement> .

@@ -263,6 +263,13 @@ and Gate 3 — these are non-negotiable.
 > verify you have: (1) a session file, (2) confirmed class names, (3) only one
 > domain in scope for this turn, (4) source evidence table built.
 
+> 🧹 **Start with a clean context (strongly recommended).** Before modeling,
+> begin a **fresh Copilot session** (clear the current chat / run `/clear`).
+> Modeling decisions are sensitive to context: leftover noise from unrelated
+> tasks can bias class/property naming. If the current conversation already
+> carries substantial unrelated history, advise the user to clear the session
+> before proceeding.
+
 0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
    at the start of the session.  If it reports outdated files, run
    `python -m kairos_ontology update` and commit the refresh before doing any other work.
@@ -272,6 +279,15 @@ and Gate 3 — these are non-negotiable.
 2. **Read the hub README** — open `ontology-hub/README.md` and note the company
    name, company domain, namespace base, and the domain model overview table.
    All new ontologies MUST use the namespace pattern documented there.
+2a. **Read business-discovery context (if present)** — check for the latest
+   `ontology-hub/.sessions-design/businessdiscovery-*.md` and any
+   `ontology-hub/model/glossary/*.ttl` produced by the **kairos-design-discovery**
+   skill. Use them as **background context** (what the company does, its sector,
+   and its alternative terminology) to inform naming proposals and to spot terms the
+   business flagged for modeling. This is context only — it does **not** relax
+   Gate 6: source data (bronze vocab + TMDL) remains the authoritative evidence for
+   which classes/properties exist. Do not copy glossary `skos:altLabel`s into the
+   domain ontology (they belong in the glossary overlay).
 3. **Ask: Are we starting from a reference model?** — this is the FIRST question
    to ask the user before any modeling work.  See the
    [Reference-model-first workflow](#reference-model-first-workflow) section
@@ -1772,11 +1788,14 @@ report. Save to `ontology-hub/.sessions-design/modeling-{domain}-FINAL-{YYYY-MM-
 
 ## Next Steps
 
-- [ ] Create silver extension (`model/extensions/{domain}-silver-ext.ttl`)
 - [ ] Create source mappings — invoke **kairos-design-mapping** skill to interactively
   map source columns to domain properties (`model/mappings/{source}-to-{domain}.ttl`)
-- [ ] Run `python -m kairos_ontology validate`
-- [ ] Run `python -m kairos_ontology project --target silver`
+- [ ] Design silver annotations — invoke **kairos-design-silver** skill
+  (`model/extensions/{domain}-silver-ext.ttl`)
+- [ ] Design gold annotations (for Power BI) — invoke **kairos-design-gold** skill
+  (`model/extensions/{domain}-gold-ext.ttl`)
+- [ ] Validate — invoke **kairos-execute-validate** skill
+- [ ] Generate output — invoke **kairos-execute-project** skill
 ```
 
 ---
@@ -1814,6 +1833,7 @@ report. Save to `ontology-hub/.sessions-design/modeling-{domain}-FINAL-{YYYY-MM-
 
 | When you need | Invoke |
 |---|---|
+| Explore company context / capture business terminology first | **kairos-design-discovery** |
 | Silver/gold extension annotations (full reference tables) | **kairos-design-silver** / **kairos-design-gold** |
 | Source-to-domain column mapping | **kairos-design-mapping** |
 | Run projections (dbt, silver DDL, Power BI) | **kairos-execute-project** |

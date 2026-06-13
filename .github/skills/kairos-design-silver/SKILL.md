@@ -364,6 +364,10 @@ or `dbt` (for dbt models — requires SKOS mappings).
 > The **kairos-execute-project** skill handles *generation*. If you need to
 > iterate on outputs, edit the extension file here, then invoke projection again.
 
+> **Next design step (optional):** if this domain also feeds a Power BI semantic
+> model, design the gold annotations next via the **kairos-design-gold** skill
+> before projecting the `powerbi` target.
+
 Artifacts are written to the dbt project tree under `output/medallion/dbt/`:
 
 **DDL & constraints** (in `analyses/{DOMAIN}/`):

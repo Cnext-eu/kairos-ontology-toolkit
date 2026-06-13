@@ -137,7 +137,8 @@ skips checkpoints.
 
 Use this table to pick the correct skill for a user's intent:
 
-> **Design vs Execute:** The design skills (`kairos-design-source`,
+> **Design vs Execute:** The design skills (`kairos-design-discovery`,
+> `kairos-design-source`,
 > `kairos-design-silver`, `kairos-design-gold`,
 > `kairos-design-mapping`, `kairos-design-domain`) create/modify source files
 > interactively. The **kairos-execute-project** skill **executes generation**
@@ -146,6 +147,7 @@ Use this table to pick the correct skill for a user's intent:
 
 | User intent | Correct skill |
 |---|---|
+| "Explore company / business model / capture business terminology" | **kairos-design-discovery** |
 | "Model / design / create classes / add properties / extend ontology" | **kairos-design-domain** |
 | "Create a new hub repo from scratch" | **kairos-setup-init** |
 | "Set up folder structure / configure hub" | **kairos-setup-config** |
@@ -196,6 +198,7 @@ annotation review). They MUST NEVER be run in autopilot or autopilot-fleet mode:
 
 | Skill | Reason |
 |-------|--------|
+| **kairos-design-discovery** | Company facts and glossary terms must be confirmed by the user; web findings stay inferred until approved |
 | **kairos-design-domain** | Hard gates require user naming confirmation before TTL generation |
 | **kairos-design-mapping** | Every table→entity and column→property mapping needs explicit user approval |
 | **kairos-design-silver** | Extension annotations (SCD types, natural keys, FK) need design review |

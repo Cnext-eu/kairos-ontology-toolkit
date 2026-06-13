@@ -473,6 +473,7 @@ def init(domain, company_domain, force):
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "model" / "inventory",
+        hub / "model" / "glossary",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -485,6 +486,14 @@ def init(domain, company_domain, force):
         hub / ".sessions-design",
     ]:
         d.mkdir(parents=True, exist_ok=True)
+
+    # Business-discovery imports live at the REPO ROOT (like ontology-reference-models),
+    # not under ontology-hub/. Created on init so it's ready to receive artifacts.
+    imports_bd = cwd / ".imports" / "businessdiscovery"
+    imports_bd.mkdir(parents=True, exist_ok=True)
+    imports_readme_src = _SCAFFOLD_DIR / "imports" / "businessdiscovery" / "README.md"
+    if imports_readme_src.is_file() and (not (imports_bd / "README.md").exists() or force):
+        shutil.copy2(imports_readme_src, imports_bd / "README.md")
 
     # Place .gitkeep in empty output subdirs so git tracks them
     for target in [
@@ -509,6 +518,7 @@ def init(domain, company_domain, force):
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
+        "model/glossary": "model/glossary",
         "integration/sources": "integration/sources",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
@@ -516,6 +526,12 @@ def init(domain, company_domain, force):
         readme_dst = hub / hub_subdir / "README.md"
         if readme_src.is_file() and (not readme_dst.exists() or force):
             shutil.copy2(readme_src, readme_dst)
+
+    # 2a. Copy the business glossary template into model/glossary/
+    glossary_tpl_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "glossary" / "glossary-template.ttl"
+    glossary_tpl_dst = hub / "model" / "glossary" / "glossary-template.ttl"
+    if glossary_tpl_src.is_file() and (not glossary_tpl_dst.exists() or force):
+        shutil.copy2(glossary_tpl_src, glossary_tpl_dst)
 
     # 2b. Copy source-system-template into integration/sources/
     src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "integration" / "sources" / "source-system-template"
@@ -2324,6 +2340,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "model" / "inventory",
+        hub / "model" / "glossary",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -2336,6 +2353,14 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / ".sessions-design",
     ]:
         d.mkdir(parents=True, exist_ok=True)
+
+    # Business-discovery imports live at the REPO ROOT (like ontology-reference-models),
+    # not under ontology-hub/. Created on new-repo so it's ready to receive artifacts.
+    imports_bd = repo_dir / ".imports" / "businessdiscovery"
+    imports_bd.mkdir(parents=True, exist_ok=True)
+    imports_readme_src = _SCAFFOLD_DIR / "imports" / "businessdiscovery" / "README.md"
+    if imports_readme_src.is_file():
+        shutil.copy2(imports_readme_src, imports_bd / "README.md")
 
     # Place .gitkeep in output subdirs so git tracks them
     for target in [
@@ -2360,6 +2385,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
+        "model/glossary": "model/glossary",
         "integration/sources": "integration/sources",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
@@ -2367,6 +2393,11 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         dst = hub / hub_subdir / "README.md"
         if src.is_file():
             shutil.copy2(src, dst)
+
+    # Business glossary template into model/glossary/
+    glossary_tpl_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "glossary" / "glossary-template.ttl"
+    if glossary_tpl_src.is_file():
+        shutil.copy2(glossary_tpl_src, hub / "model" / "glossary" / "glossary-template.ttl")
 
     # Source-system-template into integration/sources/
     src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "integration" / "sources" / "source-system-template"
