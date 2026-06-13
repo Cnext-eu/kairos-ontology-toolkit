@@ -157,6 +157,65 @@ def _read_hub_channel() -> str:
     match = re.search(r'\[tool\.kairos\].*?channel\s*=\s*"([^"]+)"', content, re.DOTALL)
     return match.group(1) if match else "stable"
 
+
+def _read_pinned_toolkit_version() -> str | None:
+    """Return the toolkit version pinned in the cwd ``pyproject.toml`` (or None).
+
+    Parses the ``kairos-ontology-toolkit @ …`` dependency, supporting both the
+    ``.whl`` release URL and the legacy ``git+https://…@<tag>`` form, and returns
+    the PEP 440 version derived from the tag.  Returns ``None`` when there is no
+    pyproject, no toolkit pin, or the tag cannot be parsed.
+    """
+    pyproject = Path.cwd() / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    content = pyproject.read_text(encoding="utf-8")
+    # .whl release URL: .../releases/download/<tag>/kairos_ontology_toolkit-...
+    m = re.search(
+        r"kairos-ontology-toolkit\s*@\s*https://github\.com/[^/]+/[^/]+/"
+        r"releases/download/([^/]+)/",
+        content,
+    )
+    if not m:
+        # Legacy git pin: kairos-ontology-toolkit @ git+https://…@<tag>
+        m = re.search(
+            r"kairos-ontology-toolkit\s*@\s*git\+https://[^\s\"@]+@([^\s\"]+)",
+            content,
+        )
+    if not m:
+        return None
+    return _tag_to_version(m.group(1))
+
+
+def _warn_if_version_mismatch() -> None:
+    """Warn when the running toolkit version differs from the hub's pin.
+
+    Catches the case where a user runs a globally-installed (often older)
+    ``kairos-ontology`` / ``python -m kairos_ontology`` instead of
+    ``uv run kairos-ontology``, silently using a different version than the one
+    pinned in this hub's ``pyproject.toml``.  Non-blocking (stderr warning only).
+    """
+    pinned = _read_pinned_toolkit_version()
+    if not pinned or pinned == _toolkit_version:
+        return
+
+    relation = "different from"
+    try:
+        from packaging.version import parse as _parse_version
+
+        if _parse_version(_toolkit_version) < _parse_version(pinned):
+            relation = "OLDER than"
+    except Exception:  # pragma: no cover - packaging always present via deps
+        pass
+
+    click.echo(
+        f"⚠️  Running kairos-ontology v{_toolkit_version}, which is {relation} the\n"
+        f"   version pinned in this hub (v{pinned}).\n"
+        f"   You may be using a globally-installed toolkit.\n"
+        f"   Fix: run `uv run kairos-ontology …` (or `uv sync`) to use the pin.\n",
+        err=True,
+    )
+
 # ---------------------------------------------------------------------------
 # Managed-file stamping — toolkit-owned files carry a version marker so
 # ``kairos-ontology update`` can refresh them without manual diffing.
@@ -283,6 +342,7 @@ def _check_not_inside_git_repo(parent: Path, name: str) -> None:
 def cli():
     """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
     _warn_if_outside_venv()
+    _warn_if_version_mismatch()
 
 
 _LIFECYCLE_TABLE = """\
@@ -1890,15 +1950,34 @@ def update(check, upgrade):
             raise SystemExit(1)
         if sys.platform == "win32":
             # On Windows the running .exe is locked and uv sync cannot replace it.
-            # uv run auto-syncs when the lock file is newer, so the new version
-            # activates on the next invocation without manual intervention.
-            print(f"   ✓ Upgraded to {ref} (will activate on next uv run)")
+            # uv run auto-syncs when the lock file is newer.
+            print(f"   ✓ Upgraded to {ref}")
         else:
             result = subprocess.run(["uv", "sync"], capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"❌ uv sync failed:\n{result.stderr}")
                 raise SystemExit(1)
             print(f"   ✓ Upgraded to {ref}")
+
+        # The managed-file refresh below runs in THIS process, which still has the
+        # OLD toolkit loaded in memory (_toolkit_version / _SCAFFOLD_DIR are bound
+        # to the previously-imported module).  If the version actually changed,
+        # re-exec the refresh in a fresh `uv run` so it uses the NEW version's
+        # scaffold and version stamp, then exit with its status.
+        if version != _toolkit_version:
+            reexec_cmd = ["uv", "run", "kairos-ontology", "update"]
+            if check:
+                reexec_cmd.append("--check")
+            print(f"   ↻ Refreshing managed files under {ref} (uv run) ...")
+            try:
+                reexec = subprocess.run(reexec_cmd)
+            except (OSError, FileNotFoundError) as exc:
+                print(
+                    f"⚠  Could not auto-refresh managed files ({exc}).\n"
+                    f"   Run `uv run kairos-ontology update` to finish the upgrade."
+                )
+                raise SystemExit(1)
+            raise SystemExit(reexec.returncode)
 
     # Detect repo type: dataplatform (has dbt_project.yml) vs ontology-hub
     repo_root = Path.cwd()

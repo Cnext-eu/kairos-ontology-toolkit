@@ -181,10 +181,22 @@ This will:
 3. Update the `pyproject.toml` dependency pin to the `.whl` URL
 4. Run `uv lock` to update the lock file
 5. Run `uv sync` to install the new version
+6. **Automatically refresh managed files under the new version** — when the
+   version actually changes, `--upgrade` re-execs the refresh in a fresh
+   `uv run` so skills/instructions are stamped against the *new* toolkit (no
+   manual second `update` needed). (DD-049)
+
+> **Always run via `uv run`.** Invoking `python -m kairos_ontology` or a
+> globally-installed `kairos-ontology` may use a different (often older) toolkit
+> than the version pinned in this hub. The CLI now warns when the running version
+> differs from the `pyproject.toml` pin — if you see that warning, re-run the
+> command with `uv run kairos-ontology …` (or `uv sync`). (DD-049)
 
 ### Refreshing managed files
 
-After upgrading, refresh toolkit-owned files:
+`update --upgrade` already refreshes managed files automatically (step 6 above).
+You only need to run `update` on its own to refresh without upgrading, e.g. after
+pulling someone else's pin bump:
 
 ```bash
 # Preview what would change

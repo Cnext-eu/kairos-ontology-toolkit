@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Tests for the update --upgrade CLI command (Windows lock-file handling)."""
+"""Tests for the update --upgrade CLI command.
+
+Covers the Windows lock-file handling and the post-upgrade re-exec that refreshes
+managed files under the newly-installed toolkit version (instead of the stale
+in-process module).
+"""
 
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -42,21 +47,14 @@ class TestUpdateUpgradeWindows:
     ):
         """On Windows, uv sync should be skipped after uv lock succeeds."""
         _make_hub_pyproject(tmp_path)
-
-        # uv lock succeeds
-        lock_result = MagicMock(returncode=0, stdout="", stderr="")
-        mock_run.return_value = lock_result
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("sys.platform", "win32"):
             with runner.isolated_filesystem(temp_dir=tmp_path):
-                # Re-create pyproject in the isolated fs
                 _make_hub_pyproject(Path.cwd())
                 result = runner.invoke(cli, ["update", "--upgrade"])
 
         assert result.exit_code == 0
-        assert "will activate on next uv run" in result.output
-
-        # Only uv lock should have been called, NOT uv sync
         calls = [c[0][0] for c in mock_run.call_args_list]
         assert ["uv", "lock"] in calls
         assert ["uv", "sync"] not in calls
@@ -70,10 +68,7 @@ class TestUpdateUpgradeWindows:
     ):
         """On non-Windows, uv sync should still be called after uv lock."""
         _make_hub_pyproject(tmp_path)
-
-        # Both uv lock and uv sync succeed
-        success = MagicMock(returncode=0, stdout="", stderr="")
-        mock_run.return_value = success
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("sys.platform", "linux"):
             with runner.isolated_filesystem(temp_dir=tmp_path):
@@ -82,8 +77,97 @@ class TestUpdateUpgradeWindows:
 
         assert result.exit_code == 0
         assert "Upgraded to v3.9.0-rc.2" in result.output
-
-        # Both uv lock and uv sync should have been called
         calls = [c[0][0] for c in mock_run.call_args_list]
         assert ["uv", "lock"] in calls
         assert ["uv", "sync"] in calls
+
+
+class TestUpdateUpgradeReexec:
+    """The post-upgrade refresh must re-exec under the NEW toolkit version."""
+
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_reexec_refresh_when_version_changed(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        """When the target version differs, refresh is re-run via `uv run`,
+        and the stale in-process managed refresh is skipped."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 0
+        calls = [c[0][0] for c in mock_run.call_args_list]
+        assert ["uv", "run", "kairos-ontology", "update"] in calls
+        # In-process managed refresh must NOT have run (re-exec owns it now).
+        mock_scaffold.assert_not_called()
+
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_reexec_propagates_check_flag(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        """`--upgrade --check` re-execs the refresh with --check appended."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade", "--check"])
+
+        assert result.exit_code == 0
+        calls = [c[0][0] for c in mock_run.call_args_list]
+        assert ["uv", "run", "kairos-ontology", "update", "--check"] in calls
+
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_reexec_exit_code_propagates(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        """A non-zero re-exec (e.g. drift under --check) propagates the exit code."""
+
+        def _run(cmd, *args, **kwargs):
+            if cmd[:4] == ["uv", "run", "kairos-ontology", "update"]:
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = _run
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade", "--check"])
+
+        assert result.exit_code == 1
+
+    @patch("kairos_ontology.cli.main._toolkit_version", "3.9.0rc2")
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_no_reexec_when_version_unchanged(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        """A no-op upgrade (target == running) runs the in-process refresh,
+        with no re-exec (guards against recursion)."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 0
+        calls = [c[0][0] for c in mock_run.call_args_list]
+        assert ["uv", "run", "kairos-ontology", "update"] not in calls
+        # In-process refresh ran (it consulted the managed map).
+        mock_scaffold.assert_called()
