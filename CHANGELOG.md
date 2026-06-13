@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.12.1] — 2026-06-13
+
+### Fixed
+- **`update --upgrade` now refreshes managed files under the new version.**
+  Previously the post-upgrade managed-file refresh ran in the same process, which
+  still had the *old* toolkit loaded, so skills/instructions were stamped against
+  the old version and a manual second `update` was needed. The command now
+  re-execs the refresh in a fresh `uv run` when the version changes. (DD-049)
+
+### Added
+- **Running-vs-pinned version guard.** The CLI now warns (non-blocking) when the
+  running toolkit version differs from the version pinned in the hub's
+  `pyproject.toml` — catching users who run a global/older `kairos-ontology`
+  instead of `uv run kairos-ontology`. (DD-049)
+
 ## [3.12.0] — 2026-06-13
 
 ### Removed
