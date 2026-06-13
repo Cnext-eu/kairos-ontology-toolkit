@@ -6,10 +6,12 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from rdflib import RDF, RDFS, OWL
 
 from kairos_ontology.analyse_sources import (
     parse_source_vocabulary,
     parse_reference_model,
+    find_specializations,
     analyse_table_single_call,
     analyse_source_system,
     write_analysis_output,
@@ -110,6 +112,49 @@ ref-party:taxIdentifier a owl:DatatypeProperty ;
 ref-party:email a owl:DatatypeProperty ;
     rdfs:label "Email address" ;
     rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
+"""
+
+SAMPLE_REF_MODEL_WITH_SUBCLASSES_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ref-party: <https://kairos.cnext.eu/ref/party#> .
+
+<https://kairos.cnext.eu/ref/party> a owl:Ontology ;
+    rdfs:label "Party" ;
+    owl:versionInfo "1.0.0" .
+
+ref-party:Party a owl:Class ;
+    rdfs:label "Party" ;
+    rdfs:comment "A business party" .
+
+ref-party:Organisation a owl:Class ;
+    rdfs:subClassOf ref-party:Party ;
+    rdfs:label "Organisation" .
+
+ref-party:Person a owl:Class ;
+    rdfs:subClassOf ref-party:Party ;
+    rdfs:label "Person" .
+
+ref-party:partyName a owl:DatatypeProperty ;
+    rdfs:label "Party name" ;
+    rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
+
+ref-party:registrationNumber a owl:DatatypeProperty ;
+    rdfs:label "Registration number" ;
+    rdfs:domain ref-party:Organisation ;
+    rdfs:range xsd:string .
+
+ref-party:firstName a owl:DatatypeProperty ;
+    rdfs:label "First name" ;
+    rdfs:domain ref-party:Person ;
+    rdfs:range xsd:string .
+
+ref-party:lastName a owl:DatatypeProperty ;
+    rdfs:label "Last name" ;
+    rdfs:domain ref-party:Person ;
     rdfs:range xsd:string .
 """
 
@@ -718,6 +763,124 @@ class TestParseReferenceModel:
         prop_names = {p["name"] for p in result["classes"][0]["properties"]}
         assert "partyName" in prop_names
         assert "taxIdentifier" in prop_names
+
+
+# ---------------------------------------------------------------------------
+# Tests: Specialization discovery (DD-044)
+# ---------------------------------------------------------------------------
+
+
+class TestFindSpecializations:
+    """Tests for find_specializations() helper."""
+
+    def test_finds_direct_subclasses(self, tmp_path):
+        ref_file = tmp_path / "party.ttl"
+        ref_file.write_text(SAMPLE_REF_MODEL_WITH_SUBCLASSES_TTL, encoding="utf-8")
+        from rdflib import Graph, URIRef
+        g = Graph()
+        g.parse(ref_file, format="turtle")
+        party_uri = URIRef("https://kairos.cnext.eu/ref/party#Party")
+
+        specs = find_specializations(g, party_uri)
+
+        spec_names = {s["class"] for s in specs}
+        assert "Organisation" in spec_names
+        assert "Person" in spec_names
+
+    def test_includes_subclass_properties(self, tmp_path):
+        ref_file = tmp_path / "party.ttl"
+        ref_file.write_text(SAMPLE_REF_MODEL_WITH_SUBCLASSES_TTL, encoding="utf-8")
+        from rdflib import Graph, URIRef
+        g = Graph()
+        g.parse(ref_file, format="turtle")
+        party_uri = URIRef("https://kairos.cnext.eu/ref/party#Party")
+
+        specs = find_specializations(g, party_uri)
+
+        org_spec = next(s for s in specs if s["class"] == "Organisation")
+        org_prop_names = {p["name"] for p in org_spec["properties"]}
+        assert "registrationNumber" in org_prop_names
+
+        person_spec = next(s for s in specs if s["class"] == "Person")
+        person_prop_names = {p["name"] for p in person_spec["properties"]}
+        assert "firstName" in person_prop_names
+        assert "lastName" in person_prop_names
+
+    def test_distance_is_correct(self, tmp_path):
+        ref_file = tmp_path / "party.ttl"
+        ref_file.write_text(SAMPLE_REF_MODEL_WITH_SUBCLASSES_TTL, encoding="utf-8")
+        from rdflib import Graph, URIRef
+        g = Graph()
+        g.parse(ref_file, format="turtle")
+        party_uri = URIRef("https://kairos.cnext.eu/ref/party#Party")
+
+        specs = find_specializations(g, party_uri)
+
+        for s in specs:
+            assert s["distance"] == 1, f"{s['class']} should be distance 1"
+
+    def test_max_depth_limits_traversal(self, tmp_path):
+        """With max_depth=0, no specializations should be found."""
+        ref_file = tmp_path / "party.ttl"
+        ref_file.write_text(SAMPLE_REF_MODEL_WITH_SUBCLASSES_TTL, encoding="utf-8")
+        from rdflib import Graph, URIRef
+        g = Graph()
+        g.parse(ref_file, format="turtle")
+        party_uri = URIRef("https://kairos.cnext.eu/ref/party#Party")
+
+        specs = find_specializations(g, party_uri, max_depth=0)
+        assert specs == []
+
+    def test_no_descendants_returns_empty(self, tmp_path):
+        ref_file = tmp_path / "party.ttl"
+        ref_file.write_text(SAMPLE_REF_MODEL_WITH_SUBCLASSES_TTL, encoding="utf-8")
+        from rdflib import Graph, URIRef
+        g = Graph()
+        g.parse(ref_file, format="turtle")
+        # Person has no subclasses
+        person_uri = URIRef("https://kairos.cnext.eu/ref/party#Person")
+
+        specs = find_specializations(g, person_uri)
+        assert specs == []
+
+    def test_cycle_protection(self):
+        """A circular subClassOf should not cause infinite loop."""
+        from rdflib import Graph, Namespace
+        g = Graph()
+        ns = Namespace("http://example.org/")
+        g.add((ns.A, RDF.type, OWL.Class))
+        g.add((ns.B, RDF.type, OWL.Class))
+        g.add((ns.B, RDFS.subClassOf, ns.A))
+        g.add((ns.A, RDFS.subClassOf, ns.B))  # circular
+
+        specs = find_specializations(g, ns.A)
+        assert len(specs) == 1
+        assert specs[0]["class"] == "B"
+
+
+class TestParseReferenceModelWithSpecializations:
+    """Tests for parse_reference_model with include_specializations=True."""
+
+    def test_specializations_included_when_requested(self, tmp_path):
+        ref_file = tmp_path / "party.ttl"
+        ref_file.write_text(SAMPLE_REF_MODEL_WITH_SUBCLASSES_TTL, encoding="utf-8")
+
+        result = parse_reference_model(ref_file, include_specializations=True)
+
+        party_cls = next(c for c in result["classes"] if c["name"] == "Party")
+        assert "specializations" in party_cls
+        spec_names = {s["class"] for s in party_cls["specializations"]}
+        assert "Organisation" in spec_names
+        assert "Person" in spec_names
+
+    def test_specializations_absent_by_default(self, tmp_path):
+        ref_file = tmp_path / "party.ttl"
+        ref_file.write_text(SAMPLE_REF_MODEL_WITH_SUBCLASSES_TTL, encoding="utf-8")
+
+        result = parse_reference_model(ref_file)
+
+        party_cls = next(c for c in result["classes"] if c["name"] == "Party")
+        assert "specializations" not in party_cls
 
 
 # ---------------------------------------------------------------------------

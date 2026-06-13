@@ -23,6 +23,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and resiliency policies
 - Scenario tests for integration extension annotations (`test_scenario_integration.py`)
 - Vocabulary coverage test for `kairos-int:` annotations
+- **`propose-alignment` mapping hints** — opt-in `--include-mapping-hints` flag emits
+  deterministic transform hints (passthrough/CAST) and structural candidates
+  (split/dedup/multi-target) to seed the `design-mapping` skill. Default output is
+  unchanged. (design log DD-045)
+- **Reference-model specialization visibility in `design-domain`** — the modeler now
+  surfaces reference-model subclasses and their subclass-specific properties (from the
+  materialized inventories) at Step 0c.1b, Checkpoint 1, and Checkpoint 3b, steering
+  reuse over local duplication. (DD-046)
+- **`kairos-ontology check-inventory`** — deterministic pre-flight gate that verifies
+  `model/inventory/*.yaml` exists and is current (via a stored `source_sha256`),
+  blocking domain modeling against a missing/stale inventory. `generate_inventory()`
+  now stamps `source_sha256` into the inventory envelope. (DD-047)
+- Tests: `test_propose_alignment_hints.py`, `test_scenario_mapping_hints.py`,
+  `test_inventory_freshness.py`, `test_design_domain_skill_contract.py`,
+  `test_scenario_specialization.py`
+- `docs/instruction-guides/context-engineer-methodology-guide.md` — two-design-model
+  methodology + three-tier (deterministic/promptable/judgment) guide
+
+### Removed
+- Dead `--catalog` option / `catalog_path` parameter from the `generate-inventory`
+  command and `generate_inventory()` (reserved-for-future, never wired)
 
 ## [3.9.2] — 2026-06-08
 

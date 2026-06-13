@@ -3,7 +3,6 @@
 """Tests for the _warn_if_outside_venv startup guard."""
 
 import sys
-from pathlib import Path
 from unittest.mock import patch
 
 from kairos_ontology.cli.main import _warn_if_outside_venv

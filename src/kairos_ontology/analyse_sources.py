@@ -132,13 +132,16 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
 
 
 def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None = None,
-                          domain_name: str | None = None) -> dict[str, Any]:
+                          domain_name: str | None = None,
+                          include_specializations: bool = False) -> dict[str, Any]:
     """Parse a reference model TTL file (or pre-loaded graph) into a domain summary.
 
     Args:
         ttl_path: Path to a single TTL file (mutually exclusive with graph)
         graph: Pre-loaded rdflib Graph (used for merged multi-file domains)
         domain_name: Override domain name (used with graph parameter)
+        include_specializations: If True, walk subClassOf downward and include
+            a ``specializations`` key per class (DD-044).
 
     Returns dict with domain_name, file, classes (with properties and labels).
     """
@@ -183,18 +186,95 @@ def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None =
                 "range": prop_range,
             })
 
-        classes.append({
+        cls_dict: dict[str, Any] = {
             "name": cls_name,
             "label": cls_label,
             "comment": cls_comment,
             "properties": properties,
-        })
+        }
+        if include_specializations:
+            cls_dict["specializations"] = find_specializations(g, cls_uri)
+        classes.append(cls_dict)
 
     return {
         "domain_name": resolved_name,
         "file": ttl_path.name if ttl_path else "(merged)",
         "classes": classes,
     }
+
+
+# ---------------------------------------------------------------------------
+# Specialization discovery (DD-044)
+# ---------------------------------------------------------------------------
+
+
+def find_specializations(
+    graph: Graph, cls_uri: URIRef, *, max_depth: int = 3
+) -> list[dict[str, Any]]:
+    """Walk ``rdfs:subClassOf`` downward to discover descendant classes and their properties.
+
+    Descendant properties are **specialization evidence** — they indicate what subclasses
+    add, not what the parent class inherits.  See DD-044 for semantics.
+
+    Args:
+        graph: The RDF graph containing class and property definitions.
+        cls_uri: The class URI to find specializations for.
+        max_depth: Maximum depth of ``subClassOf`` traversal (default 3).
+
+    Returns:
+        List of dicts, each with ``class``, ``class_uri``, ``distance``, and
+        ``properties`` (list of ``{name, label, range, type}``).
+    """
+    result: list[dict[str, Any]] = []
+    visited: set[str] = {str(cls_uri)}
+
+    # BFS with depth tracking
+    queue: list[tuple[URIRef, int]] = [(cls_uri, 0)]
+
+    while queue:
+        current, depth = queue.pop(0)
+        if depth >= max_depth:
+            continue
+
+        # Find direct subclasses of current
+        for child in graph.subjects(RDFS.subClassOf, current):
+            if not isinstance(child, URIRef):
+                continue
+            child_str = str(child)
+            if child_str in visited:
+                continue
+            visited.add(child_str)
+
+            # Collect properties declared on this child class
+            child_name = child_str.split("#")[-1].split("/")[-1]
+            child_props: list[dict[str, str]] = []
+            for prop_uri in graph.subjects(RDFS.domain, child):
+                prop_name = str(prop_uri).split("#")[-1].split("/")[-1]
+                prop_label = str(graph.value(prop_uri, RDFS.label) or prop_name)
+                prop_range = ""
+                range_val = graph.value(prop_uri, RDFS.range)
+                if range_val:
+                    prop_range = str(range_val).split("#")[-1].split("/")[-1]
+                prop_type = "datatype"
+                if (prop_uri, RDF.type, OWL.ObjectProperty) in graph:
+                    prop_type = "object"
+                child_props.append({
+                    "name": prop_name,
+                    "label": prop_label,
+                    "range": prop_range,
+                    "type": prop_type,
+                })
+
+            result.append({
+                "class": child_name,
+                "class_uri": child_str,
+                "distance": depth + 1,
+                "properties": child_props,
+            })
+
+            queue.append((child, depth + 1))
+
+    return result
 
 
 def _find_ontology_package_dirs(all_ttls: list[Path], ref_models_dir: Path) -> set[str]:
@@ -261,6 +341,7 @@ def resolve_reference_models(
     *,
     catalog_path: Path | None = None,
     exclude_patterns: list[str] | None = None,
+    include_specializations: bool = False,
 ) -> list[dict[str, Any]]:
     """Discover and resolve reference model TTLs, merging sub-modules by domain.
 
@@ -273,6 +354,7 @@ def resolve_reference_models(
         ref_models_dir: Directory containing reference model TTL files.
         catalog_path: Optional XML catalog for resolving owl:imports URIs.
         exclude_patterns: Glob patterns to exclude (e.g. ``["archive/**"]``).
+        include_specializations: Walk subClassOf downward per class (DD-044).
 
     Returns list of domain summaries (same format as parse_reference_model).
     """
@@ -315,7 +397,8 @@ def resolve_reference_models(
                 from kairos_ontology.catalog_utils import load_graph_with_catalog
                 catalog_result = load_graph_with_catalog(ttl_files[0], catalog_path)
                 result = parse_reference_model(
-                    graph=catalog_result.graph, domain_name=display_name
+                    graph=catalog_result.graph, domain_name=display_name,
+                    include_specializations=include_specializations,
                 )
                 result["ref_source"] = domain_key
                 result["file"] = str(ttl_files[0])
@@ -328,7 +411,10 @@ def resolve_reference_models(
                 )
                 # Fall back to simple parse
                 try:
-                    result = parse_reference_model(ttl_files[0])
+                    result = parse_reference_model(
+                        ttl_files[0],
+                        include_specializations=include_specializations,
+                    )
                     if result["classes"]:
                         result["ref_source"] = domain_key
                         domains.append(result)
@@ -337,7 +423,10 @@ def resolve_reference_models(
         elif len(ttl_files) == 1:
             # Single file without catalog: parse directly
             try:
-                result = parse_reference_model(ttl_files[0])
+                result = parse_reference_model(
+                    ttl_files[0],
+                    include_specializations=include_specializations,
+                )
                 if result["classes"]:
                     result["ref_source"] = domain_key
                     domains.append(result)
@@ -370,7 +459,10 @@ def resolve_reference_models(
                 except Exception as e:
                     logger.debug("Catalog import resolution skipped: %s", e)
 
-            result = parse_reference_model(graph=merged, domain_name=display_name)
+            result = parse_reference_model(
+                graph=merged, domain_name=display_name,
+                include_specializations=include_specializations,
+            )
             result["ref_source"] = domain_key
             if result["classes"]:
                 domains.append(result)

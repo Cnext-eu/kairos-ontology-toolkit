@@ -65,6 +65,11 @@ The user can override any auto-approved mapping.
 2. Ask user which source system to map
 3. Ask user which domain(s) to target (list available from `model/ontologies/`)
 4. Create session file: `ontology-hub/.sessions-design/mapping-{source}-to-{domain}-{YYYY-MM-DD}.md`
+5. **Check for mapping hints (DD-045):** if a `*-alignment.yaml` produced with
+   `propose-alignment --include-mapping-hints` exists for the domain, load it. Its
+   `transform_hint` / `structural_hints` fields give you a richer starting point.
+   They are **advisory** — see "Consuming Mapping Hints (DD-045)" below. If no hint
+   file exists, proceed exactly as before (hints are optional).
 
 ### Phase 1 — Table-to-Entity Alignment
 
@@ -85,6 +90,14 @@ The user can override any auto-approved mapping.
    - `deprecated` — known dead tables
    - `out-of-scope` — valid data, not in current domain model
    - `gap` — should be in domain → feed back to modeling skill
+
+> **If DD-045 hints are loaded:** surface any table-level `structural_hints`
+> (`split_candidate`, `dedup_candidate`, `merge_candidate`,
+> `multi_target_candidate`) as *proposals* during alignment — e.g. a
+> `split_candidate` on a `Type` discriminator suggests mapping one source table to
+> several subclasses. These are candidates only; all carry
+> `requires_human_confirmation: true` and MUST be confirmed before you encode any
+> split/dedup/multi-target mapping.
 
 ### Phase 2 — Column-to-Property Mapping (per confirmed table)
 
@@ -108,6 +121,15 @@ For each confirmed table→entity pair:
 7. Only generate TTL after full chunk confirmation
 8. Proceed to next chunk
 
+> **If DD-045 hints are loaded:** pre-fill the *Transform* column from each
+> column's `transform_hint`, and mark the row's source as machine-suggested. A
+> hint with `requires_human_confirmation: false` (exact-name + same-logical-type
+> passthrough) may use the auto-approve fast-track; **every** hint with
+> `requires_human_confirmation: true` MUST be confirmed by the user before TTL.
+> Always derive the SKOS predicate yourself from the `alignment` category (hints do
+> not carry a SKOS predicate — see below). Never paste a `CAST(...)` hint into TTL
+> without confirming the encoding with the user.
+
 ### Phase 3 — Validation & Report
 
 1. Present coverage summary:
@@ -123,6 +145,44 @@ For each confirmed table→entity pair:
    - Map another table from same source
    - Start new mapping session for different source
    - Proceed to projection (`kairos-execute-project`)
+
+---
+
+## Consuming Mapping Hints (DD-045)
+
+`propose-alignment --include-mapping-hints` can enrich `*-alignment.yaml` with
+**advisory, non-authoritative hints**. They give you a richer starting point but
+**never replace** your reasoning or the user-confirmation gates.
+
+**What the hints contain:**
+
+| Field (column-level) | Meaning | How to use |
+|---|---|---|
+| `transform_hint` | Suggested SQL transform (`source.Col` passthrough or `CAST(...)`) | Pre-fill the Transform column; confirm unless trivial passthrough |
+| `transform_confidence` | 0.0–1.0 deterministic confidence | Show as evidence; do not treat as approval |
+| `requires_human_confirmation` | `false` only for exact-name + same-logical-type passthrough | If `true`, you MUST confirm with the user before TTL |
+| `transform_rationale` | Why the hint was generated | Show to the user as evidence |
+
+| Field (table-level) | Meaning | How to use |
+|---|---|---|
+| `structural_hints[]` | `split_candidate` / `dedup_candidate` / `merge_candidate` / `multi_target_candidate` | Surface as proposals in Phase 1; all require confirmation |
+
+**Rules when hints are present:**
+
+1. **No SKOS predicate is provided.** Derive it yourself from the `alignment`
+   category (`exact`→`exactMatch`, `semantic`/`partial`→`closeMatch`/`narrowMatch`,
+   `custom`→needs a new property first). The hint generator deliberately omits the
+   SKOS predicate because it is a trivial relabel of `alignment`.
+2. **Hints accelerate, never decide.** Still read the bronze vocabulary and domain
+   ontology independently (Gate 4). Still confirm every non-trivial transform and
+   every structural hint (Gate 5).
+3. **Honor `requires_human_confirmation`.** A polished `CAST(...)` hint is a
+   *candidate* — confirm the source encoding/business policy before writing it.
+4. **Hints are optional.** If no hint file exists, run the workflow exactly as
+   before.
+
+See `docs/instruction-guides/context-engineer-methodology-guide.md` for the
+deterministic / promptable / judgment tiering behind this design.
 
 ---
 

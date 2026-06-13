@@ -91,6 +91,10 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-041](#dd-041-llm-powered-source-affinity-analysis--coverage-reporting) | LLM-powered Source Affinity Analysis & Coverage Reporting | Accepted | 2026-06-04 |
 | [DD-042](#dd-042-table-centric-source-classification-with-module-class-grounding) | Table-centric source classification with module-class grounding | Accepted | 2026-06-05 |
 | [DD-043](#dd-043-propose-alignment--pre-modeling-column-to-property-matching) | Propose-alignment — pre-modeling column-to-property matching | Accepted | 2026-06-05 |
+| [DD-044](#dd-044-reference-model-specialization-discovery--materialized-inventories) | Reference Model Specialization Discovery & Materialized Inventories | Proposed | 2026-06-12 |
+| [DD-045](#dd-045-mapping-hints-for-propose-alignment) | Mapping Hints for propose-alignment | Accepted | 2026-06-13 |
+| [DD-046](#dd-046-reference-model-specialization-visibility-in-domain-modeling) | Reference Model Specialization Visibility in Domain Modeling | Accepted | 2026-06-13 |
+| [DD-047](#dd-047-deterministic-inventory-freshness-pre-flight-gate) | Deterministic Inventory Freshness Pre-flight Gate | Accepted | 2026-06-13 |
 
 ---
 
@@ -1604,22 +1608,27 @@ ontology.
 
 ### Decision
 
-Introduce **Reference Model Inspired** as the **default** strategy for reference model
-alignment. **Reference Model Enforced** (full `owl:imports`) is the override, available
-only when a Kairos-managed reference model meets all eligibility criteria.
+> **⚠ AMENDED by DD-044 (2026-06-12):** The default strategy has been flipped.
+> **Enforced** (`owl:imports` + `silverInclude`) is now the default for all reference
+> models. **Inspired** is an opt-in override for cases where import is impossible or
+> undesirable. See DD-044 for full rationale.
+
+Introduce **Reference Model Inspired** as the ~~**default**~~ **opt-in** strategy for
+reference model alignment. **Reference Model Enforced** (full `owl:imports`) is the
+~~override~~ **default**, with `silverInclude` whitelisting (DD-021) ensuring only
+claimed classes are projected.
 
 **Reference Model Inspired definition:**
 
-> Mirror reference model structural patterns as local classes (own namespace), with a
-> formal SKOS alignment file declaring correspondence to the source vocabulary. No
-> `owl:imports` at runtime.
+> Mirror reference model structural patterns as local classes (own namespace), with
+> `rdfs:seeAlso` back-references (DD-033). No `owl:imports` at runtime.
 
 **The simplified strategy model (2 strategies):**
 
 | Strategy | When | What |
 |----------|------|------|
-| **Reference Model Inspired** (default) | All reference models; large/complex models; alignment-only documentation | Local patterns + SKOS alignment file |
-| **Reference Model Enforced** (override) | Small, projection-compatible Kairos ref models only | `owl:imports` + DD-021/DD-023 |
+| **Reference Model Enforced** (default — amended by DD-044) | All reference models; `silverInclude` whitelisting prevents projection noise | `owl:imports` + DD-021 whitelist |
+| **Reference Model Inspired** (opt-in) | When import is impossible (proprietary model, no TTL); deliberate structural deviation | Local patterns + `rdfs:seeAlso` |
 
 **Enforced eligibility** (ALL must be true):
 - Published in `ontology-reference-models/` central repo
@@ -2370,6 +2379,263 @@ Design choices:
 - `custom_columns` entries (alignment=custom) identify source columns that will need
   new local properties — the modeling skill can focus review there
 - Output is additive: does not modify or replace affinity reports
+
+---
+
+## DD-044: Reference Model Specialization Discovery & Materialized Inventories
+
+**Status:** Proposed  
+**Date:** 2026-06-12  
+**Affects:** `analyse_sources.py`, `propose_alignment.py`, `coverage_report.py`, `inventory.py` (new), `cli/main.py`, DD-032 (amended)  
+**Implementation:** `src/kairos_ontology/inventory.py`, `src/kairos_ontology/analyse_sources.py`
+
+### Context
+
+Design-time tools (`analyse-sources`, `propose-alignment`, `coverage-report`) only collect
+properties where `rdfs:domain` directly equals a class URI. Properties defined on
+**subclasses** of a reference model class are invisible to designers, preventing them from
+discovering specialization patterns (e.g., that `registrationNumber` belongs to
+`Organisation`, a subclass of `Party`).
+
+Additionally, multiple LLM-based tools re-parse the same reference model TTL files
+independently, which is wasteful and opaque.
+
+### Decision
+
+1. **Enforced as default strategy** (amends DD-032): `owl:imports` + `silverInclude`
+   whitelisting becomes the default for all reference models. Inspired (`rdfs:seeAlso`)
+   becomes an opt-in override. This is safe because `silverInclude` (DD-021) prevents
+   projection noise from unused imported classes.
+
+2. **Materialized YAML inventories**: A `generate-inventory` CLI command produces YAML
+   files in `model/inventory/` containing classes, properties, and specialization trees.
+   These are committed to git and consumed by LLM tools.
+
+3. **Specialization semantics**: Descendant properties are **specialization evidence**,
+   not inherited properties. In OWL/RDFS, `rdfs:domain ref:Organisation` does not mean
+   Party has that property. Specializations produce refinement suggestions
+   ("consider aligning to Organisation") but do NOT inflate coverage percentages.
+
+4. **Validation warnings**: Two new checks — "mapped but not whitelisted" and
+   "whitelisted but not mapped" — catch mismatches between `silverInclude` annotations
+   and SKOS source mappings.
+
+### Rationale
+
+| Alternative | Why rejected |
+|-------------|-------------|
+| Treat descendant properties as inherited | Semantically wrong in OWL; inflates coverage |
+| PropertyIndex + projector refactor | Over-engineered; projectors work correctly |
+| Implicit projection from mappings | Risk of "surprise tables" undermines shift-left |
+| On-the-fly computation only | Wasteful re-parsing; no designer visibility |
+
+### Consequences
+
+- `parse_reference_model()` gains an `include_specializations` parameter
+- `resolve_reference_models()` gains an `include_specializations` parameter
+- `coverage-report` has a new "specialization" alignment category (not counted in coverage %)
+- `propose-alignment` prompt includes specialization properties for better LLM matching
+- `validate_whitelist_mapping()` function added to `validator.py`
+- Hub scaffold should include `model/inventory/` directory
+- Skills guidance should default to Enforced strategy
+
+---
+
+## DD-045: Mapping Hints for `propose-alignment`
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `propose_alignment.py`, `cli/main.py`, `kairos-design-mapping` skill, `kairos-design-source` skill  
+**Implementation:** `src/kairos_ontology/propose_alignment.py` (hint functions + `include_mapping_hints`), `src/kairos_ontology/cli/main.py` (`--include-mapping-hints`)
+
+### Context
+
+The `design-mapping` skill (GitHub Copilot, interactive) re-derives every SKOS
+predicate and SQL transform from scratch inside the conversation, even though
+`propose-alignment` already performed the hard semantic column→property matching in
+the prior step. This re-derivation is uncontrolled (no versioned prompt, shares the
+conversation context window) and repetitive. We want to give `design-mapping` a
+richer starting point **without** pretending the LLM can author production SQL
+unaided, and **without** breaking the separate pre-modeling role of
+`propose-alignment` (its default `*-alignment.yaml` feeds `design-domain`'s Source
+Evidence Table — DD-043).
+
+### Decision
+
+1. **Keep `propose-alignment`; do not deprecate it.** Add an opt-in
+   `--include-mapping-hints` flag. The default output is **byte-unchanged**,
+   preserving the `design-domain` pre-modeling contract.
+
+2. **Deterministic, non-authoritative hints** when the flag is on:
+   - Column-level `transform_hint` derived from logical-type compatibility:
+     passthrough (`source.Col`) for exact-name + same-logical-type matches; a
+     `CAST(...)` candidate when types differ; flag-only when type is unclear.
+     Every non-trivial hint carries `requires_human_confirmation: true`; only an
+     exact-name + same-logical-type passthrough may set it `false`.
+   - Table-level `structural_hints` (`split_candidate`, `dedup_candidate`,
+     `merge_candidate`, `multi_target_candidate`) detected by lightweight
+     heuristics. All advisory, all require confirmation.
+
+3. **No `skos_hint` field.** The SKOS predicate is a trivial relabel of the existing
+   `alignment` category, so the `design-mapping` skill derives it itself. Emitting
+   it would add a redundant, authoritative-looking field whose only non-mechanical
+   case (`partial` → `closeMatch` vs `narrowMatch`) is exactly where human judgement
+   matters — risking rubber-stamping.
+
+4. **`design-mapping` stays reasoning + validation.** Hints accelerate the
+   conversation; Gates 4 (read bronze + ontology independently) and 5 (confirm every
+   non-trivial transform and structural hint) still apply.
+
+### Rationale
+
+| Alternative | Why rejected |
+|-------------|-------------|
+| New `propose-mapping` command (LLM authors transforms + deprecates propose-alignment) | LLM can't author production SQL safely (parser only exposes name/type/nullable/samples); one-table-one-target schema can't express split/merge/multi-target; deprecation breaks `design-domain` pre-modeling; weakened gates; negative cost/benefit |
+| Emit a `skos_hint` field | Pure relabel of `alignment`; redundant; authoritative-looking default risks rubber-stamping |
+| Make transforms authoritative | Transforms encode business policy (encodings, defaults, dedup ordering) the parser cannot infer; must stay human-confirmed |
+
+This applies the deterministic / promptable / judgment tiering documented in
+`docs/instruction-guides/context-engineer-methodology-guide.md`: SKOS derivation and
+type comparison are deterministic (Tier 1), transform/structural candidates are
+advisory (Tier 2 shape), and the final transform/split decision stays human (Tier 3).
+
+### Consequences
+
+- `ColumnAlignment` gains optional `transform_hint`, `transform_confidence`,
+  `requires_human_confirmation`, `transform_rationale`; `TableAlignment` gains
+  `structural_hints`. Serialized only when populated → default output unchanged.
+- `run_propose_alignment()` gains `include_mapping_hints` (default `False`);
+  `propose-alignment` CLI gains `--include-mapping-hints`.
+- `kairos-design-mapping` and `kairos-design-source` skills (both copies) updated to
+  consume hints while keeping confirmation gates.
+- Tests: `tests/test_propose_alignment_hints.py` (unit) and
+  `tests/scenarios/test_scenario_mapping_hints.py` (acme-hub adminpulse→client,
+  including a regression guard that default output has no hint keys).
+
+---
+
+## DD-046: Reference Model Specialization Visibility in Domain Modeling
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `kairos-design-domain` skill (both copies)  
+**Implementation:** `.github/skills/kairos-design-domain/SKILL.md` + `src/kairos_ontology/scaffold/skills/kairos-design-domain/SKILL.md`
+
+### Context
+
+Reference models now ship richer specialization trees: a parent class such as
+`Party` has subclasses (`Organisation`, `Person`) that carry subclass-specific
+properties (`registrationNumber` on `Organisation`; `firstName`/`lastName` on
+`Person`). The `design-domain` skill, however, built its **Reference Model Class
+Inventory** (Step 0c.1b) by manually reading module TTL and listing only classes
+with properties whose `rdfs:domain` points **directly** at the class. It never
+unpacked the subclass closure, nor referenced the DD-044 materialized inventories
+(`model/inventory/*.yaml`) that already contain the full specialization tree with
+subclass properties.
+
+Result: during modeling, a parent class appears to have **none** of its subclasses'
+properties. The only indirect path (the alignment YAML, Step 0a.2) surfaces a
+subclass property **only if a source column happens to hit it**, so unused subclass
+properties stay invisible. The modeler could therefore re-create a local class or
+redefine a property that already exists on an imported subclass — silently
+duplicating the reference model and undermining the reference-model-first principle
+(DD-043).
+
+### Decision
+
+Make reference-model **subclasses and their subclass-specific properties** visible
+at every point in the `design-domain` flow where the modeler could otherwise create
+a local duplicate:
+
+1. **Step 0c.1b — Reference Model Class Inventory**: prefer the DD-044 materialized
+   inventory (`model/inventory/*.yaml`), which contains the specialization tree;
+   fall back to raw TTL. List each class's subclasses as nested rows with their
+   subclass-specific properties.
+2. **Checkpoint 1 (anti-local-class)**: include specialization subclasses in the
+   "available reference model classes" table so the modeler sees an existing
+   subclass before inventing a similarly-named local class.
+3. **Checkpoint 3b (property reuse, Step 2)**: list properties defined on existing
+   **subclasses** of the parent, not just the direct `rdfs:domain` chain, and add a
+   rule to subclass-and-reuse rather than create a local duplicate.
+
+### Rationale
+
+The fix lives entirely in the skill (documentation/guidance), reusing the inventory
+artifacts DD-044 already produces — no new code, no new command, no runtime closure
+resolution during modeling (the inventories are pre-materialized, per DD-044). This
+keeps the deterministic tier doing the unpacking and the LLM-guided skill simply
+presenting it, consistent with the three-tier methodology
+(`docs/instruction-guides/context-engineer-methodology-guide.md`).
+
+### Consequences
+
+- `design-domain` Step 0c.1b, Checkpoint 1, and Checkpoint 3b now surface
+  subclass-defined properties; the modeler is steered to subclass-and-reuse.
+- Depends on DD-044 materialized inventories being present; the skill falls back to
+  raw TTL (without subclass closure) when they are absent.
+- Documentation-only change to the skill (both copies kept in sync); no projector or
+  CLI behavior changes.
+
+---
+
+## DD-047: Deterministic Inventory Freshness Pre-flight Gate
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `inventory.py`, `cli/main.py`, `kairos-design-domain` skill (both copies)  
+**Implementation:** `src/kairos_ontology/inventory.py` (`compute_source_hash`, `source_sha256` envelope field, `check_inventories`), `src/kairos_ontology/cli/main.py` (`check-inventory` command)
+
+### Context
+
+DD-046 made reference-model subclass properties visible during domain modeling by
+reading the DD-044 materialized inventories (`model/inventory/*.yaml`). But that
+visibility is only as good as the inventory: the `design-domain` skill's "prefer
+inventories" guidance was a **soft** instruction with no enforcement. A modeler
+could proceed against a **missing** inventory (falling back to raw TTL, which hides
+subclass closure) or a **stale** inventory (reference models changed since the YAML
+was generated), silently reintroducing the exact duplication DD-046 set out to
+prevent. The skill's "mandatory" language lived on the checkpoints, but nothing
+deterministically verified the inventory was present and current.
+
+### Decision
+
+Add a deterministic, code-level pre-flight gate:
+
+1. **Provenance hash** — `generate_inventory()` now stores `source_sha256` (SHA-256
+   of the source TTL bytes) in the inventory envelope.
+2. **`check_inventories()`** — classifies every source TTL as `ok`, `missing`
+   (has classes but no inventory → blocking), `stale` (stored hash ≠ current →
+   blocking), `unverifiable` (pre-DD-047 inventory with no hash → warn), or `orphan`
+   (inventory with no source → warn). Class-less TTLs are skipped (mirrors
+   `generate-inventory`).
+3. **`kairos-ontology check-inventory`** — CLI wrapper that exits non-zero on
+   missing/stale; `--strict` also fails on unverifiable; `--warn-only` never blocks.
+4. **Skill hard gate** — `design-domain` Step 0c.1b now opens with a 🚦 pre-flight
+   instructing the LLM to run `check-inventory` and **STOP** (propose nothing) until
+   it passes, regenerating + committing the inventory if needed.
+
+### Rationale
+
+The enforcement is deterministic (Tier 1) — a content-hash comparison, reproducible
+and unit-testable — rather than relying on the LLM to honor a soft "prefer
+inventories" hint (which is exactly the kind of judgment that should not gate
+correctness). Storing a content hash, not an mtime, makes the check robust across
+git clones where timestamps are meaningless. Backward compatibility is preserved:
+inventories generated before DD-047 lack the hash and are reported as `unverifiable`
+(warn, not block) unless `--strict` is used. The gate is still *invoked* by the
+skill (the skill harness has no Python entry point), but the pass/fail decision is
+now made by code, not by the model.
+
+### Consequences
+
+- Inventory envelope gains `source_sha256` (optional; `None` for graph-sourced
+  inventories). Existing readers ignore unknown keys.
+- New CLI command `check-inventory`; `design-domain` skill (both copies) gains the
+  pre-flight gate at Step 0c.1b.
+- Tests: `tests/test_inventory_freshness.py` (hash, `check_inventories`
+  classification, CLI exit codes for fresh/missing/warn-only/strict).
+- A true blocking gate still depends on the operator/agent actually running
+  `check-inventory`; CI hubs may additionally wire it as a pipeline step.
 
 ---
 

@@ -297,10 +297,11 @@ curated, industry-aligned OWL ontologies bundled into **accelerator packs** —
 sector-specific collections of ontologies (e.g., Financial Services, Supply
 Chain, Healthcare) that provide a proven starting point.
 
-> **Two alignment strategies:** The default strategy is **Reference Model Inspired**
-> — model locally with selective pattern adoption and a SKOS alignment file. If the
-> user's domain uses a Kairos-managed reference model (small, projection-ready, ships
-> defaults), they can override to **Reference Model Enforced** which uses `owl:imports`.
+> **Two alignment strategies:** The default strategy is **Reference Model Enforced**
+> — use `owl:imports` with `silverInclude` whitelisting (DD-044). This gives designers
+> the full reference model graph while only projecting claimed classes. If the
+> reference model cannot be imported (proprietary, no TTL), use **Reference Model
+> Inspired** as an opt-in override.
 > See [Standard model alignment](#standard-model-alignment) for details.
 
 ### Step 0 — Ask the user
@@ -552,6 +553,29 @@ After identifying the target domain from the affinity report, resolve the
 `domain_uris` to their local reference model TTL files via the OASIS XML catalog
 and **read those TTLs** to extract the reference model vocabulary into your context.
 
+> **🚦 Pre-flight gate (DD-047) — run BEFORE building the inventory.** Execute:
+> ```bash
+> kairos-ontology check-inventory
+> ```
+> This deterministically verifies that `model/inventory/*-inventory.yaml` exists
+> for every source TTL **and** is up to date (the stored `source_sha256` matches
+> the current file). **If the command exits non-zero (missing or stale), STOP** —
+> do not propose any class or property. Run `kairos-ontology generate-inventory`,
+> commit the refreshed inventory, then re-run `check-inventory` until it passes.
+> Only continue past this point when the check is green. This guarantees the
+> specialization tree you reason over below reflects the current reference models.
+
+> **Prefer materialized inventories (DD-046 / DD-044).** Once the pre-flight gate
+> is green, read `model/inventory/*.yaml` **first** — they already unpack the full
+> **specialization tree** (subclasses of each reference class) and the
+> **subclass-specific properties** (e.g. `registrationNumber` on `Organisation`, a
+> subclass of `Party`). Raw TTL reading (below) only surfaces properties whose
+> `rdfs:domain` points *directly* at a class, so a parent class like `Party` would
+> appear to have none of its subclasses' properties — risking a modeler re-creating
+> a local class/property that already exists on a subclass. Use the raw TTL steps
+> below only as a fallback when no inventory exists **and** the pre-flight gate was
+> run in `--warn-only` mode by an operator who accepts the degraded view.
+
 1. **Resolve URIs via the catalog chain:**
    ```bash
    # The hub catalog chains to the reference-models catalog
@@ -574,18 +598,24 @@ and **read those TTLs** to extract the reference model vocabulary into your cont
 3. **Extract the reference model vocabulary:**
    From the TTL, build a **Reference Model Class Inventory** listing all
    `owl:Class` subjects with their `rdfs:label`, `rdfs:comment`, and declared
-   properties (`rdfs:domain` pointing to the class):
+   properties (`rdfs:domain` pointing to the class). **Include each class's
+   specialization subclasses and their subclass-specific properties** (from the
+   materialized inventory, DD-046) as nested rows — these are the most commonly
+   missed reuse opportunities:
 
    > "**Reference Model Class Inventory** (from `bsp/commercial`):
    >
    > | # | Class URI | Label | Properties | Comment |
    > |---|-----------|-------|------------|---------|
    > | 1 | `bsp:SalesContract` | Sales Contract | `contractIdentifier`, `effectiveDate`, `expiryDate` | A commercial agreement… |
+   > | 1.1 | ↳ `bsp:FramedContract` _(subclass)_ | Framed Contract | `frameworkReference` | Specialization of SalesContract… |
    > | 2 | `bsp:TradeTerms` | Trade Terms | `incoterm`, `paymentTerms` | Terms governing a transaction… |
    > | … | … | … | … | … |
    >
-   > These classes are already available via `owl:imports` — **do NOT recreate
-   > them as local classes.** Use them directly or subclass them."
+   > These classes **and their subclasses** are already available via
+   > `owl:imports` — **do NOT recreate them as local classes, and do NOT redefine
+   > a property that already exists on a subclass.** Use them directly or subclass
+   > them."
 
 **Why this matters:** Without this inventory in your context, you will rely on
 naming heuristics and risk creating custom classes (`Client`, `Agreement`) when
@@ -904,10 +934,11 @@ When incorporating **Kairos reference model** ontologies into the hub, **use
 `owl:imports` via the catalog** — never copy or recreate the reference model
 TTL files inside the hub.
 
-> **Important:** This applies only to the **Reference Model Enforced** strategy
-> (Kairos-managed reference models: small, < 50 classes, include `-defaults.ttl`).
-> For large **external standards** (FIBO, DCSA, GS1, schema.org), use the default
-> [Reference Model Inspired](#reference-model-inspired-default-strategy) strategy below.
+> **Important:** This is the **default** strategy (DD-044). Use `owl:imports` for any
+> reference model available as TTL. Add `silverInclude` annotations to whitelist only
+> the classes you need projected.
+> For standards **without TTL distribution**, use the opt-in
+> [Reference Model Inspired](#reference-model-inspired-opt-in-strategy) strategy below.
 
 The reference models ship with a `catalog-v001.xml` that maps logical URIs to
 local file paths.  Your domain ontology imports the reference model by URI:
@@ -1119,34 +1150,31 @@ standard ontology (FIBO, DCSA, GS1, PROV-O, schema.org, etc.):
 Ask the user to confirm:
 - The exact standard or vocabulary (name + version/edition if relevant).
 - Whether the standard is available as a **Kairos reference model** (Enforced-eligible)
-  or is an **external standard** (Inspired — the default).
+  or is an **external standard** with no TTL distribution (Inspired — opt-in override).
 
 ### Step 2 — Determine the strategy
 
 | Strategy | When to use | Approach |
 |----------|-------------|----------|
-| **Reference Model Inspired** (default) | All external standards AND any reference model where you want selective adoption. This is the default — use unless overridden. | Model locally + selective pattern adoption + SKOS alignment file |
-| **Reference Model Enforced** (override) | Kairos-managed reference models in `ontology-reference-models/`. Small (< 50 classes), projection-optimized, ships `-defaults.ttl`. | `owl:imports` + `rdfs:subClassOf` + DD-021 whitelist + DD-023 defaults |
+| **Reference Model Enforced** (default — DD-044) | All reference models. `silverInclude` whitelisting ensures only claimed classes are projected, making even large imports safe. | `owl:imports` + `rdfs:subClassOf` + DD-021 whitelist + DD-023 defaults |
+| **Reference Model Inspired** (opt-in) | When import is impossible (proprietary, no TTL distribution) or the designer deliberately wants to deviate from the reference model's structure. | Model locally + `rdfs:seeAlso` traceability |
 
-> **Default rule:** Always start with **Reference Model Inspired** unless the user
-> explicitly requests Enforced and the reference model meets all eligibility criteria.
+> **Default rule:** Always start with **Reference Model Enforced** unless import is
+> impossible or the user explicitly requests Inspired.
 
-**Enforced eligibility** (ALL must be true):
-- Found in `ontology-reference-models/accelerator-packs/`
+**Enforced eligibility** (preferred — DD-044 makes this the default):
+- Available as TTL (either Kairos-managed or external with TTL distribution)
 - Has a catalog entry mapping its URI to a local `.ttl` file
-- Typically < 50 classes, focused on a specific domain
-- Ships `*-silver-defaults.ttl` (DD-023 compatible)
-- No transitive imports pulling in unrequested concepts
-- Examples: BSP-Party, BSP-Billing, MMT modules
+- Use `silverInclude` to whitelist only the classes you need projected
+- Examples: BSP-Party, BSP-Billing, MMT modules, FIBO (with whitelist)
 
-**Inspired indicators** (anything not meeting Enforced criteria):
-- Large (100+ classes) or depends on large transitive imports
-- Externally maintained — versioned independently of your hub
-- Not projection-optimized (no `kairos-ext:` annotations, no `-defaults.ttl`)
-- Examples: FIBO, DCSA, GS1, PROV-O, schema.org
+**Inspired indicators** (opt-in override — use only when import is impossible):
+- No TTL distribution available (proprietary API-only standards)
+- Designer wants deliberate structural deviation from the reference
+- Examples: proprietary vendor APIs, standards without RDF serialization
 
-> **Rule of thumb:** If importing the standard would add > 50 classes to the
-> merged graph that you'll never project, use Reference Model Inspired (the default).
+> **Rule of thumb:** If the reference model is available as TTL, use Enforced with
+> `silverInclude` whitelisting. Only fall back to Inspired when import is impossible.
 
 ### Step 3 — Alignment patterns
 
@@ -1163,7 +1191,7 @@ Ask the user to confirm:
     rdfs:comment "A high-value customer — extends the reference model."@en .
 ```
 
-#### Reference Model Inspired (default strategy)
+#### Reference Model Inspired (opt-in strategy)
 
 **Do NOT import the external standard.** Instead:
 
@@ -1251,10 +1279,13 @@ for this domain:
 > | # | Ref Class | Label | Source Tables Feeding It | Coverage |
 > |---|-----------|-------|--------------------------|----------|
 > | 1 | `bsp:SalesContract` | Sales Contract | `tblContracts` (Admin) | 3/5 props matched |
+> | 1.1 | ↳ `bsp:FramedContract` _(subclass)_ | Framed Contract | _(none)_ | subclass already defined |
 > | 2 | `bsp:TradeTerms` | Trade Terms | _(none)_ | 0/3 — no source data |
 >
-> These classes are **already imported** and should be used directly (or
-> subclassed) rather than creating new local classes with similar names."
+> These classes **and their subclasses** are **already imported** and should be
+> used directly (or subclassed) rather than creating new local classes with
+> similar names. **Check the subclass rows too** — an existing specialization may
+> already model the concept you are about to create locally."
 
 **Only propose a NEW local class when ALL of these conditions are met:**
 1. No reference model class covers this concept (check the inventory)
@@ -1450,6 +1481,16 @@ parent chain:
 > | 3 | `ref:contactEmail` | `ref:Party` | `xsd:string` | Primary contact email address |
 > | … | … | … | … | … |
 
+> **Also list properties defined on existing SUBCLASSES of the parent (DD-046).**
+> Use the specialization tree from the materialized inventory (Step 0c.1b), not
+> just the direct `rdfs:domain` chain. A property such as `ref:registrationNumber`
+> defined on `ref:Organisation` (a subclass of `ref:Party`) is easy to miss with
+> raw TTL reading and is a common source of accidental local duplication:
+>
+> | # | Property | Defined on (subclass) | Range | Reuse instead of creating local? |
+> |---|----------|-----------------------|-------|----------------------------------|
+> | 1 | `ref:registrationNumber` | `ref:Organisation` ⊂ `ref:Party` | `xsd:string` | ✅ subclass `ref:Organisation` and reuse |
+
 **Step 2b — List all named individuals (enumerations) from imports:**
 
 If the reference model defines named individuals (e.g., status values,
@@ -1499,6 +1540,9 @@ property, use `rdfs:subPropertyOf` instead of creating an unrelated property:
 
 **Rules:**
 - If an inherited property covers the same semantic meaning, default to REUSE.
+- **If a property defined on an existing subclass (specialization) covers the
+  concept, subclass that class and reuse the property — do NOT create a local
+  duplicate (DD-046).**
 - Only create a new property if the user explicitly confirms it has **different
   semantics** from all inherited properties (e.g., different cardinality,
   different business context, or more specific meaning).

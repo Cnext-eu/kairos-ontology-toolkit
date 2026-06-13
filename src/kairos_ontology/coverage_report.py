@@ -248,6 +248,15 @@ def _align_properties(
         for p in ref_cls.get("properties", []):
             ref_props_by_name[p["name"].lower()] = p
 
+    # DD-044: Build specialization property index for fallback matching
+    spec_props_by_name: dict[str, tuple[str, dict]] = {}
+    if ref_cls:
+        for spec in ref_cls.get("specializations", []):
+            for p in spec.get("properties", []):
+                p_lower = p["name"].lower()
+                if p_lower not in spec_props_by_name:
+                    spec_props_by_name[p_lower] = (spec["class"], p)
+
     results = []
     for prop in ont_cls.get("properties", []):
         ref_prop = None
@@ -271,14 +280,31 @@ def _align_properties(
                 alignment = "name-match"
                 confidence = 0.7
 
+        # DD-044: Check specialization properties (refinement suggestion)
+        spec_class = None
+        if ref_prop is None and ref_cls:
+            prop_lower = prop["name"].lower()
+            if prop_lower in spec_props_by_name:
+                spec_class, ref_prop = spec_props_by_name[prop_lower]
+                alignment = "specialization"
+                confidence = 0.5
+
         ref_name = f"{ref_cls['name']}.{ref_prop['name']}" if ref_cls and ref_prop else None
 
-        results.append({
+        result_entry: dict[str, Any] = {
             "ontology_property": prop["name"],
             "ref_property": ref_name,
             "alignment": alignment,
             "confidence": confidence,
-        })
+        }
+        if spec_class:
+            result_entry["specialization_class"] = spec_class
+            result_entry["refinement_suggestion"] = (
+                f"Property matches {spec_class}.{ref_prop['name']} "
+                f"(specialization of {ref_cls['name']}). "
+                f"Consider aligning to {spec_class} instead."
+            )
+        results.append(result_entry)
 
     return results
 
@@ -353,7 +379,9 @@ def run_coverage_report(
     ontology_files = [f for f in ontology_files if not f.name.startswith("_")]
 
     # Resolve reference models (recursive discovery + merge)
-    ref_domains = resolve_reference_models(ref_models_dir)
+    ref_domains = resolve_reference_models(
+        ref_models_dir, include_specializations=True,
+    )
 
     # Build lookup index for deterministic alignment
     ref_index = _build_ref_index(ref_domains)
@@ -390,6 +418,7 @@ def run_coverage_report(
                     alignment=pa.get("alignment", "custom"),
                     confidence=pa.get("confidence", 0.0),
                     source_columns=evidence.get(prop_name, []),
+                    suggestion=pa.get("refinement_suggestion", ""),
                 ))
 
             domain_cov.classes.append(ClassAlignment(
@@ -410,7 +439,8 @@ def run_coverage_report(
         total_props = sum(len(c.properties) for c in domain_cov.classes)
         aligned_props = sum(
             1 for c in domain_cov.classes
-            for p in c.properties if p.alignment != "custom"
+            for p in c.properties
+            if p.alignment not in ("custom", "specialization")
         )
         domain_cov.property_coverage_pct = round(
             aligned_props / total_props * 100) if total_props else 0.0

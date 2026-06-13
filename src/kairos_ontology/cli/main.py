@@ -472,6 +472,7 @@ def init(domain, company_domain, force):
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
+        hub / "model" / "inventory",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -1359,8 +1360,11 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
               help='Show per-table alignment details.')
 @click.option('--quiet', '-q', is_flag=True, default=False,
               help='Suppress progress output (errors still shown).')
+@click.option('--include-mapping-hints', is_flag=True, default=False,
+              help='DD-045: add deterministic transform + structural mapping hints '
+                   '(advisory, human-confirmed). Default output is unchanged.')
 def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
-                          domains_filter, verbose, quiet):
+                          domains_filter, verbose, quiet, include_mapping_hints):
     """Propose source-column → reference-model-property alignment (LLM-powered).
 
     Pre-modeling step that analyses how source columns map to reference model
@@ -1435,6 +1439,8 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
         click.echo(f"   Model: {llm_model}")
         if domains_filter:
             click.echo(f"   Domain filter: {domains_filter}")
+        if include_mapping_hints:
+            click.echo("   Mapping hints: enabled (DD-045)")
         click.echo()
 
     filter_list = None
@@ -1457,6 +1463,7 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             model=llm_model,
             domains_filter=filter_list,
             report=reporter,
+            include_mapping_hints=include_mapping_hints,
         )
         if not quiet:
             click.echo(
@@ -1584,6 +1591,205 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
     except ValueError as e:
         click.echo(f"\n❌ {e}", err=True)
         raise SystemExit(1)
+
+
+@cli.command(name='generate-inventory')
+@click.option('--ontology-dir', type=click.Path(exists=True), default=None,
+              help='Path to model/ontologies/ directory (default: auto-detect from hub).')
+@click.option('--ref-models-dir', type=click.Path(exists=True), default=None,
+              help='Path to model/reference-models/ directory (default: auto-detect).')
+@click.option('--output-dir', '-o', type=click.Path(), default=None,
+              help='Output directory (default: model/inventory/).')
+def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir):
+    """Generate materialized YAML inventories for ontologies and reference models.
+
+    Produces one YAML file per domain/reference model containing classes, properties,
+    and specialization trees (DD-044).  Inventories are consumed by analyse-sources,
+    propose-alignment, and coverage-report as a cached alternative to re-parsing TTL.
+
+    Files are written to model/inventory/ and should be committed to git.
+
+    \\b
+    Examples:
+      kairos-ontology generate-inventory
+      kairos-ontology generate-inventory --output-dir model/inventory/
+      kairos-ontology generate-inventory --ref-models-dir path/to/refs/
+    """
+    from ..inventory import generate_inventory, write_inventory
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=True)
+
+    # Resolve ontology directory
+    if ontology_dir:
+        ont_path = Path(ontology_dir)
+    elif hub_root:
+        ont_path = hub_root / "model" / "ontologies"
+    else:
+        ont_path = None
+
+    # Resolve reference models directory
+    if ref_models_dir:
+        ref_path = Path(ref_models_dir)
+    elif hub_root:
+        ref_path = hub_root / "model" / "reference-models"
+        if not ref_path.is_dir():
+            ref_path = None
+    else:
+        ref_path = None
+
+    if not ont_path and not ref_path:
+        click.echo("❌ No ontology or reference model directories found. "
+                    "Use --ontology-dir or --ref-models-dir.", err=True)
+        raise SystemExit(1)
+
+    # Resolve output directory
+    if output_dir:
+        out_path = Path(output_dir)
+    elif hub_root:
+        out_path = hub_root / "model" / "inventory"
+    else:
+        out_path = Path("model/inventory")
+
+    click.echo("📦 Generating materialized inventories")
+    written: list[Path] = []
+
+    # Process reference models
+    if ref_path and ref_path.is_dir():
+        click.echo(f"   Reference models: {ref_path}")
+        ref_ttls = sorted(ref_path.glob("**/*.ttl"))
+        for ttl_file in ref_ttls:
+            try:
+                inv = generate_inventory(ttl_file)
+                if not inv["classes"]:
+                    continue
+                stem = ttl_file.stem
+                yaml_path = out_path / f"{stem}-inventory.yaml"
+                write_inventory(inv, yaml_path)
+                written.append(yaml_path)
+                n_classes = len(inv["classes"])
+                n_specs = sum(
+                    len(c.get("specializations", []))
+                    for c in inv["classes"]
+                )
+                click.echo(
+                    f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations"
+                )
+            except Exception as e:
+                click.echo(f"   ⚠ Failed to process {ttl_file.name}: {e}", err=True)
+
+    # Process domain ontologies
+    if ont_path and ont_path.is_dir():
+        click.echo(f"   Ontologies: {ont_path}")
+        ont_ttls = sorted(ont_path.glob("**/*.ttl"))
+        for ttl_file in ont_ttls:
+            try:
+                inv = generate_inventory(ttl_file, include_specializations=False)
+                if not inv["classes"]:
+                    continue
+                stem = ttl_file.stem
+                yaml_path = out_path / f"{stem}-inventory.yaml"
+                write_inventory(inv, yaml_path)
+                written.append(yaml_path)
+                click.echo(f"   ✅ {stem}: {len(inv['classes'])} classes")
+            except Exception as e:
+                click.echo(f"   ⚠ Failed to process {ttl_file.name}: {e}", err=True)
+
+    click.echo(f"\n✅ Generated {len(written)} inventory file(s) in {out_path}")
+
+
+@cli.command(name='check-inventory')
+@click.option('--ontology-dir', type=click.Path(exists=True), default=None,
+              help='Path to model/ontologies/ directory (default: auto-detect from hub).')
+@click.option('--ref-models-dir', type=click.Path(exists=True), default=None,
+              help='Path to model/reference-models/ directory (default: auto-detect).')
+@click.option('--inventory-dir', type=click.Path(), default=None,
+              help='Path to model/inventory/ directory (default: auto-detect).')
+@click.option('--strict', is_flag=True, default=False,
+              help='Also fail when an inventory cannot be verified (no stored hash).')
+@click.option('--warn-only', is_flag=True, default=False,
+              help='Report problems but always exit 0 (never block).')
+def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, warn_only):
+    """Verify that materialized inventories exist and are up to date (DD-047).
+
+    Deterministic pre-flight gate for ``design-domain``: confirms that every source
+    TTL has a matching ``model/inventory/*-inventory.yaml`` and that the stored
+    ``source_sha256`` matches the current file content.  Exits non-zero (blocking)
+    when an inventory is **missing** or **stale**, so a modeler never works against
+    an out-of-date view of the reference model's specialization tree.
+
+    \\b
+    Examples:
+      kairos-ontology check-inventory
+      kairos-ontology check-inventory --strict
+      kairos-ontology check-inventory --warn-only
+    """
+    from ..inventory import check_inventories
+    from ..hub_utils import find_hub_root
+
+    hub_root = find_hub_root(Path.cwd(), require_model=True)
+
+    if ontology_dir:
+        ont_path: Path | None = Path(ontology_dir)
+    elif hub_root:
+        ont_path = hub_root / "model" / "ontologies"
+    else:
+        ont_path = None
+
+    if ref_models_dir:
+        ref_path: Path | None = Path(ref_models_dir)
+    elif hub_root:
+        ref_path = hub_root / "model" / "reference-models"
+        if not ref_path.is_dir():
+            ref_path = None
+    else:
+        ref_path = None
+
+    if inventory_dir:
+        inv_path = Path(inventory_dir)
+    elif hub_root:
+        inv_path = hub_root / "model" / "inventory"
+    else:
+        inv_path = Path("model/inventory")
+
+    if not ont_path and not ref_path:
+        click.echo("❌ No ontology or reference model directories found. "
+                   "Use --ontology-dir or --ref-models-dir.", err=True)
+        raise SystemExit(1)
+
+    report = check_inventories(
+        ontology_dir=ont_path, ref_models_dir=ref_path, inventory_dir=inv_path,
+    )
+
+    click.echo("🔎 Checking materialized inventories")
+    click.echo(f"   Inventory dir: {inv_path}")
+    for stem in report.ok:
+        click.echo(f"   ✓ {stem}: up to date")
+    for stem in report.missing:
+        click.echo(f"   ❌ {stem}: MISSING inventory", err=True)
+    for stem in report.stale:
+        click.echo(f"   ❌ {stem}: STALE (source changed since generation)", err=True)
+    for stem in report.unverifiable:
+        click.echo(f"   ⚠ {stem}: cannot verify freshness (no stored hash — regenerate)")
+    for name in report.orphan:
+        click.echo(f"   ⚠ {name}: orphan inventory (no matching source TTL)")
+
+    blocking = report.is_blocking or (strict and report.unverifiable)
+
+    if blocking and not warn_only:
+        click.echo(
+            "\n❌ Inventory check failed. Run "
+            "`kairos-ontology generate-inventory` and commit the result "
+            "before modeling.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if report.is_blocking or report.has_warnings:
+        click.echo("\n⚠ Inventory check completed with warnings (not blocking).")
+    else:
+        click.echo("\n✅ Inventories are present and up to date.")
 
 
 @cli.command()
@@ -1877,6 +2083,7 @@ def migrate(check, hub_path):
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
+        hub / "model" / "inventory",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -2116,6 +2323,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
+        hub / "model" / "inventory",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",

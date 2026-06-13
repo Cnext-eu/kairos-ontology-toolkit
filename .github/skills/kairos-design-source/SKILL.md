@@ -295,6 +295,11 @@ Verify reference models are available:
 ls ontology-reference-models/
 ```
 
+> **Tip (DD-044):** Run `kairos-ontology generate-inventory` first to create
+> materialized YAML inventories in `model/inventory/`. These give `analyse-sources`
+> and `propose-alignment` visibility into subclass properties (specialization
+> patterns) that raw TTL parsing would miss.
+
 ### 4b — Run the analysis
 
 ```bash
@@ -356,6 +361,14 @@ After the source vocabulary and analysis are complete:
    map source columns to domain ontology properties
 3. **Design silver annotations** — invoke the **kairos-design-silver** skill
 4. **Generate output** — invoke the **kairos-execute-project** skill
+
+> **Optional (DD-045):** Before mapping, you can run
+> `kairos-ontology propose-alignment --include-mapping-hints` to enrich the
+> alignment YAML with advisory **transform** and **structural** mapping hints.
+> The **kairos-design-mapping** skill consumes these for a richer starting point
+> while still confirming every non-trivial transform with you. Without the flag,
+> the default alignment output (used by **kairos-design-domain** pre-modeling) is
+> unchanged. See `docs/instruction-guides/context-engineer-methodology-guide.md`.
 
 ---
 

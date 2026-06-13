@@ -2349,7 +2349,6 @@ class TestCompositeNaturalKey:
 
     def test_composite_sk_has_two_quoted_elements(self):
         """Surrogate key expression should contain both NK columns as separate list items."""
-        from kairos_ontology.projections.medallion_dbt_projector import _build_sk_iri_columns
         g = self._graph()
         nk = _get_natural_key(g, "http://kairos.example/ontology/Address")
         cols = _build_sk_iri_columns(
@@ -2366,7 +2365,6 @@ class TestCompositeNaturalKey:
 
     def test_composite_iri_uses_underscore_separator(self):
         """IRI CONCAT for composite NK should join parts with '_', not '/'."""
-        from kairos_ontology.projections.medallion_dbt_projector import _build_sk_iri_columns
         g = self._graph()
         nk = _get_natural_key(g, "http://kairos.example/ontology/Address")
         cols = _build_sk_iri_columns(
@@ -2391,7 +2389,6 @@ class TestDbtTypeStringMacro:
 
     def test_null_sk_uses_dbt_type_string(self):
         """_build_sk_iri_columns with no natural key should emit dbt.type_string()."""
-        from kairos_ontology.projections.medallion_dbt_projector import _build_sk_iri_columns
         g = Graph()
         g.parse(data=textwrap.dedent("""\
             @prefix owl: <http://www.w3.org/2002/07/owl#> .
@@ -2655,7 +2652,6 @@ class TestSkIriUsesSourceExpression:
 
     def test_no_source_lookup_falls_back_to_alias(self):
         """Without a source lookup, _build_sk_iri_columns falls back to the alias (safe default)."""
-        from kairos_ontology.projections.medallion_dbt_projector import _build_sk_iri_columns
         g = Graph()
         g.parse(data=BANK_ACCOUNT_ONTOLOGY_TTL, format="turtle")
         nk = _get_natural_key(g, "http://kairos.example/ontology/BankAccount")
