@@ -2,9 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Tests for the generate-inventory CLI command (DD-044)."""
 
-from pathlib import Path
 
-import pytest
 import yaml
 from click.testing import CliRunner
 

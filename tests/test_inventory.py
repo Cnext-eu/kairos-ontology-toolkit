@@ -2,10 +2,8 @@
 # Copyright 2026 Cnext.eu
 """Tests for inventory module (DD-044)."""
 
-from pathlib import Path
 
 import pytest
-import yaml
 
 from kairos_ontology.inventory import (
     generate_inventory,
@@ -56,6 +54,7 @@ class TestGenerateInventory:
         assert inv["domain_name"] == "Party"
         assert "generated_at" in inv
         assert str(ref_file) in inv["generated_from"]
+        assert inv["source_sha256"]  # provenance hash present (DD-047)
 
     def test_includes_specializations_by_default(self, tmp_path):
         ref_file = tmp_path / "party.ttl"

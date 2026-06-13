@@ -52,6 +52,11 @@ class ColumnAlignment:
     alignment: str  # exact | semantic | partial | custom
     confidence: float
     rationale: str = ""
+    # DD-045 mapping hints (only populated when include_mapping_hints=True)
+    transform_hint: str | None = None
+    transform_confidence: float | None = None
+    requires_human_confirmation: bool | None = None
+    transform_rationale: str | None = None
 
 
 @dataclass
@@ -63,6 +68,8 @@ class TableAlignment:
     ref_class_confidence: float
     columns: list[ColumnAlignment] = field(default_factory=list)
     custom_columns: list[dict[str, Any]] = field(default_factory=list)
+    # DD-045 structural mapping hints (only populated when include_mapping_hints=True)
+    structural_hints: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -428,6 +435,268 @@ def _clamp_confidence(val: Any) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Mapping hints (DD-045) — deterministic, opt-in (--include-mapping-hints)
+# ---------------------------------------------------------------------------
+#
+# Hints give the `design-mapping` skill a richer starting point WITHOUT
+# authoring production SQL or committing decisions. Every non-trivial hint
+# carries requires_human_confirmation=True. The SKOS predicate is deliberately
+# NOT emitted — it is a trivial relabel of the existing `alignment` category the
+# skill derives itself (see DD-045 "Considered and dropped").
+
+# Normalize SQL/source/XSD types to a small set of logical types.
+_LOGICAL_TYPE_MAP = {
+    # strings
+    "varchar": "string", "nvarchar": "string", "char": "string", "nchar": "string",
+    "text": "string", "ntext": "string", "string": "string", "str": "string",
+    "uuid": "string", "uniqueidentifier": "string", "guid": "string", "anyuri": "string",
+    # integers
+    "int": "int", "integer": "int", "bigint": "int", "smallint": "int",
+    "tinyint": "int", "long": "int", "short": "int", "byte": "int",
+    "nonnegativeinteger": "int", "positiveinteger": "int",
+    # decimals
+    "decimal": "decimal", "numeric": "decimal", "money": "decimal",
+    "smallmoney": "decimal", "float": "decimal", "real": "decimal",
+    "double": "decimal",
+    # booleans
+    "bit": "bool", "bool": "bool", "boolean": "bool",
+    # dates
+    "date": "date",
+    # datetimes
+    "datetime": "datetime", "datetime2": "datetime", "datetimeoffset": "datetime",
+    "timestamp": "datetime", "smalldatetime": "datetime", "datetimestamp": "datetime",
+}
+
+# Logical type → SQL type used in CAST(...) hints.
+_SQL_CAST_TYPE = {
+    "string": "VARCHAR",
+    "int": "INT",
+    "decimal": "DECIMAL",
+    "bool": "BOOLEAN",
+    "date": "DATE",
+    "datetime": "TIMESTAMP",
+}
+
+# Column-name tokens that suggest a discriminator (subclass-split signal).
+_DISCRIMINATOR_NAMES = {
+    "type", "kind", "category", "status", "classification", "subtype", "class",
+}
+
+# Column-name tokens that suggest a record-ordering column (dedup signal).
+_ORDERING_TOKENS = ("modified", "updated", "changed", "created", "timestamp", "version")
+
+
+def _normalize_logical_type(raw_type: Any) -> str:
+    """Reduce a SQL/source/XSD type to a small logical type, or 'unknown'."""
+    if not raw_type:
+        return "unknown"
+    t = str(raw_type).strip().lower()
+    if "(" in t:  # strip precision, e.g. varchar(50) / decimal(10,2)
+        t = t.split("(", 1)[0].strip()
+    for sep in ("#", "/", ":"):  # reduce URI / CURIE to local name
+        if sep in t:
+            t = t.rsplit(sep, 1)[-1]
+    return _LOGICAL_TYPE_MAP.get(t, "unknown")
+
+
+def _transform_hint(
+    column: dict[str, Any],
+    ref_property_name: str,
+    ref_property_range: str,
+    source_alias: str = "source",
+) -> dict[str, Any]:
+    """Deterministic, non-authoritative transform suggestion for a matched column.
+
+    Returns {transform_hint, transform_confidence, requires_human_confirmation,
+    transform_rationale}. Only an exact name + same logical type passthrough may
+    set requires_human_confirmation=False; everything else must be confirmed.
+    """
+    col_name = str(column.get("name", "") or "")
+    col_type = _normalize_logical_type(column.get("data_type", ""))
+    target_type = _normalize_logical_type(ref_property_range)
+    ref = f"{source_alias}.{col_name}"
+    name_match = bool(col_name) and col_name.lower() == str(ref_property_name or "").lower()
+
+    if col_type != "unknown" and col_type == target_type:
+        if name_match:
+            return {
+                "transform_hint": ref,
+                "transform_confidence": 0.9,
+                "requires_human_confirmation": False,
+                "transform_rationale": (
+                    f"Same logical type ({col_type}) and matching name; direct passthrough"
+                ),
+            }
+        return {
+            "transform_hint": ref,
+            "transform_confidence": 0.7,
+            "requires_human_confirmation": True,
+            "transform_rationale": (
+                f"Same logical type ({col_type}) but name differs from "
+                f"'{ref_property_name}'; confirm passthrough"
+            ),
+        }
+
+    if col_type != "unknown" and target_type != "unknown":
+        sql_type = _SQL_CAST_TYPE.get(target_type, target_type.upper())
+        return {
+            "transform_hint": f"CAST({ref} AS {sql_type})",
+            "transform_confidence": 0.6,
+            "requires_human_confirmation": True,
+            "transform_rationale": (
+                f"Source type {col_type} differs from target range {target_type}; "
+                "cast candidate — confirm encoding/semantics"
+            ),
+        }
+
+    return {
+        "transform_hint": ref,
+        "transform_confidence": 0.3,
+        "requires_human_confirmation": True,
+        "transform_rationale": (
+            "Type compatibility unclear; confirm transform and any normalization policy"
+        ),
+    }
+
+
+def _distinct_samples(column: dict[str, Any]) -> set[str]:
+    """Distinct stringified sample values for a column."""
+    return {str(s) for s in (column.get("samples") or [])}
+
+
+def _is_discriminator(column: dict[str, Any]) -> bool:
+    """Heuristic: does this column look like a subclass discriminator?"""
+    name = str(column.get("name", "") or "").lower()
+    if name in _DISCRIMINATOR_NAMES or name.endswith("type") or name.endswith("kind"):
+        return True
+    distinct = _distinct_samples(column)
+    logical = _normalize_logical_type(column.get("data_type", ""))
+    return 2 <= len(distinct) <= 5 and logical in ("int", "string", "bool")
+
+
+def _collect_sibling_subclasses(ref_classes: list[dict[str, Any]]) -> list[str]:
+    """Collect distinct specialization subclass names across the reference model."""
+    seen: list[str] = []
+    for cls in ref_classes:
+        for spec in cls.get("specializations", []):
+            name = spec.get("class", "")
+            if name and name not in seen:
+                seen.append(name)
+    return seen
+
+
+def _detect_structural_hints(
+    table_name: str,
+    columns: list[dict[str, Any]],
+    ref_classes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Lightweight detection of structural mapping candidates (all advisory).
+
+    Emits split_candidate / dedup_candidate / multi_target_candidate hints. Each
+    is a candidate only and carries requires_human_confirmation=True.
+    """
+    hints: list[dict[str, Any]] = []
+    sibling_subclasses = _collect_sibling_subclasses(ref_classes)
+
+    # split_candidate — discriminator column + >=2 sibling subclasses available.
+    if len(sibling_subclasses) >= 2:
+        for col in columns:
+            if _is_discriminator(col):
+                hints.append({
+                    "type": "split_candidate",
+                    "source_table": table_name,
+                    "discriminator_column": col.get("name", ""),
+                    "sampled_values": sorted(_distinct_samples(col)),
+                    "target_class_candidates": list(sibling_subclasses),
+                    "requires_human_confirmation": True,
+                    "rationale": (
+                        f"Low-cardinality discriminator '{col.get('name', '')}' with "
+                        f"{len(sibling_subclasses)} sibling subclass(es) available"
+                    ),
+                })
+                break  # one split signal per table is enough
+
+    # dedup_candidate — an id-like natural key column + >=1 ordering column.
+    id_cols = [
+        c.get("name", "") for c in columns
+        if str(c.get("name", "") or "").lower().endswith("id")
+    ]
+    ordering_cols = [
+        c.get("name", "") for c in columns
+        if _normalize_logical_type(c.get("data_type", "")) in ("date", "datetime")
+        or any(tok in str(c.get("name", "") or "").lower() for tok in _ORDERING_TOKENS)
+    ]
+    if id_cols and ordering_cols:
+        hints.append({
+            "type": "dedup_candidate",
+            "source_table": table_name,
+            "natural_key_column": id_cols[0],
+            "ordering_column_candidates": ordering_cols,
+            "requires_human_confirmation": True,
+            "rationale": (
+                "Natural-key-like column with ordering column(s); confirm whether "
+                "deduplication / latest-record selection is required"
+            ),
+        })
+
+    # multi_target_candidate — column name matches properties in >=2 classes.
+    prop_owners: dict[str, set[str]] = {}
+    for cls in ref_classes:
+        for p in cls.get("properties", []):
+            pname = str(p.get("name", "") or "").lower()
+            if pname:
+                prop_owners.setdefault(pname, set()).add(cls.get("name", ""))
+    for col in columns:
+        cname = str(col.get("name", "") or "").lower()
+        owners = prop_owners.get(cname, set())
+        if len(owners) >= 2:
+            hints.append({
+                "type": "multi_target_candidate",
+                "source_table": table_name,
+                "source_column": col.get("name", ""),
+                "target_class_candidates": sorted(owners),
+                "requires_human_confirmation": True,
+                "rationale": (
+                    f"Column '{col.get('name', '')}' matches a property in "
+                    f"{len(owners)} reference classes; confirm intended target(s)"
+                ),
+            })
+
+    return hints
+
+
+def _build_property_range_index(
+    ref_classes: list[dict[str, Any]],
+) -> dict[tuple[str | None, str], str]:
+    """Index (class, property) → range, with a (None, property) name fallback."""
+    idx: dict[tuple[str | None, str], str] = {}
+    for cls in ref_classes:
+        cls_name = cls.get("name", "")
+        for p in cls.get("properties", []):
+            pname = p.get("name", "")
+            rng = p.get("range", "") or ""
+            idx[(cls_name, pname)] = rng
+            idx.setdefault((None, pname), rng)
+        for spec in cls.get("specializations", []):
+            for p in spec.get("properties", []):
+                pname = p.get("name", "")
+                if pname:
+                    idx.setdefault((None, pname), p.get("range", "") or "")
+    return idx
+
+
+def _lookup_property_range(
+    idx: dict[tuple[str | None, str], str],
+    ref_class: str,
+    ref_property: str,
+) -> str:
+    """Resolve a property range by (class, property) then by property name."""
+    if (ref_class, ref_property) in idx:
+        return idx[(ref_class, ref_property)]
+    return idx.get((None, ref_property), "")
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -440,6 +709,7 @@ def run_propose_alignment(
     model: str = DEFAULT_MODEL,
     domains_filter: list[str] | None = None,
     report=None,
+    include_mapping_hints: bool = False,
 ) -> list[Path]:
     """Run alignment for all domains found in affinity reports.
 
@@ -451,6 +721,10 @@ def run_propose_alignment(
         model: LLM model name.
         domains_filter: Optional list of domain ids to include.
         report: Progress reporter callable.
+        include_mapping_hints: DD-045 — when True, enrich each column with a
+            deterministic transform hint and each table with structural hints.
+            Default output (False) is unchanged, preserving the design-domain
+            pre-modeling contract.
 
     Returns list of written output file paths.
     """
@@ -519,6 +793,11 @@ def run_propose_alignment(
         else:
             report(f"     ⚠ No reference model resolved for {domain_uris}")
 
+        # DD-045: property-range index for deterministic transform hints
+        range_index = (
+            _build_property_range_index(ref_classes) if include_mapping_hints else {}
+        )
+
         alignment = DomainAlignment(
             domain=domain_id,
             domain_uris=domain_uris,
@@ -555,15 +834,33 @@ def run_propose_alignment(
                         "rationale": ca.get("rationale", ""),
                     })
                 else:
-                    col_alignments.append(ColumnAlignment(
+                    ref_class_name = ca.get("ref_class", result.get("ref_class", ""))
+                    col_obj = next(
+                        (c for c in columns if c["name"] == ca["column"]), None
+                    )
+                    column_alignment = ColumnAlignment(
                         column=ca["column"],
                         data_type=col_data_type,
-                        ref_class=ca.get("ref_class", result.get("ref_class", "")),
+                        ref_class=ref_class_name,
                         ref_property=ca["ref_property"],
                         alignment=ca["alignment"],
                         confidence=ca["confidence"],
                         rationale=ca.get("rationale", ""),
-                    ))
+                    )
+                    if include_mapping_hints and col_obj is not None:
+                        prop_range = _lookup_property_range(
+                            range_index, ref_class_name, ca["ref_property"]
+                        )
+                        hint = _transform_hint(
+                            col_obj, ca["ref_property"], prop_range
+                        )
+                        column_alignment.transform_hint = hint["transform_hint"]
+                        column_alignment.transform_confidence = hint["transform_confidence"]
+                        column_alignment.requires_human_confirmation = (
+                            hint["requires_human_confirmation"]
+                        )
+                        column_alignment.transform_rationale = hint["transform_rationale"]
+                    col_alignments.append(column_alignment)
 
             ta = TableAlignment(
                 system=system,
@@ -573,6 +870,10 @@ def run_propose_alignment(
                 columns=col_alignments,
                 custom_columns=custom_cols,
             )
+            if include_mapping_hints:
+                ta.structural_hints = _detect_structural_hints(
+                    table, columns, ref_classes
+                )
             alignment.tables.append(ta)
 
             matched = len(col_alignments)
@@ -689,7 +990,7 @@ def write_alignment_output(alignment: DomainAlignment, output_dir: Path) -> Path
             "custom_columns": ta.custom_columns,
         }
         for ca in ta.columns:
-            table_dict["columns"].append({
+            col_dict: dict[str, Any] = {
                 "column": ca.column,
                 "data_type": ca.data_type,
                 "ref_class": ca.ref_class,
@@ -697,7 +998,17 @@ def write_alignment_output(alignment: DomainAlignment, output_dir: Path) -> Path
                 "alignment": ca.alignment,
                 "confidence": ca.confidence,
                 "rationale": ca.rationale,
-            })
+            }
+            # DD-045: emit hint fields only when populated (default unchanged)
+            if ca.transform_hint is not None:
+                col_dict["transform_hint"] = ca.transform_hint
+                col_dict["transform_confidence"] = ca.transform_confidence
+                col_dict["requires_human_confirmation"] = ca.requires_human_confirmation
+                col_dict["transform_rationale"] = ca.transform_rationale
+            table_dict["columns"].append(col_dict)
+        # DD-045: emit structural hints only when present (default unchanged)
+        if ta.structural_hints:
+            table_dict["structural_hints"] = ta.structural_hints
         data["tables"].append(table_dict)
 
     output_file = output_dir / f"{alignment.domain}-alignment.yaml"

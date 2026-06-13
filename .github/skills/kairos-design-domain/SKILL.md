@@ -553,6 +553,29 @@ After identifying the target domain from the affinity report, resolve the
 `domain_uris` to their local reference model TTL files via the OASIS XML catalog
 and **read those TTLs** to extract the reference model vocabulary into your context.
 
+> **🚦 Pre-flight gate (DD-047) — run BEFORE building the inventory.** Execute:
+> ```bash
+> kairos-ontology check-inventory
+> ```
+> This deterministically verifies that `model/inventory/*-inventory.yaml` exists
+> for every source TTL **and** is up to date (the stored `source_sha256` matches
+> the current file). **If the command exits non-zero (missing or stale), STOP** —
+> do not propose any class or property. Run `kairos-ontology generate-inventory`,
+> commit the refreshed inventory, then re-run `check-inventory` until it passes.
+> Only continue past this point when the check is green. This guarantees the
+> specialization tree you reason over below reflects the current reference models.
+
+> **Prefer materialized inventories (DD-046 / DD-044).** Once the pre-flight gate
+> is green, read `model/inventory/*.yaml` **first** — they already unpack the full
+> **specialization tree** (subclasses of each reference class) and the
+> **subclass-specific properties** (e.g. `registrationNumber` on `Organisation`, a
+> subclass of `Party`). Raw TTL reading (below) only surfaces properties whose
+> `rdfs:domain` points *directly* at a class, so a parent class like `Party` would
+> appear to have none of its subclasses' properties — risking a modeler re-creating
+> a local class/property that already exists on a subclass. Use the raw TTL steps
+> below only as a fallback when no inventory exists **and** the pre-flight gate was
+> run in `--warn-only` mode by an operator who accepts the degraded view.
+
 1. **Resolve URIs via the catalog chain:**
    ```bash
    # The hub catalog chains to the reference-models catalog
@@ -575,18 +598,24 @@ and **read those TTLs** to extract the reference model vocabulary into your cont
 3. **Extract the reference model vocabulary:**
    From the TTL, build a **Reference Model Class Inventory** listing all
    `owl:Class` subjects with their `rdfs:label`, `rdfs:comment`, and declared
-   properties (`rdfs:domain` pointing to the class):
+   properties (`rdfs:domain` pointing to the class). **Include each class's
+   specialization subclasses and their subclass-specific properties** (from the
+   materialized inventory, DD-046) as nested rows — these are the most commonly
+   missed reuse opportunities:
 
    > "**Reference Model Class Inventory** (from `bsp/commercial`):
    >
    > | # | Class URI | Label | Properties | Comment |
    > |---|-----------|-------|------------|---------|
    > | 1 | `bsp:SalesContract` | Sales Contract | `contractIdentifier`, `effectiveDate`, `expiryDate` | A commercial agreement… |
+   > | 1.1 | ↳ `bsp:FramedContract` _(subclass)_ | Framed Contract | `frameworkReference` | Specialization of SalesContract… |
    > | 2 | `bsp:TradeTerms` | Trade Terms | `incoterm`, `paymentTerms` | Terms governing a transaction… |
    > | … | … | … | … | … |
    >
-   > These classes are already available via `owl:imports` — **do NOT recreate
-   > them as local classes.** Use them directly or subclass them."
+   > These classes **and their subclasses** are already available via
+   > `owl:imports` — **do NOT recreate them as local classes, and do NOT redefine
+   > a property that already exists on a subclass.** Use them directly or subclass
+   > them."
 
 **Why this matters:** Without this inventory in your context, you will rely on
 naming heuristics and risk creating custom classes (`Client`, `Agreement`) when
@@ -1250,10 +1279,13 @@ for this domain:
 > | # | Ref Class | Label | Source Tables Feeding It | Coverage |
 > |---|-----------|-------|--------------------------|----------|
 > | 1 | `bsp:SalesContract` | Sales Contract | `tblContracts` (Admin) | 3/5 props matched |
+> | 1.1 | ↳ `bsp:FramedContract` _(subclass)_ | Framed Contract | _(none)_ | subclass already defined |
 > | 2 | `bsp:TradeTerms` | Trade Terms | _(none)_ | 0/3 — no source data |
 >
-> These classes are **already imported** and should be used directly (or
-> subclassed) rather than creating new local classes with similar names."
+> These classes **and their subclasses** are **already imported** and should be
+> used directly (or subclassed) rather than creating new local classes with
+> similar names. **Check the subclass rows too** — an existing specialization may
+> already model the concept you are about to create locally."
 
 **Only propose a NEW local class when ALL of these conditions are met:**
 1. No reference model class covers this concept (check the inventory)
@@ -1449,6 +1481,16 @@ parent chain:
 > | 3 | `ref:contactEmail` | `ref:Party` | `xsd:string` | Primary contact email address |
 > | … | … | … | … | … |
 
+> **Also list properties defined on existing SUBCLASSES of the parent (DD-046).**
+> Use the specialization tree from the materialized inventory (Step 0c.1b), not
+> just the direct `rdfs:domain` chain. A property such as `ref:registrationNumber`
+> defined on `ref:Organisation` (a subclass of `ref:Party`) is easy to miss with
+> raw TTL reading and is a common source of accidental local duplication:
+>
+> | # | Property | Defined on (subclass) | Range | Reuse instead of creating local? |
+> |---|----------|-----------------------|-------|----------------------------------|
+> | 1 | `ref:registrationNumber` | `ref:Organisation` ⊂ `ref:Party` | `xsd:string` | ✅ subclass `ref:Organisation` and reuse |
+
 **Step 2b — List all named individuals (enumerations) from imports:**
 
 If the reference model defines named individuals (e.g., status values,
@@ -1498,6 +1540,9 @@ property, use `rdfs:subPropertyOf` instead of creating an unrelated property:
 
 **Rules:**
 - If an inherited property covers the same semantic meaning, default to REUSE.
+- **If a property defined on an existing subclass (specialization) covers the
+  concept, subclass that class and reuse the property — do NOT create a local
+  duplicate (DD-046).**
 - Only create a new property if the user explicitly confirms it has **different
   semantics** from all inherited properties (e.g., different cardinality,
   different business context, or more specific meaning).
