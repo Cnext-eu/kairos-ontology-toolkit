@@ -184,6 +184,7 @@ company facts or glossary terms.
        category: documentation               # domain / category bucket
        company_specific: true                # true = company-specific, false = generic
        linked_iri: null                      # optional; resolved in Phase 2
+       link_relation: seeAlso                # optional; seeAlso (default) | relatedMatch
    notes: ...
    status: processed                         # processed | partial | skipped
    ```
@@ -236,8 +237,23 @@ company facts or glossary terms.
    3. **Truly novel** — only when there is **no** hub *and* **no** ref-model match,
       record the term **without** an IRI and flag it for **kairos-design-domain**.
       Never invent an IRI.
-4. Write confirmed entries to `ontology-hub/businessdiscovery/{company}-glossary.ttl`
-   using `rdflib` patterns (never modify the domain `.ttl` — Gate 4):
+4. Once entries are confirmed, **record the resolved `linked_iri`** (and, for a
+   reference-model cross-reference, `link_relation: relatedMatch`) back into the
+   per-document `_extractions/*.extraction.yaml` files, then **build the glossary
+   deterministically** — never hand-write a one-off `rdflib` script (DD-063):
+
+```bash
+kairos-ontology build-glossary
+# reads businessdiscovery/_extractions/*.extraction.yaml
+# writes businessdiscovery/{company}-glossary.ttl  (SKOS overlay — domain .ttl untouched)
+#   --company-specific-only   only include terms flagged company_specific
+#   --company-domain / --glossary-namespace / --output   override auto-detection
+```
+
+   The command aggregates `extracted_terms` into deduplicated `skos:Concept`s
+   (grouped by `linked_iri`, else `prefLabel`), collects `skos:altLabel`s, and maps
+   `linked_iri` → `rdfs:seeAlso` (or `skos:relatedMatch`). Auto-detected company
+   namespace is `https://{company-domain}/glossary#`. The produced TTL looks like:
 
 ```turtle
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
@@ -255,7 +271,8 @@ glossary:TransportDocument a skos:Concept ;
     rdfs:seeAlso <https://{company}.com/ont/logistics#TransportDocument> .
 ```
 
-   Start from `businessdiscovery/glossary-template.ttl` (installed by the scaffold).
+   `businessdiscovery/glossary-template.ttl` (installed by the scaffold) shows a
+   worked example of the same shape.
 
 ### Phase 3 — Persist & handoff
 
@@ -290,9 +307,11 @@ the next domain), do **continue**, not start-fresh:
 2. **Re-materialize** (Phase 1a) — regenerate `referencemodels-unpacked/*.yaml` so newly
    modeled hub classes appear in the breadth map.
 3. **Re-link flagged terms** — for each entry under **"Terms flagged for domain
-   modeling"** whose class now exists in `model/ontologies/`, update its glossary
-   `rdfs:seeAlso` from the reference-model IRI (or "needs domain class") to the new
-   **hub IRI**, and clear the flag. Use `rdflib` (Gate 4 — glossary only).
+   modeling"** whose class now exists in `model/ontologies/`, update its resolved
+   `linked_iri` in the per-document `_extractions/*.extraction.yaml` from the
+   reference-model IRI (or "needs domain class") to the new **hub IRI**, and clear
+   the flag. Then regenerate the glossary with `kairos-ontology build-glossary`
+   (deterministic; Gate 4 — glossary overlay only).
 4. **Append new terms** — capture any terminology discovered since the last run (from
    newly processed extractions), resolving IRIs with the same hub → ref-model → flag
    priority (Phase 2 step 3).
@@ -364,7 +383,9 @@ Auto-save after each confirmed decision.
   the term for kairos-design-domain instead of inventing one.
 - Do NOT scope discovery to the first domain — capture the company's full breadth
   (see Phase 1), including terms whose domain isn't modeled yet.
-- Do NOT write glossary TTL by string concatenation — use `rdflib`.
+- Do NOT write glossary TTL by string concatenation **or a hand-written one-off
+  `rdflib` script** — run `kairos-ontology build-glossary` (DD-063), which
+  serializes deterministically from the confirmed extractions.
 - Do NOT commit secrets or PII from imported artifacts.
 
 ---
