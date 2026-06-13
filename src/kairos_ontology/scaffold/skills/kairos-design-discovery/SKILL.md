@@ -81,6 +81,7 @@ company facts or glossary terms.
 | Source | Location | Notes |
 |--------|----------|-------|
 | Raw artifacts (notes, decks, PPT/PDF) | **`.import/businessdiscovery/`** at the **repo root** | User drops these in; read them first |
+| **Per-document extractions** | **`ontology-hub/businessdiscovery/_extractions/*.extraction.yaml`** | **One file per processed document — provenance + `source_sha256` for incremental reruns (DD-060)** |
 | Public web research | web search / fetch | Mark findings `[INFERRED — public web]` until confirmed |
 | Hub README | `ontology-hub/README.md` | Company name + domain context |
 | **Reference-model inventories** | **`ontology-hub/referencemodels-unpacked/*.yaml`** | **Materialized in Phase 1a — read-only view of the *full* domain breadth used to link glossary terms** |
@@ -153,19 +154,60 @@ company facts or glossary terms.
 > the company might touch. Capturing out-of-scope-for-now context here is what
 > prevents losing information when later domains are modeled.
 
-1. **Read the artifacts** in `.import/businessdiscovery/` (repo root). Summarise
-   each briefly.
-2. **Read** `ontology-hub/README.md` for the company name and stated context.
-3. **Research** the company on the public web (only if the user agrees). Capture
+1. **Scan the artifacts incrementally.** Run the deterministic status helper to see
+   which documents in `.import/businessdiscovery/` are new, changed, or already
+   processed (DD-060):
+   ```bash
+   kairos-ontology discovery-status
+   ```
+   - **New** (unprocessed) and **changed** documents → process them this run.
+   - **Up to date** documents → **skip** re-reading; their extraction file already
+     captures what was pulled. (On a full re-review the user can ask you to reprocess.)
+2. **Process each new/changed document** and write **one extraction file per document**
+   to `ontology-hub/businessdiscovery/_extractions/{slug}.extraction.yaml`
+   (`{slug}` = slugified source filename incl. extension, e.g. `abbreviations-pdf`).
+   This records **what was extracted from which document** so provenance travels with
+   the hub and later reruns stay incremental. Each file follows this schema:
+   ```yaml
+   version: "1.0"
+   source_file: Abbreviations.pdf
+   source_path: .import/businessdiscovery/Abbreviations.pdf
+   source_sha256: <hash printed/verified by discovery-status>
+   processed_at: 2026-01-01T00:00:00+00:00
+   strategy: company-terminology-v1          # versioned extractor/strategy label
+   summary: >-
+     One-paragraph summary of the document and what was pulled from it.
+   extracted_terms:
+     - altLabel: HBL
+       prefLabel: Transport Document
+       definition: ...
+       category: documentation               # domain / category bucket
+       company_specific: true                # true = company-specific, false = generic
+       linked_iri: null                      # optional; resolved in Phase 2
+   notes: ...
+   status: processed                         # processed | partial | skipped
+   ```
+   > **Worked example (generic strategy):** for a terminology-extraction pass, pull the
+   > full text from each document and keep only **company-specific** terms — internal
+   > system/app names, proprietary identifiers, route/vessel codes, and industry terms
+   > the company uses with a *different* meaning — and filter out generic industry
+   > jargon (`company_specific: false`). A `Domain`/category column in the source (if
+   > present) helps bucket terms. The schema is generic: adapt `strategy` and
+   > `extracted_terms` to whatever the discovery focus is.
+   >
+   > After writing the files, you may re-run `kairos-ontology discovery-status` to
+   > confirm every processed document now shows **up to date**.
+3. **Read** `ontology-hub/README.md` for the company name and stated context.
+4. **Research** the company on the public web (only if the user agrees). Capture
    the **full** business, breadth-first:
    - What the company does (core activity, sector)
    - Business model (how they make money)
    - Offerings / products / services — **all** lines, not only the first domain's
    - Key operational processes and the entities involved
    - Sector specifics (e.g. freight forwarder vs carrier vs 3PL)
-4. Present a **Company Context Proposal** and ask the user to confirm/correct each
+5. Present a **Company Context Proposal** and ask the user to confirm/correct each
    point. Tag every web-sourced claim `[INFERRED — public web]` (Gate 2).
-5. Save confirmed context to the session file — **including** terms and areas that
+6. Save confirmed context to the session file — **including** terms and areas that
    are out of scope for the current domain but will matter for later ones.
 
 ### Phase 2 — Terminology capture (the glossary)
@@ -223,6 +265,8 @@ glossary:TransportDocument a skos:Concept ;
    > "Business discovery is captured.
    > - Company context → `.sessions-design/businessdiscovery-{date}.md`
    > - Glossary → `businessdiscovery/{company}-glossary.ttl`
+   > - Per-document provenance → `businessdiscovery/_extractions/*.extraction.yaml`
+   >   (run `kairos-ontology discovery-status` any time to see what's new/changed)
    >
    > Next: design the bronze vocabulary with **kairos-design-source**, then model
    > the domain with **kairos-design-domain** (it will read this context). The
@@ -238,15 +282,21 @@ glossary:TransportDocument a skos:Concept ;
 Discovery is **idempotent and incremental**. On any rerun (typically before modeling
 the next domain), do **continue**, not start-fresh:
 
-1. **Re-materialize** (Phase 1a) — regenerate `referencemodels-unpacked/*.yaml` so newly
+1. **Re-scan documents** — run `kairos-ontology discovery-status`. Process **only** the
+   documents it flags as **new** or **changed**, writing/refreshing their
+   `_extractions/{slug}.extraction.yaml`. Leave **up-to-date** documents untouched
+   (their extraction already records what was pulled). This is what makes reruns cheap:
+   added artifacts are detected by hash, not by re-reading everything.
+2. **Re-materialize** (Phase 1a) — regenerate `referencemodels-unpacked/*.yaml` so newly
    modeled hub classes appear in the breadth map.
-2. **Re-link flagged terms** — for each entry under **"Terms flagged for domain
+3. **Re-link flagged terms** — for each entry under **"Terms flagged for domain
    modeling"** whose class now exists in `model/ontologies/`, update its glossary
    `rdfs:seeAlso` from the reference-model IRI (or "needs domain class") to the new
    **hub IRI**, and clear the flag. Use `rdflib` (Gate 4 — glossary only).
-3. **Append new terms** — capture any terminology discovered since the last run,
-   resolving IRIs with the same hub → ref-model → flag priority (Phase 2 step 3).
-4. **Update the session file** — bump `Last updated`, keep `Status` accurate, and
+4. **Append new terms** — capture any terminology discovered since the last run (from
+   newly processed extractions), resolving IRIs with the same hub → ref-model → flag
+   priority (Phase 2 step 3).
+5. **Update the session file** — bump `Last updated`, keep `Status` accurate, and
    record what changed this run.
 
 > This is what guarantees no information is lost across domains: terms are captured

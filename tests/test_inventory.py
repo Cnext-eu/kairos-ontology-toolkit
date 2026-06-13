@@ -77,6 +77,19 @@ class TestGenerateInventory:
         party_cls = next(c for c in inv["classes"] if c["name"] == "Party")
         assert "specializations" not in party_cls
 
+    def test_class_includes_uri(self, tmp_path):
+        ref_file = tmp_path / "party.ttl"
+        ref_file.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+
+        inv = generate_inventory(ref_file)
+
+        party_cls = next(c for c in inv["classes"] if c["name"] == "Party")
+        assert party_cls["uri"] == "https://kairos.cnext.eu/ref/party#Party"
+        # Every class carries its canonical IRI (no reconstruction needed).
+        assert all(c.get("uri") for c in inv["classes"])
+        org_cls = next(c for c in inv["classes"] if c["name"] == "Organisation")
+        assert org_cls["uri"] == "https://kairos.cnext.eu/ref/party#Organisation"
+
 
 class TestWriteAndLoadInventory:
 
@@ -94,6 +107,8 @@ class TestWriteAndLoadInventory:
         assert loaded["version"] == INVENTORY_VERSION
         assert loaded["domain_name"] == "Party"
         assert len(loaded["classes"]) == len(inv["classes"])
+        loaded_party = next(c for c in loaded["classes"] if c["name"] == "Party")
+        assert loaded_party["uri"] == "https://kairos.cnext.eu/ref/party#Party"
 
     def test_creates_parent_dirs(self, tmp_path):
         ref_file = tmp_path / "party.ttl"

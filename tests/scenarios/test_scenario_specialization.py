@@ -21,7 +21,12 @@ from kairos_ontology.coverage_report import (
     align_classes_deterministic,
     parse_domain_ontology,
 )
-from kairos_ontology.inventory import generate_inventory, load_inventory, write_inventory
+from kairos_ontology.inventory import (
+    INVENTORY_VERSION,
+    generate_inventory,
+    load_inventory,
+    write_inventory,
+)
 from kairos_ontology.propose_alignment import _format_ref_inventory
 
 REF_MODELS_DIR = Path(__file__).parent / "acme-hub" / "model" / "reference-models"
@@ -97,7 +102,7 @@ class TestInventorySpecializations:
         ref_path = REF_MODELS_DIR / "kairos-ref-party.ttl"
         inventory = generate_inventory(ref_path, include_specializations=True)
 
-        assert inventory["version"] == "1.0"
+        assert inventory["version"] == INVENTORY_VERSION
         assert inventory["domain_name"] == "Party"
 
         # Write and reload

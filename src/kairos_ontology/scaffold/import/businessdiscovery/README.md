@@ -28,6 +28,20 @@ company operates before any modeling or mapping begins.
 3. The glossary then helps **kairos-design-mapping** match source columns to
    domain properties.
 
+## Per-document extraction tracking
+
+Every document dropped here is processed **once** and recorded as a per-document
+extraction file under `ontology-hub/businessdiscovery/_extractions/`
+(`{slug}.extraction.yaml`). Each extraction stores the document's `source_sha256`,
+a summary, and the extracted terms — so you always know **what was extracted from
+which document**.
+
+Run `kairos-ontology discovery-status` to see which documents are **new**,
+**changed**, or already **up to date**. When you add more files later, only the
+new or changed ones need reprocessing (the discovery skill uses this signal to stay
+incremental).
+
+
 ## ⚠️ Sensitive content
 
 These files may contain confidential business information. Keep the hub repository

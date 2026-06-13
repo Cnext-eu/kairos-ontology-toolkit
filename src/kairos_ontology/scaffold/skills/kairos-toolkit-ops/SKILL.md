@@ -203,6 +203,15 @@ This will:
    `uv run` so skills/instructions are stamped against the *new* toolkit (no
    manual second `update` needed). (DD-049)
 
+> **Windows (DD-057):** the running `kairos-ontology.exe` locks its own
+> executable, so it cannot `uv sync` to the new version in-process. On Windows
+> `--upgrade` instead schedules a **detached** helper that waits for the current
+> process to exit, then runs `uv sync` + `kairos-ontology update` automatically.
+> The refresh opens in a new console window moments after the command returns and
+> writes a transcript to `.kairos/upgrade-refresh.log`. No manual second step is
+> needed; if you ever see a "could not schedule" message, just run
+> `uv run kairos-ontology update` in a fresh shell.
+
 > **Always run via `uv run`.** Invoking `python -m kairos_ontology` or a
 > globally-installed `kairos-ontology` may use a different (often older) toolkit
 > than the version pinned in this hub. The CLI now warns when the running version
