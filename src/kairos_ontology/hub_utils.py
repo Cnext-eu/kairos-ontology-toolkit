@@ -12,6 +12,70 @@ logger = logging.getLogger(__name__)
 # Directories that a scaffolded ontology-hub should contain.
 _HUB_MARKER_DIRS = ("model", "integration", "output")
 
+# Managed-file marker stamped into toolkit-managed files (.github/...).
+_MANAGED_MARKER = "kairos-ontology-toolkit:managed"
+
+
+def _is_managed_root(directory: Path) -> bool:
+    """Return True when *directory* is a toolkit-managed hub/dataplatform root.
+
+    A managed root is the directory that holds the toolkit pin and/or the
+    toolkit-managed ``.github/`` files — i.e. the place ``update`` must operate
+    on.  It is detected by any of these positive anchors:
+
+    1. ``pyproject.toml`` referencing ``kairos-ontology-toolkit`` or a
+       ``[tool.kairos]`` section (the toolkit pin — strongest signal).
+    2. ``.github/copilot-instructions.md`` carrying the managed marker.
+    3. A dataplatform root: ``dbt_project.yml`` **and** a managed ``.github/``.
+    """
+    pyproject = directory / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            content = pyproject.read_text(encoding="utf-8")
+        except OSError:
+            content = ""
+        if "kairos-ontology-toolkit" in content or "[tool.kairos]" in content:
+            return True
+
+    instructions = directory / ".github" / "copilot-instructions.md"
+    if instructions.is_file():
+        try:
+            if _MANAGED_MARKER in instructions.read_text(encoding="utf-8"):
+                return True
+        except OSError:
+            pass
+
+    if (directory / "dbt_project.yml").is_file() and (directory / ".github").is_dir():
+        return True
+
+    return False
+
+
+def find_managed_root(cwd: Path | None = None) -> Path | None:
+    """Walk **up** from *cwd* to find the toolkit-managed root directory.
+
+    Unlike :func:`find_hub_root` (which only inspects ``cwd`` and
+    ``cwd/ontology-hub`` for *content* layout), this resolver searches the
+    ancestor chain for the directory that owns the toolkit pin / managed
+    ``.github/`` files.  This is the directory the ``update`` command must
+    operate on, so running ``update`` from a content subdirectory re-roots to
+    the real hub instead of scaffolding a second one.
+
+    Args:
+        cwd: Starting directory.  Defaults to ``Path.cwd()``.
+
+    Returns:
+        The managed root path, or ``None`` if no ancestor qualifies.
+    """
+    if cwd is None:
+        cwd = Path.cwd()
+    cwd = cwd.resolve()
+
+    for directory in [cwd, *cwd.parents]:
+        if _is_managed_root(directory):
+            return directory
+    return None
+
 
 def find_hub_root(
     cwd: Path | None = None,

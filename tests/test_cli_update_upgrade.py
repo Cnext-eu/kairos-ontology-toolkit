@@ -253,3 +253,92 @@ class TestUpdateUpgradeReexec:
         assert ["uv", "run", "kairos-ontology", "update"] not in calls
         # In-process refresh ran (it consulted the managed map).
         mock_scaffold.assert_called()
+
+
+class TestUpdateHubRootResolution:
+    """update must operate on the real managed root, never scaffold a second hub (DD-062)."""
+
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_upgrade_reroots_from_subdirectory(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve,
+        runner, tmp_path, monkeypatch
+    ):
+        """Run from a content subdir → re-roots up and updates the parent's pin."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _make_hub_pyproject(tmp_path)
+        subdir = tmp_path / "ontology-hub" / "model"
+        subdir.mkdir(parents=True)
+        monkeypatch.chdir(subdir)
+
+        with patch("sys.platform", "linux"):
+            result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 0
+        assert "Detected hub root" in result.output
+        # The parent pin was updated; no spurious pyproject in the subdir.
+        assert "v3.9.0-rc.2" in (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+        assert not (subdir / "pyproject.toml").exists()
+
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_upgrade_refuses_when_no_hub(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve,
+        runner, tmp_path, monkeypatch
+    ):
+        """No pin / managed .github anywhere → hard-error, no fabrication."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        workdir = tmp_path / "not-a-hub"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+
+        with patch("sys.platform", "linux"):
+            result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 1
+        assert "No ontology hub found" in result.output
+        assert not (workdir / "pyproject.toml").exists()
+
+    @patch("subprocess.run")
+    def test_plain_update_still_works_in_subdir(
+        self, mock_run, runner, tmp_path, monkeypatch
+    ):
+        """Plain refresh from a content subdir re-roots to the parent hub."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _make_hub_pyproject(tmp_path)
+        subdir = tmp_path / "ontology-hub" / "model"
+        subdir.mkdir(parents=True)
+        monkeypatch.chdir(subdir)
+
+        result = runner.invoke(cli, ["update", "--check"])
+
+        assert "Detected hub root" in result.output
+        # No spurious .github created in the content subdir.
+        assert not (subdir / ".github").exists()
+
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_legacy_hub_fabricates_pyproject(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve,
+        runner, tmp_path, monkeypatch
+    ):
+        """A legacy managed hub (managed .github, no pyproject) still gets one."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        gh = tmp_path / ".github"
+        gh.mkdir()
+        (gh / "copilot-instructions.md").write_text(
+            "<!-- kairos-ontology-toolkit:managed v1.0.0 -->\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with patch("sys.platform", "linux"):
+            result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 0
+        assert (tmp_path / "pyproject.toml").is_file()

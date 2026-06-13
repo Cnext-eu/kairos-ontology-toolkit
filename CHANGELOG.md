@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.2] — 2026-06-13
+
+### Fixed
+- **`update`/`--upgrade` no longer scaffolds a second hub from a subdirectory (DD-062).**
+  The command now resolves the hub via an upward-walking `find_managed_root()`
+  (anchored on the `[tool.kairos]` / toolkit pin or the managed
+  `.github/copilot-instructions.md` marker) and auto-re-roots to it with a notice,
+  instead of trusting `Path.cwd()`. Running it inside a content subdirectory (e.g.
+  `ontology-hub/`) now updates the real repo-root hub. Fabricating a `pyproject.toml`
+  is restricted to positively-detected (legacy) hubs; in a non-hub directory the
+  command now hard-errors with guidance instead of manufacturing a spurious hub.
+
+
 ## [3.15.1] — 2026-06-13
 
 ### Added
