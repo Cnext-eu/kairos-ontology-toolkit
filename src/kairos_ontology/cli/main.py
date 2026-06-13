@@ -381,6 +381,60 @@ def _copy_managed(src: Path, dst: Path) -> None:
     dst.write_text(content, encoding="utf-8")
 
 
+def _schedule_windows_refresh(check: bool) -> bool:
+    """Schedule a detached managed-file refresh that runs after THIS process exits.
+
+    On Windows the currently-running ``kairos-ontology.exe`` holds a lock on its own
+    executable, so an in-process (or synchronously re-exec'd) ``uv sync`` cannot replace
+    it with the newly-pinned version — the refresh would fail with a file-lock error.
+
+    To work around this we spawn a fully detached PowerShell process that:
+
+    1. Waits for the current parent PID to terminate (releasing the ``.exe`` lock),
+    2. Runs ``uv sync`` to install the new version, then
+    3. Runs ``uv run kairos-ontology update`` (with ``--check`` if requested) to refresh
+       the managed files under the new version.
+
+    Output is mirrored to a transcript log so the result is durable after the spawned
+    console window closes.  Returns ``True`` if the helper was scheduled, ``False`` on
+    failure (callers fall back to printing manual guidance).
+    """
+    pid = os.getpid()
+    update_cmd = "uv run kairos-ontology update"
+    if check:
+        update_cmd += " --check"
+
+    log_dir = Path.cwd() / ".kairos"
+    log_path = log_dir / "upgrade-refresh.log"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    ps_script = (
+        f"Wait-Process -Id {pid} -ErrorAction SilentlyContinue; "
+        f"Start-Sleep -Milliseconds 750; "
+        f"try {{ Start-Transcript -Path '{log_path}' -Force | Out-Null }} catch {{}} ; "
+        f"Write-Host 'Refreshing managed files under the upgraded toolkit...'; "
+        f"uv sync; "
+        f"{update_cmd}; "
+        f"try {{ Stop-Transcript | Out-Null }} catch {{}}"
+    )
+
+    # DETACHED_PROCESS=0x8, CREATE_NEW_CONSOLE=0x10, CREATE_NEW_PROCESS_GROUP=0x200.
+    # A visible console lets the user watch progress; the transcript keeps a record.
+    creationflags = 0x00000010 | 0x00000200
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+            creationflags=creationflags,
+            close_fds=True,
+        )
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def _check_not_inside_git_repo(parent: Path, name: str) -> None:
     """Raise ClickException if *parent* is deeply inside an existing git repo.
 
@@ -619,6 +673,7 @@ def init(domain, company_domain, force):
         hub / "model" / "mappings",
         hub / "referencemodels-unpacked",
         hub / "businessdiscovery",
+        hub / "businessdiscovery" / "_extractions",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -666,6 +721,7 @@ def init(domain, company_domain, force):
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
         "businessdiscovery": "businessdiscovery",
+        "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/sources": "integration/sources",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
@@ -1960,6 +2016,89 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, war
         click.echo("\n✅ Inventories are present and up to date.")
 
 
+@cli.command(name='discovery-status')
+@click.option('--import-dir', type=click.Path(), default=None,
+              help='Path to .import/businessdiscovery/ (default: auto-detect from hub).')
+@click.option('--extraction-dir', type=click.Path(), default=None,
+              help='Path to businessdiscovery/_extractions/ (default: auto-detect from hub).')
+@click.option('--strict', is_flag=True, default=False,
+              help='Exit non-zero when documents are new (unprocessed) or changed.')
+@click.option('--warn-only', is_flag=True, default=False,
+              help='Report status but always exit 0 (never block).')
+def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
+    """Report which business-discovery documents are unprocessed or changed (DD-060).
+
+    Deterministic, AI-free helper for the ``design-discovery`` skill: scans the raw
+    artifacts in ``.import/businessdiscovery/`` and compares each against its
+    per-document extraction file under ``businessdiscovery/_extractions/`` using the
+    stored ``source_sha256``.  The skill uses this to process only **new** or
+    **changed** documents on a rerun instead of re-reading everything.
+
+    Informational by default (exit 0).  Pass ``--strict`` to exit non-zero when
+    there is work to do (new or changed documents).
+
+    \\b
+    Examples:
+      kairos-ontology discovery-status
+      kairos-ontology discovery-status --strict
+    """
+    from ..discovery_extraction import check_discovery_docs
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+
+    if import_dir:
+        imp_path = Path(import_dir)
+    else:
+        imp_path = cwd / ".import" / "businessdiscovery"
+
+    if extraction_dir:
+        ext_path = Path(extraction_dir)
+    elif hub_root:
+        ext_path = hub_root / "businessdiscovery" / "_extractions"
+    else:
+        ext_path = cwd / "businessdiscovery" / "_extractions"
+
+    report = check_discovery_docs(import_dir=imp_path, extraction_dir=ext_path)
+
+    click.echo("🔎 Checking business-discovery documents")
+    click.echo(f"   Import dir:     {imp_path}")
+    click.echo(f"   Extraction dir: {ext_path}")
+
+    if not imp_path.is_dir():
+        click.echo(
+            "   ⚠ No .import/businessdiscovery/ directory found — nothing to process.")
+        return
+
+    for name in report.ok:
+        click.echo(f"   ✓ {name}: up to date")
+    for name in report.unprocessed:
+        click.echo(f"   ➕ {name}: NEW (not yet processed)")
+    for name in report.changed:
+        click.echo(f"   ♻ {name}: CHANGED since last extraction")
+    for name in report.unverifiable:
+        click.echo(f"   ⚠ {name}: cannot verify freshness (no stored hash — reprocess)")
+    for name in report.orphan:
+        click.echo(f"   ⚠ {name}: orphan extraction (no matching source document)")
+
+    if report.has_work and strict and not warn_only:
+        click.echo(
+            "\n❌ Discovery documents need processing. Run the "
+            "kairos-design-discovery skill to extract new/changed documents.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if report.has_work:
+        n = len(report.unprocessed) + len(report.changed)
+        click.echo(f"\n⚠ {n} document(s) need processing (run kairos-design-discovery).")
+    elif report.has_warnings:
+        click.echo("\n⚠ Discovery documents checked with warnings (not blocking).")
+    else:
+        click.echo("\n✅ All discovery documents are processed and up to date.")
+
+
 @cli.command()
 @click.option("--check", is_flag=True,
               help="Report outdated files without modifying anything (exit 1 on drift).")
@@ -2054,9 +2193,29 @@ def update(check, upgrade):
         # The managed-file refresh below runs in THIS process, which still has the
         # OLD toolkit loaded in memory (_toolkit_version / _SCAFFOLD_DIR are bound
         # to the previously-imported module).  If the version actually changed,
-        # re-exec the refresh in a fresh `uv run` so it uses the NEW version's
-        # scaffold and version stamp, then exit with its status.
+        # refresh under the NEW version's scaffold and version stamp.
         if version != _toolkit_version:
+            if sys.platform == "win32":
+                # The running kairos-ontology.exe locks its own executable, so a
+                # synchronous re-exec (uv sync) here would fail to replace it.
+                # Schedule a detached helper that waits for this process to exit
+                # — releasing the lock — then syncs and refreshes on its own.
+                if _schedule_windows_refresh(check):
+                    log_path = Path.cwd() / ".kairos" / "upgrade-refresh.log"
+                    print(
+                        f"   ↻ Managed-file refresh scheduled — it will run automatically "
+                        f"once this process exits.\n"
+                        f"     Progress opens in a new window; a transcript is written to "
+                        f"{log_path}."
+                    )
+                    raise SystemExit(0)
+                print(
+                    "⚠  Could not schedule the automatic managed-file refresh.\n"
+                    "   Run `uv run kairos-ontology update` in a fresh shell to finish "
+                    "the upgrade."
+                )
+                raise SystemExit(1)
+
             reexec_cmd = ["uv", "run", "kairos-ontology", "update"]
             if check:
                 reexec_cmd.append("--check")
@@ -2512,6 +2671,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "model" / "mappings",
         hub / "referencemodels-unpacked",
         hub / "businessdiscovery",
+        hub / "businessdiscovery" / "_extractions",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
@@ -2559,6 +2719,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
         "businessdiscovery": "businessdiscovery",
+        "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/sources": "integration/sources",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():

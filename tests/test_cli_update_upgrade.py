@@ -38,12 +38,14 @@ def _make_hub_pyproject(tmp_path: Path, version: str = "v3.8.0") -> Path:
 class TestUpdateUpgradeWindows:
     """Tests for the Windows-specific uv sync skip during --upgrade."""
 
+    @patch("kairos_ontology.cli.main.subprocess.Popen")
     @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
     @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
     @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_windows_skips_uv_sync(
-        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_popen,
+        runner, tmp_path
     ):
         """On Windows, uv sync should be skipped after uv lock succeeds."""
         _make_hub_pyproject(tmp_path)
@@ -58,6 +60,86 @@ class TestUpdateUpgradeWindows:
         calls = [c[0][0] for c in mock_run.call_args_list]
         assert ["uv", "lock"] in calls
         assert ["uv", "sync"] not in calls
+
+    @patch("kairos_ontology.cli.main.os.getpid", return_value=4242)
+    @patch("kairos_ontology.cli.main.subprocess.Popen")
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_windows_schedules_detached_refresh(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_popen,
+        mock_getpid, runner, tmp_path
+    ):
+        """On Windows, the refresh is scheduled as a detached helper (not a blocking
+        re-exec), waiting on the parent PID so the .exe lock is released first."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "win32"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 0
+        # The blocking re-exec must NOT have been used on Windows.
+        run_calls = [c[0][0] for c in mock_run.call_args_list]
+        assert ["uv", "run", "kairos-ontology", "update"] not in run_calls
+        # In-process managed refresh must NOT have run (detached helper owns it).
+        mock_scaffold.assert_not_called()
+        # A detached helper was scheduled with the parent PID + sync + refresh.
+        mock_popen.assert_called_once()
+        ps_cmd = mock_popen.call_args[0][0]
+        assert ps_cmd[0] == "powershell"
+        script = ps_cmd[-1]
+        assert "Wait-Process -Id 4242" in script
+        assert "uv sync" in script
+        assert "uv run kairos-ontology update" in script
+        # CREATE_NEW_CONSOLE flag (0x10) is set.
+        assert mock_popen.call_args.kwargs["creationflags"] & 0x00000010
+
+    @patch("kairos_ontology.cli.main.os.getpid", return_value=4242)
+    @patch("kairos_ontology.cli.main.subprocess.Popen")
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_windows_detached_refresh_propagates_check(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_popen,
+        mock_getpid, runner, tmp_path
+    ):
+        """`--upgrade --check` schedules the refresh with `update --check`."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "win32"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade", "--check"])
+
+        assert result.exit_code == 0
+        mock_popen.assert_called_once()
+        script = mock_popen.call_args[0][0][-1]
+        assert "uv run kairos-ontology update --check" in script
+
+    @patch("kairos_ontology.cli.main.subprocess.Popen", side_effect=OSError("boom"))
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_windows_detached_fallback_on_oserror(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_popen,
+        runner, tmp_path
+    ):
+        """If the detached helper cannot be launched, print manual guidance and exit 1."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "win32"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 1
+        assert "uv run kairos-ontology update" in result.output
+        mock_scaffold.assert_not_called()
 
     @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
     @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")

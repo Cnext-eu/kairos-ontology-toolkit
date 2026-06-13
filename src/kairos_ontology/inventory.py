@@ -26,7 +26,7 @@ from .analyse_sources import parse_reference_model
 
 logger = logging.getLogger(__name__)
 
-INVENTORY_VERSION = "1.0"
+INVENTORY_VERSION = "1.1"
 
 
 def compute_source_hash(path: Path) -> str:

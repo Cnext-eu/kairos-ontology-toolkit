@@ -159,10 +159,12 @@ ontology-hub/.sessions-design/
 > 2. **Start fresh** (new session, previous one archived)
 > 3. **Review** the saved session first"
 
-> ⚠️ **On Continue/Review (extension pre-flight):** before resuming, run the
-> **Source-Completeness Checkpoint (P2b)** from
-> [Pre-flight checks](#pre-flight-checks-lifecycle-position--run-first): list the
-> imported/analysed sources and ask whether **additional/other** sources (or new
+> ⚠️ **On Continue/Review (extension pre-flight):** before resuming, run both the
+> **Discovery-Completeness Checkpoint (P1b)** and the **Source-Completeness Checkpoint
+> (P2c)** from
+> [Pre-flight checks](#pre-flight-checks-lifecycle-position--run-first): confirm
+> business-discovery context exists (offer **kairos-design-discovery** if not), then list
+> the imported/analysed sources and ask whether **additional/other** sources (or new
 > ones added since the last session) need importing. If so, route the user back to
 > **kairos-design-source** (import + `analyse-sources`) before continuing, so the
 > Source Evidence Table stays current.
@@ -293,7 +295,39 @@ ls ontology-hub/integration/sources/        # any source systems imported?
 ls ontology-hub/integration/sources/_analysis/ 2>/dev/null   # analysed?
 ls ontology-hub/.sessions-design/modeling-* 2>/dev/null      # prior modeling session(s)?
 ls ontology-hub/model/ontologies/           # existing domain .ttl files?
+ls ontology-hub/businessdiscovery/*.ttl 2>/dev/null                  # discovery artifacts?
+ls ontology-hub/.sessions-design/businessdiscovery-* 2>/dev/null     # discovery session(s)?
 ```
+
+**P1b — Discovery-Completeness Checkpoint (ALWAYS, every start — fires in P2a AND the
+sources-exist branches).** Discovery (`discovery → source → domain → …`, kairos-help §2)
+is the canonical **first** lifecycle step: it captures the company model + business
+glossary that improves naming alignment and flags business terms for modeling. It is
+**not** gated by source state, so check it independently of P2:
+
+```bash
+ls businessdiscovery/*.ttl 2>/dev/null                        # company model / glossary TTL
+ls .sessions-design/businessdiscovery-*.md 2>/dev/null        # discovery session(s)
+```
+
+- **If discovery artifacts are absent** (no `businessdiscovery/*.ttl` and no
+  `businessdiscovery-*.md` session) → **prompt before modeling**:
+
+  > "No business-discovery context found. Discovery (company model + business glossary)
+  > is the canonical first lifecycle step and improves naming alignment across all
+  > domains. Would you like to run **kairos-design-discovery** first? (Recommended —
+  > otherwise I'll proceed with source evidence only; Gate 6 still applies.)"
+
+  If the user accepts → **invoke kairos-design-discovery**, then resume here. If the user
+  declines → record the choice in the session file and continue (this is a recommendation,
+  not a hard block — Gate 6 remains the authoritative constraint).
+- **If discovery artifacts exist** → note them; they are read as background context in
+  Step 2a.
+
+> This checkpoint is **symmetric to the P2c Source-Completeness Checkpoint**: ask once per
+> session start. In **P2a** the discovery offer is already part of the lifecycle hand-off;
+> in **P2b/P2c** (sources already imported) this is the only place discovery is surfaced —
+> do not skip it just because sources exist.
 
 **P2a — No sources (`integration/sources/` empty): AUTO-HAND OFF to lifecycle start.**
 The user is at the **start of the lifecycle**, not at modeling. Do **not** proceed
@@ -313,7 +347,33 @@ then resume modeling once sources are imported + analysed. Only continue straigh
 into modeling if the user explicitly opts for a source-less reference-model sketch
 (Gate 6 still applies).
 
-**P2b — Sources exist: MANDATORY Source-Completeness Checkpoint (ALWAYS, every start).**
+**P2b — Sources imported but NOT analysed (`_analysis/` missing or no
+`*-affinity.yaml`): AUTO-HAND OFF to source analysis.** Source vocabularies exist,
+but the source-domain analysis that grounds modeling has not been run yet. Do **not**
+proceed into class design or the Source Evidence Table — the affinity reports are a
+Gate 6 prerequisite. Detect with:
+
+```bash
+ls integration/sources/_analysis/*-affinity.yaml 2>/dev/null   # empty/error → not analysed
+```
+
+If missing, hand off:
+
+> "Your sources are imported, but the source-domain analysis hasn't run yet
+> (`integration/sources/_analysis/` has no affinity reports). Modeling is data-first
+> and needs that analysis to scope domains and avoid invented classes (Gate 6). I'll
+> run it now via **kairos-design-source** Phase 4, which first does the cheap,
+> AI-free **`generate-inventory`** (unpacking the reference models into
+> `referencemodels-unpacked/`) and then the longer AI **`analyse-sources`** pass.
+> Then I'll return here to model."
+
+**Invoke the kairos-design-source skill (Phase 4)** now — it runs
+`generate-inventory` **first** (deterministic, de-risks the Step 0c.1b / DD-047
+inventory gate), then `analyse-sources`. Resume modeling once `*-affinity.yaml`
+reports exist. Only continue without analysis if the user explicitly opts for a
+source-less reference-model sketch (Gate 6 still applies).
+
+**P2c — Sources imported AND analysed: MANDATORY Source-Completeness Checkpoint (ALWAYS, every start).**
 Whenever `integration/sources/` is non-empty — **first modeling pass OR
 restart/extension** — you MUST pose the completeness question before building the
 Source Evidence Table (Step 0c). Do not skip it just because some sources were
@@ -350,10 +410,13 @@ already imported/analysed.
 2. **Read the hub README** — open `ontology-hub/README.md` and note the company
    name, company domain, namespace base, and the domain model overview table.
    All new ontologies MUST use the namespace pattern documented there.
-2a. **Read business-discovery context (if present)** — check for the latest
+2a. **Read business-discovery context (gate — see P1b)** — by now the **P1b
+   Discovery-Completeness Checkpoint** has already fired (it prompts to run
+   **kairos-design-discovery** when no discovery artifacts exist). Read the latest
    `ontology-hub/.sessions-design/businessdiscovery-*.md` and any
    `ontology-hub/businessdiscovery/*.ttl` produced by the **kairos-design-discovery**
-   skill. Use them as **background context** (what the company does, its sector,
+   skill. If they are **present**, you MUST read them and use them as **background
+   context** (what the company does, its sector,
    and its alternative terminology) to inform naming proposals and to spot terms the
    business flagged for modeling. This is context only — it does **not** relax
    Gate 6: source data (bronze vocab + TMDL) remains the authoritative evidence for
@@ -425,8 +488,10 @@ At the **very start** of any modeling session, ask:
 
 > If `integration/sources/` itself is **empty**, you're at the *start* of the
 > lifecycle, not at modeling — see [Pre-flight checks](#pre-flight-checks-lifecycle-position--run-first)
-> (**P2a**: auto-hand off to **kairos-design-source** first). If sources exist,
-> make sure you've completed the **P2b Source-Completeness Checkpoint** before this
+> (**P2a**: auto-hand off to **kairos-design-source** first). If sources exist but
+> aren't analysed yet (**P2b**), run `generate-inventory` + `analyse-sources` via
+> **kairos-design-source** Phase 4 first. If sources exist and are analysed,
+> make sure you've completed the **P2c Source-Completeness Checkpoint** before this
 > step.
 
 Check for the analysis output:
@@ -437,8 +502,15 @@ ls integration/sources/_analysis/
 
 - If `_analysis/` exists with `*-affinity.yaml` files → proceed.  Read the
   domain contribution reports to understand which reference domains each source contributes to.
-- If `_analysis/` is **missing** → instruct the user to run:
+- If `_analysis/` is **missing** → run the source analysis via **kairos-design-source**
+  Phase 4. Do the cheap, deterministic **`generate-inventory`** (AI-free) **first** so
+  the reference models are unpacked into `referencemodels-unpacked/` (this also de-risks
+  the Step 0c.1b / DD-047 inventory gate), then the AI `analyse-sources` pass:
   ```bash
+  # 1. Unpack reference models (fast, no AI) — de-risks the Step 0c.1b inventory gate
+  kairos-ontology generate-inventory
+
+  # 2. Analyse sources against the accelerator's data domains (AI provider required)
   kairos-ontology analyse-sources \
     --accelerator logistics \
     --sources integration/sources \

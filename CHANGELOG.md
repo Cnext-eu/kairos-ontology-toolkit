@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.0] — 2026-06-13
+
+### Added
+- **Per-document extraction tracking for business discovery (DD-060).** The
+  `kairos-design-discovery` skill now writes one extraction file per processed
+  document to `ontology-hub/businessdiscovery/_extractions/{slug}.extraction.yaml`,
+  recording the document's `source_sha256`, a summary, the extraction strategy, and the
+  extracted terms — so you always know **what was extracted from which document**. A new
+  deterministic, AI-free command `kairos-ontology discovery-status` scans
+  `.import/businessdiscovery/` and reports which documents are **new**, **changed**, or
+  **up to date** (hash-based, mirroring `check-inventory`); `--strict` exits non-zero
+  when there is work to do. Reruns now reprocess only new/changed documents instead of
+  re-reading everything. New hubs get a `businessdiscovery/_extractions/` folder + README
+  via `init`/`new-repo`.
+
+### Changed
+- **Modeling now gates on source analysis and unpacks reference models first
+  (DD-058).** `kairos-design-domain` gains a pre-flight branch (**P2b**) that detects
+  imported-but-unanalysed sources (`integration/sources/_analysis/` has no
+  `*-affinity.yaml`) and auto-hands off to `kairos-design-source` Phase 4 before any
+  class design — closing a gap where "start modeling" could skip the data-first source
+  analysis. `kairos-design-source` Phase 4 now makes `generate-inventory` (+
+  `check-inventory`) a required up-front step run **before** the AI `analyse-sources`
+  pass (cheap/AI-free first), which also de-risks the Step 0c.1b / DD-047 inventory gate.
+  The Source-Completeness Checkpoint is renumbered P2b → **P2c**.
+- **Modeling pre-flight adds a Discovery-Completeness gate (DD-059).**
+  `kairos-design-domain` now checks for business-discovery artifacts
+  (`businessdiscovery/*.ttl`, `.sessions-design/businessdiscovery-*.md`) in a new **P1b**
+  checkpoint that fires **independent of source state** — so a hub with imported sources
+  but no discovery context is now prompted to run `kairos-design-discovery` first
+  (recommended, not hard-blocked). Step 2a is upgraded from "read if present" to an
+  explicit gate. Closes a gap where discovery (the canonical lifecycle start) was only
+  surfaced in the empty-sources branch.
+
+### Fixed
+- **Inventory class entries now include their canonical `uri` (schema 1.1).**
+  `generate-inventory` previously emitted each class with `name`/`label`/`comment`/
+  `properties`/`specializations` but no top-level URI, forcing consumers to reconstruct
+  IRIs from the domain namespace + class name. Each class now carries a `uri` field
+  (matching the `class_uri` already present on specializations). `INVENTORY_VERSION`
+  bumped `1.0` → `1.1`; regenerate inventories with `kairos-ontology generate-inventory`
+  to pick up the field.
+- **Windows `update --upgrade` no longer fails the managed-file refresh with a
+  file-lock error (DD-057).** The running `kairos-ontology.exe` locks its own
+  executable, so the previous synchronous re-exec could not `uv sync` to the new
+  version. The upgrade now schedules a **detached** helper that waits for the current
+  process to exit, then runs `uv sync` + `kairos-ontology update` automatically. A
+  transcript is written to `.kairos/upgrade-refresh.log`. Non-Windows behaviour is
+  unchanged.
+
 ## [3.14.0] — 2026-06-13
 
 ### Changed

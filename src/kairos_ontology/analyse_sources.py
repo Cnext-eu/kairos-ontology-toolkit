@@ -187,6 +187,7 @@ def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None =
             })
 
         cls_dict: dict[str, Any] = {
+            "uri": str(cls_uri),
             "name": cls_name,
             "label": cls_label,
             "comment": cls_comment,

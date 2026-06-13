@@ -306,10 +306,21 @@ Verify reference models are available:
 ls ontology-reference-models/
 ```
 
-> **Tip (DD-044):** Run `kairos-ontology generate-inventory` first to create
-> materialized YAML inventories in `referencemodels-unpacked/`. These give `analyse-sources`
-> and `propose-alignment` visibility into subclass properties (specialization
-> patterns) that raw TTL parsing would miss.
+**Then unpack the reference models FIRST (required — DD-044/DD-047).** Before the AI
+analysis, run the cheap, deterministic, **AI-free** `generate-inventory` so the
+reference models are materialized into `referencemodels-unpacked/*-inventory.yaml`:
+
+```bash
+kairos-ontology generate-inventory
+kairos-ontology check-inventory    # verify the unpacked inventory is present & current
+```
+
+> **Why up front:** `generate-inventory` is quick and AI-free, so there's no reason to
+> defer it. It gives `analyse-sources` and `propose-alignment` visibility into subclass
+> properties (specialization patterns) that raw TTL parsing would miss, **and** it
+> satisfies the Step 0c.1b / DD-047 inventory gate that the modeling skill enforces
+> later — so unpacking now de-risks that gate instead of hitting it mid-modeling.
+> Order: **`generate-inventory` (quick) → `analyse-sources` (the long AI run).**
 
 ### 4b — Run the analysis
 

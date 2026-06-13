@@ -104,6 +104,10 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-054](#dd-054-reference-model-inventories-namespaced-by-owning-model) | Reference-Model Inventories Namespaced by Owning Model | Accepted | 2026-06-13 |
 | [DD-055](#dd-055-business-discovery-materializes-reference-model-breadth--links-glossary-to-ref-model-iris) | Business Discovery Materializes Reference-Model Breadth & Links Glossary to Ref-Model IRIs | Accepted | 2026-06-13 |
 | [DD-056](#dd-056-relocate-glossary--inventory-folders-to-hub-root-new-hubs-only) | Relocate Glossary & Inventory Folders to Hub Root (New Hubs Only) | Accepted | 2026-06-13 |
+| [DD-057](#dd-057-windows-update---upgrade-uses-a-detached-self-healing-managed-file-refresh) | Windows `update --upgrade` Uses a Detached Self-Healing Managed-File Refresh | Accepted | 2026-06-13 |
+| [DD-058](#dd-058-modeling-pre-flight-gates-on-source-analysis-unpack-reference-models-before-analyse-sources) | Modeling Pre-Flight Gates on Source Analysis; Unpack Reference Models Before `analyse-sources` | Accepted | 2026-06-13 |
+| [DD-059](#dd-059-modeling-pre-flight-adds-a-discovery-completeness-gate-independent-of-source-state) | Modeling Pre-Flight Adds a Discovery-Completeness Gate (Independent of Source State) | Accepted | 2026-06-13 |
+| [DD-060](#dd-060-per-document-extraction-tracking-for-business-discovery) | Per-Document Extraction Tracking for Business Discovery | Accepted | 2026-06-13 |
 
 ---
 
@@ -3172,7 +3176,253 @@ auto-migration was rejected as out of scope and risky for committed data.
 
 ---
 
+## DD-057: Windows `update --upgrade` Uses a Detached Self-Healing Managed-File Refresh
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `update --upgrade` (Windows)  
+**Implementation:** `src/kairos_ontology/cli/main.py`
+(`_schedule_windows_refresh`, `update()` upgrade branch),
+`tests/test_cli_update_upgrade.py`
+
+### Context
+
+`kairos-ontology update --upgrade` bumps the `pyproject.toml` pin, runs `uv lock`, and
+then refreshes the toolkit-managed files under the **new** version. Because the running
+process has the *old* toolkit module loaded in memory (`_toolkit_version` /
+`_SCAFFOLD_DIR`), the refresh must happen under a freshly-installed version. Previously
+this was done by synchronously re-exec'ing `uv run kairos-ontology update` via
+`subprocess.run`.
+
+On Windows this is impossible: the running `kairos-ontology.exe` holds an exclusive lock
+on its own executable for its entire lifetime. The synchronous re-exec keeps the parent
+alive (blocked in `subprocess.run`), so the child's implicit `uv sync` cannot overwrite
+the locked `kairos-ontology.exe` and the refresh fails with a file-lock error — leaving
+the pin bumped but managed files stale.
+
+### Decision
+
+On Windows, when the target version differs from the running version, the upgrade no
+longer re-execs synchronously. Instead it spawns a **detached** PowerShell helper
+(`_schedule_windows_refresh`) that:
+
+1. `Wait-Process -Id <parent-pid>` — blocks until the current process exits, releasing
+   the `.exe` lock;
+2. runs `uv sync` to install the newly-pinned version;
+3. runs `uv run kairos-ontology update` (propagating `--check`) to refresh managed files.
+
+The parent prints a "refresh scheduled" message and exits 0 immediately. Output is
+mirrored to a transcript log at `.kairos/upgrade-refresh.log` so the result is durable
+after the spawned console closes. If the helper cannot be launched, the command falls
+back to printing manual guidance and exits non-zero.
+
+Non-Windows platforms keep the existing inline `uv sync` + blocking re-exec, which has no
+lock constraint.
+
+### Rationale
+
+The parent process can never release its own `.exe` lock while alive, so an in-process or
+synchronously-chained refresh is fundamentally unworkable on Windows. Deferring the
+sync+refresh until after the process exits is the only reliable single-command path, and a
+detached helper keeps the upgrade fully automatic ("self-healing") rather than forcing the
+user into a manual two-step. A wheel-extract refresh (reading scaffold from the downloaded
+`.whl` without syncing) was considered but rejected as more complex and leaving the venv
+out of sync with the pin.
+
+### Consequences
+
+- Windows upgrades complete automatically without a file-lock error; the refresh appears in
+  a new console window shortly after the command returns.
+- A transcript log (`.kairos/upgrade-refresh.log`) records the deferred refresh outcome.
+- The detached helper depends on `uv` being on the system `PATH` (it is, since the upgrade
+  itself ran via uv).
+- `--upgrade --check` is honoured: the scheduled refresh runs `update --check`.
+
+---
+
+## DD-058: Modeling Pre-Flight Gates on Source Analysis; Unpack Reference Models Before `analyse-sources`
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `kairos-design-domain` skill (pre-flight branches), `kairos-design-source`
+skill (Phase 4)  
+**Implementation:** `.github/skills/kairos-design-domain/SKILL.md`,
+`.github/skills/kairos-design-source/SKILL.md` (+ scaffold copies)
+
+### Context
+
+Two adjacent workflow gaps were observed in a client hub:
+
+1. **Modeling started without source analysis.** "Start modeling" routed straight into
+   `kairos-design-domain` and proceeded toward the Source Evidence Table even though
+   `integration/sources/_analysis/` contained no affinity reports. The skill's pre-flight
+   only distinguished *no sources* (P2a → hand off to import) from *sources exist* (P2b →
+   completeness checkpoint); it had **no branch for "sources imported but not analysed"**,
+   so the data-first analysis (a Gate 6 prerequisite) was silently skipped and Step 0c.1
+   fell back to naming heuristics.
+2. **Reference-model unpacking happened too late.** `generate-inventory` (the deterministic,
+   AI-free materialization of `referencemodels-unpacked/*-inventory.yaml`) was only a *tip*
+   before `analyse-sources` and was otherwise enforced as the DD-047 gate at modeling Step
+   0c.1b — i.e. mid-modeling. Because it is cheap and AI-free, there was no reason to defer
+   it, and deferring it risked failing the DD-047 gate after the long AI analysis had run.
+
+### Decision
+
+1. **Add a modeling pre-flight branch (P2b) that gates on source analysis.** In
+   `kairos-design-domain`, the pre-flight now has three branches: **P2a** (no sources →
+   hand off to import), **P2b** (sources imported but `_analysis/*-affinity.yaml` missing →
+   **auto-hand off to `kairos-design-source` Phase 4** to run the analysis before any class
+   design), and **P2c** (sources imported *and* analysed → the existing mandatory
+   Source-Completeness Checkpoint, formerly P2b).
+2. **Unpack reference models first in source Phase 4.** `kairos-design-source` Phase 4a now
+   makes `generate-inventory` (+ `check-inventory`) a **required up-front step** run
+   **before** `analyse-sources`, rather than an optional tip. The documented order is
+   `generate-inventory` (quick, AI-free) → `analyse-sources` (the long AI run). The
+   `kairos-design-domain` Step 0a `_analysis/`-missing handoff was updated to the same
+   order.
+
+### Rationale
+
+Domain modeling is data-first: classes/properties must be grounded in analysed source
+evidence (Gate 6). A skill that proceeds without affinity reports produces invented
+classes, defeating the reference-model-first design. Unpacking the reference models is
+deterministic and AI-free, so doing it up front costs nothing and removes a mid-modeling
+failure mode (the DD-047 inventory gate) — it is strictly better to unpack before the
+expensive analysis.
+
+### Consequences
+
+- "Start modeling" on a hub with imported-but-unanalysed sources now auto-routes through
+  `analyse-sources` first instead of silently skipping it.
+- The reference-model inventory is materialized before `analyse-sources`, so the later
+  Step 0c.1b / DD-047 gate is already green.
+- Pre-flight branch labels shifted: the Source-Completeness Checkpoint is now **P2c**
+  (was P2b); cross-references in the skill were updated accordingly.
+- No CLI/code change — `generate-inventory`, `check-inventory`, and `analyse-sources`
+  already exist (DD-044/DD-047/DD-054); this is a skill-flow correction.
+
+---
+
+## DD-059: Modeling Pre-Flight Adds a Discovery-Completeness Gate (Independent of Source State)
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `kairos-design-domain` skill (pre-flight + Step 2a)  
+**Implementation:** `.github/skills/kairos-design-domain/SKILL.md` (+ scaffold copy)
+
+### Context
+
+The canonical lifecycle is `discovery → source → domain → …` (kairos-help §2), so
+business discovery should precede modeling. But `kairos-design-domain` only hard-gated on
+**sources**, not discovery: the discovery offer lived **only** in the no-sources branch
+(P2a, where it hands off to `kairos-design-source` and offers discovery). When sources
+were already imported, the skill landed in the sources-exist path (P2b/P2c) — which ran
+only the source checks and never surfaced discovery. The sole other touchpoint was Step 2a
+("read business-discovery context *if present*"), passive context rather than a gate. As a
+result, on a hub with imported sources but no `businessdiscovery/` artifacts, nothing ever
+prompted discovery, and modeling proceeded without the company model + glossary.
+
+### Decision
+
+Add a **Discovery-Completeness Checkpoint (P1b)** to the modeling pre-flight, symmetric to
+the P2c Source-Completeness Checkpoint and **independent of source state** so it fires in
+**every** branch (P2a and the sources-exist branches):
+
+1. Detect discovery artifacts — `businessdiscovery/*.ttl` and
+   `.sessions-design/businessdiscovery-*.md`.
+2. If absent, prompt to run **kairos-design-discovery** first (recommended, not a hard
+   block — Gate 6 remains authoritative). The user's decline is recorded in the session
+   file.
+3. Upgrade Step 2a from "read if present" to an explicit gate that assumes P1b has already
+   fired and **must** read discovery artifacts when present.
+
+The Continue/Review extension pre-flight note now also runs P1b alongside P2c.
+
+### Rationale
+
+Discovery is the documented lifecycle start but was only enforced in the empty-sources
+branch — an asymmetry that let real hubs skip it. Making the gate independent of source
+state (a hub can have sources without ever running discovery) closes the gap. It stays a
+recommendation rather than a hard block because discovery improves naming alignment but is
+not the authoritative evidence source (that is Gate 6 / source data).
+
+### Consequences
+
+- "Start modeling" now surfaces discovery even when sources are already imported.
+- Discovery and source completeness are checked symmetrically (P1b + P2c), once per
+  session start.
+- No CLI/code change — `kairos-design-discovery` already exists; this is a skill-flow
+  correction. Pairs with DD-055 (discovery materialization) and DD-058 (source-analysis
+  gate).
+
+---
+
+## DD-060: Per-Document Extraction Tracking for Business Discovery
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `kairos-design-discovery` skill, `.import/businessdiscovery/`,
+`ontology-hub/businessdiscovery/_extractions/`, new `discovery-status` CLI command  
+**Implementation:** `src/kairos_ontology/discovery_extraction.py`,
+`discovery-status` command in `src/kairos_ontology/cli/main.py`,
+`.github/skills/kairos-design-discovery/SKILL.md` (Phase 1 / Phase 4) + scaffold copy
+
+### Context
+
+Business discovery reads raw artifacts (PDFs, decks, notes) dropped in
+`.import/businessdiscovery/` and extracts company-specific terminology. There was **no
+record of what was extracted from which document** and **no way to tell which documents
+are new or unprocessed** when more are added later. On a rerun the skill re-read
+everything with no provenance and no incremental signal — terminology could be lost or
+silently duplicated, and there was no audit trail behind the glossary.
+
+### Decision
+
+Introduce **per-document extraction files** plus a deterministic, hash-based status
+command, mirroring the inventory-freshness pattern (DD-047):
+
+- For every processed document, the discovery skill writes one
+  `ontology-hub/businessdiscovery/_extractions/{slug}.extraction.yaml` recording the
+  `source_sha256`, a summary, the extraction `strategy`, and the `extracted_terms`
+  (with a `company_specific` flag). `{slug}` is the slugified source filename **including
+  its extension**, so same-stem documents (`report.pdf` vs `report.docx`) never collide.
+- A new **`discovery-status`** CLI command (backed by `discovery_extraction.py`) scans
+  the import folder, compares each document's current hash to the stored
+  `source_sha256`, and classifies it **unprocessed / changed / up-to-date / orphan**.
+  Informational by default; `--strict` exits non-zero when there is work to do.
+- The skill (Phase 1 + Phase 4) runs `discovery-status` and processes **only** new or
+  changed documents, leaving up-to-date ones untouched.
+
+The AI extraction itself stays in the skill; only the deterministic bookkeeping is
+implemented in code so it is unit-testable. `discovery-status` is a read-only helper and
+is **not** added to the soft skill-gate set (consistent with `check-inventory` /
+`generate-inventory`).
+
+### Rationale
+
+Reusing the proven `compute_source_hash` freshness model keeps behaviour consistent and
+cheap (no AI for the "what changed?" question). Per-document files give full provenance
+that travels with the hub in git, and the hash-based diff makes reruns incremental
+instead of re-reading the whole corpus. Storing the files under
+`ontology-hub/businessdiscovery/_extractions/` (next to the glossary output) keeps the
+provenance committed alongside the deliverable it explains.
+
+### Consequences
+
+- Discovery now has an auditable trail: every glossary term can be traced to a source
+  document and its extraction file.
+- Adding new artifacts is a cheap, detectable event (`discovery-status` flags them); only
+  the delta is reprocessed.
+- New hubs get a `businessdiscovery/_extractions/` folder + README via `init`/`new-repo`;
+  existing hubs get it via the on-demand `mkdir` in `write_extraction` and the scaffold
+  README on `update`.
+- The extraction schema is intentionally generic — company-terminology extraction is the
+  worked example, not a hard requirement.
+
+---
+
 ## Template for New Decisions
+
 
 ```markdown
 ## DD-NNN: Title
