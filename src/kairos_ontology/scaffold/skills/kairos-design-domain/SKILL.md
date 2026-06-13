@@ -159,6 +159,13 @@ ontology-hub/.sessions-design/
 > 2. **Start fresh** (new session, previous one archived)
 > 3. **Review** the saved session first"
 
+> ⚠️ **On Continue/Review (extension pre-flight):** before resuming, run the
+> **Mode B** check from [Pre-flight checks](#pre-flight-checks-lifecycle-position--run-first):
+> ask whether **new/additional sources** have been added or whether the new scope
+> is covered by the sources already imported. If new sources are needed, route the
+> user back to **kairos-design-source** (import + `analyse-sources`) before
+> continuing, so the Source Evidence Table stays current.
+
 If no session exists, start fresh and create one immediately.
 
 ### Session file format
@@ -270,6 +277,54 @@ and Gate 3 — these are non-negotiable.
 > carries substantial unrelated history, advise the user to clear the session
 > before proceeding.
 
+### Pre-flight checks (lifecycle position) — RUN FIRST
+
+> Domain modeling is a **mid-lifecycle** step
+> (`discovery → source → domain → mapping → silver → gold → …`, see kairos-help §2).
+> It is **data-first**: classes/properties must be grounded in imported, analysed
+> source evidence (Gate 6 / Step 0c). Before anything else, determine **where in
+> the lifecycle** the user actually is. These are **guidance** checks — advise and
+> route, but do not hard-block if the user knowingly proceeds.
+
+**Determine the mode:**
+
+```bash
+ls ontology-hub/integration/sources/        # any source systems imported?
+ls ontology-hub/.sessions-design/modeling-* 2>/dev/null   # prior modeling session(s)?
+ls ontology-hub/model/ontologies/           # existing domain .ttl files?
+```
+
+**Mode A — Fresh model (no/empty `integration/sources/`):**
+The user is effectively at the **start of the lifecycle**, not at modeling. Advise:
+
+> "Domain modeling needs imported source evidence first. `integration/sources/`
+> looks empty — let's start at the beginning of the lifecycle:
+> 1. **kairos-design-discovery** (optional but recommended) — capture company
+>    context + business terminology.
+> 2. **kairos-design-source** — import your sources (`import-source` /
+>    `import-flatfile`, incl. CSV/Excel/**Parquet**) → bronze vocabulary, then run
+>    `analyse-sources`.
+> Then come back here to model. See kairos-help §2."
+
+Only continue into modeling if the user explicitly chooses to proceed without
+source data (e.g. a pure reference-model sketch) — note that Gate 6 still applies.
+
+**Mode B — Restart / extension (sources exist and/or a prior session/domain file
+exists):**
+The user is iterating on an existing model. **Before** modeling, check whether the
+evidence base is still current:
+
+> "You're extending an existing model. Since the last modeling session, have any
+> **new or additional source systems** been added — or are you modeling
+> entities/attributes that aren't covered by the sources already imported?
+> If so, go back to **kairos-design-source** to import the additional sources and
+> re-run `analyse-sources` (and `propose-alignment`) first, so the Source Evidence
+> Table reflects current reality. Modeling against stale/partial sources leads to
+> invented classes (Gate 6)."
+
+If new sources are needed → route to **kairos-design-source**, then resume here.
+If the existing sources already cover the new scope → continue.
+
 0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
    at the start of the session.  If it reports outdated files, run
    `python -m kairos_ontology update` and commit the refresh before doing any other work.
@@ -345,6 +400,10 @@ At the **very start** of any modeling session, ask:
 
 > **BLOCKING GATE:** Before proceeding to modeling, verify that source systems
 > have been pre-analysed against reference model domains.
+
+> If `integration/sources/` itself is **empty**, you're at the *start* of the
+> lifecycle, not at modeling — see [Pre-flight checks](#pre-flight-checks-lifecycle-position--run-first)
+> (Mode A) and route the user to **kairos-design-source** first.
 
 Check for the analysis output:
 

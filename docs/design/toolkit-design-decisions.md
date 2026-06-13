@@ -98,6 +98,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-048](#dd-048-business-discovery-phase--company-skos-glossary) | Business Discovery Phase & Company SKOS Glossary | Accepted | 2026-06-13 |
 | [DD-049](#dd-049-self-upgrade-re-exec--running-vs-pinned-version-guard) | Self-Upgrade Re-exec & Running-vs-Pinned Version Guard | Accepted | 2026-06-13 |
 | [DD-050](#dd-050-parquet-source-import) | Parquet Source Import | Accepted | 2026-06-13 |
+| [DD-051](#dd-051-start-modeling-routes-to-lifecycle-start--restart-pre-flight) | Start-Modeling Routes to Lifecycle Start & Restart Pre-flight | Accepted | 2026-06-13 |
 
 ---
 
@@ -2814,6 +2815,59 @@ Add native Parquet support to `import-flatfile`:
 - Tests in `tests/test_import_flatfile.py` cover the type mapping, the reader
   (nullability, sampling cap, date/timestamp), single-file + mixed-directory
   imports, and the missing-pyarrow `ImportError`.
+
+---
+
+## DD-051: Start-Modeling Routes to Lifecycle Start & Restart Pre-flight
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `copilot-instructions.md` (both copies), `kairos-design-domain` skill (both copies)  
+**Implementation:** `.github/copilot-instructions.md`, `.github/skills/kairos-design-domain/SKILL.md` (+ scaffold copies via `scripts/sync_dev_skills.py`)
+
+### Context
+
+`kairos-design-domain` is **data-first**: Gate 6 / the Source Evidence Table
+(Step 0c) require imported, analysed source evidence before any class/property may
+be proposed. But two routing/UX gaps remained:
+
+1. The Copilot **instructions** mapped "Model / design …" straight to
+   `kairos-design-domain` with no framing that domain modeling is a **mid-lifecycle**
+   step (`discovery → source → domain → …`). On a fresh hub, "start modeling" could
+   send a user into the modeling skill with an empty `integration/sources/`.
+2. When **restarting/extending** an existing model, nothing reminded the user that
+   **additional source systems** might need importing first. Step 0a only handled a
+   missing `_analysis/` directory, implicitly assuming `integration/sources/` was
+   already populated.
+
+### Decision
+
+Add lifecycle framing + pre-flight guidance (deliberately **guidance, not a new
+blocking gate** — Gate 6 remains the hard constraint):
+
+1. **Instructions.** The "Modeling skill" section and routing guide now state that
+   domain modeling follows discovery + source, and that "start modeling" on a fresh
+   hub means starting the lifecycle (route to `kairos-design-discovery` /
+   `kairos-design-source` first); when extending, confirm sources are current.
+2. **Skill pre-flight.** `kairos-design-domain` gains a **"Pre-flight checks
+   (lifecycle position)"** block with two modes:
+   - **Mode A (fresh / empty `integration/sources/`):** advise the user they're at
+     the start of the lifecycle and route to discovery + source import
+     (`import-source` / `import-flatfile`, incl. Parquet) + `analyse-sources` first.
+   - **Mode B (restart / extension):** prompt whether new/additional sources were
+     added and, if so, route back to `kairos-design-source` + re-run
+     `analyse-sources` before modeling. The same check is wired into
+     "Session Management → On start" (Continue/Review).
+
+### Consequences
+
+- Users starting on a fresh hub are guided to the lifecycle start instead of an
+  evidence-less modeling session, reducing invented classes (the failure mode
+  Gate 6 guards against).
+- Extension/restart sessions surface stale-source-evidence risk explicitly.
+- No behavioural/code change — instructions + skill guidance only, distributed to
+  hubs via the sync-managed scaffold copies. Parity is enforced by
+  `tests/test_scaffold_sync.py`.
 
 ---
 
