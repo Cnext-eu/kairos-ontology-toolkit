@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.12.0] — 2026-06-13
+
 ### Removed
 - **FastAPI service** — removed the `service/` directory and `tests/service/` tests.
   The REST API backend (ontology CRUD, validation, projection, AI chat endpoints) was
@@ -14,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skills are the primary interfaces. (DD-045)
 
 ### Added
+- **Business discovery phase + company SKOS glossary** — new `kairos-design-discovery`
+  skill at the front of the design lifecycle: explores company context and captures the
+  company's alternative/business terminology (esp. logistics jargon) as a SKOS glossary
+  overlay, without modifying the domain ontology. `kairos-design-mapping` consumes
+  `skos:altLabel` as advisory mapping candidates. `init`/`new-repo` create repo-root
+  `.imports/businessdiscovery/` and `ontology-hub/model/glossary/`. Added a "clear
+  Copilot session" recommendation at the modeling entry points. (DD-048)
 - **`kairos-int:` integration extension vocabulary** — new `kairos-int:` namespace
   (`https://kairos.cnext.eu/integration#`) with 22 annotation properties for
   integration pipeline behaviour: load strategy, batching, error handling, retry,
