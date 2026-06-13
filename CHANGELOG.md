@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.5] — 2026-06-14
+
 ### Fixed
 - **AI provider `.env` auto-loading now resolves repo-root settings when running from `ontology-hub/`.**
   AI-dependent commands could miss credentials when only repo-root `.env` existed.
