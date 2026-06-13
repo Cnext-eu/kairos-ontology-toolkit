@@ -471,6 +471,7 @@ Save to `ontology-hub/.sessions-design/source-{system-name}-{YYYY-MM-DD}.md`:
 
 | When you need | Invoke |
 |---|---|
+| Explore company context / capture business terminology first | **kairos-design-discovery** |
 | Design/modify domain ontology classes and properties | **kairos-design-domain** |
 | Design silver layer (DDL, SCD, FK annotations) | **kairos-design-silver** |
 | Design gold layer (Power BI star schema, measures) | **kairos-design-gold** |
