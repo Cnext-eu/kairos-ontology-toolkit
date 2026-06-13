@@ -2846,25 +2846,39 @@ Add lifecycle framing + pre-flight guidance (deliberately **guidance, not a new
 blocking gate** — Gate 6 remains the hard constraint):
 
 1. **Instructions.** The "Modeling skill" section and routing guide now state that
-   domain modeling follows discovery + source, and that "start modeling" on a fresh
-   hub means starting the lifecycle (route to `kairos-design-discovery` /
-   `kairos-design-source` first); when extending, confirm sources are current.
+   domain modeling follows discovery + source, and that "start modeling" means
+   **beginning the modeling lifecycle**. On a fresh hub the agent **auto-hands off**
+   to `kairos-design-source` (offering `kairos-design-discovery`) first; when sources
+   already exist it runs an explicit source-completeness check.
 2. **Skill pre-flight.** `kairos-design-domain` gains a **"Pre-flight checks
-   (lifecycle position)"** block with two modes:
-   - **Mode A (fresh / empty `integration/sources/`):** advise the user they're at
-     the start of the lifecycle and route to discovery + source import
-     (`import-source` / `import-flatfile`, incl. Parquet) + `analyse-sources` first.
-   - **Mode B (restart / extension):** prompt whether new/additional sources were
-     added and, if so, route back to `kairos-design-source` + re-run
-     `analyse-sources` before modeling. The same check is wired into
-     "Session Management → On start" (Continue/Review).
+   (lifecycle position)"** block, run before any modeling:
+   - **P2a (fresh / empty `integration/sources/`): auto-hand off.** Invoke
+     `kairos-design-source` (offer `kairos-design-discovery`) to import
+     (`import-source` / `import-flatfile`, incl. Parquet) + `analyse-sources`, then
+     resume modeling. Start-modeling is treated as the lifecycle entry, not a jump
+     into class design.
+   - **P2b (sources exist): MANDATORY always-on Source-Completeness Checkpoint.**
+     On **every** modeling start where sources exist — **first pass or
+     restart/extension** — the agent must list the imported/analysed source systems
+     and explicitly ask whether **additional/other** sources need importing before
+     building the Source Evidence Table. If yes → route to `kairos-design-source` +
+     `analyse-sources`; if complete → continue. Wired into "Session Management → On
+     start" (Continue/Review) and cross-referenced from Step 0a.
+
+> **Refinement (2026-06-13, same day):** P2b supersedes the original restart-only
+> "Mode B" — the completeness question is now posed on the **first modeling pass
+> too**, closing the gap where some-but-not-all sources had been analysed. P2a was
+> strengthened from "advise" to an **auto-handoff** to the source skill.
 
 ### Consequences
 
-- Users starting on a fresh hub are guided to the lifecycle start instead of an
-  evidence-less modeling session, reducing invented classes (the failure mode
+- Users starting on a fresh hub are auto-routed into the lifecycle start instead of
+  an evidence-less modeling session, reducing invented classes (the failure mode
   Gate 6 guards against).
-- Extension/restart sessions surface stale-source-evidence risk explicitly.
+- The completeness question now fires on **every** modeling start (not just
+  restart), so partially-imported source sets are surfaced before modeling.
+- The mandatory **question** is always posed; the user's **answer** is not
+  hard-blocked (Gate 6 remains the hard evidence constraint).
 - No behavioural/code change — instructions + skill guidance only, distributed to
   hubs via the sync-managed scaffold copies. Parity is enforced by
   `tests/test_scaffold_sync.py`.

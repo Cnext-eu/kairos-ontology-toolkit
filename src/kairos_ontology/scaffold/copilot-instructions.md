@@ -136,17 +136,19 @@ skips checkpoints.
 > **Modeling is a mid-lifecycle step, not the start.** The canonical lifecycle is
 > `discovery → source → domain → mapping → silver → gold → validate → project`.
 > `kairos-design-domain` is **data-first**: it needs imported, analysed sources as
-> evidence (Gate 6 / Source Evidence Table). So when a user asks to **"start
-> modeling"**:
-> - **Fresh hub / no sources yet** → this means starting at the **beginning of the
->   lifecycle**. Point the user to **kairos-help** §2 and begin with
->   **kairos-design-discovery** + **kairos-design-source** (import + `analyse-sources`)
->   *before* `kairos-design-domain`. Don't model classes against an empty
+> evidence (Gate 6 / Source Evidence Table). Treat **"start modeling"** as
+> **"begin the modeling lifecycle"**:
+> - **Fresh hub / no sources yet (`integration/sources/` empty)** → **auto-hand off
+>   to the start of the lifecycle**: invoke **kairos-design-source** first (and offer
+>   **kairos-design-discovery**) to import + `analyse-sources`, *then* return to
+>   `kairos-design-domain`. Don't model classes against an empty
 >   `integration/sources/`.
-> - **Extending / restarting an existing model** → before modeling, confirm whether
->   **new/additional source systems** need importing (back to
->   **kairos-design-source**, then re-run `analyse-sources`) so the evidence base is
->   current. This is **guidance**, not a blocking gate.
+> - **Sources already exist** → before modeling, **always run an explicit
+>   source-completeness check** (the modeling skill's mandatory pre-flight): list the
+>   imported/analysed sources and ask whether *additional/other* sources need
+>   importing first. This fires on the **first modeling pass too**, not only on
+>   restart/extension. If more are needed → back to **kairos-design-source**, then
+>   resume. Gate 6 remains the hard evidence constraint.
 
 ### Skill routing guide
 
@@ -164,13 +166,15 @@ Use this table to pick the correct skill for a user's intent:
 > `discovery → source → domain → mapping → silver → gold → validate → project →
 > diagnose → consume` (see kairos-help §2). `kairos-design-domain` sits **after**
 > discovery + source — it consumes imported, analysed source evidence. Treat
-> "start modeling" on a fresh hub as "start the lifecycle": route to
-> **kairos-design-discovery** / **kairos-design-source** first.
+> "start modeling" as **entering the lifecycle**: on a fresh hub, **auto-hand off**
+> to **kairos-design-source** (offer **kairos-design-discovery**) first; when
+> sources already exist, run the modeling skill's mandatory **source-completeness
+> check** (every time, including the first pass) before proposing classes.
 
 | User intent | Correct skill |
 |---|---|
 | "Explore company / business model / capture business terminology" | **kairos-design-discovery** |
-| "Model / design / create classes / add properties / extend ontology" | **kairos-design-domain** (fresh hub → begin at lifecycle start: discovery + source first; extending → confirm sources are current) |
+| "Model / design / create classes / add properties / extend ontology" | **kairos-design-domain** (= begin the modeling lifecycle: fresh hub → auto-hand off to kairos-design-source/discovery first; sources exist → mandatory source-completeness check, first pass included) |
 | "Create a new hub repo from scratch" | **kairos-setup-init** |
 | "Set up folder structure / configure hub" | **kairos-setup-config** |
 | "How does Kairos work? / What is this?" | **kairos-help** |
