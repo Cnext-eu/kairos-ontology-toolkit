@@ -97,6 +97,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-047](#dd-047-deterministic-inventory-freshness-pre-flight-gate) | Deterministic Inventory Freshness Pre-flight Gate | Accepted | 2026-06-13 |
 | [DD-048](#dd-048-business-discovery-phase--company-skos-glossary) | Business Discovery Phase & Company SKOS Glossary | Accepted | 2026-06-13 |
 | [DD-049](#dd-049-self-upgrade-re-exec--running-vs-pinned-version-guard) | Self-Upgrade Re-exec & Running-vs-Pinned Version Guard | Accepted | 2026-06-13 |
+| [DD-050](#dd-050-parquet-source-import) | Parquet Source Import | Accepted | 2026-06-13 |
 
 ---
 
@@ -2764,6 +2765,55 @@ Two related failure modes left hubs silently running the wrong toolkit version:
   `tests/test_cli_version_guard.py` (pin parsing + warning behaviour).
 - `packaging.version` is used for older/newer comparison (already an indirect
   dependency); a string-inequality fallback keeps it non-fatal.
+
+---
+
+## DD-050: Parquet Source Import
+
+**Status:** Accepted  
+**Date:** 2026-06-13  
+**Affects:** `import_flatfile.py`, `cli/main.py` (`import-flatfile`), `pyproject.toml`, `kairos-design-source` skill (both copies)  
+**Implementation:** `src/kairos_ontology/import_flatfile.py` (`_arrow_type_to_sql`, `read_parquet_table`, `run_import_flatfile` dispatch), `tests/test_import_flatfile.py`
+
+### Context
+
+The flat-file importer (`import-flatfile`) supported CSV and Excel only. Several
+source systems (warehouse/logistics exports in particular) deliver data as
+**Parquet** files, which previously had to be converted to CSV first — losing the
+reliable typed schema Parquet carries.
+
+### Decision
+
+Add native Parquet support to `import-flatfile`:
+
+1. **`read_parquet_table()`** reads a single `.parquet` file into the same table
+   data dict shape as `read_csv_table()`. Like CSV/Excel, it reads **only sample
+   data** — at most `max_rows` rows via a single
+   `ParquetFile.iter_batches(batch_size=max_rows)` batch — and never materialises
+   the full file. `row_count` reflects the rows actually read.
+2. **Direct Arrow→SQL type mapping** (`_arrow_type_to_sql()`): because Parquet
+   carries a reliable typed schema, column data types are mapped directly to the
+   SQL-like vocabulary (`bigint`/`int`/`decimal`/`date`/`datetime`/`bit`/
+   `varchar(max)`) rather than inferred from stringified values. Sample/distinct
+   values are still stringified to match the YAML output format.
+3. **Optional `parquet` dependency-group** (`pyarrow`), lazy-imported with a clear
+   `ImportError` pointing at `pip install kairos-ontology-toolkit[parquet]`,
+   mirroring the openpyxl/`[flatfile]` pattern. CI installs it via
+   `uv sync --all-groups`.
+4. `.parquet` is wired into both the single-file and directory dispatch in
+   `run_import_flatfile()`; directories may freely mix CSV/Excel/Parquet.
+
+### Consequences
+
+- Parquet files import with one command, producing the standard
+  `_manifest.yaml` + per-table YAML + samples that feed `import-source`.
+- Type fidelity is higher for Parquet than CSV (schema-driven, not heuristic).
+- pyarrow (~26 MB) is opt-in; CSV-only users are unaffected.
+- Downstream post-read logic (technical-column detection, exclusion) applies to
+  Parquet automatically.
+- Tests in `tests/test_import_flatfile.py` cover the type mapping, the reader
+  (nullability, sampling cap, date/timestamp), single-file + mixed-directory
+  imports, and the missing-pyarrow `ImportError`.
 
 ---
 

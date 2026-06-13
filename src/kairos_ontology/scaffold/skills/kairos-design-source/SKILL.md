@@ -33,7 +33,7 @@ Input type? ──→  Import flat files ──→ Generate vocab ──→  Rev
 ## Prerequisites
 
 - The ontology hub must be initialized (`kairos-ontology init` or `new-repo`)
-- Source data or documentation should be available (CSV/Excel files, SQL DDL,
+- Source data or documentation should be available (CSV/Excel/Parquet files, SQL DDL,
   API specs, or sample data)
 - For Phase 4 (analysis): AI provider configured (GITHUB_TOKEN or AZURE_AI_ENDPOINT)
 
@@ -45,7 +45,7 @@ Ask the user what source material they have:
 
 | Input type | Path |
 |---|---|
-| **CSV or Excel files** (exports, data dumps) | → Phase 1 (import-flatfile) |
+| **CSV, Excel, or Parquet files** (exports, data dumps) | → Phase 1 (import-flatfile) |
 | **Pre-extracted YAML** (from `extract-schema` dbt macro or manual) | → Phase 2 (import-source) |
 | **SQL DDL, API specs, or other docs** (no structured data) | → Phase 3 (manual creation) |
 | **Existing vocabulary TTL** (refresh/update) | → Phase 2 (import-source with merge) |
@@ -68,8 +68,13 @@ mkdir -p ontology-hub/integration/sources/{system-name}
 
 ## Phase 1 — Import flat files (`import-flatfile`)
 
-> **When to use:** The user has CSV exports, Excel workbooks, or a directory of
-> flat files from the source system.
+> **When to use:** The user has CSV exports, Excel workbooks, Parquet files, or a
+> directory of flat files from the source system.
+>
+> **Note:** Excel support requires the `[flatfile]` extra (openpyxl); Parquet
+> support requires the `[parquet]` extra (pyarrow). Install with
+> `pip install kairos-ontology-toolkit[flatfile]` /
+> `pip install kairos-ontology-toolkit[parquet]` if prompted.
 
 ### 1a — Determine options
 

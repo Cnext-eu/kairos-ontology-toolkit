@@ -51,6 +51,9 @@ foundry = [
 flatfile = [
     "openpyxl>=3.1.0,<4.0.0",
 ]
+parquet = [
+    "pyarrow>=14.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]
