@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.2] — 2026-06-13
+
+### Changed
+- **Start-modeling now auto-hands off to the lifecycle start, and the
+  source-completeness check is always-on.** Refines v3.13.1 (DD-051): on a fresh
+  hub, "start modeling" auto-routes to `kairos-design-source` (offering
+  `kairos-design-discovery`) before domain modeling. When sources already exist,
+  the `kairos-design-domain` skill now poses a **mandatory Source-Completeness
+  Checkpoint on every modeling start** — including the first pass — asking whether
+  additional/other sources should be imported first (previously only on
+  restart/extension). (DD-051)
+
 ## [3.13.1] — 2026-06-13
 
 ### Changed
