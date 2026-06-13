@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.4] — 2026-06-13
+
 ### Changed
 - **`propose-alignment` prompt payload is now token-optimized with quality safeguards.**
   Per table, the first pass now uses a deterministic shortlist of reference classes
