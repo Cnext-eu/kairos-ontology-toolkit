@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.22.0] — 2026-06-14
+
+### Fixed
+- **Silver/dbt merge pattern no longer generates invalid/lossy `UNION ALL`
+  (issue #175).** When two or more bronze sources merged into one silver entity
+  with non-identical mapped column sets (the normal master-data case), the dbt
+  projector produced broken SQL: the union column list was taken from the first
+  source only, per-source views projected only their own mapped columns (so the
+  `UNION ALL` branches had mismatched column counts), and FK `_sk` columns were
+  silently dropped. The merge pattern now builds a **canonical column superset**
+  across all sources, projects every per-source staging view to that superset
+  with explicitly-typed `CAST(NULL AS <type>)` pads for unmapped columns, and
+  emits **explicit per-branch column lists** (no `select *`) so the `UNION ALL`
+  is positionally consistent. A loud warning fires when a source does not map a
+  natural-key column (which would yield NULL/duplicate surrogate keys).
+- **Silver/dbt FK auto-inference no longer mis-resolves same-range FK properties
+  (issue #174).** When a class declared two or more FK object properties whose
+  natural-key signature was identical (e.g. `hasBillingAddress` and
+  `hasShippingAddress`, both ranged on `Address`), NK-based auto-inference would
+  silently resolve an *unmapped* role to the *mapped* sibling's source columns,
+  producing a semantically wrong join with no warning. The dbt projector now
+  detects FK targets that share a natural-key signature (keyed on resolved NK
+  property URIs, so discriminator-folded subtypes and `silverForeignKeyOn`
+  redirects are covered too) and **disables auto-inference** for them — they are
+  resolved only from explicit SKOS mappings; unmapped roles emit a NULL
+  placeholder plus an explicit ambiguity warning directing the user to add an
+  explicit mapping. Correctly-mapped roles are unaffected.
+
+### Changed
+- **Foreign keys are now resolved in the merge pattern (issue #175).** Because
+  each per-source staging view is single-source, the existing single-source FK
+  machinery now runs *inside* each view: the source that maps a FK emits a real
+  `left join {{ ref(target) }}` and the resulting `_sk` column, while sources
+  that don't map it emit a NULL pad. The FK `_sk` flows through the `UNION ALL`
+  as an ordinary canonical column — no union-level join, no hidden columns, no
+  silent drop. The union model itself performs no joins. See DD-074.
+
 ## [3.21.0] — 2026-06-14
 
 ### Added

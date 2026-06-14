@@ -279,6 +279,32 @@ class TestMultiSourceConsistency:
         sql_files = list(invoice_dir.rglob("*.sql"))
         assert len(sql_files) >= 1, "Invoice domain has no SQL model files"
 
+    def test_merge_superset_is_non_lossy(self, projected_hub):
+        """A column mapped by only one source still appears in every per-source
+        view and the union (canonical superset, NULL-padded where unmapped).
+
+        Regression for the merge bug where per-source views projected only their
+        own mapped columns, dropping columns and breaking the UNION ALL.
+        """
+        client_dir = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "client"
+        )
+        adminpulse = next(
+            f for f in client_dir.rglob("*.sql") if "admin" in f.name.lower()
+        )
+        crm = next(
+            f for f in client_dir.rglob("*.sql") if "crm" in f.name.lower()
+        )
+        ap_sql = adminpulse.read_text(encoding="utf-8").lower()
+        crm_sql = crm.read_text(encoding="utf-8").lower()
+        # vat_number is mapped only by AdminPulse — CRM must NULL-pad it
+        assert "as vat_number" in ap_sql, "AdminPulse view missing vat_number"
+        assert "as vat_number" in crm_sql, (
+            "CRM view should NULL-pad vat_number (superset), not drop it"
+        )
+        assert "cast(null" in crm_sql, "CRM view should contain NULL pads"
+
 
 class TestCrossDomainConsistency:
     """Both client and invoice domains should be present across all targets."""
@@ -431,8 +457,10 @@ class TestMappingToSqlConsistency:
     def test_billingpro_column_mappings_in_sql(self, projected_hub):
         """All BillingPro column mappings should produce columns in dbt SQL.
 
-        FK properties (ObjectProperty targets) are excluded because FK joins are
-        not supported for multi-source entities (Invoice has 2 source tables).
+        FK properties (ObjectProperty targets) appear under their range-derived
+        ``<range>_sk`` column name (e.g. issuedTo → client_sk), resolved via a
+        per-source join inside each single-source staging view, so they are
+        matched separately rather than by the property snake_case name.
         """
         mapping_file = MAPPINGS_DIR / "billingpro-to-invoice.ttl"
         expected = _parse_expected_mappings(mapping_file)
@@ -446,7 +474,7 @@ class TestMappingToSqlConsistency:
             all_sql += f.read_text(encoding="utf-8") + "\n"
         all_sql_lower = all_sql.lower()
 
-        # FK properties that resolve as joins (not regular columns)
+        # FK properties resolve as <range>_sk join columns, not <prop> columns
         fk_properties = {"issuedTo", "belongsToInvoice"}
 
         missing = []
@@ -460,6 +488,15 @@ class TestMappingToSqlConsistency:
         assert not missing, (
             "Mapping columns not found in dbt SQL output:\n"
             + "\n".join(f"  - {m}" for m in missing)
+        )
+
+        # FK column flows through the merge: client_sk must be present and
+        # resolved via a per-source join (not dropped).
+        assert "client_sk" in all_sql_lower, (
+            "FK column client_sk missing from multi-source invoice SQL"
+        )
+        assert "left join {{ ref('client') }}" in all_sql_lower, (
+            "FK should resolve via a per-source left join to client"
         )
 
     def test_crmsystem_column_mappings_in_sql(self, projected_hub):
@@ -549,8 +586,9 @@ class TestMappingToSqlConsistency:
     def test_schema_yaml_columns_match_mappings(self, projected_hub):
         """Columns in _models.yml should include all mapped properties.
 
-        FK properties are excluded — they appear as _sk join columns in single-
-        source models but are absent for multi-source entities.
+        FK properties appear under their range-derived ``<range>_sk`` column
+        name (resolved per source and carried through the union), so they are
+        matched separately rather than by the property snake_case name.
         """
         mapping_file = MAPPINGS_DIR / "billingpro-to-invoice.ttl"
         expected = _parse_expected_mappings(mapping_file)
@@ -570,7 +608,7 @@ class TestMappingToSqlConsistency:
                 for col in model.get("columns", []):
                     all_yaml_columns.add(col["name"].lower())
 
-        # FK properties that resolve as joins (not regular columns)
+        # FK properties resolve under their <range>_sk column name
         fk_properties = {"issuedTo", "belongsToInvoice"}
 
         # Check that mapped properties appear as columns
@@ -585,6 +623,11 @@ class TestMappingToSqlConsistency:
         assert not missing, (
             "Mapped columns missing from _models.yml:\n"
             + "\n".join(f"  - {m}" for m in missing)
+        )
+
+        # The FK column itself is documented under its range-derived name.
+        assert "client_sk" in all_yaml_columns, (
+            "FK column client_sk missing from invoice _models.yml"
         )
 
 

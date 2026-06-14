@@ -25,7 +25,12 @@
 with unioned as (
 
 {%- for src in source_models %}
-    select * from {{"{{"}} ref('{{ src }}') {{"}}"}}
+    select
+        _source_system,
+{%- for col in columns %}
+        {{ col.target_name }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+    from {{"{{"}} ref('{{ src }}') {{"}}"}}
 {%- if not loop.last %}
     union all
 {%- endif %}
@@ -38,17 +43,6 @@ select
     {{ iri_expression }} as {{ model_name }}_iri,
     _source_system,
 {%- for col in columns %}
-    {{ col.target_name }}{% if not loop.last or joins %},{% endif %}
-{%- endfor %}
-{%- for join in joins %}
-{%- if loop.first %}
-    {{ join.expression }} as {{ join.target_name }}{% if not loop.last %},{% endif %}
-{%- else %}
-    {{ join.expression }} as {{ join.target_name }}{% if not loop.last %},{% endif %}
-{%- endif %}
+    {{ col.target_name }}{% if not loop.last %},{% endif %}
 {%- endfor %}
 from unioned
-{%- for join in joins %}
-    {{ join.type }} join {{ join.ref }} as {{ join.alias }}
-        on {{ join.condition }}
-{%- endfor %}

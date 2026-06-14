@@ -1009,6 +1009,16 @@ def _gen_silver_models(
                 src for src, count in source_system_counts.items() if count > 1
             }
 
+            # Canonical SQL types for NULL-pad columns (matches schema YAML)
+            type_map = _build_column_type_map(graph, cls_uri, platform)
+
+            # Pass 1: extract per-source data columns + FK columns/joins.
+            # Each per-source staging view is single-source, so the existing
+            # single-source FK machinery resolves real joins within it.
+            per_source_meta: list[dict] = []
+            per_source_data: list[list[dict]] = []
+            per_source_fk: list[list[dict]] = []
+
             for i, (src, raw_tbl, tbl_uri) in enumerate(source_refs):
                 src_suffix = _camel_to_snake(src)
                 if src in needs_table_suffix:
@@ -1021,13 +1031,20 @@ def _gen_silver_models(
                 # Get the set of column URIs for this specific source table
                 tbl_col_uris = _get_table_column_uris(systems, tbl_uri)
 
-                # Extract columns scoped to this source (no SK/IRI)
+                # Extract data columns scoped to this source (no SK/IRI)
                 src_columns = _extract_silver_columns(
                     graph, cls_uri, namespace, mappings, platform=platform,
                     source_refs=source_refs, systems=systems,
                     table_column_uris=tbl_col_uris, include_sk_iri=False,
                     mapping_ns=mapping_ns,
                 )
+
+                # FK joins resolved within this single-source staging view
+                fk_cols, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
+                    graph, cls_uri, mappings, [(src, raw_tbl, tbl_uri)],
+                    systems=systems,
+                )
+                warnings.extend(fk_warnings)
 
                 # Resolve filter condition
                 cte_filter = ""
@@ -1038,42 +1055,63 @@ def _gen_silver_models(
                         cte_filter = tbl_map["filter_condition"].replace("source.", "")
                         break
 
+                per_source_data.append(src_columns)
+                per_source_fk.append(fk_cols)
+                per_source_meta.append({
+                    "model_name": src_model_name,
+                    "src": src,
+                    "raw_tbl": raw_tbl,
+                    "source_alias": _camel_to_snake(raw_tbl),
+                    "joins": fk_joins,
+                    "filter": cte_filter,
+                })
+
+            # Build canonical superset (data cols then FK cols) with NULL pads so
+            # every per-source view projects an identical, positional column list.
+            canonical_columns, padded_per_source = _build_merge_superset(
+                per_source_data, per_source_fk, type_map,
+            )
+
+            # Natural-key coverage check: a source that does not map an NK column
+            # produces NULL/duplicate surrogate keys in the union — warn loudly.
+            nk_cols = _get_natural_key(graph, cls_uri)
+            for psm, data_cols in zip(per_source_meta, per_source_data):
+                provided = {c["target_name"] for c in data_cols}
+                missing_nk = [nk for nk in nk_cols if nk not in provided]
+                if missing_nk:
+                    msg = (
+                        f"Merge entity '{local}': source '{psm['src']}' "
+                        f"({psm['raw_tbl']}) does not map natural-key column(s) "
+                        f"{', '.join(missing_nk)}; rows from this source will "
+                        f"produce NULL/duplicate surrogate keys in the union. "
+                        f"Resolve via: kairos-design-mapping"
+                    )
+                    logger.warning(msg)
+                    warnings.append(msg)
+
+            # Pass 2: render per-source staging views with padded canonical columns
+            for psm, padded in zip(per_source_meta, padded_per_source):
                 content = source_template.render(
-                    model_name=src_model_name,
+                    model_name=psm["model_name"],
                     domain_name=ontology_name,
                     schema_name=schema_name,
-                    source_name=src,
-                    raw_table_name=raw_tbl,
-                    columns=src_columns,
-                    filter_condition=cte_filter,
+                    source_name=psm["src"],
+                    raw_table_name=psm["raw_tbl"],
+                    source_alias=psm["source_alias"],
+                    columns=padded,
+                    joins=psm["joins"],
+                    filter_condition=psm["filter"],
                     parent_model=model_name,
                     ref_model=silver_source_ref or None,
                     ontology_metadata=meta,
                 )
-                path = f"models/silver/{ontology_name}/{src_model_name}.sql"
+                path = f"models/silver/{ontology_name}/{psm['model_name']}.sql"
                 artifacts[path] = content
 
-            # Build SK/IRI expressions for the union model (uses normalised cols)
+            # Union model: SK/IRI on normalised columns + explicit superset list.
+            # FK columns are already resolved upstream, so no union-level joins.
             sk_expr = _build_sk_expression(graph, cls_uri)
             iri_expr = _build_iri_expression(graph, cls_uri, namespace)
-
-            # Collect the normalised target column names (without SK/IRI)
-            # Use the first source's columns as the canonical list of target names
-            first_tbl_col_uris = _get_table_column_uris(
-                systems, source_refs[0][2]
-            )
-            canonical_columns = _extract_silver_columns(
-                graph, cls_uri, namespace, mappings, platform=platform,
-                source_refs=source_refs, systems=systems,
-                table_column_uris=first_tbl_col_uris, include_sk_iri=False,
-                mapping_ns=mapping_ns,
-            )
-
-            # FK joins in union model (applied on normalised column names)
-            fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
-                graph, cls_uri, mappings, source_refs, systems=systems,
-            )
-            warnings.extend(fk_warnings)
 
             content = union_template.render(
                 model_name=model_name,
@@ -1084,11 +1122,11 @@ def _gen_silver_models(
                 columns=canonical_columns,
                 sk_expression=sk_expr,
                 iri_expression=iri_expr,
-                joins=fk_columns,
                 ontology_metadata=meta,
             )
             path = f"models/silver/{ontology_name}/{model_name}.sql"
             artifacts[path] = content
+            total_fk_joins = sum(len(psm["joins"]) for psm in per_source_meta)
             entity_metadata.append({
                 "class_name": local,
                 "class_uri": cls_uri,
@@ -1097,7 +1135,7 @@ def _gen_silver_models(
                 "source_count": len(source_refs),
                 "column_count": len(canonical_columns),
                 "column_names": [c["target_name"] for c in canonical_columns],
-                "fk_join_count": len(fk_joins) if fk_joins else 0,
+                "fk_join_count": total_fk_joins,
                 "skipped": False,
                 "skip_reason": None,
             })
@@ -1298,6 +1336,100 @@ def _get_table_column_uris(systems: list[dict], table_uri: str) -> set[str]:
                 for col in tbl["columns"]:
                     result.add(col["uri"])
     return result
+
+
+def _build_column_type_map(
+    graph: Graph, class_uri: str, platform: str = DEFAULT_PLATFORM
+) -> dict[str, str]:
+    """Map each datatype-property silver column name to its canonical SQL type.
+
+    Used by the multi-source merge pattern to type the ``CAST(NULL AS <type>)``
+    pad columns so the generated SQL matches the types advertised in the
+    schema YAML (which derives types via the same ``_xsd_to_target`` mapping).
+    """
+    type_map: dict[str, str] = {}
+    domain_classes = _get_class_and_parents(graph, class_uri)
+    for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+        domain = graph.value(prop, RDFS.domain)
+        if domain and str(domain) in domain_classes:
+            col_name = _resolve_column_name(graph, str(prop))
+            range_uri = graph.value(prop, RDFS.range)
+            type_map[col_name] = _xsd_to_target(range_uri, platform)
+    return type_map
+
+
+def _merge_pad_type(target_name: str, type_map: dict[str, str]) -> str:
+    """Return the SQL type for a ``CAST(NULL AS <type>)`` merge pad column.
+
+    Datatype columns use their range-derived canonical type; ``_label`` and FK
+    ``_sk`` columns use the portable dbt string macro.
+    """
+    if target_name in type_map:
+        return type_map[target_name]
+    if target_name.endswith("_label") or target_name.endswith("_sk"):
+        return "{{ dbt.type_string() }}"
+    return "VARCHAR(255)"
+
+
+def _build_merge_superset(
+    per_source_columns: list[list[dict]],
+    per_source_fk_columns: list[list[dict]],
+    type_map: dict[str, str],
+) -> tuple[list[dict], list[list[dict]]]:
+    """Build the canonical column superset for a multi-source merge.
+
+    Each per-source staging view must project an identical, ordered column list
+    so the parent ``UNION ALL`` is positionally consistent.  This merges the
+    scoped per-source data columns and per-source FK columns into one
+    deterministic canonical order (all data columns in source/property order,
+    then all FK columns) and pads each source's missing columns with
+    ``CAST(NULL AS <type>) as <col>``.
+
+    Args:
+        per_source_columns: data column dicts for each source (source order).
+        per_source_fk_columns: FK column dicts for each source (source order).
+        type_map: column-name → canonical SQL type, for NULL pads.
+
+    Returns:
+        ``(canonical_columns, padded_per_source)`` where ``canonical_columns``
+        is the ordered list of ``{"target_name": ...}`` and
+        ``padded_per_source`` is, for each source, the full column list in
+        canonical order with NULL pads for absent columns.
+    """
+    data_order: list[str] = []
+    fk_order: list[str] = []
+    seen: set[str] = set()
+    for cols in per_source_columns:
+        for col in cols:
+            name = col["target_name"]
+            if name not in seen:
+                seen.add(name)
+                data_order.append(name)
+    for cols in per_source_fk_columns:
+        for col in cols:
+            name = col["target_name"]
+            if name not in seen:
+                seen.add(name)
+                fk_order.append(name)
+    canonical_order = data_order + fk_order
+    canonical_columns = [{"target_name": n} for n in canonical_order]
+
+    padded_per_source: list[list[dict]] = []
+    for data_cols, fk_cols in zip(per_source_columns, per_source_fk_columns):
+        by_name: dict[str, dict] = {c["target_name"]: c for c in data_cols}
+        by_name.update({c["target_name"]: c for c in fk_cols})
+        padded: list[dict] = []
+        for name in canonical_order:
+            if name in by_name:
+                padded.append(by_name[name])
+            else:
+                pad_type = _merge_pad_type(name, type_map)
+                padded.append({
+                    "expression": f"CAST(NULL AS {pad_type})",
+                    "target_name": name,
+                })
+        padded_per_source.append(padded)
+    return canonical_columns, padded_per_source
 
 
 def _build_sk_expression(
@@ -1782,10 +1914,22 @@ def _resolve_fk_source_column(
     systems: list[dict] | None,
     fk_col_name: str,
     range_local: str,
-) -> tuple[str | None, list[str] | None]:
+    auto_inference_ambiguous: bool = False,
+) -> tuple[str | None, list[str] | None, str]:
     """Resolve the source column(s) for an FK property via mappings or auto-inference.
 
-    Returns (source_col_name, source_columns) or (None, None) if unresolved.
+    Args:
+        auto_inference_ambiguous: When True, the property's join target is shared by
+            another FK property on the same class, so the range natural key cannot
+            disambiguate roles.  Auto-inference is disabled and the property is resolved
+            only from an explicit SKOS mapping.
+
+    Returns:
+        (source_col_name, source_columns, status) where status is one of:
+        - ``"resolved"``: a source column was found (via explicit mapping or auto-inference)
+        - ``"not_found"``: no explicit mapping and auto-inference found no match
+        - ``"ambiguous_auto_inference"``: no explicit mapping and auto-inference was
+          skipped because the join target is shared by multiple FK properties
     """
     source_col_name = None
     source_columns: list[str] | None = None
@@ -1809,7 +1953,12 @@ def _resolve_fk_source_column(
             break
 
     if source_col_name is not None:
-        return source_col_name, source_columns
+        return source_col_name, source_columns, "resolved"
+
+    # Auto-inference is unsafe when ≥2 FK properties share this join target: the range
+    # natural key is identical, so it cannot tell which role the mapped columns play.
+    if auto_inference_ambiguous:
+        return None, None, "ambiguous_auto_inference"
 
     # Auto-inference: find source column mapped to NK of range class
     current_table_col_uris: set[str] = set()
@@ -1822,7 +1971,7 @@ def _resolve_fk_source_column(
     nk_prop_uris = _get_nk_property_uris(graph, str(range_cls))
 
     if not nk_prop_uris or not current_table_col_uris:
-        return None, None
+        return None, None, "not_found"
 
     # Collect all candidates per NK property — require exactly one
     # unambiguous candidate per NK component
@@ -1865,7 +2014,8 @@ def _resolve_fk_source_column(
         )
         logger.info(msg)
 
-    return source_col_name, source_columns
+    status = "resolved" if source_col_name is not None else "not_found"
+    return source_col_name, source_columns, status
 
 
 def _build_fk_join_clause(
@@ -1970,12 +2120,33 @@ def _extract_fk_columns_and_joins(
     # Also include FK columns redirected to this class via silverForeignKeyOn
     fk_targets.extend(_infer_fk_on_targets(graph, class_uri))
 
+    # Detect FK properties that share the same auto-inference signature: their range
+    # natural keys resolve to the *same* property URIs, so NK-based auto-inference would
+    # grab the same source columns and cannot tell which role they play. Such targets
+    # must be resolved from explicit mappings only. Keying on the NK-property signature
+    # (rather than the range class URI) also catches discriminator-folded subtypes that
+    # inherit the same parent natural key. Targets with no natural key cannot auto-infer
+    # at all, so an empty signature is never treated as a collision.
+    ambiguity_key_counts: dict[tuple, int] = {}
+    target_keys: list[tuple | None] = []
     for target_info in fk_targets:
+        nk_sig = tuple(_get_nk_property_uris(graph, str(target_info["range_cls"])))
+        key = nk_sig if nk_sig else None
+        target_keys.append(key)
+        if key is not None:
+            ambiguity_key_counts[key] = ambiguity_key_counts.get(key, 0) + 1
+
+    for target_info, ambiguity_key in zip(fk_targets, target_keys):
         prop = target_info["prop"]
         range_cls = target_info["range_cls"]
         range_local = target_info["range_local"]
         range_model = target_info["range_model"]
         fk_col_name = target_info["fk_col_name"]
+
+        auto_inference_ambiguous = (
+            ambiguity_key is not None
+            and ambiguity_key_counts.get(ambiguity_key, 0) > 1
+        )
 
         # Disambiguate duplicate FK column names
         if fk_col_name in existing_aliases:
@@ -1983,28 +2154,38 @@ def _extract_fk_columns_and_joins(
             fk_col_name = f"{prop_suffix}_sk"
 
         # Resolve source column via mapping or auto-inference
-        source_col_name, source_columns = _resolve_fk_source_column(
+        source_col_name, source_columns, status = _resolve_fk_source_column(
             prop, mappings, bronze_col_lookup, graph, range_cls,
             source_refs, systems, fk_col_name, range_local,
+            auto_inference_ambiguous=auto_inference_ambiguous,
         )
 
         if source_col_name is None:
-            # No explicit mapping and auto-inference failed — emit NULL placeholder
+            # Unresolved — emit NULL placeholder with a status-specific warning
             prop_local = extract_local_name(str(prop))
             fk_columns.append({
                 "expression": "CAST(NULL AS {{ dbt.type_string() }})",
                 "target_name": fk_col_name,
             })
-            remediation = (
-                f"Add 'bronze:<col> skos:exactMatch <{prop}>' to your mapping "
-                f"file, or map a source column to the natural key of "
-                f"'{range_local}'."
-            )
-            msg = (
-                f"FK column '{fk_col_name}' has no mapping for property "
-                f"'{prop_local}' and auto-inference found no match — "
-                f"emitting NULL placeholder. {remediation}"
-            )
+            if status == "ambiguous_auto_inference":
+                msg = (
+                    f"FK column '{fk_col_name}': multiple FK properties on this class "
+                    f"target '{range_local}'; auto-inference is ambiguous — add an "
+                    f"explicit mapping for '{prop_local}' (e.g. "
+                    f"'bronze:<col> skos:exactMatch <{prop}>'). Emitting NULL "
+                    f"placeholder."
+                )
+            else:
+                remediation = (
+                    f"Add 'bronze:<col> skos:exactMatch <{prop}>' to your mapping "
+                    f"file, or map a source column to the natural key of "
+                    f"'{range_local}'."
+                )
+                msg = (
+                    f"FK column '{fk_col_name}' has no mapping for property "
+                    f"'{prop_local}' and auto-inference found no match — "
+                    f"emitting NULL placeholder. {remediation}"
+                )
             warnings.append(msg)
             existing_aliases.add(fk_col_name)
             continue

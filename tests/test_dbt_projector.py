@@ -23,6 +23,8 @@ from kairos_ontology.projections.medallion_dbt_projector import (
     _source_type_to_target,
     _xsd_to_target,
     _extract_fk_columns_and_joins,
+    _build_merge_superset,
+    _merge_pad_type,
     _get_natural_key,
     _get_nk_property_uris,
     _get_raw_natural_key,
@@ -1406,6 +1408,688 @@ class TestFKAutoInference:
         # Warning should include remediation guidance
         assert "natural key" in warnings[0].lower() or "mapping" in warnings[0].lower()
         assert "ClientType" in warnings[0] or "client_type" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# FK auto-inference ambiguity: multiple FK properties sharing the same range
+# (regression for issue #174)
+# ---------------------------------------------------------------------------
+
+FK_SAME_RANGE_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "Test Same-Range FK" ;
+        owl:versionInfo "1.0.0" .
+
+    ex:TradeParty a owl:Class ;
+        rdfs:label "Trade Party" ;
+        rdfs:comment "A trading party" ;
+        kairos-ext:naturalKey "partyId" .
+
+    ex:partyId a owl:DatatypeProperty ;
+        rdfs:domain ex:TradeParty ;
+        rdfs:range xsd:string .
+
+    ex:Address a owl:Class ;
+        rdfs:label "Address" ;
+        rdfs:comment "A postal address" ;
+        kairos-ext:naturalKey "addressCode" .
+
+    ex:addressCode a owl:DatatypeProperty ;
+        rdfs:domain ex:Address ;
+        rdfs:range xsd:string .
+
+    ex:hasBillingAddress a owl:ObjectProperty ;
+        rdfs:label "has billing address" ;
+        rdfs:domain ex:TradeParty ;
+        rdfs:range ex:Address ;
+        kairos-ext:silverForeignKey "true" ;
+        kairos-ext:silverColumnName "billing_address_sk" .
+
+    ex:hasShippingAddress a owl:ObjectProperty ;
+        rdfs:label "has shipping address" ;
+        rdfs:domain ex:TradeParty ;
+        rdfs:range ex:Address ;
+        kairos-ext:silverForeignKey "true" ;
+        kairos-ext:silverColumnName "shipping_address_sk" .
+""")
+
+
+class TestAmbiguousSameRangeFK:
+    """Regression tests for issue #174.
+
+    When ≥2 FK properties on a class share the same range natural key, NK-based
+    auto-inference cannot disambiguate roles and must be disabled — unmapped roles
+    emit a NULL placeholder plus an explicit ambiguity warning, while explicitly
+    mapped roles are unaffected.
+    """
+
+    PARTY_URI = "http://kairos.example/ontology/TradeParty"
+    BILLING_PROP = "http://kairos.example/ontology/hasBillingAddress"
+    SHIPPING_PROP = "http://kairos.example/ontology/hasShippingAddress"
+    ADDRESS_CODE = "http://kairos.example/ontology/addressCode"
+    TBL = "https://example.com/bronze/erp#tblParty"
+    COL_BILLING = "https://example.com/bronze/erp#tblParty_BillingAddress"
+    COL_SHIPPING = "https://example.com/bronze/erp#tblParty_ShippingAddress"
+
+    @pytest.fixture
+    def graph(self):
+        g = Graph()
+        g.parse(data=FK_SAME_RANGE_ONTOLOGY_TTL, format="turtle")
+        return g
+
+    @pytest.fixture
+    def systems(self):
+        return [{
+            "system_label": "ERP",
+            "tables": [{
+                "uri": self.TBL,
+                "name": "tblParty",
+                "columns": [
+                    {"uri": f"{self.TBL}_PartyID", "name": "PartyID",
+                     "data_type": "int"},
+                    {"uri": self.COL_BILLING, "name": "BillingAddress",
+                     "data_type": "varchar"},
+                    {"uri": self.COL_SHIPPING, "name": "ShippingAddress",
+                     "data_type": "varchar"},
+                ],
+            }],
+        }]
+
+    @property
+    def source_refs(self):
+        return [("erp", "tblParty", self.TBL)]
+
+    def _fk_by_name(self, fk_columns, name):
+        return next(c for c in fk_columns if c["target_name"] == name)
+
+    def test_issue_174_unmapped_sibling_not_cross_contaminated(self, graph, systems):
+        """Billing mapped explicitly; shipping unmapped → shipping is NULL, not joined."""
+        # Billing column is mapped both to the FK property (explicit) and to the
+        # Address natural key — the exact setup that previously mis-resolved shipping.
+        mappings = {
+            "table_maps": {},
+            "column_maps": {
+                self.COL_BILLING: [
+                    {"target_uri": self.BILLING_PROP,
+                     "transform": "source.BillingAddress", "match_type": "exactMatch"},
+                    {"target_uri": self.ADDRESS_CODE,
+                     "transform": "source.BillingAddress", "match_type": "exactMatch"},
+                ],
+            },
+        }
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            graph, self.PARTY_URI, mappings, self.source_refs, systems=systems,
+        )
+
+        billing = self._fk_by_name(fk_columns, "billing_address_sk")
+        shipping = self._fk_by_name(fk_columns, "shipping_address_sk")
+
+        # Billing resolves via explicit mapping
+        assert "NULL" not in billing["expression"]
+        # Shipping is NOT cross-contaminated — emitted as NULL placeholder
+        assert "NULL" in shipping["expression"]
+
+        # Only the billing join exists; shipping has none
+        assert len(joins) == 1
+        assert "BillingAddress" in joins[0]["condition"]
+
+        # Exactly one ambiguity warning, naming the shipping role
+        amb = [w for w in warnings if "ambiguous" in w.lower()]
+        assert len(amb) == 1
+        assert "shipping_address_sk" in amb[0]
+        assert "hasShippingAddress" in amb[0]
+
+    def test_both_mapped_resolve_without_warning(self, graph, systems):
+        """Both same-range FKs explicitly mapped → both resolve, no ambiguity warning."""
+        mappings = {
+            "table_maps": {},
+            "column_maps": {
+                self.COL_BILLING: [
+                    {"target_uri": self.BILLING_PROP,
+                     "transform": "source.BillingAddress", "match_type": "exactMatch"},
+                ],
+                self.COL_SHIPPING: [
+                    {"target_uri": self.SHIPPING_PROP,
+                     "transform": "source.ShippingAddress", "match_type": "exactMatch"},
+                ],
+            },
+        }
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            graph, self.PARTY_URI, mappings, self.source_refs, systems=systems,
+        )
+
+        billing = self._fk_by_name(fk_columns, "billing_address_sk")
+        shipping = self._fk_by_name(fk_columns, "shipping_address_sk")
+        assert "NULL" not in billing["expression"]
+        assert "NULL" not in shipping["expression"]
+        assert len(joins) == 2
+        assert not [w for w in warnings if "ambiguous" in w.lower()]
+
+    def test_all_unmapped_both_ambiguous(self, graph, systems):
+        """Both same-range FKs unmapped → both NULL with ambiguity warnings."""
+        mappings = {"table_maps": {}, "column_maps": {}}
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            graph, self.PARTY_URI, mappings, self.source_refs, systems=systems,
+        )
+        assert all("NULL" in c["expression"] for c in fk_columns)
+        assert len(joins) == 0
+        amb = [w for w in warnings if "ambiguous" in w.lower()]
+        assert len(amb) == 2
+
+    def test_single_range_fk_still_auto_infers(
+        self, autoinfer_graph, systems_with_fk_column, mappings_with_nk_column
+    ):
+        """A lone FK property to a range still auto-infers (no false ambiguity)."""
+        source_refs = [(
+            "adminpulse", "tblClient",
+            "https://example.com/bronze/adminpulse#tblClient",
+        )]
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            autoinfer_graph,
+            "http://kairos.example/ontology/Client",
+            mappings_with_nk_column,
+            source_refs,
+            systems=systems_with_fk_column,
+        )
+        assert len(joins) == 1
+        assert not [w for w in warnings if "ambiguous" in w.lower()]
+
+    def test_discriminator_folded_subtypes_share_nk_are_ambiguous(self):
+        """Two FK props to distinct subtypes sharing an inherited parent NK collide."""
+        ttl = textwrap.dedent("""\
+            @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+            @prefix ex:   <http://kairos.example/ontology/> .
+            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+            <http://kairos.example/ontology> a owl:Ontology ;
+                rdfs:label "Folded" ; owl:versionInfo "1.0.0" .
+
+            ex:Party a owl:Class ; rdfs:label "Party" ; rdfs:comment "p" ;
+                kairos-ext:naturalKey "partyId" ;
+                kairos-ext:inheritanceStrategy "discriminator" .
+            ex:partyId a owl:DatatypeProperty ;
+                rdfs:domain ex:Party ; rdfs:range xsd:string .
+            ex:LegalEntity a owl:Class ; rdfs:subClassOf ex:Party ;
+                rdfs:label "Legal Entity" ; rdfs:comment "le" .
+            ex:NaturalPerson a owl:Class ; rdfs:subClassOf ex:Party ;
+                rdfs:label "Natural Person" ; rdfs:comment "np" .
+
+            ex:Invoice a owl:Class ; rdfs:label "Invoice" ; rdfs:comment "i" ;
+                kairos-ext:naturalKey "invoiceId" .
+            ex:invoiceId a owl:DatatypeProperty ;
+                rdfs:domain ex:Invoice ; rdfs:range xsd:string .
+            ex:billedToLegalEntity a owl:ObjectProperty ;
+                rdfs:label "billed to legal entity" ;
+                rdfs:domain ex:Invoice ; rdfs:range ex:LegalEntity ;
+                kairos-ext:silverForeignKey "true" ;
+                kairos-ext:silverColumnName "legal_party_sk" .
+            ex:billedToNaturalPerson a owl:ObjectProperty ;
+                rdfs:label "billed to natural person" ;
+                rdfs:domain ex:Invoice ; rdfs:range ex:NaturalPerson ;
+                kairos-ext:silverForeignKey "true" ;
+                kairos-ext:silverColumnName "person_party_sk" .
+        """)
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        tbl = "https://example.com/bronze/erp#tblInvoice"
+        systems = [{
+            "system_label": "ERP",
+            "tables": [{
+                "uri": tbl, "name": "tblInvoice",
+                "columns": [
+                    {"uri": f"{tbl}_InvoiceID", "name": "InvoiceID",
+                     "data_type": "int"},
+                    {"uri": f"{tbl}_PartyRef", "name": "PartyRef",
+                     "data_type": "varchar"},
+                ],
+            }],
+        }]
+        # PartyRef mapped to the shared parent NK partyId — would mis-resolve both FKs
+        mappings = {
+            "table_maps": {},
+            "column_maps": {
+                f"{tbl}_PartyRef": [{
+                    "target_uri": "http://kairos.example/ontology/partyId",
+                    "transform": "source.PartyRef", "match_type": "exactMatch",
+                }],
+            },
+        }
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            g, "http://kairos.example/ontology/Invoice", mappings,
+            [("erp", "tblInvoice", tbl)], systems=systems,
+        )
+        assert all("NULL" in c["expression"] for c in fk_columns)
+        assert len(joins) == 0
+        amb = [w for w in warnings if "ambiguous" in w.lower()]
+        assert len(amb) == 2
+
+    def test_silver_fk_on_duplicate_join_target_is_ambiguous(self):
+        """Two silverForeignKeyOn props redirected onto the same class collide."""
+        ttl = textwrap.dedent("""\
+            @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+            @prefix ex:   <http://kairos.example/ontology/> .
+            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+            <http://kairos.example/ontology> a owl:Ontology ;
+                rdfs:label "FKOn" ; owl:versionInfo "1.0.0" .
+
+            ex:TradeParty a owl:Class ; rdfs:label "Trade Party" ; rdfs:comment "tp" ;
+                kairos-ext:naturalKey "partyId" .
+            ex:partyId a owl:DatatypeProperty ;
+                rdfs:domain ex:TradeParty ; rdfs:range xsd:string .
+            ex:Address a owl:Class ; rdfs:label "Address" ; rdfs:comment "a" ;
+                kairos-ext:naturalKey "addressCode" .
+            ex:addressCode a owl:DatatypeProperty ;
+                rdfs:domain ex:Address ; rdfs:range xsd:string .
+
+            ex:hasBillingAddress a owl:ObjectProperty ;
+                rdfs:label "billing" ;
+                rdfs:domain ex:TradeParty ; rdfs:range ex:Address ;
+                kairos-ext:silverForeignKeyOn ex:Address ;
+                kairos-ext:silverColumnName "billing_party_sk" .
+            ex:hasShippingAddress a owl:ObjectProperty ;
+                rdfs:label "shipping" ;
+                rdfs:domain ex:TradeParty ; rdfs:range ex:Address ;
+                kairos-ext:silverForeignKeyOn ex:Address ;
+                kairos-ext:silverColumnName "shipping_party_sk" .
+        """)
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        tbl = "https://example.com/bronze/erp#tblAddress"
+        systems = [{
+            "system_label": "ERP",
+            "tables": [{
+                "uri": tbl, "name": "tblAddress",
+                "columns": [
+                    {"uri": f"{tbl}_PartyRef", "name": "PartyRef",
+                     "data_type": "varchar"},
+                ],
+            }],
+        }]
+        # PartyRef mapped to the shared join-target NK partyId
+        mappings = {
+            "table_maps": {},
+            "column_maps": {
+                f"{tbl}_PartyRef": [{
+                    "target_uri": "http://kairos.example/ontology/partyId",
+                    "transform": "source.PartyRef", "match_type": "exactMatch",
+                }],
+            },
+        }
+        # Build the Address model — FK columns are redirected here via silverForeignKeyOn
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            g, "http://kairos.example/ontology/Address", mappings,
+            [("erp", "tblAddress", tbl)], systems=systems,
+        )
+        assert all("NULL" in c["expression"] for c in fk_columns)
+        assert len(joins) == 0
+        amb = [w for w in warnings if "ambiguous" in w.lower()]
+        assert len(amb) == 2
+
+    @pytest.fixture
+    def autoinfer_graph(self):
+        g = Graph()
+        g.parse(data=FK_AUTOINFER_ONTOLOGY_TTL, format="turtle")
+        return g
+
+    @pytest.fixture
+    def systems_with_fk_column(self):
+        return [{
+            "system_label": "AdminPulse",
+            "tables": [{
+                "uri": "https://example.com/bronze/adminpulse#tblClient",
+                "name": "tblClient",
+                "columns": [
+                    {"uri": "https://example.com/bronze/adminpulse#tblClient_ClientID",
+                     "name": "ClientID", "data_type": "int"},
+                    {"uri": "https://example.com/bronze/adminpulse#tblClient_TypeCode",
+                     "name": "TypeCode", "data_type": "int"},
+                ],
+            }],
+        }]
+
+    @pytest.fixture
+    def mappings_with_nk_column(self):
+        return {
+            "table_maps": {
+                "https://example.com/bronze/adminpulse#tblClient": [{
+                    "target_uri": "http://kairos.example/ontology/Client",
+                    "mapping_type": "direct",
+                }],
+            },
+            "column_maps": {
+                "https://example.com/bronze/adminpulse#tblClient_ClientID": [{
+                    "target_uri": "http://kairos.example/ontology/clientId",
+                    "transform": "CAST(source.ClientID AS STRING)",
+                    "match_type": "exactMatch",
+                }],
+                "https://example.com/bronze/adminpulse#tblClient_TypeCode": [{
+                    "target_uri": "http://kairos.example/ontology/typeCode",
+                    "transform": "source.TypeCode",
+                    "match_type": "exactMatch",
+                }],
+            },
+        }
+
+
+# ---------------------------------------------------------------------------
+# Multi-source merge: canonical superset padding (issue #175)
+# ---------------------------------------------------------------------------
+
+class TestMergeSupersetPadding:
+    """Verify the merge superset builder produces positionally consistent,
+    NULL-padded per-source column lists so the parent UNION ALL is valid."""
+
+    def test_superset_is_union_of_all_sources(self):
+        """Canonical order = all data cols (source order) then all FK cols."""
+        src_a = [
+            {"expression": "a_expr", "target_name": "client_id"},
+            {"expression": "n_expr", "target_name": "client_name"},
+            {"expression": "v_expr", "target_name": "vat_number"},
+        ]
+        src_b = [
+            {"expression": "b_id", "target_name": "client_id"},
+            {"expression": "b_name", "target_name": "client_name"},
+            {"expression": "b_city", "target_name": "city"},
+        ]
+        fk_a = [{"expression": "ref.client_type_sk", "target_name": "client_type_sk"}]
+        fk_b = [{"expression": "CAST(NULL AS x)", "target_name": "client_type_sk"}]
+        type_map = {
+            "client_id": "VARCHAR(255)", "client_name": "VARCHAR(255)",
+            "vat_number": "VARCHAR(255)", "city": "VARCHAR(255)",
+        }
+        canonical, padded = _build_merge_superset([src_a, src_b], [fk_a, fk_b], type_map)
+        names = [c["target_name"] for c in canonical]
+        # Data columns first (source order, de-duplicated), then FK columns
+        assert names == [
+            "client_id", "client_name", "vat_number", "city", "client_type_sk",
+        ]
+
+    def test_all_sources_have_identical_column_count_and_order(self):
+        src_a = [{"expression": "a", "target_name": "client_id"},
+                 {"expression": "v", "target_name": "vat_number"}]
+        src_b = [{"expression": "b", "target_name": "client_id"},
+                 {"expression": "c", "target_name": "city"}]
+        canonical, padded = _build_merge_superset(
+            [src_a, src_b], [[], []], {"vat_number": "VARCHAR(255)", "city": "INT"}
+        )
+        names = [c["target_name"] for c in canonical]
+        for cols in padded:
+            assert [c["target_name"] for c in cols] == names
+
+    def test_missing_column_is_null_padded_with_canonical_type(self):
+        src_a = [{"expression": "v", "target_name": "vat_number"}]
+        src_b = [{"expression": "c", "target_name": "city"}]
+        type_map = {"vat_number": "VARCHAR(255)", "city": "INT"}
+        _canonical, padded = _build_merge_superset(
+            [src_a, src_b], [[], []], type_map
+        )
+        # Source B is missing vat_number → CAST(NULL AS VARCHAR(255))
+        b_by_name = {c["target_name"]: c["expression"] for c in padded[1]}
+        assert b_by_name["vat_number"] == "CAST(NULL AS VARCHAR(255))"
+        # Source A is missing city → CAST(NULL AS INT)
+        a_by_name = {c["target_name"]: c["expression"] for c in padded[0]}
+        assert a_by_name["city"] == "CAST(NULL AS INT)"
+        # Mapped columns keep their real expression
+        assert a_by_name["vat_number"] == "v"
+
+    def test_label_and_sk_pads_use_string_macro(self):
+        """_label and FK _sk pad columns use the portable dbt string macro."""
+        assert _merge_pad_type("status_label", {}) == "{{ dbt.type_string() }}"
+        assert _merge_pad_type("client_type_sk", {}) == "{{ dbt.type_string() }}"
+        # Known datatype column uses its canonical type
+        assert _merge_pad_type("vat_number", {"vat_number": "VARCHAR(50)"}) == "VARCHAR(50)"
+        # Unknown plain column falls back to VARCHAR(255)
+        assert _merge_pad_type("mystery", {}) == "VARCHAR(255)"
+
+    def test_label_column_padded_when_only_one_source_has_enum(self):
+        """A _label column present in one source is NULL-padded in the other."""
+        src_a = [
+            {"expression": "s", "target_name": "status"},
+            {"expression": "case...", "target_name": "status_label"},
+        ]
+        src_b = [{"expression": "s2", "target_name": "status"}]
+        _canonical, padded = _build_merge_superset(
+            [src_a, src_b], [[], []], {"status": "VARCHAR(255)"}
+        )
+        b_by_name = {c["target_name"]: c["expression"] for c in padded[1]}
+        assert b_by_name["status_label"] == "CAST(NULL AS {{ dbt.type_string() }})"
+
+
+# ---------------------------------------------------------------------------
+# Multi-source merge: per-source FK joins + union flow (issue #175)
+# ---------------------------------------------------------------------------
+
+MERGE_FK_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "Merge FK" ; owl:versionInfo "1.0.0" .
+
+    ex:Client a owl:Class ; rdfs:label "Client" ; rdfs:comment "c" ;
+        kairos-ext:naturalKey "clientId" .
+    ex:clientId a owl:DatatypeProperty ;
+        rdfs:domain ex:Client ; rdfs:range xsd:string .
+    ex:clientName a owl:DatatypeProperty ;
+        rdfs:label "name" ; rdfs:comment "n" ;
+        rdfs:domain ex:Client ; rdfs:range xsd:string .
+
+    ex:ClientType a owl:Class ; rdfs:label "Client Type" ; rdfs:comment "ct" ;
+        kairos-ext:naturalKey "typeCode" .
+    ex:typeCode a owl:DatatypeProperty ;
+        rdfs:domain ex:ClientType ; rdfs:range xsd:string .
+
+    ex:hasType a owl:ObjectProperty ;
+        rdfs:label "has type" ; rdfs:comment "ht" ;
+        rdfs:domain ex:Client ; rdfs:range ex:ClientType ;
+        kairos-ext:silverForeignKey "true" .
+""")
+
+
+class TestMergeFKPerSource:
+    """Each per-source staging view is single-source, so FK joins resolve there
+    and the _sk column flows through the union as a canonical column."""
+
+    CLIENT_URI = "http://kairos.example/ontology/Client"
+
+    @pytest.fixture
+    def graph(self):
+        g = Graph()
+        g.parse(data=MERGE_FK_ONTOLOGY_TTL, format="turtle")
+        return g
+
+    @pytest.fixture
+    def systems(self):
+        ap = "https://example.com/bronze/ap#tblClient"
+        crm = "https://example.com/bronze/crm#Customers"
+        return [
+            {"system_label": "ap", "tables": [{
+                "uri": ap, "name": "tblClient",
+                "columns": [
+                    {"uri": f"{ap}_ClientID", "name": "ClientID", "data_type": "int"},
+                    {"uri": f"{ap}_TypeCode", "name": "TypeCode", "data_type": "varchar"},
+                ],
+            }]},
+            {"system_label": "crm", "tables": [{
+                "uri": crm, "name": "Customers",
+                "columns": [
+                    {"uri": f"{crm}_CustCode", "name": "CustCode", "data_type": "varchar"},
+                ],
+            }]},
+        ]
+
+    def test_mapping_source_resolves_fk_join(self, graph, systems):
+        """The source mapping the FK NK gets a real join + _sk column."""
+        ap = "https://example.com/bronze/ap#tblClient"
+        mappings = {
+            "table_maps": {},
+            "column_maps": {
+                f"{ap}_TypeCode": [{
+                    "target_uri": "http://kairos.example/ontology/typeCode",
+                    "transform": "source.TypeCode", "match_type": "exactMatch",
+                }],
+            },
+        }
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            graph, self.CLIENT_URI, mappings,
+            [("ap", "tblClient", ap)], systems=systems,
+        )
+        assert len(joins) == 1
+        assert any(c["target_name"] == "client_type_sk"
+                   and "NULL" not in c["expression"] for c in fk_columns)
+
+    def test_non_mapping_source_pads_null(self, graph, systems):
+        """A source that does not map the FK NK emits a NULL placeholder, no join."""
+        crm = "https://example.com/bronze/crm#Customers"
+        mappings = {"table_maps": {}, "column_maps": {}}
+        fk_columns, joins, warnings = _extract_fk_columns_and_joins(
+            graph, self.CLIENT_URI, mappings,
+            [("crm", "Customers", crm)], systems=systems,
+        )
+        assert len(joins) == 0
+        assert all("NULL" in c["expression"] for c in fk_columns)
+        assert any("client_type_sk" == c["target_name"] for c in fk_columns)
+
+    def test_fk_sk_in_superset_from_one_source(self, graph, systems):
+        """The FK _sk column is part of the canonical superset even if only one
+        source resolves it — flows through the union, never silently dropped."""
+        fk_a = [{"expression": "ref.client_type_sk", "target_name": "client_type_sk"}]
+        fk_b = [{"expression": "CAST(NULL AS x)", "target_name": "client_type_sk"}]
+        data_a = [{"expression": "id", "target_name": "client_id"}]
+        data_b = [{"expression": "id2", "target_name": "client_id"}]
+        canonical, padded = _build_merge_superset(
+            [data_a, data_b], [fk_a, fk_b], {"client_id": "VARCHAR(255)"}
+        )
+        names = [c["target_name"] for c in canonical]
+        assert "client_type_sk" in names
+        # Both per-source views carry the FK column
+        for cols in padded:
+            assert any(c["target_name"] == "client_type_sk" for c in cols)
+
+
+# ---------------------------------------------------------------------------
+# Multi-source merge: natural-key coverage warning (issue #175)
+# ---------------------------------------------------------------------------
+
+_NK_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "NK Coverage" ; owl:versionInfo "1.0.0" .
+
+    ex:Client a owl:Class ; rdfs:label "Client" ; rdfs:comment "c" ;
+        kairos-ext:naturalKey "clientId" .
+    ex:clientId a owl:DatatypeProperty ;
+        rdfs:label "client id" ; rdfs:comment "id" ;
+        rdfs:domain ex:Client ; rdfs:range xsd:string .
+    ex:clientName a owl:DatatypeProperty ;
+        rdfs:label "client name" ; rdfs:comment "n" ;
+        rdfs:domain ex:Client ; rdfs:range xsd:string .
+""")
+
+_NK_BRONZE_AP_TTL = textwrap.dedent("""\
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+    bronze-ap:AdminPulse a kairos-bronze:SourceSystem ; rdfs:label "AdminPulse" .
+    bronze-ap:tblClient a kairos-bronze:SourceTable ;
+        rdfs:label "tblClient" ;
+        kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+        kairos-bronze:tableName "tblClient" ;
+        kairos-bronze:primaryKeyColumns "ClientID" .
+    bronze-ap:tblClient_ClientID a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblClient ;
+        kairos-bronze:columnName "ClientID" ; kairos-bronze:dataType "int" .
+    bronze-ap:tblClient_Name a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblClient ;
+        kairos-bronze:columnName "Name" ; kairos-bronze:dataType "nvarchar(255)" .
+""")
+
+_NK_BRONZE_CRM_TTL = textwrap.dedent("""\
+    @prefix bronze-crm: <https://example.com/bronze/crm#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+    bronze-crm:CrmSystem a kairos-bronze:SourceSystem ; rdfs:label "CrmSystem" .
+    bronze-crm:Customers a kairos-bronze:SourceTable ;
+        rdfs:label "Customers" ;
+        kairos-bronze:sourceSystem bronze-crm:CrmSystem ;
+        kairos-bronze:tableName "Customers" .
+    bronze-crm:Customers_CustName a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-crm:Customers ;
+        kairos-bronze:columnName "CustName" ; kairos-bronze:dataType "nvarchar(255)" .
+""")
+
+# CRM maps clientName but NOT clientId (the natural key) → NK-coverage warning
+_NK_MAPPING_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix bronze-crm: <https://example.com/bronze/crm#> .
+    @prefix ex: <http://kairos.example/ontology/> .
+
+    bronze-ap:tblClient skos:exactMatch ex:Client ;
+        kairos-map:mappingType "direct" .
+    bronze-ap:tblClient_ClientID skos:exactMatch ex:clientId .
+    bronze-ap:tblClient_Name skos:exactMatch ex:clientName .
+
+    bronze-crm:Customers skos:exactMatch ex:Client ;
+        kairos-map:mappingType "direct" .
+    bronze-crm:Customers_CustName skos:exactMatch ex:clientName .
+""")
+
+
+class TestMergeNKCoverageWarning:
+    """A source that does not map a natural-key column triggers a loud warning."""
+
+    def test_missing_nk_in_one_source_warns(self, tmp_path, template_dir, caplog):
+        graph = Graph()
+        graph.parse(data=_NK_ONTOLOGY_TTL, format="turtle")
+        bronze = tmp_path / "bronze"
+        bronze.mkdir()
+        (bronze / "adminpulse.ttl").write_text(_NK_BRONZE_AP_TTL, encoding="utf-8")
+        (bronze / "crm.ttl").write_text(_NK_BRONZE_CRM_TTL, encoding="utf-8")
+        mappings = tmp_path / "mappings"
+        mappings.mkdir()
+        (mappings / "to-client.ttl").write_text(_NK_MAPPING_TTL, encoding="utf-8")
+
+        classes = [{
+            "uri": "http://kairos.example/ontology/Client",
+            "name": "Client", "label": "Client", "comment": "c",
+        }]
+        with caplog.at_level("WARNING"):
+            artifacts = generate_dbt_artifacts(
+                classes=classes, graph=graph, template_dir=template_dir,
+                namespace="http://kairos.example/ontology/",
+                ontology_name="client", bronze_dir=bronze, mappings_dir=mappings,
+            )
+        # Both per-source views generated → merge path was exercised
+        assert any("corporate" not in k and "__from_" in k for k in artifacts)
+        msgs = " ".join(r.getMessage() for r in caplog.records)
+        assert "natural-key column" in msgs and "client_id" in msgs, (
+            f"Expected NK-coverage warning naming client_id, got:\n{msgs}"
+        )
 
 
 # ---------------------------------------------------------------------------
