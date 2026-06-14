@@ -448,6 +448,14 @@ ontology-hub/.sessions-design/
 
 If a previous session exists, ask the user whether to continue or start fresh.
 
+> **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
+> start a new session instead of resuming, first move any existing
+> `.sessions-design/source-{system-name}-*.md` log(s) for this source system into
+> `ontology-hub/.sessions-design/_archive/` (create it if missing; keep the
+> original filename). Never delete a previous log. Then create the new session log.
+> This applies only to the interactive `.sessions-design/source-*.md` log, not the
+> separate `.sessions-design-import/` audit logs.
+
 ### Session file format
 
 Save to `ontology-hub/.sessions-design/source-{system-name}-{YYYY-MM-DD}.md`:

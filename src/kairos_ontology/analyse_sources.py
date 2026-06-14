@@ -520,6 +520,48 @@ def load_data_domains(ref_models_dir: Path, accelerator: str | None = None) -> d
     return {}
 
 
+def load_accelerator_uri_modules(
+    ref_models_dir: Path, accelerator: str | None = None
+) -> dict[str, dict[str, Any]]:
+    """Map each imported reference-model URI to its module label and owning domains.
+
+    Unlike :func:`load_data_domains` (which returns parallel ``uris``/``modules``
+    lists per domain), this preserves the per-import ``uri ↔ module`` pairing and
+    aggregates which data-domain ids import each URI — the metadata
+    ``propose-alignment`` needs to tag cross-module matches (issue #166, DD-070).
+
+    Returns ``{uri: {"module": str, "domains": [domain_id, ...]}}`` for one
+    accelerator pack's ``data-domains.yaml``. Empty dict when none is found.
+    """
+    if accelerator:
+        glob_pattern = f"accelerator-packs/{accelerator}/client-hub-blueprint/data-domains.yaml"
+    else:
+        glob_pattern = "accelerator-packs/*/client-hub-blueprint/data-domains.yaml"
+
+    for dd_path in ref_models_dir.glob(glob_pattern):
+        try:
+            with open(dd_path, encoding="utf-8") as f:
+                dd = yaml.safe_load(f)
+            result: dict[str, dict[str, Any]] = {}
+            for group in dd.get("groups", []):
+                for domain in group.get("domains", []):
+                    domain_id = domain.get("id", "")
+                    for imp in domain.get("imports", []) or []:
+                        uri = imp.get("uri")
+                        if not uri:
+                            continue
+                        entry = result.setdefault(uri, {"module": "", "domains": []})
+                        if not entry["module"] and imp.get("module"):
+                            entry["module"] = imp["module"]
+                        if domain_id and domain_id not in entry["domains"]:
+                            entry["domains"].append(domain_id)
+            logger.info("Loaded %d accelerator import URIs from %s", len(result), dd_path)
+            return result
+        except Exception as e:
+            logger.warning("Failed to load data-domains.yaml: %s", e)
+    return {}
+
+
 def list_accelerator_packs(ref_models_dir: Path) -> list[str]:
     """List accelerator pack names that have a data-domains.yaml blueprint."""
     packs: list[str] = []

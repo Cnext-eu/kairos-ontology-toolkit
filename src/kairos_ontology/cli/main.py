@@ -1693,10 +1693,18 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
               help='Max concurrent per-table LLM calls (default: 8; use 1 for serial).')
 @click.option('--force', is_flag=True, default=False,
               help='Bypass caches (domain affinity skip + per-table cache) and re-align all.')
+@click.option('--cross-module', 'cross_module', is_flag=True, default=False,
+              help='DD-070 (issue #166): widen the property candidate pool to the whole '
+                   'accelerator so columns can match sibling/shared-module properties '
+                   '(e.g. a shared Address class). Requires --accelerator. Default output '
+                   'is unchanged.')
+@click.option('--accelerator', default=None,
+              help='Accelerator pack name whose data-domains.yaml defines the cross-module '
+                   'property pool (required with --cross-module).')
 def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
                           domains_filter, verbose, quiet, include_mapping_hints,
                           max_prompt_classes, retry_min_confidence, retry_min_mapped_ratio,
-                          max_workers, force):
+                          max_workers, force, cross_module, accelerator):
     """Propose source-column → reference-model-property alignment (LLM-powered).
 
     Pre-modeling step that analyses how source columns map to reference model
@@ -1763,6 +1771,26 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
     else:
         output_path = Path(output)
 
+    # DD-070: resolve the reference-models dir + validate cross-module prerequisites.
+    ref_models_dir = None
+    if cross_module:
+        ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
+        if not accelerator:
+            click.echo(
+                "❌ --cross-module requires --accelerator <name> (the accelerator "
+                "pack whose data-domains.yaml defines the cross-module pool).",
+                err=True,
+            )
+            raise SystemExit(1)
+        if ref_models_dir is None:
+            click.echo(
+                "❌ --cross-module needs a reference-models directory "
+                "(ontology-reference-models/). None found. Run "
+                "'kairos-ontology update-refmodels' first.",
+                err=True,
+            )
+            raise SystemExit(1)
+
     if not quiet:
         click.echo("📐 Proposing column→property alignment")
         click.echo(f"   Analysis: {analysis_path}")
@@ -1773,6 +1801,8 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             click.echo(f"   Domain filter: {domains_filter}")
         if include_mapping_hints:
             click.echo("   Mapping hints: enabled (DD-045)")
+        if cross_module:
+            click.echo(f"   Cross-module: enabled (accelerator: {accelerator}) [DD-070]")
         click.echo()
 
     filter_list = None
@@ -1802,6 +1832,9 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             max_workers=max_workers,
             force=force,
             cost_warning=not quiet,
+            cross_module=cross_module,
+            accelerator=accelerator,
+            ref_models_dir=ref_models_dir,
         )
         if not quiet:
             click.echo(

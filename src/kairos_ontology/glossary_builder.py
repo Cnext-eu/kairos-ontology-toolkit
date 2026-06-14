@@ -43,6 +43,16 @@ _SEE_ALSO = "seeAlso"
 _RELATED_MATCH = "relatedMatch"
 _VALID_RELATIONS = (_SEE_ALSO, _RELATED_MATCH)
 
+# DD-071: disclaimer stamped on every generated glossary ConceptScheme. The
+# business-discovery glossary is initial inspiration only — it is NOT updated
+# during modeling and its seeAlso/relatedMatch links may go stale by design.
+_NON_AUTHORITATIVE_NOTE = (
+    "Initial, inspirational artifact from business discovery. NOT an "
+    "authoritative mapping kept in sync with the domain ontology. The "
+    "seeAlso/relatedMatch links are inspiration only and are not reconciled "
+    "during modeling."
+)
+
 
 @dataclass
 class GlossaryConcept:
@@ -236,6 +246,11 @@ def build_glossary_graph(
     graph.add((scheme, RDFS.label, Literal(scheme_label)))
     if scheme_description:
         graph.add((scheme, DCTERMS.description, Literal(scheme_description)))
+    # DD-071: stamp every generated glossary as inspirational / non-authoritative
+    # so downstream modeling treats it as background context, not a binding source
+    # that must be kept in sync (seeAlso/relatedMatch links may go stale by design).
+    graph.add((scheme, RDFS.comment, Literal(_NON_AUTHORITATIVE_NOTE)))
+    graph.add((scheme, SKOS.editorialNote, Literal(_NON_AUTHORITATIVE_NOTE)))
 
     for concept in concepts:
         node = glossary[concept.local_name]

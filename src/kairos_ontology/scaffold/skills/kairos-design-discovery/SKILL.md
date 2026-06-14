@@ -103,14 +103,21 @@ company facts or glossary terms.
    > fresh**, or **review** it first?"
 3. If none exists, create one immediately (Gate 1), even if sparse.
 
+> **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
+> start a new session instead of resuming, first move any existing
+> `.sessions-design/businessdiscovery-*.md` log(s) into
+> `ontology-hub/.sessions-design/_archive/` (create it if missing; keep the
+> original filename). Never delete a previous log. Then create the new session log.
+
 > **Discovery is incremental and idempotent — reruns are expected.** A hub grows
 > one domain at a time, but discovery is **company-wide** and runs *before* the
 > first domain is modeled, so it deliberately captures terminology for domains that
 > don't exist in the hub yet. When you rerun discovery (e.g. before modeling the
 > next domain), treat it as a **continue**: re-materialize the inventories
-> (Phase 1a), re-link any previously **flagged** terms to the hub IRIs that now
-> exist, and append newly discovered terms. Never start from scratch unless the user
-> explicitly asks. See [Phase 4 — Rerun / incremental](#phase-4--rerun--incremental).
+> (Phase 1a), preserve previously generated glossary links as historical
+> inspiration, and append newly discovered terms. Never start from scratch unless
+> the user explicitly asks. See
+> [Phase 4 — Rerun / incremental](#phase-4--rerun--incremental).
 
 ### Phase 1a — Materialize reference-model breadth (read-only)
 
@@ -255,6 +262,13 @@ kairos-ontology build-glossary
    `linked_iri` → `rdfs:seeAlso` (or `skos:relatedMatch`). Auto-detected company
    namespace is `https://{company-domain}/glossary#`. The produced TTL looks like:
 
+   > **Glossary authority note (DD-071).** The generated glossary is inspirational
+   > background only, not an authoritative ontology artifact. It is not kept in sync
+   > with the domain ontology; `rdfs:seeAlso` / `skos:relatedMatch` links are
+   > initial hints and are not reconciled during modeling. The generated
+   > `skos:ConceptScheme` carries this disclaimer as both `rdfs:comment` and
+   > `skos:editorialNote`.
+
 ```turtle
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -291,8 +305,8 @@ glossary:TransportDocument a skos:Concept ;
    > match source columns to domain properties.
    >
    > 🔁 **Revisit discovery on each new domain.** When you start modeling the next
-   > domain, rerun this skill in **continue** mode — it will re-link the terms now
-   > flagged for modeling to their freshly-created hub IRIs and capture anything new."
+   > domain, rerun this skill in **continue** mode — it will keep prior glossary
+   > links as historical inspiration and capture anything new."
 
 ### Phase 4 — Rerun / incremental
 
@@ -304,14 +318,11 @@ the next domain), do **continue**, not start-fresh:
    `_extractions/{slug}.extraction.yaml`. Leave **up-to-date** documents untouched
    (their extraction already records what was pulled). This is what makes reruns cheap:
    added artifacts are detected by hash, not by re-reading everything.
-2. **Re-materialize** (Phase 1a) — regenerate `referencemodels-unpacked/*.yaml` so newly
-   modeled hub classes appear in the breadth map.
-3. **Re-link flagged terms** — for each entry under **"Terms flagged for domain
-   modeling"** whose class now exists in `model/ontologies/`, update its resolved
-   `linked_iri` in the per-document `_extractions/*.extraction.yaml` from the
-   reference-model IRI (or "needs domain class") to the new **hub IRI**, and clear
-   the flag. Then regenerate the glossary with `kairos-ontology build-glossary`
-   (deterministic; Gate 4 — glossary overlay only).
+2. **Re-materialize** (Phase 1a) — regenerate `referencemodels-unpacked/*.yaml` so new
+   terms can still be resolved against the current breadth map.
+3. **Preserve existing glossary links** — do **not** re-link previously generated
+   `rdfs:seeAlso` / `skos:relatedMatch` references just because the domain model has
+   evolved. They are inspirational, historical hints and may intentionally be stale.
 4. **Append new terms** — capture any terminology discovered since the last run (from
    newly processed extractions), resolving IRIs with the same hub → ref-model → flag
    priority (Phase 2 step 3).
@@ -319,8 +330,8 @@ the next domain), do **continue**, not start-fresh:
    record what changed this run.
 
 > This is what guarantees no information is lost across domains: terms are captured
-> company-wide up front, linked to ref-model IRIs immediately, and reconciled to hub
-> IRIs as each domain is modeled.
+> company-wide up front, while the generated glossary remains an inspirational
+> snapshot rather than a domain-ontology synchronization mechanism.
 
 ---
 
@@ -354,8 +365,8 @@ Save to `ontology-hub/.sessions-design/businessdiscovery-{YYYY-MM-DD}.md`:
 ## Terms flagged for domain modeling
 
 > Terms linked to a **reference-model** IRI (class not yet in the hub) and terms
-> with **no** match. On each rerun, re-link these to the hub IRI once their domain
-> is modeled (Phase 4).
+> with **no** match. Keep these as modeling prompts; do not rewrite prior glossary
+> links solely to synchronize with later domain modeling (Phase 4).
 
 - [ ] {term} — linked to ref-model `{IRI}`, not yet a hub class → claim via kairos-design-domain
 - [ ] {term} — no class/property yet (hub or ref-model) → invoke kairos-design-domain

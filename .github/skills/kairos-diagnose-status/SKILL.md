@@ -20,6 +20,11 @@ the implementation stands and what remains to be done.
 1. **Quick toolkit check** — run `python -m kairos_ontology update --check` once.
    If outdated, note it in the report but continue.
 
+2. **Ignore archived design logs (DD-071)** — when listing or grepping
+   `.sessions-design` for the last/most-recent session log, do not descend into
+   `.sessions-design/_archive/`. Archived logs are historical and must be ignored
+   when determining current progress.
+
 ---
 
 ## What to inspect

@@ -171,6 +171,13 @@ ontology-hub/.sessions-design/
 
 If no session exists, start fresh and create one immediately.
 
+> **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
+> start a new session instead of resuming, first move any existing
+> `.sessions-design/modeling-{domain}-*.md` log(s) for this domain (including
+> `modeling-{domain}-FINAL-*.md`) into `ontology-hub/.sessions-design/_archive/`
+> (create it if missing; keep the original filename). Never delete a previous log.
+> Then create the new session log.
+
 ### Session file format
 
 Save progress to `ontology-hub/.sessions-design/modeling-{domain}-{YYYY-MM-DD}.md`:
@@ -425,9 +432,9 @@ already imported/analysed.
    > **Glossary terms may point at reference-model IRIs.** Discovery links a term to
    > an existing **reference-model** IRI when no hub class exists yet (it materializes
    > the full ref-model breadth first). When you **claim** such a class into this hub
-   > (e.g. via `owl:imports` + `silverInclude`), the glossary's `rdfs:seeAlso` can be
-   > reconciled to the new hub IRI on the next **kairos-design-discovery** rerun —
-   > you don't edit the glossary here (Gate 4 of that skill owns it).
+   > (e.g. via `owl:imports` + `silverInclude`), treat the glossary link as
+   > inspirational background only. Do not edit or reconcile the glossary here; its
+   > `rdfs:seeAlso` / `skos:relatedMatch` links may intentionally become stale.
 3. **Ask: Are we starting from a reference model?** — this is the FIRST question
    to ask the user before any modeling work.  See the
    [Reference-model-first workflow](#reference-model-first-workflow) section

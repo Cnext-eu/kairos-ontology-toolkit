@@ -14,13 +14,17 @@ from kairos_ontology.propose_alignment import (
     ColumnAlignment,
     DomainAlignment,
     TableAlignment,
+    _build_class_meta_index,
     _build_property_label_index,
     _build_reference_rollup,
     _clamp_confidence,
     _compact_prompt_samples,
     _detect_address_part,
     _format_source_columns,
+    _module_tag,
+    _resolve_column_module,
     _review_column_alignment,
+    _select_property_pool,
     _select_ref_classes_for_table,
     _should_retry_with_full_inventory,
     align_table,
@@ -1093,3 +1097,381 @@ class TestAlignmentConcurrencyAndCaching:
             # generated_at differs; compare the table payloads only.
             assert [t["table"] for t in s["tables"]] == [t["table"] for t in p["tables"]]
             assert s["tables"] == p["tables"]
+
+
+# placeholder-marker-for-append
+
+
+# ---------------------------------------------------------------------------
+# Tests: cross-module alignment (DD-070, issue #166)
+# ---------------------------------------------------------------------------
+
+
+PARTY_URI = "https://example.com/ont/party#"
+SIBLING_URI = "https://example.com/ont/reference-data#"
+
+
+def _home_classes():
+    return [
+        {"name": "TradeParty", "label": "Trade Party", "comment": "",
+         "properties": [{"name": "partyName", "label": "Party Name", "range": "string"}]},
+    ]
+
+
+def _widened_classes():
+    """Home TradeParty + a sibling/shared-module Address class (tagged)."""
+    return [
+        {"name": "TradeParty", "label": "Trade Party", "comment": "",
+         "properties": [{"name": "partyName", "label": "Party Name", "range": "string"}],
+         "source_uri": PARTY_URI, "module": "party",
+         "ref_class_id": "party:TradeParty", "belongs_to_domains": ["party"]},
+        {"name": "Address", "label": "Address", "comment": "A postal address",
+         "properties": [
+             {"name": "street", "label": "Street", "range": "string"},
+             {"name": "postalCode", "label": "Postal Code", "range": "string"},
+         ],
+         "source_uri": SIBLING_URI, "module": "reference-data",
+         "ref_class_id": "reference-data:Address",
+         "belongs_to_domains": ["party", "commercial"]},
+    ]
+
+
+class TestModuleTag:
+    def test_home_class_no_tag(self):
+        assert _module_tag({"name": "TradeParty"}) == ""
+
+    def test_sibling_class_tag(self):
+        assert _module_tag({"name": "Address", "module": "reference-data"}) == (
+            "  [module: reference-data]"
+        )
+
+
+class TestClassMetaIndex:
+    def test_indexes_by_name_with_module_meta(self):
+        index = _build_class_meta_index(_widened_classes())
+        assert "Address" in index
+        meta = index["Address"][0]
+        assert meta["module"] == "reference-data"
+        assert meta["is_home"] is False
+        assert meta["belongs_to_domains"] == ["party", "commercial"]
+        # TradeParty present from the home uri (is_home not set here → False)
+        assert "TradeParty" in index
+
+    def test_same_name_across_modules_kept_separate(self):
+        classes = [
+            {"name": "Address", "module": "party", "source_uri": PARTY_URI,
+             "is_home": True, "belongs_to_domains": ["party"]},
+            {"name": "Address", "module": "reference-data", "source_uri": SIBLING_URI,
+             "is_home": False, "belongs_to_domains": ["commercial"]},
+        ]
+        index = _build_class_meta_index(classes)
+        assert len(index["Address"]) == 2
+        modules = {m["module"] for m in index["Address"]}
+        assert modules == {"party", "reference-data"}
+
+
+class TestResolveColumnModule:
+    def test_sibling_match_returns_meta(self):
+        index = _build_class_meta_index(_widened_classes())
+        meta = _resolve_column_module("Address", "reference-data", index)
+        assert meta is not None
+        assert meta["module"] == "reference-data"
+
+    def test_home_match_returns_none(self):
+        classes = [
+            {"name": "TradeParty", "module": "party", "source_uri": PARTY_URI,
+             "is_home": True, "belongs_to_domains": ["party"]},
+        ]
+        index = _build_class_meta_index(classes)
+        assert _resolve_column_module("TradeParty", "party", index) is None
+
+    def test_unknown_class_returns_none(self):
+        index = _build_class_meta_index(_widened_classes())
+        assert _resolve_column_module("Nonexistent", "", index) is None
+
+    def test_prefers_home_when_module_ambiguous(self):
+        classes = [
+            {"name": "Address", "module": "party", "source_uri": PARTY_URI,
+             "is_home": True, "belongs_to_domains": ["party"]},
+            {"name": "Address", "module": "reference-data", "source_uri": SIBLING_URI,
+             "is_home": False, "belongs_to_domains": ["commercial"]},
+        ]
+        index = _build_class_meta_index(classes)
+        # No explicit ref_module → prefers the home class → not a cross-module tag.
+        assert _resolve_column_module("Address", "", index) is None
+
+
+class TestSelectPropertyPool:
+    def test_includes_home_shortlist_and_surfaces_sibling(self):
+        widened = _widened_classes()
+        for c in widened:
+            c["is_home"] = c["source_uri"] == PARTY_URI
+        home_shortlist = [widened[0]]  # TradeParty
+        columns = [{"name": "SHIPPER_STREET", "data_type": "nvarchar", "samples": []}]
+        pool = _select_property_pool(
+            "tblParties", columns, widened, home_shortlist,
+            indicative_columns=["SHIPPER_STREET"],
+        )
+        names = {c["name"] for c in pool}
+        assert "TradeParty" in names  # home always included
+        assert "Address" in names  # sibling surfaced by token overlap with 'street'
+
+    def test_excludes_home_classes_from_cross_scoring(self):
+        widened = _widened_classes()
+        for c in widened:
+            c["is_home"] = c["source_uri"] == PARTY_URI
+        home_shortlist = [widened[0]]
+        columns = [{"name": "PARTY_NAME", "data_type": "nvarchar", "samples": []}]
+        pool = _select_property_pool(
+            "tblParties", columns, widened, home_shortlist,
+        )
+        # No token overlap with Address → only the home shortlist is returned.
+        assert {c["name"] for c in pool} == {"TradeParty"}
+
+
+class TestBuildAlignmentPromptCrossModule:
+    def test_default_prompt_has_no_cross_module_artifacts(self):
+        prompt = build_alignment_prompt(
+            "tblParties",
+            [{"name": "SHIPPER_STREET", "data_type": "nvarchar", "samples": []}],
+            _home_classes(),
+        )
+        assert "CROSS-MODULE" not in prompt
+        assert "ref_module" not in prompt
+        assert "[module:" not in prompt
+
+    def test_cross_module_prompt_adds_sections(self):
+        widened = _widened_classes()
+        prompt = build_alignment_prompt(
+            "tblParties",
+            [{"name": "SHIPPER_STREET", "data_type": "nvarchar", "samples": []}],
+            widened,
+            table_ref_classes=_home_classes(),
+        )
+        assert "CROSS-MODULE" in prompt
+        assert "ref_module" in prompt
+        assert "[module: reference-data]" in prompt
+        # STEP 1 candidate list is home-only.
+        assert "Must be one of: TradeParty" in prompt
+
+
+class TestAlignTableCrossModule:
+    def _client(self, payload):
+        client = mock.MagicMock()
+        client.chat.completions.create.return_value = mock.MagicMock(
+            choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+        )
+        return client
+
+    def test_captures_ref_module_when_present(self):
+        payload = {
+            "ref_class": "TradeParty", "ref_class_confidence": 0.9,
+            "column_alignments": [
+                {"column": "SHIPPER_STREET", "ref_class": "Address",
+                 "ref_module": "reference-data", "ref_property": "street",
+                 "alignment": "semantic", "confidence": 0.8, "rationale": "street"},
+            ],
+        }
+        client = self._client(payload)
+        result = align_table(
+            client, "gpt", "tblParties",
+            [{"name": "SHIPPER_STREET", "data_type": "nvarchar"}],
+            _widened_classes(),
+            table_ref_classes=_home_classes(),
+        )
+        assert result["ref_class"] == "TradeParty"  # validated against home pool
+        assert result["column_alignments"][0]["ref_module"] == "reference-data"
+
+    def test_default_mode_omits_ref_module(self):
+        payload = {
+            "ref_class": "TradeParty", "ref_class_confidence": 0.9,
+            "column_alignments": [
+                {"column": "PartyName", "ref_class": "TradeParty",
+                 "ref_property": "partyName", "alignment": "exact",
+                 "confidence": 0.95, "rationale": "match"},
+            ],
+        }
+        client = self._client(payload)
+        result = align_table(
+            client, "gpt", "tblParties",
+            [{"name": "PartyName", "data_type": "nvarchar"}],
+            _home_classes(),
+        )
+        assert "ref_module" not in result["column_alignments"][0]
+
+
+class TestWriteAlignmentOutputCrossModule:
+    def test_emits_cross_module_fields(self, tmp_path):
+        ca = ColumnAlignment(
+            column="SHIPPER_STREET", data_type="nvarchar", ref_class="Address",
+            ref_property="street", alignment="semantic", confidence=0.8,
+            ref_module="reference-data", ref_module_uri=SIBLING_URI,
+            belongs_to_domains=["party", "commercial"],
+        )
+        ta = TableAlignment(system="adminpulse", table="tblParties",
+                            ref_class="TradeParty", ref_class_confidence=0.9,
+                            columns=[ca])
+        alignment = DomainAlignment(
+            domain="party", domain_uris=[PARTY_URI],
+            generated_at="2026-01-01T00:00:00Z", model_used="gpt",
+            tables=[ta], affinity_sha256="abc",
+            alignment_params_sha256="deadbeef",
+            cross_module_matches=[{
+                "ref_class": "Address", "ref_module": "reference-data",
+                "ref_module_uri": SIBLING_URI,
+                "belongs_to_domains": ["party", "commercial"],
+                "source_columns": ["adminpulse.tblParties.SHIPPER_STREET"],
+            }],
+        )
+        out = write_alignment_output(alignment, tmp_path)
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        col = data["tables"][0]["columns"][0]
+        assert col["ref_module"] == "reference-data"
+        assert col["belongs_to_domains"] == ["party", "commercial"]
+        assert data["alignment_params_sha256"] == "deadbeef"
+        assert len(data["cross_module_matches"]) == 1
+
+    def test_default_omits_cross_module_fields(self, tmp_path):
+        ca = ColumnAlignment(
+            column="PartyName", data_type="nvarchar", ref_class="TradeParty",
+            ref_property="partyName", alignment="exact", confidence=0.95,
+        )
+        ta = TableAlignment(system="adminpulse", table="tblParties",
+                            ref_class="TradeParty", ref_class_confidence=0.9,
+                            columns=[ca])
+        alignment = DomainAlignment(
+            domain="party", domain_uris=[PARTY_URI],
+            generated_at="2026-01-01T00:00:00Z", model_used="gpt",
+            tables=[ta], affinity_sha256="abc",
+        )
+        out = write_alignment_output(alignment, tmp_path)
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        assert "ref_module" not in data["tables"][0]["columns"][0]
+        assert "alignment_params_sha256" not in data
+        assert "cross_module_matches" not in data
+
+
+@pytest.fixture
+def party_sources(tmp_path):
+    sources = tmp_path / "sources" / "adminpulse"
+    sources.mkdir(parents=True)
+    vocab = """\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+<#tblParties> a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "tblParties" .
+<#tblParties_SHIPPER_STREET> a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "SHIPPER_STREET" ;
+    kairos-bronze:dataType "nvarchar(100)" ;
+    kairos-bronze:belongsToTable <#tblParties> .
+"""
+    (sources / "adminpulse.vocabulary.ttl").write_text(vocab, encoding="utf-8")
+    return tmp_path / "sources"
+
+
+class TestRunProposeAlignmentCrossModule:
+    def _inventory_side_effect(self, domain_uris, catalog_path, *,
+                               inventory_dir=None, module_map=None):
+        if module_map is None:
+            return _home_classes()
+        return _widened_classes()
+
+    def _client(self, calls=None):
+        def create_completion(**kwargs):
+            if calls is not None:
+                calls.append(kwargs["messages"][1]["content"])
+            payload = {
+                "ref_class": "TradeParty", "ref_class_confidence": 0.9,
+                "column_alignments": [
+                    {"column": "SHIPPER_STREET", "ref_class": "Address",
+                     "ref_module": "reference-data", "ref_property": "street",
+                     "alignment": "semantic", "confidence": 0.8,
+                     "rationale": "street part"},
+                ],
+            }
+            return mock.MagicMock(
+                choices=[mock.MagicMock(
+                    message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        return client
+
+    def _run(self, analysis_dir, party_sources, output, calls=None, **kw):
+        with mock.patch(
+            "kairos_ontology.propose_alignment.get_ai_client",
+            return_value=self._client(calls),
+        ), mock.patch(
+            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            side_effect=self._inventory_side_effect,
+        ), mock.patch(
+            "kairos_ontology.analyse_sources.load_accelerator_uri_modules",
+            return_value={
+                PARTY_URI: {"module": "party", "domains": ["party"]},
+                SIBLING_URI: {"module": "reference-data",
+                              "domains": ["party", "commercial"]},
+            },
+        ):
+            return run_propose_alignment(
+                analysis_dir=analysis_dir,
+                sources_dir=party_sources,
+                catalog_path=None,
+                output_dir=output,
+                domains_filter=["party"],
+                **kw,
+            )
+
+    def test_column_matches_sibling_module(self, analysis_dir, party_sources, tmp_path):
+        out = tmp_path / "out"
+        self._run(analysis_dir, party_sources, out,
+                  cross_module=True, accelerator="logistics",
+                  ref_models_dir=tmp_path)
+        data = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
+        # Table still classifies to the HOME class.
+        assert data["tables"][0]["ref_class"] == "TradeParty"
+        col = data["tables"][0]["columns"][0]
+        assert col["ref_class"] == "Address"
+        assert col["ref_module"] == "reference-data"
+        assert col["belongs_to_domains"] == ["party", "commercial"]
+        # Separate cross-module section populated; params hash present.
+        assert data["alignment_params_sha256"]
+        matches = data["cross_module_matches"]
+        assert len(matches) == 1
+        assert matches[0]["ref_class"] == "Address"
+        assert matches[0]["source_columns"] == [
+            "adminpulse.tblParties.SHIPPER_STREET"
+        ]
+
+    def test_full_inventory_retry_disabled(self, analysis_dir, party_sources, tmp_path):
+        calls: list[str] = []
+        self._run(analysis_dir, party_sources, tmp_path / "out", calls=calls,
+                  cross_module=True, accelerator="logistics",
+                  ref_models_dir=tmp_path, max_prompt_classes=1)
+        # Exactly one LLM call for the single party table — no full-inventory retry.
+        assert len(calls) == 1
+
+    def test_cross_module_not_skipped_after_home_only_run(
+        self, analysis_dir, party_sources, tmp_path
+    ):
+        out = tmp_path / "out"
+        # First: a default (home-only) run → no params hash recorded.
+        self._run(analysis_dir, party_sources, out)
+        first = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
+        assert "cross_module_matches" not in first
+        # Then: a cross-module run with the same affinity must NOT be skipped.
+        self._run(analysis_dir, party_sources, out,
+                  cross_module=True, accelerator="logistics",
+                  ref_models_dir=tmp_path)
+        second = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
+        assert "cross_module_matches" in second
+
+    def test_requires_accelerator(self, analysis_dir, party_sources, tmp_path):
+        with pytest.raises(ValueError, match="requires an accelerator"):
+            run_propose_alignment(
+                analysis_dir=analysis_dir,
+                sources_dir=party_sources,
+                catalog_path=None,
+                output_dir=tmp_path / "out",
+                domains_filter=["party"],
+                cross_module=True,
+            )
+

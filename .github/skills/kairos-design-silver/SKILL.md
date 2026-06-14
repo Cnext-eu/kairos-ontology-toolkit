@@ -936,6 +936,12 @@ ontology-hub/.sessions-design/
 
 If a previous session exists, ask the user whether to continue or start fresh.
 
+> **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
+> start a new session instead of resuming, first move any existing
+> `.sessions-design/silver-{domain}-*.md` log(s) for this domain into
+> `ontology-hub/.sessions-design/_archive/` (create it if missing; keep the
+> original filename). Never delete a previous log. Then create the new session log.
+
 ### Session file format
 
 Save to `ontology-hub/.sessions-design/silver-{domain}-{YYYY-MM-DD}.md`:
