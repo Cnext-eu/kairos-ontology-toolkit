@@ -319,6 +319,12 @@ kairos-ext:silverIncludeImports a owl:AnnotationProperty ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:boolean .
 
+kairos-ext:silverExclude a owl:AnnotationProperty ;
+    rdfs:label "silver exclude"@en ;
+    rdfs:comment "If true, exclude this class from the silver layer projection entirely (no table emitted). Overrides silverInclude / silverIncludeImports. Descendants still inherit the excluded class's properties; it is treated as an unclaimed (cross-domain) FK target (DD-073)."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:boolean .
+
 # ---------------------------------------------------------------------------
 # Import whitelisting — Gold layer
 # ---------------------------------------------------------------------------

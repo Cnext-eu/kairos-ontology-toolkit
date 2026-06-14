@@ -327,6 +327,82 @@ class TestProjectionReportMarkdown:
         assert "# Projection Report — test" in content
 
 
+class TestProjectionSessionLogArchival:
+    """DD-071-style archival of prior projection session logs."""
+
+    def test_archive_moves_prior_logs(self, tmp_path):
+        from kairos_ontology.projector import _archive_prior_projection_logs
+
+        sessions = tmp_path / ".sessions-projection"
+        sessions.mkdir()
+        old1 = sessions / "projection-client-silver-2025-01-01_00-00-00.md"
+        old2 = sessions / "dbt-client-2025-01-01_00-00-00.md"
+        other = sessions / "projection-invoice-silver-2025-01-01_00-00-00.md"
+        for f in (old1, old2, other):
+            f.write_text("x", encoding="utf-8")
+
+        archived = _archive_prior_projection_logs(sessions, ["client"])
+
+        # client logs archived; invoice (not in domains) untouched
+        assert not old1.exists()
+        assert not old2.exists()
+        assert other.exists()
+        archive = sessions / "_archive"
+        assert (archive / old1.name).exists()
+        assert (archive / old2.name).exists()
+        assert len(archived) == 2
+
+    def test_archive_no_dir_is_noop(self, tmp_path):
+        from kairos_ontology.projector import _archive_prior_projection_logs
+
+        missing = tmp_path / "does-not-exist"
+        assert _archive_prior_projection_logs(missing, ["client"]) == []
+        assert _archive_prior_projection_logs(None, ["client"]) == []
+
+    def test_archive_handles_name_collision(self, tmp_path):
+        from kairos_ontology.projector import _archive_prior_projection_logs
+
+        sessions = tmp_path / ".sessions-projection"
+        archive = sessions / "_archive"
+        archive.mkdir(parents=True)
+        name = "projection-client-silver-2025-01-01_00-00-00.md"
+        (sessions / name).write_text("new", encoding="utf-8")
+        (archive / name).write_text("already-archived", encoding="utf-8")
+
+        _archive_prior_projection_logs(sessions, ["client"])
+
+        # Original archived file preserved; collision stored under a suffixed name
+        assert (archive / name).read_text(encoding="utf-8") == "already-archived"
+        suffixed = list(archive.glob("projection-client-silver-*-1.md"))
+        assert len(suffixed) == 1
+        assert suffixed[0].read_text(encoding="utf-8") == "new"
+
+    def test_second_run_archives_first_log(self, tmp_path):
+        """Integration: a second projection run archives the first run's log."""
+        hub = tmp_path
+        ont_dir = hub / "model" / "ontologies"
+        ont_dir.mkdir(parents=True)
+        (ont_dir / "test.ttl").write_text(_TTL, encoding="utf-8")
+        sessions_dir = hub / ".sessions-projection"
+        sessions_dir.mkdir(parents=True)
+        output_dir = hub / "output"
+        catalog = tmp_path / "catalog.xml"
+
+        # First run — drop a sentinel prior log to guarantee something to archive
+        prior = sessions_dir / "projection-test-prompt-2024-01-01_00-00-00.md"
+        prior.write_text("# old", encoding="utf-8")
+
+        run_projections(
+            ontologies_path=ont_dir, output_path=output_dir,
+            catalog_path=catalog, target="prompt",
+        )
+
+        # The sentinel prior log was moved to _archive/; only the fresh log remains
+        assert not prior.exists()
+        assert (sessions_dir / "_archive" / prior.name).exists()
+        assert len(list(sessions_dir.glob("projection-test-*.md"))) == 1
+
+
 class TestCatalogWarningsInReport:
     """Verify that catalog resolution warnings are captured in projection-report.json."""
 

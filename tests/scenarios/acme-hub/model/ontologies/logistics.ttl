@@ -2,6 +2,7 @@
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 @prefix acme-log: <https://acme.example/ontology/logistics#> .
+@prefix refp: <https://refmodel.example/ontology/party#> .
 
 # ---------------------------------------------------------------------------
 # Ontology declaration — import-only domain for DD-021 testing
@@ -12,5 +13,36 @@
     rdfs:comment "Import-only domain that delegates to a reference model (DD-021)." ;
     owl:imports <https://refmodel.example/ontology/party> .
 
-# No local classes — all content comes from the imported reference model.
-# The silver-ext file claims specific imported classes for projection.
+# Most content comes from the imported reference model. The local classes below
+# exercise issue #172: transitive discriminator folding and silverExclude.
+
+# Issue #172 (B): role-marker subtype that reaches the claimed discriminator root
+# refp:Organization only via the UNCLAIMED intermediate refp:ShipOperator. It must
+# fold into the organization table (no standalone vessel_carrier table).
+acme-log:VesselCarrier a owl:Class ;
+    rdfs:subClassOf refp:ShipOperator ;
+    rdfs:label "Vessel Carrier" ;
+    rdfs:comment "A carrier operating vessels — role marker, no own columns." .
+
+# Issue #172 (A): BaseMarker is silverExcluded (no table) but ActiveMarker, which
+# subclasses it, must still inherit BaseMarker's properties into its own table.
+acme-log:BaseMarker a owl:Class ;
+    rdfs:label "Base Marker" ;
+    rdfs:comment "Excluded role-marker base class — see silverExclude." .
+
+acme-log:markerCode a owl:DatatypeProperty ;
+    rdfs:label "marker code" ;
+    rdfs:comment "Code carried by all markers." ;
+    rdfs:domain acme-log:BaseMarker ;
+    rdfs:range xsd:string .
+
+acme-log:ActiveMarker a owl:Class ;
+    rdfs:subClassOf acme-log:BaseMarker ;
+    rdfs:label "Active Marker" ;
+    rdfs:comment "Materialised marker that inherits from the excluded base." .
+
+acme-log:activeSince a owl:DatatypeProperty ;
+    rdfs:label "active since" ;
+    rdfs:comment "When the marker became active." ;
+    rdfs:domain acme-log:ActiveMarker ;
+    rdfs:range xsd:date .

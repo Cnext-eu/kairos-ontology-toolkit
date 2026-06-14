@@ -1,5 +1,6 @@
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 @prefix refp:       <https://refmodel.example/ontology/party#> .
+@prefix acme-log:   <https://acme.example/ontology/logistics#> .
 
 # ---------------------------------------------------------------------------
 # DD-021: Claim imported reference model classes for silver projection
@@ -12,3 +13,22 @@ refp:TradeParty kairos-ext:silverInclude true ;
 
 refp:Carrier kairos-ext:silverInclude true ;
     kairos-ext:naturalKey "carrier_code" .
+
+# ---------------------------------------------------------------------------
+# Issue #172 (B) — transitive discriminator fold.
+# Organization is the claimed discriminator root. The unclaimed intermediate
+# refp:ShipOperator is NOT claimed, yet the local subtype acme-log:VesselCarrier
+# folds into the organization table through it.
+# ---------------------------------------------------------------------------
+refp:Organization kairos-ext:silverInclude true ;
+    kairos-ext:scdType "2" ;
+    kairos-ext:inheritanceStrategy "discriminator" ;
+    kairos-ext:discriminatorColumn "org_type" ;
+    kairos-ext:naturalKey "org_name" .
+
+# ---------------------------------------------------------------------------
+# Issue #172 (A) — silverExclude.
+# BaseMarker emits no table; ActiveMarker (its subclass) still inherits markerCode.
+# ---------------------------------------------------------------------------
+acme-log:BaseMarker kairos-ext:silverExclude true .
+

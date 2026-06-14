@@ -142,7 +142,30 @@ ex:{ClassName}
 > become nullable columns with a `-- from {SubtypeName}` comment. The annotation is
 > preserved in the extension file for future Gold-layer projections.
 
-### 2d — SCD type (R5)
+> **Transitive folding (issue #172):** discriminator folding is **transitive through
+> unclaimed intermediate classes**. A subtype that reaches a claimed discriminator
+> ancestor only via *unclaimed* (not separately projected) intermediates is still
+> folded into that ancestor's table — and the intermediates' properties fold in too,
+> labelled `-- from {SubtypeName}`. The walk stops at the **first claimed ancestor**,
+> so single-level folding is unchanged.
+
+### 2c-bis — Exclude a class from silver (`silverExclude`)
+
+> "Should `{ClassName}` be kept in the ontology for inheritance/semantics but **not**
+> materialised as its own silver table?" (e.g. an abstract role-marker class.)
+
+```turtle
+ex:{ClassName}    kairos-ext:silverExclude "true"^^xsd:boolean .
+```
+
+- The class emits **no** table.
+- `silverExclude` **overrides** `silverInclude` / `silverIncludeImports`.
+- Descendants still **inherit** the excluded class's properties; it is treated as an
+  unclaimed (cross-domain) FK target.
+- The projector emits a warning if a materialised class depends on the excluded class
+  (subclasses it, or FK/junctions to it) so you can confirm the dropped table is
+  intentional.
+
 
 > "Should `{ClassName}` maintain full history (SCD Type 2, default) or just the current
 > record (SCD Type 1, overwrite)?"
@@ -179,6 +202,7 @@ class in the domain MUST have at minimum:
 | `kairos-ext:inlineRefThreshold` | Ontology-level | `"3"` |
 | `kairos-ext:silverIncludeImports` | Ontology-level (only if uses `owl:imports`) | `"false"` |
 | `kairos-ext:silverInclude` | Only on imported classes | `"false"` |
+| `kairos-ext:silverExclude` | Only if a class must NOT get its own table | `"false"` |
 | `kairos-ext:silverForeignKey` | On ObjectProperty (imported props lacking cardinality) | `"false"` |
 | `kairos-ext:silverForeignKeyOn` | On ObjectProperty (reversal pattern) | _(none)_ |
 

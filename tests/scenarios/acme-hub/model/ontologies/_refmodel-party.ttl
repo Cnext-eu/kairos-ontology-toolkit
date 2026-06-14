@@ -48,3 +48,30 @@ refp:addressLine a owl:DatatypeProperty ;
     rdfs:comment "Free-text address line." ;
     rdfs:domain refp:Address ;
     rdfs:range xsd:string .
+
+# ---------------------------------------------------------------------------
+# Issue #172 (B) — transitive discriminator fold fixture.
+# Organization is a claimed discriminator root; ShipOperator is an UNCLAIMED
+# intermediate; a local subtype (acme-log:VesselCarrier) reaches the
+# discriminator root only through the unclaimed intermediate and must still fold.
+# ---------------------------------------------------------------------------
+refp:Organization a owl:Class ;
+    rdfs:label "Organization" ;
+    rdfs:comment "A legal organization — claimed discriminator root for #172." .
+
+refp:orgName a owl:DatatypeProperty ;
+    rdfs:label "org name" ;
+    rdfs:comment "Registered organization name." ;
+    rdfs:domain refp:Organization ;
+    rdfs:range xsd:string .
+
+refp:ShipOperator a owl:Class ;
+    rdfs:subClassOf refp:Organization ;
+    rdfs:label "Ship Operator" ;
+    rdfs:comment "Operates vessels — UNCLAIMED intermediate for #172." .
+
+refp:shipOperatorCode a owl:DatatypeProperty ;
+    rdfs:label "ship operator code" ;
+    rdfs:comment "Identification code of the ship operator." ;
+    rdfs:domain refp:ShipOperator ;
+    rdfs:range xsd:string .
