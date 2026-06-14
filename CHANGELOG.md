@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Release-management guide + policy (DD-067).** New `docs/RELEASING.md` documents
+  SemVer discipline, the "support only the latest line" policy, and a bugfix decision
+  tree that keeps patches out of feature releases via ephemeral `hotfix/x.y.z`
+  branches cut from the release tag (with a mandatory back-merge to `main`).
+  `CONTRIBUTING.md` gains a branch-naming table and the `kairos-toolkit-ops` skill
+  links to the guide. Docs/process only — no tooling or CI changes.
+
 ### Removed
 - **PyPI publishing scaffolding removed from release CI (DD-066).**
   The dormant (commented-out) `publish-pypi` job and the unused `id-token: write`

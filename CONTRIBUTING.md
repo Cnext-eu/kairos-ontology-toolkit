@@ -112,6 +112,22 @@ Open a GitHub Issue with the `enhancement` label describing:
 5. Commit with DCO sign-off: `git commit -s`
 6. Push and open a Pull Request against `main`.
 
+### Branch naming
+
+| Prefix | Use for |
+|--------|---------|
+| `feature/*` (or `feat/*`) | New features / capabilities |
+| `fix/*` | Bug fixes targeting the next release |
+| `hotfix/x.y.z` | Urgent patch to the **released** line when `main` already has unreleased features (cut from the release tag) |
+| `chore/*` | Maintenance, dependencies, CI |
+| `docs/*` | Documentation only |
+
+Never commit to `main` directly — always branch + PR.
+
+> **Releasing & hotfixes:** see [`docs/RELEASING.md`](docs/RELEASING.md) for the full
+> SemVer policy, the bugfix-vs-feature decision tree, and the hotfix/back-merge flow
+> (DD-067).
+
 ### Commit message convention
 
 | Prefix | When |
@@ -146,6 +162,9 @@ If you want hub-repo users to test your changes before a GA release:
    ```
 6. Testers run `kairos-ontology update --upgrade` (uses `uv lock` + `uv sync`)
 7. After validation, create a GA release and testers switch back to `channel = "stable"`.
+
+> See [`docs/RELEASING.md`](docs/RELEASING.md) for how pre-releases fit into the
+> overall release flow (channels, SemVer, hotfixes).
 
 ## Code of Conduct
 
