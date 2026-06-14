@@ -24,10 +24,14 @@ select
     {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
 {%- endfor %}
 {%- if ref_model %}
-from {{"{{"}} ref('{{ ref_model }}') {{"}}"}}
+from {{"{{"}} ref('{{ ref_model }}') {{"}}"}} as {{ source_alias }}
 {%- else %}
-from {{"{{"}} source('{{ source_name }}', '{{ raw_table_name }}') {{"}}"}}
+from {{"{{"}} source('{{ source_name }}', '{{ raw_table_name }}') {{"}}"}} as {{ source_alias }}
 {%- endif %}
+{%- for join in joins %}
+    {{ join.type }} join {{ join.ref }} as {{ join.alias }}
+        on {{ join.condition }}
+{%- endfor %}
 {%- if filter_condition %}
 where {{ filter_condition }}
 {%- endif %}

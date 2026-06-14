@@ -366,16 +366,24 @@ class TestMultiSource:
             "Per-source model should be materialized as view"
         )
 
-    def test_crm_source_excludes_unmapped(self, client_dbt_artifacts):
-        """CRM source lacks VATNumber mapping — unmapped columns are excluded."""
+    def test_crm_source_includes_null_pad_for_unmapped(self, client_dbt_artifacts):
+        """CRM lacks VATNumber — unmapped columns are NULL-padded to the superset.
+
+        The merge pattern projects every per-source view to a common canonical
+        column superset so the parent UNION ALL is positionally consistent.  A
+        column a source does not map appears as ``CAST(NULL AS <type>)``.
+        """
         key = _find_artifact(
             client_dbt_artifacts, "corporate_client__from_crm_system.sql"
         )
         sql = client_dbt_artifacts[key]
-        assert "vat_number" not in sql, (
-            "CRM source should NOT include unmapped vat_number column"
+        assert "as vat_number" in sql, (
+            "CRM source should include vat_number as a NULL-padded superset column"
         )
-        # Mapped columns should still be present
+        assert "cast(null as" in sql.lower(), (
+            "CRM source should NULL-pad unmapped columns"
+        )
+        # Mapped columns should still be present with real expressions
         assert "client_name" in sql or "client_id" in sql, (
             "CRM source should include mapped columns"
         )
@@ -1126,17 +1134,26 @@ class TestSourceSystemDiscriminator:
 # ---------------------------------------------------------------------------
 
 class TestUnmappedColumnExclusion:
-    """Silver models should only include columns with source mappings."""
+    """Multi-source merge views NULL-pad to a common canonical column superset."""
 
-    def test_no_cast_null_for_unmapped(self, client_dbt_artifacts):
-        """Per-source views should not have CAST(NULL) for unmapped properties."""
+    def test_null_pad_for_superset_columns(self, client_dbt_artifacts):
+        """Per-source views NULL-pad columns they do not map (superset padding).
+
+        Each per-source staging view must project the full canonical column
+        superset so the parent UNION ALL is positionally consistent.  Columns a
+        source does not map are emitted as ``CAST(NULL AS <type>)`` rather than
+        dropped (which previously caused column-count mismatches / data loss).
+        """
         key = _find_artifact(
             client_dbt_artifacts, "corporate_client__from_crm_system.sql"
         )
         sql = client_dbt_artifacts[key]
-        # Unmapped columns should not appear at all
-        assert "CAST(NULL" not in sql, (
-            "Per-source view should not contain CAST(NULL) for unmapped properties"
+        # CRM does not map vat_number — it must be NULL-padded, not dropped
+        assert "CAST(NULL" in sql, (
+            "Per-source view should NULL-pad unmapped superset columns"
+        )
+        assert "as vat_number" in sql, (
+            "CRM per-source view should include vat_number as a NULL pad"
         )
 
     def test_mapped_columns_present(self, client_dbt_artifacts):
@@ -1547,23 +1564,48 @@ class TestIntraDomainFKJoin:
 
 
 # ---------------------------------------------------------------------------
-# Multi-source FK skip tests — Invoice is multi-source, FK joins skipped
+# Multi-source FK per-source join tests — Invoice is multi-source, FK resolved
+# inside each single-source staging view and flows through the union.
 # ---------------------------------------------------------------------------
 
-class TestMultiSourceFKSkip:
+class TestMultiSourceFKPerSource:
     """Invoice entity is multi-source (tblInvoice + tblCreditNote).
 
-    FK joins are intentionally skipped for multi-source entities because the
-    join logic is too complex with UNION ALL patterns.
+    FK joins are resolved *inside each single-source staging view* (where the
+    existing single-source FK machinery applies) and the resulting ``_sk``
+    column flows through the UNION ALL as an ordinary canonical column.  The
+    union model itself performs no joins.
     """
 
-    def test_invoice_no_client_fk_join(self, invoice_dbt_artifacts):
-        """invoice.sql should NOT have a left join to ref('client')."""
-        key = _find_artifact(invoice_dbt_artifacts, "invoice.sql")
-        assert key is not None, "invoice.sql not found"
+    def test_union_has_no_join(self, invoice_dbt_artifacts):
+        """The union model must not perform FK joins (resolved upstream)."""
+        key = _find_artifact(invoice_dbt_artifacts, "/invoice.sql")
+        assert key is not None, "invoice.sql (union) not found"
         sql = invoice_dbt_artifacts[key].lower()
-        assert "ref('client')" not in sql, (
-            f"Multi-source Invoice should not have FK join to client:\n{sql}"
+        assert "left join" not in sql, (
+            f"Union model should not contain joins (FK resolved per source):\n{sql}"
+        )
+
+    def test_union_includes_client_sk(self, invoice_dbt_artifacts):
+        """client_sk must be present as a canonical column in the union (no drop)."""
+        key = _find_artifact(invoice_dbt_artifacts, "/invoice.sql")
+        sql = invoice_dbt_artifacts[key].lower()
+        assert "client_sk" in sql, (
+            f"Union model should include client_sk as a canonical column:\n{sql}"
+        )
+
+    def test_per_source_view_has_fk_join(self, invoice_dbt_artifacts):
+        """Each source mapping the FK has a real left join to ref('client')."""
+        key = _find_artifact(
+            invoice_dbt_artifacts, "invoice__from_billing_pro__tbl_invoice.sql"
+        )
+        assert key is not None, "per-source invoice view not found"
+        sql = invoice_dbt_artifacts[key].lower()
+        assert "left join {{ ref('client') }}" in sql, (
+            f"Per-source view should resolve FK via a left join to client:\n{sql}"
+        )
+        assert "client_sk" in sql, (
+            f"Per-source view should emit client_sk:\n{sql}"
         )
 
 
