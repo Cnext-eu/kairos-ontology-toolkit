@@ -99,6 +99,85 @@ def _alignment_aligned_tables(data: dict[str, Any]) -> set[tuple[str, str]]:
     return aligned
 
 
+#: Canonical triage dispositions written back into a custom column by the
+#: ``kairos-design-domain`` skill (issue #164).  Any other non-empty value is
+#: still treated as *disposed* so the gate never blocks on a deliberate choice.
+CUSTOM_DISPOSITIONS = ("model", "silver-passthrough", "skip")
+
+#: Lower-cased substrings that mark a custom column as *likely operational/audit*
+#: (ETL/technical) rather than a business attribute needing a modeling decision.
+#: Used only to bucket the report so genuine business columns aren't buried — it
+#: never excludes a column from triage.
+_OPERATIONAL_PATTERNS = (
+    "created_", "updated_", "modified_", "inserted_", "deleted_",
+    "_created", "_updated", "_modified", "createdat", "updatedat",
+    "_by", "createdby", "modifiedby", "timestamp", "rowversion",
+    "row_version", "loaddate", "load_date", "load_ts", "loadts",
+    "etl_", "_etl", "_dwh", "dwh_", "is_deleted", "isdeleted",
+    "source_id", "sourceid", "source_system", "sourcesystem",
+    "_guid", "guid", "uuid", "_uid", "_hash", "checksum",
+)
+
+
+def _is_operational_column(column: str) -> bool:
+    """Heuristically flag audit/ETL/technical custom columns (bucketing only)."""
+    name = (column or "").lower()
+    return any(pat in name for pat in _OPERATIONAL_PATTERNS)
+
+
+def _is_disposed(entry: dict[str, Any]) -> bool:
+    """True when a custom column carries an explicit, non-empty triage disposition."""
+    disp = entry.get("disposition")
+    return isinstance(disp, str) and disp.strip() != ""
+
+
+@dataclass
+class CustomColumn:
+    """A source-evidenced custom column (no reference-model property) to triage."""
+
+    system: str
+    table: str
+    column: str
+    suggested_property: str = ""
+    disposition: str | None = None
+    operational: bool = False
+
+    @property
+    def disposed(self) -> bool:
+        return isinstance(self.disposition, str) and self.disposition.strip() != ""
+
+    @property
+    def identity(self) -> str:
+        return f"{self.system}.{self.table}.{self.column}"
+
+
+def collect_custom_columns(data: dict[str, Any]) -> list[CustomColumn]:
+    """Extract and classify every ``custom_columns`` entry from an alignment file."""
+    out: list[CustomColumn] = []
+    for tbl in data.get("tables", []) or []:
+        if not isinstance(tbl, dict):
+            continue
+        system = tbl.get("system", "")
+        table = tbl.get("table", "")
+        for cc in tbl.get("custom_columns", []) or []:
+            if not isinstance(cc, dict):
+                continue
+            column = cc.get("column", "")
+            if not column:
+                continue
+            out.append(
+                CustomColumn(
+                    system=system,
+                    table=table,
+                    column=column,
+                    suggested_property=cc.get("suggested_property", "") or "",
+                    disposition=cc.get("disposition"),
+                    operational=_is_operational_column(column),
+                )
+            )
+    return out
+
+
 def load_alignment(path: Path) -> dict[str, Any]:
     """Load an alignment YAML file, raising on malformed content."""
     with open(path, encoding="utf-8") as f:
@@ -125,6 +204,9 @@ class AlignmentCheckReport:
     orphan: list[str] = field(default_factory=list)
     #: domain → sorted "system.table" strings that are affinity-assigned but not aligned
     uncovered_tables: dict[str, list[str]] = field(default_factory=dict)
+    #: domain → all source-evidenced custom columns (issue #164), classified +
+    #: carrying their triage disposition.  Drives the report and ``--strict`` gate.
+    custom_columns: dict[str, list[CustomColumn]] = field(default_factory=dict)
 
     @property
     def is_blocking(self) -> bool:
@@ -135,6 +217,19 @@ class AlignmentCheckReport:
     def has_warnings(self) -> bool:
         """True when an unverifiable (no stored hash) or orphan alignment exists."""
         return bool(self.unverifiable or self.orphan)
+
+    def undisposed_custom_columns(self, domain: str) -> list[CustomColumn]:
+        """Custom columns for *domain* still lacking an explicit triage disposition."""
+        return [c for c in self.custom_columns.get(domain, []) if not c.disposed]
+
+    @property
+    def has_undisposed_custom_columns(self) -> bool:
+        """True when any domain has an untriaged custom column (issue #164)."""
+        return any(
+            not c.disposed
+            for cols in self.custom_columns.values()
+            for c in cols
+        )
 
 
 def check_alignment_coverage(
@@ -188,6 +283,12 @@ def check_alignment_coverage(
         except Exception:
             report.stale.append(domain)
             continue
+
+        # Issue #164: collect custom columns whenever the file loads, regardless
+        # of coverage/freshness state, so they surface even for incomplete domains.
+        custom = collect_custom_columns(data)
+        if custom:
+            report.custom_columns[domain] = custom
 
         aligned = _alignment_aligned_tables(data)
         gaps = expected - aligned

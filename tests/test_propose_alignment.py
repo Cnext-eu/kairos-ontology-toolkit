@@ -647,6 +647,8 @@ class TestRunProposeAlignment:
         # 2 matched (semantic) + 0 custom in columns (custom goes to custom_columns)
         assert len(tbl["columns"]) == 2
         assert len(tbl["custom_columns"]) == 1
+        # Issue #164: custom columns are written with a null disposition awaiting triage.
+        assert tbl["custom_columns"][0]["disposition"] is None
 
     def test_domain_filter(self, analysis_dir, sources_dir, tmp_path):
         client = mock.MagicMock()

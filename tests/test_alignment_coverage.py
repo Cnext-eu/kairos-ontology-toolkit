@@ -9,7 +9,9 @@ from click.testing import CliRunner
 
 from kairos_ontology.alignment_coverage import (
     ALIGNMENT_HASH_SCHEMA_VERSION,
+    CustomColumn,
     check_alignment_coverage,
+    collect_custom_columns,
     compute_affinity_hash,
     load_affinity_domain_tables,
 )
@@ -38,15 +40,29 @@ def _write_alignment(
     *,
     schema_version: int = ALIGNMENT_HASH_SCHEMA_VERSION,
     source_sha256: str | None = "__auto__",
+    custom: dict[tuple[str, str], list[dict]] | None = None,
 ) -> None:
-    """Write an alignment file. tables = [(system, table), ...]."""
+    """Write an alignment file. tables = [(system, table), ...].
+
+    ``custom`` maps a ``(system, table)`` pair to a list of ``custom_columns``
+    entries (each a dict with at least ``column``; optional ``suggested_property``
+    and ``disposition``).
+    """
     analysis_dir.mkdir(parents=True, exist_ok=True)
     if source_sha256 == "__auto__":
         source_sha256 = compute_affinity_hash(tables)
+    custom = custom or {}
     data: dict = {
         "schema_version": schema_version,
         "domain": domain,
-        "tables": [{"system": s, "table": t} for s, t in tables],
+        "tables": [
+            {
+                "system": s,
+                "table": t,
+                "custom_columns": custom.get((s, t), []),
+            }
+            for s, t in tables
+        ],
     }
     if source_sha256 is not None:
         data["source_sha256"] = source_sha256
@@ -177,3 +193,132 @@ class TestCheckAlignmentCLI:
         ])
         assert result.exit_code == 0, result.output
         assert "up to date" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Issue #164 — custom-column triage
+# ---------------------------------------------------------------------------
+
+
+class TestCollectCustomColumns:
+
+    def test_extracts_and_classifies(self):
+        data = {
+            "tables": [
+                {
+                    "system": "qargo",
+                    "table": "companies",
+                    "custom_columns": [
+                        {"column": "credit_limit", "suggested_property": "creditLimit"},
+                        {"column": "created_at"},
+                    ],
+                }
+            ]
+        }
+        cols = collect_custom_columns(data)
+        assert len(cols) == 2
+        biz = next(c for c in cols if c.column == "credit_limit")
+        assert biz.identity == "qargo.companies.credit_limit"
+        assert biz.suggested_property == "creditLimit"
+        assert biz.operational is False
+        assert biz.disposed is False
+        audit = next(c for c in cols if c.column == "created_at")
+        assert audit.operational is True
+
+    def test_disposed_when_disposition_set(self):
+        cc = CustomColumn(system="s", table="t", column="c", disposition="skip")
+        assert cc.disposed is True
+        assert CustomColumn(system="s", table="t", column="c").disposed is False
+        assert CustomColumn(
+            system="s", table="t", column="c", disposition="  "
+        ).disposed is False
+
+    def test_handles_missing_custom_columns(self):
+        assert collect_custom_columns({"tables": [{"system": "s", "table": "t"}]}) == []
+
+
+class TestCustomColumnReport:
+
+    def _setup(self, tmp_path, custom):
+        _write_affinity(tmp_path, "qargo", [("companies", "party")])
+        _write_alignment(
+            tmp_path, "party", [("qargo", "companies")],
+            custom={("qargo", "companies"): custom},
+        )
+
+    def test_collected_in_report(self, tmp_path):
+        self._setup(tmp_path, [{"column": "credit_limit"}])
+        report = check_alignment_coverage(analysis_dir=tmp_path)
+        assert "party" in report.custom_columns
+        assert report.has_undisposed_custom_columns is True
+        assert len(report.undisposed_custom_columns("party")) == 1
+
+    def test_disposed_columns_not_flagged(self, tmp_path):
+        self._setup(tmp_path, [{"column": "credit_limit", "disposition": "model"}])
+        report = check_alignment_coverage(analysis_dir=tmp_path)
+        assert report.has_undisposed_custom_columns is False
+        assert report.undisposed_custom_columns("party") == []
+
+    def test_no_custom_columns(self, tmp_path):
+        self._setup(tmp_path, [])
+        report = check_alignment_coverage(analysis_dir=tmp_path)
+        assert report.has_undisposed_custom_columns is False
+        assert report.custom_columns == {}
+
+    def test_collected_even_when_incomplete(self, tmp_path):
+        # Domain has two affinity tables but only one is aligned (incomplete);
+        # custom columns on the aligned table must still surface.
+        _write_affinity(tmp_path, "qargo", [("companies", "party"), ("contacts", "party")])
+        _write_alignment(
+            tmp_path, "party", [("qargo", "companies")],
+            source_sha256="stale-or-partial",
+            custom={("qargo", "companies"): [{"column": "credit_limit"}]},
+        )
+        report = check_alignment_coverage(analysis_dir=tmp_path)
+        assert "party" in report.incomplete
+        assert report.has_undisposed_custom_columns is True
+
+
+class TestStrictCustomColumnGate:
+
+    def _setup(self, tmp_path, custom):
+        analysis = tmp_path / "_analysis"
+        _write_affinity(analysis, "qargo", [("companies", "party")])
+        _write_alignment(
+            analysis, "party", [("qargo", "companies")],
+            custom={("qargo", "companies"): custom},
+        )
+        return analysis
+
+    def test_default_warns_does_not_block(self, tmp_path):
+        analysis = self._setup(tmp_path, [{"column": "credit_limit"}])
+        result = CliRunner().invoke(cli, [
+            "check-alignment", "--analysis-dir", str(analysis),
+        ])
+        assert result.exit_code == 0, result.output
+        assert "credit_limit" in result.output
+
+    def test_strict_blocks_undisposed(self, tmp_path):
+        analysis = self._setup(tmp_path, [{"column": "credit_limit"}])
+        result = CliRunner().invoke(cli, [
+            "check-alignment", "--analysis-dir", str(analysis), "--strict",
+        ])
+        assert result.exit_code == 1, result.output
+        assert "untriaged custom columns" in result.output
+
+    def test_strict_passes_when_all_disposed(self, tmp_path):
+        analysis = self._setup(
+            tmp_path, [{"column": "credit_limit", "disposition": "model"}]
+        )
+        result = CliRunner().invoke(cli, [
+            "check-alignment", "--analysis-dir", str(analysis), "--strict",
+        ])
+        assert result.exit_code == 0, result.output
+
+    def test_strict_warn_only_exits_zero(self, tmp_path):
+        analysis = self._setup(tmp_path, [{"column": "credit_limit"}])
+        result = CliRunner().invoke(cli, [
+            "check-alignment", "--analysis-dir", str(analysis),
+            "--strict", "--warn-only",
+        ])
+        assert result.exit_code == 0, result.output
