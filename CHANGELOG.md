@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.0] — 2026-06-14
+
+### Added
+- **propose-alignment plausibility & address review flags (DD-069, issues #167/#168).**
+  A deterministic, no-LLM review pass now flags structurally implausible column
+  maps for human review instead of letting them pass silently. Each flagged column
+  in `{domain}-alignment.yaml` gains `review: true` + a `review_reason`
+  (emitted only when a rule fires, so default output is unchanged). Rules cover:
+  address-part columns (`street`/`postalCode`/`addressLine*`/qualified
+  `city`/`zip`) force-fit onto non-address party scalars (#167); boolean source →
+  identity/name property; financial-flavoured column → generic identity property;
+  and no-name-token-overlap + low-confidence maps (#168). `check-alignment` collects
+  these into a new **report-only** "flagged for review" section — it never blocks
+  (separate from the #164 custom-column `--strict` gate). The column mapping is
+  kept (only flagged), and no cross-module `reference-data#Address` target is
+  hardcoded (that remains #166's scope).
+
 ## [3.17.0] — 2026-06-14
 
 ### Added

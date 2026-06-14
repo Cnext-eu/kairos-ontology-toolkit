@@ -178,6 +178,52 @@ def collect_custom_columns(data: dict[str, Any]) -> list[CustomColumn]:
     return out
 
 
+@dataclass
+class ReviewColumn:
+    """A mapped column flagged for human review by propose-alignment (DD-069).
+
+    Carries the deterministic plausibility/address ``review_reason`` so
+    ``check-alignment`` can surface implausible maps. Report-only — these never
+    block the gate (issues #167/#168).
+    """
+
+    system: str
+    table: str
+    column: str
+    ref_property: str = ""
+    reason: str = ""
+
+    @property
+    def identity(self) -> str:
+        return f"{self.system}.{self.table}.{self.column}"
+
+
+def collect_review_columns(data: dict[str, Any]) -> list[ReviewColumn]:
+    """Extract every column flagged with ``review: true`` from an alignment file."""
+    out: list[ReviewColumn] = []
+    for tbl in data.get("tables", []) or []:
+        if not isinstance(tbl, dict):
+            continue
+        system = tbl.get("system", "")
+        table = tbl.get("table", "")
+        for col in tbl.get("columns", []) or []:
+            if not isinstance(col, dict) or not col.get("review"):
+                continue
+            column = col.get("column", "")
+            if not column:
+                continue
+            out.append(
+                ReviewColumn(
+                    system=system,
+                    table=table,
+                    column=column,
+                    ref_property=col.get("ref_property", "") or "",
+                    reason=col.get("review_reason", "") or "",
+                )
+            )
+    return out
+
+
 def load_alignment(path: Path) -> dict[str, Any]:
     """Load an alignment YAML file, raising on malformed content."""
     with open(path, encoding="utf-8") as f:
@@ -207,6 +253,9 @@ class AlignmentCheckReport:
     #: domain → all source-evidenced custom columns (issue #164), classified +
     #: carrying their triage disposition.  Drives the report and ``--strict`` gate.
     custom_columns: dict[str, list[CustomColumn]] = field(default_factory=dict)
+    #: domain → columns flagged ``review: true`` by propose-alignment (DD-069,
+    #: issues #167/#168). Report-only — never contributes to ``is_blocking``.
+    review_columns: dict[str, list[ReviewColumn]] = field(default_factory=dict)
 
     @property
     def is_blocking(self) -> bool:
@@ -289,6 +338,11 @@ def check_alignment_coverage(
         custom = collect_custom_columns(data)
         if custom:
             report.custom_columns[domain] = custom
+
+        # DD-069: collect review-flagged maps (report-only; never blocks).
+        flagged = collect_review_columns(data)
+        if flagged:
+            report.review_columns[domain] = flagged
 
         aligned = _alignment_aligned_tables(data)
         gaps = expected - aligned

@@ -12,6 +12,7 @@ from kairos_ontology.alignment_coverage import (
     CustomColumn,
     check_alignment_coverage,
     collect_custom_columns,
+    collect_review_columns,
     compute_affinity_hash,
     load_affinity_domain_tables,
 )
@@ -322,3 +323,88 @@ class TestStrictCustomColumnGate:
             "--strict", "--warn-only",
         ])
         assert result.exit_code == 0, result.output
+
+
+def _write_alignment_with_reviews(
+    analysis_dir: Path,
+    domain: str,
+    system: str,
+    table: str,
+    columns: list[dict],
+) -> None:
+    """Write an alignment file whose single table has the given ``columns``."""
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    data = {
+        "schema_version": ALIGNMENT_HASH_SCHEMA_VERSION,
+        "domain": domain,
+        "source_sha256": compute_affinity_hash([(system, table)]),
+        "tables": [{"system": system, "table": table, "columns": columns}],
+    }
+    with open(analysis_dir / f"{domain}-alignment.yaml", "w", encoding="utf-8") as f:
+        yaml.dump(data, f, sort_keys=False)
+
+
+class TestCollectReviewColumns:
+    def test_collects_only_flagged(self):
+        data = {
+            "tables": [
+                {
+                    "system": "qargo",
+                    "table": "companies",
+                    "columns": [
+                        {"column": "name", "ref_property": "partyName"},
+                        {"column": "SHIPPER_STREET", "ref_property": "partyName",
+                         "review": True, "review_reason": "address-part column"},
+                    ],
+                }
+            ]
+        }
+        flagged = collect_review_columns(data)
+        assert len(flagged) == 1
+        assert flagged[0].column == "SHIPPER_STREET"
+        assert flagged[0].identity == "qargo.companies.SHIPPER_STREET"
+        assert "address-part" in flagged[0].reason
+
+    def test_empty_when_none_flagged(self):
+        data = {"tables": [{"system": "s", "table": "t",
+                            "columns": [{"column": "c", "ref_property": "p"}]}]}
+        assert collect_review_columns(data) == []
+
+
+class TestReviewColumnsReportOnly:
+
+    def _setup(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        _write_affinity(analysis, "qargo", [("companies", "party")])
+        _write_alignment_with_reviews(
+            analysis, "party", "qargo", "companies",
+            columns=[
+                {"column": "SHIPPER_STREET", "ref_property": "partyName",
+                 "review": True, "review_reason": "address-part column mapped to "
+                 "non-address property"},
+            ],
+        )
+        return analysis
+
+    def test_review_columns_collected(self, tmp_path):
+        analysis = self._setup(tmp_path)
+        report = check_alignment_coverage(analysis_dir=analysis)
+        assert "party" in report.review_columns
+        assert report.review_columns["party"][0].column == "SHIPPER_STREET"
+
+    def test_review_does_not_block(self, tmp_path):
+        """DD-069: review flags are report-only — never block, even with --strict."""
+        analysis = self._setup(tmp_path)
+        report = check_alignment_coverage(analysis_dir=analysis)
+        assert report.is_blocking is False
+        assert report.has_undisposed_custom_columns is False
+
+    def test_cli_reports_review_section(self, tmp_path):
+        analysis = self._setup(tmp_path)
+        for flag in ([], ["--strict"]):
+            result = CliRunner().invoke(cli, [
+                "check-alignment", "--analysis-dir", str(analysis), *flag,
+            ])
+            assert result.exit_code == 0, result.output
+            assert "flagged for review" in result.output
+            assert "SHIPPER_STREET" in result.output

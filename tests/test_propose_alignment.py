@@ -14,10 +14,13 @@ from kairos_ontology.propose_alignment import (
     ColumnAlignment,
     DomainAlignment,
     TableAlignment,
+    _build_property_label_index,
     _build_reference_rollup,
     _clamp_confidence,
     _compact_prompt_samples,
+    _detect_address_part,
     _format_source_columns,
+    _review_column_alignment,
     _select_ref_classes_for_table,
     _should_retry_with_full_inventory,
     align_table,
@@ -505,6 +508,153 @@ class TestWriteAlignmentOutput:
         assert data["tables"][0]["columns"][0]["alignment"] == "semantic"
         assert len(data["tables"][0]["custom_columns"]) == 1
 
+    def test_review_flags_emitted_only_when_set(self, tmp_path):
+        """DD-069: review/review_reason emitted only when a column is flagged."""
+        alignment = DomainAlignment(
+            domain="party",
+            domain_uris=["https://example.com/ont/party#"],
+            generated_at="2026-06-05T10:00:00Z",
+            model_used="gpt-5.4-mini",
+            tables=[
+                TableAlignment(
+                    system="admin",
+                    table="tblParties",
+                    ref_class="TradeParty",
+                    ref_class_confidence=0.9,
+                    columns=[
+                        ColumnAlignment(
+                            column="PartyName",
+                            data_type="nvarchar(100)",
+                            ref_class="TradeParty",
+                            ref_property="partyName",
+                            alignment="exact",
+                            confidence=0.95,
+                        ),
+                        ColumnAlignment(
+                            column="SHIPPER_STREET",
+                            data_type="nvarchar(100)",
+                            ref_class="TradeParty",
+                            ref_property="partyName",
+                            alignment="semantic",
+                            confidence=0.4,
+                            review=True,
+                            review_reason="address-part column mapped to non-address property",
+                        ),
+                    ],
+                ),
+            ],
+        )
+        out_path = write_alignment_output(alignment, tmp_path)
+        with open(out_path) as f:
+            data = yaml.safe_load(f)
+        cols = data["tables"][0]["columns"]
+        clean, flagged = cols[0], cols[1]
+        assert "review" not in clean and "review_reason" not in clean
+        assert flagged["review"] is True
+        assert "address-part" in flagged["review_reason"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: DD-069 review pass (issues #167/#168)
+# ---------------------------------------------------------------------------
+
+
+class TestDetectAddressPart:
+    @pytest.mark.parametrize(
+        "name",
+        ["SHIPPER_STREET", "billing_zip", "postal_code", "address_line_1",
+         "house_number", "consignee_city"],
+    )
+    def test_detects_strong_address_parts(self, name):
+        assert _detect_address_part(name) is True
+
+    @pytest.mark.parametrize(
+        "name",
+        ["country", "city", "clearingHouse", "warehouse", "countryOfBirth",
+         "PartyName", ""],
+    )
+    def test_ignores_ambiguous_or_non_address(self, name):
+        assert _detect_address_part(name) is False
+
+
+class TestReviewColumnAlignment:
+    @pytest.fixture
+    def label_index(self):
+        ref_classes = [
+            {"name": "TradeParty", "properties": [
+                {"name": "partyName", "label": "Party Name", "range": "string"},
+                {"name": "partyIdentifier", "label": "Party Identifier", "range": "string"},
+                {"name": "isActive", "label": "Is Active", "range": "boolean"},
+                {"name": "address", "label": "Address", "range": "Address"},
+            ]},
+        ]
+        return _build_property_label_index(ref_classes)
+
+    def test_address_part_to_non_address_scalar_flagged(self, label_index):
+        reason = _review_column_alignment(
+            column_name="SHIPPER_STREET", data_type="nvarchar(100)",
+            ref_class="TradeParty", ref_property="partyName",
+            confidence=0.5, label_index=label_index,
+        )
+        assert reason and "address-part" in reason
+
+    def test_address_part_to_address_property_not_flagged(self, label_index):
+        reason = _review_column_alignment(
+            column_name="SHIPPER_STREET", data_type="nvarchar(100)",
+            ref_class="TradeParty", ref_property="address",
+            confidence=0.5, label_index=label_index,
+        )
+        assert reason is None
+
+    def test_boolean_to_identity_flagged(self, label_index):
+        reason = _review_column_alignment(
+            column_name="FCPAYABLEIND", data_type="bit",
+            ref_class="TradeParty", ref_property="partyIdentifier",
+            confidence=0.5, label_index=label_index,
+        )
+        assert reason and "boolean" in reason
+
+    def test_financial_to_identity_flagged(self, label_index):
+        reason = _review_column_alignment(
+            column_name="IBAN", data_type="varchar(34)",
+            ref_class="TradeParty", ref_property="partyIdentifier",
+            confidence=0.9, label_index=label_index,
+        )
+        assert reason and "financial" in reason
+
+    def test_no_token_overlap_low_confidence_flagged(self, label_index):
+        reason = _review_column_alignment(
+            column_name="XYZ123", data_type="nvarchar(50)",
+            ref_class="TradeParty", ref_property="partyName",
+            confidence=0.3, label_index=label_index,
+        )
+        assert reason and "share no name token" in reason
+
+    def test_numeric_id_to_identifier_not_flagged(self, label_index):
+        """ClientID int → partyIdentifier must not be noise (token overlap)."""
+        reason = _review_column_alignment(
+            column_name="PartyIdentifier", data_type="int",
+            ref_class="TradeParty", ref_property="partyIdentifier",
+            confidence=0.4, label_index=label_index,
+        )
+        assert reason is None
+
+    def test_good_name_match_not_flagged(self, label_index):
+        reason = _review_column_alignment(
+            column_name="PartyName", data_type="nvarchar(100)",
+            ref_class="TradeParty", ref_property="partyName",
+            confidence=0.95, label_index=label_index,
+        )
+        assert reason is None
+
+    def test_empty_property_not_flagged(self, label_index):
+        reason = _review_column_alignment(
+            column_name="anything", data_type="int",
+            ref_class="TradeParty", ref_property="",
+            confidence=0.1, label_index=label_index,
+        )
+        assert reason is None
+
 
 # ---------------------------------------------------------------------------
 # Tests: _build_reference_rollup
@@ -649,6 +799,60 @@ class TestRunProposeAlignment:
         assert len(tbl["custom_columns"]) == 1
         # Issue #164: custom columns are written with a null disposition awaiting triage.
         assert tbl["custom_columns"][0]["disposition"] is None
+
+    def test_review_flag_end_to_end(self, analysis_dir, tmp_path):
+        """DD-069: an address-part column force-fit onto a party scalar is flagged."""
+        sources = tmp_path / "sources" / "adminpulse"
+        sources.mkdir(parents=True)
+        vocab = """\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+<#tblParties> a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "tblParties" .
+<#tblParties_SHIPPER_STREET> a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "SHIPPER_STREET" ;
+    kairos-bronze:dataType "nvarchar(100)" ;
+    kairos-bronze:belongsToTable <#tblParties> .
+"""
+        (sources / "adminpulse.vocabulary.ttl").write_text(vocab, encoding="utf-8")
+
+        responses = {
+            "tblParties": {
+                "ref_class": "TradeParty",
+                "ref_class_confidence": 0.88,
+                "column_alignments": [
+                    {"column": "SHIPPER_STREET", "ref_class": "TradeParty",
+                     "ref_property": "partyName", "alignment": "semantic",
+                     "confidence": 0.5, "rationale": "Best available"},
+                ],
+            },
+        }
+        client = self._mock_client(responses)
+        output = tmp_path / "output"
+        with mock.patch(
+            "kairos_ontology.propose_alignment.get_ai_client", return_value=client
+        ), mock.patch(
+            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            return_value=[
+                {"name": "TradeParty", "label": "Trade Party", "comment": "",
+                 "properties": [
+                     {"name": "partyName", "label": "Party Name", "range": "string"},
+                 ]},
+            ],
+        ):
+            run_propose_alignment(
+                analysis_dir=analysis_dir,
+                sources_dir=tmp_path / "sources",
+                catalog_path=None,
+                output_dir=output,
+                domains_filter=["party"],
+            )
+
+        with open(output / "party-alignment.yaml") as f:
+            data = yaml.safe_load(f)
+        col = data["tables"][0]["columns"][0]
+        assert col["column"] == "SHIPPER_STREET"
+        assert col["review"] is True
+        assert "address-part" in col["review_reason"]
 
     def test_domain_filter(self, analysis_dir, sources_dir, tmp_path):
         client = mock.MagicMock()
