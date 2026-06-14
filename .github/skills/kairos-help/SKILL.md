@@ -272,6 +272,12 @@ kairos-ontology check-alignment [--domains "Domain1,Domain2"] [--warn-only]
 # Generate coverage report (deterministic alignment, post-modeling)
 kairos-ontology coverage-report [--ontology PATH] [--ref-models PATH] [--format both]
 
+# Suggest DRAFT SHACL shapes from bronze source profiling (DD-076)
+# Writes to output/shapes-draft/<name>.ttl (outside model/shapes, NOT auto-loaded).
+# Run via the kairos-execute-validate skill; PII never enumerated, always masked.
+kairos-ontology suggest-shapes [--source PATH] [--out PATH] \
+  [--enum-distinct-max 12] [--no-sample-values] [--force]
+
 # Build the SKOS company glossary from confirmed discovery extractions (deterministic)
 kairos-ontology build-glossary [--company-specific-only] [--company-domain acme.com] \
   [--glossary-namespace IRI] [--output PATH]

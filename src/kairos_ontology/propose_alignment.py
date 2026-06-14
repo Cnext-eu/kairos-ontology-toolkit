@@ -34,6 +34,8 @@ from .analyse_sources import (
 from .ai_provider import get_ai_client
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import compute_entry_hash, open_cache
+from ._samples import example_values as _render_example_values
+from ._samples import is_pii_column
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,12 @@ class ColumnAlignment:
     alignment: str  # exact | semantic | partial | custom
     confidence: float
     rationale: str = ""
+    # DD-075 sample-grounded evidence. ``example_values`` is produced by default
+    # (PII masked via the shared policy); suppressed with --no-sample-values.
+    # ``transform_compat`` is an advisory warning when a proposed CAST looks
+    # incompatible with the real sampled values. Both emitted only when present.
+    example_values: list[str] | None = None
+    transform_compat: str | None = None
     # DD-045 mapping hints (only populated when include_mapping_hints=True)
     transform_hint: str | None = None
     transform_confidence: float | None = None
@@ -997,6 +1005,45 @@ def _transform_hint(
     }
 
 
+def _parses_as(value: str, target_type: str) -> bool:
+    """Conservative check: does a single raw value parse as the target type?
+
+    Only obvious numeric/bool cases are checked. Dates/locale formats are NOT
+    parsed (too ambiguous) and always count as compatible to avoid false alarms.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return True  # NULL/empty is not evidence of incompatibility
+    if target_type == "int":
+        return re.fullmatch(r"[+-]?\d+", text) is not None
+    if target_type == "decimal":
+        return re.fullmatch(r"[+-]?\d*\.?\d+([eE][+-]?\d+)?", text) is not None
+    if target_type == "bool":
+        return text.lower() in {"0", "1", "true", "false", "t", "f", "y", "n", "yes", "no"}
+    return True
+
+
+def _transform_compat_note(column: dict[str, Any], target_range: str) -> str | None:
+    """Advisory warning when sampled values look incompatible with a CAST target.
+
+    Returns a short note (e.g. "2/5 sample values are non-numeric — cast may
+    NULL") or None. Numeric/bool targets only; never raises confidence, never
+    blocks. Returns None when there are no samples or the target is not numeric/
+    bool (we don't second-guess string/date casts from a 5-row sample).
+    """
+    target_type = _normalize_logical_type(target_range)
+    if target_type not in {"int", "decimal", "bool"}:
+        return None
+    samples = [str(s).strip() for s in (column.get("samples") or []) if str(s).strip()]
+    if not samples:
+        return None
+    bad = [s for s in samples if not _parses_as(s, target_type)]
+    if not bad:
+        return None
+    kind = "non-boolean" if target_type == "bool" else "non-numeric"
+    return f"{len(bad)}/{len(samples)} sample values are {kind} — CAST may NULL/fail; confirm"
+
+
 def _distinct_samples(column: dict[str, Any]) -> set[str]:
     """Distinct stringified sample values for a column."""
     return {str(s) for s in (column.get("samples") or [])}
@@ -1312,6 +1359,7 @@ def run_propose_alignment(
     domains_filter: list[str] | None = None,
     report=None,
     include_mapping_hints: bool = False,
+    include_sample_values: bool = True,
     max_prompt_classes: int = MAX_REF_CLASSES_PER_PROMPT,
     retry_min_confidence: float = RETRY_MIN_CONFIDENCE,
     retry_min_mapped_ratio: float = RETRY_MIN_MAPPED_RATIO,
@@ -1681,6 +1729,20 @@ def run_propose_alignment(
                         confidence=ca["confidence"],
                         rationale=ca.get("rationale", ""),
                     )
+                    # DD-075: masked, default-on sample evidence for the mapper.
+                    if col_obj is not None:
+                        col_is_pii = is_pii_column(
+                            col_obj.get("name"),
+                            target_property=ca["ref_property"],
+                            sample_values=col_obj.get("samples"),
+                        )
+                        evidence = _render_example_values(
+                            col_obj.get("samples"),
+                            is_pii=col_is_pii,
+                            include=include_sample_values,
+                        )
+                        if evidence:
+                            column_alignment.example_values = evidence
                     if include_mapping_hints and col_obj is not None:
                         prop_range = _lookup_property_range(
                             range_index, ref_class_name, ca["ref_property"]
@@ -1694,6 +1756,10 @@ def run_propose_alignment(
                             hint["requires_human_confirmation"]
                         )
                         column_alignment.transform_rationale = hint["transform_rationale"]
+                        # DD-075: advisory CAST-vs-samples compatibility note.
+                        compat = _transform_compat_note(col_obj, prop_range)
+                        if compat:
+                            column_alignment.transform_compat = compat
                     # DD-069: deterministic plausibility/address review flag.
                     review_reason = _review_column_alignment(
                         column_name=ca["column"],
@@ -1926,6 +1992,11 @@ def write_alignment_output(alignment: DomainAlignment, output_dir: Path) -> Path
                 "confidence": ca.confidence,
                 "rationale": ca.rationale,
             }
+            # DD-075: emit sample evidence + compat note only when populated.
+            if ca.example_values:
+                col_dict["example_values"] = ca.example_values
+            if ca.transform_compat is not None:
+                col_dict["transform_compat"] = ca.transform_compat
             # DD-045: emit hint fields only when populated (default unchanged)
             if ca.transform_hint is not None:
                 col_dict["transform_hint"] = ca.transform_hint

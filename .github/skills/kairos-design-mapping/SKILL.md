@@ -40,7 +40,11 @@ interleave tables from different sources.
 ### Gate 4: Source-grounded proposals (data-first)
 
 > **You MUST read the bronze vocabulary AND domain ontology BEFORE proposing
-> any mappings. Present evidence (column names, types) with every proposal.**
+> any mappings. Present evidence (column names, types, AND masked example
+> values) with every proposal.** Real sample values are the strongest evidence
+> for a mapping — surface them by default (see Phase 2 Examples column). PII
+> columns are always masked; never paste raw sample values into committed TTL or
+> comments.
 
 ### Gate 5: Explicit user confirmation required
 
@@ -114,23 +118,40 @@ The user can override any auto-approved mapping.
 
 For each confirmed table→entity pair:
 
-1. Read all columns from the bronze vocabulary
+1. Read all columns from the bronze vocabulary (including `kairos-bronze:sampleValues`)
 2. Read all properties from the target entity (including inherited)
 3. Present columns in **chunks of max 15**, grouped by prefix or data type
-4. For each chunk, show a **Column Mapping Proposal**:
+4. For each chunk, show a **Column Mapping Proposal**. The **Examples** column is
+   **mandatory** — populate it from the bronze `sampleValues`, **masking PII**
+   (see Privacy note below):
 
-| Source Column | Target Property | Match Type | Transform | Confidence |
-|---|---|---|---|---|
-| `customer_name` | `name` | exact | — | High ✓ |
-| `cust_email` | `email` | exact | — | High ✓ |
-| `WEIGHT_KG` | `weight` | close | `CAST(... AS DECIMAL)` | Medium |
-| `INTERNAL_FLAG` | — | operational | — | — |
-| `LEGACY_CODE` | — | deprecated | — | — |
+| Source Column | Examples | Target Property | Match Type | Transform | Confidence |
+|---|---|---|---|---|---|
+| `customer_name` | `Acme NV`, `Globex` | `name` | exact | — | High ✓ |
+| `cust_email` | `jo***@***.com` | `email` | exact | — | High ✓ |
+| `WEIGHT_KG` | `12.5`, `8.0` | `weight` | close | `CAST(... AS DECIMAL)` | Medium |
+| `INTERNAL_FLAG` | `Y`, `N` | — | operational | — | — |
+| `LEGACY_CODE` | `A1`, `B7` | — | deprecated | — | — |
 
 5. Rows marked ✓ are auto-approved (exact name + type match)
 6. Wait for user to confirm/correct remaining rows
 7. Only generate TTL after full chunk confirmation
 8. Proceed to next chunk
+
+> **Privacy (mandatory).** The **Examples** column is for *transient display
+> only* to ground the user's decision. **Never** copy real sample values into the
+> committed mapping TTL, `rdfs:comment`, or the session log. PII columns (name,
+> email, IBAN, phone, national ID, etc. — by column name, mapped property, or
+> value shape) are **always masked** (e.g. `jo***@***.com`). When in doubt, mask.
+> If `propose-alignment` produced an `*-alignment.yaml`, reuse its already-masked
+> `example_values` rather than re-reading raw bronze values.
+
+> **Transform compatibility (`transform_compat`).** When an `*-alignment.yaml`
+> carries a `transform_compat` note on a column (e.g. *"2/5 sample values are
+> non-numeric — CAST may NULL/fail"*), surface it as a **warning** next to that
+> row's Transform. It is advisory: it never blocks and never changes confidence,
+> but the user should confirm the cast/cleaning policy before you write a
+> `CAST(...)` transform.
 
 > **If a business glossary is loaded (Phase 0, step 5):** when a source column name
 > or description matches a concept's `skos:altLabel`, surface the concept's linked
@@ -182,6 +203,8 @@ For each confirmed table→entity pair:
 | `transform_confidence` | 0.0–1.0 deterministic confidence | Show as evidence; do not treat as approval |
 | `requires_human_confirmation` | `false` only for exact-name + same-logical-type passthrough | If `true`, you MUST confirm with the user before TTL |
 | `transform_rationale` | Why the hint was generated | Show to the user as evidence |
+| `example_values` (DD-075) | Masked sample values from bronze (default-on) | Populate the Phase 2 Examples column; never copy into TTL |
+| `transform_compat` (DD-075) | Advisory "N/M samples incompatible with CAST target" | Show as a Transform warning; confirm cast/cleaning policy |
 
 | Field (table-level) | Meaning | How to use |
 |---|---|---|

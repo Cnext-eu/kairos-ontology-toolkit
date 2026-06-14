@@ -907,6 +907,58 @@ def _gen_silver_models(
                     (source_name, tbl["name"], tbl["uri"])
                 )
 
+    # Issue #179: a table mapping whose target class is never projected (an
+    # unclaimed imported subtype — silverIncludeImports=false and no per-class
+    # silverInclude) would otherwise be silently dropped: its class_to_sources
+    # entry is never consumed by the entity loop below (which iterates only
+    # projected ``classes``), so the source data vanishes with no warning.
+    # Detect such orphaned targets and either fold them onto a projected
+    # discriminator parent (so the contribution is preserved) or, failing that,
+    # emit a loud warning so the drop is never silent.
+    projected_uris = {c["uri"] for c in classes}
+    for target in list(class_to_sources.keys()):
+        if target in projected_uris:
+            continue
+        orphan_refs = class_to_sources[target]
+        target_local = extract_local_name(target)
+        # Try to fold onto a projected discriminator parent.
+        folded_parent = None
+        for parent in graph.objects(URIRef(target), RDFS.subClassOf):
+            if not isinstance(parent, URIRef):
+                continue
+            if str(parent).startswith("http://www.w3.org/"):
+                continue
+            strategy = graph.value(parent, KAIROS_EXT.inheritanceStrategy)
+            if (
+                strategy
+                and str(strategy) == "discriminator"
+                and str(parent) in projected_uris
+            ):
+                folded_parent = str(parent)
+                break
+        if folded_parent is not None:
+            existing = class_to_sources.setdefault(folded_parent, [])
+            for ref in orphan_refs:
+                if ref not in existing:
+                    existing.append(ref)
+            del class_to_sources[target]
+            msg = (
+                f"Table mapping → '{target_local}' targets an unprojected class; "
+                f"folded its source(s) onto projected discriminator parent "
+                f"'{extract_local_name(folded_parent)}'."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+        else:
+            del class_to_sources[target]
+            msg = (
+                f"Table mapping → '{target_local}' targets a class that is not "
+                f"projected (unclaimed import / not silverInclude'd) — ignored. "
+                f"Claim it via kairos-design-silver or map to a projected class."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
     for cls in classes:
         cls_uri = cls["uri"]
         local = cls["name"]
@@ -1335,6 +1387,18 @@ def _get_table_column_uris(systems: list[dict], table_uri: str) -> set[str]:
             if tbl["uri"] == table_uri:
                 for col in tbl["columns"]:
                     result.add(col["uri"])
+    return result
+
+
+def _get_table_column_names(systems: list[dict], table_uri: str) -> set[str]:
+    """Return the set of physical column names belonging to a specific bronze table."""
+    result: set[str] = set()
+    for sys in systems:
+        for tbl in sys["tables"]:
+            if tbl["uri"] == table_uri:
+                for col in tbl["columns"]:
+                    if col.get("name"):
+                        result.add(col["name"])
     return result
 
 
@@ -1904,6 +1968,46 @@ def _infer_fk_on_targets(
     return targets
 
 
+def _physical_columns_referenced(col_map: dict) -> set[str]:
+    """Physical source column names a column-mapping references.
+
+    Combines explicit ``source_columns`` with any ``source.<col>`` tokens in the
+    ``transform`` expression.  Used to attribute a mapping to a specific source
+    table when its subject URI is synthetic/composite (not a declared bronze
+    column).
+    """
+    names: set[str] = set()
+    for sc in col_map.get("source_columns") or []:
+        if sc:
+            names.add(str(sc))
+    transform = col_map.get("transform")
+    if transform:
+        names.update(re.findall(r"source\.([A-Za-z0-9_]+)", str(transform)))
+    return names
+
+
+def _mapping_belongs_to_source(
+    col_uri: str,
+    col_map: dict,
+    current_table_col_uris: set[str],
+    current_table_col_names: set[str],
+) -> bool:
+    """Is this column-mapping attributable to the current source table?
+
+    True when the mapping's subject is one of the current table's bronze columns,
+    OR (for synthetic/composite/transform-only subjects whose URI is not itself a
+    declared bronze column) every physical column it references exists on the
+    current table.  An empty current-table column set means the scope is known but
+    has no columns — never attribute in that case.
+    """
+    if col_uri in current_table_col_uris:
+        return True
+    referenced = _physical_columns_referenced(col_map)
+    if referenced and current_table_col_names:
+        return referenced.issubset(current_table_col_names)
+    return False
+
+
 def _resolve_fk_source_column(
     prop,
     mappings: dict,
@@ -1934,21 +2038,40 @@ def _resolve_fk_source_column(
     source_col_name = None
     source_columns: list[str] | None = None
 
-    # Try explicit SKOS mapping first
+    # Scope to the current source's columns. Use a None sentinel: when ``systems``
+    # is not provided the scope is unknown (legacy unscoped behaviour, e.g.
+    # non-merge callers without systems); when ``systems`` is provided the scope is
+    # known even if the table has no columns (an empty set must NOT fall back to
+    # unscoped, or one source's explicit mapping would leak into another source's
+    # per-source merge view — issue #178).
+    current_table_col_uris: set[str] | None = None
+    current_table_col_names: set[str] = set()
+    if systems is not None:
+        current_table_col_uris = set()
+        for (_, _, tbl_uri_ref) in source_refs:
+            current_table_col_uris.update(_get_table_column_uris(systems, tbl_uri_ref))
+            current_table_col_names.update(_get_table_column_names(systems, tbl_uri_ref))
+
+    # Try explicit SKOS mapping first (scoped to the current source).
     for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
         for col_map in col_maps_list:
-            if col_map.get("target_uri") == str(prop):
-                if col_map.get("source_columns"):
-                    source_columns = col_map["source_columns"]
-                if col_map.get("transform"):
-                    source_col_name = col_map["transform"].replace("source.", "")
+            if col_map.get("target_uri") != str(prop):
+                continue
+            if current_table_col_uris is not None and not _mapping_belongs_to_source(
+                col_uri, col_map, current_table_col_uris, current_table_col_names
+            ):
+                continue
+            if col_map.get("source_columns"):
+                source_columns = col_map["source_columns"]
+            if col_map.get("transform"):
+                source_col_name = col_map["transform"].replace("source.", "")
+            else:
+                bronze_col = bronze_col_lookup.get(col_uri)
+                if bronze_col:
+                    source_col_name = bronze_col["name"]
                 else:
-                    bronze_col = bronze_col_lookup.get(col_uri)
-                    if bronze_col:
-                        source_col_name = bronze_col["name"]
-                    else:
-                        source_col_name = extract_local_name(col_uri)
-                break
+                    source_col_name = extract_local_name(col_uri)
+            break
         if source_col_name:
             break
 
@@ -1960,17 +2083,13 @@ def _resolve_fk_source_column(
     if auto_inference_ambiguous:
         return None, None, "ambiguous_auto_inference"
 
-    # Auto-inference: find source column mapped to NK of range class
-    current_table_col_uris: set[str] = set()
-    if systems:
-        for (_, _, tbl_uri_ref) in source_refs:
-            current_table_col_uris.update(
-                _get_table_column_uris(systems, tbl_uri_ref)
-            )
+    # Auto-inference: find source column mapped to NK of range class (reuses the
+    # source-scoped column set computed above).
+    auto_col_uris = current_table_col_uris or set()
 
     nk_prop_uris = _get_nk_property_uris(graph, str(range_cls))
 
-    if not nk_prop_uris or not current_table_col_uris:
+    if not nk_prop_uris or not auto_col_uris:
         return None, None, "not_found"
 
     # Collect all candidates per NK property — require exactly one
@@ -1980,7 +2099,7 @@ def _resolve_fk_source_column(
     for nk_uri in nk_prop_uris:
         matches: list[tuple[str, str | None]] = []
         for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
-            if col_uri not in current_table_col_uris:
+            if col_uri not in auto_col_uris:
                 continue
             for col_map in col_maps_list:
                 if col_map.get("target_uri") == nk_uri:

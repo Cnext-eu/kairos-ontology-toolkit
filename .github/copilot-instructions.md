@@ -57,6 +57,7 @@ When reviewing or creating a pull request, verify:
 | Check | What to look for |
 |-------|-----------------|
 | **SPDX headers** | Every new or modified `.py` file has the `SPDX-License-Identifier` + `Copyright` header |
+| **Issue auto-close** | Every issue the PR **fully fixes** is referenced with a GitHub closing keyword (`Closes`/`Fixes`/`Resolves #NNN`) in the PR **body** (not just the title) so it auto-closes on merge; follow-up issues that should stay open are referenced as plain `#NNN` |
 | **No secrets** | No API keys, tokens, passwords, or internal URLs in code, config, or comments |
 | **No PII** | No personal data (names, emails, addresses) in ontology labels, test fixtures, or comments |
 | **Design decisions** | If the PR introduces an architectural choice, update `docs/design/toolkit-design-decisions.md` |

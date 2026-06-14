@@ -10,19 +10,13 @@ from rdflib.namespace import OWL, RDF, RDFS
 from pyshacl import validate as shacl_validate
 import json
 from .catalog_utils import load_graph_with_catalog
+# Canonical PII keyword list lives in ._samples (single source of truth, also
+# used by the sample-exposure masking policy); re-exported for compatibility.
+from ._samples import PII_KEYWORDS
 
 logger = logging.getLogger(__name__)
 
 KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
-
-# PII indicator keywords — if a property local name or label contains any of these
-# substrings, it is flagged as potentially containing personal data.
-PII_KEYWORDS: list[str] = [
-    "first_name", "last_name", "date_of_birth", "national_id", "iban",
-    "phone", "email", "address", "ssn", "passport", "tax_id", "gender",
-    "ethnicity", "religion", "health", "maiden_name", "birth_place",
-    "nationality", "marital_status",
-]
 
 # Filename patterns that are NOT domain ontologies and should be skipped.
 _NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")

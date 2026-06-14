@@ -1609,6 +1609,46 @@ class TestMultiSourceFKPerSource:
         )
 
 
+class TestMergeExplicitFKNoLeak:
+    """Issue #178: an explicit FK column-mapping declared by ONE merge source must
+    not leak into the OTHER source's per-source view.
+
+    AdminPulse (tblClient) explicitly maps ``TypeCode`` → ``hasType`` (FK to
+    ClientType); CRMSystem (Customers) does not.  The AdminPulse per-source
+    CorporateClient view must keep the real join; the CRMSystem view must emit a
+    NULL placeholder and must NOT reference AdminPulse's ``TypeCode`` column.
+    """
+
+    def test_declaring_source_keeps_join(self, client_dbt_artifacts):
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_admin_pulse.sql"
+        )
+        assert key is not None, "AdminPulse per-source CorporateClient view not found"
+        sql = client_dbt_artifacts[key].lower()
+        assert "client_type_sk" in sql
+        assert "left join {{ ref('client_type') }}" in sql, (
+            f"Declaring source should keep the hasType FK join:\n{sql}"
+        )
+
+    def test_non_declaring_source_does_not_leak(self, client_dbt_artifacts):
+        key = _find_artifact(
+            client_dbt_artifacts, "corporate_client__from_crm_system.sql"
+        )
+        assert key is not None, "CRMSystem per-source CorporateClient view not found"
+        sql = client_dbt_artifacts[key]
+        # FK _sk column still present, but only as a NULL pad (no join, no leak).
+        assert "client_type_sk" in sql
+        assert "client_type" not in sql.lower().replace("client_type_sk", ""), (
+            f"CRMSystem view must not join/reference client_type:\n{sql}"
+        )
+        assert "TypeCode" not in sql, (
+            f"CRMSystem view must not reference AdminPulse's TypeCode column:\n{sql}"
+        )
+        assert "null" in sql.lower(), (
+            f"CRMSystem view should emit a NULL placeholder for the FK:\n{sql}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Logistics domain tests — ref-model classes with source mappings
 # ---------------------------------------------------------------------------

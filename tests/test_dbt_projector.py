@@ -1981,6 +1981,115 @@ class TestMergeFKPerSource:
             assert any(c["target_name"] == "client_type_sk" for c in cols)
 
 
+class TestMergeExplicitFKMappingScope:
+    """Issue #178: an EXPLICIT FK column-mapping declared by one source must not
+    leak into another source's per-source merge view (phantom join / columns).
+
+    The projector is called once per source with the GLOBAL mappings dict, so the
+    explicit-mapping branch must be scoped to the current source's columns."""
+
+    CLIENT_URI = "http://kairos.example/ontology/Client"
+    HAS_TYPE = "http://kairos.example/ontology/hasType"
+
+    @pytest.fixture
+    def graph(self):
+        g = Graph()
+        g.parse(data=MERGE_FK_ONTOLOGY_TTL, format="turtle")
+        return g
+
+    @pytest.fixture
+    def systems(self):
+        ap = "https://example.com/bronze/ap#tblClient"
+        crm = "https://example.com/bronze/crm#Customers"
+        return [
+            {"system_label": "ap", "tables": [{
+                "uri": ap, "name": "tblClient",
+                "columns": [
+                    {"uri": f"{ap}_ClientID", "name": "ClientID", "data_type": "int"},
+                    {"uri": f"{ap}_TypeCode", "name": "TypeCode", "data_type": "varchar"},
+                ],
+            }]},
+            {"system_label": "crm", "tables": [{
+                "uri": crm, "name": "Customers",
+                "columns": [
+                    {"uri": f"{crm}_CustCode", "name": "CustCode", "data_type": "varchar"},
+                ],
+            }]},
+        ]
+
+    def _global_mappings(self):
+        """GLOBAL mappings: ONLY source ap declares an explicit FK mapping."""
+        ap = "https://example.com/bronze/ap#tblClient"
+        return {
+            "table_maps": {},
+            "column_maps": {
+                f"{ap}_TypeCode": [{
+                    "target_uri": self.HAS_TYPE,
+                    "transform": "source.TypeCode", "match_type": "exactMatch",
+                }],
+            },
+        }
+
+    def test_declaring_source_keeps_real_join(self, graph, systems):
+        """Source ap (which declares the explicit FK mapping) keeps a real join."""
+        ap = "https://example.com/bronze/ap#tblClient"
+        fk_columns, joins, _ = _extract_fk_columns_and_joins(
+            graph, self.CLIENT_URI, self._global_mappings(),
+            [("ap", "tblClient", ap)], systems=systems,
+        )
+        assert len(joins) == 1
+        assert any(c["target_name"] == "client_type_sk"
+                   and "NULL" not in c["expression"] for c in fk_columns)
+
+    def test_non_declaring_source_does_not_leak(self, graph, systems):
+        """Source crm (does NOT declare the FK) must NOT inherit ap's explicit
+        mapping: no join, NULL placeholder, no reference to ap's TypeCode column."""
+        crm = "https://example.com/bronze/crm#Customers"
+        fk_columns, joins, _ = _extract_fk_columns_and_joins(
+            graph, self.CLIENT_URI, self._global_mappings(),
+            [("crm", "Customers", crm)], systems=systems,
+        )
+        assert len(joins) == 0
+        type_cols = [c for c in fk_columns if c["target_name"] == "client_type_sk"]
+        assert type_cols, "FK _sk column must still appear as a NULL pad"
+        assert all("NULL" in c["expression"] for c in type_cols)
+        assert all("TypeCode" not in c["expression"] for c in type_cols)
+
+    def test_synthetic_subject_mapping_attributed_to_declaring_source(self, graph, systems):
+        """A composite/synthetic-subject FK mapping (subject URI is not a declared
+        bronze column) is attributed to the source whose physical columns it
+        references — declaring source resolves, the other source does not leak."""
+        ap = "https://example.com/bronze/ap#tblClient"
+        crm = "https://example.com/bronze/crm#Customers"
+        mappings = {
+            "table_maps": {},
+            "column_maps": {
+                # Synthetic subject URI (not in any table's declared columns) but
+                # references ap's physical TypeCode column.
+                f"{ap}#synthetic_ClientType": [{
+                    "target_uri": self.HAS_TYPE,
+                    "source_columns": ["TypeCode"],
+                    "transform": "source.TypeCode", "match_type": "exactMatch",
+                }],
+            },
+        }
+        # Declaring source (ap) attributes via physical-column fallback → join.
+        _, joins_ap, _ = _extract_fk_columns_and_joins(
+            graph, self.CLIENT_URI, mappings,
+            [("ap", "tblClient", ap)], systems=systems,
+        )
+        assert len(joins_ap) == 1
+        # Non-declaring source (crm) lacks TypeCode → no leak.
+        fk_crm, joins_crm, _ = _extract_fk_columns_and_joins(
+            graph, self.CLIENT_URI, mappings,
+            [("crm", "Customers", crm)], systems=systems,
+        )
+        assert len(joins_crm) == 0
+        assert all("NULL" in c["expression"]
+                   for c in fk_crm if c["target_name"] == "client_type_sk")
+
+
+
 # ---------------------------------------------------------------------------
 # Multi-source merge: natural-key coverage warning (issue #175)
 # ---------------------------------------------------------------------------
@@ -2089,6 +2198,146 @@ class TestMergeNKCoverageWarning:
         msgs = " ".join(r.getMessage() for r in caplog.records)
         assert "natural-key column" in msgs and "client_id" in msgs, (
             f"Expected NK-coverage warning naming client_id, got:\n{msgs}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue #179: table mapping to an unprojected class must not be silently dropped
+# ---------------------------------------------------------------------------
+
+_UNPROJECTED_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology> a owl:Ontology ;
+        rdfs:label "Unprojected" ; owl:versionInfo "1.0.0" .
+
+    ex:Client a owl:Class ; rdfs:label "Client" ; rdfs:comment "c" ;
+        kairos-ext:naturalKey "clientId" .
+    ex:VipClient a owl:Class ; rdfs:label "Vip Client" ; rdfs:comment "v" ;
+        rdfs:subClassOf ex:Client ;
+        kairos-ext:naturalKey "clientId" .
+
+    ex:clientId a owl:DatatypeProperty ;
+        rdfs:label "client id" ; rdfs:comment "id" ;
+        rdfs:domain ex:Client ; rdfs:range xsd:string .
+    ex:clientName a owl:DatatypeProperty ;
+        rdfs:label "client name" ; rdfs:comment "n" ;
+        rdfs:domain ex:Client ; rdfs:range xsd:string .
+""")
+
+# Same as above but the parent uses the discriminator inheritance strategy, so the
+# orphaned subtype's source folds onto the projected parent rather than warning.
+_UNPROJECTED_DISCRIMINATOR_ONTOLOGY_TTL = _UNPROJECTED_ONTOLOGY_TTL.replace(
+    'ex:Client a owl:Class ; rdfs:label "Client" ; rdfs:comment "c" ;\n'
+    '    kairos-ext:naturalKey "clientId" .',
+    'ex:Client a owl:Class ; rdfs:label "Client" ; rdfs:comment "c" ;\n'
+    '    kairos-ext:naturalKey "clientId" ;\n'
+    '    kairos-ext:inheritanceStrategy "discriminator" .',
+)
+
+_UNPROJECTED_BRONZE_TTL = textwrap.dedent("""\
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+    bronze-ap:AdminPulse a kairos-bronze:SourceSystem ; rdfs:label "AdminPulse" .
+    bronze-ap:tblVip a kairos-bronze:SourceTable ;
+        rdfs:label "tblVip" ;
+        kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
+        kairos-bronze:tableName "tblVip" ;
+        kairos-bronze:primaryKeyColumns "VipID" .
+    bronze-ap:tblVip_VipID a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblVip ;
+        kairos-bronze:columnName "VipID" ; kairos-bronze:dataType "int" .
+    bronze-ap:tblVip_VipName a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblVip ;
+        kairos-bronze:columnName "VipName" ; kairos-bronze:dataType "nvarchar(255)" .
+""")
+
+_UNPROJECTED_MAPPING_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix ex: <http://kairos.example/ontology/> .
+
+    bronze-ap:tblVip skos:exactMatch ex:VipClient ;
+        kairos-map:mappingType "direct" .
+    bronze-ap:tblVip_VipID skos:exactMatch ex:clientId .
+    bronze-ap:tblVip_VipName skos:exactMatch ex:clientName .
+""")
+
+
+class TestUnprojectedClassMapping:
+    """Issue #179: a table mapping whose target class is not projected must surface
+    a warning (never a silent drop), and fold onto a projected discriminator
+    parent when one exists."""
+
+    def _setup(self, tmp_path, ontology_ttl):
+        graph = Graph()
+        graph.parse(data=ontology_ttl, format="turtle")
+        bronze = tmp_path / "bronze"
+        bronze.mkdir()
+        (bronze / "adminpulse.ttl").write_text(
+            _UNPROJECTED_BRONZE_TTL, encoding="utf-8"
+        )
+        mappings = tmp_path / "mappings"
+        mappings.mkdir()
+        (mappings / "to-client.ttl").write_text(
+            _UNPROJECTED_MAPPING_TTL, encoding="utf-8"
+        )
+        # Only the parent Client is projected; VipClient is unclaimed/unprojected.
+        classes = [{
+            "uri": "http://kairos.example/ontology/Client",
+            "name": "Client", "label": "Client", "comment": "c",
+        }]
+        return graph, bronze, mappings, classes
+
+    def test_warns_when_no_projected_parent(self, tmp_path, template_dir, caplog):
+        graph, bronze, mappings, classes = self._setup(
+            tmp_path, _UNPROJECTED_ONTOLOGY_TTL
+        )
+        with caplog.at_level("WARNING"):
+            artifacts = generate_dbt_artifacts(
+                classes=classes, graph=graph, template_dir=template_dir,
+                namespace="http://kairos.example/ontology/",
+                ontology_name="client", bronze_dir=bronze, mappings_dir=mappings,
+            )
+        msgs = " ".join(r.getMessage() for r in caplog.records)
+        assert "VipClient" in msgs and "not" in msgs.lower(), (
+            f"Expected a warning naming the unprojected class VipClient:\n{msgs}"
+        )
+        # No vip model and no rows folded into client (Client has no own mapping).
+        assert not any("vip" in k.lower() for k in artifacts), (
+            f"Unprojected VipClient must not produce a model:\n{list(artifacts)}"
+        )
+
+    def test_folds_onto_projected_discriminator_parent(
+        self, tmp_path, template_dir, caplog
+    ):
+        graph, bronze, mappings, classes = self._setup(
+            tmp_path, _UNPROJECTED_DISCRIMINATOR_ONTOLOGY_TTL
+        )
+        with caplog.at_level("WARNING"):
+            artifacts = generate_dbt_artifacts(
+                classes=classes, graph=graph, template_dir=template_dir,
+                namespace="http://kairos.example/ontology/",
+                ontology_name="client", bronze_dir=bronze, mappings_dir=mappings,
+            )
+        msgs = " ".join(r.getMessage() for r in caplog.records)
+        assert "folded" in msgs.lower() and "Client" in msgs, (
+            f"Expected a fold warning mentioning the parent Client:\n{msgs}"
+        )
+        # The folded source (tblVip) drives the projected Client model.
+        client_sql = "".join(
+            v for k, v in artifacts.items()
+            if k.endswith(".sql") and "client" in k.lower()
+        )
+        assert "tbl_vip" in client_sql.lower() or "tblvip" in client_sql.lower(), (
+            f"Folded VipClient source (tblVip) missing from Client model:\n{client_sql}"
         )
 
 

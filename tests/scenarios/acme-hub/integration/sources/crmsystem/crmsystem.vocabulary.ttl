@@ -26,18 +26,21 @@ bronze-crm:Customers_CustCode a kairos-bronze:SourceColumn ;
     kairos-bronze:sourceTable bronze-crm:Customers ;
     kairos-bronze:columnName "CustCode" ;
     kairos-bronze:dataType "nvarchar(20)" ;
+    kairos-bronze:sampleValues "C-1001 | C-1002 | C-1003" ;
     kairos-bronze:nullable "false"^^xsd:boolean .
 
 bronze-crm:Customers_CustName a kairos-bronze:SourceColumn ;
     kairos-bronze:sourceTable bronze-crm:Customers ;
     kairos-bronze:columnName "CustName" ;
     kairos-bronze:dataType "nvarchar(200)" ;
+    kairos-bronze:sampleValues "Acme NV | Globex Corp | Initech BV" ;
     kairos-bronze:nullable "false"^^xsd:boolean .
 
 bronze-crm:Customers_CustEmail a kairos-bronze:SourceColumn ;
     kairos-bronze:sourceTable bronze-crm:Customers ;
     kairos-bronze:columnName "CustEmail" ;
     kairos-bronze:dataType "nvarchar(100)" ;
+    kairos-bronze:sampleValues "jane.doe@acme.example | bob@globex.example" ;
     kairos-bronze:nullable "true"^^xsd:boolean .
 
 # Note: CRM source does NOT have VATNumber, City, Country — tests unmapped optional cols
