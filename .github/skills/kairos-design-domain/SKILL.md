@@ -1731,7 +1731,7 @@ When presenting new property proposals, you MUST separate them into two tiers:
   evidence source in the session file
 - Never mix Tier 1 and Tier 2 properties in a single undifferentiated list
 
-**MANDATORY: Custom Column Triage (issue #164)**
+**MANDATORY: Custom Column Triage (issue #164, hardened by issue #182 / DD-077)**
 
 Every `custom_columns` entry from the domain `{domain}-alignment.yaml` is a
 source-evidenced column with **no** reference-model property. The domain MUST NOT
@@ -1740,13 +1740,29 @@ record an explicit disposition for each:
 
 > **Custom columns to triage** (from `{domain}-alignment.yaml`):
 >
-> | # | Source (`system.table.column`) | Suggested Property | Disposition |
-> |---|---|---|---|
-> | 1 | `qargo.companies.credit_limit` | `creditLimit` | model |
-> | 2 | `qargo.companies.payment_iban_code` | `paymentIban` | model |
-> | 3 | `qargo.companies.currency` | `currency` | model |
-> | 4 | `qargo.companies.created_at` | — | skip |
-> | 5 | `qargo.companies.legacy_billing_addr` | `billingAddress` | silver-passthrough |
+> | # | Source (`system.table.column`) | Suggested Property | Recommended | Disposition |
+> |---|---|---|---|---|
+> | 1 | `qargo.companies.credit_limit` | `creditLimit` | — | model |
+> | 2 | `qargo.companies.payment_iban_code` | `paymentIban` | — | model |
+> | 3 | `qargo.companies.currency` | `currency` | — | model |
+> | 4 | `qargo.companies.created_at` | — | skip | skip *(auto)* |
+> | 5 | `soloplan.fields.CFSTRING33` | — | silver-passthrough | silver-passthrough |
+> | 6 | `qargo.shipments.co2e_well_to_wheel` | — | — | model |
+
+**Reading the hardened fields (issue #182):**
+- `suggested_property` is now `null` for any column the model wasn't confident
+  about (below `--custom-confidence-floor`, default 0.5) or that looked like a
+  catch-all sink (one property guessed for ≥3 dissimilar columns). **A `null`
+  suggestion means "decide from the source evidence", not "no business value".**
+- `recommended_disposition` is an **advisory** heuristic: `skip` for audit/technical
+  columns, `silver-passthrough` for generic vendor slots (`CFSTRING33`, `CFENUM…`),
+  empty for a business column you must decide on. It is a hint — confirm it.
+- `disposition` may already be **auto-filled** (`disposition_source: heuristic`) for
+  narrow, near-zero-ambiguity audit columns (`created_at`, `tenant_id`, surrogate
+  `id`). Review these; they are skips, not models.
+- Generic vendor slots are *recommended* `silver-passthrough` but stay **undisposed**
+  (they still block under `--strict`) unless the user accepts the heuristics — see
+  the bulk option below.
 
 **Disposition values** (canonical):
 - `model` — add as a local extension property in this checkpoint (becomes Tier 1).
@@ -1756,11 +1772,28 @@ record an explicit disposition for each:
   dropped.
 
 **You MUST write each decision back into `{domain}-alignment.yaml`** by setting the
-`disposition:` field on the matching `custom_columns` entry. This is what makes the
-triage verifiable — `check-alignment --strict` reads it (see the Completion gate).
-Likely operational/audit columns (e.g. `created_at`, `modified_by`, ETL/load
-timestamps, surrogate ids) may be bulk-dispositioned as `skip`, but they still
-require an explicit value — nothing is silently dropped.
+`disposition:` field on the matching `custom_columns` entry, and stamp
+`disposition_source: human` so a future `propose-alignment --force` preserves your
+decision (DD-077 WS9 merges human-owned dispositions back; only heuristic-owned
+fields are recomputed). This is what makes the triage verifiable —
+`check-alignment --strict` reads it (see the Completion gate).
+
+**Bulk option for large files (hundreds of columns):** when the recommended
+heuristics look right for the audit/vendor-slot columns, run
+`check-alignment --accept-heuristics --strict`: this treats columns whose only
+remaining gap is a heuristic `recommended_disposition` (e.g. CF-slot
+passthrough) as disposed, so you only manually triage the genuine business
+columns. Audit columns already auto-skip. Always eyeball the business columns
+(`recommended_disposition` empty) by hand.
+
+> **Hallucinated anchors (Gate-6, DD-077 WS6).** Before triaging, sanity-check the
+> table anchors. If a `tables[].ref_class` is a class that exists in **no**
+> reference model (e.g. a `Booking`/`Shipment` invented by an older toolkit run),
+> the whole triage is built on fiction. Run `check-alignment --check-anchors` to
+> validate every `ref_class` against the installed reference-model class set; it
+> reports/blocks on hallucinated or unanchored tables (`ref_class_status:
+> rejected|unmatched`). Fix the anchor (or re-run `propose-alignment`) **before**
+> grinding through the columns.
 
 Every column dispositioned `model` flows into the Tier-1 property proposal below.
 

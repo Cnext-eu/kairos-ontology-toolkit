@@ -194,6 +194,9 @@ class TestCrossModuleScenario:
     def test_default_run_has_no_cross_module_fields(self, tmp_path):
         data = _run(tmp_path, cross_module=False)
         assert "cross_module_matches" not in data
-        assert "alignment_params_sha256" not in data
+        # Issue #182 (WS0): the params hash is now ALWAYS computed and emitted (so the
+        # domain-level freshness skip works in default mode too), but the cross-module
+        # match section and per-column ref_module tags remain absent.
+        assert data["alignment_params_sha256"]
         for col in data["tables"][0]["columns"]:
             assert "ref_module" not in col

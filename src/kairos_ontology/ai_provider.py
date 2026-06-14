@@ -7,6 +7,11 @@ Supports multiple AI backends via environment variable configuration:
 - Azure AI Foundry: uses AZURE_AI_ENDPOINT + AZURE_AI_KEY
 - Microsoft Foundry: uses AZURE_FOUNDRY_ENDPOINT + azure-ai-projects SDK
 
+Additionally supports per-role endpoint/model overrides (issue #182) so the
+``affinity`` (analyse-sources) and ``alignment`` (propose-alignment) steps can use
+independent endpoints/models via ``KAIROS_AI_{ROLE}_ENDPOINT`` / ``_KEY`` /
+``_MODEL``.
+
 Both providers return an OpenAI-compatible client instance.
 Automatically loads .env from the hub root (or CWD) if present.
 """
@@ -80,6 +85,37 @@ ENV_AZURE_KEY = "AZURE_AI_KEY"
 ENV_FOUNDRY_ENDPOINT = "AZURE_FOUNDRY_ENDPOINT"
 ENV_FOUNDRY_API_KEY = "AZURE_FOUNDRY_API_KEY"
 
+# ---------------------------------------------------------------------------
+# Per-role endpoint overrides (issue #182)
+# ---------------------------------------------------------------------------
+# The two LLM-powered pre-modeling steps have different accuracy/cost profiles:
+#
+#   * "affinity"  (analyse-sources)   — coarse table → domain classification; the
+#     high-volume call (one per table × every source system). A small model
+#     (gpt-5.4-mini) is fine.
+#   * "alignment" (propose-alignment) — closed-vocabulary reasoning (pick the right
+#     ref_class, map every column). Accuracy-sensitive; benefits from a stronger
+#     model and may live on a separate deployment/endpoint.
+#
+# Each role may point at its own OpenAI-compatible endpoint via
+# ``KAIROS_AI_{ROLE}_ENDPOINT`` (+ ``_KEY`` + ``_MODEL``). When a role endpoint is
+# not set the role falls back to the global provider configuration above, with an
+# optional ``KAIROS_AI_{ROLE}_MODEL`` model override.
+ROLE_AFFINITY = "affinity"
+ROLE_ALIGNMENT = "alignment"
+
+
+def _role_env(role: str | None, suffix: str) -> str:
+    """Read a per-role env var ``KAIROS_AI_{ROLE}_{SUFFIX}`` (empty if unset/no role)."""
+    if not role:
+        return ""
+    return os.environ.get(f"KAIROS_AI_{role.upper()}_{suffix}", "").strip()
+
+
+def resolve_role_model(role: str | None, default: str = DEFAULT_MODEL) -> str:
+    """Return the model configured for ``role`` (``KAIROS_AI_{ROLE}_MODEL``) or ``default``."""
+    return _role_env(role, "MODEL") or default
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -100,10 +136,18 @@ class AIProviderConfig:
 # ---------------------------------------------------------------------------
 
 
-def resolve_provider_config(model: str = DEFAULT_MODEL) -> AIProviderConfig:
+def resolve_provider_config(
+    model: str = DEFAULT_MODEL, *, role: str | None = None
+) -> AIProviderConfig:
     """Resolve AI provider configuration from environment variables.
 
-    Detection order:
+    When ``role`` is given (``"affinity"`` / ``"alignment"``) and a per-role
+    endpoint is configured (``KAIROS_AI_{ROLE}_ENDPOINT``), that OpenAI-compatible
+    endpoint wins, letting the two pre-modeling steps use independent endpoints/
+    models (issue #182). Otherwise the global provider is resolved and, if set, the
+    per-role model override (``KAIROS_AI_{ROLE}_MODEL``) is applied.
+
+    Detection order (global fallback):
     1. KAIROS_AI_PROVIDER env var (explicit: "github", "azure", or "foundry")
     2. If AZURE_AI_ENDPOINT is set → azure
     3. If AZURE_FOUNDRY_ENDPOINT is set → foundry
@@ -116,20 +160,32 @@ def resolve_provider_config(model: str = DEFAULT_MODEL) -> AIProviderConfig:
     Raises:
         EnvironmentError: If no valid configuration is found.
     """
+    # Per-role dedicated endpoint takes precedence when configured.
+    role_endpoint = _role_env(role, "ENDPOINT")
+    if role_endpoint:
+        return AIProviderConfig(
+            provider=f"endpoint:{role}",
+            endpoint=role_endpoint,
+            api_key=_role_env(role, "KEY"),
+            model=resolve_role_model(role, model),
+        )
+
+    # Otherwise fall back to the global provider, with an optional role model.
+    effective_model = resolve_role_model(role, model)
     explicit_provider = os.environ.get(ENV_PROVIDER, "").lower().strip()
 
     if explicit_provider == "azure" or (
         not explicit_provider and os.environ.get(ENV_AZURE_ENDPOINT)
     ):
-        return _resolve_azure(model)
+        return _resolve_azure(effective_model)
     elif explicit_provider == "foundry" or (
         not explicit_provider and os.environ.get(ENV_FOUNDRY_ENDPOINT)
     ):
-        return _resolve_foundry(model)
+        return _resolve_foundry(effective_model)
     elif explicit_provider == "github" or (
         not explicit_provider and os.environ.get(ENV_GITHUB_TOKEN)
     ):
-        return _resolve_github(model)
+        return _resolve_github(effective_model)
     elif explicit_provider:
         raise EnvironmentError(
             f"Unknown KAIROS_AI_PROVIDER value: '{explicit_provider}'. "
@@ -141,7 +197,9 @@ def resolve_provider_config(model: str = DEFAULT_MODEL) -> AIProviderConfig:
             f"  - {ENV_GITHUB_TOKEN} (for GitHub Models)\n"
             f"  - {ENV_AZURE_ENDPOINT} + {ENV_AZURE_KEY} (for Azure AI Foundry)\n"
             f"  - {ENV_FOUNDRY_ENDPOINT} (for Microsoft Foundry)\n"
-            f"  - {ENV_PROVIDER}=github|azure|foundry (explicit provider selection)"
+            f"  - {ENV_PROVIDER}=github|azure|foundry (explicit provider selection)\n"
+            "Or configure a per-role endpoint, e.g. "
+            "KAIROS_AI_ALIGNMENT_ENDPOINT + KAIROS_AI_ALIGNMENT_KEY."
         )
 
 
@@ -226,11 +284,13 @@ def _resolve_foundry(model: str) -> AIProviderConfig:
 # ---------------------------------------------------------------------------
 
 
-def get_ai_client(model: str = DEFAULT_MODEL):
+def get_ai_client(model: str = DEFAULT_MODEL, *, role: str | None = None):
     """Create an OpenAI-compatible client for the configured AI provider.
 
     Args:
         model: The model name to use. Stored in config for reference.
+        role: Optional pre-modeling role (``"affinity"`` / ``"alignment"``) selecting
+            a per-role endpoint override when configured (issue #182).
 
     Returns:
         An OpenAI client instance configured for the resolved provider.
@@ -238,7 +298,7 @@ def get_ai_client(model: str = DEFAULT_MODEL):
     Raises:
         EnvironmentError: If no valid provider configuration is found.
     """
-    config = resolve_provider_config(model)
+    config = resolve_provider_config(model, role=role)
 
     logger.info("Using AI provider: %s (endpoint: %s)", config.provider, config.endpoint)
 

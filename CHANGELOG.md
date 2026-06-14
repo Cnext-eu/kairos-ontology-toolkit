@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.24.0] — 2026-06-14
+
+### Added
+- **Custom-column triage hardening (issue #182, DD-082).** A set of deterministic
+  / confidence-gated fixes to `propose-alignment` and the `check-alignment` gate
+  that make the Checkpoint-3b custom-column triage reliable at scale (hundreds of
+  custom columns) — **no new AI cost** (DD-077):
+  - **Confidence-gated suggestions (WS1).** An unmatched custom column only keeps a
+    `suggested_property` when the model is confident enough
+    (`--custom-confidence-floor`, default `0.5`); below the floor it is dropped to
+    `null` rather than emitting a confident-but-wrong guess. A catch-all detector
+    downgrades any property proposed for ≥3 dissimilar columns (the
+    `stageCode`/`customsID` sink problem).
+  - **Two-tier auto-disposition (WS2).** Every custom column gets an advisory
+    `recommended_disposition` (`skip` / `silver-passthrough` / `""`). A final
+    `disposition` is auto-filled **only** for narrow, near-zero-ambiguity
+    audit/technical columns (`created_on`, `tenant_id`, surrogate `id`, …), stamped
+    `disposition_source: heuristic`. Generic vendor slots (`CFSTRING33`, …) are
+    *recommended* `silver-passthrough` but stay undisposed (still block under
+    `--strict`) unless `check-alignment --accept-heuristics` is passed.
+  - **Reference-rollup integrity (WS4).** Matched properties are validated against
+    the class's real reference-model property set; coverage is capped at 100% and a
+    `hallucinated_properties` sample is surfaced instead of silently clamping.
+  - **Hallucinated-anchor detection (WS6).** Generation records a non-clean
+    `ref_class_status` (`fallback` / `rejected` / `unmatched`) + `rejected_ref_class`
+    so a force-fit or unanchored table is visible without re-running the LLM. A new
+    `check-alignment --check-anchors` gate re-validates `ref_class` anchors against
+    the real installed reference-model class set and blocks on hallucinated anchors
+    (e.g. a `Booking` class that exists in no reference model).
+  - **Prompt hardening (WS7).** For an unmatched column the model now emits
+    `alignment: custom` + `ref_property: null` (never an invented camelCase name),
+    may return `ref_class: null` when no class fits, and is steered away from
+    catch-all sinks and >100% over-mapping.
+  - **Opt-in high-accuracy preset (WS8).** `propose-alignment --high-accuracy`
+    selects a higher-tier model for the accuracy-sensitive class-anchoring step;
+    mini stays the default and the cost banner notes alignment is accuracy-sensitive.
+  - **Per-role LLM endpoints.** The two pre-modeling steps can now use independent
+    endpoints/models via `KAIROS_AI_AFFINITY_*` and `KAIROS_AI_ALIGNMENT_*`
+    (`_ENDPOINT` / `_KEY` / `_MODEL`): keep `analyse-sources` on a cheap mini
+    endpoint while pointing `propose-alignment` at a stronger model/deployment. A
+    role with no override falls back to the global provider. Documented in both
+    `.env.example` scaffolds.
+  - **Disposition preservation on regeneration (WS9).** Re-running
+    `propose-alignment` (including `--force`) no longer wipes a modeler's
+    hand-triaged dispositions: human-owned `disposition`/`note` values are merged
+    back by `(system, table, column)`; only heuristic-owned fields are recomputed.
+  - **Schema/cache/version contract (WS0).** An explicit `algorithm_version` is
+    emitted and folded into the per-table and domain cache keys, so the hardened
+    prompt/heuristics take effect instead of serving stale cache. Fixes a latent bug
+    where the freshness hash was written as `source_sha256` but read as
+    `affinity_sha256` (dead domain-level cache skip).
+
+### Notes
+- Cross-domain candidate tagging and a non-LLM repair path for existing large
+  alignment YAMLs were scoped under issue #182 but deferred to follow-up issues.
+
 ## [3.23.0] — 2026-06-14
 
 ### Added

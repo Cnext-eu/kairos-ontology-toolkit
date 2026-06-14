@@ -808,9 +808,13 @@ def _as_str_list(val: Any) -> list[str]:
 
 
 def _get_openai_client():
-    """Create an OpenAI client configured for the active AI provider."""
-    from kairos_ontology.ai_provider import get_ai_client
-    return get_ai_client()
+    """Create an OpenAI client configured for the active AI provider.
+
+    Uses the ``affinity`` role so a per-role endpoint/model override applies to the
+    high-volume table → domain classification call (issue #182).
+    """
+    from kairos_ontology.ai_provider import ROLE_AFFINITY, get_ai_client
+    return get_ai_client(role=ROLE_AFFINITY)
 
 
 def _format_columns(columns: list[dict[str, Any]]) -> str:

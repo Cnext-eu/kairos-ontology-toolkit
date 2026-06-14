@@ -209,6 +209,72 @@ class TestResolveProviderConfig:
                 resolve_provider_config()
 
 
+class TestPerRoleEndpoints:
+    """Per-role endpoint/model overrides (issue #182)."""
+
+    def test_role_endpoint_wins_over_global_provider(self):
+        env = {
+            "GITHUB_TOKEN": "global-token",
+            "KAIROS_AI_ALIGNMENT_ENDPOINT": "https://strong.example.com/v1",
+            "KAIROS_AI_ALIGNMENT_KEY": "align-key",
+            "KAIROS_AI_ALIGNMENT_MODEL": "gpt-5.5",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = resolve_provider_config(role="alignment")
+        assert config.provider == "endpoint:alignment"
+        assert config.endpoint == "https://strong.example.com/v1"
+        assert config.api_key == "align-key"
+        assert config.model == "gpt-5.5"
+
+    def test_other_role_unaffected_by_role_endpoint(self):
+        # Alignment has a dedicated endpoint; affinity falls back to global github.
+        env = {
+            "GITHUB_TOKEN": "global-token",
+            "KAIROS_AI_ALIGNMENT_ENDPOINT": "https://strong.example.com/v1",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = resolve_provider_config(role="affinity")
+        assert config.provider == "github"
+        assert config.endpoint == GITHUB_MODELS_ENDPOINT
+
+    def test_role_model_override_keeps_global_provider(self):
+        # Only the model is overridden; the global github provider still resolves.
+        env = {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-5.5"}
+        with patch.dict(os.environ, env, clear=True):
+            config = resolve_provider_config(role="alignment")
+        assert config.provider == "github"
+        assert config.endpoint == GITHUB_MODELS_ENDPOINT
+        assert config.model == "gpt-5.5"
+
+    def test_no_role_ignores_role_vars(self):
+        env = {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-5.5"}
+        with patch.dict(os.environ, env, clear=True):
+            config = resolve_provider_config()
+        assert config.model == DEFAULT_MODEL
+
+    def test_resolve_role_model_helper(self):
+        from kairos_ontology.ai_provider import resolve_role_model
+        with patch.dict(os.environ, {"KAIROS_AI_AFFINITY_MODEL": "mini-x"}, clear=True):
+            assert resolve_role_model("affinity", "fallback") == "mini-x"
+            assert resolve_role_model("alignment", "fallback") == "fallback"
+            assert resolve_role_model(None, "fallback") == "fallback"
+
+    @patch("openai.OpenAI")
+    def test_get_ai_client_uses_role_endpoint(self, mock_openai_cls):
+        mock_openai_cls.return_value = MagicMock()
+        env = {
+            "GITHUB_TOKEN": "global-token",
+            "KAIROS_AI_ALIGNMENT_ENDPOINT": "https://strong.example.com/v1",
+            "KAIROS_AI_ALIGNMENT_KEY": "align-key",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            get_ai_client(role="alignment")
+        mock_openai_cls.assert_called_once_with(
+            base_url="https://strong.example.com/v1",
+            api_key="align-key",
+        )
+
+
 class TestGetAiClient:
     """Test client factory."""
 

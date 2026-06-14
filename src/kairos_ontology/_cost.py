@@ -28,6 +28,7 @@ def build_cost_warning(
     max_workers: int,
     model: str,
     force: bool,
+    accuracy_sensitive: bool = False,
 ) -> str:
     """Return the multi-line cost-warning banner text.
 
@@ -43,6 +44,15 @@ def build_cost_warning(
             f"models cost far more\n     for no quality gain on this task."
         )
     )
+    if accuracy_sensitive and model != RECOMMENDED_MODEL:
+        # Issue #182: class-anchoring / column alignment IS accuracy-sensitive, so a
+        # higher tier can genuinely reduce hallucinated anchors/properties here.
+        model_line = (
+            f"  ⚠️  Model in use: '{model}'.  This step is ACCURACY-SENSITIVE "
+            f"(class\n     anchoring & column mapping); a higher tier (e.g. via "
+            f"--high-accuracy)\n     can reduce hallucinations. '{RECOMMENDED_MODEL}' "
+            f"is the cheaper default."
+        )
     cache_line = (
         "  ♻️  --force is set: caches are BYPASSED — every table will be re-billed."
         if force
@@ -74,6 +84,7 @@ def print_cost_warning(
     model: str,
     force: bool = False,
     quiet: bool = False,
+    accuracy_sensitive: bool = False,
     stream: Callable[[str], None] | None = None,
 ) -> None:
     """Print the cost-warning banner to stderr unless ``quiet`` is set.
@@ -96,6 +107,7 @@ def print_cost_warning(
         max_workers=max_workers,
         model=model,
         force=force,
+        accuracy_sensitive=accuracy_sensitive,
     )
     if stream is not None:
         stream(text + "\n")
