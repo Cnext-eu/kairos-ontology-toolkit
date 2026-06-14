@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **PyPI publishing scaffolding removed from release CI (DD-066).**
+  The dormant (commented-out) `publish-pypi` job and the unused `id-token: write`
+  permission are removed from `.github/workflows/release.yml`. The toolkit was never
+  published to PyPI; it is distributed via GitHub Releases (wheel + sdist assets) and
+  consumed through git-tag / wheel-URL pins. README and skills updated to drop the
+  PyPI badge and `pip install kairos-ontology-toolkit` instructions in favour of the
+  git-tag install. No behavioural change to the `build` / `github-release` jobs.
+
 ## [3.16.0] — 2026-06-14
 
 ### Added
