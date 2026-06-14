@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.21.0] — 2026-06-14
+
+### Added
+- **`kairos-ext:silverExclude` annotation (DD-073, issue #172).** A new boolean
+  class annotation that suppresses a class's silver table while keeping it in the
+  ontology for inheritance/semantics. It overrides `silverInclude` /
+  `silverIncludeImports`; descendants still inherit the excluded class's
+  properties (it is treated as an unclaimed / cross-domain FK target). The
+  projector warns when a materialised class subclasses or FK/junctions to an
+  excluded class. Declared in `scaffold/kairos-ext.ttl`; documented in the
+  `kairos-design-silver` skill.
+
+### Fixed
+- **Transitive S3 discriminator folding (DD-073, issue #172).** Discriminator
+  folding now walks `rdfs:subClassOf` through **unclaimed** intermediate classes
+  and folds a subtype into the nearest **claimed** discriminator ancestor, instead
+  of inspecting only the direct parent. Properties of the unclaimed intermediates
+  fold into the parent table too (previously they were silently dropped).
+  `folded_subtypes` is now URI-keyed for namespace safety, traversal is
+  deterministic, and conflicting strategies among same-depth claimed ancestors
+  emit a warning. Single-level (depth-1) folding behaviour is unchanged.
+
 ## [3.20.0] — 2026-06-14
 
 ### Added

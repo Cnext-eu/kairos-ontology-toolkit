@@ -143,6 +143,71 @@ def _get_class_and_ancestors(
     return result
 
 
+def _nearest_claimed_ancestor(
+    graph: Graph, cls_uri: URIRef, class_uris: set[str],
+) -> URIRef | None:
+    """Find the nearest claimed (separately-projected) ancestor of *cls_uri*.
+
+    Walks ``rdfs:subClassOf`` breadth-first, traversing ONLY through *unclaimed*
+    intermediate classes, and returns the first claimed ancestor (a class whose
+    URI is in *class_uris*) encountered. This lets S3 discriminator folding reach
+    a claimed discriminator ancestor through unclaimed intermediates, e.g.
+    ``CargoOperator -> Carrier(unclaimed) -> TradeParty(claimed)``.
+
+    Returns the ancestor URIRef, or ``None`` if no claimed ancestor exists.
+
+    Deterministic: parents are visited in sorted-URI order, level by level, so
+    "nearest" means the smallest ``rdfs:subClassOf`` depth. If several claimed
+    ancestors are reached at the same minimal depth with *conflicting*
+    inheritance strategies, a warning is emitted and the lexicographically
+    smallest URI is chosen. Cycle-safe; stops at W3C vocabulary URIs.
+
+    For the common single-inheritance case this is equivalent to picking the
+    claimed direct parent, so depth-1 folding behaviour is unchanged.
+    """
+    visited: set[str] = {str(cls_uri)}
+    frontier: list[URIRef] = [cls_uri]
+    while frontier:
+        claimed_here: list[URIRef] = []
+        next_frontier: list[URIRef] = []
+        for current in frontier:
+            parents = sorted(
+                (p for p in graph.objects(current, RDFS.subClassOf)
+                 if isinstance(p, URIRef)),
+                key=str,
+            )
+            for parent in parents:
+                parent_str = str(parent)
+                if parent_str in visited:
+                    continue
+                visited.add(parent_str)
+                if parent_str.startswith("http://www.w3.org/"):
+                    continue
+                if parent_str in class_uris:
+                    claimed_here.append(parent)
+                else:
+                    next_frontier.append(parent)
+        if claimed_here:
+            claimed_here.sort(key=str)
+            if len(claimed_here) > 1:
+                strategies = {
+                    (_str_val(graph, c, KAIROS_EXT.inheritanceStrategy) or "")
+                    for c in claimed_here
+                }
+                if len(strategies) > 1:
+                    logger.warning(
+                        "Class %s reaches multiple nearest claimed ancestors with "
+                        "conflicting inheritance strategies (%s); using %s. "
+                        "Declare an explicit strategy to disambiguate.",
+                        cls_uri,
+                        ", ".join(str(c) for c in claimed_here),
+                        claimed_here[0],
+                    )
+            return claimed_here[0]
+        frontier = sorted(next_frontier, key=str)
+    return None
+
+
 # PII keywords for projection-time GDPR warning (mirrors validator.PII_KEYWORDS)
 _PII_KEYWORDS: list[str] = [
     "first_name", "last_name", "date_of_birth", "national_id", "iban",
@@ -222,6 +287,49 @@ def _warn_unclaimed_parents(
                 logger.info(msg)
                 notices.append(msg)
     return notices
+
+
+def _warn_silver_exclude_dependents(
+    graph: Graph,
+    excluded_uris: set[str],
+    class_uris: set[str],
+) -> list[str]:
+    """Warn when a ``silverExclude``d class is depended on by materialised classes.
+
+    An excluded class produces no table and is treated like an unclaimed /
+    cross-domain FK target. That is usually intentional, but it can silently drop
+    a discriminator fold target or an FK/junction target that retained classes
+    rely on. This surfaces those cases (A — issue #172).
+
+    Returns a list of warning messages (also logged).
+    """
+    warnings: list[str] = []
+    for excl in sorted(excluded_uris):
+        excl_uri = URIRef(excl)
+        excl_local = _local_name(excl)
+        # A retained class subclasses the excluded class (fold/inheritance target)
+        subclassed_by = [
+            str(s) for s in graph.subjects(RDFS.subClassOf, excl_uri)
+            if str(s) in class_uris
+        ]
+        # A retained class FKs/junctions to the excluded class (object property range)
+        referenced_by = sorted({
+            str(graph.value(prop, RDFS.domain))
+            for prop in graph.subjects(RDFS.range, excl_uri)
+            if (prop, RDF.type, OWL.ObjectProperty) in graph
+            and str(graph.value(prop, RDFS.domain)) in class_uris
+        })
+        if subclassed_by or referenced_by:
+            deps = sorted({_local_name(u) for u in subclassed_by + referenced_by})
+            msg = (
+                f"silverExclude: {excl_local} is excluded from projection but is "
+                f"referenced by materialised class(es) {', '.join(deps)}. Their "
+                f"inherited columns / FK targets may be affected. {excl_local} is "
+                f"treated as an unclaimed (cross-domain) target."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+    return warnings
 
 
 def _warn_incomplete_fk_annotations(graph: Graph) -> list[str]:
@@ -418,7 +526,21 @@ def generate_silver_artifacts(
     # Imported classes claimed via kairos-ext:silverInclude are materialized in
     # this domain's schema; unclaimed imports are excluded upstream.
     domain_classes = list(classes)
+    # A — kairos-ext:silverExclude (mirror gold's goldExclude): drop classes that
+    # should not materialise as their own table. Exclude OVERRIDES silverInclude /
+    # silverIncludeImports (this filter runs after upstream include selection).
+    # An excluded class still contributes inherited properties to descendants (the
+    # `merged` graph is read by URI), and is treated as an unclaimed / cross-domain
+    # FK target by the FK logic below.
+    excluded_uris = {
+        c["uri"] for c in domain_classes
+        if _bool_val(merged, URIRef(c["uri"]), KAIROS_EXT.silverExclude, False)
+    }
+    if excluded_uris:
+        domain_classes = [c for c in domain_classes if c["uri"] not in excluded_uris]
     class_uris = {c["uri"] for c in domain_classes}
+    if excluded_uris:
+        _warn_silver_exclude_dependents(merged, excluded_uris, class_uris)
 
     # GDPR PII warning: scan for PII-like properties on unprotected classes
     _warn_unprotected_pii(merged, domain_classes, namespace)
@@ -430,31 +552,33 @@ def generate_silver_artifacts(
     _warn_incomplete_fk_annotations(merged)
 
     # S3: Track subtypes to flatten into parent tables (discriminator strategy only)
-    folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype names]
+    folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype URIs]
     # Map of subtype_uri → parent_uri for property merging (discriminator only)
     subtype_parents: dict[str, str] = {}
     # TPC parents: parents that use table-per-concrete-class (children inherit props)
     tpc_parents: set[str] = set()
 
-    # Pre-scan: identify subtype relationships and classify inheritance strategy
+    # Pre-scan: identify subtype relationships and classify inheritance strategy.
+    # B (issue #172): folding is TRANSITIVE — a subtype reaching a claimed
+    # discriminator ancestor only through *unclaimed* intermediates still folds.
     for cls_info in domain_classes:
         cls_uri = URIRef(cls_info["uri"])
         gdpr_parent = merged.value(cls_uri, KAIROS_EXT.gdprSatelliteOf)
         if gdpr_parent is not None:
             continue  # GDPR satellites are never flattened
-        for parent in merged.objects(cls_uri, RDFS.subClassOf):
-            if isinstance(parent, URIRef) and str(parent) in class_uris:
-                parent_strategy = _str_val(merged, parent, KAIROS_EXT.inheritanceStrategy)
-                if parent_strategy == "discriminator":
-                    # S3: flatten into parent
-                    subtype_parents[cls_info["uri"]] = str(parent)
-                    existing = folded_subtypes.setdefault(str(parent), [])
-                    if cls_info["name"] not in existing:
-                        existing.append(cls_info["name"])
-                else:
-                    # TPC: child gets its own table, inheriting parent properties
-                    tpc_parents.add(str(parent))
-                break
+        ancestor = _nearest_claimed_ancestor(merged, cls_uri, class_uris)
+        if ancestor is None:
+            continue
+        parent_strategy = _str_val(merged, ancestor, KAIROS_EXT.inheritanceStrategy)
+        if parent_strategy == "discriminator":
+            # S3: flatten into the (possibly transitive) discriminator ancestor
+            subtype_parents[cls_info["uri"]] = str(ancestor)
+            existing = folded_subtypes.setdefault(str(ancestor), [])
+            if cls_info["uri"] not in existing:
+                existing.append(cls_info["uri"])
+        else:
+            # TPC: child gets its own table, inheriting parent properties
+            tpc_parents.add(str(ancestor))
 
     for cls_info in domain_classes:
         cls_uri = URIRef(cls_info["uri"])
@@ -567,25 +691,32 @@ def generate_silver_artifacts(
     # ----------------------------------------------------------------
     # S3 post-pass: merge subtype properties into parent tables
     # ----------------------------------------------------------------
-    for parent_uri_str, subtype_names in folded_subtypes.items():
+    # folded_subtypes maps parent_uri → [subtype URIs] (URI-keyed for namespace
+    # safety). For each folded subtype we merge its OWN properties plus those of
+    # any *unclaimed* intermediate ancestors up to (but excluding) the claimed
+    # fold target — class_uris makes _get_class_and_ancestors stop at claimed
+    # ancestors, so the parent's own columns are not duplicated.
+    name_by_uri = {c["uri"]: c["name"] for c in domain_classes}
+    for parent_uri_str, subtype_uris in folded_subtypes.items():
         if parent_uri_str not in tables:
             continue
         parent_tbl = tables[parent_uri_str]
-        # Find subtype class URIs and merge their properties
-        for cls_info in domain_classes:
-            if cls_info["name"] not in subtype_names:
-                continue
-            sub_uri = URIRef(cls_info["uri"])
-            # Merge data properties as nullable columns with subtype comment
+        for sub_uri_str in subtype_uris:
+            sub_uri = URIRef(sub_uri_str)
+            sub_name = name_by_uri.get(sub_uri_str, _local_name(sub_uri_str))
+            # Merge data properties (incl. unclaimed-intermediate ancestors) as
+            # nullable columns with a subtype comment.
             _add_data_properties(
                 merged, sub_uri, parent_tbl, shacl_graph, naming_conv,
-                comment_prefix=f"from {cls_info['name']}"
+                comment_prefix=f"from {sub_name}",
+                class_uris=class_uris,
             )
-            # Merge object property FK columns
+            # Merge object property FK columns (incl. unclaimed-intermediate ancestors)
             _add_object_property_fk_cols(
                 merged, sub_uri, parent_tbl, table_name_for, schema_name,
                 class_uris, naming_conv,
-                comment_prefix=f"from {cls_info['name']}"
+                inherit_ancestors=True,
+                comment_prefix=f"from {sub_name}"
             )
 
     # ----------------------------------------------------------------

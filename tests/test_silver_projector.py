@@ -2619,3 +2619,186 @@ def test_silver_fk_complete_no_warning(caplog):
         generate_silver_artifacts(classes, g, BASE, ontology_name="test")
     assert not any("silverForeignKey on placedBy" in msg and "will be skipped" in msg
                    for msg in caplog.messages)
+
+# ---------------------------------------------------------------------------
+# Issue #172 — _nearest_claimed_ancestor (transitive discriminator fold)
+# ---------------------------------------------------------------------------
+
+from kairos_ontology.projections.medallion_silver_projector import (  # noqa: E402
+    _nearest_claimed_ancestor,
+)
+from rdflib import URIRef  # noqa: E402
+
+
+def _chain_graph() -> Graph:
+    """A -> B(unclaimed) -> C(claimed) chain plus a claimed direct-parent case."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "T"@en ; owl:versionInfo "1.0" .
+
+        ex:Root a owl:Class ; kairos-ext:inheritanceStrategy "discriminator" .
+        ex:Mid  a owl:Class ; rdfs:subClassOf ex:Root .
+        ex:Leaf a owl:Class ; rdfs:subClassOf ex:Mid .
+        ex:DirectParent a owl:Class .
+        ex:DirectChild  a owl:Class ; rdfs:subClassOf ex:DirectParent .
+    """
+    return _make_graph(ttl)
+
+
+def test_nearest_claimed_ancestor_through_unclaimed_intermediate():
+    """Leaf reaches claimed Root only via unclaimed Mid → Root is returned."""
+    g = _chain_graph()
+    class_uris = {f"{BASE}Root"}  # Mid is NOT claimed
+    result = _nearest_claimed_ancestor(g, URIRef(f"{BASE}Leaf"), class_uris)
+    assert result == URIRef(f"{BASE}Root")
+
+
+def test_nearest_claimed_ancestor_depth_one_unchanged():
+    """Direct claimed parent is returned (depth-1 single inheritance, unchanged)."""
+    g = _chain_graph()
+    class_uris = {f"{BASE}DirectParent"}
+    result = _nearest_claimed_ancestor(g, URIRef(f"{BASE}DirectChild"), class_uris)
+    assert result == URIRef(f"{BASE}DirectParent")
+
+
+def test_nearest_claimed_ancestor_stops_at_first_claimed():
+    """If the intermediate IS claimed, the walk stops there (does not skip to Root)."""
+    g = _chain_graph()
+    class_uris = {f"{BASE}Mid", f"{BASE}Root"}  # Mid claimed
+    result = _nearest_claimed_ancestor(g, URIRef(f"{BASE}Leaf"), class_uris)
+    assert result == URIRef(f"{BASE}Mid")
+
+
+def test_nearest_claimed_ancestor_none_when_no_claimed():
+    """No claimed ancestor → None."""
+    g = _chain_graph()
+    result = _nearest_claimed_ancestor(g, URIRef(f"{BASE}Leaf"), set())
+    assert result is None
+
+
+def test_nearest_claimed_ancestor_cycle_safe():
+    """A subClassOf cycle must not hang."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "T"@en ; owl:versionInfo "1.0" .
+        ex:A a owl:Class ; rdfs:subClassOf ex:B .
+        ex:B a owl:Class ; rdfs:subClassOf ex:A .
+    """
+    g = _make_graph(ttl)
+    result = _nearest_claimed_ancestor(g, URIRef(f"{BASE}A"), set())
+    assert result is None
+
+
+def test_nearest_claimed_ancestor_conflict_warns(caplog):
+    """Multiple nearest claimed ancestors with conflicting strategies → warning."""
+    import logging
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "T"@en ; owl:versionInfo "1.0" .
+        ex:P1 a owl:Class ; kairos-ext:inheritanceStrategy "discriminator" .
+        ex:P2 a owl:Class ; kairos-ext:inheritanceStrategy "class-per-table" .
+        ex:Child a owl:Class ; rdfs:subClassOf ex:P1, ex:P2 .
+    """
+    g = _make_graph(ttl)
+    class_uris = {f"{BASE}P1", f"{BASE}P2"}
+    with caplog.at_level(logging.WARNING):
+        result = _nearest_claimed_ancestor(g, URIRef(f"{BASE}Child"), class_uris)
+    # Deterministic: lexicographically smallest URI wins (P1 < P2)
+    assert result == URIRef(f"{BASE}P1")
+    assert any("conflicting inheritance strategies" in m for m in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# Issue #172 — silverExclude
+# ---------------------------------------------------------------------------
+
+
+def test_silver_exclude_emits_no_table():
+    """A class annotated silverExclude produces no CREATE TABLE."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "T"@en ; owl:versionInfo "1.0" .
+        ex:Keep a owl:Class ; rdfs:label "Keep"@en ; rdfs:comment "."@en .
+        ex:Drop a owl:Class ; rdfs:label "Drop"@en ; rdfs:comment "."@en ;
+            kairos-ext:silverExclude "true"^^xsd:boolean .
+        ex:keepName a owl:DatatypeProperty ; rdfs:domain ex:Keep ;
+            rdfs:range xsd:string ; rdfs:label "keep name"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Keep", "name": "Keep", "label": "Keep", "comment": ""},
+        {"uri": f"{BASE}Drop", "name": "Drop", "label": "Drop", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql")).lower()
+    assert "test.keep" in ddl
+    assert "test.drop" not in ddl
+
+
+def test_silver_exclude_descendant_still_inherits():
+    """A descendant of an excluded class still inherits the excluded class's props."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "T"@en ; owl:versionInfo "1.0" .
+        ex:Base a owl:Class ; rdfs:label "Base"@en ; rdfs:comment "."@en ;
+            kairos-ext:silverExclude "true"^^xsd:boolean .
+        ex:baseCode a owl:DatatypeProperty ; rdfs:domain ex:Base ;
+            rdfs:range xsd:string ; rdfs:label "base code"@en .
+        ex:Child a owl:Class ; rdfs:label "Child"@en ; rdfs:comment "."@en ;
+            rdfs:subClassOf ex:Base .
+        ex:childName a owl:DatatypeProperty ; rdfs:domain ex:Child ;
+            rdfs:range xsd:string ; rdfs:label "child name"@en .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Base", "name": "Base", "label": "Base", "comment": ""},
+        {"uri": f"{BASE}Child", "name": "Child", "label": "Child", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql")).lower()
+    assert "test.base" not in ddl
+    assert "test.child" in ddl
+    # Child inherits base_code from the excluded Base
+    assert "base_code" in ddl
+    assert "child_name" in ddl
+
+
+def test_silver_exclude_overrides_silver_include():
+    """silverExclude wins over silverInclude on the same class."""
+    ttl = f"""
+        @prefix ref: <{REF_BASE}> .
+        @prefix hub: <{HUB_BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        <{HUB_BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "C"@en ; owl:versionInfo "1.0" .
+        ref:TradeParty a owl:Class ; rdfs:label "TP"@en ; rdfs:comment "."@en ;
+            kairos-ext:silverInclude "true"^^xsd:boolean ;
+            kairos-ext:silverExclude "true"^^xsd:boolean .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{REF_BASE}TradeParty", "name": "TradeParty",
+         "label": "TP", "comment": ""},
+    ]
+    result = generate_silver_artifacts(classes, g, HUB_BASE, ontology_name="customer")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql")).lower()
+    assert "trade_party" not in ddl

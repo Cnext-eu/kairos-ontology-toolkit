@@ -1644,7 +1644,16 @@ class TestLogisticsDomain:
 
         Both TradeParty and Carrier have source mappings — any 'No bronze mapping'
         warning indicates the mapping resolution failed.
+
+        The issue #172 structural fixtures (Organization, ShipOperator,
+        VesselCarrier, BaseMarker, ActiveMarker) are intentionally unmapped — they
+        exist only to exercise silver DDL folding/exclude — so warnings about them
+        are expected and excluded from this guard.
         """
+        unmapped_172_fixtures = (
+            "Organization", "ShipOperator", "VesselCarrier",
+            "BaseMarker", "ActiveMarker",
+        )
         with _caplog_context() as records:
             # Re-generate to capture warnings (fixture is cached but we need logs)
             from kairos_ontology.projections.medallion_dbt_projector import (
@@ -1670,7 +1679,9 @@ class TestLogisticsDomain:
             )
 
         no_mapping_warnings = [
-            r for r in records if "No bronze mapping" in r.getMessage()
+            r for r in records
+            if "No bronze mapping" in r.getMessage()
+            and not any(f"'{c}'" in r.getMessage() for c in unmapped_172_fixtures)
         ]
         assert len(no_mapping_warnings) == 0, (
             f"Unexpected 'No bronze mapping' warnings: "

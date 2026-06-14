@@ -350,3 +350,67 @@ class TestSilverIRILineage:
         assert len(matches) > 0, (
             "Expected at least one 'client:<property>' IRI comment in DDL"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #172: transitive discriminator fold + silverExclude
+# ---------------------------------------------------------------------------
+
+class TestIssue172TransitiveFoldAndExclude:
+    """B — discriminator folding is transitive through unclaimed intermediates.
+
+    A — silverExclude removes a class's table while descendants still inherit
+    its properties.
+
+    Fixtures (acme-hub logistics domain):
+      Organization(claimed, discriminator) <- ShipOperator(UNCLAIMED) <- VesselCarrier(local)
+      BaseMarker(silverExclude) <- ActiveMarker(materialised)
+    """
+
+    def test_transitive_subtype_folds_into_discriminator(self, logistics_silver_artifacts):
+        """VesselCarrier reaches the discriminator root only via an unclaimed
+        intermediate, yet must fold into the organization table (no own table)."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        ddl = logistics_silver_artifacts[ddl_key].lower()
+        assert "silver_logistics.organization" in ddl
+        # The transitive subtype and the unclaimed intermediate get no own table
+        assert "silver_logistics.vessel_carrier" not in ddl
+        assert "silver_logistics.ship_operator" not in ddl
+
+    def test_intermediate_properties_fold_into_parent(self, logistics_silver_artifacts):
+        """Properties of the UNCLAIMED intermediate (ShipOperator) must fold into
+        the discriminator parent table — they would be lost without the bounded
+        ancestor merge (rubber-duck issue #1)."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        ddl = logistics_silver_artifacts[ddl_key].lower()
+        # ship_operator_code is declared on the unclaimed intermediate
+        assert "ship_operator_code" in ddl
+        # It is merged with a "from <Subtype>" provenance comment
+        assert "from vesselcarrier" in ddl
+
+    def test_discriminator_column_present_on_parent(self, logistics_silver_artifacts):
+        """The annotated discriminator column appears on the fold-target table."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        ddl = logistics_silver_artifacts[ddl_key].lower()
+        assert "org_type" in ddl
+
+    def test_existing_tables_unaffected(self, logistics_silver_artifacts):
+        """The additive #172 fixtures must not disturb existing claimed tables."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        ddl = logistics_silver_artifacts[ddl_key].lower()
+        assert "silver_logistics.trade_party" in ddl
+        assert "silver_logistics.carrier" in ddl
+
+    def test_silver_exclude_emits_no_table(self, logistics_silver_artifacts):
+        """A silverExclude'd class produces no table."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        ddl = logistics_silver_artifacts[ddl_key].lower()
+        assert "silver_logistics.base_marker" not in ddl
+
+    def test_silver_exclude_descendant_inherits_properties(self, logistics_silver_artifacts):
+        """A descendant of the excluded class still inherits its properties."""
+        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
+        ddl = logistics_silver_artifacts[ddl_key].lower()
+        # ActiveMarker is materialised and inherits markerCode from excluded BaseMarker
+        assert "silver_logistics.active_marker" in ddl
+        assert "marker_code" in ddl
