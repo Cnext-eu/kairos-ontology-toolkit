@@ -87,12 +87,14 @@ git push && git push --tags
 
 ### What happens after push
 
-The `.github/workflows/release.yml` workflow triggers on `v*` tags:
+The `.github/workflows/release.yml` workflow triggers on `v*` tags and produces a
+**GitHub Release with the built wheel + sdist attached** (no PyPI publishing — see
+DD-066; hubs install via git-tag / wheel-URL pins):
 
-| Tag type | GitHub Release | PyPI publish |
-|----------|---------------|--------------|
-| Stable (`v2.17.0`) | ✅ Latest | ✅ Published |
-| Pre-release (`v2.18.0-rc.1`) | ✅ Pre-release | ❌ Skipped |
+| Tag type | GitHub Release | Built assets (wheel + sdist) |
+|----------|---------------|------------------------------|
+| Stable (`v2.17.0`) | ✅ Latest | ✅ Attached |
+| Pre-release (`v2.18.0-rc.1`) | ✅ Pre-release | ✅ Attached |
 
 ### Verifying the release
 

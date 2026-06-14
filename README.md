@@ -22,7 +22,6 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
-  <a href="https://pypi.org/project/kairos-ontology-toolkit/"><img src="https://img.shields.io/pypi/v/kairos-ontology-toolkit.svg" alt="PyPI"></a>
   <img src="https://img.shields.io/badge/python-3.12%2B-brightgreen.svg" alt="Python">
 </p>
 
@@ -51,8 +50,8 @@ and AI prompt context — with built-in validation and a single CLI command.
 ## 🚀 Quick Start
 
 ```bash
-# Install from PyPI
-pip install kairos-ontology-toolkit
+# Install from a tagged GitHub release (the toolkit is not published to PyPI)
+pip install "git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@v3.16.0"
 
 # Scaffold a new ontology hub
 kairos-ontology init my-ontology-hub

@@ -218,9 +218,11 @@ git push origin vX.Y.Z                          # tag only — never push to mai
 This keeps the tag reachable from `main` and needs no extra branch.
 
 The tag push triggers the **release.yml** workflow which:
-- Builds the package
-- Publishes to **PyPI**
-- Creates a **GitHub Release**
+- Builds the package (wheel + sdist)
+- Creates a **GitHub Release** with the built artifacts attached
+
+> No PyPI publishing — the toolkit is distributed via git-tag / wheel-URL pins
+> (see DD-066).
 
 > **If you forgot to bump on the branch** and already merged: do NOT push to `main`.
 > Open a small `chore/bump-X.Y.Z` PR with the bump, merge it, then tag the merged
@@ -237,7 +239,6 @@ Print a summary:
 ```
 ✅ Release complete!
    Version: v1.3.0
-   PyPI:    https://pypi.org/project/kairos-ontology-toolkit/1.3.0/
    Release: https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/tag/v1.3.0
 ```
 
