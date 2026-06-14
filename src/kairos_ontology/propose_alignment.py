@@ -23,15 +23,18 @@ from typing import Any
 import yaml
 
 from .alignment_coverage import (
+    ALIGNMENT_ALGORITHM_VERSION,
     ALIGNMENT_HASH_SCHEMA_VERSION,
+    auto_disposition,
     compute_affinity_hash,
+    recommend_disposition,
 )
 from .analyse_sources import (
     DEFAULT_MODEL,
     parse_source_vocabulary,
     parse_reference_model,
 )
-from .ai_provider import get_ai_client
+from .ai_provider import ROLE_ALIGNMENT, get_ai_client
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import compute_entry_hash, open_cache
 from ._samples import example_values as _render_example_values
@@ -53,6 +56,22 @@ RETRY_MIN_CONFIDENCE = 0.6
 RETRY_MIN_MAPPED_RATIO = 0.4
 MAX_SAMPLE_CHARS = 48
 MAX_SAMPLES_PER_COLUMN = 3
+
+#: Issue #182 — confidence floor below which a ``custom`` column's LLM-suggested
+#: property is treated as untrustworthy and emitted as the canonical *unmatched*
+#: form (``ref_property: null``) instead of a confident-but-wrong guess.
+CUSTOM_CONFIDENCE_FLOOR = 0.5
+
+#: Issue #182 — a suggested property reused across this many *dissimilar* custom
+#: columns is treated as a catch-all sink and downgraded to unmatched.
+CATCH_ALL_MIN_COLUMNS = 3
+
+#: Issue #182 — model tier used by the opt-in ``--high-accuracy`` preset for this
+#: accuracy-sensitive alignment step. ``analyse-sources`` stays on the mini tier.
+HIGH_ACCURACY_MODEL = "gpt-5.5"
+
+# ``ALIGNMENT_ALGORITHM_VERSION`` is imported from ``alignment_coverage`` (the
+# lower-level module) and re-exported via that import for use across this module.
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -105,6 +124,14 @@ class TableAlignment:
     custom_columns: list[dict[str, Any]] = field(default_factory=list)
     # DD-045 structural mapping hints (only populated when include_mapping_hints=True)
     structural_hints: list[dict[str, Any]] = field(default_factory=list)
+    #: Issue #182 (WS6) — anchor-class provenance so a rejected/hallucinated class
+    #: is reported rather than silently blanked. ``matched`` = model picked a valid
+    #: class; ``fallback`` = invalid pick recovered via the affinity entity;
+    #: ``rejected`` = invalid pick with no valid fallback (unanchored); ``unmatched``
+    #: = model returned no class.
+    ref_class_status: str = "matched"
+    #: The original invalid class the model proposed, when it was rejected/fell back.
+    rejected_ref_class: str | None = None
 
 
 @dataclass
@@ -126,6 +153,9 @@ class DomainAlignment:
     #: DD-061 — SHA-256 over the affinity ``(system, table)`` set this run saw,
     #: enabling the deterministic ``check-alignment`` freshness gate.
     affinity_sha256: str | None = None
+    #: Issue #182 — algorithm/prompt-contract version this output was produced with.
+    #: Lets ``check-alignment`` flag output from an older, pre-hardening version.
+    algorithm_version: int = ALIGNMENT_ALGORITHM_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -698,26 +728,35 @@ REFERENCE MODEL CLASSES AND PROPERTIES:
 
 Instructions:
 - For ref_class, choose the ONE class from the reference model that best represents
-  this table. Must be one of: {class_names}
+  this table. It must be one of: {class_names}.
+  If NONE of these classes genuinely fits this table, set ref_class to null (do NOT
+  force-fit a table onto an unrelated class — a wrong anchor is worse than none).
 - For each column, find the best matching property from ANY reference class
   (not limited to the table's primary class).
 - alignment values: "exact" (same concept and name), "semantic" (same concept,
   different name), "partial" (related but not equivalent), "custom" (no match).
-- Columns with no reference model match should have alignment "custom" and
-  ref_property set to a suggested camelCase property name.
+- CRITICAL — unmatched columns: when a column has no genuine reference-model
+  property, set alignment to "custom", ref_property to null, and (optionally) a
+  short free-text "note" describing the concept. Do NOT invent a camelCase property
+  name, and NEVER reuse one suggested name across several unrelated columns — a
+  confident-but-wrong guess (e.g. mapping many different columns all onto
+  "stageCode" or "customsID") is worse than an honest null.
+- Do NOT over-map: a real ref_property must come from the class's listed properties
+  above. Never map more distinct columns onto a class than it has properties.
 - ref_class_confidence: 0.0-1.0 for the table→class match.
 
 Respond with JSON only:
 {{
-  "ref_class": "<class name>",
+  "ref_class": "<class name or null>",
   "ref_class_confidence": 0.0-1.0,
   "column_alignments": [
     {{
       "column": "<source column name>",
-      "ref_class": "<class name that owns this property>",{ref_module_field}
-      "ref_property": "<property name or suggested name>",
+      "ref_class": "<class name that owns this property, or null if custom>",{ref_module_field}
+      "ref_property": "<real reference property name, or null if alignment is custom>",
       "alignment": "exact|semantic|partial|custom",
       "confidence": 0.0-1.0,
+      "note": "<optional: short concept description for a custom column>",
       "rationale": "brief explanation"
     }}
   ]
@@ -819,8 +858,15 @@ def align_table(
         result = {}
 
     # Validate ref_class
-    ref_class = str(result.get("ref_class", "") or "")
-    if ref_class not in valid_classes:
+    proposed_ref_class = str(result.get("ref_class", "") or "")
+    ref_class = proposed_ref_class
+    # WS6 (issue #182): record anchor provenance so a hallucinated/rejected class is
+    # reported rather than silently blanked.
+    ref_class_status = "matched"
+    rejected_ref_class = None
+    if not proposed_ref_class:
+        ref_class_status = "unmatched"
+    elif proposed_ref_class not in valid_classes:
         # CR-2: fall back to the affinity-derived entity when it is a valid class,
         # rather than blanking it — we trust the prior analysis as a strong default.
         likely_match = next(
@@ -829,6 +875,8 @@ def align_table(
             "",
         )
         ref_class = likely_match
+        rejected_ref_class = proposed_ref_class
+        ref_class_status = "fallback" if likely_match else "rejected"
     ref_class_confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
 
     # Validate column alignments
@@ -849,14 +897,26 @@ def align_table(
         alignment = str(ca.get("alignment", "custom") or "custom")
         if alignment not in valid_alignments:
             alignment = "custom"
+        ref_property = str(ca.get("ref_property", "") or "")
+        # WS-NORM (issue #182): canonical state model. The pipeline's single
+        # discriminator is ``alignment == "custom"``; a "mapped" alignment with no
+        # ``ref_property`` is contradictory (it cannot be counted as a real map),
+        # so collapse it to the unmatched/custom form deterministically.
+        if alignment != "custom" and not ref_property:
+            alignment = "custom"
         norm: dict[str, Any] = {
             "column": col_name,
             "ref_class": str(ca.get("ref_class", ref_class) or ref_class),
-            "ref_property": str(ca.get("ref_property", "") or ""),
+            "ref_property": ref_property,
             "alignment": alignment,
             "confidence": _clamp_confidence(ca.get("confidence", 0.0)),
             "rationale": str(ca.get("rationale", "") or ""),
         }
+        # WS7 (issue #182): for an unmatched column the model may return a short
+        # free-text ``note`` instead of inventing a property name; carry it through.
+        note = str(ca.get("note", "") or "").strip()
+        if note:
+            norm["note"] = note
         # DD-070: carry the model's sibling-module signal only when present, so the
         # normalized result (and per-table cache) stays identical in default mode.
         ref_module = str(ca.get("ref_module", "") or "")
@@ -867,6 +927,8 @@ def align_table(
     return {
         "ref_class": ref_class,
         "ref_class_confidence": ref_class_confidence,
+        "ref_class_status": ref_class_status,
+        "rejected_ref_class": rejected_ref_class,
         "column_alignments": alignments,
     }
 
@@ -878,6 +940,89 @@ def _clamp_confidence(val: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, min(1.0, f))
+
+
+def _normalize_property_token(name: str) -> str:
+    """Lower-cased alphanumeric token of a property/column name for similarity."""
+    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+
+def _build_custom_column(
+    ca: dict[str, Any],
+    col_data_type: str,
+    *,
+    confidence_floor: float,
+) -> dict[str, Any]:
+    """Build one canonical *custom* (unmatched) column entry (issue #182).
+
+    WS-NORM canonical form: an unmatched source column carries a *suggested*
+    property only when the model is confident enough to be trusted; below
+    ``confidence_floor`` the suggestion is dropped (``suggested_property: None``)
+    rather than emitting a confident-but-wrong guess (Problem 1). ``disposition``
+    is left ``None`` for the Checkpoint-3b triage (issue #164).
+    """
+    confidence = _clamp_confidence(ca.get("confidence", 0.0))
+    suggested = str(ca.get("ref_property", "") or "").strip() or None
+    if suggested is not None and confidence < confidence_floor:
+        suggested = None
+    column = ca["column"]
+    # WS2 (issue #182): advisory recommendation always; final disposition only
+    # auto-filled for narrow audit/technical columns (stamped ``heuristic``).
+    recommended = recommend_disposition(column)
+    auto = auto_disposition(column)
+    entry: dict[str, Any] = {
+        "column": column,
+        "data_type": col_data_type,
+        "suggested_property": suggested,
+        "confidence": confidence,
+        "rationale": ca.get("rationale", ""),
+        # Issue #182 WS2: advisory triage recommendation (skip / silver-passthrough
+        # / "" for a business column a human must decide on).
+        "recommended_disposition": recommended,
+        # Issue #164: triage disposition filled during domain modeling
+        # (model | silver-passthrough | skip); null until a modeler dispositions it.
+        "disposition": auto,
+        "disposition_source": "heuristic" if auto else "",
+    }
+    note = str(ca.get("note", "") or "").strip()
+    if note:
+        entry["note"] = note
+    return entry
+
+
+def _downgrade_catch_all_suggestions(
+    custom_columns: list[dict[str, Any]],
+    *,
+    min_columns: int = CATCH_ALL_MIN_COLUMNS,
+) -> int:
+    """Null out catch-all ``suggested_property`` sinks across a domain (issue #182).
+
+    When one suggested property is proposed for ``min_columns`` or more *dissimilar*
+    custom columns (e.g. ``stageCode``/``customsID`` each becoming a sink for ~15
+    unrelated columns), it is an unreliable fallback, not a real signal. Such
+    suggestions are dropped to the honest unmatched form. Columns whose name closely
+    matches the suggested property are not counted as dissimilar, so a genuinely
+    repeated real attribute is preserved. Returns the number of entries downgraded.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for cc in custom_columns:
+        suggested = cc.get("suggested_property")
+        if not suggested:
+            continue
+        groups.setdefault(str(suggested), []).append(cc)
+
+    downgraded = 0
+    for suggested, members in groups.items():
+        token = _normalize_property_token(suggested)
+        dissimilar = [
+            cc for cc in members
+            if _normalize_property_token(cc.get("column", "")) != token
+        ]
+        if len(dissimilar) >= min_columns:
+            for cc in dissimilar:
+                cc["suggested_property"] = None
+                downgraded += 1
+    return downgraded
 
 
 # ---------------------------------------------------------------------------
@@ -1369,6 +1514,7 @@ def run_propose_alignment(
     cross_module: bool = False,
     accelerator: str | None = None,
     ref_models_dir: Path | None = None,
+    custom_confidence_floor: float = CUSTOM_CONFIDENCE_FLOOR,
 ) -> list[Path]:
     """Run alignment for all domains found in affinity reports.
 
@@ -1470,8 +1616,9 @@ def run_propose_alignment(
                 parsed_vocabs[system] = {}
         return parsed_vocabs[system].get(table, [])
 
-    # Create LLM client lazily (after validation)
-    client = get_ai_client()
+    # Create LLM client lazily (after validation). Uses the ``alignment`` role so a
+    # dedicated (typically stronger) endpoint/model override applies (issue #182).
+    client = get_ai_client(role=ROLE_ALIGNMENT)
 
     if cost_warning:
         from ._cost import print_cost_warning
@@ -1482,6 +1629,7 @@ def run_propose_alignment(
             max_workers=max_workers,
             model=model,
             force=force,
+            accuracy_sensitive=True,
         )
 
     # Per-table sidecar cache (CR-5 fine-grained layer); disabled with --force.
@@ -1498,29 +1646,35 @@ def run_propose_alignment(
 
         affinity_hash = compute_affinity_hash((t["system"], t["table"]) for t in tables)
 
-        # DD-070: params signature distinguishes a cross-module run from a prior
-        # home-only one so the freshness skip does not reuse stale output. Only
-        # computed/persisted in cross-module mode (default output stays identical).
-        params_hash = ""
+        # Issue #182: the params signature now always encodes the algorithm/prompt
+        # contract version, the model, and the custom-confidence floor (plus the
+        # cross-module pool when applicable) so a stale on-disk alignment from an
+        # older toolkit version — or a different floor/model — never satisfies the
+        # domain-level skip and silently serves pre-hardening output.
+        params_payload: dict[str, Any] = {
+            "algorithm_version": ALIGNMENT_ALGORITHM_VERSION,
+            "model": model,
+            "custom_confidence_floor": round(float(custom_confidence_floor), 4),
+        }
         if cross_module:
-            params_hash = compute_entry_hash({
+            # DD-070: cross-module results must not be reused for a home-only run.
+            params_payload.update({
                 "cross_module": True,
                 "accelerator": accelerator or "",
                 "accelerator_uris": sorted(accelerator_uri_modules.keys()),
                 "home_uris": sorted(domain_uris),
             })
+        params_hash = compute_entry_hash(params_payload)
 
         # CR-5: domain-level skip — reuse an existing alignment whose freshness
-        # hash already matches the current affinity set (unless --force). In
-        # cross-module mode the params hash must match too (DD-070).
+        # hash already matches the current affinity set (unless --force). The
+        # params hash must also match so an algorithm/model/floor change forces a
+        # rebuild (issue #182).
         out_path = output_dir / f"{domain_id}-alignment.yaml"
         if not force and out_path.exists():
             existing_hash = _read_alignment_affinity_hash(out_path)
             if existing_hash and existing_hash == affinity_hash:
-                params_ok = (not cross_module) or (
-                    _read_alignment_params_hash(out_path) == params_hash
-                )
-                if params_ok:
+                if _read_alignment_params_hash(out_path) == params_hash:
                     report(
                         f"     ⏭  Up to date (affinity unchanged) — skipped {out_path.name}"
                     )
@@ -1571,7 +1725,11 @@ def run_propose_alignment(
             for c in ref_classes
         ])
         align_params = {
+            # Issue #182: algorithm/prompt-contract version invalidates per-table
+            # cache entries when alignment output semantics change.
+            "algorithm_version": ALIGNMENT_ALGORITHM_VERSION,
             "model": model,
+            "custom_confidence_floor": round(float(custom_confidence_floor), 4),
             "max_prompt_classes": max_prompt_classes,
             "retry_min_confidence": retry_min_confidence,
             "retry_min_mapped_ratio": retry_min_mapped_ratio,
@@ -1705,16 +1863,12 @@ def run_propose_alignment(
                     "unknown",
                 )
                 if ca["alignment"] == "custom":
-                    custom_cols.append({
-                        "column": ca["column"],
-                        "data_type": col_data_type,
-                        "suggested_property": ca["ref_property"],
-                        "rationale": ca.get("rationale", ""),
-                        # Issue #164: triage disposition filled during domain
-                        # modeling (model | silver-passthrough | skip); null until
-                        # a modeler dispositions it.
-                        "disposition": None,
-                    })
+                    custom_cols.append(
+                        _build_custom_column(
+                            ca, col_data_type,
+                            confidence_floor=custom_confidence_floor,
+                        )
+                    )
                 else:
                     ref_class_name = ca.get("ref_class", result.get("ref_class", ""))
                     col_obj = next(
@@ -1816,6 +1970,8 @@ def run_propose_alignment(
                 ref_class_confidence=result.get("ref_class_confidence", 0.0),
                 columns=col_alignments,
                 custom_columns=custom_cols,
+                ref_class_status=result.get("ref_class_status", "matched"),
+                rejected_ref_class=result.get("rejected_ref_class"),
             )
             if include_mapping_hints:
                 ta.structural_hints = _detect_structural_hints(
@@ -1829,6 +1985,18 @@ def run_propose_alignment(
             report(
                 f"     ├─ {system}.{table} → {ta.ref_class} "
                 f"({matched} matched, {custom} custom){cache_marker}",
+                level="verbose",
+            )
+
+        # WS1 (issue #182): domain-wide catch-all suppression — a suggested
+        # property reused across many dissimilar custom columns is an unreliable
+        # fallback sink (e.g. stageCode/customsID), not a real signal. Null those
+        # suggestions before they reach the rollup or the YAML.
+        all_custom = [cc for ta in alignment.tables for cc in ta.custom_columns]
+        downgraded = _downgrade_catch_all_suggestions(all_custom)
+        if downgraded:
+            report(
+                f"     🧹 Suppressed {downgraded} catch-all custom suggestion(s)",
                 level="verbose",
             )
 
@@ -1865,14 +2033,20 @@ def run_propose_alignment(
 
 
 def _read_alignment_affinity_hash(alignment_path: Path) -> str:
-    """Return the ``affinity_sha256`` recorded in an existing alignment file."""
+    """Return the affinity freshness hash recorded in an existing alignment file.
+
+    The writer persists this under the ``source_sha256`` key (see
+    :func:`write_alignment_output`); read the same key so the domain-level cache
+    skip in :func:`run_propose_alignment` actually matches (issue #182 — the
+    previous ``affinity_sha256`` key was never written, making the skip dead).
+    """
     try:
         data = yaml.safe_load(alignment_path.read_text(encoding="utf-8")) or {}
     except (yaml.YAMLError, OSError):
         return ""
     if not isinstance(data, dict):
         return ""
-    return str(data.get("affinity_sha256", "") or "")
+    return str(data.get("source_sha256", "") or "")
 
 
 def _read_alignment_params_hash(alignment_path: Path) -> str:
@@ -1895,7 +2069,17 @@ def _build_reference_rollup(
     alignment: DomainAlignment,
     ref_classes: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Build a reference-class-centric rollup from table-centric alignments."""
+    """Build a reference-class-centric rollup from table-centric alignments.
+
+    WS4 (issue #182): only properties that genuinely belong to a class's reference
+    model are counted as matched, so ``coverage_pct`` can never exceed 100% (the
+    previous code added *any* ``ref_property`` blindly, producing >100% coverage —
+    a hallucination signal that misled the modeler). Properties matched against a
+    class that does not declare them are recorded as ``hallucinated_properties`` and
+    surfaced (count + capped sample) rather than silently normalized away.
+    """
+    #: Max hallucinated-property names retained per class for the surfaced sample.
+    _MAX_HALLUCINATED_SAMPLE = 10
     class_data: dict[str, dict[str, Any]] = {}
 
     # Initialize from reference model
@@ -1905,8 +2089,10 @@ def _build_reference_rollup(
         class_data[cls_name] = {
             "ref_class": cls_name,
             "ref_label": cls.get("label", cls_name),
+            "ref_props": ref_props,
             "ref_properties_total": len(ref_props),
             "matched_properties": set(),
+            "hallucinated_properties": set(),
             "source_tables": [],
             "custom_extensions": [],
         }
@@ -1922,8 +2108,17 @@ def _build_reference_rollup(
 
         for ca in ta.columns:
             cls_name = ca.ref_class or primary_cls
-            if cls_name in class_data:
-                class_data[cls_name]["matched_properties"].add(ca.ref_property)
+            if cls_name not in class_data:
+                continue
+            if not ca.ref_property:
+                continue
+            cd = class_data[cls_name]
+            if ca.ref_property in cd["ref_props"]:
+                cd["matched_properties"].add(ca.ref_property)
+            else:
+                # A property mapped to a class that does not declare it — an
+                # AI-hallucination signal. Count it, never inflate coverage.
+                cd["hallucinated_properties"].add(ca.ref_property)
 
         for cc in ta.custom_columns:
             if primary_cls and primary_cls in class_data:
@@ -1939,7 +2134,8 @@ def _build_reference_rollup(
         matched = data["matched_properties"]
         total = data["ref_properties_total"]
         coverage = round(len(matched) / total * 100, 1) if total else 0.0
-        rollup.append({
+        hallucinated = sorted(data["hallucinated_properties"])
+        entry = {
             "ref_class": cls_name,
             "ref_label": data["ref_label"],
             "ref_properties_total": total,
@@ -1947,7 +2143,11 @@ def _build_reference_rollup(
             "coverage_pct": coverage,
             "source_tables": data["source_tables"],
             "custom_extensions_count": len(data["custom_extensions"]),
-        })
+        }
+        if hallucinated:
+            entry["hallucinated_properties_count"] = len(hallucinated)
+            entry["hallucinated_properties"] = hallucinated[:_MAX_HALLUCINATED_SAMPLE]
+        rollup.append(entry)
 
     return sorted(rollup, key=lambda r: r["coverage_pct"], reverse=True)
 
@@ -1957,12 +2157,69 @@ def _build_reference_rollup(
 # ---------------------------------------------------------------------------
 
 
+def _merge_preserved_custom_dispositions(
+    alignment: DomainAlignment, output_dir: Path
+) -> None:
+    """Preserve human triage when regenerating an alignment file (issue #182 WS9).
+
+    Before a fresh ``{domain}-alignment.yaml`` overwrites an existing one (e.g. on
+    ``--force``), overlay any *human-owned* custom-column metadata from the old file
+    onto the new tables, keyed by the stable ``(system, table, column)`` tuple. Only
+    heuristic-owned fields are allowed to be rewritten; a modeler's hand-triaged
+    ``disposition`` (and any free-text ``note``) survives regeneration so a large
+    hand-triaged file is never silently wiped.
+    """
+    existing_file = output_dir / f"{alignment.domain}-alignment.yaml"
+    if not existing_file.is_file():
+        return
+    try:
+        with open(existing_file, encoding="utf-8") as f:
+            old = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return
+
+    preserved: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for table in old.get("tables", []) or []:
+        system = str(table.get("system", "") or "")
+        tname = str(table.get("table", "") or "")
+        for col in table.get("custom_columns", []) or []:
+            disposition = col.get("disposition")
+            source = str(col.get("disposition_source", "") or "")
+            # Human-owned: an explicit human source, or a legacy file that carries a
+            # disposition with no source stamp (pre-WS2). Heuristic values are not
+            # preserved — they are recomputed deterministically on each run.
+            if disposition and source != "heuristic":
+                preserved[(system, tname, str(col.get("column", "") or ""))] = {
+                    "disposition": disposition,
+                    "disposition_source": source or "human",
+                    "note": str(col.get("note", "") or ""),
+                }
+    if not preserved:
+        return
+
+    for ta in alignment.tables:
+        for col in ta.custom_columns:
+            key = (ta.system, ta.table, str(col.get("column", "") or ""))
+            human = preserved.get(key)
+            if not human:
+                continue
+            col["disposition"] = human["disposition"]
+            col["disposition_source"] = human["disposition_source"]
+            if human["note"] and not col.get("note"):
+                col["note"] = human["note"]
+
+
 def write_alignment_output(alignment: DomainAlignment, output_dir: Path) -> Path:
     """Write domain alignment results to YAML."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # WS9 (issue #182): never overwrite a modeler's hand-triaged dispositions.
+    _merge_preserved_custom_dispositions(alignment, output_dir)
+
     data: dict[str, Any] = {
         "schema_version": ALIGNMENT_HASH_SCHEMA_VERSION,
+        # Issue #182: algorithm/prompt-contract version of the producing toolkit.
+        "algorithm_version": alignment.algorithm_version,
         "domain": alignment.domain,
         "domain_uris": alignment.domain_uris,
         "generated_at": alignment.generated_at,
@@ -1982,6 +2239,12 @@ def write_alignment_output(alignment: DomainAlignment, output_dir: Path) -> Path
             "columns": [],
             "custom_columns": ta.custom_columns,
         }
+        # WS6 (issue #182): surface a non-clean anchor status so a hallucinated or
+        # unanchored table is visible without re-running the LLM.
+        if ta.ref_class_status and ta.ref_class_status != "matched":
+            table_dict["ref_class_status"] = ta.ref_class_status
+        if ta.rejected_ref_class:
+            table_dict["rejected_ref_class"] = ta.rejected_ref_class
         for ca in ta.columns:
             col_dict: dict[str, Any] = {
                 "column": ca.column,

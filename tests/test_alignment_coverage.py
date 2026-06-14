@@ -8,9 +8,12 @@ import yaml
 from click.testing import CliRunner
 
 from kairos_ontology.alignment_coverage import (
+    ALIGNMENT_ALGORITHM_VERSION,
     ALIGNMENT_HASH_SCHEMA_VERSION,
+    AnchorIssue,
     CustomColumn,
     check_alignment_coverage,
+    collect_anchor_issues,
     collect_custom_columns,
     collect_review_columns,
     compute_affinity_hash,
@@ -40,6 +43,7 @@ def _write_alignment(
     tables: list[tuple[str, str]],
     *,
     schema_version: int = ALIGNMENT_HASH_SCHEMA_VERSION,
+    algorithm_version: int | None = ALIGNMENT_ALGORITHM_VERSION,
     source_sha256: str | None = "__auto__",
     custom: dict[tuple[str, str], list[dict]] | None = None,
 ) -> None:
@@ -65,6 +69,8 @@ def _write_alignment(
             for s, t in tables
         ],
     }
+    if algorithm_version is not None:
+        data["algorithm_version"] = algorithm_version
     if source_sha256 is not None:
         data["source_sha256"] = source_sha256
     with open(analysis_dir / f"{domain}-alignment.yaml", "w", encoding="utf-8") as f:
@@ -145,6 +151,25 @@ class TestCheckAlignmentCoverage:
         assert report.unverifiable == ["party"]
         assert not report.is_blocking
         assert report.has_warnings
+
+    def test_old_algorithm_version_is_unverifiable(self, tmp_path):
+        # Issue #182: a complete + fresh file produced by an older alignment
+        # algorithm/prompt contract must be flagged so it is regenerated rather
+        # than trusted (it may carry pre-hardening confident-but-wrong output).
+        _write_affinity(tmp_path, "adminpulse", [("tblA", "party")])
+        _write_alignment(tmp_path, "party", [("adminpulse", "tblA")],
+                         algorithm_version=ALIGNMENT_ALGORITHM_VERSION - 1)
+        report = check_alignment_coverage(analysis_dir=tmp_path)
+        assert report.unverifiable == ["party"]
+        assert not report.is_blocking
+
+    def test_missing_algorithm_version_is_unverifiable(self, tmp_path):
+        # A legacy file with a freshness hash but no algorithm_version field.
+        _write_affinity(tmp_path, "adminpulse", [("tblA", "party")])
+        _write_alignment(tmp_path, "party", [("adminpulse", "tblA")],
+                         algorithm_version=None)
+        report = check_alignment_coverage(analysis_dir=tmp_path)
+        assert report.unverifiable == ["party"]
 
     def test_orphan_alignment_warns(self, tmp_path):
         _write_affinity(tmp_path, "adminpulse", [("tblA", "party")])
@@ -324,6 +349,64 @@ class TestStrictCustomColumnGate:
         ])
         assert result.exit_code == 0, result.output
 
+    def test_accept_heuristics_unblocks_cf_slot(self, tmp_path):
+        # WS2 (issue #182): a generic vendor slot recommends silver-passthrough and
+        # is accepted under --accept-heuristics, but a business column still blocks.
+        analysis = self._setup(tmp_path, [{"column": "CFSTRING33"}])
+        blocked = CliRunner().invoke(cli, [
+            "check-alignment", "--analysis-dir", str(analysis), "--strict",
+        ])
+        assert blocked.exit_code == 1, blocked.output
+        accepted = CliRunner().invoke(cli, [
+            "check-alignment", "--analysis-dir", str(analysis), "--strict",
+            "--accept-heuristics",
+        ])
+        assert accepted.exit_code == 0, accepted.output
+
+    def test_accept_heuristics_still_blocks_business_column(self, tmp_path):
+        analysis = self._setup(tmp_path, [{"column": "credit_limit"}])
+        result = CliRunner().invoke(cli, [
+            "check-alignment", "--analysis-dir", str(analysis), "--strict",
+            "--accept-heuristics",
+        ])
+        assert result.exit_code == 1, result.output
+
+
+class TestDispositionHeuristics:
+    def test_generic_vendor_slot_detection(self):
+        from kairos_ontology.alignment_coverage import is_generic_vendor_slot
+        assert is_generic_vendor_slot("CFSTRING33")
+        assert is_generic_vendor_slot("CFENUMERATION54")
+        assert is_generic_vendor_slot("CF12")
+        assert not is_generic_vendor_slot("credit_limit")
+        assert not is_generic_vendor_slot("CFWASTESURCHAMOUNT")
+
+    def test_recommend_disposition(self):
+        from kairos_ontology.alignment_coverage import recommend_disposition
+        assert recommend_disposition("CFSTRING33") == "silver-passthrough"
+        assert recommend_disposition("created_on") == "skip"
+        assert recommend_disposition("tenant_id") == "skip"
+        assert recommend_disposition("credit_limit") == ""
+
+    def test_auto_disposition_narrow(self):
+        from kairos_ontology.alignment_coverage import auto_disposition
+        assert auto_disposition("CREATEDON") == "skip"
+        assert auto_disposition("tenant_id") == "skip"
+        # A generic vendor slot is NOT auto-disposed (stays a conscious decision).
+        assert auto_disposition("CFSTRING33") is None
+        # A business column is never auto-disposed.
+        assert auto_disposition("credit_limit") is None
+
+    def test_effective_disposed(self):
+        c = CustomColumn(system="s", table="t", column="CFSTRING33",
+                         recommended_disposition="silver-passthrough")
+        assert c.disposed is False
+        assert c.effective_disposed(accept_heuristics=False) is False
+        assert c.effective_disposed(accept_heuristics=True) is True
+        biz = CustomColumn(system="s", table="t", column="credit_limit",
+                           recommended_disposition="")
+        assert biz.effective_disposed(accept_heuristics=True) is False
+
 
 def _write_alignment_with_reviews(
     analysis_dir: Path,
@@ -408,3 +491,96 @@ class TestReviewColumnsReportOnly:
             assert result.exit_code == 0, result.output
             assert "flagged for review" in result.output
             assert "SHIPPER_STREET" in result.output
+
+
+def _write_alignment_with_anchor(
+    analysis_dir: Path,
+    domain: str,
+    system: str,
+    table: str,
+    ref_class: str,
+    *,
+    ref_class_status: str | None = None,
+    rejected_ref_class: str | None = None,
+) -> None:
+    """Write a minimal complete+fresh alignment file with one anchored table."""
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    tbl: dict = {"system": system, "table": table, "ref_class": ref_class,
+                 "columns": [], "custom_columns": []}
+    if ref_class_status is not None:
+        tbl["ref_class_status"] = ref_class_status
+    if rejected_ref_class is not None:
+        tbl["rejected_ref_class"] = rejected_ref_class
+    data = {
+        "schema_version": ALIGNMENT_HASH_SCHEMA_VERSION,
+        "algorithm_version": ALIGNMENT_ALGORITHM_VERSION,
+        "domain": domain,
+        "tables": [tbl],
+        "source_sha256": compute_affinity_hash([(system, table)]),
+    }
+    with open(analysis_dir / f"{domain}-alignment.yaml", "w", encoding="utf-8") as f:
+        yaml.dump(data, f, sort_keys=False)
+
+
+class TestCollectAnchorIssues:
+    def test_hallucinated_anchor_detected(self):
+        data = {"tables": [
+            {"system": "bsp", "table": "bookings", "ref_class": "Booking"},
+            {"system": "bsp", "table": "requests", "ref_class": "BookingRequest"},
+        ]}
+        issues = collect_anchor_issues(data, {"BookingRequest", "ConfirmedBooking"})
+        kinds = {(i.table, i.kind) for i in issues}
+        assert ("bookings", "hallucinated") in kinds
+        # A real class produces no issue.
+        assert all(i.table != "requests" for i in issues)
+
+    def test_rejected_status_surfaced(self):
+        data = {"tables": [
+            {"system": "s", "table": "t", "ref_class": "",
+             "ref_class_status": "rejected", "rejected_ref_class": "Booking"},
+        ]}
+        issues = collect_anchor_issues(data, {"BookingRequest"})
+        assert issues[0].kind == "rejected"
+        assert issues[0].rejected_ref_class == "Booking"
+
+    def test_real_anchor_no_issue(self):
+        data = {"tables": [
+            {"system": "s", "table": "t", "ref_class": "ConfirmedBooking"},
+        ]}
+        assert collect_anchor_issues(data, {"ConfirmedBooking"}) == []
+
+
+class TestAnchorGate:
+    def test_anchor_check_off_by_default(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        _write_affinity(analysis, "bsp", [("bookings", "booking")])
+        _write_alignment_with_anchor(analysis, "booking", "bsp", "bookings", "Booking")
+        report = check_alignment_coverage(analysis_dir=analysis)
+        assert report.has_hallucinated_anchors is False
+        assert report.anchor_issues == {}
+
+    def test_hallucinated_anchor_flagged_and_blocks(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        _write_affinity(analysis, "bsp", [("bookings", "booking")])
+        _write_alignment_with_anchor(analysis, "booking", "bsp", "bookings", "Booking")
+        report = check_alignment_coverage(
+            analysis_dir=analysis, check_anchors=True,
+            valid_ref_classes={"BookingRequest", "ConfirmedBooking"},
+        )
+        assert report.has_hallucinated_anchors is True
+        assert report.hallucinated_anchors[0].ref_class == "Booking"
+
+    def test_valid_anchor_passes(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        _write_affinity(analysis, "bsp", [("requests", "booking")])
+        _write_alignment_with_anchor(
+            analysis, "booking", "bsp", "requests", "BookingRequest")
+        report = check_alignment_coverage(
+            analysis_dir=analysis, check_anchors=True,
+            valid_ref_classes={"BookingRequest", "ConfirmedBooking"},
+        )
+        assert report.has_hallucinated_anchors is False
+
+    def test_anchor_issue_identity(self):
+        ai = AnchorIssue(system="s", table="t", kind="hallucinated", ref_class="X")
+        assert ai.identity == "s.t"

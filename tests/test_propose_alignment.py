@@ -11,17 +11,23 @@ import pytest
 import yaml
 
 from kairos_ontology.propose_alignment import (
+    ALIGNMENT_ALGORITHM_VERSION,
     ColumnAlignment,
     DomainAlignment,
     TableAlignment,
     _build_class_meta_index,
+    _build_custom_column,
     _build_property_label_index,
     _build_reference_rollup,
+    _downgrade_catch_all_suggestions,
+    _read_alignment_affinity_hash,
+    _read_alignment_params_hash,
     _clamp_confidence,
     _compact_prompt_samples,
     _detect_address_part,
     _format_source_columns,
     _module_tag,
+    _normalize_property_token,
     _parses_as,
     _resolve_column_module,
     _review_column_alignment,
@@ -236,6 +242,21 @@ class TestBuildAlignmentPrompt:
         prompt = build_alignment_prompt("tbl", columns, sample_ref_classes)
         assert "HINT" not in prompt
 
+    def test_ws7_prompt_forbids_invented_property_names(self, sample_ref_classes):
+        # WS7 (issue #182): the prompt must instruct null ref_property for unmatched
+        # columns and explicitly forbid catch-all sinks — the root cause of garbage
+        # suggestions like stageCode/customsID.
+        columns = [{"name": "X", "data_type": "string"}]
+        prompt = build_alignment_prompt("tbl", columns, sample_ref_classes)
+        assert "ref_property to null" in prompt
+        assert "stageCode" in prompt  # named as a forbidden catch-all example
+        assert "null if alignment is custom" in prompt
+
+    def test_ws7_prompt_allows_null_ref_class(self, sample_ref_classes):
+        columns = [{"name": "X", "data_type": "string"}]
+        prompt = build_alignment_prompt("tbl", columns, sample_ref_classes)
+        assert "set ref_class to null" in prompt
+
 
 # ---------------------------------------------------------------------------
 # Tests: align_table
@@ -311,6 +332,46 @@ class TestAlignTable:
         columns = [{"name": "X", "data_type": "string"}]
         result = align_table(client, "gpt-5.4-mini", "tbl", columns, sample_ref_classes)
         assert result["column_alignments"][0]["alignment"] == "custom"
+
+    def test_anchor_status_matched(self, sample_ref_classes):
+        response = {"ref_class": "SalesContract", "ref_class_confidence": 0.9,
+                    "column_alignments": []}
+        client = self._mock_client(response)
+        result = align_table(client, "gpt-5.4-mini", "t",
+                             [{"name": "X", "data_type": "string"}], sample_ref_classes)
+        assert result["ref_class_status"] == "matched"
+        assert result["rejected_ref_class"] is None
+
+    def test_anchor_status_rejected_when_no_fallback(self, sample_ref_classes):
+        # WS6 (issue #182): a hallucinated class with no valid affinity fallback is
+        # reported as rejected (unanchored), not silently blanked.
+        response = {"ref_class": "Booking", "ref_class_confidence": 0.9,
+                    "column_alignments": []}
+        client = self._mock_client(response)
+        result = align_table(client, "gpt-5.4-mini", "t",
+                             [{"name": "X", "data_type": "string"}], sample_ref_classes)
+        assert result["ref_class"] == ""
+        assert result["ref_class_status"] == "rejected"
+        assert result["rejected_ref_class"] == "Booking"
+
+    def test_anchor_status_fallback_to_affinity_entity(self, sample_ref_classes):
+        response = {"ref_class": "Booking", "ref_class_confidence": 0.9,
+                    "column_alignments": []}
+        client = self._mock_client(response)
+        result = align_table(client, "gpt-5.4-mini", "t",
+                             [{"name": "X", "data_type": "string"}], sample_ref_classes,
+                             likely_entity="SalesContract")
+        assert result["ref_class"] == "SalesContract"
+        assert result["ref_class_status"] == "fallback"
+        assert result["rejected_ref_class"] == "Booking"
+
+    def test_anchor_status_unmatched_when_empty(self, sample_ref_classes):
+        response = {"ref_class": "", "ref_class_confidence": 0.0,
+                    "column_alignments": []}
+        client = self._mock_client(response)
+        result = align_table(client, "gpt-5.4-mini", "t",
+                             [{"name": "X", "data_type": "string"}], sample_ref_classes)
+        assert result["ref_class_status"] == "unmatched"
 
     def test_unknown_column_filtered(self, sample_ref_classes):
         response = {
@@ -514,6 +575,28 @@ class TestWriteAlignmentOutput:
         assert data["tables"][0]["columns"][0]["alignment"] == "semantic"
         assert len(data["tables"][0]["custom_columns"]) == 1
 
+    def test_affinity_hash_round_trips_through_reader(self, tmp_path):
+        # Issue #182 regression: the writer persists the freshness hash under the
+        # ``source_sha256`` key, so ``_read_alignment_affinity_hash`` must read the
+        # same key for the domain-level cache skip to ever fire. Previously the
+        # reader looked for ``affinity_sha256`` (never written) → dead skip.
+        alignment = DomainAlignment(
+            domain="commercial",
+            domain_uris=["https://example.com/ont/commercial#"],
+            generated_at="2026-06-05T10:00:00Z",
+            model_used="gpt-5.4-mini",
+            affinity_sha256="deadbeefcafe",
+            alignment_params_sha256="paramshash123",
+        )
+        out_path = write_alignment_output(alignment, tmp_path)
+
+        data = yaml.safe_load(out_path.read_text(encoding="utf-8"))
+        assert data["source_sha256"] == "deadbeefcafe"
+        assert data["algorithm_version"] == ALIGNMENT_ALGORITHM_VERSION
+
+        assert _read_alignment_affinity_hash(out_path) == "deadbeefcafe"
+        assert _read_alignment_params_hash(out_path) == "paramshash123"
+
     def test_review_flags_emitted_only_when_set(self, tmp_path):
         """DD-069: review/review_reason emitted only when a column is flagged."""
         alignment = DomainAlignment(
@@ -558,6 +641,121 @@ class TestWriteAlignmentOutput:
         assert "review" not in clean and "review_reason" not in clean
         assert flagged["review"] is True
         assert "address-part" in flagged["review_reason"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: WS9 disposition preservation on regeneration (issue #182)
+# ---------------------------------------------------------------------------
+
+
+class TestPreserveHumanDispositions:
+    def _alignment(self, custom_columns):
+        return DomainAlignment(
+            domain="consignment",
+            domain_uris=["https://example.com/ont/consignment#"],
+            generated_at="2026-06-05T10:00:00Z",
+            model_used="gpt-5.4-mini",
+            tables=[
+                TableAlignment(
+                    system="qargo",
+                    table="shipments",
+                    ref_class="Consignment",
+                    ref_class_confidence=0.9,
+                    custom_columns=custom_columns,
+                ),
+            ],
+        )
+
+    def test_human_disposition_survives_regeneration(self, tmp_path):
+        # First write: a modeler hand-triages a business column to "model".
+        first = self._alignment([
+            {"column": "co2e_well_to_wheel", "data_type": "float",
+             "suggested_property": None, "disposition": "model",
+             "disposition_source": "human", "recommended_disposition": ""},
+        ])
+        write_alignment_output(first, tmp_path)
+
+        # Regeneration (e.g. --force) produces a fresh undisposed column.
+        regen = self._alignment([
+            {"column": "co2e_well_to_wheel", "data_type": "float",
+             "suggested_property": None, "disposition": None,
+             "disposition_source": "", "recommended_disposition": ""},
+        ])
+        out = write_alignment_output(regen, tmp_path)
+
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        col = data["tables"][0]["custom_columns"][0]
+        assert col["disposition"] == "model"
+        assert col["disposition_source"] == "human"
+
+    def test_heuristic_disposition_is_recomputed(self, tmp_path):
+        # A heuristic-owned disposition is not preserved — it is recomputed.
+        first = self._alignment([
+            {"column": "created_on", "data_type": "datetime",
+             "suggested_property": None, "disposition": "skip",
+             "disposition_source": "heuristic", "recommended_disposition": "skip"},
+        ])
+        write_alignment_output(first, tmp_path)
+
+        regen = self._alignment([
+            {"column": "created_on", "data_type": "datetime",
+             "suggested_property": None, "disposition": "silver-passthrough",
+             "disposition_source": "heuristic", "recommended_disposition": "skip"},
+        ])
+        out = write_alignment_output(regen, tmp_path)
+
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        col = data["tables"][0]["custom_columns"][0]
+        # The new (heuristic) value stands; the old heuristic value is not restored.
+        assert col["disposition"] == "silver-passthrough"
+
+    def test_legacy_disposition_without_source_treated_as_human(self, tmp_path):
+        # A pre-WS2 file carries a disposition with no source stamp → treat as human.
+        first = self._alignment([
+            {"column": "loaded_distance_km", "data_type": "float",
+             "suggested_property": None, "disposition": "model"},
+        ])
+        write_alignment_output(first, tmp_path)
+
+        regen = self._alignment([
+            {"column": "loaded_distance_km", "data_type": "float",
+             "suggested_property": None, "disposition": None,
+             "disposition_source": ""},
+        ])
+        out = write_alignment_output(regen, tmp_path)
+
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        col = data["tables"][0]["custom_columns"][0]
+        assert col["disposition"] == "model"
+        assert col["disposition_source"] == "human"
+
+    def test_human_note_preserved_when_absent_in_regen(self, tmp_path):
+        first = self._alignment([
+            {"column": "tank_to_wheel", "data_type": "float",
+             "suggested_property": None, "disposition": "model",
+             "disposition_source": "human", "note": "MRV emissions metric"},
+        ])
+        write_alignment_output(first, tmp_path)
+
+        regen = self._alignment([
+            {"column": "tank_to_wheel", "data_type": "float",
+             "suggested_property": None, "disposition": None,
+             "disposition_source": ""},
+        ])
+        out = write_alignment_output(regen, tmp_path)
+
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        col = data["tables"][0]["custom_columns"][0]
+        assert col["note"] == "MRV emissions metric"
+
+    def test_no_existing_file_is_noop(self, tmp_path):
+        regen = self._alignment([
+            {"column": "x", "data_type": "int", "suggested_property": None,
+             "disposition": None, "disposition_source": ""},
+        ])
+        out = write_alignment_output(regen, tmp_path)
+        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        assert data["tables"][0]["custom_columns"][0]["disposition"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +905,88 @@ class TestBuildReferenceRollup:
         tt = next(r for r in rollup if r["ref_class"] == "TradeTerms")
         assert tt["matched_properties"] == 0
         assert tt["coverage_pct"] == 0.0
+
+    def test_hallucinated_property_not_counted(self, sample_ref_classes):
+        # WS4 (issue #182): a property not on the class must not count as matched,
+        # must not inflate coverage past 100%, and must be surfaced.
+        alignment = DomainAlignment(
+            domain="commercial",
+            domain_uris=[],
+            generated_at="",
+            model_used="",
+            tables=[
+                TableAlignment(
+                    system="admin",
+                    table="tblContracts",
+                    ref_class="SalesContract",
+                    ref_class_confidence=0.95,
+                    columns=[
+                        ColumnAlignment(
+                            column="ContractNo",
+                            data_type="nvarchar(50)",
+                            ref_class="SalesContract",
+                            ref_property="contractIdentifier",
+                            alignment="semantic",
+                            confidence=0.92,
+                        ),
+                        ColumnAlignment(
+                            column="Bogus",
+                            data_type="nvarchar(50)",
+                            ref_class="SalesContract",
+                            ref_property="notARealProperty",
+                            alignment="semantic",
+                            confidence=0.8,
+                        ),
+                    ],
+                ),
+            ],
+        )
+        rollup = _build_reference_rollup(alignment, sample_ref_classes)
+        sc = next(r for r in rollup if r["ref_class"] == "SalesContract")
+        assert sc["matched_properties"] == 1
+        assert sc["coverage_pct"] <= 100.0
+        assert sc["hallucinated_properties_count"] == 1
+        assert "notARealProperty" in sc["hallucinated_properties"]
+
+    def test_coverage_never_exceeds_100(self, sample_ref_classes):
+        # Over-mapping a 3-property class with 5 distinct ref_property values must
+        # still cap coverage at the 3 real ones (issue #182 121% bug).
+        cols = [
+            ColumnAlignment(column=f"C{i}", data_type="string",
+                            ref_class="SalesContract", ref_property=name,
+                            alignment="semantic", confidence=0.9)
+            for i, name in enumerate([
+                "contractIdentifier", "effectiveDate", "contractType",
+                "ghost1", "ghost2",
+            ])
+        ]
+        alignment = DomainAlignment(
+            domain="commercial", domain_uris=[], generated_at="", model_used="",
+            tables=[TableAlignment(system="s", table="t", ref_class="SalesContract",
+                                   ref_class_confidence=0.9, columns=cols)],
+        )
+        rollup = _build_reference_rollup(alignment, sample_ref_classes)
+        sc = next(r for r in rollup if r["ref_class"] == "SalesContract")
+        assert sc["matched_properties"] == 3
+        assert sc["coverage_pct"] == 100.0
+        assert sc["hallucinated_properties_count"] == 2
+
+    def test_no_hallucination_fields_when_clean(self, sample_ref_classes):
+        alignment = DomainAlignment(
+            domain="commercial", domain_uris=[], generated_at="", model_used="",
+            tables=[TableAlignment(
+                system="s", table="t", ref_class="SalesContract",
+                ref_class_confidence=0.9,
+                columns=[ColumnAlignment(
+                    column="C", data_type="string", ref_class="SalesContract",
+                    ref_property="contractIdentifier", alignment="semantic",
+                    confidence=0.9)],
+            )],
+        )
+        rollup = _build_reference_rollup(alignment, sample_ref_classes)
+        sc = next(r for r in rollup if r["ref_class"] == "SalesContract")
+        assert "hallucinated_properties_count" not in sc
+        assert "hallucinated_properties" not in sc
 
 
 # ---------------------------------------------------------------------------
@@ -1254,7 +1534,7 @@ class TestBuildAlignmentPromptCrossModule:
         assert "ref_module" in prompt
         assert "[module: reference-data]" in prompt
         # STEP 1 candidate list is home-only.
-        assert "Must be one of: TradeParty" in prompt
+        assert "It must be one of: TradeParty" in prompt
 
 
 class TestAlignTableCrossModule:
@@ -1659,5 +1939,139 @@ class TestSampleEvidenceIntegration:
         data = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
         for c in data["tables"][0]["columns"]:
             assert "example_values" not in c
+
+
+# ---------------------------------------------------------------------------
+# Issue #182 — WS-NORM canonical state + WS1 confidence-gated custom suggestions
+# ---------------------------------------------------------------------------
+class TestNormalizePropertyToken:
+    def test_strips_non_alphanumeric_and_lowercases(self):
+        assert _normalize_property_token("CF_String-33") == "cfstring33"
+        assert _normalize_property_token("stageCode") == "stagecode"
+
+    def test_none_and_empty(self):
+        assert _normalize_property_token(None) == ""
+        assert _normalize_property_token("") == ""
+
+
+class TestNormCanonicalState:
+    """WS-NORM: a mapped alignment with no ref_property collapses to custom."""
+
+    def _mock_client(self, response_dict):
+        client = mock.MagicMock()
+        client.chat.completions.create.return_value = mock.MagicMock(
+            choices=[mock.MagicMock(
+                message=mock.MagicMock(content=json.dumps(response_dict))
+            )]
+        )
+        return client
+
+    def test_semantic_without_ref_property_demoted_to_custom(self, sample_ref_classes):
+        response = {
+            "ref_class": "SalesContract",
+            "ref_class_confidence": 0.8,
+            "column_alignments": [
+                {
+                    "column": "X",
+                    "ref_property": "",
+                    "alignment": "semantic",
+                    "confidence": 0.9,
+                },
+            ],
+        }
+        client = self._mock_client(response)
+        columns = [{"name": "X", "data_type": "string"}]
+        result = align_table(client, "gpt-5.4-mini", "tbl", columns, sample_ref_classes)
+        assert result["column_alignments"][0]["alignment"] == "custom"
+
+    def test_note_passthrough(self, sample_ref_classes):
+        response = {
+            "ref_class": "SalesContract",
+            "ref_class_confidence": 0.8,
+            "column_alignments": [
+                {
+                    "column": "X",
+                    "ref_property": "",
+                    "alignment": "custom",
+                    "confidence": 0.0,
+                    "note": "vendor-specific slot",
+                },
+            ],
+        }
+        client = self._mock_client(response)
+        columns = [{"name": "X", "data_type": "string"}]
+        result = align_table(client, "gpt-5.4-mini", "tbl", columns, sample_ref_classes)
+        assert result["column_alignments"][0]["note"] == "vendor-specific slot"
+
+
+class TestBuildCustomColumn:
+    def test_high_confidence_keeps_suggestion(self):
+        ca = {"column": "Foo", "ref_property": "fooBar", "confidence": 0.9}
+        cc = _build_custom_column(ca, "nvarchar(50)", confidence_floor=0.5)
+        assert cc["suggested_property"] == "fooBar"
+        assert cc["confidence"] == 0.9
+        assert cc["disposition"] is None
+
+    def test_below_floor_nulls_suggestion(self):
+        ca = {"column": "Foo", "ref_property": "stageCode", "confidence": 0.3}
+        cc = _build_custom_column(ca, "nvarchar(50)", confidence_floor=0.5)
+        assert cc["suggested_property"] is None
+
+    def test_empty_ref_property_stays_null(self):
+        ca = {"column": "Foo", "ref_property": "", "confidence": 0.99}
+        cc = _build_custom_column(ca, "int", confidence_floor=0.5)
+        assert cc["suggested_property"] is None
+
+    def test_note_included_when_present(self):
+        ca = {"column": "Foo", "ref_property": "", "confidence": 0.0,
+              "note": "opaque slot"}
+        cc = _build_custom_column(ca, "int", confidence_floor=0.5)
+        assert cc["note"] == "opaque slot"
+
+    def test_note_absent_when_blank(self):
+        ca = {"column": "Foo", "ref_property": "", "confidence": 0.0, "note": "  "}
+        cc = _build_custom_column(ca, "int", confidence_floor=0.5)
+        assert "note" not in cc
+
+
+class TestDowngradeCatchAllSuggestions:
+    def test_catch_all_sink_nulled(self):
+        cols = [
+            {"column": "co2e_well_to_wheel", "suggested_property": "stageCode"},
+            {"column": "tenant_id", "suggested_property": "stageCode"},
+            {"column": "loaded_distance", "suggested_property": "stageCode"},
+        ]
+        downgraded = _downgrade_catch_all_suggestions(cols, min_columns=3)
+        assert downgraded == 3
+        assert all(c["suggested_property"] is None for c in cols)
+
+    def test_below_threshold_preserved(self):
+        cols = [
+            {"column": "a", "suggested_property": "stageCode"},
+            {"column": "b", "suggested_property": "stageCode"},
+        ]
+        downgraded = _downgrade_catch_all_suggestions(cols, min_columns=3)
+        assert downgraded == 0
+        assert all(c["suggested_property"] == "stageCode" for c in cols)
+
+    def test_similar_named_column_not_counted_as_sink(self):
+        # A genuinely repeated real attribute (column name ~ property) is preserved.
+        cols = [
+            {"column": "stage_code", "suggested_property": "stageCode"},
+            {"column": "stageCode", "suggested_property": "stageCode"},
+            {"column": "StageCode", "suggested_property": "stageCode"},
+        ]
+        downgraded = _downgrade_catch_all_suggestions(cols, min_columns=3)
+        assert downgraded == 0
+        assert all(c["suggested_property"] == "stageCode" for c in cols)
+
+    def test_null_suggestions_ignored(self):
+        cols = [
+            {"column": "a", "suggested_property": None},
+            {"column": "b", "suggested_property": None},
+            {"column": "c", "suggested_property": None},
+        ]
+        assert _downgrade_catch_all_suggestions(cols, min_columns=3) == 0
+
 
 

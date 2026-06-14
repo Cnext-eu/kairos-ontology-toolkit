@@ -178,6 +178,25 @@ class TestCostWarning:
         )
         assert "BYPASSED" in text
 
+    def test_accuracy_sensitive_changes_non_recommended_line(self):
+        # WS8 (issue #182): alignment is accuracy-sensitive, so the banner must not
+        # claim "no quality gain" for a higher tier — it should flag the trade-off.
+        text = build_cost_warning(
+            command="propose-alignment", table_count=10,
+            max_workers=4, model="gpt-5.5", force=False,
+            accuracy_sensitive=True,
+        )
+        assert "ACCURACY-SENSITIVE" in text
+        assert "no quality gain" not in text
+
+    def test_accuracy_sensitive_default_model_still_recommended(self):
+        text = build_cost_warning(
+            command="propose-alignment", table_count=10,
+            max_workers=4, model=RECOMMENDED_MODEL, force=False,
+            accuracy_sensitive=True,
+        )
+        assert "recommended for this task" in text
+
     def test_quiet_suppresses(self):
         emitted: list[str] = []
         print_cost_warning(

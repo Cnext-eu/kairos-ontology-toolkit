@@ -156,6 +156,51 @@ def _resolve_ref_models_dir(cwd: Path, hub_root: Path | None) -> Path | None:
     return None
 
 
+def _build_valid_anchor_classes(
+    analysis_path: Path, cwd: Path, hub_root: Path | None
+) -> set[str]:
+    """Build the union of reference-model class names for the WS6 anchor gate.
+
+    Issue #182: gathers every ``domain_uris`` entry from the alignment files in
+    *analysis_path*, resolves their reference models via the hub catalog, and
+    returns the set of class names.  Returns an empty set when no catalog or
+    reference model can be resolved (the caller then skips anchor validation).
+    Resolution lives here in the CLI; the core gate only consumes the result.
+    """
+    import yaml as _yaml
+
+    from ..propose_alignment import extract_ref_model_inventory
+
+    if not analysis_path.is_dir():
+        return set()
+
+    catalog_path: Path | None = None
+    if hub_root:
+        candidate = hub_root / "catalog-v001.xml"
+        if candidate.exists():
+            catalog_path = candidate
+    if catalog_path is None:
+        candidate = cwd / "catalog-v001.xml"
+        if candidate.exists():
+            catalog_path = candidate
+
+    uris: set[str] = set()
+    for align_file in sorted(analysis_path.glob("*-alignment.yaml")):
+        try:
+            data = _yaml.safe_load(align_file.read_text(encoding="utf-8")) or {}
+        except (OSError, _yaml.YAMLError):
+            continue
+        for uri in data.get("domain_uris", []) or []:
+            if isinstance(uri, str) and uri:
+                uris.add(uri)
+
+    if not uris:
+        return set()
+
+    classes = extract_ref_model_inventory(sorted(uris), catalog_path)
+    return {str(c.get("name", "")) for c in classes if c.get("name")}
+
+
 def _resolve_import_dir(cwd: Path, hub_root: Path | None) -> Path:
     """Locate the business-discovery import directory.
 
@@ -1531,7 +1576,13 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         build_data_domain_targets, load_data_domains, list_accelerator_packs,
         make_reporter,
     )
+    from ..ai_provider import DEFAULT_MODEL, ROLE_AFFINITY, resolve_role_model
     from ..hub_utils import find_hub_root
+
+    # Issue #182: a per-role model override (KAIROS_AI_AFFINITY_MODEL) acts as the
+    # default for this step unless the operator pinned --model explicitly.
+    if llm_model == DEFAULT_MODEL:
+        llm_model = resolve_role_model(ROLE_AFFINITY, DEFAULT_MODEL)
 
     # Auto-detect hub paths
     cwd = Path.cwd()
@@ -1708,11 +1759,20 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
 @click.option('--accelerator', default=None,
               help='Accelerator pack name whose data-domains.yaml defines the cross-module '
                    'property pool (required with --cross-module).')
+@click.option('--custom-confidence-floor', type=click.FloatRange(0.0, 1.0), default=0.5,
+              help='Issue #182: below this confidence an unmatched column emits no '
+                   'suggested property (null) instead of a confident-but-wrong guess '
+                   '(default: 0.5).')
+@click.option('--high-accuracy', 'high_accuracy', is_flag=True, default=False,
+              help='Issue #182: use a higher-accuracy model tier for this '
+                   'accuracy-sensitive alignment step (overrides the default model '
+                   'unless --model was set explicitly). Costs more per run.')
 def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
                           domains_filter, verbose, quiet, include_mapping_hints,
                           no_sample_values,
                           max_prompt_classes, retry_min_confidence, retry_min_mapped_ratio,
-                          max_workers, force, cross_module, accelerator):
+                          max_workers, force, cross_module, accelerator,
+                          custom_confidence_floor, high_accuracy):
     """Propose source-column → reference-model-property alignment (LLM-powered).
 
     Pre-modeling step that analyses how source columns map to reference model
@@ -1728,11 +1788,21 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
       kairos-ontology propose-alignment --domains "commercial,party" --verbose
       kairos-ontology propose-alignment --analysis path/to/_analysis/
     """
-    from ..propose_alignment import run_propose_alignment
+    from ..propose_alignment import HIGH_ACCURACY_MODEL, run_propose_alignment
+    from ..ai_provider import DEFAULT_MODEL, ROLE_ALIGNMENT, resolve_role_model
     from ..hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
+
+    # Issue #182: the opt-in high-accuracy preset bumps the model tier for this
+    # accuracy-sensitive step, unless the operator pinned a model explicitly. When
+    # neither is given, a per-role model override (KAIROS_AI_ALIGNMENT_MODEL) acts
+    # as the default so it stays consistent with KAIROS_AI_ALIGNMENT_ENDPOINT.
+    if high_accuracy and llm_model == DEFAULT_MODEL:
+        llm_model = HIGH_ACCURACY_MODEL
+    elif llm_model == DEFAULT_MODEL:
+        llm_model = resolve_role_model(ROLE_ALIGNMENT, DEFAULT_MODEL)
 
     # Auto-detect analysis directory
     if analysis is None:
@@ -1844,6 +1914,7 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             cross_module=cross_module,
             accelerator=accelerator,
             ref_models_dir=ref_models_dir,
+            custom_confidence_floor=custom_confidence_floor,
         )
         if not quiet:
             click.echo(
@@ -2295,7 +2366,16 @@ def _autodetect_analysis_dir(cwd: Path, hub_root: Path | None) -> Path | None:
 @click.option('--strict', is_flag=True, default=False,
               help='Also block (exit non-zero) when any source-evidenced custom '
                    'column lacks a triage disposition (issue #164).')
-def check_alignment_cmd(analysis_dir, domains_filter, warn_only, strict):
+@click.option('--check-anchors', is_flag=True, default=False,
+              help='Issue #182: validate every table anchor class against the real '
+                   'reference-model class set and block on hallucinated anchors '
+                   '(classes that exist in no reference model).')
+@click.option('--accept-heuristics', is_flag=True, default=False,
+              help='Issue #182: treat a custom column with a heuristic '
+                   'recommended_disposition (skip / silver-passthrough) as disposed '
+                   'for the --strict gate, so only genuine business columns block.')
+def check_alignment_cmd(analysis_dir, domains_filter, warn_only, strict, check_anchors,
+                        accept_heuristics):
     """Verify that every domain has a complete, fresh alignment (DD-061).
 
     Deterministic pre-flight gate for ``design-domain``: confirms that every data
@@ -2347,8 +2427,23 @@ def check_alignment_cmd(analysis_dir, domains_filter, warn_only, strict):
     if domains_filter:
         filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
 
+    # Issue #182 (WS6): build the real reference-model class set so the anchor gate
+    # can flag hallucinated anchors. Resolution lives in the CLI; the core gate just
+    # receives the pre-built set (decoupled from CLI internals).
+    valid_ref_classes: set[str] | None = None
+    if check_anchors:
+        valid_ref_classes = _build_valid_anchor_classes(analysis_path, cwd, hub_root)
+        if not valid_ref_classes:
+            click.echo(
+                "   ⚠ --check-anchors: could not resolve any reference-model classes "
+                "(no catalog/inventory found); anchor validation skipped.",
+                err=True,
+            )
+
     report = check_alignment_coverage(
         analysis_dir=analysis_path, domains_filter=filter_list,
+        check_anchors=check_anchors and bool(valid_ref_classes),
+        valid_ref_classes=valid_ref_classes,
     )
 
     click.echo("🔎 Checking source-to-domain alignment coverage")
@@ -2376,12 +2471,14 @@ def check_alignment_cmd(analysis_dir, domains_filter, warn_only, strict):
     for name in report.orphan:
         click.echo(f"   ⚠ {name}: orphan alignment (no matching affinity domain)")
 
-    # Issue #164: surface source-evidenced custom columns needing triage.
+    # Issue #164/#182: surface source-evidenced custom columns needing triage.
     if report.custom_columns:
         click.echo("\n🧩 Custom columns (no reference-model property) — triage needed:")
         for domain in sorted(report.custom_columns):
             cols = report.custom_columns[domain]
-            undisposed = [c for c in cols if not c.disposed]
+            undisposed = [
+                c for c in cols if not c.effective_disposed(accept_heuristics)
+            ]
             business = [c for c in undisposed if not c.operational]
             operational = [c for c in undisposed if c.operational]
             disposed_n = len(cols) - len(undisposed)
@@ -2391,18 +2488,25 @@ def check_alignment_cmd(analysis_dir, domains_filter, warn_only, strict):
             )
             for c in business[:15]:
                 suffix = f" → {c.suggested_property}" if c.suggested_property else ""
-                click.echo(f"        ◆ {c.identity}{suffix}")
+                rec = f" [rec: {c.recommended_disposition}]" if c.recommended_disposition else ""
+                click.echo(f"        ◆ {c.identity}{suffix}{rec}")
             if len(business) > 15:
                 click.echo(f"        … and {len(business) - 15} more business column(s)")
             if operational:
                 click.echo(
                     f"        ◇ {len(operational)} likely operational/audit "
-                    "column(s) (also need a disposition)"
+                    "column(s) (rec: skip)"
                 )
-        click.echo(
+        tip = (
             "   → Disposition each in the alignment YAML: "
             "model / silver-passthrough / skip."
         )
+        if not accept_heuristics:
+            tip += (
+                " Pass --accept-heuristics to auto-accept skip/silver-passthrough "
+                "recommendations."
+            )
+        click.echo(tip)
 
     # DD-069: surface review-flagged maps (issues #167/#168). Report-only.
     if report.review_columns:
@@ -2423,8 +2527,39 @@ def check_alignment_cmd(analysis_dir, domains_filter, warn_only, strict):
             "it is intentional."
         )
 
-    custom_block = strict and report.has_undisposed_custom_columns
-    should_block = (report.is_blocking or custom_block) and not warn_only
+    # Issue #182 (WS6): surface hallucinated/unanchored table anchors.
+    if report.anchor_issues:
+        click.echo(
+            f"\n⚓ Reference-anchor check ({sum(len(v) for v in report.anchor_issues.values())} "
+            "issue(s)):"
+        )
+        for domain in sorted(report.anchor_issues):
+            issues = report.anchor_issues[domain]
+            hall = [i for i in issues if i.kind == "hallucinated"]
+            other = [i for i in issues if i.kind != "hallucinated"]
+            click.echo(
+                f"   • {domain}: {len(hall)} hallucinated, {len(other)} unanchored/rejected"
+            )
+            for i in hall[:15]:
+                click.echo(
+                    f"        ✖ {i.identity} → '{i.ref_class}' exists in NO reference "
+                    "model (hallucinated anchor)", err=True,
+                )
+            for i in other[:15]:
+                detail = f" (rejected '{i.rejected_ref_class}')" if i.rejected_ref_class else ""
+                click.echo(f"        ◇ {i.identity}: {i.kind}{detail}")
+        click.echo(
+            "   → A hallucinated anchor invalidates its table's triage. Re-run "
+            "propose-alignment (optionally --high-accuracy) or correct the anchor."
+        )
+
+    custom_block = strict and report.any_undisposed_custom_columns(
+        accept_heuristics=accept_heuristics
+    )
+    anchor_block = check_anchors and report.has_hallucinated_anchors
+    should_block = (
+        report.is_blocking or custom_block or anchor_block
+    ) and not warn_only
 
     if report.is_blocking and not warn_only:
         click.echo(
@@ -2438,6 +2573,13 @@ def check_alignment_cmd(analysis_dir, domains_filter, warn_only, strict):
             "\n❌ Strict check failed: untriaged custom columns remain. Disposition "
             "every custom column (model / silver-passthrough / skip) in the "
             "alignment YAML before completing the domain.",
+            err=True,
+        )
+    if anchor_block and not warn_only:
+        click.echo(
+            "\n❌ Anchor check failed: one or more tables anchor on a class that "
+            "exists in no reference model (hallucinated anchor). Building a triage "
+            "on a fictional anchor produces a broken model — fix the anchor first.",
             err=True,
         )
     if should_block:
