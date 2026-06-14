@@ -122,6 +122,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-072](#dd-072-provenance-comment-header-on-toolkit-generated-ttl) | Provenance comment header on toolkit-generated TTL | Accepted | 2026-06-14 |
 | [DD-073](#dd-073-transitive-discriminator-folding--silverexclude-issue-172) | Transitive discriminator folding + silverExclude (issue #172) | Accepted | 2026-06-14 |
 | [DD-074](#dd-074-multi-source-merge--canonical-superset--per-source-fk-joins-issue-175) | Multi-source merge — canonical superset + per-source FK joins (issue #175) | Accepted | 2026-06-14 |
+| [DD-075](#dd-075-sample-grounded-mapping-evidence-masked-example-values--transform-compatibility) | Sample-grounded mapping evidence (masked example values + transform compatibility) | Accepted | 2026-06-14 |
+| [DD-076](#dd-076-suggest-shapes--draft-shacl-from-source-profiling) | `suggest-shapes` — draft SHACL from source profiling | Accepted | 2026-06-14 |
 
 ---
 
@@ -4352,6 +4354,127 @@ external dbt/medallion review, which both converged on superset + typed NULL pad
   `test_scenario_projection.py` (merge superset non-lossy + FK presence). Unit
   tests added: `TestMergeSupersetPadding`, `TestMergeFKPerSource`,
   `TestMergeNKCoverageWarning` in `tests/test_dbt_projector.py`.
+- **Regression follow-ups (issues #178, #179).** Two per-source-merge edge cases
+  surfaced after DD-074 and were fixed without changing the core design:
+  (#178) an **explicit** FK column-mapping declared by one merge source leaked
+  into other sources' per-source views (phantom join/columns) — the
+  explicit-mapping branch of `_resolve_fk_source_column` is now scoped to the
+  current source's columns (None-sentinel scope; physical-column fallback for
+  synthetic/composite subjects via `_mapping_belongs_to_source`); (#179) a table
+  mapping whose target class is **not projected** (unclaimed import) was silently
+  dropped — `_gen_silver_models` now folds such orphans onto a projected
+  discriminator parent when present, otherwise emits a loud warning. Unit tests
+  `TestMergeExplicitFKMappingScope`, `TestUnprojectedClassMapping` and scenario
+  test `TestMergeExplicitFKNoLeak` were added.
+
+---
+
+## DD-075: Sample-grounded mapping evidence (masked example values + transform compatibility)
+
+**Status:** Accepted  
+**Date:** 2026-06-14  
+**Affects:** `src/kairos_ontology/_samples.py` (new),
+`src/kairos_ontology/propose_alignment.py`, `src/kairos_ontology/cli/main.py`,
+`src/kairos_ontology/validator.py`, `.github/skills/kairos-design-mapping/SKILL.md`  
+**Implementation:** `_samples.py` (`is_pii_column`, `value_is_pii_shaped`,
+`mask_value`, `example_values`); `ColumnAlignment.example_values` /
+`ColumnAlignment.transform_compat`; `_parses_as()` / `_transform_compat_note()`;
+`run_propose_alignment(include_sample_values=True)`; `--no-sample-values` CLI flag.
+
+### Context
+
+Source **sample values** (5 rows captured at import, stored as bronze
+`kairos-bronze:sampleValues`) were the strongest available evidence for a
+column→property mapping but were never surfaced to the mapper. They were used
+only for enum/format enrichment, affinity analysis, and alignment prompts —
+never presented as decision evidence during `kairos-design-mapping`, and never
+used to sanity-check a proposed `CAST(...)` transform.
+
+### Decision
+
+- **`example_values` is on by default** in `propose-alignment` output (the user
+  directive: "too valuable to be opt-in"). The mapping skill's Phase 2 table now
+  carries a **mandatory** masked Examples column.
+- **PII is always masked.** A shared policy module (`_samples.py`) is the single
+  source of truth: a column is PII if its name keyword-matches, its mapped
+  property keyword-matches, it is `gdpr_protected`, or its values are PII-shaped
+  (email/IBAN/phone/long-digit regex). PII values are masked length-preservingly
+  (`jo***@***.com`) and never enumerated. `validator.PII_KEYWORDS` now imports
+  from `_samples` to avoid drift.
+- **`transform_compat`** is an advisory note (`"N/M sample values are non-numeric
+  — CAST may NULL/fail"`) emitted only for numeric/bool CAST targets. It never
+  raises confidence, never auto-sets review, and never blocks.
+- **No `schema_version` bump.** Both fields are additive and emitted only when
+  populated, so existing v2 alignment files and the freshness gate are unaffected.
+
+### Rationale
+
+Real values disambiguate mappings far better than names/types alone and let the
+modeler catch encoding traps before writing SQL. Forcing the feature on (vs.
+opt-in) maximises that value; masking PII unconditionally keeps the committed
+artifacts safe even though raw `sampleValues` are already in version control.
+Keeping `transform_compat` advisory respects the toolkit's warning-tolerant,
+human-confirmed mapping flow.
+
+### Consequences
+
+- `propose-alignment` output now contains masked example values by default;
+  `--no-sample-values` / `include_sample_values=False` suppresses them.
+- The Examples column is for transient display only — skills must never copy raw
+  values into committed TTL/comments/session logs.
+- A first masking layer now exists, but raw bronze `sampleValues` remain
+  committed (pre-existing); tightening that is out of scope here.
+
+---
+
+## DD-076: `suggest-shapes` — draft SHACL from source profiling
+
+**Status:** Accepted  
+**Date:** 2026-06-14  
+**Affects:** `src/kairos_ontology/suggest_shapes.py` (new),
+`src/kairos_ontology/cli/main.py`, `.github/skills/kairos-execute-validate/SKILL.md`,
+`.github/skills/kairos-help/SKILL.md`  
+**Implementation:** `suggest_shapes.build_shapes_graph()` / `suggest_shapes()`;
+`suggest-shapes` CLI command; entry in `_SKILL_COVERED_COMMANDS`.
+
+### Context
+
+SHACL shapes were entirely hand-written — there was no generator. Source
+profiling metadata (datatype, nullability, `kairos-bronze:distinctCount`,
+samples) already encodes most of a basic shape, so the blank-page cost was
+avoidable.
+
+### Decision
+
+Add a deterministic `suggest-shapes` command that builds a **DRAFT** SHACL graph
+(via rdflib, never string concatenation) from a bronze vocabulary:
+- `sh:datatype` always; `sh:pattern` only when one `FORMAT_PATTERNS` entry
+  matches all samples; `sh:minCount 1` only from `nullable:false`; `sh:in` only
+  when a reliable `distinctCount` ≤ `--enum-distinct-max` fully matches the
+  sampled distinct set **and the column is not PII**. No sample-derived
+  min/max ranges.
+- Output defaults to `output/shapes-draft/<name>.ttl` — **outside**
+  `model/shapes/` and with a `.ttl` (not `.shacl.ttl`) suffix — so
+  `validator.py`'s recursive `**/*.shacl.ttl` glob does **not** auto-load drafts.
+- Refuses to overwrite without `--force`; reuses the DD-075 `_samples` masking
+  policy (PII never enumerated, masked in comments).
+
+### Rationale
+
+A reviewed-draft workflow (generate → curate → move into `model/shapes/`) gives
+leverage without letting machine guesses silently become enforced constraints.
+Writing outside the loaded shapes dir is the safety mechanism that makes
+"draft" real. Gating `sh:in`/`sh:minCount` on reliable metadata (not raw
+5-row samples) avoids over-constraining.
+
+### Consequences
+
+- New skill-gated CLI command (owned by `kairos-execute-validate`); emits the
+  soft skill-gate warning unless `KAIROS_SKILL_CONTEXT=1`.
+- Drafts are advisory and require manual promotion into `model/shapes/`; nothing
+  is enforced until a human moves and renames the file.
+- `kairos-bronze:distinctCount` is the reliability signal for enums; absent it,
+  the command emits only an advisory "possible enum (unverified)" comment.
 
 ---
 

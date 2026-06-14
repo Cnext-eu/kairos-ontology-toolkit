@@ -22,11 +22,13 @@ from kairos_ontology.propose_alignment import (
     _detect_address_part,
     _format_source_columns,
     _module_tag,
+    _parses_as,
     _resolve_column_module,
     _review_column_alignment,
     _select_property_pool,
     _select_ref_classes_for_table,
     _should_retry_with_full_inventory,
+    _transform_compat_note,
     align_table,
     build_alignment_prompt,
     load_affinity_reports,
@@ -1474,4 +1476,188 @@ class TestRunProposeAlignmentCrossModule:
                 domains_filter=["party"],
                 cross_module=True,
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: DD-075 sample-grounded mapping evidence
+# ---------------------------------------------------------------------------
+
+
+class TestParsesAs:
+    def test_int(self):
+        assert _parses_as("42", "int")
+        assert _parses_as("-7", "int")
+        assert not _parses_as("12.5", "int")
+        assert not _parses_as("N/A", "int")
+
+    def test_decimal(self):
+        assert _parses_as("12.5", "decimal")
+        assert _parses_as("3", "decimal")
+        assert not _parses_as("abc", "decimal")
+
+    def test_bool(self):
+        assert _parses_as("true", "bool")
+        assert _parses_as("0", "bool")
+        assert not _parses_as("maybe", "bool")
+
+    def test_empty_is_compatible(self):
+        assert _parses_as("", "int")
+        assert _parses_as("   ", "int")
+
+    def test_non_checked_types_pass(self):
+        # Dates/strings are not second-guessed from samples.
+        assert _parses_as("not-a-date", "date")
+        assert _parses_as("anything", "string")
+
+
+class TestTransformCompatNote:
+    def test_flags_non_numeric(self):
+        note = _transform_compat_note(
+            {"samples": ["12", "N/A", "34"]}, "integer"
+        )
+        assert note is not None
+        assert "1/3" in note and "non-numeric" in note
+
+    def test_clean_numeric_no_note(self):
+        assert _transform_compat_note({"samples": ["1", "2", "3"]}, "integer") is None
+
+    def test_no_samples_no_note(self):
+        assert _transform_compat_note({"samples": []}, "integer") is None
+
+    def test_string_target_ignored(self):
+        assert _transform_compat_note({"samples": ["x", "y"]}, "string") is None
+
+
+class TestSampleEvidenceEmission:
+    def test_example_and_compat_emitted_only_when_set(self, tmp_path):
+        alignment = DomainAlignment(
+            domain="party",
+            domain_uris=["https://example.com/ont/party#"],
+            generated_at="2026-06-05T10:00:00Z",
+            model_used="gpt-5.4-mini",
+            tables=[
+                TableAlignment(
+                    system="admin", table="tblParties",
+                    ref_class="TradeParty", ref_class_confidence=0.9,
+                    columns=[
+                        ColumnAlignment(
+                            column="PartyName", data_type="nvarchar(100)",
+                            ref_class="TradeParty", ref_property="partyName",
+                            alignment="exact", confidence=0.95,
+                            example_values=["Acme NV", "Globex"],
+                        ),
+                        ColumnAlignment(
+                            column="Code", data_type="int",
+                            ref_class="TradeParty", ref_property="partyName",
+                            alignment="semantic", confidence=0.5,
+                            transform_compat="1/3 sample values are non-numeric — "
+                                              "CAST may NULL/fail; confirm",
+                        ),
+                        ColumnAlignment(
+                            column="Bare", data_type="int",
+                            ref_class="TradeParty", ref_property="partyName",
+                            alignment="semantic", confidence=0.5,
+                        ),
+                    ],
+                ),
+            ],
+        )
+        out_path = write_alignment_output(alignment, tmp_path)
+        data = yaml.safe_load(out_path.read_text("utf-8"))
+        assert data["schema_version"] == 2  # NOT bumped
+        cols = data["tables"][0]["columns"]
+        named, coded, bare = cols
+        assert named["example_values"] == ["Acme NV", "Globex"]
+        assert "transform_compat" not in named
+        assert "non-numeric" in coded["transform_compat"]
+        assert "example_values" not in bare
+        assert "transform_compat" not in bare
+
+
+class TestSampleEvidenceIntegration:
+    """End-to-end: example_values are produced by default and PII is masked."""
+
+    def _vocab_with_samples(self, tmp_path):
+        sources = tmp_path / "sources"
+        admin = sources / "adminpulse"
+        admin.mkdir(parents=True)
+        vocab = """\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+
+<#tblParties> a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "tblParties" .
+
+<#tblParties_PartyName> a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "PartyName" ;
+    kairos-bronze:dataType "nvarchar(100)" ;
+    kairos-bronze:sampleValues "Acme NV | Globex Corp" ;
+    kairos-bronze:belongsToTable <#tblParties> .
+
+<#tblParties_Email> a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "Email" ;
+    kairos-bronze:dataType "nvarchar(200)" ;
+    kairos-bronze:sampleValues "jane.doe@acme.com | bob@globex.com" ;
+    kairos-bronze:belongsToTable <#tblParties> .
+"""
+        (admin / "adminpulse.vocabulary.ttl").write_text(vocab, encoding="utf-8")
+        return sources
+
+    def _responses(self):
+        return {
+            "tblParties": {
+                "ref_class": "TradeParty", "ref_class_confidence": 0.9,
+                "column_alignments": [
+                    {"column": "PartyName", "ref_class": "TradeParty",
+                     "ref_property": "partyName", "alignment": "exact",
+                     "confidence": 0.95, "rationale": "name"},
+                    {"column": "Email", "ref_class": "TradeParty",
+                     "ref_property": "contactEmail", "alignment": "semantic",
+                     "confidence": 0.8, "rationale": "email"},
+                ],
+            },
+        }
+
+    def _run(self, analysis_dir, sources, output, **kw):
+        client = TestRunProposeAlignment()._mock_client(self._responses())
+        with mock.patch(
+            "kairos_ontology.propose_alignment.get_ai_client", return_value=client
+        ), mock.patch(
+            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            return_value=[
+                {"name": "TradeParty", "label": "Trade Party", "comment": "",
+                 "properties": [
+                     {"name": "partyName", "label": "Party Name", "range": "string"},
+                     {"name": "contactEmail", "label": "Contact Email", "range": "string"},
+                 ]},
+            ],
+        ):
+            return run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources,
+                catalog_path=None, output_dir=output,
+                domains_filter=["party"], **kw,
+            )
+
+    def test_examples_on_by_default_pii_masked(self, analysis_dir, tmp_path):
+        sources = self._vocab_with_samples(tmp_path)
+        out = tmp_path / "out"
+        self._run(analysis_dir, sources, out)
+        data = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
+        cols = {c["column"]: c for c in data["tables"][0]["columns"]}
+        # Non-PII column shows raw values by default.
+        assert cols["PartyName"]["example_values"] == ["Acme NV", "Globex Corp"]
+        # PII (email) column is masked — raw address must never appear.
+        email_examples = cols["Email"]["example_values"]
+        assert all("@" in v and "***" in v for v in email_examples)
+        raw = (out / "party-alignment.yaml").read_text("utf-8")
+        assert "jane.doe@acme.com" not in raw
+        assert "bob@globex.com" not in raw
+
+    def test_no_sample_values_suppresses(self, analysis_dir, tmp_path):
+        sources = self._vocab_with_samples(tmp_path)
+        out = tmp_path / "out"
+        self._run(analysis_dir, sources, out, include_sample_values=False)
+        data = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
+        for c in data["tables"][0]["columns"]:
+            assert "example_values" not in c
+
 

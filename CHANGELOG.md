@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.23.0] — 2026-06-14
+
+### Added
+- **Sample-grounded mapping evidence (DD-075).** `propose-alignment` now emits
+  masked `example_values` for each mapped column **by default** (real source
+  sample values are the strongest mapping evidence), plus an advisory
+  `transform_compat` note when a proposed numeric/bool `CAST(...)` looks
+  incompatible with the sampled values (e.g. *"2/5 sample values are
+  non-numeric — CAST may NULL/fail"*). A shared `_samples` policy module is the
+  single source of truth for PII detection and masking: PII columns (by name,
+  mapped property, `gdpr_protected`, or value shape) are **always masked**
+  (`jo***@***.com`) and never enumerated. Both fields are additive — no
+  `schema_version` bump. Suppress with `--no-sample-values`. The
+  `kairos-design-mapping` skill gains a **mandatory** masked Examples column in
+  its Phase 2 proposal table and a privacy rule (never copy raw values into
+  committed TTL/comments/session logs).
+- **`suggest-shapes` — draft SHACL from source profiling (DD-076).** New
+  deterministic CLI command that builds a **DRAFT** SHACL file from bronze
+  profiling metadata: `sh:datatype` always; `sh:pattern` when one format matches
+  all samples; `sh:minCount 1` from `nullable:false`; `sh:in` only when a
+  reliable `kairos-bronze:distinctCount` ≤ `--enum-distinct-max` fully matches
+  the sampled distinct set (never for PII). Output defaults to
+  `output/shapes-draft/<name>.ttl` — **outside** `model/shapes/` and with a
+  `.ttl` (not `.shacl.ttl`) suffix — so the validator does not auto-load drafts;
+  the user reviews and promotes them. Surfaced via the `kairos-execute-validate`
+  skill (skill-gated; set `KAIROS_SKILL_CONTEXT=1`).
+
+### Fixed
+- **dbt merge: explicit FK mapping no longer leaks across sources (issue #178).**
+  When two bronze sources merged into one silver entity and only one source
+  declared an **explicit** SKOS FK column-mapping (`bronze:<col> skos:exactMatch
+  <fkProperty>`), the dbt projector applied that mapping to *every* source's
+  per-source staging view — producing a phantom `left join` and a join predicate
+  referencing a column the other source does not have. `_resolve_fk_source_column`
+  now scopes the explicit-mapping branch to the current source's columns (using a
+  None sentinel so legacy non-merge callers are unaffected, and a physical-column
+  fallback so synthetic/composite/transform-only mapping subjects are still
+  attributed to the declaring source). Non-declaring sources emit a typed
+  `CAST(NULL AS …)` placeholder; the declaring source keeps its real join.
+- **dbt silver: table mapping to an unprojected class is no longer silently
+  dropped (issue #179).** A `skos:exactMatch` table mapping whose target class is
+  not in the projected set (e.g. an unclaimed imported subtype —
+  `silverIncludeImports=false` and no `silverInclude`) was discarded with no
+  model and no warning. `_gen_silver_models` now detects such orphaned targets and
+  either **folds** their source(s) onto a projected discriminator parent (when one
+  exists) or emits a loud warning naming the table and class, so the contribution
+  is never lost without notice.
+
 ## [3.22.0] — 2026-06-14
 
 ### Fixed

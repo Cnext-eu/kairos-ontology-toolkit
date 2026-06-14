@@ -105,6 +105,51 @@ sh:property [
 
 ---
 
+## Draft SHACL from source samples (`suggest-shapes`, DD-076)
+
+Hand-writing shapes from scratch is tedious. `suggest-shapes` generates a
+**DRAFT** SHACL file from bronze source profiling metadata (datatype, format
+patterns, nullability, and `distinctCount`-backed enums) to give you a starting
+point you then review and edit.
+
+> **Skill context.** This command is skill-gated. Set the sentinel before
+> running so the soft-gate stays quiet:
+> - PowerShell: `$env:KAIROS_SKILL_CONTEXT = "1"`
+> - bash/zsh: `export KAIROS_SKILL_CONTEXT=1`
+
+```bash
+kairos-ontology suggest-shapes --source integration/sources/crm/crm.vocabulary.ttl
+```
+
+| Option | Purpose |
+|--------|---------|
+| `--source` | Bronze vocabulary TTL (auto-detected if a single one exists) |
+| `--out` | Output path (default `output/shapes-draft/<name>.ttl`) |
+| `--enum-distinct-max` | Max distinct values to emit an `sh:in` enum (default 12) |
+| `--no-sample-values` | Suppress masked example values in comments |
+| `--force` | Overwrite an existing draft |
+
+**What it emits (all advisory, `rdfs:comment`-annotated):**
+- `sh:datatype` — always, from the logical type.
+- `sh:pattern` — only when a single format pattern matches all samples.
+- `sh:minCount 1` — only from `nullable:false` metadata.
+- `sh:in (...)` — only when a reliable `distinctCount` ≤ `enum-distinct-max`
+  fully matches the sampled distinct values, **and never for PII columns**.
+- No sample-derived `sh:minInclusive`/`sh:maxInclusive` (5 rows are not a range).
+
+**Important constraints:**
+- Output goes to `output/shapes-draft/` — **outside** `model/shapes/` — and uses
+  the `.ttl` suffix (not `.shacl.ttl`), so the validator does **not** load it
+  automatically. You must review and move shapes into `model/shapes/` yourself.
+- PII values are never enumerated into `sh:in` and are always masked in comments.
+- The command refuses to overwrite an existing file unless `--force`.
+
+**Workflow:** run `suggest-shapes` → open the draft → keep/edit the constraints
+you trust → move the curated shape into `model/shapes/<name>.shacl.ttl` → re-run
+Level 2 SHACL validation.
+
+---
+
 ## Level 3 — Modeling best practices
 
 > **Reference**: The full modeling rule set is defined in the

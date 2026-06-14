@@ -102,6 +102,34 @@ with known security problems.
 git push -u origin HEAD
 ```
 
+### Step 4b — Link issues with closing keywords (MANDATORY)
+
+Before writing the PR body, identify which open issues this PR **fully
+resolves**. For each one, the PR **body** (description) MUST contain a GitHub
+**closing keyword** so the issue auto-closes when the PR merges:
+
+```
+Closes #175
+Fixes #174
+Resolves #166
+```
+
+> ⚠️ **Why this matters:** an issue reference like `#175` on its own — or a
+> reference in the PR **title** — does **NOT** auto-close the issue on merge.
+> Without a closing keyword the issue stays open after the fix ships (this is
+> exactly what left #174/#175 open after PR #177 merged). Only the keywords
+> below, in the PR **body** or a commit message, trigger auto-close.
+
+| Use | Keyword (any case) | When |
+|-----|--------------------|------|
+| **Auto-close** | `close` / `closes` / `closed`, `fix` / `fixes` / `fixed`, `resolve` / `resolves` / `resolved` followed by `#NNN` | The PR **fully fixes** the issue |
+| **Reference only** (no close) | plain `#NNN` (no keyword) | The PR is *related to* / *partially addresses* the issue, or the issue is a follow-up that should stay open |
+
+- One keyword **per issue** (`Closes #1, #2` does NOT close #2 — write
+  `Closes #1` and `Closes #2`).
+- For a follow-up/spin-off issue that must stay open, reference it as a plain
+  `#NNN` (e.g. "follow-up: #176") so it is linked but **not** closed.
+
 ### Step 5 — Create the pull request
 
 Use the GitHub CLI (`gh`):
@@ -110,7 +138,8 @@ Use the GitHub CLI (`gh`):
 gh pr create --base main --fill
 ```
 
-Or with explicit title and body:
+Or with explicit title and body (note the **`Closes:` section** — see
+[Step 4b](#step-4b--link-issues-with-closing-keywords-mandatory)):
 
 ```bash
 gh pr create --base main \
@@ -119,10 +148,18 @@ gh pr create --base main \
 
 - <bullet summary of what changed>
 
+## Closes
+Closes #<issue fully fixed by this PR>
+Fixes #<another issue fully fixed by this PR>
+
+<!-- Follow-up / related issues that should STAY OPEN: reference without a
+     keyword, e.g. 'Follow-up: #176' -->
+
 ## Checklist
-- [ ] `python -m kairos_ontology validate` passes
-- [ ] `python -m kairos_ontology project` regenerated (if ontology changed)
-- [ ] `_master.ttl` updated (if new domain added)
+- [ ] Closing keywords (\`Closes/Fixes/Resolves #NNN\`) added for every issue this PR fully fixes
+- [ ] \`python -m kairos_ontology validate\` passes
+- [ ] \`python -m kairos_ontology project\` regenerated (if ontology changed)
+- [ ] \`_master.ttl\` updated (if new domain added)
 - [ ] Hub README domain table updated (if new domain added)
 - [ ] Security review passed (no path traversal, no secrets, no shell=True)"
 ```
@@ -153,6 +190,15 @@ Next steps:
   - Review the PR on GitHub
   - After merge, run local cleanup:
       git checkout main && git pull origin main && git branch -d feature/add-order-domain
+```
+
+After the PR is merged, **verify the linked issues actually closed**. If any
+issue you intended to fix is still open, the PR body was missing a closing
+keyword — close it manually and add the keyword next time:
+
+```bash
+gh issue list --state open    # fixed issues should NOT appear here
+gh issue close <number> --comment "Fixed by #<pr-number>"   # manual fallback
 ```
 
 ## Post-merge cleanup and release

@@ -444,6 +444,10 @@ class TestMappingToSqlConsistency:
 
         missing = []
         for _bronze_col, target_prop, transform in expected["column_mappings"]:
+            # FK properties resolve as <range>_sk join columns, not <prop> columns
+            # (e.g. hasType → client_type_sk), matched separately.
+            if target_prop in {"hasType"}:
+                continue
             # Use silverColumnName override if declared, otherwise snake_case
             col_name = overrides.get(target_prop, _to_snake_case(target_prop))
             if col_name not in all_sql_lower:

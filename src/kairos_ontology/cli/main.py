@@ -81,6 +81,7 @@ _SKILL_COVERED_COMMANDS = {
     "generate-staging": "kairos-design-source",
     "analyse-sources": "kairos-design-source",
     "init-dataplatform": "kairos-setup-dataplatform",
+    "suggest-shapes": "kairos-execute-validate",
 }
 
 # Env vars that signal the command was launched from within a skill context.
@@ -1684,6 +1685,9 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
 @click.option('--include-mapping-hints', is_flag=True, default=False,
               help='DD-045: add deterministic transform + structural mapping hints '
                    '(advisory, human-confirmed). Default output is unchanged.')
+@click.option('--no-sample-values', 'no_sample_values', is_flag=True, default=False,
+              help='DD-075: suppress masked sample example_values in the output '
+                   '(values are included by default; PII is always masked).')
 @click.option('--max-prompt-classes', type=int, default=12,
               help='Max reference classes in first-pass table prompt (default: 12).')
 @click.option('--retry-min-confidence', type=click.FloatRange(0.0, 1.0), default=0.6,
@@ -1706,6 +1710,7 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
                    'property pool (required with --cross-module).')
 def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
                           domains_filter, verbose, quiet, include_mapping_hints,
+                          no_sample_values,
                           max_prompt_classes, retry_min_confidence, retry_min_mapped_ratio,
                           max_workers, force, cross_module, accelerator):
     """Propose source-column → reference-model-property alignment (LLM-powered).
@@ -1829,6 +1834,7 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             domains_filter=filter_list,
             report=reporter,
             include_mapping_hints=include_mapping_hints,
+            include_sample_values=not no_sample_values,
             max_prompt_classes=max_prompt_classes,
             retry_min_confidence=retry_min_confidence,
             retry_min_mapped_ratio=retry_min_mapped_ratio,
@@ -1852,6 +1858,95 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
     except ValueError as e:
         click.echo(f"\n❌ {e}", err=True)
         raise SystemExit(1)
+
+
+@cli.command('suggest-shapes')
+@click.option('--source', type=click.Path(exists=True), default=None,
+              help='Path to a bronze source vocabulary TTL (e.g. '
+                   '<system>.vocabulary.ttl). Default: auto-detect single vocabulary.')
+@click.option('--mappings', type=click.Path(exists=True), default=None,
+              help='Optional SKOS mappings TTL (reserved for domain-targeted shapes).')
+@click.option('--out', '-o', type=click.Path(), default=None,
+              help='Output draft TTL path (default: output/shapes-draft/<name>.ttl).')
+@click.option('--enum-distinct-max', type=int, default=12,
+              help='Max distinct values to emit an sh:in enum (default: 12).')
+@click.option('--no-sample-values', 'no_sample_values', is_flag=True, default=False,
+              help='Suppress masked example values in shape comments (PII is always masked).')
+@click.option('--force', is_flag=True, default=False,
+              help='Overwrite an existing draft shapes file.')
+def suggest_shapes_cmd(source, mappings, out, enum_distinct_max, no_sample_values, force):
+    """DD-076: generate a DRAFT SHACL file from bronze source profiling metadata.
+
+    Produces advisory PropertyShapes (datatype always; format pattern, nullability
+    minCount, and distinctCount-backed enums when reliable evidence exists) that a
+    human reviews and promotes into model/shapes/. PII values are never enumerated
+    and are always masked. Output is written outside the loaded shapes directory so
+    the validator does not pick it up automatically.
+
+    \b
+    Examples:
+      kairos-ontology suggest-shapes
+      kairos-ontology suggest-shapes --source integration/sources/crm/crm.vocabulary.ttl
+    """
+    from ..suggest_shapes import suggest_shapes
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    base = hub_root or cwd
+
+    # Auto-detect the source vocabulary when not provided.
+    if source is None:
+        sources_dir = base / "integration" / "sources"
+        candidates = sorted(sources_dir.glob("**/*.vocabulary.ttl")) if sources_dir.is_dir() else []
+        if not candidates:
+            click.echo(
+                "❌ No source vocabulary found under integration/sources/. "
+                "Run 'kairos-ontology import-source' first, or pass --source.",
+                err=True,
+            )
+            raise SystemExit(1)
+        if len(candidates) > 1:
+            click.echo(
+                "❌ Multiple source vocabularies found; specify one with --source:",
+                err=True,
+            )
+            for c in candidates:
+                click.echo(f"   - {c}", err=True)
+            raise SystemExit(1)
+        source_path = candidates[0]
+    else:
+        source_path = Path(source)
+
+    # Default output: output/shapes-draft/<name>.ttl (outside model/shapes).
+    if out is None:
+        name = source_path.name.replace(".vocabulary.ttl", "").replace(".ttl", "")
+        out_path = base / "output" / "shapes-draft" / f"{name}.ttl"
+    else:
+        out_path = Path(out)
+
+    click.echo("🔶 Suggesting draft SHACL shapes from source profiling")
+    click.echo(f"   Source: {source_path}")
+    click.echo(f"   Output: {out_path}")
+    click.echo()
+
+    try:
+        written = suggest_shapes(
+            source_path,
+            out_path,
+            enum_distinct_max=enum_distinct_max,
+            include_sample_values=not no_sample_values,
+            force=force,
+        )
+    except FileExistsError as e:
+        click.echo(f"❌ {e}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"✅ Draft shapes written: {written}")
+    click.echo(
+        "⚠ DRAFT — review and edit before moving into model/shapes/. "
+        "These are advisory and require human confirmation."
+    )
 
 
 @cli.command('coverage-report')

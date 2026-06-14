@@ -74,6 +74,12 @@ bronze-ap:tblClient_Country skos:exactMatch acme:clientCountry ;
 bronze-ap:tblClient_TypeCode skos:exactMatch acme:typeCode ;
     kairos-map:transform "source.TypeCode" .
 
+# Explicit FK mapping: tblClient.TypeCode → CorporateClient.hasType (issue #178).
+# Only AdminPulse declares this FK; it must NOT leak into the CRMSystem per-source
+# CorporateClient view (which has no TypeCode column).
+bronze-ap:tblClient_TypeCode skos:exactMatch acme:hasType ;
+    kairos-map:transform "source.TypeCode" .
+
 # ---------------------------------------------------------------------------
 # Table-level: tblClientPII → ClientPII (GDPR satellite)
 # ---------------------------------------------------------------------------
