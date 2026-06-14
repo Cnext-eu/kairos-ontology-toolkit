@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 MAX_COLUMNS_PER_PROMPT = 80
 MAX_REF_PROPERTIES_PER_PROMPT = 60
 MAX_REF_CLASSES_PER_PROMPT = 12
+#: DD-070 (issue #166) — max sibling/shared-module classes added to the STEP-2
+#: property pool in cross-module mode, on top of the home table-class shortlist.
+MAX_CROSS_MODULE_CLASSES = 8
 RETRY_MIN_CONFIDENCE = 0.6
 RETRY_MIN_MAPPED_RATIO = 0.4
 MAX_SAMPLE_CHARS = 48
@@ -74,6 +77,13 @@ class ColumnAlignment:
     # default YAML output stays byte-identical.
     review: bool | None = None
     review_reason: str | None = None
+    # DD-070 cross-module match tagging (issue #166) — populated only when a column
+    # maps to a property on a sibling / shared accelerator-module class. Emitted only
+    # when set, so default (home-only) output stays byte-identical.
+    ref_module: str | None = None
+    ref_module_uri: str | None = None
+    belongs_to_domain: str | None = None
+    belongs_to_domains: list[str] | None = None
 
 
 @dataclass
@@ -98,6 +108,13 @@ class DomainAlignment:
     model_used: str
     tables: list[TableAlignment] = field(default_factory=list)
     reference_rollup: list[dict[str, Any]] = field(default_factory=list)
+    #: DD-070 (issue #166) — sibling/shared-module classes that source columns
+    #: matched cross-domain; tells the modeler which module to import. Populated
+    #: only in cross-module mode.
+    cross_module_matches: list[dict[str, Any]] = field(default_factory=list)
+    #: DD-070 (issue #166) — params signature (cross_module/accelerator/pool) so the
+    #: freshness skip distinguishes a cross-module run from a home-only one.
+    alignment_params_sha256: str | None = None
     #: DD-061 — SHA-256 over the affinity ``(system, table)`` set this run saw,
     #: enabling the deterministic ``check-alignment`` freshness gate.
     affinity_sha256: str | None = None
@@ -157,11 +174,18 @@ def extract_ref_model_inventory(
     catalog_path: Path | None,
     *,
     inventory_dir: Path | None = None,
+    module_map: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve domain URIs and extract full class+property inventory.
 
     If *inventory_dir* contains pre-generated YAML inventories (DD-044), those
     are preferred over re-parsing TTL files.
+
+    When *module_map* (``{uri: {"module", "domains"}}``) is provided (DD-070,
+    cross-module mode), each class is additionally tagged with ``module``,
+    ``source_uri``, ``ref_class_id`` and ``belongs_to_domains``, and dedup is keyed
+    on ``ref_class_id`` (so a same-named class in a different module is preserved).
+    Without it, behaviour is unchanged: name-based dedup and no module tags.
 
     Returns list of class dicts with:
     {name, uri, label, comment, properties: [{name, uri, label, range, range_label,
@@ -192,14 +216,24 @@ def extract_ref_model_inventory(
         except Exception:
             continue
         if not path or not Path(path).exists():
+            if module_map is not None:
+                logger.warning(
+                    "Cross-module: could not resolve accelerator import URI %s", uri
+                )
             continue
+
+        module_info = (module_map or {}).get(uri, {})
+        module = module_info.get("module", "")
 
         ref = parse_reference_model(Path(path), include_specializations=True)
         for cls in ref.get("classes", []):
             cls_name = cls.get("name", "")
-            if cls_name in seen_classes:
+            # Cross-module mode dedups on (uri, name) so a same-named class in a
+            # different module is kept; home-only mode keeps historical name dedup.
+            dedup_key = f"{uri}#{cls_name}" if module_map is not None else cls_name
+            if dedup_key in seen_classes:
                 continue
-            seen_classes.add(cls_name)
+            seen_classes.add(dedup_key)
 
             # Enrich properties with full metadata from the parsed graph
             props = []
@@ -219,6 +253,11 @@ def extract_ref_model_inventory(
             }
             if "specializations" in cls:
                 cls_dict["specializations"] = cls["specializations"]
+            if module_map is not None:
+                cls_dict["module"] = module
+                cls_dict["source_uri"] = uri
+                cls_dict["ref_class_id"] = f"{module}:{cls_name}" if module else cls_name
+                cls_dict["belongs_to_domains"] = list(module_info.get("domains", []))
             all_classes.append(cls_dict)
 
     return all_classes
@@ -252,6 +291,16 @@ def _load_inventory_classes(inventory_dir: Path) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _module_tag(cls: dict[str, Any]) -> str:
+    """Render a ``  [module: X]`` suffix for a tagged cross-module class.
+
+    Returns an empty string for home-only classes (no ``module`` key), keeping
+    the default prompt byte-identical.
+    """
+    module = cls.get("module", "")
+    return f"  [module: {module}]" if module else ""
+
+
 def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
     """Format reference model inventory for the LLM prompt."""
     lines = []
@@ -261,7 +310,8 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
         for p in props[:MAX_REF_PROPERTIES_PER_PROMPT]:
             range_str = f" ({p['range']})" if p.get("range") else ""
             prop_lines.append(f"    - {p['name']} [{p.get('label', p['name'])}]{range_str}")
-        lines.append(f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])})")
+        lines.append(f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])})"
+                     f"{_module_tag(cls)}")
         if cls.get("comment"):
             lines.append(f"    Description: {cls['comment']}")
         if prop_lines:
@@ -444,18 +494,142 @@ def _select_ref_classes_for_table(
     return selected
 
 
+def _select_property_pool(
+    table_name: str,
+    columns: list[dict[str, Any]],
+    property_ref_classes: list[dict[str, Any]],
+    table_shortlist: list[dict[str, Any]],
+    *,
+    indicative_columns: list[str] | None = None,
+    max_cross: int = MAX_CROSS_MODULE_CLASSES,
+) -> list[dict[str, Any]]:
+    """Build the STEP-2 property candidate pool for cross-module mode (DD-070).
+
+    Always includes the home table-classification shortlist, plus the top
+    ``max_cross`` sibling/shared-module classes (``is_home`` False) scored by
+    property/column token overlap, so a precise sibling class (e.g. Address) can
+    surface for an address column without crowding out the home candidates.
+    Deterministic: ties broken by ``ref_class_id``/name.
+    """
+    if indicative_columns is None:
+        indicative_columns = []
+
+    selected_ids: set[str] = set()
+    selected: list[dict[str, Any]] = []
+
+    def _cid(cls: dict[str, Any]) -> str:
+        return str(cls.get("ref_class_id") or cls.get("name", ""))
+
+    for cls in table_shortlist:
+        cid = _cid(cls)
+        if cid not in selected_ids:
+            selected_ids.add(cid)
+            selected.append(cls)
+
+    table_tokens = _tokenize_text(table_name)
+    column_tokens: set[str] = set()
+    for col in columns:
+        column_tokens.update(_tokenize_text(str(col.get("name", ""))))
+        for sample in col.get("samples", [])[:2]:
+            column_tokens.update(_tokenize_text(str(sample)))
+    indicative_tokens = _tokenize_text(" ".join(indicative_columns))
+
+    scored: list[tuple[float, str, dict[str, Any]]] = []
+    for cls in property_ref_classes:
+        if cls.get("is_home"):
+            continue
+        cid = _cid(cls)
+        if cid in selected_ids:
+            continue
+        score = _score_ref_class(
+            cls,
+            table_tokens=table_tokens,
+            column_tokens=column_tokens,
+            likely_entity_tokens=set(),
+            indicative_tokens=indicative_tokens,
+        )
+        scored.append((score, cid, cls))
+
+    # Keep only classes with some lexical signal; sort by score then id (stable).
+    scored = [s for s in scored if s[0] > 0.0]
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    for _, cid, cls in scored[:max_cross]:
+        selected_ids.add(cid)
+        selected.append(cls)
+
+    return selected
+
+
+def _build_class_meta_index(
+    property_ref_classes: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Index tagged classes by name → list of module metadata (DD-070).
+
+    Each entry: ``{module, source_uri, belongs_to_domains, is_home}``. A name may
+    map to several entries (e.g. a home class and a same-named sibling-module
+    class), disambiguated later by the model-supplied ``ref_module``.
+    """
+    index: dict[str, list[dict[str, Any]]] = {}
+    for cls in property_ref_classes:
+        name = str(cls.get("name", ""))
+        if not name:
+            continue
+        index.setdefault(name, []).append({
+            "module": cls.get("module", ""),
+            "source_uri": cls.get("source_uri", ""),
+            "belongs_to_domains": list(cls.get("belongs_to_domains", [])),
+            "is_home": bool(cls.get("is_home")),
+        })
+    return index
+
+
+def _resolve_column_module(
+    ref_class_name: str,
+    ref_module: str,
+    class_meta: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    """Resolve a matched column's class to sibling-module metadata, or None.
+
+    Returns the chosen non-home meta dict when the column maps to a
+    sibling/shared-module class; returns None when the match is home-domain (no
+    tag) or the class is unknown. Prefers an explicit model-supplied ``ref_module``,
+    then a home class (to avoid false cross-module tags), then any sibling class.
+    """
+    metas = class_meta.get(ref_class_name)
+    if not metas:
+        return None
+    chosen: dict[str, Any] | None = None
+    if ref_module:
+        chosen = next((m for m in metas if m["module"] == ref_module), None)
+    if chosen is None:
+        chosen = next((m for m in metas if m["is_home"]), None)
+    if chosen is None:
+        chosen = next((m for m in metas if not m["is_home"]), None)
+    if chosen is None or chosen["is_home"]:
+        return None
+    return chosen
+
+
 def build_alignment_prompt(
     table_name: str,
     columns: list[dict[str, Any]],
     ref_classes: list[dict[str, Any]],
     likely_entity: str = "",
+    *,
+    table_ref_classes: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the alignment prompt for one source table.
 
     Two-stage in a single call:
     1. Which reference class does this table best align to?
     2. For each column, which reference property is the best match?
+
+    When *table_ref_classes* is provided (DD-070 cross-module mode), STEP 1 is
+    constrained to those home-domain classes while STEP 2 may match properties on
+    ANY class in *ref_classes* (the widened accelerator pool). Without it (default),
+    both steps draw from *ref_classes* and the output is unchanged.
     """
+    table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
     entity_hint = ""
     step1 = "STEP 1: Determine which reference model class this table best represents."
     likely_match = ""
@@ -463,7 +637,7 @@ def build_alignment_prompt(
         # CR-2: when the affinity step already derived the entity and it matches a
         # candidate class, anchor STEP 1 on it instead of re-deriving from scratch.
         likely_match = next(
-            (c["name"] for c in ref_classes
+            (c["name"] for c in table_classes
              if str(c["name"]).lower() == str(likely_entity).lower()),
             "",
         )
@@ -482,13 +656,31 @@ def build_alignment_prompt(
     ref_inventory = _format_ref_inventory(ref_classes)
     source_cols = _format_source_columns(columns)
 
-    class_names = ", ".join(c["name"] for c in ref_classes)
+    class_names = ", ".join(c["name"] for c in table_classes)
+
+    cross_module_note = ""
+    ref_module_field = ""
+    if table_ref_classes is not None:
+        ref_module_field = (
+            '\n      "ref_module": "<module name if the matched property\'s class is '
+            'a sibling/shared module, else empty>",'
+        )
+        cross_module_note = (
+            "\nCROSS-MODULE: Some reference classes below belong to sibling or shared "
+            "modules (marked '[module: <name>]'). For STEP 1 choose the table's class "
+            "ONLY from the table-candidate classes listed above. For STEP 2 you MAY map "
+            "a column to a property on ANY class, including a sibling-module class — "
+            "prefer a precise sibling-module match (e.g. an Address, PaymentTerms, or "
+            "Currency class) over force-fitting an address/payment/currency column onto "
+            "an unrelated home-domain scalar. When a column maps to a sibling-module "
+            "class, set its `ref_module` to that class's module name.\n"
+        )
 
     return f"""Align this source database table to the reference model.
 
 {step1}
 STEP 2: For each source column, find the best matching reference model property.
-{entity_hint}
+{entity_hint}{cross_module_note}
 SOURCE TABLE: {table_name}
 COLUMNS:
 {source_cols}
@@ -514,7 +706,7 @@ Respond with JSON only:
   "column_alignments": [
     {{
       "column": "<source column name>",
-      "ref_class": "<class name that owns this property>",
+      "ref_class": "<class name that owns this property>",{ref_module_field}
       "ref_property": "<property name or suggested name>",
       "alignment": "exact|semantic|partial|custom",
       "confidence": 0.0-1.0,
@@ -570,10 +762,17 @@ def align_table(
     columns: list[dict[str, Any]],
     ref_classes: list[dict[str, Any]],
     likely_entity: str = "",
+    *,
+    table_ref_classes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run LLM alignment for one source table against reference model classes.
 
     Returns normalized dict with ref_class, ref_class_confidence, column_alignments.
+
+    When *table_ref_classes* is given (DD-070 cross-module mode), the table's
+    ``ref_class`` is validated against those home classes while each column's
+    ``ref_class`` may be any class in *ref_classes* (the widened pool); a per-column
+    ``ref_module`` is captured when the model supplies one.
     """
     if not ref_classes:
         return {
@@ -582,8 +781,12 @@ def align_table(
             "column_alignments": [],
         }
 
-    prompt = build_alignment_prompt(table_name, columns, ref_classes, likely_entity)
-    valid_classes = {c["name"] for c in ref_classes}
+    prompt = build_alignment_prompt(
+        table_name, columns, ref_classes, likely_entity,
+        table_ref_classes=table_ref_classes,
+    )
+    table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
+    valid_classes = {c["name"] for c in table_classes}
 
     try:
         response = call_with_backoff(lambda: client.chat.completions.create(
@@ -613,7 +816,7 @@ def align_table(
         # CR-2: fall back to the affinity-derived entity when it is a valid class,
         # rather than blanking it — we trust the prior analysis as a strong default.
         likely_match = next(
-            (c["name"] for c in ref_classes
+            (c["name"] for c in table_classes
              if str(c["name"]).lower() == str(likely_entity).lower()),
             "",
         )
@@ -638,14 +841,20 @@ def align_table(
         alignment = str(ca.get("alignment", "custom") or "custom")
         if alignment not in valid_alignments:
             alignment = "custom"
-        alignments.append({
+        norm: dict[str, Any] = {
             "column": col_name,
             "ref_class": str(ca.get("ref_class", ref_class) or ref_class),
             "ref_property": str(ca.get("ref_property", "") or ""),
             "alignment": alignment,
             "confidence": _clamp_confidence(ca.get("confidence", 0.0)),
             "rationale": str(ca.get("rationale", "") or ""),
-        })
+        }
+        # DD-070: carry the model's sibling-module signal only when present, so the
+        # normalized result (and per-table cache) stays identical in default mode.
+        ref_module = str(ca.get("ref_module", "") or "")
+        if ref_module:
+            norm["ref_module"] = ref_module
+        alignments.append(norm)
 
     return {
         "ref_class": ref_class,
@@ -1109,6 +1318,9 @@ def run_propose_alignment(
     max_workers: int = DEFAULT_MAX_WORKERS,
     force: bool = False,
     cost_warning: bool = False,
+    cross_module: bool = False,
+    accelerator: str | None = None,
+    ref_models_dir: Path | None = None,
 ) -> list[Path]:
     """Run alignment for all domains found in affinity reports.
 
@@ -1131,11 +1343,44 @@ def run_propose_alignment(
             the legacy fully-serial path exactly.
         force: When True, bypass both cache layers (domain-level ``affinity_sha256``
             skip and the per-table sidecar cache) and re-align everything.
+        cross_module: DD-070 (issue #166) — when True, widen the STEP-2 property
+            candidate pool to the whole accelerator (sibling/shared modules) so
+            columns can match cross-module properties, and tag each cross-module
+            match with its owning ``ref_module``. Requires *accelerator* +
+            *ref_models_dir*. Default False keeps output byte-identical.
+        accelerator: Accelerator pack name whose ``data-domains.yaml`` defines the
+            cross-module property pool (required when *cross_module* is True).
+        ref_models_dir: Reference-models directory containing ``accelerator-packs/``
+            (required when *cross_module* is True).
 
     Returns list of written output file paths.
     """
     if report is None:
         report = lambda msg, **kw: None  # noqa: E731
+
+    # DD-070: resolve the accelerator import → module map for cross-module mode.
+    accelerator_uri_modules: dict[str, dict[str, Any]] = {}
+    if cross_module:
+        if not accelerator or not ref_models_dir:
+            raise ValueError(
+                "--cross-module requires an accelerator and a reference-models "
+                "directory. Pass --accelerator <name> (and ensure "
+                "ontology-reference-models/ is present)."
+            )
+        from .analyse_sources import load_accelerator_uri_modules
+        accelerator_uri_modules = load_accelerator_uri_modules(
+            Path(ref_models_dir), accelerator
+        )
+        if not accelerator_uri_modules:
+            raise ValueError(
+                f"--cross-module: no data-domains.yaml found for accelerator "
+                f"'{accelerator}' under {ref_models_dir}. Check the accelerator name "
+                "and that reference models are installed."
+            )
+        report(
+            f"  🔗 Cross-module: {len(accelerator_uri_modules)} accelerator module "
+            f"URI(s) from '{accelerator}'"
+        )
 
     # Load and group by domain
     domain_tables = load_affinity_reports(analysis_dir)
@@ -1205,17 +1450,36 @@ def run_propose_alignment(
 
         affinity_hash = compute_affinity_hash((t["system"], t["table"]) for t in tables)
 
+        # DD-070: params signature distinguishes a cross-module run from a prior
+        # home-only one so the freshness skip does not reuse stale output. Only
+        # computed/persisted in cross-module mode (default output stays identical).
+        params_hash = ""
+        if cross_module:
+            params_hash = compute_entry_hash({
+                "cross_module": True,
+                "accelerator": accelerator or "",
+                "accelerator_uris": sorted(accelerator_uri_modules.keys()),
+                "home_uris": sorted(domain_uris),
+            })
+
         # CR-5: domain-level skip — reuse an existing alignment whose freshness
-        # hash already matches the current affinity set (unless --force).
+        # hash already matches the current affinity set (unless --force). In
+        # cross-module mode the params hash must match too (DD-070).
         out_path = output_dir / f"{domain_id}-alignment.yaml"
         if not force and out_path.exists():
             existing_hash = _read_alignment_affinity_hash(out_path)
             if existing_hash and existing_hash == affinity_hash:
-                report(f"     ⏭  Up to date (affinity unchanged) — skipped {out_path.name}")
-                output_files.append(out_path)
-                continue
+                params_ok = (not cross_module) or (
+                    _read_alignment_params_hash(out_path) == params_hash
+                )
+                if params_ok:
+                    report(
+                        f"     ⏭  Up to date (affinity unchanged) — skipped {out_path.name}"
+                    )
+                    output_files.append(out_path)
+                    continue
 
-        # Resolve reference model inventory
+        # Resolve reference model inventory (home domain — STEP 1 + rollup + hints)
         ref_classes = extract_ref_model_inventory(domain_uris, catalog_path)
         if ref_classes:
             report(
@@ -1224,6 +1488,25 @@ def run_propose_alignment(
             )
         else:
             report(f"     ⚠ No reference model resolved for {domain_uris}")
+
+        # DD-070: widened STEP-2 property pool spanning the whole accelerator.
+        if cross_module:
+            home_uri_set = set(domain_uris)
+            property_ref_classes = extract_ref_model_inventory(
+                sorted(accelerator_uri_modules.keys()), catalog_path,
+                module_map=accelerator_uri_modules,
+            )
+            for c in property_ref_classes:
+                c["is_home"] = c.get("source_uri", "") in home_uri_set
+            class_meta = _build_class_meta_index(property_ref_classes)
+            cross_count = sum(1 for c in property_ref_classes if not c.get("is_home"))
+            report(
+                f"     Cross-module pool: {len(property_ref_classes)} class(es) "
+                f"({cross_count} sibling/shared)"
+            )
+        else:
+            property_ref_classes = ref_classes
+            class_meta = {}
 
         # DD-045: property-range index for deterministic transform hints
         range_index = (
@@ -1246,6 +1529,15 @@ def run_propose_alignment(
             "retry_min_mapped_ratio": retry_min_mapped_ratio,
             "ref_signature": ref_signature,
         }
+        if cross_module:
+            # DD-070: cross-module results must not collide with home-only ones.
+            align_params["cross_module"] = True
+            align_params["accelerator"] = accelerator or ""
+            align_params["cross_module_signature"] = compute_entry_hash([
+                [c.get("ref_class_id", c.get("name", "")),
+                 [p.get("name", "") for p in c.get("properties", [])]]
+                for c in property_ref_classes
+            ])
 
         alignment = DomainAlignment(
             domain=domain_id,
@@ -1253,6 +1545,7 @@ def run_propose_alignment(
             generated_at=datetime.now(timezone.utc).isoformat(),
             model_used=model,
             affinity_sha256=affinity_hash,
+            alignment_params_sha256=params_hash or None,
         )
 
         def _process_table(tbl_info: dict[str, Any]) -> dict[str, Any] | None:
@@ -1295,26 +1588,39 @@ def run_propose_alignment(
                 max_classes=max_prompt_classes,
             )
             try:
-                result = align_table(
-                    client, model, table, columns, shortlist_classes,
-                    likely_entity=likely_entity,
-                )
-                if (
-                    len(shortlist_classes) < len(ref_classes)
-                    and _should_retry_with_full_inventory(
-                        result, len(columns),
-                        min_confidence=retry_min_confidence,
-                        min_mapped_ratio=retry_min_mapped_ratio,
+                if cross_module:
+                    # DD-070: STEP 1 stays home-scoped; STEP 2 uses the widened
+                    # accelerator pool. No full-inventory retry (cost guard).
+                    prop_pool = _select_property_pool(
+                        table, columns, property_ref_classes, shortlist_classes,
+                        indicative_columns=indicative_columns,
                     )
-                ):
-                    full_result = align_table(
-                        client, model, table, columns, ref_classes,
+                    result = align_table(
+                        client, model, table, columns, prop_pool,
+                        likely_entity=likely_entity,
+                        table_ref_classes=shortlist_classes,
+                    )
+                else:
+                    result = align_table(
+                        client, model, table, columns, shortlist_classes,
                         likely_entity=likely_entity,
                     )
-                    if _alignment_result_score(
-                        full_result, len(columns)
-                    ) >= _alignment_result_score(result, len(columns)):
-                        result = full_result
+                    if (
+                        len(shortlist_classes) < len(ref_classes)
+                        and _should_retry_with_full_inventory(
+                            result, len(columns),
+                            min_confidence=retry_min_confidence,
+                            min_mapped_ratio=retry_min_mapped_ratio,
+                        )
+                    ):
+                        full_result = align_table(
+                            client, model, table, columns, ref_classes,
+                            likely_entity=likely_entity,
+                        )
+                        if _alignment_result_score(
+                            full_result, len(columns)
+                        ) >= _alignment_result_score(result, len(columns)):
+                            result = full_result
             except Exception as exc:  # noqa: BLE001 — isolate a single table failure
                 logger.warning("Alignment failed for %s.%s: %s", system, table, exc)
                 result = {"ref_class": "", "ref_class_confidence": 0.0,
@@ -1323,6 +1629,9 @@ def run_propose_alignment(
                     "result": result, "cache_key": cache_key, "from_cache": False}
 
         processed = map_concurrent(_process_table, tables, max_workers=max_workers)
+
+        # DD-070: accumulate cross-module matches across the domain's tables.
+        cross_module_acc: dict[tuple[str, str], dict[str, Any]] = {}
 
         for entry in processed:
             if entry is None:
@@ -1406,6 +1715,32 @@ def run_propose_alignment(
                                 "requires_human_confirmation": True,
                                 "rationale": review_reason,
                             })
+                    # DD-070: tag matches that resolved to a sibling/shared module.
+                    if cross_module:
+                        meta = _resolve_column_module(
+                            ref_class_name,
+                            str(ca.get("ref_module", "") or ""),
+                            class_meta,
+                        )
+                        if meta is not None:
+                            column_alignment.ref_module = meta["module"] or None
+                            column_alignment.ref_module_uri = meta["source_uri"] or None
+                            domains = meta.get("belongs_to_domains", [])
+                            if len(domains) == 1:
+                                column_alignment.belongs_to_domain = domains[0]
+                            elif len(domains) > 1:
+                                column_alignment.belongs_to_domains = list(domains)
+                            key = (ref_class_name, meta["module"])
+                            acc = cross_module_acc.setdefault(key, {
+                                "ref_class": ref_class_name,
+                                "ref_module": meta["module"],
+                                "ref_module_uri": meta["source_uri"],
+                                "belongs_to_domains": list(domains),
+                                "source_columns": [],
+                            })
+                            acc["source_columns"].append(
+                                f"{system}.{table}.{ca['column']}"
+                            )
                     col_alignments.append(column_alignment)
 
             ta = TableAlignment(
@@ -1431,8 +1766,28 @@ def run_propose_alignment(
                 level="verbose",
             )
 
-        # Build reference rollup
+        # Build reference rollup (home-domain classes only — DD-070 keeps cross-
+        # module matches in a separate section to avoid distorting coverage%).
         alignment.reference_rollup = _build_reference_rollup(alignment, ref_classes)
+
+        # DD-070: emit cross-module matches, deterministically sorted.
+        if cross_module_acc:
+            matches = []
+            for _key, m in cross_module_acc.items():
+                matches.append({
+                    "ref_class": m["ref_class"],
+                    "ref_module": m["ref_module"],
+                    "ref_module_uri": m["ref_module_uri"],
+                    "belongs_to_domains": m["belongs_to_domains"],
+                    "source_columns": sorted(m["source_columns"]),
+                })
+            alignment.cross_module_matches = sorted(
+                matches, key=lambda r: (r["ref_module"], r["ref_class"])
+            )
+            report(
+                f"     🔗 Cross-module matches: {len(alignment.cross_module_matches)} "
+                "class(es)"
+            )
 
         # Write output
         out_path = write_alignment_output(alignment, output_dir)
@@ -1452,6 +1807,17 @@ def _read_alignment_affinity_hash(alignment_path: Path) -> str:
     if not isinstance(data, dict):
         return ""
     return str(data.get("affinity_sha256", "") or "")
+
+
+def _read_alignment_params_hash(alignment_path: Path) -> str:
+    """Return the ``alignment_params_sha256`` recorded in an existing file (DD-070)."""
+    try:
+        data = yaml.safe_load(alignment_path.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("alignment_params_sha256", "") or "")
 
 
 # ---------------------------------------------------------------------------
@@ -1570,11 +1936,26 @@ def write_alignment_output(alignment: DomainAlignment, output_dir: Path) -> Path
             if ca.review:
                 col_dict["review"] = True
                 col_dict["review_reason"] = ca.review_reason
+            # DD-070: emit cross-module tags only when set (default unchanged)
+            if ca.ref_module:
+                col_dict["ref_module"] = ca.ref_module
+                if ca.ref_module_uri:
+                    col_dict["ref_module_uri"] = ca.ref_module_uri
+                if ca.belongs_to_domain:
+                    col_dict["belongs_to_domain"] = ca.belongs_to_domain
+                elif ca.belongs_to_domains:
+                    col_dict["belongs_to_domains"] = ca.belongs_to_domains
             table_dict["columns"].append(col_dict)
         # DD-045: emit structural hints only when present (default unchanged)
         if ta.structural_hints:
             table_dict["structural_hints"] = ta.structural_hints
         data["tables"].append(table_dict)
+
+    # DD-070: emit cross-module sections only in cross-module mode (default unchanged)
+    if alignment.alignment_params_sha256:
+        data["alignment_params_sha256"] = alignment.alignment_params_sha256
+    if alignment.cross_module_matches:
+        data["cross_module_matches"] = alignment.cross_module_matches
 
     output_file = output_dir / f"{alignment.domain}-alignment.yaml"
     with open(output_file, "w", encoding="utf-8") as f:

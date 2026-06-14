@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.19.0] — 2026-06-14
+
+### Added
+- **Cross-module candidate properties in `propose-alignment` (DD-070, issue #166).**
+  The actual fix for the limitation #167/#168 only *detected*: a column whose true
+  reference-model match lives in a sibling/shared accelerator module (e.g. a shared
+  `Address`, `PaymentTerms`, or `currency`) could not be matched and was force-fit
+  onto an unrelated home-domain scalar. A new opt-in `--cross-module` flag (requires
+  `--accelerator <name>`) widens the **STEP-2 property candidate pool** to the whole
+  accelerator while keeping **STEP-1 table classification home-only** (two separate
+  pools). Each matched non-home class is tagged with its owning `ref_module`
+  (+ `ref_module_uri`, `belongs_to_domain(s)`) and accumulated into a separate
+  `cross_module_matches` section that tells the modeler which module to import. The
+  home `reference_rollup` is unchanged. Classes carry a stable `ref_class_id`
+  (`<module>:<Class>`) and are deduped by URI so same-named classes across modules
+  stay distinct. Freshness/cache keys include a cross-module params signature
+  (`alignment_params_sha256`) so a cross-module run is never skipped after a prior
+  home-only run, and the unbounded full-inventory retry is disabled in cross-module
+  mode (cost guard). **Default output (no `--cross-module`) is byte-identical.**
+- **Business-discovery glossary marked non-authoritative (DD-071).** Every generated
+  `{company}-glossary.ttl` `skos:ConceptScheme` is now stamped with an `rdfs:comment`
+  + `skos:editorialNote` disclaimer making explicit that the glossary is initial
+  inspiration only — not kept in sync with the domain ontology, and its
+  `seeAlso`/`relatedMatch` links are not reconciled during modeling.
+
+### Changed
+- **Design-skill session logs are archived, not overwritten, on "Start fresh" (DD-071).**
+  When a user starts a fresh design session, existing `.sessions-design/*.md` logs are
+  moved to `ontology-hub/.sessions-design/_archive/` before the new log is created
+  (never silently deleted). `kairos-diagnose-status` ignores `_archive/` when locating
+  the most recent session log.
+
 ## [3.18.0] — 2026-06-14
 
 ### Added

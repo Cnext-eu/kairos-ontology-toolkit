@@ -183,6 +183,21 @@ def test_build_graph_emits_valid_skos():
     ) in graph
 
 
+def test_build_graph_stamps_non_authoritative_disclaimer():
+    """DD-071: every generated glossary scheme carries a non-authoritative note."""
+    concepts, _ = aggregate_concepts(
+        [{"prefLabel": "Transport Document", "definition": "doc"}]
+    )
+    graph = build_glossary_graph(
+        concepts, glossary_namespace=GLOSSARY_NS, scheme_label="L"
+    )
+    scheme = URIRef(GLOSSARY_NS)
+    comments = [str(o) for _, _, o in graph.triples((scheme, RDFS.comment, None))]
+    notes = [str(o) for _, _, o in graph.triples((scheme, SKOS.editorialNote, None))]
+    assert comments and "NOT an authoritative" in comments[0]
+    assert notes and "inspiration only" in notes[0]
+
+
 def test_build_graph_related_match_relation():
     terms = [
         {

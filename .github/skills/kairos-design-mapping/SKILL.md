@@ -65,6 +65,12 @@ The user can override any auto-approved mapping.
 2. Ask user which source system to map
 3. Ask user which domain(s) to target (list available from `model/ontologies/`)
 4. Create session file: `ontology-hub/.sessions-design/mapping-{source}-to-{domain}-{YYYY-MM-DD}.md`
+   > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
+   > start a new session instead of resuming, first move any existing
+   > `.sessions-design/mapping-{source}-to-{domain}-*.md` log(s) for this
+   > source→domain pair into `ontology-hub/.sessions-design/_archive/` (create it if
+   > missing; keep the original filename). Never delete a previous log. Then create
+   > the new session log.
 5. **Load the business glossary (if present):** check
    `ontology-hub/businessdiscovery/*.ttl` (produced by the **kairos-design-discovery**
    skill). Index each `skos:Concept`'s `skos:altLabel`s and the domain IRI it links
@@ -218,11 +224,52 @@ mapped** but annotated:
    custom-column gate (issue #164).
 2. **Address-part columns** (`SHIPPER_STREET`, `billing_zip`, …) flagged onto a
    party scalar usually belong on a shared `Address` concept via an address
-   relationship. Until cross-module candidates land (#166), model the
-   relationship locally or confirm the scalar map deliberately.
+   relationship. With **cross-module alignment** (DD-070, see below) the shared
+   `Address` class becomes a real candidate and these columns can be matched
+   directly; otherwise model the relationship locally or confirm the scalar map
+   deliberately.
 3. **Always reconcile every `review: true` column** before completing the
    mapping — either fix the target property or note the confirmation in the
    Column Mapping Table.
+
+---
+
+## Cross-module candidates (DD-070, issue #166)
+
+By default `propose-alignment` only considers the **home domain's** reference
+classes, so a column whose true match lives in a sibling / shared accelerator
+module (a shared `Address`, `PaymentTerms`, `currency`, …) gets force-fit onto an
+unrelated home scalar. Run with `--cross-module --accelerator <name>` to widen the
+**property** candidate pool to the whole accelerator while still classifying the
+**table** against home classes only:
+
+```bash
+kairos-ontology propose-alignment --cross-module --accelerator logistics
+```
+
+When a column matches a sibling/shared-module class, its entry in
+`*-alignment.yaml` gains:
+
+| Field (column-level) | Meaning | How to use |
+|---|---|---|
+| `ref_module` | The owning module of the matched non-home class (e.g. `reference-data`) | Tells you **which module to `owl:imports`** to use this class |
+| `ref_module_uri` | The module's namespace URI | Resolve/import the module |
+| `belongs_to_domain` / `belongs_to_domains` | Data-domain(s) that import the module | Context only — prefer `ref_module` as the actionable signal |
+
+A separate top-level **`cross_module_matches`** section rolls these up per
+class, listing the `ref_module` and the contributing `source_columns` — your
+checklist of which shared/sibling modules the domain needs to import. The home
+`reference_rollup` is unchanged.
+
+**Rules:**
+
+- `--cross-module` **requires** `--accelerator`; without a resolvable accelerator
+  it errors (no silent fallback — table-less shared modules are invisible to
+  affinity reports).
+- Default output (no `--cross-module`) is **byte-identical** — none of the new
+  fields appear.
+- A cross-module run is never skipped by the freshness cache after a prior
+  home-only run (params are part of the freshness signature).
 
 ---
 
