@@ -109,6 +109,30 @@ gh release list --limit 5
 gh run list --workflow release.yml --limit 3
 ```
 
+### Release lines & hotfixes (bugfix vs feature release)
+
+> **Full policy:** [`docs/RELEASING.md`](https://github.com/Cnext-eu/kairos-ontology-toolkit/blob/main/docs/RELEASING.md) (DD-067).
+
+We support **only the latest release line** and keep bugfixes out of feature
+releases. SemVer: `fix:` → **patch**, `feat:` → **minor**, breaking → **major**.
+
+When a bug is found in the released `vX.Y.Z`, check whether `main` already has
+unreleased features:
+
+```bash
+git fetch --tags origin
+git log --oneline vX.Y.Z..origin/main
+```
+
+- **`main` is clean** → fix on `main` via a `fix/*` PR, bump **patch**, tag `main`.
+- **`main` has unreleased features** → don't tag `main`. Cut `hotfix/x.y.(z+1)` from
+  the **tag** `vX.Y.Z`, fix + patch-bump, tag from that branch (becomes the new
+  *Latest* release), then **back-merge to `main`** (keep `main`'s in-progress version
+  on conflict; add the **`skip-version`** label to the back-merge PR).
+
+Feature releases stay as in §1 (minor bump + tag on `main`); pre-release validation
+uses the `preview` channel (§2).
+
 ---
 
 ## 2. Update Workflow (Hub-Repo Users)
