@@ -459,6 +459,13 @@ Chain, Healthcare) that provide a proven starting point.
 > reference model cannot be imported (proprietary, no TTL), use **Reference Model
 > Inspired** as an opt-in override.
 > See [Standard model alignment](#standard-model-alignment) for details.
+>
+> ⚠️ **Enforced governs class-hierarchy reuse, not "add nothing local."** You still
+> reuse reference *classes* (via `owl:imports` + `rdfs:subClassOf`), but
+> source-evidenced columns with no reference property legitimately warrant **local
+> extension properties** (or a documented silver-passthrough / skip decision — see
+> Checkpoint 3b Custom Column Triage). A zero-local-property domain is a *special
+> case* (e.g. a pure passthrough), **not** the default outcome (issue #164).
 
 ### Step 0 — Ask the user
 
@@ -911,13 +918,19 @@ For each source column, check:
 
 > "**Reference model coverage for this domain:**
 >
-> | Ref Class | Ref Properties | Matched to Source | Unmatched | Coverage |
-> |-----------|---------------|-------------------|-----------|----------|
-> | `bsp:SalesContract` | 5 | 3 (60%) | `contractType`, `partyRole` | 🟡 Partial |
-> | `bsp:TradeTerms` | 3 | 0 (0%) | all | 🔴 No source data |
+> | Ref Class | Ref Properties | Matched to Source | Unmatched | Custom Cols | Coverage |
+> |-----------|---------------|-------------------|-----------|-------------|----------|
+> | `bsp:SalesContract` | 5 | 3 (60%) | `contractType`, `partyRole` | 4 | 🟡 Partial |
+> | `bsp:TradeTerms` | 3 | 0 (0%) | all | 0 | 🔴 No source data |
 >
 > Unmatched reference properties are included as ⚪ Inherited in the property
-> design phase — they exist via `owl:imports` but have no source column yet."
+> design phase — they exist via `owl:imports` but have no source column yet.
+>
+> The **Custom Cols** count comes from `reference_rollup[].custom_extensions_count`
+> in the alignment YAML — these are source-evidenced columns with **no** ref-model
+> property. A non-zero count means there are Tier-1 candidate local properties that
+> MUST be triaged in Checkpoint 3b (issue #164). Do not finalize the domain while
+> any custom column is undisposed."
 
 **Step 0c.5 — Detect subclass candidates from source data:**
 
@@ -947,6 +960,10 @@ Present discriminator findings:
 - It MUST be built from actual file reads, not from memory or assumption
 - Every row must cite the exact file and column name
 - The table drives Checkpoint 1 (class proposals) and Checkpoint 3b (property proposals)
+- **Custom-column completeness (issue #164):** Every `custom_columns` entry in the
+  domain `{domain}-alignment.yaml` MUST appear as a `❌ Custom` row here — none may
+  be silently omitted. These are the Tier-1 source-evidenced candidates that
+  Checkpoint 3b will force you to triage (model / silver-passthrough / skip).
 - If no source systems are available for this domain, document that explicitly
   and note that all proposals will be `[INFERRED]`
 - **Completeness check (Gate 6a):** If TMDL files exist in
@@ -1381,6 +1398,12 @@ Ask the user to confirm:
 
 > **Default rule:** Always start with **Reference Model Enforced** unless import is
 > impossible or the user explicitly requests Inspired.
+>
+> **Enforced ≠ zero local properties.** Enforced enforces *class-hierarchy* reuse.
+> Source-evidenced custom columns (no ref property) are still triaged into local
+> extension properties or a documented passthrough/skip decision (Checkpoint 3b,
+> issue #164). Don't treat a clean zero-local-property domain as the template for
+> commercial master-data domains that genuinely need local attributes.
 
 **Enforced eligibility** (preferred — DD-044 makes this the default):
 - Available as TTL (either Kairos-managed or external with TTL distribution)
@@ -1680,6 +1703,39 @@ When presenting new property proposals, you MUST separate them into two tiers:
   evidence source in the session file
 - Never mix Tier 1 and Tier 2 properties in a single undifferentiated list
 
+**MANDATORY: Custom Column Triage (issue #164)**
+
+Every `custom_columns` entry from the domain `{domain}-alignment.yaml` is a
+source-evidenced column with **no** reference-model property. The domain MUST NOT
+be marked COMPLETED while any of these is undisposed. Present the full list and
+record an explicit disposition for each:
+
+> **Custom columns to triage** (from `{domain}-alignment.yaml`):
+>
+> | # | Source (`system.table.column`) | Suggested Property | Disposition |
+> |---|---|---|---|
+> | 1 | `qargo.companies.credit_limit` | `creditLimit` | model |
+> | 2 | `qargo.companies.payment_iban_code` | `paymentIban` | model |
+> | 3 | `qargo.companies.currency` | `currency` | model |
+> | 4 | `qargo.companies.created_at` | — | skip |
+> | 5 | `qargo.companies.legacy_billing_addr` | `billingAddress` | silver-passthrough |
+
+**Disposition values** (canonical):
+- `model` — add as a local extension property in this checkpoint (becomes Tier 1).
+- `silver-passthrough` — not a domain property, but carried into silver; record as
+  an open item for the **kairos-design-silver** skill.
+- `skip` — operational/audit/technical column with no business value; intentionally
+  dropped.
+
+**You MUST write each decision back into `{domain}-alignment.yaml`** by setting the
+`disposition:` field on the matching `custom_columns` entry. This is what makes the
+triage verifiable — `check-alignment --strict` reads it (see the Completion gate).
+Likely operational/audit columns (e.g. `created_at`, `modified_by`, ETL/load
+timestamps, surrogate ids) may be bulk-dispositioned as `skip`, but they still
+require an explicit value — nothing is silently dropped.
+
+Every column dispositioned `model` flows into the Tier-1 property proposal below.
+
 **Step 1 — Resolve the inheritance chain:**
 
 Programmatically (or by reading the imported ontology files) build the full
@@ -1948,6 +2004,27 @@ When finishing a domain model, remind the user that extension files will need:
 ---
 
 ## Completion: Final Configuration Report
+
+**MANDATORY pre-completion gate — Custom Column Triage (issue #164):**
+
+Before generating the final report or marking the domain COMPLETED, run the
+deterministic strict gate and confirm it passes:
+
+```bash
+kairos-ontology check-alignment --domains <target-domain> --strict
+```
+
+- **Exit 0** → every source-evidenced custom column carries a `disposition`
+  (model / silver-passthrough / skip). Proceed to the final report.
+- **Exit 1** → untriaged custom columns remain. STOP, return to Checkpoint 3b,
+  disposition the listed columns in `{domain}-alignment.yaml`, and re-run. Do not
+  mark the domain COMPLETED while this gate is red — undisposed columns are exactly
+  the source-evidenced business attributes (banking, billing, credit, lifecycle
+  flags) that otherwise resurface as unmappable columns during
+  **kairos-design-mapping**.
+
+`--warn-only` overrides `--strict` and must only be used as a deliberate,
+documented exception.
 
 When the user confirms all classes and properties for a domain, generate a final
 report. Save to `ontology-hub/.sessions-design/modeling-{domain}-FINAL-{YYYY-MM-DD}.md`:

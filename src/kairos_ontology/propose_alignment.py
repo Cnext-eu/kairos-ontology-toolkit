@@ -1179,6 +1179,10 @@ def run_propose_alignment(
                         "data_type": col_data_type,
                         "suggested_property": ca["ref_property"],
                         "rationale": ca.get("rationale", ""),
+                        # Issue #164: triage disposition filled during domain
+                        # modeling (model | silver-passthrough | skip); null until
+                        # a modeler dispositions it.
+                        "disposition": None,
                     })
                 else:
                     ref_class_name = ca.get("ref_class", result.get("ref_class", ""))

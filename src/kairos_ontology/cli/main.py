@@ -2136,7 +2136,10 @@ def _autodetect_analysis_dir(cwd: Path, hub_root: Path | None) -> Path | None:
               help='Comma-separated domain names to include (case-insensitive substring match).')
 @click.option('--warn-only', is_flag=True, default=False,
               help='Report problems but always exit 0 (never block).')
-def check_alignment_cmd(analysis_dir, domains_filter, warn_only):
+@click.option('--strict', is_flag=True, default=False,
+              help='Also block (exit non-zero) when any source-evidenced custom '
+                   'column lacks a triage disposition (issue #164).')
+def check_alignment_cmd(analysis_dir, domains_filter, warn_only, strict):
     """Verify that every domain has a complete, fresh alignment (DD-061).
 
     Deterministic pre-flight gate for ``design-domain``: confirms that every data
@@ -2146,10 +2149,23 @@ def check_alignment_cmd(analysis_dir, domains_filter, warn_only):
     set).  Exits non-zero (blocking) when an alignment is **missing**,
     **incomplete**, or **stale**, so a modeler never hand-reads a subset of tables.
 
+    Also surfaces source-evidenced **custom columns** (columns with no
+    reference-model property) so they aren't silently dropped before mapping
+    (issue #164).  These are reported as a warning by default; pass ``--strict``
+    to additionally **block** until every custom column carries a triage
+    ``disposition`` (model / silver-passthrough / skip) in the alignment YAML.
+
+    \\b
+    Flag precedence:
+      (default)             missing/incomplete/stale block; custom columns warn
+      --strict              the above, plus undisposed custom columns block
+      --warn-only           report everything but always exit 0 (overrides --strict)
+
     \\b
     Examples:
       kairos-ontology check-alignment
       kairos-ontology check-alignment --domains party,commercial
+      kairos-ontology check-alignment --strict
       kairos-ontology check-alignment --warn-only
     """
     from ..alignment_coverage import check_alignment_coverage
@@ -2204,6 +2220,37 @@ def check_alignment_cmd(analysis_dir, domains_filter, warn_only):
     for name in report.orphan:
         click.echo(f"   ⚠ {name}: orphan alignment (no matching affinity domain)")
 
+    # Issue #164: surface source-evidenced custom columns needing triage.
+    if report.custom_columns:
+        click.echo("\n🧩 Custom columns (no reference-model property) — triage needed:")
+        for domain in sorted(report.custom_columns):
+            cols = report.custom_columns[domain]
+            undisposed = [c for c in cols if not c.disposed]
+            business = [c for c in undisposed if not c.operational]
+            operational = [c for c in undisposed if c.operational]
+            disposed_n = len(cols) - len(undisposed)
+            click.echo(
+                f"   • {domain}: {len(cols)} custom column(s) — "
+                f"{len(undisposed)} undisposed, {disposed_n} disposed"
+            )
+            for c in business[:15]:
+                suffix = f" → {c.suggested_property}" if c.suggested_property else ""
+                click.echo(f"        ◆ {c.identity}{suffix}")
+            if len(business) > 15:
+                click.echo(f"        … and {len(business) - 15} more business column(s)")
+            if operational:
+                click.echo(
+                    f"        ◇ {len(operational)} likely operational/audit "
+                    "column(s) (also need a disposition)"
+                )
+        click.echo(
+            "   → Disposition each in the alignment YAML: "
+            "model / silver-passthrough / skip."
+        )
+
+    custom_block = strict and report.has_undisposed_custom_columns
+    should_block = (report.is_blocking or custom_block) and not warn_only
+
     if report.is_blocking and not warn_only:
         click.echo(
             "\n❌ Alignment check failed. Run "
@@ -2211,6 +2258,14 @@ def check_alignment_cmd(analysis_dir, domains_filter, warn_only):
             "result before modeling.",
             err=True,
         )
+    if custom_block and not warn_only:
+        click.echo(
+            "\n❌ Strict check failed: untriaged custom columns remain. Disposition "
+            "every custom column (model / silver-passthrough / skip) in the "
+            "alignment YAML before completing the domain.",
+            err=True,
+        )
+    if should_block:
         raise SystemExit(1)
 
     if report.is_blocking or report.has_warnings:

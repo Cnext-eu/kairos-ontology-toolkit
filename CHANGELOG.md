@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.0] — 2026-06-14
+
+### Added
+- **Custom-column triage in domain modeling (DD-068, issue #164).** Source-evidenced
+  columns with no reference-model property are no longer silently dropped before
+  mapping. `propose-alignment` now writes a `disposition` field (`model` /
+  `silver-passthrough` / `skip`; `null` until triaged) on each `custom_columns`
+  entry. `check-alignment` surfaces and classifies these columns (business vs likely
+  operational/audit) and gains a `--strict` flag that **blocks** until every custom
+  column is dispositioned (default warns; `--warn-only` overrides `--strict`). The
+  `kairos-design-domain` skill now requires every custom column to appear in the
+  Source Evidence Table, records a per-column disposition back into the alignment
+  YAML in Checkpoint 3b, runs `check-alignment --strict` at the completion gate, and
+  clarifies that "Reference Model Enforced" governs class-hierarchy reuse — not
+  "add nothing local".
+
 ## [3.16.1] — 2026-06-14
 
 ### Added
