@@ -21,6 +21,9 @@ from typing import Any
 import yaml
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 
+from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
+from ._cache import SidecarCache, compute_entry_hash, open_cache
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -851,7 +854,7 @@ def analyse_table_single_call(
     prompt = _build_single_call_prompt(table_name, columns, candidates)
 
     try:
-        response = client.chat.completions.create(
+        response = call_with_backoff(lambda: client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": (
@@ -864,7 +867,7 @@ def analyse_table_single_call(
             ],
             temperature=0.1,
             response_format={"type": "json_object"},
-        )
+        ))
         result = json.loads(response.choices[0].message.content)
     except Exception as e:
         logger.warning("LLM single-call analysis failed for table %s: %s", table_name, e)
@@ -940,6 +943,8 @@ def analyse_source_system(
     model: str = DEFAULT_MODEL,
     threshold: float = 0.3,
     report=None,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+    cache: SidecarCache | None = None,
 ) -> SourceAnalysis:
     """Analyse one source system against candidate domains, table by table.
 
@@ -956,6 +961,8 @@ def analyse_source_system(
         threshold: Reserved for backward compatibility (unused — one primary
             domain is always returned per table).
         report: Optional progress reporter (see make_reporter)
+        max_workers: Max concurrent per-table LLM calls. ``1`` runs serially.
+        cache: Optional sidecar cache; reuses unchanged per-table classifications.
 
     Returns:
         SourceAnalysis with one TableAssignment per (non-empty) source table.
@@ -976,13 +983,49 @@ def analyse_source_system(
     client = _get_openai_client()
     candidates = _build_candidates(ref_domains)
     meta_by_id = {c["id"]: c for c in candidates}
+    # Stable signature of the candidate domain set for cache-key invalidation.
+    candidate_signature = compute_entry_hash(sorted(c["id"] for c in candidates))
+
+    table_items = [(name, cols) for name, cols in tables.items() if cols]
+
+    def _classify(item: tuple[str, list[dict[str, Any]]]) -> dict[str, Any]:
+        tbl_name, columns = item
+        cache_key = compute_entry_hash({
+            "system": sys_name,
+            "table": tbl_name,
+            "model": model,
+            "candidates": candidate_signature,
+            "columns": [
+                {"name": c.get("name"), "type": c.get("data_type"),
+                 "samples": c.get("samples", [])}
+                for c in columns
+            ],
+        }) if cache is not None else ""
+        if cache is not None:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return {"table": tbl_name, "columns": columns, "res": cached,
+                        "cache_key": cache_key, "from_cache": True}
+        try:
+            res = analyse_table_single_call(client, model, tbl_name, columns, candidates)
+        except Exception as exc:  # noqa: BLE001 — isolate one table failure
+            logger.warning("Classification failed for %s.%s: %s", sys_name, tbl_name, exc)
+            res = {"domain": _pick_fallback(set(meta_by_id), FALLBACK_DOMAIN_IDS),
+                   "secondary_domains": [], "confidence": 0.0, "likely_entity": "",
+                   "rationale": f"Classification error: {exc}", "indicative_columns": []}
+        return {"table": tbl_name, "columns": columns, "res": res,
+                "cache_key": cache_key, "from_cache": False}
+
+    classified = map_concurrent(_classify, table_items, max_workers=max_workers)
 
     assignments: list[TableAssignment] = []
-    for tbl_name, columns in tables.items():
-        if not columns:
-            continue
+    for entry in classified:
+        tbl_name = entry["table"]
+        columns = entry["columns"]
+        res = entry["res"]
+        if cache is not None and not entry["from_cache"] and entry["cache_key"]:
+            cache.put(entry["cache_key"], res)
 
-        res = analyse_table_single_call(client, model, tbl_name, columns, candidates)
         domain_id = res["domain"]
         meta = meta_by_id.get(domain_id, {})
 
@@ -995,9 +1038,10 @@ def analyse_source_system(
                 "domain_uris": smeta.get("uris", []),
             })
 
+        cache_marker = " (cached)" if entry["from_cache"] else ""
         report(
             f"      ├─ {tbl_name} → {domain_id} "
-            f"({res['confidence']:.2f}) {res['likely_entity']}",
+            f"({res['confidence']:.2f}) {res['likely_entity']}{cache_marker}",
             level="verbose",
         )
         assignments.append(TableAssignment(
@@ -1136,6 +1180,9 @@ def run_analyse_sources(
     accelerator: str | None = None,
     shallow: bool = False,
     report=None,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+    force: bool = False,
+    cost_warning: bool = False,
 ) -> list[Path]:
     """Run analysis for all source systems in a hub.
 
@@ -1267,11 +1314,26 @@ def run_analyse_sources(
 
     analyses: list[SourceAnalysis] = []
 
+    # Per-table sidecar cache; disabled with --force.
+    cache = open_cache(output_dir, "analyse-sources", enabled=not force)
+
+    if cost_warning:
+        from ._cost import print_cost_warning
+        total_tables = sum(len(parse_source_vocabulary(v)) for v in vocab_files)
+        print_cost_warning(
+            command="analyse-sources",
+            table_count=total_tables,
+            max_workers=max_workers,
+            model=model,
+            force=force,
+        )
+
     for vocab_path in vocab_files:
         sys_name = vocab_path.stem.replace(".vocabulary", "")
         report(f"  • {sys_name} …")
         analysis = analyse_source_system(
-            vocab_path, ref_domains, model=model, threshold=threshold, report=report
+            vocab_path, ref_domains, model=model, threshold=threshold, report=report,
+            max_workers=max_workers, cache=cache,
         )
         analyses.append(analysis)
 
@@ -1283,6 +1345,8 @@ def run_analyse_sources(
             f"    → {n_tables} table(s) classified into {len(domains_hit)} "
             f"domain(s) → {output_file.name}"
         )
+
+    cache.flush()
 
     # Write summary matrix
     if analyses:

@@ -255,8 +255,19 @@ kairos-ontology import-flatfile --from <path> [--system NAME] [--output PATH] \
   [--sample-size 5] [--max-rows 1000]
 
 # Analyse sources against reference models (LLM-powered, pre-modeling)
+# Concurrent (--max-workers, default 8) + cached; prints a cost banner (use gpt-5.4-mini).
 kairos-ontology analyse-sources [--sources PATH] [--ref-models PATH] [--output PATH] \
-  [--model gpt-5.4-mini] [--domains "Domain1,Domain2"] [--max-domains N] [--materialize PATH]
+  [--model gpt-5.4-mini] [--domains "Domain1,Domain2"] [--max-domains N] [--materialize PATH] \
+  [--max-workers 8] [--force]
+
+# Propose source→domain column alignment (LLM-powered, pre-modeling)
+# Embedded primarily in the kairos-design-domain skill (Step 0a.2 alignment gate);
+# there is no separate alignment skill — run it via kairos-design-domain.
+# Concurrent (--max-workers) + cached; anchors on affinity likely_entity; cost banner.
+kairos-ontology propose-alignment [--domains "Domain1,Domain2"] [--ref-models PATH] \
+  [--max-workers 8] [--force] [--max-prompt-classes 12] \
+  [--retry-min-confidence 0.6] [--retry-min-mapped-ratio 0.4]
+kairos-ontology check-alignment [--domains "Domain1,Domain2"] [--warn-only]
 
 # Generate coverage report (deterministic alignment, post-modeling)
 kairos-ontology coverage-report [--ontology PATH] [--ref-models PATH] [--format both]

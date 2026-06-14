@@ -531,6 +531,12 @@ ls integration/sources/_analysis/
 - Without it, the modeler tends to create too many custom classes instead of
   reusing proven reference model concepts
 
+> **`propose-alignment` lives here.** The `propose-alignment` step is embedded
+> **primarily in this skill** — it is run as part of the Step 0a.2 alignment-coverage
+> gate (below) to pre-populate the Source Evidence Table. There is no dedicated
+> alignment skill; treat `propose-alignment` (and its `check-alignment` gate) as
+> part of the `kairos-design-domain` workflow.
+
 **Step 0a.2 — Alignment-coverage gate (MANDATORY — DD-061):**
 
 > **BLOCKING GATE (symmetric to the Step 0c.1b inventory gate).** Before building
@@ -556,6 +562,23 @@ kairos-ontology check-alignment --domains <target-domain>
 
 `check-alignment` is read-only and deterministic (no AI). Use `--warn-only` only
 as a deliberate, documented override.
+
+> **💸 `propose-alignment` cost, speed & caching (DD-065):** like `analyse-sources`,
+> `propose-alignment` issues **one paid LLM call per source table**, now run
+> **concurrently** (`--max-workers`, default 8; `1` = serial). It prints a cost
+> banner before running and recommends a cost/value-optimized model
+> (**`gpt-5.4-mini`**, the default). Re-runs are cheap:
+> - **Domain-level skip** — a domain whose `{domain}-alignment.yaml` is already fresh
+>   against the affinity set (matching `source_sha256`) is skipped entirely.
+> - **Per-table sidecar cache** (`integration/sources/_analysis/.cache/`) reuses
+>   unchanged tables even when other tables in the domain changed.
+> - `--force` bypasses both cache layers and re-bills every table.
+>
+> The class selection is **anchored on the affinity `likely_entity`**: the model
+> confirms (rather than re-derives) the entity, and falls back to `likely_entity`
+> when it returns an invalid class. Tuning flags (defaults shown):
+> `--max-workers 8`, `--max-prompt-classes 12`, `--retry-min-confidence 0.6`,
+> `--retry-min-mapped-ratio 0.4`, `--force`.
 
 Once the gate is green, read the alignment for the target domain to pre-populate
 the Source Evidence Table:

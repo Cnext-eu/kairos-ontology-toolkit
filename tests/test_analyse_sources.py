@@ -1224,3 +1224,67 @@ class TestSemanticGrounding:
         ref_domains = [{"domain_name": "X", "classes": [{"name": "A"}], "uris": []}]
         resolve_domain_class_summaries(ref_domains, catalog)
         assert "class_summary" not in ref_domains[0]
+
+
+# ---------------------------------------------------------------------------
+# Tests: concurrency + sidecar caching (CR-1 / CR-5)
+# ---------------------------------------------------------------------------
+
+
+class TestAffinityConcurrencyAndCaching:
+    def _setup(self, tmp_path):
+        vocab_file = tmp_path / "testapp.vocabulary.ttl"
+        vocab_file.write_text(SAMPLE_VOCAB_TTL, encoding="utf-8")
+        ref_file = tmp_path / "party.ttl"
+        ref_file.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+        ref_domains = [parse_reference_model(ref_file)]
+        return vocab_file, ref_domains
+
+    def _counting_client(self, counter):
+        client = MagicMock()
+
+        def create(**kwargs):
+            counter.append(1)
+            payload = {"domain": "party", "confidence": 0.9, "likely_entity": "Party"}
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = json.dumps(payload)
+            return resp
+
+        client.chat.completions.create.side_effect = create
+        return client
+
+    def test_sidecar_cache_skips_second_run(self, tmp_path, monkeypatch):
+        from kairos_ontology._cache import SidecarCache
+
+        vocab_file, ref_domains = self._setup(tmp_path)
+        counter: list[int] = []
+        client = self._counting_client(counter)
+        monkeypatch.setattr(
+            "kairos_ontology.analyse_sources._get_openai_client", lambda: client
+        )
+
+        cache = SidecarCache(tmp_path / ".cache" / "analyse-sources.json")
+        analyse_source_system(vocab_file, ref_domains, cache=cache)
+        first = len(counter)
+        assert first > 0
+        cache.flush()
+
+        # Fresh cache object loading the same sidecar file → all tables hit.
+        counter.clear()
+        cache2 = SidecarCache(tmp_path / ".cache" / "analyse-sources.json")
+        analyse_source_system(vocab_file, ref_domains, cache=cache2)
+        assert counter == []
+
+    def test_parallel_matches_serial(self, tmp_path, monkeypatch):
+        vocab_file, ref_domains = self._setup(tmp_path)
+        monkeypatch.setattr(
+            "kairos_ontology.analyse_sources._get_openai_client",
+            lambda: self._counting_client([]),
+        )
+        serial = analyse_source_system(vocab_file, ref_domains, max_workers=1)
+        parallel = analyse_source_system(vocab_file, ref_domains, max_workers=4)
+        assert [a.table for a in serial.table_assignments] == \
+            [a.table for a in parallel.table_assignments]
+        assert [a.domain for a in serial.table_assignments] == \
+            [a.domain for a in parallel.table_assignments]

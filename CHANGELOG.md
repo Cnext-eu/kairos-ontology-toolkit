@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.0] — 2026-06-14
+
+### Added
+- **Concurrent, cached AI pre-modeling for `analyse-sources` and `propose-alignment` (DD-065).**
+  Both commands now parallelize their per-table LLM calls with a bounded thread pool
+  (`--max-workers`, default `8`; `--max-workers 1` reproduces the old serial path),
+  collapsing large-hub runs from tens of minutes to a few. Two-level incremental
+  caching skips unchanged work: a domain-level skip via the existing `affinity_sha256`
+  freshness hash plus a schema-neutral per-table sidecar cache under
+  `<analysis-dir>/.cache/`. `--force` bypasses both cache layers. Both commands now
+  print a prominent cost banner before running (showing table count × workers and
+  recommending `gpt-5.4-mini`), suppressed by `--quiet`. Rate-limit (HTTP 429) errors
+  are retried with exponential back-off.
+
+### Changed
+- **`propose-alignment` anchors class selection on the affinity `likely_entity` (DD-065).**
+  The prompt now asks the model to confirm the affinity-derived entity rather than
+  re-derive it, and falls back to `likely_entity` when the model returns an invalid
+  class (previously blanked). Defaults retuned for fewer redundant calls:
+  `--max-prompt-classes` `18`→`12`, `--retry-min-confidence` `0.75`→`0.6`,
+  `--retry-min-mapped-ratio` `0.55`→`0.4`.
+
 ## [3.15.5] — 2026-06-14
 
 ### Fixed

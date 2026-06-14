@@ -32,6 +32,8 @@ from .analyse_sources import (
     parse_reference_model,
 )
 from .ai_provider import get_ai_client
+from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
+from ._cache import compute_entry_hash, open_cache
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +43,9 @@ logger = logging.getLogger(__name__)
 
 MAX_COLUMNS_PER_PROMPT = 80
 MAX_REF_PROPERTIES_PER_PROMPT = 60
-MAX_REF_CLASSES_PER_PROMPT = 18
-RETRY_MIN_CONFIDENCE = 0.75
-RETRY_MIN_MAPPED_RATIO = 0.55
+MAX_REF_CLASSES_PER_PROMPT = 12
+RETRY_MIN_CONFIDENCE = 0.6
+RETRY_MIN_MAPPED_RATIO = 0.4
 MAX_SAMPLE_CHARS = 48
 MAX_SAMPLES_PER_COLUMN = 3
 
@@ -450,11 +452,27 @@ def build_alignment_prompt(
     2. For each column, which reference property is the best match?
     """
     entity_hint = ""
+    step1 = "STEP 1: Determine which reference model class this table best represents."
+    likely_match = ""
     if likely_entity:
-        entity_hint = (
-            f"\nHINT: Prior analysis suggests this table represents "
-            f"a '{likely_entity}' entity.\n"
+        # CR-2: when the affinity step already derived the entity and it matches a
+        # candidate class, anchor STEP 1 on it instead of re-deriving from scratch.
+        likely_match = next(
+            (c["name"] for c in ref_classes
+             if str(c["name"]).lower() == str(likely_entity).lower()),
+            "",
         )
+        if likely_match:
+            step1 = (
+                f"STEP 1: Prior analysis indicates this table represents "
+                f"'{likely_match}'. Confirm this class; only override it if it is "
+                f"clearly wrong, and justify the override in the rationale."
+            )
+        else:
+            entity_hint = (
+                f"\nHINT: Prior analysis suggests this table represents "
+                f"a '{likely_entity}' entity.\n"
+            )
 
     ref_inventory = _format_ref_inventory(ref_classes)
     source_cols = _format_source_columns(columns)
@@ -463,7 +481,7 @@ def build_alignment_prompt(
 
     return f"""Align this source database table to the reference model.
 
-STEP 1: Determine which reference model class this table best represents.
+{step1}
 STEP 2: For each source column, find the best matching reference model property.
 {entity_hint}
 SOURCE TABLE: {table_name}
@@ -563,7 +581,7 @@ def align_table(
     valid_classes = {c["name"] for c in ref_classes}
 
     try:
-        response = client.chat.completions.create(
+        response = call_with_backoff(lambda: client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": (
@@ -575,7 +593,7 @@ def align_table(
             ],
             temperature=0.1,
             response_format={"type": "json_object"},
-        )
+        ))
         result = json.loads(response.choices[0].message.content)
     except Exception as e:
         logger.warning("LLM alignment failed for table %s: %s", table_name, e)
@@ -587,7 +605,14 @@ def align_table(
     # Validate ref_class
     ref_class = str(result.get("ref_class", "") or "")
     if ref_class not in valid_classes:
-        ref_class = ""
+        # CR-2: fall back to the affinity-derived entity when it is a valid class,
+        # rather than blanking it — we trust the prior analysis as a strong default.
+        likely_match = next(
+            (c["name"] for c in ref_classes
+             if str(c["name"]).lower() == str(likely_entity).lower()),
+            "",
+        )
+        ref_class = likely_match
     ref_class_confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
 
     # Validate column alignments
@@ -912,6 +937,9 @@ def run_propose_alignment(
     max_prompt_classes: int = MAX_REF_CLASSES_PER_PROMPT,
     retry_min_confidence: float = RETRY_MIN_CONFIDENCE,
     retry_min_mapped_ratio: float = RETRY_MIN_MAPPED_RATIO,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+    force: bool = False,
+    cost_warning: bool = False,
 ) -> list[Path]:
     """Run alignment for all domains found in affinity reports.
 
@@ -930,6 +958,10 @@ def run_propose_alignment(
         max_prompt_classes: Max number of reference classes in first pass prompt.
         retry_min_confidence: Retry threshold for ref class confidence.
         retry_min_mapped_ratio: Retry threshold for mapped column ratio.
+        max_workers: Max concurrent per-table LLM calls (CR-1). ``1`` reproduces
+            the legacy fully-serial path exactly.
+        force: When True, bypass both cache layers (domain-level ``affinity_sha256``
+            skip and the per-table sidecar cache) and re-align everything.
 
     Returns list of written output file paths.
     """
@@ -979,6 +1011,20 @@ def run_propose_alignment(
     # Create LLM client lazily (after validation)
     client = get_ai_client()
 
+    if cost_warning:
+        from ._cost import print_cost_warning
+        total_tables = sum(len(v) for v in domain_tables.values())
+        print_cost_warning(
+            command="propose-alignment",
+            table_count=total_tables,
+            max_workers=max_workers,
+            model=model,
+            force=force,
+        )
+
+    # Per-table sidecar cache (CR-5 fine-grained layer); disabled with --force.
+    cache = open_cache(analysis_dir, "propose-alignment", enabled=not force)
+
     output_files: list[Path] = []
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -987,6 +1033,18 @@ def run_propose_alignment(
 
         # Get domain URIs from first table entry
         domain_uris = tables[0].get("domain_uris", []) if tables else []
+
+        affinity_hash = compute_affinity_hash((t["system"], t["table"]) for t in tables)
+
+        # CR-5: domain-level skip — reuse an existing alignment whose freshness
+        # hash already matches the current affinity set (unless --force).
+        out_path = output_dir / f"{domain_id}-alignment.yaml"
+        if not force and out_path.exists():
+            existing_hash = _read_alignment_affinity_hash(out_path)
+            if existing_hash and existing_hash == affinity_hash:
+                report(f"     ⏭  Up to date (affinity unchanged) — skipped {out_path.name}")
+                output_files.append(out_path)
+                continue
 
         # Resolve reference model inventory
         ref_classes = extract_ref_model_inventory(domain_uris, catalog_path)
@@ -1003,65 +1061,111 @@ def run_propose_alignment(
             _build_property_range_index(ref_classes) if include_mapping_hints else {}
         )
 
+        # Stable signature of the reference model for cache-key invalidation.
+        ref_signature = compute_entry_hash([
+            [c.get("name", ""), [p.get("name", "") for p in c.get("properties", [])]]
+            for c in ref_classes
+        ])
+        align_params = {
+            "model": model,
+            "max_prompt_classes": max_prompt_classes,
+            "retry_min_confidence": retry_min_confidence,
+            "retry_min_mapped_ratio": retry_min_mapped_ratio,
+            "ref_signature": ref_signature,
+        }
+
         alignment = DomainAlignment(
             domain=domain_id,
             domain_uris=domain_uris,
             generated_at=datetime.now(timezone.utc).isoformat(),
             model_used=model,
-            affinity_sha256=compute_affinity_hash(
-                (t["system"], t["table"]) for t in tables
-            ),
+            affinity_sha256=affinity_hash,
         )
 
-        for tbl_info in tables:
+        def _process_table(tbl_info: dict[str, Any]) -> dict[str, Any] | None:
+            """Compute (or reuse) the normalized alignment result for one table.
+
+            Runs in a worker thread under ``map_concurrent``; performs only the
+            LLM call (+ cache lookup) and returns plain data. The deterministic
+            ``TableAlignment`` is assembled later on the main thread in input
+            order so the YAML output stays diff-stable.
+            """
             system = tbl_info["system"]
             table = tbl_info["table"]
             columns = get_columns(system, table)
             if not columns:
-                report(f"     ⚠ No columns found for {system}.{table}", level="verbose")
-                continue
+                return {"system": system, "table": table, "columns": [], "result": None}
 
             likely_entity = tbl_info.get("likely_entity", "")
             indicative_columns = tbl_info.get("indicative_columns", [])
+
+            cache_key = compute_entry_hash({
+                "system": system,
+                "table": table,
+                "likely_entity": likely_entity,
+                "columns": [
+                    {"name": c.get("name"), "type": c.get("data_type"),
+                     "samples": c.get("samples", [])}
+                    for c in columns
+                ],
+                "params": align_params,
+            })
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return {"system": system, "table": table, "columns": columns,
+                        "result": cached, "cache_key": cache_key, "from_cache": True}
+
             shortlist_classes = _select_ref_classes_for_table(
-                table,
-                columns,
-                ref_classes,
+                table, columns, ref_classes,
                 likely_entity=likely_entity,
                 indicative_columns=indicative_columns,
                 max_classes=max_prompt_classes,
             )
-            result = align_table(
-                client,
-                model,
-                table,
-                columns,
-                shortlist_classes,
-                likely_entity=likely_entity,
-            )
-            if (
-                len(shortlist_classes) < len(ref_classes)
-                and _should_retry_with_full_inventory(
-                    result,
-                    len(columns),
-                    min_confidence=retry_min_confidence,
-                    min_mapped_ratio=retry_min_mapped_ratio,
-                )
-            ):
-                full_result = align_table(
-                    client,
-                    model,
-                    table,
-                    columns,
-                    ref_classes,
+            try:
+                result = align_table(
+                    client, model, table, columns, shortlist_classes,
                     likely_entity=likely_entity,
                 )
-                if _alignment_result_score(full_result, len(columns)) >= _alignment_result_score(
-                    result, len(columns)
+                if (
+                    len(shortlist_classes) < len(ref_classes)
+                    and _should_retry_with_full_inventory(
+                        result, len(columns),
+                        min_confidence=retry_min_confidence,
+                        min_mapped_ratio=retry_min_mapped_ratio,
+                    )
                 ):
-                    result = full_result
+                    full_result = align_table(
+                        client, model, table, columns, ref_classes,
+                        likely_entity=likely_entity,
+                    )
+                    if _alignment_result_score(
+                        full_result, len(columns)
+                    ) >= _alignment_result_score(result, len(columns)):
+                        result = full_result
+            except Exception as exc:  # noqa: BLE001 — isolate a single table failure
+                logger.warning("Alignment failed for %s.%s: %s", system, table, exc)
+                result = {"ref_class": "", "ref_class_confidence": 0.0,
+                          "column_alignments": []}
+            return {"system": system, "table": table, "columns": columns,
+                    "result": result, "cache_key": cache_key, "from_cache": False}
 
-            # Build TableAlignment
+        processed = map_concurrent(_process_table, tables, max_workers=max_workers)
+
+        for entry in processed:
+            if entry is None:
+                continue
+            system = entry["system"]
+            table = entry["table"]
+            columns = entry["columns"]
+            result = entry["result"]
+            if not columns or result is None:
+                report(f"     ⚠ No columns found for {system}.{table}", level="verbose")
+                continue
+
+            if not entry.get("from_cache") and entry.get("cache_key"):
+                cache.put(entry["cache_key"], result)
+
+            # Build TableAlignment (deterministic; no LLM)
             col_alignments = []
             custom_cols = []
             for ca in result.get("column_alignments", []):
@@ -1121,9 +1225,10 @@ def run_propose_alignment(
 
             matched = len(col_alignments)
             custom = len(custom_cols)
+            cache_marker = " (cached)" if entry.get("from_cache") else ""
             report(
                 f"     ├─ {system}.{table} → {ta.ref_class} "
-                f"({matched} matched, {custom} custom)",
+                f"({matched} matched, {custom} custom){cache_marker}",
                 level="verbose",
             )
 
@@ -1135,7 +1240,19 @@ def run_propose_alignment(
         output_files.append(out_path)
         report(f"     ✓ Written: {out_path.name}")
 
+    cache.flush()
     return output_files
+
+
+def _read_alignment_affinity_hash(alignment_path: Path) -> str:
+    """Return the ``affinity_sha256`` recorded in an existing alignment file."""
+    try:
+        data = yaml.safe_load(alignment_path.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("affinity_sha256", "") or "")
 
 
 # ---------------------------------------------------------------------------
