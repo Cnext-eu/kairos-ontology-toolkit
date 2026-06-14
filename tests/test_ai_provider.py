@@ -291,6 +291,21 @@ class TestGetAiClient:
         )
         assert client is not None
 
+    @patch("kairos_ontology.ai_provider.logger")
+    @patch("openai.OpenAI")
+    def test_logs_sanitized_endpoint(self, mock_openai_cls, mock_logger):
+        mock_openai_cls.return_value = MagicMock()
+        env = {
+            "KAIROS_AI_ALIGNMENT_ENDPOINT": "https://user:pass@strong.example.com/v1?key=secret",
+            "KAIROS_AI_ALIGNMENT_KEY": "align-key",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            get_ai_client(role="alignment")
+
+        assert mock_logger.info.called
+        info_args = mock_logger.info.call_args.args
+        assert info_args[2] == "https://strong.example.com"
+
     @patch("kairos_ontology.ai_provider._create_foundry_client")
     def test_foundry_delegates_to_create_foundry_client(self, mock_create):
         mock_create.return_value = MagicMock()

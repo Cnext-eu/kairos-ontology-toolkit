@@ -22,6 +22,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -300,7 +301,11 @@ def get_ai_client(model: str = DEFAULT_MODEL, *, role: str | None = None):
     """
     config = resolve_provider_config(model, role=role)
 
-    logger.info("Using AI provider: %s (endpoint: %s)", config.provider, config.endpoint)
+    logger.info(
+        "Using AI provider: %s (endpoint: %s)",
+        config.provider,
+        _endpoint_for_log(config.endpoint),
+    )
 
     if config.provider == "foundry":
         return _create_foundry_client(config)
@@ -310,6 +315,16 @@ def get_ai_client(model: str = DEFAULT_MODEL, *, role: str | None = None):
         base_url=config.endpoint,
         api_key=config.api_key,
     )
+
+
+def _endpoint_for_log(endpoint: str) -> str:
+    """Return a non-sensitive endpoint representation suitable for logs."""
+    parsed = urlsplit(endpoint)
+    if not parsed.scheme or not parsed.hostname:
+        return "<redacted>"
+    if parsed.port:
+        return f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+    return f"{parsed.scheme}://{parsed.hostname}"
 
 
 def _create_foundry_client(config: AIProviderConfig):
