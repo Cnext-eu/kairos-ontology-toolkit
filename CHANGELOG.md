@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.20.0] — 2026-06-14
+
+### Added
+- **Provenance comment header on toolkit-generated TTL (DD-072).** Files the
+  toolkit writes itself now begin with a small Turtle `#`-comment block stamping
+  the toolkit version, a UTC generation timestamp, the generator name and an
+  edit-policy note. Applied to source vocabulary (`*.vocabulary.ttl`), the SKOS
+  glossary (`*-glossary.ttl`), and the scaffold ontologies (`_master.ttl`,
+  per-domain `{domain}.ttl`) written by `init` / `new-repo`. The header is plain
+  comments only — it adds no RDF triples, so it never affects parsing, SHACL
+  validation, merge, or projection. A new shared helper
+  (`kairos_ontology._provenance.provenance_comment` / `prepend_provenance`) is
+  exposed and idempotent (regenerating never stacks headers); the design skills
+  (`kairos-design-domain`, `kairos-setup-config`) document the convention for
+  hand-authored ontology/SHACL files.
+
 ## [3.19.0] — 2026-06-14
 
 ### Added

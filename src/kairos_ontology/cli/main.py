@@ -14,6 +14,7 @@ from ..validator import run_validation, run_gdpr_validation
 from ..projector import run_projections
 from ..catalog_test import test_catalog_resolution
 from .. import __version__ as _toolkit_version
+from .._provenance import provenance_comment
 
 
 def _ensure_utf8_stdio() -> None:
@@ -1019,6 +1020,7 @@ def init(domain, company_domain, force):
             content = (content
                        .replace("{company_name}", company_name)
                        .replace("{company_domain}", company_domain))
+            content = provenance_comment("init", editable=True) + "\n" + content
             master_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created ontology-hub/model/ontologies/_master.ttl")
 
@@ -1049,6 +1051,7 @@ def init(domain, company_domain, force):
                        .replace("{domain}", domain)
                        .replace("{label}", label)
                        .replace("{company_domain}", company_domain))
+            content = provenance_comment("init", editable=True) + "\n" + content
             ontology_dst.write_text(content, encoding="utf-8")
             print(f"  ✓ Created ontology-hub/model/ontologies/{domain}.ttl")
 
@@ -3326,6 +3329,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         content = (content
                    .replace("{company_name}", company_name)
                    .replace("{company_domain}", company_domain_val))
+        content = provenance_comment("new-repo", editable=True) + "\n" + content
         (hub / "model" / "ontologies" / "_master.ttl").write_text(content, encoding="utf-8")
         print("  ✓ ontology-hub/model/ontologies/_master.ttl")
 

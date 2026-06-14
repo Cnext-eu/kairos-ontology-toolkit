@@ -988,6 +988,10 @@ def test_init_generates_master_ontology(tmp_path):
             assert "owl:Ontology" in content
             assert "contoso.com/ont/master" in content
             assert "Contoso" in content
+            # DD-072: scaffold ontology carries an editable provenance header.
+            assert content.startswith("#")
+            assert "kairos-ontology-toolkit" in content
+            assert "safe to edit" in content.lower()
 
 
 def test_init_starter_uses_company_domain(tmp_path):

@@ -241,6 +241,12 @@ def test_build_glossary_round_trips(tmp_path: Path):
     assert out.is_file()
     assert len(result.concepts) == 1
 
+    # DD-072: provenance header stamped at the top of the generated glossary.
+    text = out.read_text(encoding="utf-8")
+    assert text.startswith("#")
+    assert "kairos-ontology-toolkit" in text
+    assert "Generator : build-glossary" in text
+
     # Output must be valid, re-parseable Turtle.
     g = Graph()
     g.parse(out, format="turtle")
