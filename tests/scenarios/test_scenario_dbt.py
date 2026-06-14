@@ -1924,6 +1924,174 @@ class TestCrossTableWarnings:
             f"{bad_identifier_warnings}"
         )
 
+    def _subtype_inputs(self):
+        """Build a synthetic single-source subtype-as-own-table scenario.
+
+        Returns ``(classes, graph, namespace, systems, mappings)`` where a
+        ``Child`` subtype is claimed as its own silver table (single source
+        ``tblChild``) and inherits ``parentAttr`` from ``Parent`` — whose column
+        lives on a different table (``tblParent``).  This realises the inherited
+        cross-table pattern from issue #181.
+        """
+        from rdflib import RDF, RDFS, OWL, Graph, Literal, Namespace, URIRef
+
+        ns = "http://example.com/acme#"
+        ex = Namespace(ns)
+        xsd_str = URIRef("http://www.w3.org/2001/XMLSchema#string")
+
+        g = Graph()
+        g.add((ex.Parent, RDF.type, OWL.Class))
+        g.add((ex.Parent, RDFS.label, Literal("Parent")))
+        g.add((ex.Child, RDF.type, OWL.Class))
+        g.add((ex.Child, RDFS.label, Literal("Child")))
+        g.add((ex.Child, RDFS.subClassOf, ex.Parent))
+        # Inherited property declared on the parent.
+        g.add((ex.parentAttr, RDF.type, OWL.DatatypeProperty))
+        g.add((ex.parentAttr, RDFS.domain, ex.Parent))
+        g.add((ex.parentAttr, RDFS.range, xsd_str))
+        g.add((ex.parentAttr, RDFS.label, Literal("parentAttr")))
+        # Own property declared on the subtype.
+        g.add((ex.childAttr, RDF.type, OWL.DatatypeProperty))
+        g.add((ex.childAttr, RDFS.domain, ex.Child))
+        g.add((ex.childAttr, RDFS.range, xsd_str))
+        g.add((ex.childAttr, RDFS.label, Literal("childAttr")))
+
+        classes = [{"uri": str(ex.Child), "name": "Child", "label": "Child",
+                    "comment": ""}]
+
+        child_tbl = "http://example.com/src/ChildTable"
+        parent_tbl = "http://example.com/src/ParentTable"
+        systems = [{
+            "system_uri": "http://example.com/src/Sys",
+            "system_label": "CrmSystem",
+            "database": "db", "schema": "dbo", "connection_type": "jdbc",
+            "tables": [
+                {"uri": child_tbl, "name": "tblChild", "label": "tblChild",
+                 "pk_columns": ["child_id"], "incremental_column": None,
+                 "columns": [
+                     {"uri": child_tbl + "#child_id", "name": "child_id",
+                      "data_type": "int", "nullable": False, "is_pk": True},
+                     {"uri": child_tbl + "#child_attr", "name": "child_attr",
+                      "data_type": "string", "nullable": True, "is_pk": False},
+                 ]},
+                {"uri": parent_tbl, "name": "tblParent", "label": "tblParent",
+                 "pk_columns": ["parent_id"], "incremental_column": None,
+                 "columns": [
+                     {"uri": parent_tbl + "#parent_id", "name": "parent_id",
+                      "data_type": "int", "nullable": False, "is_pk": True},
+                     {"uri": parent_tbl + "#parent_attr", "name": "parent_attr",
+                      "data_type": "string", "nullable": True, "is_pk": False},
+                 ]},
+            ],
+        }]
+
+        mappings = {
+            "table_maps": {child_tbl: [{
+                "target_uri": str(ex.Child), "mapping_type": "direct",
+                "filter_condition": None, "dedup_key": None, "dedup_order": None,
+            }]},
+            "column_maps": {
+                child_tbl + "#child_attr": [{
+                    "target_uri": str(ex.childAttr), "match_type": "exactMatch",
+                    "transform": None, "source_columns": None,
+                    "default_value": None,
+                }],
+                parent_tbl + "#parent_attr": [{
+                    "target_uri": str(ex.parentAttr), "match_type": "exactMatch",
+                    "transform": None, "source_columns": None,
+                    "default_value": None,
+                }],
+            },
+        }
+        return classes, g, ns, systems, mappings
+
+    def test_inherited_cross_table_is_info_not_warning(self):
+        """Issue #181: inherited cross-table props become a consolidated info note.
+
+        A subtype claimed as its own silver table must NOT emit per-column
+        cross-table warnings for inherited parent properties (they were excluded
+        by design). Instead, a single consolidated info note is recorded.
+        """
+        from jinja2 import Environment, FileSystemLoader
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            _gen_silver_models,
+        )
+
+        classes, graph, ns, systems, mappings = self._subtype_inputs()
+        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+
+        _artifacts, warnings, entity_meta = _gen_silver_models(
+            classes, graph, ns, systems, mappings, env, {}, "acme",
+        )
+
+        # No per-column cross-table warning for the inherited parentAttr.
+        cross_table = [w for w in warnings if "Cross-table reference" in w]
+        assert not cross_table, (
+            f"Inherited cross-table props must not warn, got: {cross_table}"
+        )
+
+        # Exactly one consolidated info note on the Child entity.
+        child_meta = next(m for m in entity_meta if m["class_name"] == "Child")
+        notes = child_meta.get("info_notes") or []
+        assert len(notes) == 1, f"Expected one info note, got: {notes}"
+        assert "subtype claimed as its own silver table" in notes[0]
+        assert "Parent" in notes[0]
+        assert "1 inherited property" in notes[0]
+
+    def test_own_cross_table_still_warns(self):
+        """Own-domain cross-table props remain genuine ⚠️ warnings (own precedence)."""
+        from rdflib import RDFS
+        from jinja2 import Environment, FileSystemLoader
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            _gen_silver_models,
+        )
+
+        classes, graph, ns, systems, mappings = self._subtype_inputs()
+        # Re-home parentAttr onto the subtype so its cross-table column is now an
+        # OWN property → must produce a per-column warning.
+        from rdflib import URIRef
+        parent_attr = URIRef(ns + "parentAttr")
+        graph.remove((parent_attr, RDFS.domain, URIRef(ns + "Parent")))
+        graph.add((parent_attr, RDFS.domain, URIRef(ns + "Child")))
+
+        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+        _artifacts, warnings, entity_meta = _gen_silver_models(
+            classes, graph, ns, systems, mappings, env, {}, "acme",
+        )
+
+        cross_table = [w for w in warnings if "Cross-table reference" in w]
+        assert cross_table, "Own-domain cross-table prop should warn"
+        assert any("parentAttr" in w for w in cross_table)
+        child_meta = next(m for m in entity_meta if m["class_name"] == "Child")
+        assert not (child_meta.get("info_notes") or []), (
+            "Own cross-table prop must not be demoted to an info note"
+        )
+
+    def test_inherited_info_renders_in_session_log(self, tmp_path):
+        """The consolidated info note surfaces under a ## ℹ️ Info session-log section."""
+        from jinja2 import Environment, FileSystemLoader
+        from kairos_ontology.projections.medallion_dbt_projector import (
+            _gen_silver_models, write_dbt_session_log,
+        )
+
+        classes, graph, ns, systems, mappings = self._subtype_inputs()
+        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+        _artifacts, _warnings, entity_meta = _gen_silver_models(
+            classes, graph, ns, systems, mappings, env, {}, "acme",
+        )
+
+        out = write_dbt_session_log(
+            domain="acme",
+            entity_metadata=entity_meta,
+            sessions_dir=tmp_path,
+            warnings=[],
+        )
+        text = out.read_text(encoding="utf-8")
+        assert "## ℹ️ Info" in text
+        assert "subtype claimed as its own silver table" in text
+        # Info notes alone must suppress the "No issues" banner.
+        assert "## ✅ No issues" not in text
+
 
 # ---------------------------------------------------------------------------
 # Bug fix: single-source column scoping (table_column_uris)

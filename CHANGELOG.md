@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.24.1] — 2026-06-14
+
+### Changed
+- **Alignment `--high-accuracy` now prefers `gpt-5.4` (non-reasoning).** The
+  `propose-alignment` high-accuracy tier dropped from `gpt-5.5` to `gpt-5.4`:
+  alignment is deterministic closed-vocabulary matching, so a non-reasoning model
+  is preferred (lower latency/cost, no reasoning-model overhead). gpt-5.4 is also
+  the recommended `KAIROS_AI_ALIGNMENT_MODEL` in the scaffold `.env.example`.
+
+### Fixed
+- **Foundry AI provider: extras packaging + API-key auth crash (DD-078).** Two
+  related defects that made the Microsoft Foundry provider unusable for
+  `analyse-sources` / `propose-alignment`:
+  - The user-facing extras (`azure`, `foundry`, `flatfile`, `parquet`) were declared
+    **only** under `[dependency-groups]`, so the documented
+    `pip install kairos-ontology-toolkit[foundry]` resolved nothing (extras are not
+    written into wheel metadata). They are now also declared under
+    `[project.optional-dependencies]`; a parity test
+    (`tests/test_packaging_extras.py`) keeps the two in sync.
+  - `_create_foundry_client` passed an `AzureKeyCredential` (from
+    `AZURE_FOUNDRY_API_KEY`) to `AIProjectClient`, but azure-ai-projects 2.x
+    `get_openai_client()` requires a token credential (`get_token`) — crashing every
+    table to `mdm`/0.00. The Foundry path now prefers `DefaultAzureCredential` and,
+    when an API key is set, tries it then **falls back to `DefaultAzureCredential`**,
+    with a clear error if neither works.
+- **dbt cross-table warning conflated inherited vs own props (issue #181, DD-079).**
+  For a subtype claimed as its own silver table (`Child ⊂ Parent`), every inherited
+  parent property mapped on the parent's table fired a `Cross-table reference … may
+  need a JOIN` ⚠️ warning — even though those columns are excluded from the subtype
+  model **by design** — producing 40+ noise warnings per subtype. Cross-table
+  properties are now classified by their **direct** `rdfs:domain`: **own** props
+  (declared on the subtype) still emit a per-column ⚠️ warning (genuine JOIN
+  candidates, own-precedence), while **inherited** props are reclassified
+  warning → **info** and collapsed into one consolidated ℹ️ note per class (surfaced
+  under a `## ℹ️ Info` section of the dbt session log). WARNING-log volume and report
+  warning counts drop accordingly.
+
 ## [3.24.0] — 2026-06-14
 
 ### Added

@@ -125,6 +125,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-075](#dd-075-sample-grounded-mapping-evidence-masked-example-values--transform-compatibility) | Sample-grounded mapping evidence (masked example values + transform compatibility) | Accepted | 2026-06-14 |
 | [DD-076](#dd-076-suggest-shapes--draft-shacl-from-source-profiling) | `suggest-shapes` — draft SHACL from source profiling | Accepted | 2026-06-14 |
 | [DD-077](#dd-077-custom-column-triage-hardening-issue-182) | Custom-column triage hardening (issue #182) | Accepted | 2026-06-15 |
+| [DD-078](#dd-078-user-facing-extras-packaging--foundry-token-credential-fallback) | User-facing extras packaging + Foundry token-credential fallback | Accepted | 2026-06-14 |
+| [DD-079](#dd-079-dbt-cross-table-warning-conflates-inherited-vs-own-properties-issue-181) | dbt cross-table warning conflates inherited vs own properties (issue #181) | Accepted | 2026-06-15 |
 
 ---
 
@@ -4568,6 +4570,118 @@ Ship a dependency-ordered set of workstreams (rubber-duck-reviewed):
 - Cross-domain candidate tagging (WS3) and a non-LLM repair path for existing large
   YAMLs were scoped here but **deferred to follow-up issues** to avoid introducing a
   new class of wrong-domain noise and to keep this change focused.
+
+---
+
+## DD-078: User-facing extras packaging + Foundry token-credential fallback
+
+**Status:** Accepted  
+**Date:** 2026-06-14  
+**Affects:** `pyproject.toml`, `src/kairos_ontology/ai_provider.py`, scaffold `.env.example` copies  
+**Implementation:** `pyproject.toml` (`[project.optional-dependencies]` + `[dependency-groups]`), `ai_provider.py::_create_foundry_client`, `tests/test_packaging_extras.py`, `tests/test_ai_provider.py`
+
+### Context
+
+Two related defects broke the Microsoft Foundry AI provider path used by
+`analyse-sources` / `propose-alignment`:
+
+1. **Extras installed nothing.** The four user-facing extras (`azure`, `foundry`,
+   `flatfile`, `parquet`) were declared **only** under `[dependency-groups]`
+   (PEP 735). The documented `pip install kairos-ontology-toolkit[<extra>]`
+   resolves `[project.optional-dependencies]`, and dependency-groups are not
+   written into wheel metadata — so the install silently resolved nothing and
+   `azure` was never importable.
+
+2. **API-key auth crashed the Foundry path.** `_create_foundry_client` wrapped
+   `AZURE_FOUNDRY_API_KEY` in `AzureKeyCredential` and passed it to
+   `AIProjectClient`. In azure-ai-projects 2.x, `get_openai_client()` mints an AAD
+   token via `credential.get_token(...)`; `AzureKeyCredential` has no `get_token`,
+   raising `'AzureKeyCredential' object has no attribute 'get_token'`. Every table
+   failed and fell back to `mdm`/0.00, producing garbage analysis output.
+
+### Decision
+
+- **Dual-declare** the four user-facing extras in **both**
+  `[project.optional-dependencies]` (so the wheel `[extra]` install works) and
+  `[dependency-groups]` (for `uv sync --group`). A parity test
+  (`tests/test_packaging_extras.py`) prevents drift; `dev` stays group-only.
+- **Foundry credential fallback.** Prefer a real `TokenCredential`
+  (`DefaultAzureCredential`). When `AZURE_FOUNDRY_API_KEY` is set, attempt
+  `AzureKeyCredential` but catch the `AttributeError` from the SDK's token path and
+  **fall back to `DefaultAzureCredential`**, with a clear `EnvironmentError` when
+  neither credential is usable.
+
+### Rationale
+
+Key auth is fundamentally incompatible with the Foundry SDK's
+`get_openai_client()`, so silently requiring a token (or erroring usefully) is
+correct. Keeping both extra declarations avoids breaking either pip or uv
+workflows. Defensive try/fallback keeps behavior correct across SDK versions.
+
+### Consequences
+
+- `pip install kairos-ontology-toolkit[foundry]` now pulls `azure-ai-projects` +
+  `azure-identity`.
+- Foundry users authenticate via `az login` / managed identity; a set API key no
+  longer breaks the run (it falls back to token auth).
+- Extras must be edited in two places — guarded by the parity test.
+
+---
+
+## DD-079: dbt cross-table warning conflates inherited vs own properties (issue #181)
+
+**Status:** Accepted  
+**Date:** 2026-06-15  
+**Affects:** `src/kairos_ontology/projections/medallion_dbt_projector.py`  
+**Implementation:** `_gen_silver_models` (cross-table classification), `write_dbt_session_log` (`## ℹ️ Info` section), `tests/scenarios/test_scenario_dbt.py::TestCrossTableWarnings`
+
+### Context
+
+When a subtype is claimed as its own silver table (`Child ⊂ Parent`, single
+source `tblChild`), `_gen_silver_models` scopes the model's columns to the
+subtype's primary table — inherited parent attributes that live on the parent's
+table are deliberately excluded (resolving them would require a JOIN). The
+cross-table detector, however, flagged **every** mapped property whose domain was
+the class **or any ancestor** when its column was not in the primary table. As a
+result, each excluded-by-design inherited property emitted a
+`Cross-table reference … may need a JOIN` ⚠️ warning — 40+ noise warnings per
+subtype — drowning out genuinely actionable own-class cross-table mappings.
+
+### Decision
+
+Classify each cross-table mapped property by its **direct** `rdfs:domain`:
+
+- **own** — direct domains include the class URI → keep the per-column ⚠️ warning
+  (a genuine JOIN candidate). Own-precedence: a property declared on the class
+  stays a warning even if it is also declared on an ancestor.
+- **inherited** — direct domains intersect only ancestors → reclassify
+  warning → **info** and collapse all inherited props into **one** consolidated
+  ℹ️ note per class, surfaced under a new `## ℹ️ Info` section of the dbt session
+  log (and threaded via `entity_metadata["info_notes"]`, so no
+  `_gen_silver_models` return-signature change).
+
+RDF permits multiple `rdfs:domain` values, so domains are read with
+`graph.objects(prop, RDFS.domain)` and filtered to `URIRef` (blank-node /
+`owl:unionOf` domain expressions are ignored, as before). The `## ✅ No issues`
+banner now also requires no info notes.
+
+### Rationale
+
+The inherited columns were already excluded on purpose; warning about them is
+misleading and noisy. Surfacing a single consolidated, clearly-informational note
+preserves discoverability (the user can still choose to enrich the subtype via a
+JOIN) without polluting the actionable warning channel or the report's warning
+counts.
+
+### Consequences
+
+- WARNING-log volume and projection-report warning counts drop sharply for
+  subtype-as-own-table models.
+- A new `## ℹ️ Info` session-log section appears when inherited cross-table props
+  are detected.
+- `_get_class_and_parents` still follows a single `subClassOf` chain (pre-existing
+  limitation, shared with column extraction so classification stays consistent
+  with what was actually excluded) — multiple inheritance is out of scope here.
 
 ---
 

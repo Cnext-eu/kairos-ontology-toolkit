@@ -1764,9 +1764,10 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
                    'suggested property (null) instead of a confident-but-wrong guess '
                    '(default: 0.5).')
 @click.option('--high-accuracy', 'high_accuracy', is_flag=True, default=False,
-              help='Issue #182: use a higher-accuracy model tier for this '
-                   'accuracy-sensitive alignment step (overrides the default model '
-                   'unless --model was set explicitly). Costs more per run.')
+              help='Issue #182: use the preferred non-reasoning accuracy tier '
+                   '(gpt-5.4) for this accuracy-sensitive alignment step '
+                   '(overrides the default model unless --model was set '
+                   'explicitly). Costs more per run than the mini default.')
 def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
                           domains_filter, verbose, quiet, include_mapping_hints,
                           no_sample_values,
