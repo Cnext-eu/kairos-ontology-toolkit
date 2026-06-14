@@ -345,6 +345,41 @@ class ProjectionReport:
         return path
 
 
+def _archive_prior_projection_logs(sessions_dir: Optional[Path], domains) -> list[Path]:
+    """Move prior per-domain projection session logs into ``_archive/`` (DD-071 style).
+
+    Before a new projection run writes its session logs, any existing
+    ``projection-{domain}-*.md`` / ``dbt-{domain}-*.md`` files for the domains
+    being regenerated are *moved* (never deleted) into
+    ``.sessions-projection/_archive/`` so the main folder reflects only the latest
+    run — mirroring the design-session archival behaviour (DD-071).
+
+    Returns the list of destination paths that were archived.
+    """
+    if not sessions_dir or not sessions_dir.is_dir():
+        return []
+    archive_dir = sessions_dir / "_archive"
+    archived: list[Path] = []
+    for domain in domains:
+        for pattern in (f"projection-{domain}-*.md", f"dbt-{domain}-*.md"):
+            for old in sorted(sessions_dir.glob(pattern)):
+                if not old.is_file():
+                    continue
+                archive_dir.mkdir(parents=True, exist_ok=True)
+                dest = archive_dir / old.name
+                # Avoid clobbering a same-named archived file from an earlier run.
+                if dest.exists():
+                    counter = 1
+                    while True:
+                        dest = archive_dir / f"{old.stem}-{counter}{old.suffix}"
+                        if not dest.exists():
+                            break
+                        counter += 1
+                old.replace(dest)
+                archived.append(dest)
+    return archived
+
+
 def _is_domain_ontology(path: Path) -> bool:
     """Return True if *path* looks like a domain ontology file.
 
@@ -987,6 +1022,9 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     # Write per-domain Markdown reports to .sessions-projection/
     sessions_dir = hub_root / ".sessions-projection" if hub_root else None
     if sessions_dir:
+        # DD-071-style archival: move the previous run's per-domain logs into
+        # _archive/ so the folder reflects only the latest projection.
+        _archive_prior_projection_logs(sessions_dir, report.domains)
         for domain_name in report.domains:
             md_path = report.write_domain_markdown(domain_name, sessions_dir)
             if md_path:

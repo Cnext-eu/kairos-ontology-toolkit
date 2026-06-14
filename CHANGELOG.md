@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projector warns when a materialised class subclasses or FK/junctions to an
   excluded class. Declared in `scaffold/kairos-ext.ttl`; documented in the
   `kairos-design-silver` skill.
+- **Automated projection session-log archival (DD-071 amendment).** Each
+  projection run now moves any pre-existing per-domain logs
+  (`projection-{domain}-*.md`, `dbt-{domain}-*.md`) for the in-scope domains into
+  `.sessions-projection/_archive/` before writing the new logs (collision-safe,
+  never deleted), mirroring the design-session `_archive/` convention.
+  `kairos-diagnose-status` ignores the `_archive/` subfolder for
+  `.sessions-projection`.
 
 ### Fixed
 - **Transitive S3 discriminator folding (DD-073, issue #172).** Discriminator

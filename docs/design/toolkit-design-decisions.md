@@ -4109,8 +4109,7 @@ reconcile.
   **move** the existing log there (preserving the filename, optionally
   timestamp-suffixed) before creating the new one — never silently delete.
   `kairos-diagnose-status` ignores `_archive/` when locating the most recent
-  session log.
-- **H2.** Stamp every generated glossary `skos:ConceptScheme` with a constant
+  session log.- **H2.** Stamp every generated glossary `skos:ConceptScheme` with a constant
   `rdfs:comment` **and** `skos:editorialNote` disclaimer
   (`_NON_AUTHORITATIVE_NOTE`) stating the glossary is non-authoritative
   inspiration whose links are not reconciled during modeling. Document the status
@@ -4130,6 +4129,18 @@ so it needs no configuration.
   archive folder is git-ignorable like the rest of `.sessions-design/`.
 - H2 adds two triples to every glossary; a `test_glossary_builder.py` assertion
   guards their presence.
+
+### Amendment (3.21.0) — automated projection-log archival
+
+The H1 convention is now **enforced in code for projection session logs**. When a
+projection run writes new per-domain logs into `.sessions-projection/`
+(`projection-{domain}-*.md` and `dbt-{domain}-*.md`), any pre-existing logs for
+the in-scope domains are first **moved** into `.sessions-projection/_archive/`
+(collision-safe `-{n}` suffix; never deleted) by
+`_archive_prior_projection_logs()` in `projector.py`, called from
+`_run_projection`. This mirrors the design-session `_archive/` convention but
+removes the manual step for projection logs. `kairos-diagnose-status` ignores the
+`_archive/` subfolder for `.sessions-projection` as well.
 
 ---
 
