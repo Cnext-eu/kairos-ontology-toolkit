@@ -154,6 +154,31 @@ def _resolve_ref_models_dir(cwd: Path, hub_root: Path | None) -> Path | None:
     return None
 
 
+def _resolve_import_dir(cwd: Path, hub_root: Path | None) -> Path:
+    """Locate the business-discovery import directory.
+
+    Raw discovery artifacts live at the **repository root** in
+    ``.import/businessdiscovery/`` (a sibling of ``ontology-hub/`` and
+    ``ontology-reference-models/``), not under ``ontology-hub/``.  Like
+    :func:`_resolve_ref_models_dir`, this resolves the dual layout so the command
+    works both from the repo root and from inside ``ontology-hub/`` (DD-064).
+
+    Returns the first existing candidate, or ``cwd/.import/businessdiscovery`` as
+    a stable fallback when none exist (so the caller's "nothing to process"
+    message still reports a sensible path).
+    """
+    rel = Path(".import") / "businessdiscovery"
+    candidates = [
+        cwd / rel,
+        (hub_root.parent / rel) if hub_root else None,
+        (hub_root / rel) if hub_root else None,
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_dir():
+            return candidate
+    return cwd / rel
+
+
 # Toolkit GitHub repo for channel resolution
 _TOOLKIT_REPO = "Cnext-eu/kairos-ontology-toolkit"
 
@@ -2248,6 +2273,25 @@ def check_alignment_cmd(analysis_dir, domains_filter, warn_only, strict):
             "model / silver-passthrough / skip."
         )
 
+    # DD-069: surface review-flagged maps (issues #167/#168). Report-only.
+    if report.review_columns:
+        total_flagged = sum(len(v) for v in report.review_columns.values())
+        click.echo(
+            f"\n⚠ Maps flagged for review ({total_flagged}) — "
+            "implausible/address-part alignments (not blocking):"
+        )
+        for domain in sorted(report.review_columns):
+            cols = report.review_columns[domain]
+            click.echo(f"   • {domain}: {len(cols)} flagged map(s)")
+            for c in cols[:15]:
+                click.echo(f"        ◆ {c.identity} → {c.ref_property}: {c.reason}")
+            if len(cols) > 15:
+                click.echo(f"        … and {len(cols) - 15} more")
+        click.echo(
+            "   → Review each in the alignment YAML; correct the map or confirm "
+            "it is intentional."
+        )
+
     custom_block = strict and report.has_undisposed_custom_columns
     should_block = (report.is_blocking or custom_block) and not warn_only
 
@@ -2413,7 +2457,7 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
     if import_dir:
         imp_path = Path(import_dir)
     else:
-        imp_path = cwd / ".import" / "businessdiscovery"
+        imp_path = _resolve_import_dir(cwd, hub_root)
 
     if extraction_dir:
         ext_path = Path(extraction_dir)

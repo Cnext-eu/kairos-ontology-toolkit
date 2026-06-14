@@ -69,6 +69,11 @@ class ColumnAlignment:
     transform_confidence: float | None = None
     requires_human_confirmation: bool | None = None
     transform_rationale: str | None = None
+    # DD-069 review flags (issues #167/#168) — populated only when a deterministic
+    # plausibility/address rule fires; emitted only when review is True so the
+    # default YAML output stays byte-identical.
+    review: bool | None = None
+    review_reason: str | None = None
 
 
 @dataclass
@@ -921,6 +926,170 @@ def _lookup_property_range(
 
 
 # ---------------------------------------------------------------------------
+# Plausibility / address review pass (DD-069, issues #167/#168)
+# ---------------------------------------------------------------------------
+#
+# Deterministic, no-LLM guards that FLAG (never reclassify) implausible column
+# alignments for human review. The pass runs on the main thread during table
+# assembly, AFTER sidecar-cache retrieval; it only decorates ``ColumnAlignment``
+# objects and never mutates the cached raw LLM ``result`` dict. When no rule
+# fires the YAML output is byte-identical to pre-DD-069.
+
+#: Below this LLM confidence a name-mismatched map is considered review-worthy.
+REVIEW_MIN_CONFIDENCE = 0.6
+
+#: Unambiguous address-part tokens — strong enough to flag on their own.
+_ADDRESS_PART_TOKENS = frozenset({
+    "street", "postalcode", "postcode", "zipcode", "addressline",
+    "housenumber", "houseno",
+})
+
+#: Address qualifier tokens that, combined with a weak token, confirm an
+#: address-part column (e.g. ``shipper_city``, ``billing_zip``).
+_ADDRESS_QUALIFIER_TOKENS = frozenset({
+    "shipper", "consignee", "billing", "shipping", "delivery", "invoice",
+    "mailing", "registered", "home", "work", "contact",
+})
+
+#: Ambiguous address tokens — only treated as address parts together with a
+#: qualifier (bare ``country``/``city`` are too easily citizenship/name fields).
+_ADDRESS_WEAK_TOKENS = frozenset({"city", "country", "zip", "postal", "address"})
+
+#: Property name fragments that mark a property as ADDRESS-flavoured (so an
+#: address-part column mapped here is plausible and must NOT be flagged).
+_ADDRESS_PROPERTY_TOKENS = frozenset({
+    "address", "street", "city", "country", "postal", "zip", "location",
+})
+
+#: Generic identity / name properties a weakly-evidenced or address/financial
+#: column should not silently land on. Specific identifiers (taxIdentifier,
+#: vatNumber, bankAccountIdentifier, ...) are deliberately excluded.
+_GENERIC_IDENTITY_PROPERTIES = frozenset({
+    "partyidentifier", "registrationnumber", "partyname", "name", "identifier",
+})
+
+#: Column tokens that mark a column as financial-flavoured.
+_FINANCIAL_COLUMN_TOKENS = frozenset({
+    "iban", "bic", "swift", "currency", "payment", "amount", "balance",
+})
+
+
+def _build_property_label_index(
+    ref_classes: list[dict[str, Any]],
+) -> dict[tuple[str | None, str], str]:
+    """Index (class, property) → label, with a (None, property) name fallback."""
+    idx: dict[tuple[str | None, str], str] = {}
+    for cls in ref_classes:
+        cls_name = cls.get("name", "")
+        for p in cls.get("properties", []):
+            pname = p.get("name", "")
+            label = p.get("label", "") or pname
+            idx[(cls_name, pname)] = label
+            idx.setdefault((None, pname), label)
+    return idx
+
+
+def _lookup_property_label(
+    idx: dict[tuple[str | None, str], str],
+    ref_class: str,
+    ref_property: str,
+) -> str:
+    """Resolve a property label by (class, property) then by property name."""
+    if (ref_class, ref_property) in idx:
+        return idx[(ref_class, ref_property)]
+    return idx.get((None, ref_property), "")
+
+
+def _compact_name(value: str) -> str:
+    """Lowercased alphanumeric-only form of a name (deterministic)."""
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _detect_address_part(column_name: str) -> bool:
+    """Return True when *column_name* is strong evidence of an address part."""
+    tokens = _tokenize_text(column_name)
+    if not tokens:
+        return False
+    # Compact form so address_line_1 / postal_code / house_number also match.
+    compact = _compact_name(column_name)
+    if any(tok in tokens or tok in compact for tok in _ADDRESS_PART_TOKENS):
+        return True
+    # Weak tokens require an address qualifier to confirm (shipper_city, ...).
+    if (tokens & _ADDRESS_WEAK_TOKENS) and (tokens & _ADDRESS_QUALIFIER_TOKENS):
+        return True
+    return False
+
+
+def _is_address_property(ref_property: str) -> bool:
+    """Return True when *ref_property* is an address-flavoured property."""
+    tokens = _tokenize_text(ref_property)
+    compact = _compact_name(ref_property)
+    return any(t in tokens or t in compact for t in _ADDRESS_PROPERTY_TOKENS)
+
+
+def _review_column_alignment(
+    *,
+    column_name: str,
+    data_type: str,
+    ref_class: str,
+    ref_property: str,
+    confidence: float,
+    label_index: dict[tuple[str | None, str], str],
+) -> str | None:
+    """Return a review reason when a column map is implausible, else ``None``.
+
+    Deterministic; FLAGS (never changes) the mapping. Covers issue #167
+    (address-part columns force-fit onto non-address scalars) and issue #168
+    (boolean→identity, financial→identity, and weak-name + low-confidence maps).
+    """
+    if not ref_property:
+        return None
+
+    prop_label = _lookup_property_label(label_index, ref_class, ref_property)
+    col_tokens = _tokenize_text(column_name)
+    prop_tokens = _tokenize_text(ref_property) | _tokenize_text(prop_label)
+    shared = col_tokens & prop_tokens
+    is_identity = ref_property.lower() in _GENERIC_IDENTITY_PROPERTIES
+
+    # #167 — address-part columns. Mapping to a non-address scalar is implausible;
+    # mapping to an address-flavoured property is plausible (and exempt from the
+    # generic low-confidence rule below, since street↔address share no token).
+    if _detect_address_part(column_name):
+        if _is_address_property(ref_property):
+            return None
+        return (
+            f"address-part column '{column_name}' mapped to non-address property "
+            f"'{ref_property}'; model an address relationship / shared Address concept"
+        )
+
+    logical = _normalize_logical_type(data_type)
+
+    # #168 — boolean source mapped to a string identity/name property.
+    if logical == "bool" and is_identity:
+        return (
+            f"boolean column '{column_name}' mapped to identity/name property "
+            f"'{ref_property}'; likely a flag, not an identifier"
+        )
+
+    # #168 — financial-flavoured column mapped to a generic identity property.
+    if (col_tokens & _FINANCIAL_COLUMN_TOKENS) and is_identity:
+        return (
+            f"financial-flavoured column '{column_name}' mapped to identity/name "
+            f"property '{ref_property}'; confirm the intended target"
+        )
+
+    # #168 — no shared name token AND low confidence. Numeric→string identifier is
+    # common & valid, so it is only flagged here when the name also doesn't line up.
+    if not shared and confidence < REVIEW_MIN_CONFIDENCE:
+        return (
+            f"column '{column_name}' and property '{ref_property}' share no name "
+            f"token and confidence is low ({confidence:.2f})"
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -1061,6 +1230,10 @@ def run_propose_alignment(
             _build_property_range_index(ref_classes) if include_mapping_hints else {}
         )
 
+        # DD-069: property-label index for the deterministic review pass (always
+        # built — cheap, and the review flags are an always-on quality guard).
+        review_label_index = _build_property_label_index(ref_classes)
+
         # Stable signature of the reference model for cache-key invalidation.
         ref_signature = compute_entry_hash([
             [c.get("name", ""), [p.get("name", "") for p in c.get("properties", [])]]
@@ -1168,6 +1341,7 @@ def run_propose_alignment(
             # Build TableAlignment (deterministic; no LLM)
             col_alignments = []
             custom_cols = []
+            address_hints: list[dict[str, Any]] = []
             for ca in result.get("column_alignments", []):
                 col_data_type = next(
                     (c["data_type"] for c in columns if c["name"] == ca["column"]),
@@ -1211,6 +1385,27 @@ def run_propose_alignment(
                             hint["requires_human_confirmation"]
                         )
                         column_alignment.transform_rationale = hint["transform_rationale"]
+                    # DD-069: deterministic plausibility/address review flag.
+                    review_reason = _review_column_alignment(
+                        column_name=ca["column"],
+                        data_type=col_data_type,
+                        ref_class=ref_class_name,
+                        ref_property=ca["ref_property"],
+                        confidence=ca["confidence"],
+                        label_index=review_label_index,
+                    )
+                    if review_reason:
+                        column_alignment.review = True
+                        column_alignment.review_reason = review_reason
+                        if include_mapping_hints and _detect_address_part(ca["column"]):
+                            address_hints.append({
+                                "type": "address_candidate",
+                                "source_table": table,
+                                "source_column": ca["column"],
+                                "current_property": ca["ref_property"],
+                                "requires_human_confirmation": True,
+                                "rationale": review_reason,
+                            })
                     col_alignments.append(column_alignment)
 
             ta = TableAlignment(
@@ -1224,7 +1419,7 @@ def run_propose_alignment(
             if include_mapping_hints:
                 ta.structural_hints = _detect_structural_hints(
                     table, columns, ref_classes
-                )
+                ) + address_hints
             alignment.tables.append(ta)
 
             matched = len(col_alignments)
@@ -1371,6 +1566,10 @@ def write_alignment_output(alignment: DomainAlignment, output_dir: Path) -> Path
                 col_dict["transform_confidence"] = ca.transform_confidence
                 col_dict["requires_human_confirmation"] = ca.requires_human_confirmation
                 col_dict["transform_rationale"] = ca.transform_rationale
+            # DD-069: emit review flags only when a rule fired (default unchanged)
+            if ca.review:
+                col_dict["review"] = True
+                col_dict["review_reason"] = ca.review_reason
             table_dict["columns"].append(col_dict)
         # DD-045: emit structural hints only when present (default unchanged)
         if ta.structural_hints:

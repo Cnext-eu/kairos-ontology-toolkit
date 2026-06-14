@@ -200,6 +200,32 @@ deterministic / promptable / judgment tiering behind this design.
 
 ---
 
+## Review-flagged maps (DD-069, issues #167/#168)
+
+`propose-alignment` runs a deterministic plausibility/address review pass. A
+column in `*-alignment.yaml` that looks structurally implausible is **kept
+mapped** but annotated:
+
+| Field (column-level) | Meaning | How to use |
+|---|---|---|
+| `review` | `true` when a deterministic rule flagged this map | Treat the map as **unconfirmed** — re-read the bronze column and the domain property before accepting it |
+| `review_reason` | Why it was flagged (address-part on a non-address scalar; boolean/financial → identity; no name-token overlap + low confidence) | Show to the user as evidence; correct the mapping or confirm it is intentional |
+
+**Rules:**
+
+1. **Review flags never block.** `check-alignment` lists them in a report-only
+   "flagged for review" section; they are independent of the `--strict`
+   custom-column gate (issue #164).
+2. **Address-part columns** (`SHIPPER_STREET`, `billing_zip`, …) flagged onto a
+   party scalar usually belong on a shared `Address` concept via an address
+   relationship. Until cross-module candidates land (#166), model the
+   relationship locally or confirm the scalar map deliberately.
+3. **Always reconcile every `review: true` column** before completing the
+   mapping — either fix the target property or note the confirmation in the
+   Column Mapping Table.
+
+---
+
 ## Match Type Decision Tree
 
 Use the right SKOS predicate based on the relationship:
