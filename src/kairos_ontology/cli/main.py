@@ -1464,13 +1464,17 @@ def generate_staging(from_dir, output, source_name):
                    'data domains (party, commercial, ...) instead of raw reference models.')
 @click.option('--shallow', is_flag=True, default=False,
               help='Skip owl:imports resolution in the reference-model fallback (faster).')
+@click.option('--max-workers', type=int, default=8,
+              help='Max concurrent per-table LLM calls (default: 8; use 1 for serial).')
+@click.option('--force', is_flag=True, default=False,
+              help='Bypass the per-table cache and re-classify every table.')
 @click.option('--verbose', '-v', is_flag=True, default=False,
               help='Show per-table classification lines.')
 @click.option('--quiet', '-q', is_flag=True, default=False,
               help='Suppress progress output (errors still shown).')
 def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_domains,
                         domains_filter, materialize_dir, exclude_patterns,
-                        accelerator, shallow, verbose, quiet):
+                        accelerator, shallow, max_workers, force, verbose, quiet):
     """Analyse source vocabularies against reference model domains (LLM-powered).
 
     Classifies each source table by domain affinity. Two strategies:
@@ -1613,6 +1617,9 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
             accelerator=accelerator,
             shallow=shallow,
             report=reporter,
+            max_workers=max_workers,
+            force=force,
+            cost_warning=not quiet,
         )
         if not quiet:
             click.echo(
@@ -1649,17 +1656,22 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
 @click.option('--include-mapping-hints', is_flag=True, default=False,
               help='DD-045: add deterministic transform + structural mapping hints '
                    '(advisory, human-confirmed). Default output is unchanged.')
-@click.option('--max-prompt-classes', type=int, default=18,
-              help='Max reference classes in first-pass table prompt (default: 18).')
-@click.option('--retry-min-confidence', type=click.FloatRange(0.0, 1.0), default=0.75,
+@click.option('--max-prompt-classes', type=int, default=12,
+              help='Max reference classes in first-pass table prompt (default: 12).')
+@click.option('--retry-min-confidence', type=click.FloatRange(0.0, 1.0), default=0.6,
               help='Retry with full reference inventory when ref_class confidence is below this '
-                   'threshold (default: 0.75).')
-@click.option('--retry-min-mapped-ratio', type=click.FloatRange(0.0, 1.0), default=0.55,
+                   'threshold (default: 0.6).')
+@click.option('--retry-min-mapped-ratio', type=click.FloatRange(0.0, 1.0), default=0.4,
               help='Retry with full reference inventory when non-custom mapped column ratio is '
-                   'below this threshold (default: 0.55).')
+                   'below this threshold (default: 0.4).')
+@click.option('--max-workers', type=int, default=8,
+              help='Max concurrent per-table LLM calls (default: 8; use 1 for serial).')
+@click.option('--force', is_flag=True, default=False,
+              help='Bypass caches (domain affinity skip + per-table cache) and re-align all.')
 def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
                           domains_filter, verbose, quiet, include_mapping_hints,
-                          max_prompt_classes, retry_min_confidence, retry_min_mapped_ratio):
+                          max_prompt_classes, retry_min_confidence, retry_min_mapped_ratio,
+                          max_workers, force):
     """Propose source-column → reference-model-property alignment (LLM-powered).
 
     Pre-modeling step that analyses how source columns map to reference model
@@ -1762,6 +1774,9 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             max_prompt_classes=max_prompt_classes,
             retry_min_confidence=retry_min_confidence,
             retry_min_mapped_ratio=retry_min_mapped_ratio,
+            max_workers=max_workers,
+            force=force,
+            cost_warning=not quiet,
         )
         if not quiet:
             click.echo(

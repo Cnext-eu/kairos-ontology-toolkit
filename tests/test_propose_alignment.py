@@ -201,13 +201,26 @@ class TestBuildAlignmentPrompt:
         assert "TradeTerms" in prompt
         assert "incoterm" in prompt
 
-    def test_includes_entity_hint(self, sample_ref_classes):
+    def test_anchors_on_matching_entity(self, sample_ref_classes):
+        # CR-2: when likely_entity matches a candidate class, STEP 1 anchors on it
+        # (confirm rather than re-derive) instead of emitting a soft HINT.
         columns = [{"name": "X", "data_type": "string"}]
         prompt = build_alignment_prompt(
             "tbl", columns, sample_ref_classes, likely_entity="SalesContract"
         )
         assert "SalesContract" in prompt
+        assert "Confirm this class" in prompt
+        assert "HINT" not in prompt
+
+    def test_hint_when_entity_not_a_class(self, sample_ref_classes):
+        # When likely_entity is not among the candidate classes, fall back to a
+        # soft HINT so the model can still use the signal.
+        columns = [{"name": "X", "data_type": "string"}]
+        prompt = build_alignment_prompt(
+            "tbl", columns, sample_ref_classes, likely_entity="Spaceship"
+        )
         assert "HINT" in prompt
+        assert "Spaceship" in prompt
 
     def test_no_hint_when_empty(self, sample_ref_classes):
         columns = [{"name": "X", "data_type": "string"}]
@@ -750,3 +763,127 @@ class TestRunProposeAlignment:
         assert len(calls) == 2
         assert "TradeTerms" not in calls[0]
         assert "TradeTerms" in calls[1]
+
+
+# ---------------------------------------------------------------------------
+# Tests: concurrency + caching (CR-1 / CR-5)
+# ---------------------------------------------------------------------------
+
+
+class TestAlignmentConcurrencyAndCaching:
+    REF_CLASSES = [
+        {"name": "SalesContract", "label": "Sales Contract", "comment": "",
+         "properties": [
+             {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+         ]},
+    ]
+
+    def _counting_client(self, counter: list[int]):
+        """A mock client that returns a valid alignment and counts each call."""
+        def create_completion(**kwargs):
+            counter.append(1)
+            prompt = kwargs["messages"][1]["content"]
+            ref_class = "SalesContract" if "tblContracts" in prompt else "TradeParty"
+            payload = {
+                "ref_class": ref_class,
+                "ref_class_confidence": 0.9,
+                "column_alignments": [
+                    {"column": "ContractNo", "ref_class": ref_class,
+                     "ref_property": "contractIdentifier", "alignment": "semantic",
+                     "confidence": 0.9, "rationale": "id"},
+                ],
+            }
+            return mock.MagicMock(
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        return client
+
+    def _run(self, client, analysis_dir, sources_dir, output_dir, **kw):
+        with mock.patch(
+            "kairos_ontology.propose_alignment.get_ai_client", return_value=client
+        ), mock.patch(
+            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            return run_propose_alignment(
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
+                output_dir=output_dir,
+                **kw,
+            )
+
+    def test_domain_skip_on_unchanged_affinity(self, analysis_dir, sources_dir, tmp_path):
+        out = tmp_path / "out"
+        counter: list[int] = []
+        client = self._counting_client(counter)
+
+        self._run(client, analysis_dir, sources_dir, out)
+        first = len(counter)
+        assert first > 0
+
+        # Second run, same output → affinity_sha256 unchanged → domains skipped.
+        counter.clear()
+        files = self._run(client, analysis_dir, sources_dir, out)
+        assert counter == []  # zero LLM calls
+        assert len(files) == 2  # files still returned
+
+    def test_force_bypasses_skip(self, analysis_dir, sources_dir, tmp_path):
+        out = tmp_path / "out"
+        counter: list[int] = []
+        client = self._counting_client(counter)
+
+        self._run(client, analysis_dir, sources_dir, out)
+        first = len(counter)
+        counter.clear()
+        self._run(client, analysis_dir, sources_dir, out, force=True)
+        assert len(counter) == first  # re-billed everything
+
+    def test_sidecar_cache_skips_llm_across_output_dirs(self, analysis_dir, sources_dir, tmp_path):
+        # First run populates the per-table sidecar under analysis_dir/.cache.
+        counter: list[int] = []
+        client = self._counting_client(counter)
+        self._run(client, analysis_dir, sources_dir, tmp_path / "out1")
+        assert len(counter) > 0
+
+        # Second run to a FRESH output dir: domain-level skip cannot fire (no prior
+        # alignment file), but the sidecar cache hits → zero LLM calls.
+        counter.clear()
+        self._run(client, analysis_dir, sources_dir, tmp_path / "out2")
+        assert counter == []
+
+    def test_changed_column_invalidates_sidecar(self, analysis_dir, sources_dir, tmp_path):
+        counter: list[int] = []
+        client = self._counting_client(counter)
+        self._run(client, analysis_dir, sources_dir, tmp_path / "out1")
+        assert len(counter) > 0
+
+        # Mutate a source column so the per-table input hash changes.
+        vocab = sources_dir / "adminpulse" / "adminpulse.vocabulary.ttl"
+        text = vocab.read_text(encoding="utf-8").replace("ContractNo", "ContractNumber")
+        vocab.write_text(text, encoding="utf-8")
+
+        counter.clear()
+        self._run(client, analysis_dir, sources_dir, tmp_path / "out2")
+        # The commercial table changed → at least one fresh call (party may differ too).
+        assert len(counter) >= 1
+
+    def test_parallel_matches_serial(self, analysis_dir, sources_dir, tmp_path):
+        serial_out = tmp_path / "serial"
+        parallel_out = tmp_path / "parallel"
+        self._run(
+            self._counting_client([]), analysis_dir, sources_dir, serial_out,
+            max_workers=1, force=True,
+        )
+        self._run(
+            self._counting_client([]), analysis_dir, sources_dir, parallel_out,
+            max_workers=4, force=True,
+        )
+        for name in ("commercial-alignment.yaml", "party-alignment.yaml"):
+            s = yaml.safe_load((serial_out / name).read_text(encoding="utf-8"))
+            p = yaml.safe_load((parallel_out / name).read_text(encoding="utf-8"))
+            # generated_at differs; compare the table payloads only.
+            assert [t["table"] for t in s["tables"]] == [t["table"] for t in p["tables"]]
+            assert s["tables"] == p["tables"]

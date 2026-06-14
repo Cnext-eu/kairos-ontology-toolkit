@@ -335,16 +335,36 @@ kairos-ontology analyse-sources --accelerator logistics
 | `--accelerator <name>` | none | Classify toward an accelerator pack's **data domains** (party, commercial, ...) with their model URIs — recommended; fast (no owl:imports resolution) |
 | `--domains "party,booking"` | all | Focus on specific domains |
 | `--model gpt-5.4-mini` | gpt-5.4-mini | LLM model for semantic matching |
+| `--max-workers N` | 8 | **Concurrent** per-table LLM calls — the primary speedup on large hubs. Lower to `3-4` on low-TPM Azure deployments; `1` runs serially (old behaviour) |
+| `--force` | off | Bypass caching and re-run every table (see 4d) |
 | `--max-domains N` | all | Rate limit protection |
 | `--shallow` | off | Skip module-class grounding + owl:imports resolution (faster) |
 | `--materialize .resolved/` | none | Write the resolved analysis context (manifest + per-domain YAML) for inspection |
-| `--verbose` / `--quiet` | off | Per-table progress / suppress progress |
+| `--verbose` / `--quiet` | off | Per-table progress / suppress progress **and the cost banner** |
 | `--threshold` | 0.3 | Deprecated; ignored in table-centric (schema_version 2) analysis |
 | `--sources path/` | auto-detect | Override sources directory |
 | `--ref-models path/` | auto-detect | Override reference models directory |
 
 Without `--accelerator`, the command falls back to grouping reference-model TTLs
 into model-level domains.
+
+> **💸 Cost & speed (DD-065):** `analyse-sources` issues **one paid LLM call per
+> source table**, now run **concurrently** (`--max-workers`, default 8). On a large
+> hub this is hundreds of calls — the command prints a prominent cost banner before
+> running. Keep the AI provider pointed at a cost/value-optimized model
+> (**`gpt-5.4-mini`**, the default); avoid frontier models for this bulk task.
+
+### 4d — Caching & re-runs (DD-065)
+
+Re-running `analyse-sources` does **not** re-bill unchanged work:
+
+- A **per-table sidecar cache** under `integration/sources/_analysis/.cache/`
+  reuses a table's classification when its columns/samples, model, and candidate
+  domains are unchanged (cached tables are marked `(cached)` in verbose output).
+- Use `--force` to ignore the cache and re-classify every table (e.g. after
+  changing prompt-affecting settings the cache key doesn't capture).
+- The `.cache/` directory is regenerable — safe to delete or git-ignore.
+
 
 ### 4c — Review affinity reports
 
