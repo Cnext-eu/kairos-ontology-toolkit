@@ -33,6 +33,7 @@ from rdflib import DCTERMS, RDFS, SKOS, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF
 
 from .discovery_extraction import EXTRACTION_SUFFIX, load_extraction
+from ._provenance import prepend_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -273,7 +274,8 @@ def build_glossary_graph(
 def write_glossary_graph(graph: Graph, output_path: Path) -> Path:
     """Serialize *graph* to Turtle at *output_path*, creating parent dirs."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    graph.serialize(destination=str(output_path), format="turtle")
+    ttl = prepend_provenance(graph.serialize(format="turtle"), "build-glossary")
+    output_path.write_text(ttl, encoding="utf-8")
     logger.info("Wrote glossary to %s", output_path)
     return output_path
 

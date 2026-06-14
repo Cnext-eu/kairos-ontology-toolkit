@@ -211,6 +211,15 @@ class TestGenerateVocabularyTtl:
         g.parse(data=ttl, format="turtle")
         assert len(g) > 0
 
+    def test_provenance_header_stamped(self):
+        # DD-072: generated vocabulary carries a toolkit provenance comment.
+        ttl = generate_vocabulary_ttl(VALID_YAML_DATA)
+        assert ttl.startswith("#")
+        assert "kairos-ontology-toolkit" in ttl
+        assert "Generator : import-source" in ttl
+        # Header must not break parsing.
+        Graph().parse(data=ttl, format="turtle")
+
     def test_contains_source_system(self):
         ttl = generate_vocabulary_ttl(VALID_YAML_DATA)
         g = Graph()

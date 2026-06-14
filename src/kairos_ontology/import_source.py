@@ -24,6 +24,8 @@ import yaml
 from rdflib import XSD, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 
+from ._provenance import prepend_provenance
+
 logger = logging.getLogger(__name__)
 
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
@@ -479,7 +481,11 @@ def generate_vocabulary_ttl(data: dict) -> str:
                         g.add((prop_uri, KAIROS_BRONZE.dataType,
                                Literal(_json_type_to_sql(js.get("type", "string")))))
 
-    return g.serialize(format="turtle")
+    return prepend_provenance(
+        g.serialize(format="turtle"),
+        "import-source",
+        extra={"Source system": system_name},
+    )
 
 
 def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
@@ -527,7 +533,11 @@ def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
         # Generate table + columns (reuse same logic as generate_vocabulary_ttl)
         _add_table_to_graph(g, tbl, base_ns, sys_uri)
 
-        results[tbl["name"]] = g.serialize(format="turtle")
+        results[tbl["name"]] = prepend_provenance(
+            g.serialize(format="turtle"),
+            "import-source",
+            extra={"Source system": system_name, "Table": tbl["name"]},
+        )
 
     return results
 
@@ -887,7 +897,14 @@ def merge_with_existing(
             existing.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns,
                           Literal(" ".join(pk_names))))
 
-    return existing.serialize(format="turtle"), report
+    return (
+        prepend_provenance(
+            existing.serialize(format="turtle"),
+            "import-source",
+            extra={"Source system": system_name},
+        ),
+        report,
+    )
 
 
 # --------------------------------------------------------------------------- #
