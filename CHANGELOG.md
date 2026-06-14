@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.1] — 2026-06-14
+
 ### Added
 - **Release-management guide + policy (DD-067).** New `docs/RELEASING.md` documents
   SemVer discipline, the "support only the latest line" policy, and a bugfix decision
