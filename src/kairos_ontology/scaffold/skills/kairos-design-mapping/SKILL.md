@@ -242,9 +242,8 @@ mapped** but annotated:
 
 **Rules:**
 
-1. **Review flags never block.** `check-alignment` lists them in a report-only
-   "flagged for review" section; they are independent of the `--strict`
-   custom-column gate (issue #164).
+1. **Review flags never block.** The `check-claims` gate surfaces them in a
+   report-only section; they are independent of the `--strict` curation gate.
 2. **Address-part columns** (`SHIPPER_STREET`, `billing_zip`, …) flagged onto a
    party scalar usually belong on a shared `Address` concept via an address
    relationship. With **cross-module alignment** (DD-070, see below) the shared

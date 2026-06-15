@@ -5,9 +5,7 @@
 from pathlib import Path
 
 import yaml
-from click.testing import CliRunner
 
-from kairos_ontology.cli.main import cli
 from kairos_ontology.source_coverage import (
     check_source_coverage,
     collect_mapped_subjects,
@@ -126,33 +124,3 @@ class TestCheckSourceCoverage:
         )
         assert "commercial" not in report.domain_counts
         assert not report.is_blocking
-
-
-class TestCheckSourceCoverageCLI:
-
-    def test_blocks_on_uncovered(self, tmp_path):
-        analysis, sources, mappings = _hub(tmp_path)
-        _write_affinity(analysis, "adminpulse", [("tblA", "party"), ("tblB", "party")])
-        (mappings / "adminpulse-to-client.ttl").write_text(MAPPING_TTL, encoding="utf-8")
-        runner = CliRunner()
-        result = runner.invoke(cli, [
-            "check-source-coverage",
-            "--analysis-dir", str(analysis),
-            "--sources", str(sources),
-            "--mappings", str(mappings),
-        ])
-        assert result.exit_code == 1, result.output
-        assert "unmapped" in result.output
-
-    def test_warn_only_exits_zero(self, tmp_path):
-        analysis, sources, mappings = _hub(tmp_path)
-        _write_affinity(analysis, "adminpulse", [("tblB", "party")])
-        runner = CliRunner()
-        result = runner.invoke(cli, [
-            "check-source-coverage",
-            "--analysis-dir", str(analysis),
-            "--sources", str(sources),
-            "--mappings", str(mappings),
-            "--warn-only",
-        ])
-        assert result.exit_code == 0, result.output

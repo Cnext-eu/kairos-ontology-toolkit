@@ -548,10 +548,10 @@ ls integration/sources/_analysis/
 > **`propose-alignment` lives here.** The `propose-alignment` step is embedded
 > **primarily in this skill** — it is run as part of the Step 0a.2 alignment-coverage
 > gate (below) to pre-populate the Source Evidence Table. There is no dedicated
-> alignment skill; treat `propose-alignment` (and its `check-alignment` gate) as
+> alignment skill; treat `propose-alignment` (and its `check-claims` gate) as
 > part of the `kairos-design-domain` workflow.
 
-**Step 0a.2 — Alignment-coverage gate (MANDATORY — DD-061):**
+**Step 0a.2 — Claims-coverage gate (MANDATORY — DD-EL-1):**
 
 > **BLOCKING GATE (symmetric to the Step 0c.1b inventory gate).** Before building
 > the Source Evidence Table, verify that `propose-alignment` was run **completely**
@@ -559,22 +559,22 @@ ls integration/sources/_analysis/
 > hand-reading a subset of tables (e.g. mining 2 of 67 domain tables):
 
 ```bash
-kairos-ontology check-alignment --domains <target-domain>
+kairos-ontology check-claims --domains <target-domain>
 ```
 
 - **Exit 0** → every affinity table for the domain has a fresh, complete
-  `{domain}-alignment.yaml`. Proceed.
+  `{domain}-claims.yaml` registry. Proceed.
 - **Exit 1 (missing / incomplete / stale)** → STOP. Run the full alignment pass
   (no domain filter so every domain table is covered), then re-check:
   ```bash
   kairos-ontology propose-alignment
-  kairos-ontology check-alignment --domains <target-domain>
+  kairos-ontology check-claims --domains <target-domain>
   ```
   `propose-alignment` requires affinity reports (`analyse-sources`) to exist first.
   Do **not** proceed to the Source Evidence Table while this gate is red — a red
   gate means some domain tables would be invisible to modeling.
 
-`check-alignment` is read-only and deterministic (no AI). Use `--warn-only` only
+`check-claims` is read-only and deterministic (no AI). Use `--warn-only` only
 as a deliberate, documented override.
 
 > **💸 `propose-alignment` cost, speed & caching (DD-065):** like `analyse-sources`,
@@ -627,9 +627,11 @@ the Source Evidence Table:
   - Focus manual review on `custom_columns` (no ref-model match) and low-confidence alignments
   - The `reference_rollup` shows coverage gaps per ref class
 
-> **Legacy alignment files:** a `schema_version: 1` alignment (no `source_sha256`)
-> is reported by `check-alignment` as *unverifiable* (a warning, not a block).
-> Regenerate it with `propose-alignment` to restore freshness checking.
+> **Legacy alignment files (retired — DD-EL-1):** `{domain}-alignment.yaml` is
+> retired in favour of the Claim Registry (`model/claims/{domain}-claims.yaml`). A
+> hub that still has alignment files must run a one-time
+> `kairos-ontology migrate-claims`; `check-claims` then rejects any remaining
+> alignment YAML. Regenerate with `propose-alignment` to refresh the registry.
 
 
 **Using the affinity report during modeling:**
@@ -1771,29 +1773,26 @@ record an explicit disposition for each:
 - `skip` — operational/audit/technical column with no business value; intentionally
   dropped.
 
-**You MUST write each decision back into `{domain}-alignment.yaml`** by setting the
-`disposition:` field on the matching `custom_columns` entry, and stamp
-`disposition_source: human` so a future `propose-alignment --force` preserves your
-decision (DD-077 WS9 merges human-owned dispositions back; only heuristic-owned
-fields are recomputed). This is what makes the triage verifiable —
-`check-alignment --strict` reads it (see the Completion gate).
+**You MUST record each decision in the Claim Registry**
+(`model/claims/{domain}-claims.yaml`) by setting the candidate claim's `status`
+(`approved` / `rejected` / `deferred`) and `disposition` (`claim` / `specialize`
+/ `passthrough` / `skip`). A re-run of `propose-alignment --force` preserves your
+human decision (the merge keeps curated fields and only refreshes evidence). This
+is what makes the triage verifiable — `check-claims --strict` reads it (see the
+Completion gate).
 
-**Bulk option for large files (hundreds of columns):** when the recommended
-heuristics look right for the audit/vendor-slot columns, run
-`check-alignment --accept-heuristics --strict`: this treats columns whose only
-remaining gap is a heuristic `recommended_disposition` (e.g. CF-slot
-passthrough) as disposed, so you only manually triage the genuine business
-columns. Audit columns already auto-skip. Always eyeball the business columns
-(`recommended_disposition` empty) by hand.
+> **Transition note (DD-EL-1):** the former alignment-YAML disposition workflow
+> (writing `disposition:` onto `custom_columns`, the `--accept-heuristics` /
+> `--check-anchors` flags) is retired. Disposition now lives on registry claims.
+> The detailed registry-curation UX is being finalised in the skills thin-chat
+> redesign; until then, curate claim `status`/`disposition` directly and gate with
+> `check-claims --strict`.
 
-> **Hallucinated anchors (Gate-6, DD-077 WS6).** Before triaging, sanity-check the
-> table anchors. If a `tables[].ref_class` is a class that exists in **no**
-> reference model (e.g. a `Booking`/`Shipment` invented by an older toolkit run),
-> the whole triage is built on fiction. Run `check-alignment --check-anchors` to
-> validate every `ref_class` against the installed reference-model class set; it
-> reports/blocks on hallucinated or unanchored tables (`ref_class_status:
-> rejected|unmatched`). Fix the anchor (or re-run `propose-alignment`) **before**
-> grinding through the columns.
+> **Sanity-check anchors before triaging.** If a proposed claim points at a
+> reference class that exists in **no** installed reference model (a hallucinated
+> anchor from an older run), the triage is built on fiction. Reject the claim or
+> re-run `propose-alignment` to refresh candidates **before** grinding through the
+> columns.
 
 Every column dispositioned `model` flows into the Tier-1 property proposal below.
 
@@ -2066,22 +2065,22 @@ When finishing a domain model, remind the user that extension files will need:
 
 ## Completion: Final Configuration Report
 
-**MANDATORY pre-completion gate — Custom Column Triage (issue #164):**
+**MANDATORY pre-completion gate — Claim curation (DD-EL-1):**
 
 Before generating the final report or marking the domain COMPLETED, run the
 deterministic strict gate and confirm it passes:
 
 ```bash
-kairos-ontology check-alignment --domains <target-domain> --strict
+kairos-ontology check-claims --domains <target-domain> --strict
 ```
 
-- **Exit 0** → every source-evidenced custom column carries a `disposition`
-  (model / silver-passthrough / skip). Proceed to the final report.
-- **Exit 1** → untriaged custom columns remain. STOP, return to Checkpoint 3b,
-  disposition the listed columns in `{domain}-alignment.yaml`, and re-run. Do not
-  mark the domain COMPLETED while this gate is red — undisposed columns are exactly
-  the source-evidenced business attributes (banking, billing, credit, lifecycle
-  flags) that otherwise resurface as unmappable columns during
+- **Exit 0** → every candidate claim is decided (`approved` / `rejected` /
+  `deferred`) — no undecided `proposed` claims remain. Proceed to the final report.
+- **Exit 1** → undecided claims remain. STOP, return to Checkpoint 3b, set the
+  `status`/`disposition` on the listed claims in `{domain}-claims.yaml`, and
+  re-run. Do not mark the domain COMPLETED while this gate is red — undecided
+  claims are exactly the source-evidenced business attributes (banking, billing,
+  credit, lifecycle flags) that otherwise resurface as unmappable columns during
   **kairos-design-mapping**.
 
 `--warn-only` overrides `--strict` and must only be used as a deliberate,

@@ -22,7 +22,7 @@ from unittest import mock
 import yaml
 
 from kairos_ontology.analyse_sources import parse_reference_model
-from kairos_ontology.propose_alignment import run_propose_alignment
+from kairos_ontology.propose_alignment import alignment_to_dict, build_domain_alignments
 
 ACME_HUB = Path(__file__).parent / "acme-hub"
 SOURCES_DIR = ACME_HUB / "integration" / "sources"
@@ -108,22 +108,20 @@ def _affinity_dir(tmp_path):
 
 
 def _run(tmp_path, include_mapping_hints):
-    output = tmp_path / "out"
     with mock.patch(
         "kairos_ontology.propose_alignment.get_ai_client", return_value=_mock_client()
     ), mock.patch(
         "kairos_ontology.propose_alignment.extract_ref_model_inventory",
         return_value=_real_party_classes(),
     ):
-        run_propose_alignment(
+        alignments = build_domain_alignments(
             analysis_dir=_affinity_dir(tmp_path),
             sources_dir=SOURCES_DIR,
             catalog_path=None,
-            output_dir=output,
             include_mapping_hints=include_mapping_hints,
         )
-    data = yaml.safe_load((output / "client-alignment.yaml").read_text(encoding="utf-8"))
-    return data["tables"][0]
+    client = next(a for a in alignments if a.domain == "client")
+    return alignment_to_dict(client)["tables"][0]
 
 
 # ---------------------------------------------------------------------------

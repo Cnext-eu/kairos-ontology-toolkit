@@ -1,25 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Tests for the deterministic alignment-coverage gate (DD-061)."""
+"""Tests for the reused affinity/freshness primitives and triage heuristics.
+
+The alignment-coverage *gate* is retired (DD-EL-1) — its replacement is the
+``check-claims`` gate, covered by ``tests/test_claim_coverage.py``. What remains
+in :mod:`kairos_ontology.alignment_coverage` are the deterministic primitives the
+new gate and ``propose-alignment`` reuse, exercised here.
+"""
 
 from pathlib import Path
 
 import yaml
-from click.testing import CliRunner
 
 from kairos_ontology.alignment_coverage import (
-    ALIGNMENT_ALGORITHM_VERSION,
-    ALIGNMENT_HASH_SCHEMA_VERSION,
-    AnchorIssue,
-    CustomColumn,
-    check_alignment_coverage,
-    collect_anchor_issues,
-    collect_custom_columns,
-    collect_review_columns,
+    auto_disposition,
     compute_affinity_hash,
+    is_generic_vendor_slot,
     load_affinity_domain_tables,
+    recommend_disposition,
 )
-from kairos_ontology.cli.main import cli
 
 
 def _write_affinity(analysis_dir: Path, system: str, tables: list[tuple[str, str]]) -> None:
@@ -34,46 +33,6 @@ def _write_affinity(analysis_dir: Path, system: str, tables: list[tuple[str, str
         ],
     }
     with open(analysis_dir / f"{system}-affinity.yaml", "w", encoding="utf-8") as f:
-        yaml.dump(data, f, sort_keys=False)
-
-
-def _write_alignment(
-    analysis_dir: Path,
-    domain: str,
-    tables: list[tuple[str, str]],
-    *,
-    schema_version: int = ALIGNMENT_HASH_SCHEMA_VERSION,
-    algorithm_version: int | None = ALIGNMENT_ALGORITHM_VERSION,
-    source_sha256: str | None = "__auto__",
-    custom: dict[tuple[str, str], list[dict]] | None = None,
-) -> None:
-    """Write an alignment file. tables = [(system, table), ...].
-
-    ``custom`` maps a ``(system, table)`` pair to a list of ``custom_columns``
-    entries (each a dict with at least ``column``; optional ``suggested_property``
-    and ``disposition``).
-    """
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    if source_sha256 == "__auto__":
-        source_sha256 = compute_affinity_hash(tables)
-    custom = custom or {}
-    data: dict = {
-        "schema_version": schema_version,
-        "domain": domain,
-        "tables": [
-            {
-                "system": s,
-                "table": t,
-                "custom_columns": custom.get((s, t), []),
-            }
-            for s, t in tables
-        ],
-    }
-    if algorithm_version is not None:
-        data["algorithm_version"] = algorithm_version
-    if source_sha256 is not None:
-        data["source_sha256"] = source_sha256
-    with open(analysis_dir / f"{domain}-alignment.yaml", "w", encoding="utf-8") as f:
         yaml.dump(data, f, sort_keys=False)
 
 
@@ -109,272 +68,8 @@ class TestLoadAffinityDomainTables:
         assert result == {"party": {("adminpulse", "tblA")}}
 
 
-class TestCheckAlignmentCoverage:
-
-    def test_ok_when_complete_and_fresh(self, tmp_path):
-        _write_affinity(tmp_path, "adminpulse", [("tblA", "party"), ("tblB", "party")])
-        _write_alignment(tmp_path, "party",
-                         [("adminpulse", "tblA"), ("adminpulse", "tblB")])
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert report.ok == ["party"]
-        assert not report.is_blocking
-
-    def test_missing_alignment_blocks(self, tmp_path):
-        _write_affinity(tmp_path, "adminpulse", [("tblA", "party")])
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert report.missing == ["party"]
-        assert report.is_blocking
-        assert report.uncovered_tables["party"] == ["adminpulse.tblA"]
-
-    def test_incomplete_alignment_blocks(self, tmp_path):
-        _write_affinity(tmp_path, "adminpulse", [("tblA", "party"), ("tblB", "party")])
-        _write_alignment(tmp_path, "party", [("adminpulse", "tblA")])
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert report.incomplete == ["party"]
-        assert report.is_blocking
-        assert report.uncovered_tables["party"] == ["adminpulse.tblB"]
-
-    def test_stale_alignment_blocks(self, tmp_path):
-        _write_affinity(tmp_path, "adminpulse", [("tblA", "party")])
-        # alignment covers tblA but stored hash is for a different set
-        _write_alignment(tmp_path, "party", [("adminpulse", "tblA")],
-                         source_sha256=compute_affinity_hash([("adminpulse", "stale")]))
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert report.stale == ["party"]
-        assert report.is_blocking
-
-    def test_v1_file_is_unverifiable(self, tmp_path):
-        _write_affinity(tmp_path, "adminpulse", [("tblA", "party")])
-        _write_alignment(tmp_path, "party", [("adminpulse", "tblA")],
-                         schema_version=1, source_sha256=None)
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert report.unverifiable == ["party"]
-        assert not report.is_blocking
-        assert report.has_warnings
-
-    def test_old_algorithm_version_is_unverifiable(self, tmp_path):
-        # Issue #182: a complete + fresh file produced by an older alignment
-        # algorithm/prompt contract must be flagged so it is regenerated rather
-        # than trusted (it may carry pre-hardening confident-but-wrong output).
-        _write_affinity(tmp_path, "adminpulse", [("tblA", "party")])
-        _write_alignment(tmp_path, "party", [("adminpulse", "tblA")],
-                         algorithm_version=ALIGNMENT_ALGORITHM_VERSION - 1)
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert report.unverifiable == ["party"]
-        assert not report.is_blocking
-
-    def test_missing_algorithm_version_is_unverifiable(self, tmp_path):
-        # A legacy file with a freshness hash but no algorithm_version field.
-        _write_affinity(tmp_path, "adminpulse", [("tblA", "party")])
-        _write_alignment(tmp_path, "party", [("adminpulse", "tblA")],
-                         algorithm_version=None)
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert report.unverifiable == ["party"]
-
-    def test_orphan_alignment_warns(self, tmp_path):
-        _write_affinity(tmp_path, "adminpulse", [("tblA", "party")])
-        _write_alignment(tmp_path, "party", [("adminpulse", "tblA")])
-        _write_alignment(tmp_path, "ghost", [("adminpulse", "tblZ")])
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert report.orphan == ["ghost-alignment.yaml"]
-        assert report.has_warnings
-
-    def test_domain_filter(self, tmp_path):
-        _write_affinity(tmp_path, "adminpulse", [("tblA", "party"), ("tblB", "commercial")])
-        _write_alignment(tmp_path, "party", [("adminpulse", "tblA")])
-        report = check_alignment_coverage(analysis_dir=tmp_path, domains_filter=["party"])
-        assert report.ok == ["party"]
-        # commercial out of scope → not reported missing
-        assert report.missing == []
-
-
-class TestCheckAlignmentCLI:
-
-    def test_blocks_when_missing(self, tmp_path):
-        analysis = tmp_path / "integration" / "sources" / "_analysis"
-        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
-        runner = CliRunner()
-        result = runner.invoke(cli, [
-            "check-alignment", "--analysis-dir", str(analysis),
-        ])
-        assert result.exit_code == 1, result.output
-        assert "MISSING" in result.output
-
-    def test_warn_only_exits_zero(self, tmp_path):
-        analysis = tmp_path / "_analysis"
-        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
-        runner = CliRunner()
-        result = runner.invoke(cli, [
-            "check-alignment", "--analysis-dir", str(analysis), "--warn-only",
-        ])
-        assert result.exit_code == 0, result.output
-
-    def test_passes_when_complete(self, tmp_path):
-        analysis = tmp_path / "_analysis"
-        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
-        _write_alignment(analysis, "party", [("adminpulse", "tblA")])
-        runner = CliRunner()
-        result = runner.invoke(cli, [
-            "check-alignment", "--analysis-dir", str(analysis),
-        ])
-        assert result.exit_code == 0, result.output
-        assert "up to date" in result.output
-
-
-# ---------------------------------------------------------------------------
-# Issue #164 — custom-column triage
-# ---------------------------------------------------------------------------
-
-
-class TestCollectCustomColumns:
-
-    def test_extracts_and_classifies(self):
-        data = {
-            "tables": [
-                {
-                    "system": "qargo",
-                    "table": "companies",
-                    "custom_columns": [
-                        {"column": "credit_limit", "suggested_property": "creditLimit"},
-                        {"column": "created_at"},
-                    ],
-                }
-            ]
-        }
-        cols = collect_custom_columns(data)
-        assert len(cols) == 2
-        biz = next(c for c in cols if c.column == "credit_limit")
-        assert biz.identity == "qargo.companies.credit_limit"
-        assert biz.suggested_property == "creditLimit"
-        assert biz.operational is False
-        assert biz.disposed is False
-        audit = next(c for c in cols if c.column == "created_at")
-        assert audit.operational is True
-
-    def test_disposed_when_disposition_set(self):
-        cc = CustomColumn(system="s", table="t", column="c", disposition="skip")
-        assert cc.disposed is True
-        assert CustomColumn(system="s", table="t", column="c").disposed is False
-        assert CustomColumn(
-            system="s", table="t", column="c", disposition="  "
-        ).disposed is False
-
-    def test_handles_missing_custom_columns(self):
-        assert collect_custom_columns({"tables": [{"system": "s", "table": "t"}]}) == []
-
-
-class TestCustomColumnReport:
-
-    def _setup(self, tmp_path, custom):
-        _write_affinity(tmp_path, "qargo", [("companies", "party")])
-        _write_alignment(
-            tmp_path, "party", [("qargo", "companies")],
-            custom={("qargo", "companies"): custom},
-        )
-
-    def test_collected_in_report(self, tmp_path):
-        self._setup(tmp_path, [{"column": "credit_limit"}])
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert "party" in report.custom_columns
-        assert report.has_undisposed_custom_columns is True
-        assert len(report.undisposed_custom_columns("party")) == 1
-
-    def test_disposed_columns_not_flagged(self, tmp_path):
-        self._setup(tmp_path, [{"column": "credit_limit", "disposition": "model"}])
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert report.has_undisposed_custom_columns is False
-        assert report.undisposed_custom_columns("party") == []
-
-    def test_no_custom_columns(self, tmp_path):
-        self._setup(tmp_path, [])
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert report.has_undisposed_custom_columns is False
-        assert report.custom_columns == {}
-
-    def test_collected_even_when_incomplete(self, tmp_path):
-        # Domain has two affinity tables but only one is aligned (incomplete);
-        # custom columns on the aligned table must still surface.
-        _write_affinity(tmp_path, "qargo", [("companies", "party"), ("contacts", "party")])
-        _write_alignment(
-            tmp_path, "party", [("qargo", "companies")],
-            source_sha256="stale-or-partial",
-            custom={("qargo", "companies"): [{"column": "credit_limit"}]},
-        )
-        report = check_alignment_coverage(analysis_dir=tmp_path)
-        assert "party" in report.incomplete
-        assert report.has_undisposed_custom_columns is True
-
-
-class TestStrictCustomColumnGate:
-
-    def _setup(self, tmp_path, custom):
-        analysis = tmp_path / "_analysis"
-        _write_affinity(analysis, "qargo", [("companies", "party")])
-        _write_alignment(
-            analysis, "party", [("qargo", "companies")],
-            custom={("qargo", "companies"): custom},
-        )
-        return analysis
-
-    def test_default_warns_does_not_block(self, tmp_path):
-        analysis = self._setup(tmp_path, [{"column": "credit_limit"}])
-        result = CliRunner().invoke(cli, [
-            "check-alignment", "--analysis-dir", str(analysis),
-        ])
-        assert result.exit_code == 0, result.output
-        assert "credit_limit" in result.output
-
-    def test_strict_blocks_undisposed(self, tmp_path):
-        analysis = self._setup(tmp_path, [{"column": "credit_limit"}])
-        result = CliRunner().invoke(cli, [
-            "check-alignment", "--analysis-dir", str(analysis), "--strict",
-        ])
-        assert result.exit_code == 1, result.output
-        assert "untriaged custom columns" in result.output
-
-    def test_strict_passes_when_all_disposed(self, tmp_path):
-        analysis = self._setup(
-            tmp_path, [{"column": "credit_limit", "disposition": "model"}]
-        )
-        result = CliRunner().invoke(cli, [
-            "check-alignment", "--analysis-dir", str(analysis), "--strict",
-        ])
-        assert result.exit_code == 0, result.output
-
-    def test_strict_warn_only_exits_zero(self, tmp_path):
-        analysis = self._setup(tmp_path, [{"column": "credit_limit"}])
-        result = CliRunner().invoke(cli, [
-            "check-alignment", "--analysis-dir", str(analysis),
-            "--strict", "--warn-only",
-        ])
-        assert result.exit_code == 0, result.output
-
-    def test_accept_heuristics_unblocks_cf_slot(self, tmp_path):
-        # WS2 (issue #182): a generic vendor slot recommends silver-passthrough and
-        # is accepted under --accept-heuristics, but a business column still blocks.
-        analysis = self._setup(tmp_path, [{"column": "CFSTRING33"}])
-        blocked = CliRunner().invoke(cli, [
-            "check-alignment", "--analysis-dir", str(analysis), "--strict",
-        ])
-        assert blocked.exit_code == 1, blocked.output
-        accepted = CliRunner().invoke(cli, [
-            "check-alignment", "--analysis-dir", str(analysis), "--strict",
-            "--accept-heuristics",
-        ])
-        assert accepted.exit_code == 0, accepted.output
-
-    def test_accept_heuristics_still_blocks_business_column(self, tmp_path):
-        analysis = self._setup(tmp_path, [{"column": "credit_limit"}])
-        result = CliRunner().invoke(cli, [
-            "check-alignment", "--analysis-dir", str(analysis), "--strict",
-            "--accept-heuristics",
-        ])
-        assert result.exit_code == 1, result.output
-
-
 class TestDispositionHeuristics:
     def test_generic_vendor_slot_detection(self):
-        from kairos_ontology.alignment_coverage import is_generic_vendor_slot
         assert is_generic_vendor_slot("CFSTRING33")
         assert is_generic_vendor_slot("CFENUMERATION54")
         assert is_generic_vendor_slot("CF12")
@@ -382,205 +77,15 @@ class TestDispositionHeuristics:
         assert not is_generic_vendor_slot("CFWASTESURCHAMOUNT")
 
     def test_recommend_disposition(self):
-        from kairos_ontology.alignment_coverage import recommend_disposition
         assert recommend_disposition("CFSTRING33") == "silver-passthrough"
         assert recommend_disposition("created_on") == "skip"
         assert recommend_disposition("tenant_id") == "skip"
         assert recommend_disposition("credit_limit") == ""
 
     def test_auto_disposition_narrow(self):
-        from kairos_ontology.alignment_coverage import auto_disposition
         assert auto_disposition("CREATEDON") == "skip"
         assert auto_disposition("tenant_id") == "skip"
         # A generic vendor slot is NOT auto-disposed (stays a conscious decision).
         assert auto_disposition("CFSTRING33") is None
         # A business column is never auto-disposed.
         assert auto_disposition("credit_limit") is None
-
-    def test_effective_disposed(self):
-        c = CustomColumn(system="s", table="t", column="CFSTRING33",
-                         recommended_disposition="silver-passthrough")
-        assert c.disposed is False
-        assert c.effective_disposed(accept_heuristics=False) is False
-        assert c.effective_disposed(accept_heuristics=True) is True
-        biz = CustomColumn(system="s", table="t", column="credit_limit",
-                           recommended_disposition="")
-        assert biz.effective_disposed(accept_heuristics=True) is False
-
-
-def _write_alignment_with_reviews(
-    analysis_dir: Path,
-    domain: str,
-    system: str,
-    table: str,
-    columns: list[dict],
-) -> None:
-    """Write an alignment file whose single table has the given ``columns``."""
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    data = {
-        "schema_version": ALIGNMENT_HASH_SCHEMA_VERSION,
-        "domain": domain,
-        "source_sha256": compute_affinity_hash([(system, table)]),
-        "tables": [{"system": system, "table": table, "columns": columns}],
-    }
-    with open(analysis_dir / f"{domain}-alignment.yaml", "w", encoding="utf-8") as f:
-        yaml.dump(data, f, sort_keys=False)
-
-
-class TestCollectReviewColumns:
-    def test_collects_only_flagged(self):
-        data = {
-            "tables": [
-                {
-                    "system": "qargo",
-                    "table": "companies",
-                    "columns": [
-                        {"column": "name", "ref_property": "partyName"},
-                        {"column": "SHIPPER_STREET", "ref_property": "partyName",
-                         "review": True, "review_reason": "address-part column"},
-                    ],
-                }
-            ]
-        }
-        flagged = collect_review_columns(data)
-        assert len(flagged) == 1
-        assert flagged[0].column == "SHIPPER_STREET"
-        assert flagged[0].identity == "qargo.companies.SHIPPER_STREET"
-        assert "address-part" in flagged[0].reason
-
-    def test_empty_when_none_flagged(self):
-        data = {"tables": [{"system": "s", "table": "t",
-                            "columns": [{"column": "c", "ref_property": "p"}]}]}
-        assert collect_review_columns(data) == []
-
-
-class TestReviewColumnsReportOnly:
-
-    def _setup(self, tmp_path):
-        analysis = tmp_path / "_analysis"
-        _write_affinity(analysis, "qargo", [("companies", "party")])
-        _write_alignment_with_reviews(
-            analysis, "party", "qargo", "companies",
-            columns=[
-                {"column": "SHIPPER_STREET", "ref_property": "partyName",
-                 "review": True, "review_reason": "address-part column mapped to "
-                 "non-address property"},
-            ],
-        )
-        return analysis
-
-    def test_review_columns_collected(self, tmp_path):
-        analysis = self._setup(tmp_path)
-        report = check_alignment_coverage(analysis_dir=analysis)
-        assert "party" in report.review_columns
-        assert report.review_columns["party"][0].column == "SHIPPER_STREET"
-
-    def test_review_does_not_block(self, tmp_path):
-        """DD-069: review flags are report-only — never block, even with --strict."""
-        analysis = self._setup(tmp_path)
-        report = check_alignment_coverage(analysis_dir=analysis)
-        assert report.is_blocking is False
-        assert report.has_undisposed_custom_columns is False
-
-    def test_cli_reports_review_section(self, tmp_path):
-        analysis = self._setup(tmp_path)
-        for flag in ([], ["--strict"]):
-            result = CliRunner().invoke(cli, [
-                "check-alignment", "--analysis-dir", str(analysis), *flag,
-            ])
-            assert result.exit_code == 0, result.output
-            assert "flagged for review" in result.output
-            assert "SHIPPER_STREET" in result.output
-
-
-def _write_alignment_with_anchor(
-    analysis_dir: Path,
-    domain: str,
-    system: str,
-    table: str,
-    ref_class: str,
-    *,
-    ref_class_status: str | None = None,
-    rejected_ref_class: str | None = None,
-) -> None:
-    """Write a minimal complete+fresh alignment file with one anchored table."""
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    tbl: dict = {"system": system, "table": table, "ref_class": ref_class,
-                 "columns": [], "custom_columns": []}
-    if ref_class_status is not None:
-        tbl["ref_class_status"] = ref_class_status
-    if rejected_ref_class is not None:
-        tbl["rejected_ref_class"] = rejected_ref_class
-    data = {
-        "schema_version": ALIGNMENT_HASH_SCHEMA_VERSION,
-        "algorithm_version": ALIGNMENT_ALGORITHM_VERSION,
-        "domain": domain,
-        "tables": [tbl],
-        "source_sha256": compute_affinity_hash([(system, table)]),
-    }
-    with open(analysis_dir / f"{domain}-alignment.yaml", "w", encoding="utf-8") as f:
-        yaml.dump(data, f, sort_keys=False)
-
-
-class TestCollectAnchorIssues:
-    def test_hallucinated_anchor_detected(self):
-        data = {"tables": [
-            {"system": "bsp", "table": "bookings", "ref_class": "Booking"},
-            {"system": "bsp", "table": "requests", "ref_class": "BookingRequest"},
-        ]}
-        issues = collect_anchor_issues(data, {"BookingRequest", "ConfirmedBooking"})
-        kinds = {(i.table, i.kind) for i in issues}
-        assert ("bookings", "hallucinated") in kinds
-        # A real class produces no issue.
-        assert all(i.table != "requests" for i in issues)
-
-    def test_rejected_status_surfaced(self):
-        data = {"tables": [
-            {"system": "s", "table": "t", "ref_class": "",
-             "ref_class_status": "rejected", "rejected_ref_class": "Booking"},
-        ]}
-        issues = collect_anchor_issues(data, {"BookingRequest"})
-        assert issues[0].kind == "rejected"
-        assert issues[0].rejected_ref_class == "Booking"
-
-    def test_real_anchor_no_issue(self):
-        data = {"tables": [
-            {"system": "s", "table": "t", "ref_class": "ConfirmedBooking"},
-        ]}
-        assert collect_anchor_issues(data, {"ConfirmedBooking"}) == []
-
-
-class TestAnchorGate:
-    def test_anchor_check_off_by_default(self, tmp_path):
-        analysis = tmp_path / "_analysis"
-        _write_affinity(analysis, "bsp", [("bookings", "booking")])
-        _write_alignment_with_anchor(analysis, "booking", "bsp", "bookings", "Booking")
-        report = check_alignment_coverage(analysis_dir=analysis)
-        assert report.has_hallucinated_anchors is False
-        assert report.anchor_issues == {}
-
-    def test_hallucinated_anchor_flagged_and_blocks(self, tmp_path):
-        analysis = tmp_path / "_analysis"
-        _write_affinity(analysis, "bsp", [("bookings", "booking")])
-        _write_alignment_with_anchor(analysis, "booking", "bsp", "bookings", "Booking")
-        report = check_alignment_coverage(
-            analysis_dir=analysis, check_anchors=True,
-            valid_ref_classes={"BookingRequest", "ConfirmedBooking"},
-        )
-        assert report.has_hallucinated_anchors is True
-        assert report.hallucinated_anchors[0].ref_class == "Booking"
-
-    def test_valid_anchor_passes(self, tmp_path):
-        analysis = tmp_path / "_analysis"
-        _write_affinity(analysis, "bsp", [("requests", "booking")])
-        _write_alignment_with_anchor(
-            analysis, "booking", "bsp", "requests", "BookingRequest")
-        report = check_alignment_coverage(
-            analysis_dir=analysis, check_anchors=True,
-            valid_ref_classes={"BookingRequest", "ConfirmedBooking"},
-        )
-        assert report.has_hallucinated_anchors is False
-
-    def test_anchor_issue_identity(self):
-        ai = AnchorIssue(system="s", table="t", kind="hallucinated", ref_class="X")
-        assert ai.identity == "s.t"

@@ -380,15 +380,16 @@ ref:hasConsignmentItem
 
 ## Phase 4 — Generate output (handoff to projection skill)
 
-> **Pre-silver source-coverage gate (MANDATORY — DD-061).** Before generating the
+> **Pre-silver claims gate (MANDATORY — DD-EL-1).** Before generating the
 > silver layer, verify that the ontology + mappings actually cover every source
 > table the affinity reports assign to the in-scope domains — so silver is built
-> against a **complete** ontology, not a partial one:
+> against a **complete** ontology, not a partial one (`check-claims` includes the
+> pre-silver mapping-coverage check):
 >
 > ```bash
-> kairos-ontology check-source-coverage
+> kairos-ontology check-claims
 > # or scope to a single domain:
-> kairos-ontology check-source-coverage --domains <domain>
+> kairos-ontology check-claims --domains <domain>
 > ```
 >
 > - **Exit 0** → every affinity-assigned source table is mapped to a domain entity.
@@ -398,10 +399,10 @@ ref:hasConsignmentItem
 >   Complete the mappings via the **kairos-design-mapping** skill (and, if classes
 >   are missing, the **kairos-design-domain** skill), then re-check.
 >
-> `check-source-coverage` is read-only and deterministic (no AI). Use `--warn-only`
+> `check-claims` is read-only and deterministic (no AI). Use `--warn-only`
 > only as a deliberate, documented override (e.g. a domain you intentionally defer).
 
-Once your silver extension annotations are complete **and the source-coverage gate
+Once your silver extension annotations are complete **and the claims gate
 is green**, generate the artifacts by invoking the **kairos-execute-project** skill
 with target `silver` (for DDL + ERD) or `dbt` (for dbt models — requires SKOS
 mappings).

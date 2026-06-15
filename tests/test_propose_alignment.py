@@ -11,7 +11,6 @@ import pytest
 import yaml
 
 from kairos_ontology.propose_alignment import (
-    ALIGNMENT_ALGORITHM_VERSION,
     ColumnAlignment,
     DomainAlignment,
     TableAlignment,
@@ -20,8 +19,8 @@ from kairos_ontology.propose_alignment import (
     _build_property_label_index,
     _build_reference_rollup,
     _downgrade_catch_all_suggestions,
-    _read_alignment_affinity_hash,
-    _read_alignment_params_hash,
+    _read_claims_affinity_hash,
+    _read_claims_params_hash,
     _clamp_confidence,
     _compact_prompt_samples,
     _detect_address_part,
@@ -36,11 +35,14 @@ from kairos_ontology.propose_alignment import (
     _should_retry_with_full_inventory,
     _transform_compat_note,
     align_table,
+    alignment_to_dict,
     build_alignment_prompt,
+    build_domain_alignments,
     load_affinity_reports,
     run_propose_alignment,
-    write_alignment_output,
+    write_claims_output,
 )
+from kairos_ontology.claim_registry import load_registry
 
 
 # ---------------------------------------------------------------------------
@@ -525,12 +527,12 @@ class TestClampConfidence:
 
 
 # ---------------------------------------------------------------------------
-# Tests: write_alignment_output
+# Tests: alignment_to_dict (the pure transformation feeding the Claim Registry)
 # ---------------------------------------------------------------------------
 
 
-class TestWriteAlignmentOutput:
-    def test_writes_yaml(self, tmp_path):
+class TestAlignmentToDict:
+    def test_builds_dict(self, tmp_path):
         alignment = DomainAlignment(
             domain="commercial",
             domain_uris=["https://example.com/ont/commercial#"],
@@ -560,12 +562,7 @@ class TestWriteAlignmentOutput:
             ],
         )
 
-        out_path = write_alignment_output(alignment, tmp_path)
-        assert out_path.name == "commercial-alignment.yaml"
-        assert out_path.exists()
-
-        with open(out_path) as f:
-            data = yaml.safe_load(f)
+        data = alignment_to_dict(alignment)
 
         assert data["schema_version"] == 2
         assert data["domain"] == "commercial"
@@ -575,11 +572,10 @@ class TestWriteAlignmentOutput:
         assert data["tables"][0]["columns"][0]["alignment"] == "semantic"
         assert len(data["tables"][0]["custom_columns"]) == 1
 
-    def test_affinity_hash_round_trips_through_reader(self, tmp_path):
-        # Issue #182 regression: the writer persists the freshness hash under the
-        # ``source_sha256`` key, so ``_read_alignment_affinity_hash`` must read the
-        # same key for the domain-level cache skip to ever fire. Previously the
-        # reader looked for ``affinity_sha256`` (never written) → dead skip.
+    def test_freshness_hash_round_trips_through_claims_reader(self, tmp_path):
+        # DD-EL-1: the producer persists the freshness hashes under the registry's
+        # ``freshness`` section; the claims readers must read the same keys so the
+        # domain-level cache skip in ``run_propose_alignment`` fires.
         alignment = DomainAlignment(
             domain="commercial",
             domain_uris=["https://example.com/ont/commercial#"],
@@ -588,14 +584,15 @@ class TestWriteAlignmentOutput:
             affinity_sha256="deadbeefcafe",
             alignment_params_sha256="paramshash123",
         )
-        out_path = write_alignment_output(alignment, tmp_path)
+        out_path = write_claims_output(alignment, tmp_path)
+        assert out_path.name == "commercial-claims.yaml"
 
-        data = yaml.safe_load(out_path.read_text(encoding="utf-8"))
-        assert data["source_sha256"] == "deadbeefcafe"
-        assert data["algorithm_version"] == ALIGNMENT_ALGORITHM_VERSION
+        registry = load_registry(out_path)
+        assert registry.freshness.affinity_sha256 == "deadbeefcafe"
+        assert registry.freshness.alignment_params_sha256 == "paramshash123"
 
-        assert _read_alignment_affinity_hash(out_path) == "deadbeefcafe"
-        assert _read_alignment_params_hash(out_path) == "paramshash123"
+        assert _read_claims_affinity_hash(out_path) == "deadbeefcafe"
+        assert _read_claims_params_hash(out_path) == "paramshash123"
 
     def test_review_flags_emitted_only_when_set(self, tmp_path):
         """DD-069: review/review_reason emitted only when a column is flagged."""
@@ -633,129 +630,12 @@ class TestWriteAlignmentOutput:
                 ),
             ],
         )
-        out_path = write_alignment_output(alignment, tmp_path)
-        with open(out_path) as f:
-            data = yaml.safe_load(f)
+        data = alignment_to_dict(alignment)
         cols = data["tables"][0]["columns"]
         clean, flagged = cols[0], cols[1]
         assert "review" not in clean and "review_reason" not in clean
         assert flagged["review"] is True
         assert "address-part" in flagged["review_reason"]
-
-
-# ---------------------------------------------------------------------------
-# Tests: WS9 disposition preservation on regeneration (issue #182)
-# ---------------------------------------------------------------------------
-
-
-class TestPreserveHumanDispositions:
-    def _alignment(self, custom_columns):
-        return DomainAlignment(
-            domain="consignment",
-            domain_uris=["https://example.com/ont/consignment#"],
-            generated_at="2026-06-05T10:00:00Z",
-            model_used="gpt-5.4-mini",
-            tables=[
-                TableAlignment(
-                    system="qargo",
-                    table="shipments",
-                    ref_class="Consignment",
-                    ref_class_confidence=0.9,
-                    custom_columns=custom_columns,
-                ),
-            ],
-        )
-
-    def test_human_disposition_survives_regeneration(self, tmp_path):
-        # First write: a modeler hand-triages a business column to "model".
-        first = self._alignment([
-            {"column": "co2e_well_to_wheel", "data_type": "float",
-             "suggested_property": None, "disposition": "model",
-             "disposition_source": "human", "recommended_disposition": ""},
-        ])
-        write_alignment_output(first, tmp_path)
-
-        # Regeneration (e.g. --force) produces a fresh undisposed column.
-        regen = self._alignment([
-            {"column": "co2e_well_to_wheel", "data_type": "float",
-             "suggested_property": None, "disposition": None,
-             "disposition_source": "", "recommended_disposition": ""},
-        ])
-        out = write_alignment_output(regen, tmp_path)
-
-        data = yaml.safe_load(out.read_text(encoding="utf-8"))
-        col = data["tables"][0]["custom_columns"][0]
-        assert col["disposition"] == "model"
-        assert col["disposition_source"] == "human"
-
-    def test_heuristic_disposition_is_recomputed(self, tmp_path):
-        # A heuristic-owned disposition is not preserved — it is recomputed.
-        first = self._alignment([
-            {"column": "created_on", "data_type": "datetime",
-             "suggested_property": None, "disposition": "skip",
-             "disposition_source": "heuristic", "recommended_disposition": "skip"},
-        ])
-        write_alignment_output(first, tmp_path)
-
-        regen = self._alignment([
-            {"column": "created_on", "data_type": "datetime",
-             "suggested_property": None, "disposition": "silver-passthrough",
-             "disposition_source": "heuristic", "recommended_disposition": "skip"},
-        ])
-        out = write_alignment_output(regen, tmp_path)
-
-        data = yaml.safe_load(out.read_text(encoding="utf-8"))
-        col = data["tables"][0]["custom_columns"][0]
-        # The new (heuristic) value stands; the old heuristic value is not restored.
-        assert col["disposition"] == "silver-passthrough"
-
-    def test_legacy_disposition_without_source_treated_as_human(self, tmp_path):
-        # A pre-WS2 file carries a disposition with no source stamp → treat as human.
-        first = self._alignment([
-            {"column": "loaded_distance_km", "data_type": "float",
-             "suggested_property": None, "disposition": "model"},
-        ])
-        write_alignment_output(first, tmp_path)
-
-        regen = self._alignment([
-            {"column": "loaded_distance_km", "data_type": "float",
-             "suggested_property": None, "disposition": None,
-             "disposition_source": ""},
-        ])
-        out = write_alignment_output(regen, tmp_path)
-
-        data = yaml.safe_load(out.read_text(encoding="utf-8"))
-        col = data["tables"][0]["custom_columns"][0]
-        assert col["disposition"] == "model"
-        assert col["disposition_source"] == "human"
-
-    def test_human_note_preserved_when_absent_in_regen(self, tmp_path):
-        first = self._alignment([
-            {"column": "tank_to_wheel", "data_type": "float",
-             "suggested_property": None, "disposition": "model",
-             "disposition_source": "human", "note": "MRV emissions metric"},
-        ])
-        write_alignment_output(first, tmp_path)
-
-        regen = self._alignment([
-            {"column": "tank_to_wheel", "data_type": "float",
-             "suggested_property": None, "disposition": None,
-             "disposition_source": ""},
-        ])
-        out = write_alignment_output(regen, tmp_path)
-
-        data = yaml.safe_load(out.read_text(encoding="utf-8"))
-        col = data["tables"][0]["custom_columns"][0]
-        assert col["note"] == "MRV emissions metric"
-
-    def test_no_existing_file_is_noop(self, tmp_path):
-        regen = self._alignment([
-            {"column": "x", "data_type": "int", "suggested_property": None,
-             "disposition": None, "disposition_source": ""},
-        ])
-        out = write_alignment_output(regen, tmp_path)
-        data = yaml.safe_load(out.read_text(encoding="utf-8"))
-        assert data["tables"][0]["custom_columns"][0]["disposition"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1044,7 +924,6 @@ class TestRunProposeAlignment:
             },
         }
         client = self._mock_client(responses)
-        output = tmp_path / "output"
 
         with mock.patch(
             "kairos_ontology.propose_alignment.get_ai_client", return_value=client
@@ -1058,21 +937,19 @@ class TestRunProposeAlignment:
                  ]},
             ],
         ):
-            files = run_propose_alignment(
+            alignments = build_domain_alignments(
                 analysis_dir=analysis_dir,
                 sources_dir=sources_dir,
                 catalog_path=None,
-                output_dir=output,
             )
 
-        assert len(files) == 2  # commercial + party
-        names = {f.name for f in files}
-        assert "commercial-alignment.yaml" in names
-        assert "party-alignment.yaml" in names
+        assert len(alignments) == 2  # commercial + party
+        domains = {a.domain for a in alignments}
+        assert domains == {"commercial", "party"}
 
-        # Verify commercial alignment content
-        with open(output / "commercial-alignment.yaml") as f:
-            data = yaml.safe_load(f)
+        # Verify commercial alignment content (rich transformation surface)
+        commercial = next(a for a in alignments if a.domain == "commercial")
+        data = alignment_to_dict(commercial)
         assert data["schema_version"] == 2
         assert data["domain"] == "commercial"
         assert len(data["tables"]) == 1
@@ -1083,7 +960,7 @@ class TestRunProposeAlignment:
         # 2 matched (semantic) + 0 custom in columns (custom goes to custom_columns)
         assert len(tbl["columns"]) == 2
         assert len(tbl["custom_columns"]) == 1
-        # Issue #164: custom columns are written with a null disposition awaiting triage.
+        # Issue #164: custom columns carry a null disposition awaiting triage.
         assert tbl["custom_columns"][0]["disposition"] is None
 
     def test_review_flag_end_to_end(self, analysis_dir, tmp_path):
@@ -1113,7 +990,6 @@ class TestRunProposeAlignment:
             },
         }
         client = self._mock_client(responses)
-        output = tmp_path / "output"
         with mock.patch(
             "kairos_ontology.propose_alignment.get_ai_client", return_value=client
         ), mock.patch(
@@ -1125,16 +1001,14 @@ class TestRunProposeAlignment:
                  ]},
             ],
         ):
-            run_propose_alignment(
+            alignments = build_domain_alignments(
                 analysis_dir=analysis_dir,
                 sources_dir=tmp_path / "sources",
                 catalog_path=None,
-                output_dir=output,
                 domains_filter=["party"],
             )
 
-        with open(output / "party-alignment.yaml") as f:
-            data = yaml.safe_load(f)
+        data = alignment_to_dict(alignments[0])
         col = data["tables"][0]["columns"][0]
         assert col["column"] == "SHIPPER_STREET"
         assert col["review"] is True
@@ -1166,7 +1040,7 @@ class TestRunProposeAlignment:
             )
 
         assert len(files) == 1
-        assert files[0].name == "commercial-alignment.yaml"
+        assert files[0].name == "commercial-claims.yaml"
 
     def test_no_affinity_reports_raises(self, tmp_path):
         with pytest.raises(ValueError, match="No affinity reports"):
@@ -1373,12 +1247,14 @@ class TestAlignmentConcurrencyAndCaching:
             self._counting_client([]), analysis_dir, sources_dir, parallel_out,
             max_workers=4, force=True,
         )
-        for name in ("commercial-alignment.yaml", "party-alignment.yaml"):
-            s = yaml.safe_load((serial_out / name).read_text(encoding="utf-8"))
-            p = yaml.safe_load((parallel_out / name).read_text(encoding="utf-8"))
-            # generated_at differs; compare the table payloads only.
-            assert [t["table"] for t in s["tables"]] == [t["table"] for t in p["tables"]]
-            assert s["tables"] == p["tables"]
+        for name in ("commercial-claims.yaml", "party-claims.yaml"):
+            s = load_registry(serial_out / name)
+            p = load_registry(parallel_out / name)
+            # generated_at differs; compare the deterministic claim payloads only.
+            s_claims = [c.to_dict() for c in s.claims]
+            p_claims = [c.to_dict() for c in p.claims]
+            assert [c["id"] for c in s_claims] == [c["id"] for c in p_claims]
+            assert s_claims == p_claims
 
 
 # placeholder-marker-for-append
@@ -1605,8 +1481,7 @@ class TestWriteAlignmentOutputCrossModule:
                 "source_columns": ["adminpulse.tblParties.SHIPPER_STREET"],
             }],
         )
-        out = write_alignment_output(alignment, tmp_path)
-        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        data = alignment_to_dict(alignment)
         col = data["tables"][0]["columns"][0]
         assert col["ref_module"] == "reference-data"
         assert col["belongs_to_domains"] == ["party", "commercial"]
@@ -1626,8 +1501,7 @@ class TestWriteAlignmentOutputCrossModule:
             generated_at="2026-01-01T00:00:00Z", model_used="gpt",
             tables=[ta], affinity_sha256="abc",
         )
-        out = write_alignment_output(alignment, tmp_path)
-        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        data = alignment_to_dict(alignment)
         assert "ref_module" not in data["tables"][0]["columns"][0]
         assert "alignment_params_sha256" not in data
         assert "cross_module_matches" not in data
@@ -1702,12 +1576,34 @@ class TestRunProposeAlignmentCrossModule:
                 **kw,
             )
 
+    def _build(self, analysis_dir, party_sources, calls=None, **kw):
+        with mock.patch(
+            "kairos_ontology.propose_alignment.get_ai_client",
+            return_value=self._client(calls),
+        ), mock.patch(
+            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            side_effect=self._inventory_side_effect,
+        ), mock.patch(
+            "kairos_ontology.analyse_sources.load_accelerator_uri_modules",
+            return_value={
+                PARTY_URI: {"module": "party", "domains": ["party"]},
+                SIBLING_URI: {"module": "reference-data",
+                              "domains": ["party", "commercial"]},
+            },
+        ):
+            return build_domain_alignments(
+                analysis_dir=analysis_dir,
+                sources_dir=party_sources,
+                catalog_path=None,
+                domains_filter=["party"],
+                **kw,
+            )
+
     def test_column_matches_sibling_module(self, analysis_dir, party_sources, tmp_path):
-        out = tmp_path / "out"
-        self._run(analysis_dir, party_sources, out,
-                  cross_module=True, accelerator="logistics",
-                  ref_models_dir=tmp_path)
-        data = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
+        alignments = self._build(analysis_dir, party_sources,
+                                 cross_module=True, accelerator="logistics",
+                                 ref_models_dir=tmp_path)
+        data = alignment_to_dict(alignments[0])
         # Table still classifies to the HOME class.
         assert data["tables"][0]["ref_class"] == "TradeParty"
         col = data["tables"][0]["columns"][0]
@@ -1725,9 +1621,9 @@ class TestRunProposeAlignmentCrossModule:
 
     def test_full_inventory_retry_disabled(self, analysis_dir, party_sources, tmp_path):
         calls: list[str] = []
-        self._run(analysis_dir, party_sources, tmp_path / "out", calls=calls,
-                  cross_module=True, accelerator="logistics",
-                  ref_models_dir=tmp_path, max_prompt_classes=1)
+        self._build(analysis_dir, party_sources, calls=calls,
+                    cross_module=True, accelerator="logistics",
+                    ref_models_dir=tmp_path, max_prompt_classes=1)
         # Exactly one LLM call for the single party table — no full-inventory retry.
         assert len(calls) == 1
 
@@ -1735,16 +1631,15 @@ class TestRunProposeAlignmentCrossModule:
         self, analysis_dir, party_sources, tmp_path
     ):
         out = tmp_path / "out"
-        # First: a default (home-only) run → no params hash recorded.
+        # First: a default (home-only) run writes claims with a home-only params hash.
         self._run(analysis_dir, party_sources, out)
-        first = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
-        assert "cross_module_matches" not in first
-        # Then: a cross-module run with the same affinity must NOT be skipped.
-        self._run(analysis_dir, party_sources, out,
+        # Then: a cross-module run with the same affinity but different params must
+        # NOT be domain-skipped — a wrongly-fired skip would make zero LLM calls.
+        calls: list[str] = []
+        self._run(analysis_dir, party_sources, out, calls=calls,
                   cross_module=True, accelerator="logistics",
                   ref_models_dir=tmp_path)
-        second = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
-        assert "cross_module_matches" in second
+        assert len(calls) >= 1
 
     def test_requires_accelerator(self, analysis_dir, party_sources, tmp_path):
         with pytest.raises(ValueError, match="requires an accelerator"):
@@ -1842,8 +1737,7 @@ class TestSampleEvidenceEmission:
                 ),
             ],
         )
-        out_path = write_alignment_output(alignment, tmp_path)
-        data = yaml.safe_load(out_path.read_text("utf-8"))
+        data = alignment_to_dict(alignment)
         assert data["schema_version"] == 2  # NOT bumped
         cols = data["tables"][0]["columns"]
         named, coded, bare = cols
@@ -1897,7 +1791,7 @@ class TestSampleEvidenceIntegration:
             },
         }
 
-    def _run(self, analysis_dir, sources, output, **kw):
+    def _build(self, analysis_dir, sources, **kw):
         client = TestRunProposeAlignment()._mock_client(self._responses())
         with mock.patch(
             "kairos_ontology.propose_alignment.get_ai_client", return_value=client
@@ -1911,32 +1805,29 @@ class TestSampleEvidenceIntegration:
                  ]},
             ],
         ):
-            return run_propose_alignment(
+            return build_domain_alignments(
                 analysis_dir=analysis_dir, sources_dir=sources,
-                catalog_path=None, output_dir=output,
-                domains_filter=["party"], **kw,
+                catalog_path=None, domains_filter=["party"], **kw,
             )
 
     def test_examples_on_by_default_pii_masked(self, analysis_dir, tmp_path):
         sources = self._vocab_with_samples(tmp_path)
-        out = tmp_path / "out"
-        self._run(analysis_dir, sources, out)
-        data = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
+        alignments = self._build(analysis_dir, sources)
+        data = alignment_to_dict(alignments[0])
         cols = {c["column"]: c for c in data["tables"][0]["columns"]}
         # Non-PII column shows raw values by default.
         assert cols["PartyName"]["example_values"] == ["Acme NV", "Globex Corp"]
         # PII (email) column is masked — raw address must never appear.
         email_examples = cols["Email"]["example_values"]
         assert all("@" in v and "***" in v for v in email_examples)
-        raw = (out / "party-alignment.yaml").read_text("utf-8")
+        raw = yaml.safe_dump(data, allow_unicode=True)
         assert "jane.doe@acme.com" not in raw
         assert "bob@globex.com" not in raw
 
     def test_no_sample_values_suppresses(self, analysis_dir, tmp_path):
         sources = self._vocab_with_samples(tmp_path)
-        out = tmp_path / "out"
-        self._run(analysis_dir, sources, out, include_sample_values=False)
-        data = yaml.safe_load((out / "party-alignment.yaml").read_text("utf-8"))
+        alignments = self._build(analysis_dir, sources, include_sample_values=False)
+        data = alignment_to_dict(alignments[0])
         for c in data["tables"][0]["columns"]:
             assert "example_values" not in c
 

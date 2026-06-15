@@ -267,7 +267,7 @@ kairos-ontology analyse-sources [--sources PATH] [--ref-models PATH] [--output P
 kairos-ontology propose-alignment [--domains "Domain1,Domain2"] [--ref-models PATH] \
   [--max-workers 8] [--force] [--max-prompt-classes 12] \
   [--retry-min-confidence 0.6] [--retry-min-mapped-ratio 0.4]
-kairos-ontology check-alignment [--domains "Domain1,Domain2"] [--warn-only]
+kairos-ontology check-claims [--domains "Domain1,Domain2"] [--strict] [--warn-only]
 
 # Generate coverage report (deterministic alignment, post-modeling)
 kairos-ontology coverage-report [--ontology PATH] [--ref-models PATH] [--format both]

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-06-15
+
+### Changed (BREAKING)
+- **Claim Registry replaces the alignment YAML (DD-EL-1).** The evidence-led
+  cutover retires `{domain}-alignment.yaml` in favour of a single governed
+  `model/claims/{domain}-claims.yaml` registry as the source of truth for which
+  concepts are approved to materialize.
+  - `propose-alignment` now emits candidate (`proposed`) claims into the registry
+    (default output `model/claims/`) instead of alignment YAML, preserving
+    table/column coverage, the freshness digest, and custom-column disposition
+    triage. Re-runs merge over existing claims without clobbering human decisions.
+  - **New `check-claims` gate** replaces **both** `check-alignment` and
+    `check-source-coverage` (now removed). It verifies, per affinity domain, that a
+    `{domain}-claims.yaml` exists, is structurally valid, covers every affinity
+    table, and is fresh; it blocks on cross-file duplicate `approved` claims and
+    (unless `--no-source-coverage`) on unmapped tables, and — with `--strict` —
+    on undecided (`proposed`) claims. It rejects any leftover `*-alignment.yaml`
+    with a migration message (no dual path).
+  - **New `migrate-claims`** command performs the one-way
+    `{domain}-alignment.yaml` → `{domain}-claims.yaml` conversion.
+  - Design/help skills updated to the claims workflow (`check-claims`,
+    registry-based curation).
+
+### Removed (BREAKING)
+- `check-alignment` and `check-source-coverage` CLI commands (folded into
+  `check-claims`).
+- Alignment-YAML reader machinery in `alignment_coverage` (the module now provides
+  only the reused affinity/freshness primitives and triage heuristics).
+
 ## [3.24.1] — 2026-06-14
 
 ### Changed

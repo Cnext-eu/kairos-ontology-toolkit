@@ -156,51 +156,6 @@ def _resolve_ref_models_dir(cwd: Path, hub_root: Path | None) -> Path | None:
     return None
 
 
-def _build_valid_anchor_classes(
-    analysis_path: Path, cwd: Path, hub_root: Path | None
-) -> set[str]:
-    """Build the union of reference-model class names for the WS6 anchor gate.
-
-    Issue #182: gathers every ``domain_uris`` entry from the alignment files in
-    *analysis_path*, resolves their reference models via the hub catalog, and
-    returns the set of class names.  Returns an empty set when no catalog or
-    reference model can be resolved (the caller then skips anchor validation).
-    Resolution lives here in the CLI; the core gate only consumes the result.
-    """
-    import yaml as _yaml
-
-    from ..propose_alignment import extract_ref_model_inventory
-
-    if not analysis_path.is_dir():
-        return set()
-
-    catalog_path: Path | None = None
-    if hub_root:
-        candidate = hub_root / "catalog-v001.xml"
-        if candidate.exists():
-            catalog_path = candidate
-    if catalog_path is None:
-        candidate = cwd / "catalog-v001.xml"
-        if candidate.exists():
-            catalog_path = candidate
-
-    uris: set[str] = set()
-    for align_file in sorted(analysis_path.glob("*-alignment.yaml")):
-        try:
-            data = _yaml.safe_load(align_file.read_text(encoding="utf-8")) or {}
-        except (OSError, _yaml.YAMLError):
-            continue
-        for uri in data.get("domain_uris", []) or []:
-            if isinstance(uri, str) and uri:
-                uris.add(uri)
-
-    if not uris:
-        return set()
-
-    classes = extract_ref_model_inventory(sorted(uris), catalog_path)
-    return {str(c.get("name", "")) for c in classes if c.get("name")}
-
-
 def _resolve_import_dir(cwd: Path, hub_root: Path | None) -> Path:
     """Locate the business-discovery import directory.
 
@@ -1724,7 +1679,7 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
 @click.option('--catalog', type=click.Path(exists=True), default=None,
               help='Path to catalog-v001.xml (default: auto-detect from hub).')
 @click.option('--output', '-o', type=click.Path(), default=None,
-              help='Output directory (default: same as --analysis).')
+              help='Claim registry output directory (default: hub model/claims/).')
 @click.option('--model', 'llm_model', default='gpt-5.4-mini',
               help='LLM model for semantic alignment (default: gpt-5.4-mini).')
 @click.option('--domains', 'domains_filter', default=None,
@@ -1844,9 +1799,11 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
     else:
         catalog_path = Path(catalog)
 
-    # Output defaults to same dir as analysis
+    # Output defaults to the hub's claim registry directory (model/claims/).
+    # DD-EL-1: propose-alignment now emits candidate (proposed) claims into the
+    # Claim Registry instead of the retired {domain}-alignment.yaml.
     if output is None:
-        output_path = analysis_path
+        output_path = _resolve_claims_dir(cwd, hub_root)
     else:
         output_path = Path(output)
 
@@ -1919,8 +1876,8 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
         )
         if not quiet:
             click.echo(
-                f"\n✅ Alignment complete! Written {len(output_files)} file(s) "
-                f"to: {output_path}"
+                f"\n✅ Proposal complete! Wrote {len(output_files)} claim "
+                f"registry file(s) to: {output_path}"
             )
             for f in output_files:
                 click.echo(f"   📄 {f.name}")
@@ -2356,270 +2313,155 @@ def _autodetect_analysis_dir(cwd: Path, hub_root: Path | None) -> Path | None:
     return None
 
 
-@cli.command(name='check-alignment')
+def _resolve_claims_dir(cwd: Path, hub_root: Path | None) -> Path:
+    """Resolve the ``model/claims/`` directory (created on demand by callers)."""
+    base = hub_root if hub_root else cwd
+    return base / "model" / "claims"
+
+
+@cli.command(name='migrate-claims')
 @click.option('--analysis-dir', type=click.Path(exists=True), default=None,
-              help='Path to _analysis/ directory with affinity + alignment reports '
+              help='Directory holding the legacy {domain}-alignment.yaml files '
+                   '(default: auto-detect _analysis/).')
+@click.option('--domain', 'domain_filter', default=None,
+              help='Migrate only this domain (default: every *-alignment.yaml found).')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Output directory for {domain}-claims.yaml (default: model/claims/).')
+@click.option('--force', is_flag=True, default=False,
+              help='Overwrite an existing {domain}-claims.yaml.')
+def migrate_claims_cmd(analysis_dir, domain_filter, output, force):
+    """One-way migrate legacy alignment YAML → Claim Registry (DD-EL-1).
+
+    Deterministic, AI-free conversion of each ``{domain}-alignment.yaml`` into a
+    ``model/claims/{domain}-claims.yaml`` of ``proposed`` claims, so no prior
+    analysis is lost.  The alignment YAML is **not** modified, but is retired:
+    downstream commands reject it (run this once and switch to claims).
+
+    \\b
+    Examples:
+      kairos-ontology migrate-claims
+      kairos-ontology migrate-claims --domain party
+      kairos-ontology migrate-claims --output model/claims --force
+    """
+    from ..claim_registry import (
+        registry_path,
+        validate_registry,
+        validation_errors,
+        write_registry,
+    )
+    from ..hub_utils import find_hub_root
+    from ..migrate_claims import find_legacy_alignment_files, migrate_alignment_file
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+
+    src_dir = Path(analysis_dir) if analysis_dir else _autodetect_analysis_dir(cwd, hub_root)
+    if not src_dir:
+        click.echo(
+            "❌ Cannot find an _analysis/ directory with alignment files. "
+            "Use --analysis-dir.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    out_dir = Path(output) if output else _resolve_claims_dir(cwd, hub_root)
+
+    legacy = find_legacy_alignment_files(src_dir)
+    if domain_filter:
+        legacy = [p for p in legacy if p.name == f"{domain_filter}-alignment.yaml"]
+    if not legacy:
+        click.echo(f"❌ No matching *-alignment.yaml found in {src_dir}", err=True)
+        raise SystemExit(1)
+
+    click.echo("🔄 Migrating alignment → Claim Registry")
+    click.echo(f"   Source: {src_dir}")
+    click.echo(f"   Output: {out_dir}")
+
+    exit_code = 0
+    for align_file in legacy:
+        domain = align_file.name.replace("-alignment.yaml", "")
+        target = registry_path(out_dir, domain)
+        if target.exists() and not force:
+            click.echo(f"   ⚠ {domain}: {target.name} exists; use --force to overwrite "
+                       "(skipped)", err=True)
+            exit_code = 1
+            continue
+        try:
+            registry = migrate_alignment_file(align_file)
+        except Exception as exc:  # noqa: BLE001
+            click.echo(f"   ❌ {domain}: migration failed: {exc}", err=True)
+            exit_code = 1
+            continue
+        errors = validation_errors(validate_registry(registry))
+        if errors:
+            click.echo(f"   ❌ {domain}: produced an invalid registry:", err=True)
+            for issue in errors:
+                click.echo(f"      - {issue.message}", err=True)
+            exit_code = 1
+            continue
+        write_registry(registry, target)
+        click.echo(f"   ✓ {domain}: {len(registry.claims)} claim(s) → {target.name}")
+
+    raise SystemExit(exit_code)
+
+
+@cli.command(name='check-claims')
+@click.option('--claims-dir', type=click.Path(), default=None,
+              help='Path to model/claims/ directory (default: auto-detect).')
+@click.option('--analysis-dir', type=click.Path(exists=True), default=None,
+              help='Path to _analysis/ directory with affinity reports '
                    '(default: auto-detect).')
+@click.option('--sources', type=click.Path(), default=None,
+              help='Path to integration/sources/ directory (default: auto-detect).')
+@click.option('--mappings', type=click.Path(), default=None,
+              help='Path to model/mappings/ directory (default: auto-detect).')
+@click.option('--accelerator', default=None,
+              help='Accelerator pack whose data-domains.yaml defines domain '
+                   'ownership (default: first pack found).')
 @click.option('--domains', 'domains_filter', default=None,
               help='Comma-separated domain names to include (case-insensitive substring match).')
+@click.option('--no-source-coverage', is_flag=True, default=False,
+              help='Skip the pre-silver mapping-coverage check (registry checks only).')
+@click.option('--strict', is_flag=True, default=False,
+              help='Also block when any registry still carries an undecided '
+                   '(proposed) claim — i.e. require a fully curated registry.')
 @click.option('--warn-only', is_flag=True, default=False,
               help='Report problems but always exit 0 (never block).')
-@click.option('--strict', is_flag=True, default=False,
-              help='Also block (exit non-zero) when any source-evidenced custom '
-                   'column lacks a triage disposition (issue #164).')
-@click.option('--check-anchors', is_flag=True, default=False,
-              help='Issue #182: validate every table anchor class against the real '
-                   'reference-model class set and block on hallucinated anchors '
-                   '(classes that exist in no reference model).')
-@click.option('--accept-heuristics', is_flag=True, default=False,
-              help='Issue #182: treat a custom column with a heuristic '
-                   'recommended_disposition (skip / silver-passthrough) as disposed '
-                   'for the --strict gate, so only genuine business columns block.')
-def check_alignment_cmd(analysis_dir, domains_filter, warn_only, strict, check_anchors,
-                        accept_heuristics):
-    """Verify that every domain has a complete, fresh alignment (DD-061).
+def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
+                     domains_filter, no_source_coverage, strict, warn_only):
+    """Verify every domain's Claim Registry is valid, complete, and fresh (DD-EL-1).
 
-    Deterministic pre-flight gate for ``design-domain``: confirms that every data
-    domain enumerated in the affinity reports has a ``{domain}-alignment.yaml``
-    from ``propose-alignment`` that covers **all** of the domain's tables and is
-    still fresh (its stored ``source_sha256`` matches the current affinity table
-    set).  Exits non-zero (blocking) when an alignment is **missing**,
-    **incomplete**, or **stale**, so a modeler never hand-reads a subset of tables.
+    The single governance gate (replaces the retired ``check-alignment`` and
+    ``check-source-coverage``).  Deterministic and AI-free: it reads the committed
+    Claim Registries, affinity reports, source vocabularies, and mapping files.
 
-    Also surfaces source-evidenced **custom columns** (columns with no
-    reference-model property) so they aren't silently dropped before mapping
-    (issue #164).  These are reported as a warning by default; pass ``--strict``
-    to additionally **block** until every custom column carries a triage
-    ``disposition`` (model / silver-passthrough / skip) in the alignment YAML.
+    For each domain the affinity reports enumerate, it confirms that a
+    ``model/claims/{domain}-claims.yaml`` exists, is structurally valid, covers
+    **all** of the domain's affinity tables, and is still fresh (its stored
+    ``freshness.affinity_sha256`` matches the current affinity table set).  It
+    also blocks on cross-file duplicate ``approved`` claims, and — unless
+    ``--no-source-coverage`` — on any affinity table not yet mapped (the
+    pre-silver check).
 
     \\b
     Flag precedence:
-      (default)             missing/incomplete/stale block; custom columns warn
-      --strict              the above, plus undisposed custom columns block
+      (default)             missing/invalid/incomplete/stale/duplicate/unmapped block
+      --strict              the above, plus undecided (proposed) claims block
+      --no-source-coverage  skip the mapping-coverage portion
       --warn-only           report everything but always exit 0 (overrides --strict)
 
     \\b
     Examples:
-      kairos-ontology check-alignment
-      kairos-ontology check-alignment --domains party,commercial
-      kairos-ontology check-alignment --strict
-      kairos-ontology check-alignment --warn-only
+      kairos-ontology check-claims
+      kairos-ontology check-claims --domains party,commercial
+      kairos-ontology check-claims --strict
+      kairos-ontology check-claims --warn-only
     """
-    from ..alignment_coverage import check_alignment_coverage
+    from ..analyse_sources import load_data_domains
+    from ..claim_coverage import check_claims_coverage
     from ..hub_utils import find_hub_root
-
-    cwd = Path.cwd()
-    hub_root = find_hub_root(cwd)
-
-    if analysis_dir:
-        analysis_path: Path | None = Path(analysis_dir)
-    else:
-        analysis_path = _autodetect_analysis_dir(cwd, hub_root)
-
-    if not analysis_path:
-        click.echo(
-            "❌ Cannot find _analysis/ directory with affinity reports. "
-            "Run 'kairos-ontology analyse-sources' first, or use --analysis-dir.",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    filter_list = None
-    if domains_filter:
-        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
-
-    # Issue #182 (WS6): build the real reference-model class set so the anchor gate
-    # can flag hallucinated anchors. Resolution lives in the CLI; the core gate just
-    # receives the pre-built set (decoupled from CLI internals).
-    valid_ref_classes: set[str] | None = None
-    if check_anchors:
-        valid_ref_classes = _build_valid_anchor_classes(analysis_path, cwd, hub_root)
-        if not valid_ref_classes:
-            click.echo(
-                "   ⚠ --check-anchors: could not resolve any reference-model classes "
-                "(no catalog/inventory found); anchor validation skipped.",
-                err=True,
-            )
-
-    report = check_alignment_coverage(
-        analysis_dir=analysis_path, domains_filter=filter_list,
-        check_anchors=check_anchors and bool(valid_ref_classes),
-        valid_ref_classes=valid_ref_classes,
-    )
-
-    click.echo("🔎 Checking source-to-domain alignment coverage")
-    click.echo(f"   Analysis dir: {analysis_path}")
-    for domain in report.ok:
-        click.echo(f"   ✓ {domain}: aligned and up to date")
-    for domain in report.missing:
-        gaps = report.uncovered_tables.get(domain, [])
-        click.echo(f"   ❌ {domain}: MISSING alignment ({len(gaps)} table(s) "
-                   "unaligned)", err=True)
-    for domain in report.incomplete:
-        gaps = report.uncovered_tables.get(domain, [])
-        click.echo(f"   ❌ {domain}: INCOMPLETE — {len(gaps)} affinity table(s) "
-                   "not aligned", err=True)
-        for tbl in gaps[:10]:
-            click.echo(f"        • {tbl}", err=True)
-        if len(gaps) > 10:
-            click.echo(f"        … and {len(gaps) - 10} more", err=True)
-    for domain in report.stale:
-        click.echo(f"   ❌ {domain}: STALE (affinity tables changed since "
-                   "alignment was generated)", err=True)
-    for domain in report.unverifiable:
-        click.echo(f"   ⚠ {domain}: cannot verify freshness (no stored hash — "
-                   "regenerate with propose-alignment)")
-    for name in report.orphan:
-        click.echo(f"   ⚠ {name}: orphan alignment (no matching affinity domain)")
-
-    # Issue #164/#182: surface source-evidenced custom columns needing triage.
-    if report.custom_columns:
-        click.echo("\n🧩 Custom columns (no reference-model property) — triage needed:")
-        for domain in sorted(report.custom_columns):
-            cols = report.custom_columns[domain]
-            undisposed = [
-                c for c in cols if not c.effective_disposed(accept_heuristics)
-            ]
-            business = [c for c in undisposed if not c.operational]
-            operational = [c for c in undisposed if c.operational]
-            disposed_n = len(cols) - len(undisposed)
-            click.echo(
-                f"   • {domain}: {len(cols)} custom column(s) — "
-                f"{len(undisposed)} undisposed, {disposed_n} disposed"
-            )
-            for c in business[:15]:
-                suffix = f" → {c.suggested_property}" if c.suggested_property else ""
-                rec = f" [rec: {c.recommended_disposition}]" if c.recommended_disposition else ""
-                click.echo(f"        ◆ {c.identity}{suffix}{rec}")
-            if len(business) > 15:
-                click.echo(f"        … and {len(business) - 15} more business column(s)")
-            if operational:
-                click.echo(
-                    f"        ◇ {len(operational)} likely operational/audit "
-                    "column(s) (rec: skip)"
-                )
-        tip = (
-            "   → Disposition each in the alignment YAML: "
-            "model / silver-passthrough / skip."
-        )
-        if not accept_heuristics:
-            tip += (
-                " Pass --accept-heuristics to auto-accept skip/silver-passthrough "
-                "recommendations."
-            )
-        click.echo(tip)
-
-    # DD-069: surface review-flagged maps (issues #167/#168). Report-only.
-    if report.review_columns:
-        total_flagged = sum(len(v) for v in report.review_columns.values())
-        click.echo(
-            f"\n⚠ Maps flagged for review ({total_flagged}) — "
-            "implausible/address-part alignments (not blocking):"
-        )
-        for domain in sorted(report.review_columns):
-            cols = report.review_columns[domain]
-            click.echo(f"   • {domain}: {len(cols)} flagged map(s)")
-            for c in cols[:15]:
-                click.echo(f"        ◆ {c.identity} → {c.ref_property}: {c.reason}")
-            if len(cols) > 15:
-                click.echo(f"        … and {len(cols) - 15} more")
-        click.echo(
-            "   → Review each in the alignment YAML; correct the map or confirm "
-            "it is intentional."
-        )
-
-    # Issue #182 (WS6): surface hallucinated/unanchored table anchors.
-    if report.anchor_issues:
-        click.echo(
-            f"\n⚓ Reference-anchor check ({sum(len(v) for v in report.anchor_issues.values())} "
-            "issue(s)):"
-        )
-        for domain in sorted(report.anchor_issues):
-            issues = report.anchor_issues[domain]
-            hall = [i for i in issues if i.kind == "hallucinated"]
-            other = [i for i in issues if i.kind != "hallucinated"]
-            click.echo(
-                f"   • {domain}: {len(hall)} hallucinated, {len(other)} unanchored/rejected"
-            )
-            for i in hall[:15]:
-                click.echo(
-                    f"        ✖ {i.identity} → '{i.ref_class}' exists in NO reference "
-                    "model (hallucinated anchor)", err=True,
-                )
-            for i in other[:15]:
-                detail = f" (rejected '{i.rejected_ref_class}')" if i.rejected_ref_class else ""
-                click.echo(f"        ◇ {i.identity}: {i.kind}{detail}")
-        click.echo(
-            "   → A hallucinated anchor invalidates its table's triage. Re-run "
-            "propose-alignment (optionally --high-accuracy) or correct the anchor."
-        )
-
-    custom_block = strict and report.any_undisposed_custom_columns(
-        accept_heuristics=accept_heuristics
-    )
-    anchor_block = check_anchors and report.has_hallucinated_anchors
-    should_block = (
-        report.is_blocking or custom_block or anchor_block
-    ) and not warn_only
-
-    if report.is_blocking and not warn_only:
-        click.echo(
-            "\n❌ Alignment check failed. Run "
-            "`kairos-ontology propose-alignment` (no domain filter) and commit the "
-            "result before modeling.",
-            err=True,
-        )
-    if custom_block and not warn_only:
-        click.echo(
-            "\n❌ Strict check failed: untriaged custom columns remain. Disposition "
-            "every custom column (model / silver-passthrough / skip) in the "
-            "alignment YAML before completing the domain.",
-            err=True,
-        )
-    if anchor_block and not warn_only:
-        click.echo(
-            "\n❌ Anchor check failed: one or more tables anchor on a class that "
-            "exists in no reference model (hallucinated anchor). Building a triage "
-            "on a fictional anchor produces a broken model — fix the anchor first.",
-            err=True,
-        )
-    if should_block:
-        raise SystemExit(1)
-
-    if report.is_blocking or report.has_warnings:
-        click.echo("\n⚠ Alignment check completed with warnings (not blocking).")
-    else:
-        click.echo("\n✅ Alignments are present, complete, and up to date.")
-
-
-@cli.command(name='check-source-coverage')
-@click.option('--analysis-dir', type=click.Path(exists=True), default=None,
-              help='Path to _analysis/ directory with affinity reports (default: auto-detect).')
-@click.option('--sources', type=click.Path(exists=True), default=None,
-              help='Path to integration/sources/ directory (default: auto-detect).')
-@click.option('--mappings', type=click.Path(exists=True), default=None,
-              help='Path to model/mappings/ directory (default: auto-detect).')
-@click.option('--domains', 'domains_filter', default=None,
-              help='Comma-separated domain names to include (case-insensitive substring match).')
-@click.option('--warn-only', is_flag=True, default=False,
-              help='Report problems but always exit 0 (never block).')
-def check_source_coverage_cmd(analysis_dir, sources, mappings, domains_filter, warn_only):
-    """Verify every affinity-assigned source table is mapped (DD-061).
-
-    Deterministic pre-silver gate: confirms that every source table the affinity
-    reports assign to an in-scope domain is represented by a source-to-domain
-    mapping (a SKOS match on the bronze table or one of its columns).  Exits
-    non-zero (blocking) when any domain table is unmapped, so silver is only run
-    against a complete ontology.
-
-    \\b
-    Examples:
-      kairos-ontology check-source-coverage
-      kairos-ontology check-source-coverage --domains party
-      kairos-ontology check-source-coverage --warn-only
-    """
+    from ..migrate_claims import find_legacy_alignment_files, legacy_alignment_error
     from ..source_coverage import check_source_coverage
-    from ..hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -2636,6 +2478,21 @@ def check_source_coverage_cmd(analysis_dir, sources, mappings, domains_filter, w
             err=True,
         )
         raise SystemExit(1)
+
+    # No dual path (DD-EL-1): a hub that still carries legacy alignment YAML must
+    # migrate first. This is a hard error even under --warn-only.
+    legacy = find_legacy_alignment_files(analysis_path)
+    if legacy:
+        click.echo(
+            "❌ Legacy alignment files found — the alignment YAML is retired "
+            "(DD-EL-1). Migrate before checking claims:",
+            err=True,
+        )
+        for path in legacy:
+            click.echo(f"   • {legacy_alignment_error(path)}", err=True)
+        raise SystemExit(1)
+
+    claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
 
     if sources:
         sources_path = Path(sources)
@@ -2655,45 +2512,144 @@ def check_source_coverage_cmd(analysis_dir, sources, mappings, domains_filter, w
     if domains_filter:
         filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
 
-    report = check_source_coverage(
+    # Domain ownership baseline (data-domains.yaml). Best-effort: when no
+    # reference models are resolvable, ownership is simply not checked.
+    data_domains: dict[str, object] | None = None
+    ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
+    if ref_models_dir:
+        loaded = load_data_domains(ref_models_dir, accelerator=accelerator)
+        if loaded:
+            data_domains = dict(loaded)
+
+    report = check_claims_coverage(
+        claims_dir=claims_path,
         analysis_dir=analysis_path,
-        sources_dir=sources_path,
-        mappings_dir=mappings_path,
+        data_domains=data_domains,
         domains_filter=filter_list,
     )
 
-    click.echo("🔎 Checking source-to-domain coverage")
+    click.echo("🔎 Checking Claim Registry coverage")
+    click.echo(f"   Claims dir:   {claims_path}")
     click.echo(f"   Analysis dir: {analysis_path}")
-    click.echo(f"   Sources: {sources_path}")
-    click.echo(f"   Mappings: {mappings_path}")
-    for domain in sorted(report.domain_counts):
-        covered, total = report.domain_counts[domain]
-        gaps = report.uncovered.get(domain, [])
-        if not gaps:
-            click.echo(f"   ✓ {domain}: {covered}/{total} tables mapped "
-                       f"({report.coverage_pct(domain):.0f}%)")
-        else:
-            click.echo(f"   ❌ {domain}: {covered}/{total} tables mapped "
-                       f"({report.coverage_pct(domain):.0f}%) — "
-                       f"{len(gaps)} unmapped", err=True)
-            for tbl in gaps[:10]:
-                click.echo(f"        • {tbl}", err=True)
-            if len(gaps) > 10:
-                click.echo(f"        … and {len(gaps) - 10} more", err=True)
+    for domain in report.ok:
+        click.echo(f"   ✓ {domain}: valid, complete, and up to date")
+    for domain in report.missing:
+        gaps = report.uncovered_tables.get(domain, [])
+        click.echo(f"   ❌ {domain}: MISSING claims ({len(gaps)} table(s) "
+                   "unclaimed)", err=True)
+    for domain in sorted(report.invalid):
+        click.echo(f"   ❌ {domain}: INVALID registry:", err=True)
+        for msg in report.invalid[domain][:10]:
+            click.echo(f"        - {msg}", err=True)
+        if len(report.invalid[domain]) > 10:
+            click.echo(f"        … and {len(report.invalid[domain]) - 10} more", err=True)
+    for domain in report.incomplete:
+        gaps = report.uncovered_tables.get(domain, [])
+        click.echo(f"   ❌ {domain}: INCOMPLETE — {len(gaps)} affinity table(s) "
+                   "not in coverage", err=True)
+        for tbl in gaps[:10]:
+            click.echo(f"        • {tbl}", err=True)
+        if len(gaps) > 10:
+            click.echo(f"        … and {len(gaps) - 10} more", err=True)
+    for domain in report.stale:
+        click.echo(f"   ❌ {domain}: STALE (affinity tables changed since the "
+                   "registry was generated)", err=True)
+    for domain in report.unverifiable:
+        click.echo(f"   ⚠ {domain}: cannot verify freshness (no stored hash — "
+                   "regenerate with propose-alignment)")
+    for name in report.orphan:
+        click.echo(f"   ⚠ {name}: orphan registry (no matching affinity domain)")
+    for name in report.unowned:
+        click.echo(f"   ⚠ {name}: registry domain not found in data-domains.yaml "
+                   "(ownership unverified)")
+
+    if report.duplicate_approved:
+        click.echo(
+            f"\n⛔ Duplicate approved claims ({len(report.duplicate_approved)}):",
+            err=True,
+        )
+        for dup in report.duplicate_approved[:15]:
+            click.echo(
+                f"   • {dup.uri}: {dup.first} and {dup.second}", err=True
+            )
+        click.echo(
+            "   → Two domains approved the same URI. Deduplicate before modeling.",
+            err=True,
+        )
+
+    if report.proposed_counts:
+        click.echo(
+            f"\n🧩 Undecided claims ({report.total_proposed}) — awaiting human "
+            "decision:"
+        )
+        for domain in sorted(report.proposed_counts):
+            click.echo(f"   • {domain}: {report.proposed_counts[domain]} proposed claim(s)")
+        click.echo(
+            "   → Approve / reject / defer each in the registry "
+            "(pass --strict to block until curated)."
+        )
+
+    # Pre-silver mapping coverage (former check-source-coverage). Reuses the same
+    # backend; no double path.
+    source_blocking = False
+    if not no_source_coverage:
+        src_report = check_source_coverage(
+            analysis_dir=analysis_path,
+            sources_dir=sources_path,
+            mappings_dir=mappings_path,
+            domains_filter=filter_list,
+        )
+        click.echo("\n🔎 Checking source-to-domain mapping coverage")
+        click.echo(f"   Sources:  {sources_path}")
+        click.echo(f"   Mappings: {mappings_path}")
+        for domain in sorted(src_report.domain_counts):
+            covered, total = src_report.domain_counts[domain]
+            gaps = src_report.uncovered.get(domain, [])
+            if not gaps:
+                click.echo(f"   ✓ {domain}: {covered}/{total} tables mapped "
+                           f"({src_report.coverage_pct(domain):.0f}%)")
+            else:
+                click.echo(f"   ❌ {domain}: {covered}/{total} tables mapped "
+                           f"({src_report.coverage_pct(domain):.0f}%) — "
+                           f"{len(gaps)} unmapped", err=True)
+                for tbl in gaps[:10]:
+                    click.echo(f"        • {tbl}", err=True)
+                if len(gaps) > 10:
+                    click.echo(f"        … and {len(gaps) - 10} more", err=True)
+        source_blocking = src_report.is_blocking
+        if source_blocking and not warn_only:
+            click.echo(
+                f"\n❌ Source-coverage check failed: {src_report.total_uncovered} "
+                "affinity table(s) are not mapped to any domain entity. Complete "
+                "the mappings (kairos-design-mapping) before running silver.",
+                err=True,
+            )
+
+    strict_block = strict and report.has_undecided_claims()
+    should_block = (
+        report.is_blocking or source_blocking or strict_block
+    ) and not warn_only
 
     if report.is_blocking and not warn_only:
         click.echo(
-            f"\n❌ Source-coverage check failed: {report.total_uncovered} "
-            "affinity table(s) are not mapped to any domain entity. Complete the "
-            "mappings (kairos-design-mapping) before running silver.",
+            "\n❌ Claim check failed. Run "
+            "`kairos-ontology propose-alignment` (no domain filter), curate the "
+            "registry, and commit it before modeling.",
             err=True,
         )
+    if strict_block and not warn_only:
+        click.echo(
+            "\n❌ Strict check failed: undecided (proposed) claims remain. Approve, "
+            "reject, or defer every claim before completing the domain.",
+            err=True,
+        )
+    if should_block:
         raise SystemExit(1)
 
-    if report.is_blocking:
-        click.echo("\n⚠ Source-coverage check completed with warnings (not blocking).")
+    if report.is_blocking or report.has_warnings or source_blocking:
+        click.echo("\n⚠ Claim check completed with warnings (not blocking).")
     else:
-        click.echo("\n✅ Every affinity-assigned source table is mapped.")
+        click.echo("\n✅ Claims are valid, complete, and up to date.")
 
 
 @cli.command(name='discovery-status')

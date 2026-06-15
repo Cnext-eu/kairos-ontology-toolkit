@@ -29,6 +29,12 @@ from .alignment_coverage import (
     compute_affinity_hash,
     recommend_disposition,
 )
+from .claim_registry import (
+    load_registry,
+    merge_preserving_decisions,
+    registry_path,
+    write_registry,
+)
 from .analyse_sources import (
     DEFAULT_MODEL,
     parse_source_vocabulary,
@@ -1498,11 +1504,11 @@ def _review_column_alignment(
 # ---------------------------------------------------------------------------
 
 
-def run_propose_alignment(
+def _propose_alignments(
     analysis_dir: Path,
     sources_dir: Path,
     catalog_path: Path | None,
-    output_dir: Path,
+    output_dir: Path | None,
     model: str = DEFAULT_MODEL,
     domains_filter: list[str] | None = None,
     report=None,
@@ -1518,7 +1524,8 @@ def run_propose_alignment(
     accelerator: str | None = None,
     ref_models_dir: Path | None = None,
     custom_confidence_floor: float = CUSTOM_CONFIDENCE_FLOOR,
-) -> list[Path]:
+    emit_claims: bool = True,
+) -> tuple[list[Path], list[DomainAlignment]]:
     """Run alignment for all domains found in affinity reports.
 
     Args:
@@ -1550,7 +1557,10 @@ def run_propose_alignment(
         ref_models_dir: Reference-models directory containing ``accelerator-packs/``
             (required when *cross_module* is True).
 
-    Returns list of written output file paths.
+    Returns ``(written_paths, built_alignments)``. When *emit_claims* is False the
+    pipeline only builds and returns the in-memory :class:`DomainAlignment` objects
+    (no domain-level skip, no files written); this is the testable/introspection
+    path used by :func:`build_domain_alignments`.
     """
     if report is None:
         report = lambda msg, **kw: None  # noqa: E731
@@ -1639,7 +1649,10 @@ def run_propose_alignment(
     cache = open_cache(analysis_dir, "propose-alignment", enabled=not force)
 
     output_files: list[Path] = []
-    output_dir.mkdir(parents=True, exist_ok=True)
+    alignments: list[DomainAlignment] = []
+    if emit_claims:
+        assert output_dir is not None
+        output_dir.mkdir(parents=True, exist_ok=True)
 
     for domain_id, tables in sorted(domain_tables.items()):
         report(f"  📐 Domain: {domain_id} ({len(tables)} table(s))")
@@ -1669,20 +1682,22 @@ def run_propose_alignment(
             })
         params_hash = compute_entry_hash(params_payload)
 
-        # CR-5: domain-level skip — reuse an existing alignment whose freshness
+        # CR-5: domain-level skip — reuse an existing claim registry whose freshness
         # hash already matches the current affinity set (unless --force). The
         # params hash must also match so an algorithm/model/floor change forces a
-        # rebuild (issue #182).
-        out_path = output_dir / f"{domain_id}-alignment.yaml"
-        if not force and out_path.exists():
-            existing_hash = _read_alignment_affinity_hash(out_path)
-            if existing_hash and existing_hash == affinity_hash:
-                if _read_alignment_params_hash(out_path) == params_hash:
-                    report(
-                        f"     ⏭  Up to date (affinity unchanged) — skipped {out_path.name}"
-                    )
-                    output_files.append(out_path)
-                    continue
+        # rebuild (issue #182). Only applies when emitting claims to disk.
+        if emit_claims and not force:
+            out_path = registry_path(output_dir, domain_id)
+            if out_path.exists():
+                existing_hash = _read_claims_affinity_hash(out_path)
+                if existing_hash and existing_hash == affinity_hash:
+                    if _read_claims_params_hash(out_path) == params_hash:
+                        report(
+                            f"     ⏭  Up to date (affinity unchanged) — "
+                            f"skipped {out_path.name}"
+                        )
+                        output_files.append(out_path)
+                        continue
 
         # Resolve reference model inventory (home domain — STEP 1 + rollup + hints)
         ref_classes = extract_ref_model_inventory(domain_uris, catalog_path)
@@ -2026,41 +2041,87 @@ def run_propose_alignment(
                 "class(es)"
             )
 
-        # Write output
-        out_path = write_alignment_output(alignment, output_dir)
-        output_files.append(out_path)
-        report(f"     ✓ Written: {out_path.name}")
+        # Write output (Claim Registry — DD-EL-1)
+        alignments.append(alignment)
+        if emit_claims:
+            out_path = write_claims_output(alignment, output_dir)
+            output_files.append(out_path)
+            report(f"     ✓ Written: {out_path.name}")
 
     cache.flush()
-    return output_files
+    return output_files, alignments
 
 
-def _read_alignment_affinity_hash(alignment_path: Path) -> str:
-    """Return the affinity freshness hash recorded in an existing alignment file.
+def run_propose_alignment(
+    analysis_dir: Path,
+    sources_dir: Path,
+    catalog_path: Path | None,
+    output_dir: Path,
+    **kwargs: Any,
+) -> list[Path]:
+    """Run alignment for all domains and write the Claim Registry (DD-EL-1).
 
-    The writer persists this under the ``source_sha256`` key (see
-    :func:`write_alignment_output`); read the same key so the domain-level cache
-    skip in :func:`run_propose_alignment` actually matches (issue #182 — the
-    previous ``affinity_sha256`` key was never written, making the skip dead).
+    Emits candidate (``proposed``) claims into ``{domain}-claims.yaml`` under
+    *output_dir* (typically the hub's ``model/claims/``). Returns the list of
+    written claim-registry paths.
     """
-    try:
-        data = yaml.safe_load(alignment_path.read_text(encoding="utf-8")) or {}
-    except (yaml.YAMLError, OSError):
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    return str(data.get("source_sha256", "") or "")
+    kwargs.pop("emit_claims", None)
+    paths, _ = _propose_alignments(
+        analysis_dir, sources_dir, catalog_path, output_dir,
+        emit_claims=True, **kwargs,
+    )
+    return paths
 
 
-def _read_alignment_params_hash(alignment_path: Path) -> str:
-    """Return the ``alignment_params_sha256`` recorded in an existing file (DD-070)."""
+def build_domain_alignments(
+    analysis_dir: Path,
+    sources_dir: Path,
+    catalog_path: Path | None,
+    **kwargs: Any,
+) -> list[DomainAlignment]:
+    """Build the in-memory :class:`DomainAlignment` objects without writing.
+
+    The pure pipeline behind :func:`run_propose_alignment`: runs affinity intake,
+    LLM alignment, and the deterministic column/custom/review/cross-module passes,
+    returning the rich alignment objects. No domain-level skip and no files are
+    written, so callers (tests, introspection) can assert on the full alignment
+    surface — including exploration metadata that the Claim Registry omits.
+    """
+    kwargs.pop("emit_claims", None)
+    _, alignments = _propose_alignments(
+        analysis_dir, sources_dir, catalog_path, None,
+        emit_claims=False, **kwargs,
+    )
+    return alignments
+
+
+def _read_claims_affinity_hash(claims_path: Path) -> str:
+    """Return the affinity freshness hash recorded in an existing claims registry.
+
+    The producer persists this under ``freshness.affinity_sha256`` (see
+    :func:`write_claims_output`); read the same key so the domain-level cache
+    skip in :func:`run_propose_alignment` matches.
+    """
+    fresh = _read_claims_freshness(claims_path)
+    return str(fresh.get("affinity_sha256", "") or "")
+
+
+def _read_claims_params_hash(claims_path: Path) -> str:
+    """Return the ``freshness.alignment_params_sha256`` recorded in a claims file."""
+    fresh = _read_claims_freshness(claims_path)
+    return str(fresh.get("alignment_params_sha256", "") or "")
+
+
+def _read_claims_freshness(claims_path: Path) -> dict[str, Any]:
+    """Read the ``freshness`` mapping from a claims registry, tolerantly."""
     try:
-        data = yaml.safe_load(alignment_path.read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(claims_path.read_text(encoding="utf-8")) or {}
     except (yaml.YAMLError, OSError):
-        return ""
+        return {}
     if not isinstance(data, dict):
-        return ""
-    return str(data.get("alignment_params_sha256", "") or "")
+        return {}
+    fresh = data.get("freshness")
+    return fresh if isinstance(fresh, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -2160,65 +2221,14 @@ def _build_reference_rollup(
 # ---------------------------------------------------------------------------
 
 
-def _merge_preserved_custom_dispositions(
-    alignment: DomainAlignment, output_dir: Path
-) -> None:
-    """Preserve human triage when regenerating an alignment file (issue #182 WS9).
+def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
+    """Build the serializable mapping for a domain alignment (pure).
 
-    Before a fresh ``{domain}-alignment.yaml`` overwrites an existing one (e.g. on
-    ``--force``), overlay any *human-owned* custom-column metadata from the old file
-    onto the new tables, keyed by the stable ``(system, table, column)`` tuple. Only
-    heuristic-owned fields are allowed to be rewritten; a modeler's hand-triaged
-    ``disposition`` (and any free-text ``note``) survives regeneration so a large
-    hand-triaged file is never silently wiped.
+    Extracted from :func:`write_alignment_output` so the same structure can feed
+    both the (retired) alignment YAML writer and the Claim Registry converter
+    (``DD-EL-1``). Does not touch the filesystem and does not merge preserved
+    dispositions — callers do that before serializing.
     """
-    existing_file = output_dir / f"{alignment.domain}-alignment.yaml"
-    if not existing_file.is_file():
-        return
-    try:
-        with open(existing_file, encoding="utf-8") as f:
-            old = yaml.safe_load(f) or {}
-    except (OSError, yaml.YAMLError):
-        return
-
-    preserved: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for table in old.get("tables", []) or []:
-        system = str(table.get("system", "") or "")
-        tname = str(table.get("table", "") or "")
-        for col in table.get("custom_columns", []) or []:
-            disposition = col.get("disposition")
-            source = str(col.get("disposition_source", "") or "")
-            # Human-owned: an explicit human source, or a legacy file that carries a
-            # disposition with no source stamp (pre-WS2). Heuristic values are not
-            # preserved — they are recomputed deterministically on each run.
-            if disposition and source != "heuristic":
-                preserved[(system, tname, str(col.get("column", "") or ""))] = {
-                    "disposition": disposition,
-                    "disposition_source": source or "human",
-                    "note": str(col.get("note", "") or ""),
-                }
-    if not preserved:
-        return
-
-    for ta in alignment.tables:
-        for col in ta.custom_columns:
-            key = (ta.system, ta.table, str(col.get("column", "") or ""))
-            human = preserved.get(key)
-            if not human:
-                continue
-            col["disposition"] = human["disposition"]
-            col["disposition_source"] = human["disposition_source"]
-            if human["note"] and not col.get("note"):
-                col["note"] = human["note"]
-
-
-def write_alignment_output(alignment: DomainAlignment, output_dir: Path) -> Path:
-    """Write domain alignment results to YAML."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # WS9 (issue #182): never overwrite a modeler's hand-triaged dispositions.
-    _merge_preserved_custom_dispositions(alignment, output_dir)
-
     data: dict[str, Any] = {
         "schema_version": ALIGNMENT_HASH_SCHEMA_VERSION,
         # Issue #182: algorithm/prompt-contract version of the producing toolkit.
@@ -2294,8 +2304,32 @@ def write_alignment_output(alignment: DomainAlignment, output_dir: Path) -> Path
     if alignment.cross_module_matches:
         data["cross_module_matches"] = alignment.cross_module_matches
 
-    output_file = output_dir / f"{alignment.domain}-alignment.yaml"
-    with open(output_file, "w", encoding="utf-8") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    return data
 
-    return output_file
+
+def write_claims_output(alignment: DomainAlignment, claims_dir: Path) -> Path:
+    """Write a domain alignment as a Claim Registry (``DD-EL-1``).
+
+    The governance-facing output of ``propose-alignment``: candidate concepts are
+    emitted as ``proposed`` claims into ``{domain}-claims.yaml``. When a claims
+    file already exists, human decisions are preserved across the re-run via
+    :func:`merge_preserving_decisions` (the claim-level analog of the alignment
+    YAML's disposition preservation). Returns the written path.
+    """
+    from .migrate_claims import alignment_to_registry
+
+    registry = alignment_to_registry(alignment_to_dict(alignment))
+
+    target = registry_path(claims_dir, alignment.domain)
+    if target.exists():
+        try:
+            existing = load_registry(target)
+            registry = merge_preserving_decisions(registry, existing)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not merge existing claims at %s (%s); writing fresh.",
+                target, exc,
+            )
+
+    write_registry(registry, target)
+    return target
