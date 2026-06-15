@@ -83,6 +83,49 @@ kairos-ontology check-claims
 `check-claims` is read-only and deterministic (no AI). Skip it only when
 no affinity reports exist yet (the hub hasn't run `analyse-sources`).
 
+#### Claim-driven extension sync (Slice 2)
+
+When a domain has an **approved** Claim Registry (`model/claims/{domain}-claims.yaml`),
+approved imported-class claims deterministically drive that domain's external
+`owl:imports` and silver-extension `silverInclude` annotations. `check-claims`
+includes a **sync gate** that flags drift between the approved claims and the
+generated projection surfaces; materialize the surfaces with:
+
+```bash
+kairos-ontology claims-to-silver-ext
+```
+
+This rewrites the domain ontology's external `owl:imports` and the
+`*-silver-ext.ttl` `silverInclude` set to exactly match the approved imported
+claims (A1). The generated TTL stays human-reviewable (A2-lite). The
+`silver`, `dbt`, and `powerbi` projectors enforce an **authority gate**: if a
+claims file exists and the surfaces are out of sync, projection fails with a
+pointer to run `claims-to-silver-ext`. Use `check-claims --no-extension-sync`
+to skip only the sync portion of the gate.
+
+#### MDM / reference-data + ownership gates (Slice 4)
+
+`check-claims` also enforces four MDM/ownership rules over the registry's curated
+governance fields (`reference_data`, `mdm_anchor`, `deviation`, `ownership_override`,
+`passthrough_reviewed`):
+
+- **MDM-anchor gate (§5.4)** — broad domain claims (approved class claims with
+  disposition claim/specialize) block with `anchor_pending` when declared
+  `mdm_anchor` reference-data claims are still `proposed`, and warn `anchor_missing`
+  (pragmatic — anchors must be *known*, not fully implemented) when no anchors are
+  declared at all.
+- **deviation-log (§12/§14)** — approved `gap` (client-native) claims without a
+  `deviation` (owner + reason) block with `deviation_missing`.
+- **ownership-boundary (§14)** — approved claims crossing another data-domain's
+  `data-domains.yaml` `uris` prefix block with `ownership_conflicts` unless an
+  `ownership_override` (owner + rationale) is present; that override also downgrades
+  a cross-file same-URI duplicate from `duplicate_approved` to a `shared_dimensions`
+  warning (conformed-dimension share).
+- **passthrough-review (§11.2)** — high-use passthrough claims not yet
+  `passthrough_reviewed` warn with `passthrough_review`.
+
+Skip those gates with `check-claims --no-mdm-anchor` / `--no-ownership`.
+
 
 ### Example interaction
 

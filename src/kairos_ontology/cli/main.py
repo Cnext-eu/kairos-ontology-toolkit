@@ -80,6 +80,7 @@ _SKILL_COVERED_COMMANDS = {
     "import-flatfile": "kairos-design-source",
     "generate-staging": "kairos-design-source",
     "analyse-sources": "kairos-design-source",
+    "derive-claims": "kairos-design-source",
     "init-dataplatform": "kairos-setup-dataplatform",
     "suggest-shapes": "kairos-execute-validate",
 }
@@ -1024,6 +1025,21 @@ def init(domain, company_domain, force):
             content = provenance_comment("init", editable=True) + "\n" + content
             master_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created ontology-hub/model/ontologies/_master.ttl")
+
+    # 7a-ii. Generate foundation ontology (shared base for thin domain ontologies)
+    foundation_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "foundation.ttl.template"
+    foundation_dst = hub / "model" / "ontologies" / "_foundation.ttl"
+    if foundation_src.is_file():
+        if foundation_dst.exists() and not force:
+            print("  ⏭  ontology-hub/model/ontologies/_foundation.ttl already exists (use --force)")
+        else:
+            content = foundation_src.read_text(encoding="utf-8")
+            content = (content
+                       .replace("{company_name}", company_name)
+                       .replace("{company_domain}", company_domain))
+            content = provenance_comment("init", editable=True) + "\n" + content
+            foundation_dst.write_text(content, encoding="utf-8")
+            print("  ✓ Created ontology-hub/model/ontologies/_foundation.ttl")
 
     # 7b. Generate local catalog (URI → local file mapping)
     catalog_src = _SCAFFOLD_DIR / "ontology-hub" / "catalog-v001.xml.template"
@@ -2319,6 +2335,17 @@ def _resolve_claims_dir(cwd: Path, hub_root: Path | None) -> Path:
     return base / "model" / "claims"
 
 
+def _resolve_model_path(
+    cwd: Path, hub_root: Path | None, *, subdir: str, claims_path: Path | None = None
+) -> Path:
+    """Resolve a model subdirectory with claims-dir sibling fallback."""
+    if hub_root:
+        return hub_root / "model" / subdir
+    if claims_path and claims_path.parent.name == "model":
+        return claims_path.parent / subdir
+    return cwd / "model" / subdir
+
+
 @cli.command(name='migrate-claims')
 @click.option('--analysis-dir', type=click.Path(exists=True), default=None,
               help='Directory holding the legacy {domain}-alignment.yaml files '
@@ -2422,13 +2449,20 @@ def migrate_claims_cmd(analysis_dir, domain_filter, output, force):
               help='Comma-separated domain names to include (case-insensitive substring match).')
 @click.option('--no-source-coverage', is_flag=True, default=False,
               help='Skip the pre-silver mapping-coverage check (registry checks only).')
+@click.option('--no-extension-sync', is_flag=True, default=False,
+              help='Skip Claim Registry ↔ ontology/extension sync checks.')
+@click.option('--no-mdm-anchor', is_flag=True, default=False,
+              help='Skip the MDM-anchor gate (broad claims need known reference anchors).')
+@click.option('--no-ownership', is_flag=True, default=False,
+              help='Skip the data-domains.yaml ownership-boundary check.')
 @click.option('--strict', is_flag=True, default=False,
               help='Also block when any registry still carries an undecided '
                    '(proposed) claim — i.e. require a fully curated registry.')
 @click.option('--warn-only', is_flag=True, default=False,
               help='Report problems but always exit 0 (never block).')
 def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
-                     domains_filter, no_source_coverage, strict, warn_only):
+                     domains_filter, no_source_coverage, no_extension_sync,
+                     no_mdm_anchor, no_ownership, strict, warn_only):
     """Verify every domain's Claim Registry is valid, complete, and fresh (DD-EL-1).
 
     The single governance gate (replaces the retired ``check-alignment`` and
@@ -2503,10 +2537,17 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
 
     if mappings:
         mappings_path = Path(mappings)
-    elif hub_root:
-        mappings_path = hub_root / "model" / "mappings"
     else:
-        mappings_path = cwd / "model" / "mappings"
+        mappings_path = _resolve_model_path(
+            cwd, hub_root, subdir="mappings", claims_path=claims_path
+        )
+
+    ontologies_path = _resolve_model_path(
+        cwd, hub_root, subdir="ontologies", claims_path=claims_path
+    )
+    extensions_path = _resolve_model_path(
+        cwd, hub_root, subdir="extensions", claims_path=claims_path
+    )
 
     filter_list = None
     if domains_filter:
@@ -2526,6 +2567,8 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         analysis_dir=analysis_path,
         data_domains=data_domains,
         domains_filter=filter_list,
+        check_mdm_anchor=not no_mdm_anchor,
+        check_ownership=not no_ownership,
     )
 
     click.echo("🔎 Checking Claim Registry coverage")
@@ -2577,6 +2620,96 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             err=True,
         )
 
+    if report.anchor_pending:
+        click.echo(
+            f"\n⛔ MDM anchors undecided ({len(report.anchor_pending)} domain(s)):",
+            err=True,
+        )
+        for domain in sorted(report.anchor_pending):
+            ids = report.anchor_pending[domain]
+            click.echo(
+                f"   • {domain}: {len(ids)} anchor(s) still proposed "
+                f"while broad claims are approved", err=True,
+            )
+            for cid in ids[:10]:
+                click.echo(f"        - {cid}", err=True)
+        click.echo(
+            "   → Decide (approve/defer) the domain's MDM/reference anchors "
+            "before approving broad claims (§5.4).",
+            err=True,
+        )
+
+    if report.deviation_missing:
+        click.echo(
+            f"\n⛔ Deviation log incomplete ({len(report.deviation_missing)} "
+            "domain(s)):", err=True,
+        )
+        for domain in sorted(report.deviation_missing):
+            ids = report.deviation_missing[domain]
+            click.echo(
+                f"   • {domain}: {len(ids)} approved gap (client-native) claim(s) "
+                "lack a deviation record", err=True,
+            )
+            for cid in ids[:10]:
+                click.echo(f"        - {cid}", err=True)
+        click.echo(
+            "   → Add a deviation (owner + reason) to every client-native gap "
+            "claim (§12).", err=True,
+        )
+
+    if report.ownership_conflicts:
+        click.echo(
+            f"\n⛔ Ownership conflicts ({len(report.ownership_conflicts)}):",
+            err=True,
+        )
+        for conf in report.ownership_conflicts[:15]:
+            click.echo(
+                f"   • {conf.domain}:{conf.claim_id} approves {conf.uri} "
+                f"owned by {', '.join(conf.owners)}", err=True,
+            )
+        click.echo(
+            "   → Move the claim to its owning domain, or add an "
+            "ownership_override (owner + rationale) to document the exception.",
+            err=True,
+        )
+
+    if report.anchor_missing:
+        click.echo(
+            f"\n⚠ MDM anchors not declared ({len(report.anchor_missing)} domain(s)):"
+        )
+        for domain in sorted(report.anchor_missing):
+            click.echo(
+                f"   • {domain}: broad class claims approved but no mdm_anchor "
+                "reference-data claim declared"
+            )
+        click.echo(
+            "   → Identify the domain's major reference anchors "
+            "(conformed dimensions / code lists / natural keys)."
+        )
+
+    if report.shared_dimensions:
+        click.echo(
+            f"\n⚠ Shared conformed dimensions ({len(report.shared_dimensions)}) — "
+            "approved in multiple domains with a documented override:"
+        )
+        for dup in report.shared_dimensions[:15]:
+            click.echo(f"   • {dup.uri}: {dup.first} and {dup.second}")
+
+    if report.passthrough_review:
+        total = sum(len(v) for v in report.passthrough_review.values())
+        click.echo(
+            f"\n⚠ Passthrough fields awaiting promotion review ({total}):"
+        )
+        for domain in sorted(report.passthrough_review):
+            ids = report.passthrough_review[domain]
+            click.echo(f"   • {domain}: {len(ids)} high-use passthrough claim(s)")
+            for cid in ids[:10]:
+                click.echo(f"        - {cid}")
+        click.echo(
+            "   → Review for promotion to a modeled property, or mark "
+            "passthrough_reviewed: true (§11.2)."
+        )
+
     if report.proposed_counts:
         click.echo(
             f"\n🧩 Undecided claims ({report.total_proposed}) — awaiting human "
@@ -2625,9 +2758,48 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
                 err=True,
             )
 
+    sync_blocking = False
+    if not no_extension_sync and ontologies_path.is_dir():
+        from ..claim_projection_sync import evaluate_projection_sync
+
+        sync_report = evaluate_projection_sync(
+            claims_dir=claims_path,
+            ontologies_dir=ontologies_path,
+            extensions_dir=extensions_path,
+            domains_filter=filter_list,
+        )
+        click.echo("\n🔎 Checking claim↔projection sync")
+        click.echo(f"   Ontologies: {ontologies_path}")
+        click.echo(f"   Extensions: {extensions_path}")
+        for domain_sync in sync_report.domains:
+            if domain_sync.in_sync:
+                click.echo(f"   ✓ {domain_sync.domain}: claims/imports/includes in sync")
+                continue
+            click.echo(f"   ❌ {domain_sync.domain}: sync drift detected", err=True)
+            if domain_sync.error:
+                click.echo(f"      - {domain_sync.error}", err=True)
+            for iri in domain_sync.missing_imports[:10]:
+                click.echo(f"      - missing owl:imports: {iri}", err=True)
+            for iri in domain_sync.extra_imports[:10]:
+                click.echo(f"      - extra owl:imports: {iri}", err=True)
+            for iri in domain_sync.missing_includes[:10]:
+                click.echo(f"      - missing silverInclude: {iri}", err=True)
+            for iri in domain_sync.extra_includes[:10]:
+                click.echo(f"      - extra silverInclude: {iri}", err=True)
+            if domain_sync.has_bulk_include_imports:
+                click.echo("      - silverIncludeImports bulk flag must be removed", err=True)
+        sync_blocking = sync_report.is_blocking
+        if sync_blocking and not warn_only:
+            click.echo(
+                "\n❌ Claim/projection sync check failed. Run "
+                "`kairos-ontology claims-to-silver-ext` and commit the generated "
+                "ontology/extension changes before projecting.",
+                err=True,
+            )
+
     strict_block = strict and report.has_undecided_claims()
     should_block = (
-        report.is_blocking or source_blocking or strict_block
+        report.is_blocking or source_blocking or sync_blocking or strict_block
     ) and not warn_only
 
     if report.is_blocking and not warn_only:
@@ -2646,10 +2818,212 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
     if should_block:
         raise SystemExit(1)
 
-    if report.is_blocking or report.has_warnings or source_blocking:
+    if report.is_blocking or report.has_warnings or source_blocking or sync_blocking:
         click.echo("\n⚠ Claim check completed with warnings (not blocking).")
     else:
         click.echo("\n✅ Claims are valid, complete, and up to date.")
+
+
+@cli.command(name='claims-to-silver-ext')
+@click.option('--claims-dir', type=click.Path(), default=None,
+              help='Path to model/claims/ directory (default: auto-detect).')
+@click.option('--ontologies', type=click.Path(), default=None,
+              help='Path to model/ontologies/ directory (default: auto-detect).')
+@click.option('--extensions', type=click.Path(), default=None,
+              help='Path to model/extensions/ directory (default: auto-detect).')
+@click.option('--domains', 'domains_filter', default=None,
+              help='Comma-separated domain names to include (case-insensitive substring match).')
+@click.option('--check-only', is_flag=True, default=False,
+              help='Report drift only (exit 1 when out of sync, no writes).')
+def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter, check_only):
+    """Generate projection-facing imports/includes from approved claims (Slice 2).
+
+    A1 authority: approved imported class claims deterministically drive:
+    1) domain ontology ``owl:imports``, and 2) per-class
+    ``kairos-ext:silverInclude`` in ``*-silver-ext.ttl``.
+    """
+    from ..claim_projection_sync import apply_projection_sync, evaluate_projection_sync
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
+    ontologies_path = (
+        Path(ontologies)
+        if ontologies
+        else _resolve_model_path(cwd, hub_root, subdir="ontologies", claims_path=claims_path)
+    )
+    extensions_path = (
+        Path(extensions)
+        if extensions
+        else _resolve_model_path(cwd, hub_root, subdir="extensions", claims_path=claims_path)
+    )
+
+    filter_list = None
+    if domains_filter:
+        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
+
+    report = (
+        evaluate_projection_sync(
+            claims_dir=claims_path,
+            ontologies_dir=ontologies_path,
+            extensions_dir=extensions_path,
+            domains_filter=filter_list,
+        )
+        if check_only
+        else apply_projection_sync(
+            claims_dir=claims_path,
+            ontologies_dir=ontologies_path,
+            extensions_dir=extensions_path,
+            domains_filter=filter_list,
+        )
+    )
+
+    click.echo("🔄 Claim-driven projection sync")
+    click.echo(f"   Claims:     {claims_path}")
+    click.echo(f"   Ontologies: {ontologies_path}")
+    click.echo(f"   Extensions: {extensions_path}")
+
+    if not report.domains:
+        click.echo("   ⏭ No claims registries found in scope.")
+        raise SystemExit(0)
+
+    for domain_sync in report.domains:
+        if domain_sync.in_sync:
+            click.echo(f"   ✓ {domain_sync.domain}: in sync")
+            continue
+        click.echo(f"   ❌ {domain_sync.domain}: drift remains", err=True)
+        if domain_sync.error:
+            click.echo(f"      - {domain_sync.error}", err=True)
+        for iri in domain_sync.missing_imports[:10]:
+            click.echo(f"      - missing owl:imports: {iri}", err=True)
+        for iri in domain_sync.extra_imports[:10]:
+            click.echo(f"      - extra owl:imports: {iri}", err=True)
+        for iri in domain_sync.missing_includes[:10]:
+            click.echo(f"      - missing silverInclude: {iri}", err=True)
+        for iri in domain_sync.extra_includes[:10]:
+            click.echo(f"      - extra silverInclude: {iri}", err=True)
+        if domain_sync.has_bulk_include_imports:
+            click.echo("      - silverIncludeImports bulk flag must be removed", err=True)
+
+    if report.is_blocking:
+        raise SystemExit(1)
+    click.echo("✅ Claim-driven projection surfaces are in sync.")
+
+
+@cli.command(name='derive-claims')
+@click.option('--claims-dir', type=click.Path(), default=None,
+              help='Path to model/claims/ directory (default: auto-detect).')
+@click.option('--analysis-dir', type=click.Path(), default=None,
+              help='Path to _analysis/ directory with affinity reports (default: auto-detect).')
+@click.option('--mappings', type=click.Path(), default=None,
+              help='Path to model/mappings/ directory with SKOS mappings (default: auto-detect).')
+@click.option('--tmdl-dir', type=click.Path(), default=None,
+              help='Path to import-tmdl concept-mapping output '
+                   '(default: integration/sources/powerbi/).')
+@click.option('--domains', 'domains_filter', default=None,
+              help='Comma-separated domain names to include (case-insensitive substring match).')
+@click.option('--max-workers', type=int, default=8,
+              help='Max concurrent per-domain aggregations (default: 8; use 1 for serial).')
+@click.option('--force', is_flag=True, default=False,
+              help='Bypass the sidecar cache and re-aggregate every domain.')
+@click.option('--quiet', '-q', is_flag=True, default=False,
+              help='Suppress per-domain progress output (errors still shown).')
+def derive_claims_cmd(claims_dir, analysis_dir, mappings, tmdl_dir, domains_filter,
+                      max_workers, force, quiet):
+    """Aggregate multi-source evidence into candidate claims (DD-EL-5).
+
+    Deterministic and **AI-free**: the semantic LLM work already happened upstream
+    in ``analyse-sources`` (affinity) and ``propose-alignment`` (column→property,
+    which already writes ``{domain}-claims.yaml``).  This command is the
+    deterministic merge/enrich layer that joins those outputs with affinity, TMDL
+    concept-mapping, SKOS mapping, and sample-shape evidence — attaching **multiple
+    ``evidence_sources`` per claim** so each candidate is traceable.
+
+    \\b
+    Every derived/new claim is ``proposed`` — never auto-``approved`` (the C4
+    guard).  Human decisions survive re-runs (decided claims keep their curated
+    fields; their evidence is refreshed).  Run it after ``propose-alignment`` and
+    before human curation / approval.
+
+    \\b
+    Examples:
+      kairos-ontology derive-claims
+      kairos-ontology derive-claims --domains "client,invoice"
+      kairos-ontology derive-claims --max-workers 1 --force
+    """
+    from ..derive_claims import run_derive_claims
+    from ..hub_utils import find_hub_root
+
+    _warn_if_no_skill_context("derive-claims")
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+
+    claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
+    if not claims_path.is_dir():
+        click.echo(
+            f"❌ No claims directory at {claims_path}. Run propose-alignment "
+            "(or migrate-claims) first.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    analysis_path = (
+        Path(analysis_dir) if analysis_dir else _autodetect_analysis_dir(cwd, hub_root)
+    )
+    mappings_path = (
+        Path(mappings) if mappings
+        else _resolve_model_path(cwd, hub_root, subdir="mappings", claims_path=claims_path)
+    )
+    if tmdl_dir:
+        tmdl_path = Path(tmdl_dir)
+    else:
+        base = hub_root if hub_root else cwd
+        tmdl_path = base / "integration" / "sources" / "powerbi"
+
+    filters = [f for f in (domains_filter.split(",") if domains_filter else []) if f.strip()]
+
+    if not quiet:
+        click.echo("🧩 Deriving candidate claims (deterministic, AI-free)")
+        click.echo(f"   Claims:   {claims_path}")
+        click.echo(f"   Affinity: {analysis_path if analysis_path else '(none)'}")
+        click.echo(f"   Mappings: {mappings_path if mappings_path.is_dir() else '(none)'}")
+        click.echo(f"   TMDL:     {tmdl_path if tmdl_path.is_dir() else '(none)'}")
+
+    # The per-domain aggregation is CPU-light and the file readers are shared, so
+    # the bounded pool mostly future-proofs large hubs; correctness is identical
+    # for any --max-workers (deterministic, input-ordered).
+    report = run_derive_claims(
+        claims_path,
+        analysis_dir=analysis_path,
+        mappings_dir=mappings_path,
+        tmdl_dir=tmdl_path,
+        domains_filter=filters,
+        max_workers=max_workers,
+        force=force,
+        write=True,
+    )
+
+    if not report.domain_stats:
+        click.echo("⚠ No matching {domain}-claims.yaml found to enrich.", err=True)
+        raise SystemExit(1)
+
+    for stats in report.domain_stats:
+        if not quiet:
+            click.echo(
+                f"   ✓ {stats.domain}: +{stats.evidence_added} evidence, "
+                f"+{stats.new_claims} new candidate(s) "
+                f"({stats.total_claims} claim(s) total"
+                + (f", {stats.conflicts} conflict(s)" if stats.conflicts else "")
+                + (f", {stats.unrouted_tmdl} unrouted TMDL" if stats.unrouted_tmdl else "")
+                + ")"
+            )
+    click.echo(
+        f"✅ Derived claims for {len(report.domain_stats)} domain(s): "
+        f"+{report.total_evidence_added} evidence, +{report.total_new_claims} new candidate(s). "
+        "All candidates are 'proposed' — review and approve before projecting."
+    )
 
 
 @cli.command(name='discovery-status')
@@ -3526,6 +3900,17 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         content = provenance_comment("new-repo", editable=True) + "\n" + content
         (hub / "model" / "ontologies" / "_master.ttl").write_text(content, encoding="utf-8")
         print("  ✓ ontology-hub/model/ontologies/_master.ttl")
+
+    # Foundation ontology (shared base for thin domain ontologies)
+    foundation_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "foundation.ttl.template"
+    if foundation_src.is_file():
+        content = foundation_src.read_text(encoding="utf-8")
+        content = (content
+                   .replace("{company_name}", company_name)
+                   .replace("{company_domain}", company_domain_val))
+        content = provenance_comment("new-repo", editable=True) + "\n" + content
+        (hub / "model" / "ontologies" / "_foundation.ttl").write_text(content, encoding="utf-8")
+        print("  ✓ ontology-hub/model/ontologies/_foundation.ttl")
 
     # Local catalog (URI → local file mapping)
     catalog_src = _SCAFFOLD_DIR / "ontology-hub" / "catalog-v001.xml.template"

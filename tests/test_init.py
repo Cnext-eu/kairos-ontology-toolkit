@@ -88,10 +88,10 @@ def test_init_without_domain(tmp_path):
 
             assert Path("ontology-hub/model/ontologies").is_dir()
             assert Path(".github/skills/kairos-setup-config/SKILL.md").is_file()
-            # Only _master.ttl should exist (no domain starter)
+            # Only _foundation.ttl + _master.ttl should exist (no domain starter)
             ttl_files = sorted(Path("ontology-hub/model/ontologies").glob("*.ttl"))
-            assert len(ttl_files) == 1
-            assert ttl_files[0].name == "_master.ttl"
+            assert len(ttl_files) == 2
+            assert [f.name for f in ttl_files] == ["_foundation.ttl", "_master.ttl"]
 
 
 def test_init_no_overwrite_without_force(tmp_path):
@@ -312,9 +312,9 @@ def test_new_repo_without_domain(tmp_path):
     assert result.exit_code == 0, result.output
     repo = tmp_path / "empty-client-ontology-hub"
     assert (repo / "ontology-hub" / "model" / "ontologies").is_dir()
-    # Only _master.ttl should exist (no domain starter)
+    # Only _foundation.ttl + _master.ttl should exist (no domain starter)
     ttl_files = sorted(p.name for p in (repo / "ontology-hub" / "model" / "ontologies").glob("*.ttl"))
-    assert ttl_files == ["_master.ttl"]
+    assert ttl_files == ["_foundation.ttl", "_master.ttl"]
 
 
 def test_new_repo_custom_org(tmp_path):

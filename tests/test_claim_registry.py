@@ -13,8 +13,11 @@ from kairos_ontology.claim_registry import (
     ClaimRegistry,
     CoverageSystem,
     CoverageTable,
+    Deviation,
     EvidenceSource,
     Freshness,
+    OwnershipOverride,
+    ReferenceData,
     SilverImpact,
     dump_registry,
     is_valid_transition,
@@ -360,3 +363,117 @@ class TestMergePreservingDecisions:
         ids = [c.id for c in merged.claims]
         assert ids == sorted(ids)
         assert validation_errors(validate_registry(merged)) == []
+
+
+class TestSlice4Schema:
+    """MDM / reference-data / ownership / deviation schema additions (Slice 4)."""
+
+    def test_reference_data_round_trip(self):
+        rd = ReferenceData(
+            authority_system="iso", code_system="ISO-3166-1", key="alpha2", scd_type=1
+        )
+        assert ReferenceData.from_dict(rd.to_dict()) == rd
+
+    def test_reference_data_omits_none(self):
+        rd = ReferenceData(code_system="ISO-3166-1")
+        assert rd.to_dict() == {"code_system": "ISO-3166-1"}
+
+    def test_deviation_round_trip(self):
+        dev = Deviation(reason="no equivalent", owner="arch", gap_request="GH-42")
+        assert Deviation.from_dict(dev.to_dict()) == dev
+
+    def test_ownership_override_round_trip(self):
+        ovr = OwnershipOverride(owner="cdo", rationale="conformed dimension")
+        assert OwnershipOverride.from_dict(ovr.to_dict()) == ovr
+
+    def test_claim_round_trip_with_new_fields(self):
+        claim = Claim(
+            id="party-country", type="reference_data", status="approved",
+            disposition="claim", class_uri="https://ex.org/common#Country",
+            mdm_anchor=True,
+            reference_data=ReferenceData(code_system="ISO-3166-1", scd_type=1),
+            deviation=Deviation(reason="x", owner="y"),
+            ownership_override=OwnershipOverride(owner="cdo", rationale="shared"),
+            passthrough_reviewed=True,
+            evidence_sources=[EvidenceSource(type="source_table", system="mdm",
+                                             table="country")],
+        )
+        again = Claim.from_dict(claim.to_dict())
+        assert again.to_dict() == claim.to_dict()
+        assert again.mdm_anchor is True
+        assert again.passthrough_reviewed is True
+        assert again.reference_data.code_system == "ISO-3166-1"
+        assert again.ownership_override.owner == "cdo"
+
+    def test_dump_omits_default_new_fields(self):
+        reg = ClaimRegistry(domain="x", claims=[
+            Claim(id="x-1", type="class", class_uri="u", status="proposed")
+        ])
+        text = dump_registry(reg)
+        assert "mdm_anchor" not in text
+        assert "passthrough_reviewed" not in text
+        assert "reference_data" not in text
+        assert "ownership_override" not in text
+        assert "deviation" not in text
+
+    def test_ownership_override_requires_owner_and_rationale(self):
+        reg = ClaimRegistry(domain="d", claims=[
+            Claim(id="d-1", type="class", status="proposed", class_uri="u",
+                  ownership_override=OwnershipOverride(owner="cdo", rationale=None))
+        ])
+        msgs = [i.message for i in validation_errors(validate_registry(reg))]
+        assert any("ownership_override requires" in m for m in msgs)
+
+    def test_well_formed_override_validates(self):
+        reg = ClaimRegistry(domain="d", claims=[
+            Claim(id="d-1", type="class", status="proposed", class_uri="u",
+                  ownership_override=OwnershipOverride(owner="cdo", rationale="shared"))
+        ])
+        assert validation_errors(validate_registry(reg)) == []
+
+    def test_mdm_anchor_on_non_reference_data_warns(self):
+        reg = ClaimRegistry(domain="d", claims=[
+            Claim(id="d-1", type="class", status="proposed", class_uri="u",
+                  mdm_anchor=True)
+        ])
+        issues = validate_registry(reg)
+        assert any(i.level == "warning" and "mdm_anchor" in i.message for i in issues)
+        assert validation_errors(issues) == []
+
+    def test_reference_data_on_non_reference_data_warns(self):
+        reg = ClaimRegistry(domain="d", claims=[
+            Claim(id="d-1", type="class", status="proposed", class_uri="u",
+                  reference_data=ReferenceData(code_system="x"))
+        ])
+        issues = validate_registry(reg)
+        assert any(
+            i.level == "warning" and "reference_data" in i.message for i in issues
+        )
+
+    def test_merge_preserves_new_curated_fields(self):
+        existing = ClaimRegistry(domain="party", claims=[Claim(
+            id="party-country", type="reference_data", status="approved",
+            disposition="claim", class_uri="https://ex.org/common#Country",
+            mdm_anchor=True,
+            reference_data=ReferenceData(code_system="ISO-3166-1"),
+            ownership_override=OwnershipOverride(owner="cdo", rationale="shared"),
+            passthrough_reviewed=True,
+            evidence_sources=[EvidenceSource(type="source_table", system="mdm",
+                                             table="country")],
+        )])
+        new = ClaimRegistry(domain="party", claims=[Claim(
+            id="party-country", type="reference_data", status="proposed",
+            disposition="claim", class_uri=None,
+            evidence_sources=[EvidenceSource(type="affinity", system="mdm",
+                                             table="country")],
+        )])
+        merged = merge_preserving_decisions(new, existing)
+        c = merged.claims[0]
+        assert c.status == "approved"
+        assert c.mdm_anchor is True
+        assert c.reference_data.code_system == "ISO-3166-1"
+        assert c.ownership_override.owner == "cdo"
+        assert c.passthrough_reviewed is True
+        # evidence still refreshed from the new run
+        assert {e.type for e in c.evidence_sources} == {"affinity"}
+

@@ -16,9 +16,9 @@ retired only in Slice 1, together with its full replacement.
 | [0A](slice-0a-closure-spike.md) | Full-closure spike (perf/FK only) | 🟢 findings | — |
 | [0B](slice-0b-schema-authority.md) | Registry schema + migration + projector-authority gate (+ A1/A2 forks) | 🟢 decided | 0A |
 | [1](slice-1-registry-replacement.md) | Registry replacement vertical slice (cutover) | ✅ | 0B |
-| [2](slice-2-projection.md) | Projection vertical slice + foundation/thin scaffold | ⬜ | 1 |
-| [3](slice-3-derive-claims.md) | derive-claims (richer evidence aggregation) | ⬜ | 1 |
-| [4](slice-4-mdm-ownership.md) | MDM/reference-data rules + ownership hardening | ⬜ | 2 |
+| [2](slice-2-projection.md) | Projection vertical slice + foundation/thin scaffold | ✅ | 1 |
+| [3](slice-3-derive-claims.md) | derive-claims (richer evidence aggregation) | ✅ | 1 |
+| [4](slice-4-mdm-ownership.md) | MDM/reference-data rules + ownership hardening | ✅ | 2 |
 | [5](slice-5-pbi-fitgap.md) | Power BI/source fit-gap & gold seed | ⬜ | 2, 3 |
 | [6](slice-6-change-management.md) | Change management & contract versioning | ⬜ | 2, 4 |
 | [7](slice-7-skills-thin-chat.md) | Skills thin-chat redesign + scaffold sync | ⬜ | 2 |
@@ -88,5 +88,22 @@ Every slice PR must satisfy:
 - [ ] `uv run ruff check src/ tests/` clean
 - [ ] `kairos-ext.ttl` vocabulary coverage for any new annotation
 - [ ] `.github/skills` ↔ `scaffold/skills` synced (`scripts/sync-dev-skills.py`)
-- [ ] DD entry in `docs/design/toolkit-design-decisions.md` if architectural
+- [ ] DD entry in `docs/design/toolkit-design-decisions.md` if architectural decisions changed
 - [ ] Docs / skill updates shipped **with** the slice, not deferred
+
+## Current implementation posture (after Slice 1)
+
+- Registry cutover is complete; alignment YAML is retired.
+- Slice 2 is the next execution-critical step because projection must now be
+  claim-driven end-to-end.
+- Decision authority for Slice 2 is fixed by `decision-log.md`:
+  - **DD-EL-2 (A1):** generate domain `owl:imports` from approved claims.
+  - **DD-EL-3 (A2-lite):** keep generated TTL surfaces reviewable in PRs.
+
+## Slice 2 kickoff checklist (ready-to-start)
+
+- [ ] Lock Slice 2 scope to A1 (no import-all suppression path in this slice).
+- [ ] Implement deterministic `claims -> imports/extensions` generation path.
+- [ ] Add `claim<->extension` sync checks in `check-claims`.
+- [ ] Add/update scenario tests covering generated imports and no-drift behavior.
+- [ ] Update docs + skill/scaffold mirrors in the same PR.

@@ -106,6 +106,95 @@ class EvidenceSource:
 
 
 @dataclass
+class ReferenceData:
+    """MDM / reference-data descriptor for a ``reference_data`` claim (§5.3).
+
+    Captures the authoritative source, code system, natural key, and SCD strategy
+    of a conformed dimension / code list / crosswalk so the MDM-anchor gate has a
+    concrete, reviewable record rather than a bare class claim.
+    """
+
+    authority_system: str | None = None
+    code_system: str | None = None
+    key: str | None = None
+    scd_type: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for attr in ("authority_system", "code_system", "key", "scd_type"):
+            val = getattr(self, attr)
+            if val is not None:
+                out[attr] = val
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReferenceData:
+        scd = data.get("scd_type")
+        return cls(
+            authority_system=data.get("authority_system"),
+            code_system=data.get("code_system"),
+            key=data.get("key"),
+            scd_type=int(scd) if scd is not None else None,
+        )
+
+
+@dataclass
+class Deviation:
+    """Recorded deviation / upstream-gap decision for a client-native claim (§12).
+
+    Every ``gap`` (client-native) claim must, on approval, carry a deviation record
+    so client-native concepts are tracked and the upstream accelerator gap process
+    is visible (the ``deviation-log`` check).
+    """
+
+    reason: str | None = None
+    owner: str | None = None
+    gap_request: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for attr in ("reason", "owner", "gap_request"):
+            val = getattr(self, attr)
+            if val is not None:
+                out[attr] = val
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Deviation:
+        return cls(
+            reason=data.get("reason"),
+            owner=data.get("owner"),
+            gap_request=data.get("gap_request"),
+        )
+
+
+@dataclass
+class OwnershipOverride:
+    """Documented exception allowing a claim to cross a ``data-domains.yaml``
+    ownership boundary or to share a class as a conformed dimension (§14).
+
+    The override turns an otherwise-blocking ownership conflict / duplicate
+    ``approved`` claim into an explicit, reviewed decision — it must name an
+    ``owner`` and a ``rationale``.
+    """
+
+    owner: str | None = None
+    rationale: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if self.owner is not None:
+            out["owner"] = self.owner
+        if self.rationale is not None:
+            out["rationale"] = self.rationale
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> OwnershipOverride:
+        return cls(owner=data.get("owner"), rationale=data.get("rationale"))
+
+
+@dataclass
 class SilverImpact:
     """Declared silver-contract impact of a claim."""
 
@@ -145,6 +234,11 @@ class Claim:
     owner: str | None = None
     evidence_sources: list[EvidenceSource] = field(default_factory=list)
     silver_impact: SilverImpact | None = None
+    reference_data: ReferenceData | None = None
+    mdm_anchor: bool = False
+    deviation: Deviation | None = None
+    ownership_override: OwnershipOverride | None = None
+    passthrough_reviewed: bool = False
     rationale: str | None = None
     proposed_confidence: float | None = None
     superseded_by: str | None = None
@@ -167,6 +261,22 @@ class Claim:
             out["evidence_sources"] = [e.to_dict() for e in self.evidence_sources]
         if self.silver_impact is not None:
             out["silver_impact"] = self.silver_impact.to_dict()
+        if self.reference_data is not None:
+            ref = self.reference_data.to_dict()
+            if ref:
+                out["reference_data"] = ref
+        if self.mdm_anchor:
+            out["mdm_anchor"] = True
+        if self.deviation is not None:
+            dev = self.deviation.to_dict()
+            if dev:
+                out["deviation"] = dev
+        if self.ownership_override is not None:
+            ovr = self.ownership_override.to_dict()
+            if ovr:
+                out["ownership_override"] = ovr
+        if self.passthrough_reviewed:
+            out["passthrough_reviewed"] = True
         if self.rationale is not None:
             out["rationale"] = self.rationale
         if self.proposed_confidence is not None:
@@ -194,6 +304,21 @@ class Claim:
                 if data.get("silver_impact")
                 else None
             ),
+            reference_data=(
+                ReferenceData.from_dict(data["reference_data"])
+                if data.get("reference_data")
+                else None
+            ),
+            mdm_anchor=bool(data.get("mdm_anchor", False)),
+            deviation=(
+                Deviation.from_dict(data["deviation"]) if data.get("deviation") else None
+            ),
+            ownership_override=(
+                OwnershipOverride.from_dict(data["ownership_override"])
+                if data.get("ownership_override")
+                else None
+            ),
+            passthrough_reviewed=bool(data.get("passthrough_reviewed", False)),
             rationale=data.get("rationale"),
             proposed_confidence=data.get("proposed_confidence"),
             superseded_by=data.get("superseded_by"),
@@ -445,6 +570,18 @@ def validate_registry(registry: ClaimRegistry) -> list[ValidationIssue]:
         if claim.status == "approved" and not claim.evidence_sources:
             err("approved claim has no evidence_sources", cid)
 
+        # reference_data block belongs only on reference_data claims (Slice 4 §5.3)
+        if claim.reference_data is not None and claim.type != "reference_data":
+            warn("reference_data block set on a non-reference_data claim", cid)
+        # mdm_anchor marks a required reference-data anchor; only meaningful there
+        if claim.mdm_anchor and claim.type != "reference_data":
+            warn("mdm_anchor set on a non-reference_data claim", cid)
+
+        # ownership_override must name an owner *and* a rationale (Slice 4 §14)
+        ovr = claim.ownership_override
+        if ovr is not None and (not ovr.owner or not ovr.rationale):
+            err("ownership_override requires both 'owner' and 'rationale'", cid)
+
         # superseded_by only meaningful when deprecated, and must resolve
         if claim.superseded_by is not None:
             if claim.status != "deprecated":
@@ -493,6 +630,11 @@ HUMAN_CURATED_FIELDS = (
     "origin",
     "owner",
     "silver_impact",
+    "reference_data",
+    "mdm_anchor",
+    "deviation",
+    "ownership_override",
+    "passthrough_reviewed",
     "class_uri",
     "property_uri",
     "rationale",
@@ -545,6 +687,11 @@ def merge_preserving_decisions(
                     else list(prev.evidence_sources)
                 ),
                 silver_impact=prev.silver_impact,
+                reference_data=prev.reference_data,
+                mdm_anchor=prev.mdm_anchor,
+                deviation=prev.deviation,
+                ownership_override=prev.ownership_override,
+                passthrough_reviewed=prev.passthrough_reviewed,
                 rationale=prev.rationale,
                 proposed_confidence=cand.proposed_confidence,
                 superseded_by=prev.superseded_by,

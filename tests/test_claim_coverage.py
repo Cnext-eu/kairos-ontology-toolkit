@@ -22,8 +22,11 @@ from kairos_ontology.claim_registry import (
     ClaimRegistry,
     CoverageSystem,
     CoverageTable,
+    Deviation,
     EvidenceSource,
     Freshness,
+    OwnershipOverride,
+    ReferenceData,
     registry_path,
     write_registry,
 )
@@ -243,7 +246,399 @@ class TestCheckClaimsCoverage:
         assert "commercial" not in report.missing
 
 
-class TestCheckClaimsCLI:
+def _ref_anchor(cid: str, *, status: str = "proposed", class_uri: str | None = None) -> Claim:
+    """A reference_data MDM anchor claim."""
+    return Claim(
+        id=cid,
+        type="reference_data",
+        status=status,
+        disposition="claim",
+        mdm_anchor=True,
+        class_uri=class_uri,
+        reference_data=ReferenceData(code_system="ISO-3166-1", key="alpha2"),
+        evidence_sources=[EvidenceSource(type="source_table", system="mdm", table="country")],
+    )
+
+
+class TestMdmAnchorGate:
+
+    def test_pending_anchor_blocks_broad_claim(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        broad = _approved_class_claim("party-foo", "https://ex.org/dom#Foo")
+        anchor = _ref_anchor("party-country")  # still proposed
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[broad, anchor]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.anchor_pending == {"party": ["party-country"]}
+        assert report.is_blocking
+
+    def test_decided_anchor_passes(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        broad = _approved_class_claim("party-foo", "https://ex.org/dom#Foo")
+        anchor = _ref_anchor(
+            "party-country", status="approved", class_uri="https://ex.org/dom#Country"
+        )
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[broad, anchor]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.anchor_pending == {}
+        assert report.anchor_missing == []
+
+    def test_broad_claim_without_anchors_warns(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        broad = _approved_class_claim("party-foo", "https://ex.org/dom#Foo")
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[broad]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.anchor_missing == ["party"]
+        assert not report.is_blocking  # pragmatic — warning only
+        assert report.has_warnings
+
+    def test_no_anchor_gate_when_no_broad_claims(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        # only a proposed (not approved) class claim — not "broad"
+        proposed = Claim(id="party-p", type="class", status="proposed", disposition="claim")
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[proposed]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.anchor_missing == []
+        assert report.anchor_pending == {}
+
+    def test_no_mdm_anchor_flag_skips_gate(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        broad = _approved_class_claim("party-foo", "https://ex.org/dom#Foo")
+        anchor = _ref_anchor("party-country")
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[broad, anchor]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(
+            claims_dir=claims, analysis_dir=analysis, check_mdm_anchor=False
+        )
+        assert report.anchor_pending == {}
+        assert report.anchor_missing == []
+
+
+class TestDeviationLog:
+
+    def _gap(self, cid: str, *, deviation: Deviation | None = None) -> Claim:
+        return Claim(
+            id=cid,
+            type="class",
+            status="approved",
+            disposition="gap",
+            class_uri="https://client.example/native#Widget",
+            deviation=deviation,
+            evidence_sources=[EvidenceSource(type="source_table", system="crm", table="w")],
+        )
+
+    def test_approved_gap_without_deviation_blocks(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[self._gap("party-w")]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.deviation_missing == {"party": ["party-w"]}
+        assert report.is_blocking
+
+    def test_documented_gap_passes(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        gap = self._gap(
+            "party-w",
+            deviation=Deviation(owner="data-arch", reason="no accelerator equivalent"),
+        )
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[gap]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.deviation_missing == {}
+
+    def test_proposed_gap_not_required_to_document(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        gap = Claim(id="party-w", type="class", status="proposed", disposition="gap")
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[gap]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.deviation_missing == {}
+
+
+class TestOwnershipBoundary:
+
+    def _approved(self, cid: str, uri: str, *, override: OwnershipOverride | None = None) -> Claim:
+        return Claim(
+            id=cid,
+            type="class",
+            status="approved",
+            disposition="claim",
+            class_uri=uri,
+            ownership_override=override,
+            evidence_sources=[EvidenceSource(type="source_table", system="crm", table="a")],
+        )
+
+    def test_cross_boundary_claim_blocks(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        write_registry(
+            _registry(
+                "party", [("adminpulse", "tblA")],
+                claims=[self._approved("party-acct", "https://ref.org/finance#Account")],
+            ),
+            registry_path(claims, "party"),
+        )
+        data_domains = {
+            "finance": {"uris": ["https://ref.org/finance"]},
+            "party": {"uris": ["https://ref.org/party"]},
+        }
+        report = check_claims_coverage(
+            claims_dir=claims, analysis_dir=analysis, data_domains=data_domains
+        )
+        assert len(report.ownership_conflicts) == 1
+        conf = report.ownership_conflicts[0]
+        assert conf.domain == "party"
+        assert conf.claim_id == "party-acct"
+        assert conf.owners == ["finance"]
+        assert report.is_blocking
+
+    def test_override_clears_conflict(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        override = OwnershipOverride(owner="cdo", rationale="shared conformed dimension")
+        write_registry(
+            _registry(
+                "party", [("adminpulse", "tblA")],
+                claims=[
+                    self._approved(
+                        "party-acct", "https://ref.org/finance#Account", override=override
+                    )
+                ],
+            ),
+            registry_path(claims, "party"),
+        )
+        data_domains = {"finance": {"uris": ["https://ref.org/finance"]}}
+        report = check_claims_coverage(
+            claims_dir=claims, analysis_dir=analysis, data_domains=data_domains
+        )
+        assert report.ownership_conflicts == []
+        assert not report.is_blocking
+
+    def test_owned_claim_no_conflict(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        write_registry(
+            _registry(
+                "party", [("adminpulse", "tblA")],
+                claims=[self._approved("party-p", "https://ref.org/party#Person")],
+            ),
+            registry_path(claims, "party"),
+        )
+        data_domains = {"party": {"uris": ["https://ref.org/party"]}}
+        report = check_claims_coverage(
+            claims_dir=claims, analysis_dir=analysis, data_domains=data_domains
+        )
+        assert report.ownership_conflicts == []
+
+    def test_no_ownership_flag_skips_check(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        write_registry(
+            _registry(
+                "party", [("adminpulse", "tblA")],
+                claims=[self._approved("party-acct", "https://ref.org/finance#Account")],
+            ),
+            registry_path(claims, "party"),
+        )
+        data_domains = {"finance": {"uris": ["https://ref.org/finance"]}}
+        report = check_claims_coverage(
+            claims_dir=claims, analysis_dir=analysis,
+            data_domains=data_domains, check_ownership=False,
+        )
+        assert report.ownership_conflicts == []
+
+    def test_shared_dimension_override_downgrades_duplicate(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(
+            analysis, "adminpulse", [("tblA", "party"), ("tblB", "commercial")]
+        )
+        shared = "https://ref.org/common#Country"
+        override = OwnershipOverride(owner="cdo", rationale="conformed dimension")
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")],
+                      claims=[self._approved("party-country", shared)]),
+            registry_path(claims, "party"),
+        )
+        write_registry(
+            _registry("commercial", [("adminpulse", "tblB")],
+                      claims=[self._approved("commercial-country", shared, override=override)]),
+            registry_path(claims, "commercial"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.duplicate_approved == []
+        assert len(report.shared_dimensions) == 1
+        assert not report.is_blocking
+        assert report.has_warnings
+
+
+class TestPassthroughReview:
+
+    def _passthrough(self, cid: str, evidence: list[EvidenceSource], *, reviewed: bool = False) -> Claim:
+        return Claim(
+            id=cid,
+            type="property",
+            status="proposed",
+            disposition="passthrough",
+            passthrough_reviewed=reviewed,
+            evidence_sources=evidence,
+        )
+
+    def test_multi_system_passthrough_flagged(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        ev = [
+            EvidenceSource(type="source_column", system="crm", table="a", column="x"),
+            EvidenceSource(type="source_column", system="erp", table="b", column="x"),
+        ]
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")],
+                      claims=[self._passthrough("party-x", ev)]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.passthrough_review == {"party": ["party-x"]}
+        assert not report.is_blocking  # advisory warning
+        assert report.has_warnings
+
+    def test_measure_backed_passthrough_flagged(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        ev = [EvidenceSource(type="powerbi_measure", model="ops", measure="Revenue")]
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")],
+                      claims=[self._passthrough("party-rev", ev)]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.passthrough_review == {"party": ["party-rev"]}
+
+    def test_reviewed_passthrough_not_flagged(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        ev = [
+            EvidenceSource(type="source_column", system="crm", table="a", column="x"),
+            EvidenceSource(type="source_column", system="erp", table="b", column="x"),
+        ]
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")],
+                      claims=[self._passthrough("party-x", ev, reviewed=True)]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.passthrough_review == {}
+
+    def test_single_system_passthrough_not_flagged(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        ev = [EvidenceSource(type="source_column", system="crm", table="a", column="x")]
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")],
+                      claims=[self._passthrough("party-x", ev)]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.passthrough_review == {}
+
+
+class TestSlice4CLI:
+
+    def test_anchor_pending_blocks_via_cli(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        broad = _approved_class_claim("party-foo", "https://ex.org/dom#Foo")
+        anchor = _ref_anchor("party-country")
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[broad, anchor]),
+            registry_path(claims, "party"),
+        )
+        result = CliRunner().invoke(cli, [
+            "check-claims", "--analysis-dir", str(analysis),
+            "--claims-dir", str(claims), "--no-source-coverage",
+        ])
+        assert result.exit_code == 1, result.output
+        assert "MDM anchors undecided" in result.output
+
+    def test_no_mdm_anchor_flag_via_cli(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        broad = _approved_class_claim("party-foo", "https://ex.org/dom#Foo")
+        anchor = _ref_anchor("party-country")
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[broad, anchor]),
+            registry_path(claims, "party"),
+        )
+        result = CliRunner().invoke(cli, [
+            "check-claims", "--analysis-dir", str(analysis),
+            "--claims-dir", str(claims), "--no-source-coverage", "--no-mdm-anchor",
+        ])
+        assert result.exit_code == 0, result.output
+
+    def test_deviation_missing_blocks_via_cli(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        gap = Claim(
+            id="party-w", type="class", status="approved", disposition="gap",
+            class_uri="https://client.example/native#Widget",
+            evidence_sources=[EvidenceSource(type="source_table", system="crm", table="w")],
+        )
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")], claims=[gap]),
+            registry_path(claims, "party"),
+        )
+        result = CliRunner().invoke(cli, [
+            "check-claims", "--analysis-dir", str(analysis),
+            "--claims-dir", str(claims), "--no-source-coverage",
+        ])
+        assert result.exit_code == 1, result.output
+        assert "Deviation log incomplete" in result.output
+
 
     def test_blocks_when_missing(self, tmp_path):
         analysis = tmp_path / "_analysis"

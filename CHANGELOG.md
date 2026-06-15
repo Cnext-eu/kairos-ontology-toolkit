@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.0] — 2026-06-15
+
+### Added
+- **MDM/reference-data rules + ownership hardening in `check-claims` (DD-EL-6).**
+  Slice 4 adds four deterministic governance checks to the single `check-claims`
+  gate plus the Claim Registry schema they need.
+  - **MDM-anchor gate (§5.4).** A *broad domain claim* (an approved class claim
+    with disposition claim/specialize) is blocked with `anchor_pending` when the
+    domain declares `mdm_anchor` reference-data claims that are still `proposed`,
+    and warned with `anchor_missing` (pragmatic — anchors must be *known*, not
+    fully implemented) when broad claims have no declared anchors at all.
+  - **deviation-log check (§12/§14).** Approved `gap` (client-native) claims that
+    lack a deviation record (owner + reason) block with `deviation_missing`.
+  - **ownership-boundary check (§14).** Approved claims whose `class_uri` falls
+    under another data-domain's `data-domains.yaml` `uris` prefix block with
+    `ownership_conflicts` unless an `ownership_override` (owner + rationale) is
+    present.
+  - **passthrough-review check (§11.2).** High-use passthrough claims (evidence
+    across ≥2 source systems, a powerbi measure/slicer/filter/hierarchy/join/fk/
+    sample_signal evidence type, or any evidence carrying a `measure`) that are not
+    yet `passthrough_reviewed` warn with `passthrough_review`.
+  - **Shared-conformed-dimension escape hatch.** Cross-file same-URI approved
+    claims now route to a `shared_dimensions` warning instead of the
+    `duplicate_approved` block when either claim carries an `ownership_override`.
+- **Claim Registry schema fields (DD-EL-6).** New `ReferenceData`
+  (`authority_system` / `code_system` / `key` / `scd_type`), `Deviation`
+  (`reason` / `owner` / `gap_request`), and `OwnershipOverride`
+  (`owner` / `rationale`) dataclasses, plus `Claim` fields `reference_data`,
+  `mdm_anchor`, `deviation`, `ownership_override`, and `passthrough_reviewed`. All
+  are omitted from serialized output when default (byte-stable golden output
+  preserved) and preserved across re-runs by `merge_preserving_decisions`.
+  `validate_registry` gains structural checks (warns on `reference_data`/`mdm_anchor`
+  set on a non-`reference_data` claim; errors on an `ownership_override` missing owner
+  or rationale).
+- **`check-claims` flags.** `--no-mdm-anchor` and `--no-ownership` skip the
+  respective gates.
+
+## [4.2.0] — 2026-06-15
+
+### Added
+- **`derive-claims` command (DD-EL-5).** A **deterministic, AI-free** aggregator
+  that merges/enriches the Claim Registry (`model/claims/{domain}-claims.yaml`)
+  into `proposed` candidate claims, reducing hand-authoring. The
+  semantically-hard LLM work already happened upstream in `analyse-sources`
+  (affinity) and `propose-alignment` (column→property); `derive-claims` is the
+  deterministic merge/enrich layer. It joins **five evidence streams**
+  deterministically on `(system, table[, column])` and ref_class/ref_property
+  names — the existing claims registry, `analyse-sources` affinity,
+  `import-tmdl` concept-mapping, SKOS mappings, and sample-derived signals —
+  attaching **multiple `evidence_sources` per claim**. All derived/new claims are
+  `status: proposed` and are **never** auto-`approved` (the C4 guard); human
+  decisions survive re-runs via the existing `merge_preserving_decisions()`. For
+  parity with the AI commands it reuses `--max-workers` (default 8) and `--force`
+  (`_concurrency` / `_cache`), but **deliberately omits the cost banner** because
+  nothing is billed. A future opt-in `--llm-reconcile` flag (LLM tie-breaking /
+  rationale synthesis, with a cost banner) is **deferred** to a later slice.
+
+## [4.1.0] — 2026-06-15
+
+### Added
+- **`claims-to-silver-ext` command (DD-EL-4).** Deterministically generates/
+  regenerates a domain's external `owl:imports` set and per-class
+  `kairos-ext:silverInclude` assertions in `{domain}-silver-ext.ttl` from the
+  **approved imported** class claims in `model/claims/{domain}-claims.yaml`
+  (realizing A1 — claims drive imports). `--check-only` reports drift and exits 1
+  without writing.
+- **Foundation/thin-ontology scaffold (A2-lite).** New
+  `scaffold/ontology-hub/model/ontologies/foundation.ttl.template`; the starter
+  domain ontology now `owl:imports` the thin `_foundation` ontology.
+
+### Changed
+- **`check-claims` claim↔projection sync gate (DD-EL-4).** `check-claims` now
+  blocks when a domain's `owl:imports` / `silverInclude` surfaces drift from its
+  approved claims, or when a `silverIncludeImports` bulk-bypass flag is present.
+  Add `--no-extension-sync` to skip the gate.
+- **Projector claim-authority gate for silver/dbt/powerbi (DD-EL-4).** For those
+  targets, if `model/claims/{domain}-claims.yaml` exists, projection of that domain
+  fails (records a projection error) when the claim-derived imports/includes are out
+  of sync. Retains the DD-021 no-bypass guarantee but makes materialization
+  claim-driven.
+
 ## [4.0.0] — 2026-06-15
 
 ### Changed (BREAKING)
