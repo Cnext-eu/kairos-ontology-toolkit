@@ -1214,38 +1214,83 @@ def _gen_silver_models(
 
         # Cross-table column detection: warn if mapped columns reference source
         # tables other than the primary source (would require a JOIN to resolve).
-        # Only warn for properties that belong to THIS class's domain (avoids
-        # noise from mappings targeting other entities in the same source system).
+        # Issue #181: classify each property's domain as THIS class (own) vs an
+        # ancestor (inherited). Own properties whose column lives in a different
+        # table of the same source are genuine JOIN candidates → ⚠️ warning.
+        # Inherited properties were intentionally excluded (they live on the
+        # parent's table); collapse them into one ℹ️ Info note instead of N
+        # misleading warnings.
+        info_notes: list[str] = []
         if systems and source_refs and len(source_refs) == 1:
             primary_tbl_uri = source_refs[0][2]
             primary_col_uris = _get_table_column_uris(systems, primary_tbl_uri)
-            # Collect property URIs whose domain matches this class
-            domain_classes = _get_class_and_parents(graph, cls_uri)
-            domain_prop_uris: set[str] = set()
-            for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
-                prop_domain = graph.value(prop, RDFS.domain)
-                if prop_domain and str(prop_domain) in domain_classes:
-                    domain_prop_uris.add(str(prop))
-            # Also include object properties (for FK references)
-            for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
-                prop_domain = graph.value(prop, RDFS.domain)
-                if prop_domain and str(prop_domain) in domain_classes:
-                    domain_prop_uris.add(str(prop))
+            self_domain = {cls_uri}
+            ancestor_domain = _get_class_and_parents(graph, cls_uri) - self_domain
 
+            # Partition domain properties into own (declared on this class) and
+            # inherited (declared on an ancestor only). RDF permits multiple
+            # rdfs:domain values; only URIRef domains are considered (blank-node /
+            # owl:unionOf domain expressions are ignored, as before). Own domain
+            # takes precedence: a property declared on this class stays a warning
+            # even if it is also declared on an ancestor.
+            own_domain_props: set[str] = set()
+            inherited_domain_props: set[str] = set()
+            for ptype in (OWL.DatatypeProperty, OWL.ObjectProperty):
+                for prop in graph.subjects(RDF.type, ptype):
+                    prop_domains = {
+                        str(d) for d in graph.objects(prop, RDFS.domain)
+                        if isinstance(d, URIRef)
+                    }
+                    if prop_domains & self_domain:
+                        own_domain_props.add(str(prop))
+                    elif prop_domains & ancestor_domain:
+                        inherited_domain_props.add(str(prop))
+
+            inherited_parents: set[str] = set()
+            inherited_props_seen: set[str] = set()
             if primary_col_uris:
                 for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
+                    if col_uri in primary_col_uris:
+                        continue
                     for col_map in col_maps_list:
                         target_uri = col_map.get("target_uri")
-                        if target_uri and target_uri in domain_prop_uris:
-                            if col_uri not in primary_col_uris:
-                                target_prop = extract_local_name(target_uri)
-                                source_col = extract_local_name(col_uri)
-                                warnings.append(
-                                    f"Cross-table reference in '{local}': "
-                                    f"column '{source_col}' mapped to "
-                                    f"'{target_prop}' belongs to a different "
-                                    f"source table — model may need a JOIN."
+                        if not target_uri:
+                            continue
+                        if target_uri in own_domain_props:
+                            target_prop = extract_local_name(target_uri)
+                            source_col = extract_local_name(col_uri)
+                            warnings.append(
+                                f"Cross-table reference in '{local}': "
+                                f"column '{source_col}' mapped to own property "
+                                f"'{target_prop}' lives in a different table of "
+                                f"the same source — model may need a JOIN."
+                            )
+                        elif target_uri in inherited_domain_props:
+                            inherited_props_seen.add(target_uri)
+                            owner_domains = {
+                                str(d) for d in graph.objects(
+                                    URIRef(target_uri), RDFS.domain
                                 )
+                                if isinstance(d, URIRef) and str(d) in ancestor_domain
+                            }
+                            inherited_parents.update(
+                                extract_local_name(d) for d in owner_domains
+                            )
+
+            inherited_count = len(inherited_props_seen)
+            if inherited_count:
+                parents = ", ".join(sorted(inherited_parents)) or "a parent class"
+                plural = "y" if inherited_count == 1 else "ies"
+                verb = "is" if inherited_count == 1 else "are"
+                info_notes.append(
+                    f"'{local}' is a subtype claimed as its own silver table; "
+                    f"{inherited_count} inherited propert{plural} from {parents} "
+                    f"{verb} mapped on the parent's table(s) and {verb} excluded "
+                    f"from this model by design (inherited master attributes live "
+                    f"on the parent table, not the subtype). No action needed "
+                    f"unless you intend to enrich '{local}' via a JOIN to the "
+                    f"parent."
+                )
 
         # Extract FK columns from object properties (cross-domain joins)
         fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
@@ -1351,6 +1396,7 @@ def _gen_silver_models(
             "fk_join_count": len(fk_joins) if fk_joins else 0,
             "skipped": False,
             "skip_reason": None,
+            "info_notes": info_notes,
         })
 
     return artifacts, warnings, entity_metadata
@@ -3770,7 +3816,24 @@ def write_dbt_session_log(
             lines.append(f"- {w}")
         lines.append("")
 
-    if not skipped and not unique_warnings:
+    # Info notes (deduplicated) — e.g. inherited cross-table props on a subtype
+    # claimed as its own silver table (issue #181). Informational, not actionable.
+    info_seen: set[str] = set()
+    unique_info: list[str] = []
+    for e in entity_metadata:
+        for note in e.get("info_notes") or []:
+            if note not in info_seen:
+                info_seen.add(note)
+                unique_info.append(note)
+
+    if unique_info:
+        lines.append("## ℹ️ Info")
+        lines.append("")
+        for note in unique_info:
+            lines.append(f"- {note}")
+        lines.append("")
+
+    if not skipped and not unique_warnings and not unique_info:
         lines.append("## ✅ No issues")
         lines.append("")
         lines.append("All entities projected without warnings.")

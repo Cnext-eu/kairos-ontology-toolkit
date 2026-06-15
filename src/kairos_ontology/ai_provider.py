@@ -22,6 +22,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -300,7 +301,11 @@ def get_ai_client(model: str = DEFAULT_MODEL, *, role: str | None = None):
     """
     config = resolve_provider_config(model, role=role)
 
-    logger.info("Using AI provider: %s (endpoint: %s)", config.provider, config.endpoint)
+    logger.info(
+        "Using AI provider: %s (endpoint: %s)",
+        config.provider,
+        _endpoint_for_log(config.endpoint),
+    )
 
     if config.provider == "foundry":
         return _create_foundry_client(config)
@@ -312,8 +317,28 @@ def get_ai_client(model: str = DEFAULT_MODEL, *, role: str | None = None):
     )
 
 
+def _endpoint_for_log(endpoint: str) -> str:
+    """Return a non-sensitive endpoint representation suitable for logs."""
+    parsed = urlsplit(endpoint)
+    if not parsed.scheme or not parsed.hostname:
+        return "<redacted>"
+    if parsed.port:
+        return f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+    return f"{parsed.scheme}://{parsed.hostname}"
+
+
 def _create_foundry_client(config: AIProviderConfig):
-    """Create an OpenAI-compatible client via the Microsoft Foundry SDK."""
+    """Create an OpenAI-compatible client via the Microsoft Foundry SDK.
+
+    Authentication notes:
+        ``AIProjectClient.get_openai_client()`` (azure-ai-projects 2.x) acquires an
+        AAD bearer token by calling ``credential.get_token(...)``. An
+        ``AzureKeyCredential`` built from ``AZURE_FOUNDRY_API_KEY`` has no
+        ``get_token`` method, so key auth cannot satisfy that SDK path. We therefore
+        *prefer* a real ``TokenCredential`` (``DefaultAzureCredential``); when an API
+        key is provided we attempt it first but fall back to token auth when the SDK
+        requires a token credential.
+    """
     try:
         from azure.ai.projects import AIProjectClient
     except ImportError:
@@ -322,21 +347,51 @@ def _create_foundry_client(config: AIProviderConfig):
             "Install with: pip install kairos-ontology-toolkit[foundry]"
         )
 
-    if config.api_key:
-        from azure.core.credentials import AzureKeyCredential
-        credential = AzureKeyCredential(config.api_key)
-    else:
+    def _build_token_credential():
         try:
             from azure.identity import DefaultAzureCredential
-            credential = DefaultAzureCredential()
-        except ImportError:
-            raise EnvironmentError(
-                f"Neither {ENV_FOUNDRY_API_KEY} is set nor azure-identity is installed. "
-                "Install with: pip install kairos-ontology-toolkit[foundry]"
-            )
 
-    project_client = AIProjectClient(
-        endpoint=config.endpoint,
-        credential=credential,
-    )
-    return project_client.get_openai_client()
+            return DefaultAzureCredential()
+        except ImportError:
+            return None
+
+    def _openai_from_credential(credential):
+        project_client = AIProjectClient(
+            endpoint=config.endpoint,
+            credential=credential,
+        )
+        return project_client.get_openai_client()
+
+    if config.api_key:
+        try:
+            from azure.core.credentials import AzureKeyCredential
+
+            return _openai_from_credential(AzureKeyCredential(config.api_key))
+        except AttributeError:
+            # azure-ai-projects requires a TokenCredential (get_token); an API key
+            # cannot be used on this SDK path. Fall back to DefaultAzureCredential.
+            logger.warning(
+                "%s is set but the Foundry SDK requires AAD token auth "
+                "(AzureKeyCredential has no get_token). Falling back to "
+                "DefaultAzureCredential (az login / managed identity).",
+                ENV_FOUNDRY_API_KEY,
+            )
+            token_credential = _build_token_credential()
+            if token_credential is None:
+                raise EnvironmentError(
+                    "The Microsoft Foundry SDK requires AAD token authentication, "
+                    f"but {ENV_FOUNDRY_API_KEY} (an API key) cannot provide a token "
+                    "and azure-identity is not installed.\n"
+                    "Either run `az login` (or use a managed identity) with "
+                    "azure-identity installed, or unset the API key.\n"
+                    "Install with: pip install kairos-ontology-toolkit[foundry]"
+                )
+            return _openai_from_credential(token_credential)
+
+    token_credential = _build_token_credential()
+    if token_credential is None:
+        raise EnvironmentError(
+            f"Neither {ENV_FOUNDRY_API_KEY} is set nor azure-identity is installed. "
+            "Install with: pip install kairos-ontology-toolkit[foundry]"
+        )
+    return _openai_from_credential(token_credential)

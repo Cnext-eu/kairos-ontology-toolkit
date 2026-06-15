@@ -67,8 +67,11 @@ CUSTOM_CONFIDENCE_FLOOR = 0.5
 CATCH_ALL_MIN_COLUMNS = 3
 
 #: Issue #182 — model tier used by the opt-in ``--high-accuracy`` preset for this
-#: accuracy-sensitive alignment step. ``analyse-sources`` stays on the mini tier.
-HIGH_ACCURACY_MODEL = "gpt-5.5"
+#: accuracy-sensitive alignment step. Prefer a strong *non-reasoning* model
+#: (``gpt-5.4``): alignment is deterministic closed-vocabulary matching, so a
+#: reasoning model (gpt-5.5+) adds latency/cost without benefit.
+#: ``analyse-sources`` stays on the mini tier.
+HIGH_ACCURACY_MODEL = "gpt-5.4"
 
 # ``ALIGNMENT_ALGORITHM_VERSION`` is imported from ``alignment_coverage`` (the
 # lower-level module) and re-exported via that import for use across this module.

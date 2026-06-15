@@ -30,6 +30,25 @@ dependencies = [
     "pyarrow>=14.0.0",
 ]
 
+[project.optional-dependencies]
+# User-facing extras — installable via `pip install kairos-ontology-toolkit[<extra>]`.
+# These MUST mirror the matching [dependency-groups] entries below (same pins): the
+# groups serve `uv sync --group <extra>` workflows, while these optional-dependencies
+# are what actually ship in the wheel metadata so the documented pip install works.
+azure = [
+    "azure-identity>=1.15.0,<2.0.0",
+]
+foundry = [
+    "azure-ai-projects>=2.0.0,<3.0.0",
+    "azure-identity>=1.15.0,<2.0.0",
+]
+flatfile = [
+    "openpyxl>=3.1.0,<4.0.0",
+]
+parquet = [
+    "pyarrow>=14.0.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
 Repository = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
