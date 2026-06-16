@@ -55,3 +55,4 @@ service/frontend/dist/
 
 # Local ontology hub checkouts
 newton-ontology-hub/
+docs/.DS_Store
