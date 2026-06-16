@@ -22,7 +22,7 @@ retired only in Slice 1, together with its full replacement.
 | [5](slice-5-pbi-fitgap.md) | Power BI/source fit-gap & gold seed | ✅ | 2, 3 |
 | [6](slice-6-change-management.md) | Change management & contract versioning | ✅ | 2, 4 |
 | [7](slice-7-skills-thin-chat.md) | Skills thin-chat redesign + scaffold sync | ✅ | 2 |
-| [8](slice-8-rollout-upstream.md) | Docs, DD consolidation, rollout & upstream | ⬜ | 5, 6, 7 |
+| [8](slice-8-rollout-upstream.md) | Docs, DD consolidation, rollout & upstream | ✅ | 5, 6, 7 |
 
 ## Dependency graph
 

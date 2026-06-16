@@ -745,6 +745,68 @@ workflow-engine-in-prose risk, deferring any genuine branching to deterministic 
 
 ---
 
+## DD-EL-10: Slice 8 — Methodology promotion + 4.0.0-rc1 consolidation; everything kept in-repo
+
+**Status:** Accepted
+**Date:** 2026-06-16
+**Affects:** `docs/methodology/accelerator-first-modeling.md` (new, canonical),
+`docs/design/toolkit-design-decisions.md` (DD-080 consolidation),
+`kairos-design-discovery` (MDM-first anchors), `kairos-package-dataplatform`
+(claim-driven consumption notes), `CHANGELOG.md` (consolidation),
+`src/kairos_ontology/__init__.py` (`__version__`)
+**Implementation:** Slice 8 (Docs, DD consolidation, rollout & upstream). Spec:
+`docs/implementation/evidence-led-modeling/slice-8-rollout-upstream.md`
+
+### Context
+
+Slices 0A–7 delivered the evidence-led, accelerator-first methodology as working
+code + skills, each with a `DD-EL-N` decision on this feature track and an interim
+`__version__` bump (the branch reached 4.6.0 while `main` is 3.24.1). Slice 8
+promotes the methodology from draft to canonical and consolidates the decisions.
+Per project direction (2026-06-16), the whole feature track ships as one release
+candidate and nothing is pushed to other repositories yet.
+
+### Decision
+
+1. **Promote** the methodology to a canonical doc
+   (`docs/methodology/accelerator-first-modeling.md`) reflecting the **measured**
+   slice reality (A1 default, C2 deferred, A2-lite surfaces, MDM gate, contract
+   versioning, thin-chat modes), not the original hypothesis.
+2. **Consolidate** the per-slice decisions as **DD-080** in the canonical design
+   log, cross-referencing DD-EL-1..10 (this entry included); keep the `DD-EL-N`
+   entries as history.
+3. **MDM-first discovery** — `kairos-design-discovery` captures reference/master-
+   data anchors early; **dataplatform consumption notes** added to
+   `kairos-package-dataplatform`.
+4. **Version freeze to `4.0.0-rc1`.** Set `__version__ = "4.0.0-rc1"` and fold the
+   interim `4.0.0`–`4.6.0` CHANGELOG sections into a single `[4.0.0-rc1]` section.
+   No further version bumps for this track.
+5. **No cross-repo push.** Rollout to downstream hubs is **documented, not
+   executed** (no production domains here); upstream follow-ups (skill Gate-6
+   relaxation, scaffold foundation template, routing updates) are **drafted in the
+   methodology doc, not filed** as issues/PRs.
+
+### Rationale
+
+A single consolidated DD + a canonical methodology doc keep the design log
+navigable without duplicating ~650 lines of per-slice rationale. Collapsing the
+interim minor bumps into `4.0.0-rc1` matches the intent that the entire v4 work is
+one release candidate of 4.0.0, and avoids advertising phantom 4.1–4.6 releases.
+Keeping rollout and upstream work in-repo respects the boundary that this toolkit
+repo does not own downstream hubs or filed-issue tracking for this cut.
+
+### Consequences
+
+- `docs/methodology/accelerator-first-modeling.md` is the canonical entry point;
+  DD-080 is the design-log anchor.
+- The release candidate is `4.0.0-rc1`; pre-releases are exempt from the
+  CHANGELOG-match CI gate, and the branch version differs from `main` (3.24.1) so
+  `version-check` passes.
+- Downstream rollout and upstream issue filing are deferred follow-ups, tracked in
+  methodology §11–§12.
+
+---
+
 > **Note:** the placeholder `DD-EL-N` numbers in this log are reassigned to real
 > sequential `DD-NNN` numbers when merged into
 > `docs/design/toolkit-design-decisions.md`.

@@ -40,6 +40,30 @@ ontology-hub (producer)              dataplatform (consumer)
   extensions, and mappings. The dataplatform does NOT need the toolkit installed.
 - The dataplatform is a **pure consumer** — it pins to a release tag and runs `dbt deps`.
 
+### Claim-driven projections (what the consumer sees)
+
+Since the evidence-led methodology (toolkit ≥ 4.0.0-rc1, methodology
+`docs/methodology/accelerator-first-modeling.md`), the projections you consume are
+**claim-driven**: the producer only materializes silver/gold tables for concepts
+**approved in the per-domain Claim Registry** (`model/claims/{domain}-claims.yaml`),
+governed by `check-claims`. Practical implications for a downstream dataplatform:
+
+- **The materialized surface = approved claims.** A table/column appears in the dbt
+  package only because a claim was approved for it — not because a reference model
+  happened to contain it. Unclaimed imported breadth is **never** projected, so the
+  package stays scoped to what has source evidence.
+- **Additive by contract.** New evidence may **add** silver tables/columns/FKs, but
+  the producer's change management (`source-delta-report`, methodology §8) enforces
+  *no silent mutation* of existing silver. Treat a new minor release as
+  **backward-compatible** by default.
+- **Watch the contract version.** When the producer bumps the registry **contract
+  version** (signalled in the release notes / impact report), review the
+  `source-delta-report` for breaking changes before upgrading the pin.
+- **Gaps are requested upstream, not patched locally.** If a column you need isn't
+  in the package, it's an **unclaimed/`gap` concept** — file a gap request (see
+  *Feedback Loop* below) so the producer claims it; don't shadow-model it in the
+  consumer.
+
 ---
 
 ## Deliverable 1: dbt Package (Data Pipeline Models)

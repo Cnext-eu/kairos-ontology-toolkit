@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [4.6.0] — 2026-06-16
+## [4.0.0-rc1] — 2026-06-16
 
-### Changed
+Release candidate consolidating all Evidence-Led Accelerator-First Modeling work (slices 0–8). Supersedes the interim 4.0.0–4.6.0 development bumps, which are folded in below.
+
+### Slice 7 — Thin-chat skill interaction modes (was 4.6.0)
+
+#### Changed
 - **Thin-chat skill interaction modes + decision-packet convention (DD-EL-9).**
   Slice 7 is a **skills/docs-only** slice (no runtime code change beyond the
   version bump) that applies a thin-chat presentation convention across all
@@ -30,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     decision packets"); each design skill carries a tailored "Interaction Modes &
     Decision Packets" section.
 
-### Notes
+#### Notes
 - **C10 guard (presentation-only).** These are presentation rules layered over the
   existing checkpoints, **not** a new orchestration engine — prefer
   CLI-does-the-work / deterministic CLI for any real branching, never reimplement
@@ -38,9 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - See `docs/implementation/evidence-led-modeling/decision-log.md` (DD-EL-9) and
   `kairos-help` §11 for the full rationale, mode definitions, and packet schema.
 
-## [4.5.0] — 2026-06-16
+### Slice 6 — Change management & contract versioning (was 4.5.0)
 
-### Added
+#### Added
 - **Deterministic source-delta report + registry contract version (DD-EL-8).**
   Slice 6 adds change management for new/changed source systems, enforcing the
   invariant *new evidence may expand silver, but must not silently mutate existing
@@ -74,7 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regeneration merges. `source-delta-report` reads this block and suggests the
   next version.
 
-### Notes
+#### Notes
 - **Projector version-metadata emission is deferred (DD-EL-8).** The contract
   version lives in the registry `contract:` block and is surfaced/suggested by
   `source-delta-report`; emitting it into silver/gold projector output is future
@@ -83,9 +87,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - See `docs/implementation/evidence-led-modeling/decision-log.md` (DD-EL-8) and
   methodology §13 for the full rationale and delta/impact/version mapping.
 
-## [4.4.0] — 2026-06-16
+### Slice 5 — Power BI/source fit-gap & gold seed (was 4.4.0)
 
-### Added
+#### Added
 - **Power BI/source fit-gap simulation + gold seed (DD-EL-7).** Slice 5 adds two
   **advisory** CLI commands that use existing Power BI as *evidence, not authority*
   (methodology §7).
@@ -119,7 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hierarchies (name + ordered levels) to drive the gold-seed hierarchy annotations;
   no existing parse behavior changes.
 
-### Notes
+#### Notes
 - Both `pbi-source-fit-gap` and `tmdl-to-gold-ext` are **exempt from the skill
   soft-gate**, exactly like `import-tmdl` and `coverage-report` (they are not added to
   `_SKILL_COVERED_COMMANDS`).
@@ -129,9 +133,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - See `docs/implementation/evidence-led-modeling/decision-log.md` (DD-EL-7) and
   methodology §7 / §7.3 for the full rationale and finding/meaning/action mapping.
 
-## [4.3.0] — 2026-06-15
+### Slice 4 — MDM/reference-data rules + ownership hardening (was 4.3.0)
 
-### Added
+#### Added
 - **MDM/reference-data rules + ownership hardening in `check-claims` (DD-EL-6).**
   Slice 4 adds four deterministic governance checks to the single `check-claims`
   gate plus the Claim Registry schema they need.
@@ -166,9 +170,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`check-claims` flags.** `--no-mdm-anchor` and `--no-ownership` skip the
   respective gates.
 
-## [4.2.0] — 2026-06-15
+### Slice 3 — derive-claims (richer evidence aggregation) (was 4.2.0)
 
-### Added
+#### Added
 - **`derive-claims` command (DD-EL-5).** A **deterministic, AI-free** aggregator
   that merges/enriches the Claim Registry (`model/claims/{domain}-claims.yaml`)
   into `proposed` candidate claims, reducing hand-authoring. The
@@ -186,9 +190,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing is billed. A future opt-in `--llm-reconcile` flag (LLM tie-breaking /
   rationale synthesis, with a cost banner) is **deferred** to a later slice.
 
-## [4.1.0] — 2026-06-15
+### Slice 2 — Projection vertical slice + foundation/thin scaffold (was 4.1.0)
 
-### Added
+#### Added
 - **`claims-to-silver-ext` command (DD-EL-4).** Deterministically generates/
   regenerates a domain's external `owl:imports` set and per-class
   `kairos-ext:silverInclude` assertions in `{domain}-silver-ext.ttl` from the
@@ -199,7 +203,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scaffold/ontology-hub/model/ontologies/foundation.ttl.template`; the starter
   domain ontology now `owl:imports` the thin `_foundation` ontology.
 
-### Changed
+#### Changed
 - **`check-claims` claim↔projection sync gate (DD-EL-4).** `check-claims` now
   blocks when a domain's `owl:imports` / `silverInclude` surfaces drift from its
   approved claims, or when a `silverIncludeImports` bulk-bypass flag is present.
@@ -210,9 +214,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of sync. Retains the DD-021 no-bypass guarantee but makes materialization
   claim-driven.
 
-## [4.0.0] — 2026-06-15
+### Slices 0–1 — Registry replacement & foundation (was 4.0.0)
 
-### Changed (BREAKING)
+#### Changed (BREAKING)
 - **Claim Registry replaces the alignment YAML (DD-EL-1).** The evidence-led
   cutover retires `{domain}-alignment.yaml` in favour of a single governed
   `model/claims/{domain}-claims.yaml` registry as the source of truth for which
@@ -233,7 +237,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Design/help skills updated to the claims workflow (`check-claims`,
     registry-based curation).
 
-### Removed (BREAKING)
+#### Removed (BREAKING)
 - `check-alignment` and `check-source-coverage` CLI commands (folded into
   `check-claims`).
 - Alignment-YAML reader machinery in `alignment_coverage` (the module now provides

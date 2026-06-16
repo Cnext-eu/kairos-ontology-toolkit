@@ -279,6 +279,18 @@ user confirms.
    point. Tag every web-sourced claim `[INFERRED — public web]` (Gate 2).
 6. Save confirmed context to the session file — **including** terms and areas that
    are out of scope for the current domain but will matter for later ones.
+7. **Identify master-data / reference anchors early (MDM-first).** Before any
+   domain modeling, list the company's **core master-data entities** — the
+   shared, governed reference concepts that many domains hang off (e.g.
+   *Customer/Party*, *Product/Item*, *Location/Site*, *Employee*, *Account*,
+   *Calendar*). For each anchor capture: a working name, which business areas use
+   it, the likely **owning** domain/system (system of record), and a candidate
+   **reference-model IRI** resolved against the Phase 1a breadth map (hub →
+   ref-model → flag, same priority as Phase 2 step 3). Record these under
+   **"Master-data anchors (MDM)"** in the session file and flag each for
+   **kairos-design-domain**. This front-loads the MDM/ownership decisions that
+   `check-claims` later enforces (methodology §6, DD-EL-6), so reference data is
+   modeled and claimed before the domains that depend on it.
 
 ### Phase 2 — Terminology capture (the glossary)
 
@@ -417,6 +429,16 @@ Save to `ontology-hub/.sessions-design/businessdiscovery-{YYYY-MM-DD}.md`:
 | Business model | {how they earn} | … | ✅/❓ |
 | Offerings | {products/services} | … | ✅/❓ |
 | Key processes | {process → entities} | … | ✅/❓ |
+
+## Master-data anchors (MDM)
+
+> Core shared reference entities identified up front (Phase 1 step 7). Each is a
+> modeling prompt for kairos-design-domain and feeds the MDM/ownership checks in
+> `check-claims` (methodology §6).
+
+| Anchor | Used by (business areas) | Owning domain / system of record | Candidate IRI (hub or ref-model) | Confirmed? |
+|--------|--------------------------|----------------------------------|----------------------------------|-----------|
+| {e.g. Customer/Party} | {sales, invoicing, …} | {domain / system} | {IRI or "needs domain class"} | ✅/❓ |
 
 ## Glossary Entries (→ businessdiscovery/{company}-glossary.ttl)
 

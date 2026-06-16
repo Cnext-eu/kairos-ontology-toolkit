@@ -1,6 +1,6 @@
 # Slice 8 — Docs, DD consolidation, rollout & upstream
 
-**Status:** ⬜ not started · **Depends on:** 5, 6, 7
+**Status:** ✅ done · **Depends on:** 5, 6, 7
 
 ## Goal
 
@@ -25,10 +25,10 @@ out across the remaining domains and downstream consumers.
 
 ## Acceptance criteria
 
-- [ ] Methodology doc published under `docs/methodology/`.
-- [ ] DD entries consolidated and cross-referenced.
-- [ ] All in-scope domains migrated with passing `check-claims`.
-- [ ] Upstream issues filed and tracked.
+- [x] Methodology doc published under `docs/methodology/`.
+- [x] DD entries consolidated and cross-referenced.
+- [ ] All in-scope domains migrated with passing `check-claims`. *(N/A in toolkit repo — rollout procedure documented in the methodology doc)*
+- [ ] Upstream issues filed and tracked. *(drafted as follow-ups in the methodology doc; not filed — kept in-repo per user direction)*
 
 ## Risks / notes
 
@@ -36,3 +36,10 @@ out across the remaining domains and downstream consumers.
   closure so hubs don't run "against the grain" indefinitely.
 - Roll out per-domain in batches, re-running perf/FK checks (Slice 0A criteria)
   for each batch under the chosen import strategy (A1).
+
+## Delivered (2026-06-16)
+
+- Published canonical methodology `docs/methodology/accelerator-first-modeling.md` (reflecting measured slice reality + A1/A2/MDM/contract decisions).
+- Consolidated decisions: DD-080 in `docs/design/toolkit-design-decisions.md` cross-referencing DD-EL-1..9; DD-EL-10 records the 4.0.0-rc1 version freeze and no-cross-repo-push scope.
+- MDM-first anchors added to `kairos-design-discovery`; claim-driven consumption notes added to `kairos-package-dataplatform`.
+- Rollout = documented per-domain batch procedure; upstream follow-ups drafted (not filed). Everything kept in this repo at version **4.0.0-rc1**; no further version bumps.

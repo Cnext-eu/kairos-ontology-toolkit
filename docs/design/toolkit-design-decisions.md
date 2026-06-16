@@ -127,6 +127,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-077](#dd-077-custom-column-triage-hardening-issue-182) | Custom-column triage hardening (issue #182) | Accepted | 2026-06-15 |
 | [DD-078](#dd-078-user-facing-extras-packaging--foundry-token-credential-fallback) | User-facing extras packaging + Foundry token-credential fallback | Accepted | 2026-06-14 |
 | [DD-079](#dd-079-dbt-cross-table-warning-conflates-inherited-vs-own-properties-issue-181) | dbt cross-table warning conflates inherited vs own properties (issue #181) | Accepted | 2026-06-15 |
+| [DD-080](#dd-080-evidence-led-accelerator-first-modeling-consolidates-dd-el-110) | Evidence-Led Accelerator-First Modeling (consolidates DD-EL-1..10) | Accepted | 2026-06-16 |
 
 ---
 
@@ -4682,6 +4683,67 @@ counts.
 - `_get_class_and_parents` still follows a single `subClassOf` chain (pre-existing
   limitation, shared with column extraction so classification stays consistent
   with what was actually excluded) — multiple inheritance is out of scope here.
+
+---
+
+## DD-080: Evidence-Led Accelerator-First Modeling (consolidates DD-EL-1..10)
+
+**Status:** Accepted  
+**Date:** 2026-06-16  
+**Affects:** Claim Registry (`model/claims/{domain}-claims.yaml`), `claim_coverage.py` / `check-claims`, `derive-claims`, claim-driven `owl:imports` + `silverInclude`, silver/dbt/powerbi projectors, `pbi-source-fit-gap`, `source-delta-report` + contract version, evidence-led design skills + `kairos-help` §11  
+**Implementation:** Slices 0A–8. Canonical methodology: `docs/methodology/accelerator-first-modeling.md`. Per-slice rationale: `docs/implementation/evidence-led-modeling/decision-log.md` (DD-EL-1..10)
+
+### Context
+
+The evidence-led, accelerator-first methodology was implemented as a series of
+vertical slices, each with its own `DD-EL-N` decision recorded on the feature
+track in `docs/implementation/evidence-led-modeling/decision-log.md`. This entry
+consolidates those decisions into the canonical design log at merge, as required
+by the index-keeping rules above. It is a **roll-up + cross-reference** entry; the
+detailed context/rationale for each sub-decision remains in the decision log.
+
+### Decision
+
+Adopt the evidence-led, accelerator-first modeling methodology as canonical
+(`docs/methodology/accelerator-first-modeling.md`), comprising:
+
+- **DD-EL-1** — the **Claim Registry** (`model/claims/{domain}-claims.yaml`)
+  replaces alignment YAML as the single governed source of truth (no dual path).
+- **DD-EL-2** — **A1:** `owl:imports` are generated deterministically from approved
+  claims; the import-all/no-bypass concept (C2) is deferred pending a real
+  large-closure perf/FK spike.
+- **DD-EL-3 / DD-EL-4** — **A2-lite:** three coherent, generated-and-reviewable
+  authored surfaces (thin ontology, extensions, registry); claims drive
+  `owl:imports` + `silverInclude`; projection is gated on claim↔projection sync.
+- **DD-EL-5** — **`derive-claims`** deterministically aggregates multi-source
+  evidence into candidate claims.
+- **DD-EL-6** — MDM/reference-data rules + ownership hardening live in
+  **`check-claims`**; discovery captures master-data anchors early.
+- **DD-EL-7** — Power BI/source fit-gap is treated as **evidence, not authority**.
+- **DD-EL-8** — change management: the advisory **`source-delta-report`** + an
+  optional registry **contract version** enforce "expand silver, never silently
+  mutate".
+- **DD-EL-9** — thin-chat **skill interaction modes** + decision-packet convention
+  (`kairos-help` §11), presentation-only (C10 guard).
+- **DD-EL-10** — methodology promotion + consolidation of all slice work into a
+  single **`4.0.0-rc1`** release candidate; everything kept in-repo (no cross-repo
+  issues/PRs filed).
+
+### Rationale
+
+A single consolidated DD with a cross-reference table keeps the canonical log
+navigable without duplicating the ~650 lines of per-slice rationale already
+written and tested on the feature track. The methodology doc is the prose entry
+point; this DD is the design-log anchor.
+
+### Consequences
+
+- Future changes to any sub-decision update **both** the `DD-EL-N` entry (history)
+  and, if the architectural choice itself changes, this DD-080 roll-up.
+- The methodology is canonical for downstream hubs; rollout there proceeds in
+  per-domain batches (methodology §11).
+- Upstream follow-ups (skill Gate-6 relaxation, scaffold foundation template,
+  routing updates) are tracked in methodology §12, not yet filed.
 
 ---
 
