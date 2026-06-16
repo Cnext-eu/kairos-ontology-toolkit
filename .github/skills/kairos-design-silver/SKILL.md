@@ -500,6 +500,17 @@ If adjustments are needed, edit `{DOMAIN}-silver-ext.ttl` and re-run the project
 via the **kairos-execute-project** skill (target `silver` or `dbt`).
 The master ERD is regenerated automatically on every run.
 
+### Change management & contract versioning (Slice 6)
+
+> When a **new or changed source** could affect the silver contract, run the advisory
+> `kairos-ontology source-delta-report --system NAME` (see the **kairos-design-source**
+> skill). It classifies each delta as mapping-only / additive / breaking and suggests a
+> silver/gold contract version bump (patch / minor / major) per methodology §13 — additive
+> evidence may *expand* silver, but must never silently mutate it. The current contract
+> version lives in the registry's optional top-level `contract:` block
+> (`silver_version` / `gold_version`). Projector emission of the version is deferred
+> (DD-EL-8); use `--fail-on-breaking` in CI to block silent breaking changes.
+
 ---
 
 ## Column ordering convention (reference)

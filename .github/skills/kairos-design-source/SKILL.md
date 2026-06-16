@@ -489,6 +489,41 @@ Use `check-claims --no-mdm-anchor` / `--no-ownership` to skip those gates for hu
 not yet doing MDM governance. These are governance fields in the YAML registry, not
 kairos-ext TTL annotations.
 
+### Change management for a new/changed source (`source-delta-report`)
+
+> **When to use:** when **adding a new source system** or **refreshing an existing
+> one** (Phase 0 → "Existing vocabulary TTL" or a brand-new system) — before any
+> projection change merges. Core invariant (methodology §13): *new evidence may
+> expand silver, but must not silently mutate existing silver.*
+
+`source-delta-report` is an **advisory, deterministic, AI-free** command that compares
+a source system's bronze vocabulary against the approved Claim Registry + SKOS mappings
+(plus optional affinity hints and an optional baseline vocabulary diff), classifies each
+candidate delta (§13.2), emits a markdown impact report (§13.4), and suggests a
+silver/gold contract version bump (§13.5) with backward-compatibility tactics (§13.6).
+Like `import-tmdl` / `coverage-report` / `pbi-source-fit-gap`, it is **exempt from the
+skill soft-gate** and never mutates governed artifacts.
+
+```bash
+kairos-ontology source-delta-report --system acme_crm --domain client \
+  [--baseline integration/sources/acme_crm/acme_crm.vocabulary.prev.ttl] \
+  [--analysis-dir integration/sources/_analysis] \
+  [--output integration/reports/acme_crm-source-delta.md] [--fail-on-breaking]
+```
+
+Each delta maps deterministically to an impact class and a version bump:
+`maps-to-existing-class` / `new-column-to-property` → mapping-only → **patch**;
+`new-claim-candidate` / `passthrough-candidate` / `new-reference-list` /
+`new-relationship` / backward-compatible `changed-type` widening → additive →
+**minor**; `semantic-conflict` / non-widening `changed-type` / `changed-key` /
+`changed-grain` / `removed-column` → breaking → **major**. The suggested bump is the
+highest-precedence class present (breaking → additive → mapping-only → none). The
+current contract version is read from the registry's optional top-level `contract:`
+block (`silver_version` / `gold_version`); use `--fail-on-breaking` in CI to block
+silent breaking changes. See DD-EL-8 and methodology §13. **Projector emission of the
+contract version is deferred** — the version lives in the registry and is suggested by
+this report.
+
 ---
 
 ## Source system folder structure reference

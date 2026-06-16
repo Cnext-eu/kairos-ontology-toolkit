@@ -534,6 +534,123 @@ vocabulary untouched.
 
 ---
 
+## DD-EL-8: Slice 6 — Change management: deterministic source-delta report + registry contract version; projector emission deferred
+
+**Status:** Accepted
+**Date:** 2026-06-16
+**Affects:** new `source_delta.py`, `claim_registry.py` (optional top-level
+`contract:` block), new `source-delta-report` CLI command, `cli/main.py`,
+`integration/reports/{system}-source-delta.md` (advisory output), evidence-led
+source/silver/help skills (`kairos-design-source`, `kairos-design-silver`,
+`kairos-help`)
+**Implementation:** Slice 6 (Change management & contract versioning). Realizes the
+change-management guardrail (methodology §13). Spec:
+`docs/implementation/evidence-led-modeling/slice-6-change-management.md`
+
+### Context
+
+New source systems and new fields are expected over the life of an engagement. The
+methodology is explicit that they should enter as **evidence and candidate deltas, not
+automatic model changes**, under the core rule (§13):
+
+> New evidence may expand silver, but must not silently mutate existing silver.
+
+After Slices 1–5 the Claim Registry governs *what is approved to materialize* and
+approved claims drive projection, but there was no tooling to (a) reconcile a
+new/changed source's bronze vocabulary against the approved claims + mappings, (b)
+classify each candidate delta as additive vs breaking, or (c) decide a silver/gold
+contract version bump. Methodology §13.2 (candidate delta types), §13.4 (impact report),
+§13.5 (versioning) and §13.6 (backward-compatibility tactics) describe exactly this flow;
+Slice 6 implements it as advisory tooling plus a registry contract-version anchor.
+
+### Decision
+
+Add one **advisory**, deterministic, AI-free CLI command and one registry field. Neither
+approves claims nor mutates governed artifacts; the command is **exempt from the skill
+soft-gate** like `import-tmdl`, `coverage-report`, `pbi-source-fit-gap`, and
+`tmdl-to-gold-ext` (not added to `_SKILL_COVERED_COMMANDS`).
+
+- **`source-delta-report`** — compares a source system's bronze vocabulary against the
+  approved Claim Registry + SKOS mappings (plus optional affinity hints and an optional
+  baseline vocabulary diff), classifies each candidate delta per §13.2, emits a markdown
+  impact report per §13.4, and suggests a silver/gold contract version bump per §13.5 with
+  backward-compatibility tactics per §13.6. Options: `--system` (required; the bronze
+  vocabulary stem to evaluate), `--sources`, `--mappings`, `--claims-dir`,
+  `--analysis-dir` (optional affinity), `--baseline` (optional prior vocabulary file/dir
+  for change detection), `--domain` (optional, repeatable; limits approved-claim context),
+  `--output` (optional; else stdout), and `--fail-on-breaking` (flag; exit non-zero when
+  any breaking delta is found — a CI hook).
+
+  **Deterministic delta → impact → version mapping:**
+
+  | Delta type | Impact class | Version bump |
+  |---|---|---|
+  | `maps-to-existing-class` | mapping-only | patch |
+  | `new-column-to-property` | mapping-only | patch |
+  | `new-claim-candidate` | additive | minor |
+  | `passthrough-candidate` | additive | minor |
+  | `new-reference-list` | additive | minor |
+  | `new-relationship` | additive | minor |
+  | `changed-type` (backward-compatible widening, e.g. `int→bigint`, `nvarchar(50)→nvarchar(100)`) | additive | minor |
+  | `semantic-conflict` | breaking | major |
+  | `changed-type` (non-widening) | breaking | major |
+  | `changed-key` | breaking | major |
+  | `changed-grain` | breaking | major |
+  | `removed-column` | breaking | major |
+
+  Suggested-bump precedence: any breaking → **major**, else any additive → **minor**, else
+  any mapping-only → **patch**, else **none**.
+
+- **Registry `contract:` block.** `ClaimRegistry` gains an optional top-level block:
+
+  ```yaml
+  contract:
+    silver_version: "1.2.0"
+    gold_version: "1.0.0"
+  ```
+
+  Both keys are optional and the block is omitted entirely when unset (byte-stable for
+  registries that never set it) and preserved across regeneration merges. It records the
+  current silver/gold contract versions that `source-delta-report` reads and bumps.
+
+**Projector version-metadata emission is deferred.** Emitting the contract version into
+silver/gold projector output is **not** part of this slice. The contract version lives in
+the registry `contract:` block and is surfaced/suggested by `source-delta-report` only.
+
+### Rationale
+
+Keeping the delta classification deterministic and AI-free (joining already-produced
+bronze vocabulary, claims, mappings, optional affinity, and an optional baseline diff)
+makes re-runs free, fast, and diffable, and keeps additive vs breaking changes
+unambiguous. The fixed delta → impact → version mapping turns §13.2/§13.5 directly into
+a reproducible suggestion the engineer can act on, while `--fail-on-breaking` gives CI a
+single hook to block silent breaking changes — operationalizing the core invariant.
+
+Storing the contract version in the registry `contract:` block rather than emitting it
+into projector output now is a deliberate scope decision: projector emission is not in
+this slice's acceptance criteria and would risk destabilizing the projection test suite
+(every silver/gold golden output would change). The registry is already the governed
+source of truth the report reads and bumps, so it is the natural home for the contract
+version; emitting into projector output is future work. Making the command advisory and
+exempt from the skill soft-gate matches the other read-only evidence producers
+(`import-tmdl`, `coverage-report`, `pbi-source-fit-gap`, `tmdl-to-gold-ext`): a soft-gate
+warning would be noise on a non-mutating step.
+
+### Consequences
+
+- A new or changed source produces a reproducible impact report (expected silver
+  table/column/FK additions, breaking changes, required approvals) *before* any projection
+  change merges, mapped directly to methodology §13.4.
+- Breaking changes are clearly distinguished from additive ones, and the suggested contract
+  version bump follows the fixed §13.5 mapping; `--fail-on-breaking` lets CI enforce the
+  "must not silently mutate existing silver" invariant.
+- The registry gains a byte-stable, optional contract-version anchor preserved across
+  regeneration merges, without disturbing registries that don't use it.
+- Because projector emission is deferred, the projection test suite is unaffected by this
+  slice; surfacing the contract version in projector output remains tracked future work.
+
+---
+
 > **Note:** the placeholder `DD-EL-N` numbers in this log are reassigned to real
 > sequential `DD-NNN` numbers when merged into
 > `docs/design/toolkit-design-decisions.md`.

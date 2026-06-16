@@ -1230,6 +1230,91 @@ def tmdl_to_gold_ext(source, domain, namespace, claims_dir, model_filter, output
     click.echo("   ⚠️  Candidate only — review and map URIs via kairos-design-gold before use.")
 
 
+@cli.command(name='source-delta-report')
+@click.option('--system', required=True,
+              help='Source system (bronze vocabulary stem) to evaluate.')
+@click.option('--sources', type=click.Path(), default=None,
+              help='Path to integration/sources/ directory (default: auto-detect).')
+@click.option('--mappings', type=click.Path(), default=None,
+              help='Path to model/mappings/ directory (default: auto-detect).')
+@click.option('--claims-dir', type=click.Path(), default=None,
+              help='Path to model/claims/ directory (default: auto-detect).')
+@click.option('--analysis-dir', type=click.Path(), default=None,
+              help='Path to _analysis/ directory with affinity reports (optional).')
+@click.option('--baseline', type=click.Path(exists=True), default=None,
+              help='Prior vocabulary file or directory for change detection (optional).')
+@click.option('--domain', 'domains', multiple=True,
+              help='Limit approved-claim context to these domains (repeatable).')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Report path (default: integration/reports/{system}-source-delta.md).')
+@click.option('--fail-on-breaking', is_flag=True, default=False,
+              help='Exit non-zero when any breaking delta is detected (CI gate).')
+def source_delta_report(system, sources, mappings, claims_dir, analysis_dir,
+                        baseline, domains, output, fail_on_breaking):
+    """Classify candidate deltas from a new/changed source system (advisory).
+
+    Compares a source system's bronze vocabulary against the approved Claim
+    Registry + SKOS mappings (+ optional affinity hints + optional baseline
+    vocabulary) and classifies each table/column per methodology §13.2:
+    maps-to-existing-class, new-claim-candidate, new-column→property,
+    passthrough, new-reference-list, new-relationship, semantic-conflict,
+    changed key/type/grain. Emits an impact report (expected silver
+    table/column/FK additions, breaking changes, required approvals) and a
+    suggested silver/gold contract version bump (§13.5).
+
+    Deterministic + AI-free. Exits 0 unless --fail-on-breaking is set and a
+    breaking delta is found.
+    """
+    from ..hub_utils import find_hub_root
+    from ..source_delta import run_source_delta
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    base = hub_root if hub_root else cwd
+
+    sources_path = Path(sources) if sources else base / "integration" / "sources"
+    mappings_path = Path(mappings) if mappings else base / "model" / "mappings"
+    claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
+    analysis_path = (
+        Path(analysis_dir) if analysis_dir else _autodetect_analysis_dir(cwd, hub_root)
+    )
+
+    if not sources_path.is_dir():
+        click.echo(f"❌ Sources directory not found: {sources_path}", err=True)
+        raise SystemExit(1)
+
+    report = run_source_delta(
+        system,
+        sources_path,
+        mappings_path,
+        claims_path,
+        analysis_dir=analysis_path,
+        baseline=Path(baseline) if baseline else None,
+        domains=list(domains) or None,
+    )
+
+    if not report.deltas:
+        click.echo(f"⚠️  No bronze tables found for system '{system}' under {sources_path}.",
+                   err=True)
+
+    out_path = (
+        Path(output) if output
+        else base / "integration" / "reports" / f"{system}-source-delta.md"
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(report.render_markdown() + "\n", encoding="utf-8")
+
+    click.echo(f"🔎 Source delta for '{system}': {len(report.deltas)} candidate delta(s)")
+    click.echo(f"   suggested contract bump: {report.suggested_bump}"
+               + (f" (silver {report.silver_version or 'unset'} → "
+                  f"{report.suggested_silver_version or 'unset'})"))
+    click.echo(f"✅ Wrote source-delta report: {out_path}")
+
+    if fail_on_breaking and report.has_breaking:
+        click.echo("❌ Breaking deltas detected (--fail-on-breaking).", err=True)
+        raise SystemExit(2)
+
+
 @cli.command(name='import-source')
 @click.option('--from', 'from_path', type=click.Path(exists=True), required=True,
               help='Path to source-schema YAML file or extracted/<system>/ directory.')

@@ -263,6 +263,17 @@ kairos-ontology pbi-source-fit-gap <source> --domain DOMAIN [--claims-dir PATH] 
 kairos-ontology tmdl-to-gold-ext <source> --domain DOMAIN [--namespace IRI] [--claims-dir PATH] \
   [--model NAME] [--output model/extensions/{domain}-gold-ext.candidate.ttl]
 
+# Change management: source-delta report (advisory, deterministic, AI-free).
+# Compares a source system's bronze vocabulary against the approved Claim Registry + SKOS
+# mappings (+ optional affinity + optional baseline diff), classifies each candidate delta
+# (§13.2), emits a markdown impact report (§13.4), and suggests a silver/gold contract
+# version bump (§13.5) with backward-compat tactics (§13.6). New evidence may expand silver
+# but must not silently mutate it. Exempt from the skill soft-gate, like import-tmdl.
+# Use --fail-on-breaking in CI to block silent breaking changes.
+kairos-ontology source-delta-report --system NAME [--sources PATH] [--mappings PATH] \
+  [--claims-dir PATH] [--analysis-dir PATH] [--baseline PATH] [--domain DOMAIN ...] \
+  [--output PATH] [--fail-on-breaking]
+
 # Import CSV/Excel flat files as source documentation
 kairos-ontology import-flatfile --from <path> [--system NAME] [--output PATH] \
   [--sample-size 5] [--max-rows 1000]

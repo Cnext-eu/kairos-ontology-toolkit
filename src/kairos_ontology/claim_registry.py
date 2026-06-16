@@ -402,6 +402,38 @@ class Freshness:
 
 
 @dataclass
+class ContractMeta:
+    """Current silver/gold contract version of a domain (evidence-led ``DD-EL-8``).
+
+    Records the version the ``source-delta-report`` reads and suggests bumping
+    when new source evidence introduces additive or breaking deltas.  Both keys
+    are optional; an all-empty contract serializes to nothing (byte-stable for
+    registries that never set it).
+    """
+
+    silver_version: str | None = None
+    gold_version: str | None = None
+
+    def is_empty(self) -> bool:
+        return self.silver_version is None and self.gold_version is None
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if self.silver_version is not None:
+            out["silver_version"] = self.silver_version
+        if self.gold_version is not None:
+            out["gold_version"] = self.gold_version
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ContractMeta:
+        return cls(
+            silver_version=data.get("silver_version"),
+            gold_version=data.get("gold_version"),
+        )
+
+
+@dataclass
 class ClaimRegistry:
     """A whole-domain Claim Registry document (schema v1)."""
 
@@ -409,6 +441,7 @@ class ClaimRegistry:
     schema_version: int = CLAIM_REGISTRY_SCHEMA_VERSION
     generated_at: str | None = None
     algorithm_version: int | None = None
+    contract: ContractMeta = field(default_factory=ContractMeta)
     freshness: Freshness = field(default_factory=Freshness)
     coverage: list[CoverageSystem] = field(default_factory=list)
     claims: list[Claim] = field(default_factory=list)
@@ -422,6 +455,9 @@ class ClaimRegistry:
             out["generated_at"] = self.generated_at
         if self.algorithm_version is not None:
             out["algorithm_version"] = self.algorithm_version
+        contract = self.contract.to_dict()
+        if contract:
+            out["contract"] = contract
         freshness = self.freshness.to_dict()
         if freshness:
             out["freshness"] = freshness
@@ -439,6 +475,7 @@ class ClaimRegistry:
             schema_version=int(data.get("schema_version", CLAIM_REGISTRY_SCHEMA_VERSION)),
             generated_at=data.get("generated_at"),
             algorithm_version=data.get("algorithm_version"),
+            contract=ContractMeta.from_dict(data.get("contract") or {}),
             freshness=Freshness.from_dict(data.get("freshness") or {}),
             coverage=[CoverageSystem.from_dict(s) for s in systems],
             claims=[Claim.from_dict(c) for c in data.get("claims", [])],
@@ -712,6 +749,7 @@ def merge_preserving_decisions(
         schema_version=new.schema_version,
         generated_at=new.generated_at,
         algorithm_version=new.algorithm_version,
+        contract=new.contract if not new.contract.is_empty() else existing.contract,
         freshness=new.freshness,
         coverage=new.coverage,
         claims=merged,

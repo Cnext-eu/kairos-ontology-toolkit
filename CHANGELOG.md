@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.0] — 2026-06-16
+
+### Added
+- **Deterministic source-delta report + registry contract version (DD-EL-8).**
+  Slice 6 adds change management for new/changed source systems, enforcing the
+  invariant *new evidence may expand silver, but must not silently mutate existing
+  silver* (methodology §13).
+  - **`source-delta-report`** — an **advisory**, AI-free command that compares a
+    source system's bronze vocabulary against the approved Claim Registry + SKOS
+    mappings (plus optional affinity hints and an optional baseline vocabulary
+    diff), classifies each candidate delta (§13.2), emits a markdown impact report
+    (§13.4), and suggests a silver/gold contract version bump (§13.5) with
+    backward-compatibility tactics (§13.6). Options: `--system` (required; the
+    bronze vocabulary stem to evaluate), `--sources`, `--mappings`, `--claims-dir`,
+    `--analysis-dir` (optional affinity), `--baseline` (optional prior vocabulary
+    file/dir for change detection), `--domain` (optional, repeatable; limits
+    approved-claim context), `--output` (optional; else stdout), and
+    `--fail-on-breaking` (flag; exit non-zero when any breaking delta is found, for
+    CI). It is **exempt from the skill soft-gate**, like `import-tmdl`,
+    `coverage-report`, `pbi-source-fit-gap`, and `tmdl-to-gold-ext`.
+  - **Delta taxonomy → impact → version mapping:** `maps-to-existing-class` and
+    `new-column-to-property` → mapping-only → **patch**; `new-claim-candidate`,
+    `passthrough-candidate`, `new-reference-list`, `new-relationship`, and
+    backward-compatible `changed-type` widening (e.g. `int→bigint`,
+    `nvarchar(50)→nvarchar(100)`) → additive → **minor**; `semantic-conflict`,
+    non-widening `changed-type`, `changed-key`, `changed-grain`, and
+    `removed-column` → breaking → **major**. Suggested bump precedence: any
+    breaking → major, else any additive → minor, else any mapping-only → patch,
+    else none.
+- **Registry `contract:` block.** `ClaimRegistry` gains an optional top-level
+  `contract:` block recording the current silver/gold contract versions
+  (`silver_version`, `gold_version`; both keys optional). It is omitted entirely
+  when unset (byte-stable for registries without it) and preserved across
+  regeneration merges. `source-delta-report` reads this block and suggests the
+  next version.
+
+### Notes
+- **Projector version-metadata emission is deferred (DD-EL-8).** The contract
+  version lives in the registry `contract:` block and is surfaced/suggested by
+  `source-delta-report`; emitting it into silver/gold projector output is future
+  work — it is not in this slice's acceptance criteria and would risk
+  destabilizing the projection test suite.
+- See `docs/implementation/evidence-led-modeling/decision-log.md` (DD-EL-8) and
+  methodology §13 for the full rationale and delta/impact/version mapping.
+
 ## [4.4.0] — 2026-06-16
 
 ### Added
