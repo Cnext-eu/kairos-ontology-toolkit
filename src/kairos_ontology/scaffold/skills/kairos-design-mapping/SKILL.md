@@ -61,6 +61,66 @@ The user can override any auto-approved mapping.
 
 ---
 
+## Interaction Modes & Decision Packets (Slice 7 — thin-chat)
+
+> **Concise mode is the default.** This skill is an *orchestrator*: the work and
+> the verbose detail live in **versioned artifacts** (the mapping TTL
+> `model/mappings/{system}-to-{domain}.ttl` and the
+> `.sessions-design/mapping-{system}-*.md` session file), **not** in a long chat
+> transcript. Chat carries only the **decisions**. See `kairos-help` §11
+> (*Skill interaction modes & decision packets*) for the canonical definition
+> shared by every `kairos-design-*` skill.
+
+### Modes
+
+| Mode | What it does | When to use |
+|---|---|---|
+| `guided` | Full step-by-step explanation at every checkpoint (the pre-Slice-7 behavior). | First-time users; teaching / onboarding. |
+| `concise` **(default)** | One compact **decision packet** per table→entity / column→property decision — summary, options, artifact path. Methodology stated **once**, then linked. | Day-to-day mapping by someone who knows the flow. |
+| `silent-artifact` | Writes mappings straight into the TTL with minimal chat; surfaces **only blocking decisions** (this generalises the existing auto-approve fast-track). | Trusted fast iteration; review via the PR diff. |
+| `review-only` | **No writes** — proposes alignments and emits decision packets / coverage findings only. | Audits, second opinions, dry runs. |
+
+Switch modes any time (*"use guided mode"*, *"concise mode"*, …); the active
+mode is recorded in the session file so it persists across turns.
+
+### Decision-packet format
+
+```yaml
+# 🧩 Decision packet — Phase 1: Table-to-Entity Alignment
+summary: tblClient → CorporateClient/SoleProprietorClient/IndividualClient (split on Type).
+requires_decision: yes        # yes → STOP and wait for the user (never auto-approve)
+options:
+  - A) split into 3 subclasses by Type discriminator (recommended)
+  - B) single Client class, Type as a property
+artifact: model/mappings/adminpulse-to-client.ttl  (+ .sessions-design/mapping-adminpulse-*.md)
+mode: concise
+```
+
+Render only the packet in chat; push full reasoning to the artifact / session
+file.
+
+### Shared thin-chat rules (identical across all `kairos-design-*` skills)
+
+1. **State methodology once per session, then link** to `kairos-help` instead of
+   re-explaining the mapping workflow.
+2. **One decision packet per table / column decision** — don't bundle decisions
+   or pad packets with prose.
+3. **End each phase with PR-ready diffs**, not a chat recap: list the changed
+   files (mapping TTL, session file) and say *"review in the GitHub PR"*.
+4. **Artifacts over transcript** — rationale, confidence, and rejected targets go
+   into the session file, never only into chat.
+5. **No-autopilot preserved.** A `requires_decision: yes` packet always waits for
+   an explicit user response; the auto-approve fast-track only applies to
+   non-blocking, exact-match mappings (still shown), and no mode (incl.
+   `silent-artifact`) auto-confirms a blocking decision (Gate 5).
+
+> **C10 guard:** these modes are presentation rules for *this* skill's existing
+> checkpoints — they do **not** add a new orchestration engine. If a request
+> needs real branching logic, prefer a deterministic CLI command (e.g.
+> `propose-alignment`, `check-source-coverage`) over more prose here.
+
+---
+
 ## Phased Workflow
 
 ### Phase 0 — Discover & Scope

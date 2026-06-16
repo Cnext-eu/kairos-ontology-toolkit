@@ -651,6 +651,100 @@ warning would be noise on a non-mutating step.
 
 ---
 
+## DD-EL-9: Slice 7 — Thin-chat skill interaction modes + decision-packet convention; concise default; presentation-only (C10 guard)
+
+**Status:** Accepted
+**Date:** 2026-06-16
+**Affects:** evidence-led design skills (`kairos-design-discovery`,
+`kairos-design-source`, `kairos-design-domain`, `kairos-design-mapping`,
+`kairos-design-silver`, `kairos-design-gold`) and `kairos-help` (§11, canonical
+home); their `scaffold/skills/*` mirrors. **No backend/runtime code** beyond the
+`__version__` bump — this is a skills/docs slice.
+**Implementation:** Slice 7 (Skills thin-chat redesign + scaffold sync). Realizes
+concept C10. Spec:
+`docs/implementation/evidence-led-modeling/slice-7-skills-thin-chat.md`
+
+### Context
+
+The evidence-led skills are orchestrators that walk a user through discovery →
+source → domain → mapping → silver → gold checkpoints. As the methodology matured
+they accumulated verbose in-chat explanation: methodology restated every
+invocation, long checkpoint write-ups, and end-of-phase chat recaps. Concept C10
+proposed moving that verbosity *out of chat into versioned artifacts* (TTL,
+`.sessions-design/` session files, the Claim Registry) so the chat carries only
+decisions. The flagged risk was that a "decision packet" UX could degenerate into
+**building a workflow engine in markdown** — duplicating orchestration logic that
+belongs in deterministic CLI commands.
+
+### Decision
+
+Apply a shared **thin-chat presentation convention** across all `kairos-design-*`
+skills, defined canonically once in **`kairos-help` §11** ("Skill interaction modes
+& decision packets") and referenced (not re-explained) by each design skill via a
+tailored "Interaction Modes & Decision Packets" section.
+
+- **Four interaction modes:**
+  - `guided` — the former verbose behaviour (full explanation in chat).
+  - `concise` — the **new documented default**: minimal chat, decisions surfaced as
+    packets, detail in artifacts.
+  - `silent-artifact` — write straight to artifacts with minimal chat; still stops
+    at blocking decisions (never auto-confirms — see below).
+  - `review-only` — summarize the current state / proposed diffs without advancing.
+
+- **Decision-packet schema.** Each checkpoint emits one compact packet:
+
+  ```yaml
+  summary:           # one-line what-this-is
+  requires_decision: # the single thing the user must decide (or null)
+  options:           # enumerated choices when a decision is required
+  artifact:          # path to the full detail (TTL / .sessions-design / registry)
+  mode:              # active interaction mode
+  ```
+
+  Chat renders only the decision rows; full detail goes to the repo /
+  `.sessions-design/` / the Claim Registry.
+
+- **Shared thin-chat rules:** state the methodology **once** (then link to
+  `kairos-help`), emit **one packet per checkpoint**, end each phase with
+  **PR-ready diffs** ("files changed; review in the PR") rather than a long chat
+  recap, and prefer **artifacts over transcript**. The **no-autopilot rule is
+  preserved**: `silent-artifact` reduces chatter but **never auto-confirms a
+  blocking decision** — blocking checkpoints still require explicit user approval.
+
+- **C10 guard — presentation-only.** These modes and packets are a **presentation
+  layer over the existing checkpoints**, not a new orchestration/workflow engine.
+  Any real branching or computed logic stays in **deterministic CLI** commands
+  (CLI-does-the-work); skills remain thin wrappers and must not reimplement
+  orchestration in prose.
+
+### Rationale
+
+Moving verbose explanation into versioned artifacts makes the durable record
+reviewable in PRs and diffable over time, while the chat stays focused on the one
+decision each checkpoint actually needs. Defining the convention once in
+`kairos-help` §11 and linking from each skill avoids drift and keeps the skills
+thin. Making `concise` the default right-sizes the common path without removing the
+`guided` walkthrough for new users or `review-only`/`silent-artifact` for
+experienced ones. The C10 guard is the load-bearing constraint: by scoping the work
+to presentation over *existing* checkpoints — and explicitly forbidding new
+orchestration logic in markdown — the slice captures the UX win without the
+workflow-engine-in-prose risk, deferring any genuine branching to deterministic CLI.
+
+### Consequences
+
+- All `kairos-design-*` skills share one mode vocabulary and packet format, with
+  `concise` as the default; the canonical definition lives in `kairos-help` §11.
+- Each checkpoint produces a compact decision packet; verbose detail lands in
+  artifacts (TTL, `.sessions-design/`, Claim Registry), and phases end with PR-ready
+  diffs instead of chat recaps.
+- The no-autopilot guarantee is unchanged: blocking decisions still require explicit
+  approval; `silent-artifact` only suppresses non-decision chatter.
+- Because the slice is presentation-only, no orchestration logic was added to the
+  skills; real branching remains the responsibility of deterministic CLI commands
+  (C10 guard upheld). No runtime code changed beyond the version bump.
+
+---
+
 > **Note:** the placeholder `DD-EL-N` numbers in this log are reassigned to real
 > sequential `DD-NNN` numbers when merged into
 > `docs/design/toolkit-design-decisions.md`.

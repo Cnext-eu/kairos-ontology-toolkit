@@ -118,6 +118,71 @@ If the user explicitly requests skipping governance:
 
 ---
 
+## Interaction Modes & Decision Packets (Slice 7 — thin-chat)
+
+> **Concise mode is the default.** This skill is an *orchestrator*: the work and
+> the verbose detail live in **versioned artifacts** (the domain `.ttl`, the
+> `.sessions-design/modeling-{domain}-*.md` session file, the Claim Registry),
+> **not** in a long chat transcript. Chat carries only the **decisions**. See
+> `kairos-help` §11 (*Skill interaction modes & decision packets*) for the
+> canonical definition shared by every `kairos-design-*` skill.
+
+### Modes
+
+| Mode | What it does | When to use |
+|---|---|---|
+| `guided` | Full step-by-step explanation at every checkpoint (the pre-Slice-7 behavior). Teaches the methodology as it goes. | First-time users; teaching/onboarding. |
+| `concise` **(default)** | Emits one compact **decision packet** per checkpoint — summary, the decision required, options, artifact path. Methodology is stated **once**, then linked. | Day-to-day modeling by someone who knows the flow. |
+| `silent-artifact` | Writes proposals straight into the session file / candidate TTL with minimal chat; surfaces **only blocking decisions**. Full rationale lives in the artifact. | Trusted, fast iteration; reviewing via the PR diff. |
+| `review-only` | **No writes.** Analyses sources + reference models and emits decision packets / findings for the user to act on. | Audits, second opinions, dry runs. |
+
+Switch modes at any time: *"use guided mode"*, *"concise mode"*,
+*"silent-artifact mode"*, *"review-only mode"*. Mode is recorded in the session
+file so it persists across turns.
+
+### Decision-packet format
+
+At each checkpoint, **concise** and **silent-artifact** modes emit a compact
+packet instead of paragraphs of prose. Render only the packet in chat; push the
+full reasoning to the session file / artifact.
+
+```yaml
+# 🧩 Decision packet — Checkpoint 1: Naming Alignment
+summary: 3 classes proposed from FIBO LegalEntity, evidence-backed by AdminPulse tblClient.
+requires_decision: yes        # yes → STOP and wait for the user (never auto-approve)
+options:
+  - A) CorporateClient / SoleProprietorClient / IndividualClient (recommended)
+  - B) single Client class + type discriminator property
+artifact: model/ontologies/client.ttl  (+ .sessions-design/modeling-client-*.md)
+mode: concise
+```
+
+`requires_decision: yes` packets **always wait** for an explicit user response —
+the no-autopilot rule (Gate 5) is not relaxed by any mode. `silent-artifact`
+narrows what is shown to *blocking* packets only; it does **not** auto-confirm
+them.
+
+### Shared thin-chat rules (identical across all `kairos-design-*` skills)
+
+1. **State methodology once per session, then link.** After the first
+   invocation, do not re-explain the reference-model-first workflow or the
+   evidence-led rules — point to `kairos-help` instead of repeating them.
+2. **One decision packet per checkpoint** (Checkpoints 1–5, 3b). Don't bundle
+   multiple decisions into one packet; don't pad packets with prose.
+3. **End each phase with PR-ready diffs**, not a chat recap: list the files
+   changed (`model/ontologies/{domain}.ttl`, session file, claims) and say
+   *"review in the GitHub PR"* — the diff is the source of truth.
+4. **Artifacts over transcript.** Anything worth keeping (rationale, rejected
+   options, evidence) goes into the session file or the registry, never only
+   into chat.
+
+> **C10 guard:** these modes are presentation rules for *this* skill's existing
+> checkpoints — they do **not** add a new orchestration engine. If a request
+> needs real branching logic, prefer a deterministic CLI command over more
+> prose here.
+
+---
+
 ## Decision Tree (route within this skill)
 
 Use this quick-reference to determine which section applies:

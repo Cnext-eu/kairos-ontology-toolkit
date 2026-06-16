@@ -387,6 +387,63 @@ This skill must be updated whenever **new core functionality** is added to the
 toolkit — new projections, new annotations, new CLI commands, or new design
 patterns. The PR checklist in `SC-merge-pr` includes a reminder to verify this.
 
+## 11  Skill interaction modes & decision packets
+
+> **Canonical definition** (shared by every `kairos-design-*` skill — DD-EL-9,
+> Slice 7). Design skills are *orchestrators*: the work and the verbose detail
+> belong in **versioned artifacts** (TTL, `.sessions-design/` session files, the
+> Claim Registry), not in a long chat transcript. **Chat carries only the
+> decisions.**
+
+### 11.1  Interaction modes (concise is the default)
+
+| Mode | What it does | When to use |
+|---|---|---|
+| `guided` | Full step-by-step explanation at every checkpoint (the pre-Slice-7 behavior). | First-time users; teaching / onboarding. |
+| `concise` **(default)** | One compact **decision packet** per checkpoint — summary, decision required, options, artifact path. Methodology stated **once**, then linked here. | Day-to-day work by someone who knows the flow. |
+| `silent-artifact` | Writes proposals straight into artifacts / session files with minimal chat; surfaces **only blocking decisions**. | Trusted fast iteration; review via the PR diff. |
+| `review-only` | **No writes** — analyses and emits decision packets / findings only. | Audits, second opinions, dry runs. |
+
+Users switch modes any time (*"use guided mode"*, *"concise mode"*, …); the
+active mode is recorded in the session file so it persists across turns. Modes
+are **presentation rules**, not new orchestration logic (C10 guard).
+
+### 11.2  Decision-packet format
+
+```yaml
+# 🧩 Decision packet — <checkpoint / phase name>
+summary: <one line: what & why, with the key evidence>
+requires_decision: yes        # yes → STOP and wait for the user (never auto-approve)
+options:
+  - A) <option> (recommended)
+  - B) <option>
+artifact: <repo path that will change / has changed>
+mode: concise
+```
+
+Render only the packet in chat; push the full reasoning to the artifact /
+session file.
+
+### 11.3  Shared thin-chat rules (every design skill)
+
+1. **State methodology once per session, then link** to this skill instead of
+   re-explaining it.
+2. **One decision packet per checkpoint/phase** — don't bundle decisions or pad
+   with prose.
+3. **End each phase with PR-ready diffs**, not a chat recap: list the changed
+   files and say *"review in the GitHub PR"*.
+4. **Artifacts over transcript** — rationale, rejected options, and evidence go
+   into the session file or registry, never only into chat.
+5. **No-autopilot is preserved.** A `requires_decision: yes` packet always waits
+   for an explicit user response; no mode (including `silent-artifact`)
+   auto-confirms a blocking decision.
+
+Skills applying this convention: `kairos-design-discovery`,
+`kairos-design-source`, `kairos-design-domain`, `kairos-design-mapping`,
+`kairos-design-silver`, `kairos-design-gold`. The `kairos-execute-*` skills are
+already non-interactive (CLI-does-the-work) and only emit the PR-ready-diff
+summary at the end.
+
 ---
 
 *This skill is auto-distributed to hub repositories via the scaffold system.

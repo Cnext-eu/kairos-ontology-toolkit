@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.6.0] — 2026-06-16
+
+### Changed
+- **Thin-chat skill interaction modes + decision-packet convention (DD-EL-9).**
+  Slice 7 is a **skills/docs-only** slice (no runtime code change beyond the
+  version bump) that applies a thin-chat presentation convention across all
+  `kairos-design-*` skills, moving verbose explanation out of chat into versioned
+  artifacts (concept C10).
+  - **Four interaction modes:** `guided` (the former behaviour), `concise` (the
+    **new documented default**), `silent-artifact`, and `review-only`. The mode is
+    a presentation choice over the *existing* checkpoints — it does not change what
+    gets approved or how, and the no-autopilot rule is preserved (`silent-artifact`
+    never auto-confirms a blocking decision).
+  - **Decision-packet convention:** each checkpoint emits one compact packet
+    (`summary` / `requires_decision` / `options` / `artifact` path / `mode`); chat
+    renders only the decision rows while full detail lands in the repo /
+    `.sessions-design/` session files / the Claim Registry. Methodology is stated
+    once then linked to `kairos-help`, and each phase ends with PR-ready diffs
+    instead of a long chat recap.
+  - **Canonical definition** lives in `kairos-help` §11 ("Skill interaction modes &
+    decision packets"); each design skill carries a tailored "Interaction Modes &
+    Decision Packets" section.
+
+### Notes
+- **C10 guard (presentation-only).** These are presentation rules layered over the
+  existing checkpoints, **not** a new orchestration engine — prefer
+  CLI-does-the-work / deterministic CLI for any real branching, never reimplement
+  workflow logic in prose. This was the key design risk the slice validated.
+- See `docs/implementation/evidence-led-modeling/decision-log.md` (DD-EL-9) and
+  `kairos-help` §11 for the full rationale, mode definitions, and packet schema.
+
 ## [4.5.0] — 2026-06-16
 
 ### Added

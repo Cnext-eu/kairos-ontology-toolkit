@@ -93,6 +93,68 @@ company facts or glossary terms.
 
 ---
 
+## Interaction Modes & Decision Packets (Slice 7 — thin-chat)
+
+> **Concise mode is the default.** This skill is an *orchestrator*: the work and
+> the verbose detail live in **versioned artifacts** (the
+> `.sessions-design/businessdiscovery-{company}-*.md` session file, the
+> `businessdiscovery/_extractions/*.extraction.yaml` extractions, and the
+> `businessdiscovery/{company}-glossary.ttl` overlay), **not** in a long chat
+> transcript. Chat carries only the **decisions**. See `kairos-help` §11
+> (*Skill interaction modes & decision packets*) for the canonical definition
+> shared by every `kairos-design-*` skill.
+
+### Modes
+
+| Mode | What it does | When to use |
+|---|---|---|
+| `guided` | Full step-by-step explanation at every phase (the pre-Slice-7 behavior). | First-time users; teaching / onboarding. |
+| `concise` **(default)** | One compact **decision packet** per phase — summary, decision required, options, artifact path. Methodology stated **once**, then linked. | Day-to-day work by someone who knows the flow. |
+| `silent-artifact` | Writes confirmed facts/terms straight into the session file + glossary with minimal chat; surfaces **only blocking decisions**. | Trusted fast iteration; review via the PR diff. |
+| `review-only` | **No writes** — researches and emits decision packets / findings only. | Audits, second opinions, dry runs. |
+
+Switch modes any time (*"use guided mode"*, *"concise mode"*, …); the active
+mode is recorded in the session file so it persists across turns.
+
+### Decision-packet format
+
+```yaml
+# 🧩 Decision packet — Phase 2: Terminology capture (glossary term)
+summary: "Dossier" = a client engagement file; links to refmodel Case via relatedMatch.
+requires_decision: yes        # yes → STOP and wait for the user (never auto-approve)
+options:
+  - A) capture as skos:Concept "Dossier" → relatedMatch Case (recommended)
+  - B) treat as exactMatch of refmodel Case
+artifact: businessdiscovery/acme-glossary.ttl  (+ .sessions-design/businessdiscovery-acme-*.md)
+mode: concise
+```
+
+Render only the packet in chat; push full reasoning to the artifact / session
+file. Web findings stay `[INFERRED — public web]` inside the packet until the
+user confirms.
+
+### Shared thin-chat rules (identical across all `kairos-design-*` skills)
+
+1. **State methodology once per session, then link** to `kairos-help` instead of
+   re-explaining the discovery workflow.
+2. **One decision packet per phase / confirmation** — don't batch-confirm company
+   facts or glossary terms, and don't pad packets with prose.
+3. **End each phase with PR-ready diffs**, not a chat recap: list the changed
+   files (session file, extractions, glossary TTL) and say *"review in the GitHub
+   PR"*.
+4. **Artifacts over transcript** — rationale, provenance, and rejected terms go
+   into the session file / extractions, never only into chat.
+5. **No-autopilot preserved.** A `requires_decision: yes` packet always waits for
+   an explicit user response; no mode (incl. `silent-artifact`) auto-confirms a
+   blocking decision (Gate 5).
+
+> **C10 guard:** these modes are presentation rules for *this* skill's existing
+> phases — they do **not** add a new orchestration engine. If a request needs
+> real branching logic, prefer a deterministic CLI command (e.g. `build-glossary`)
+> over more prose here.
+
+---
+
 ## Phased Workflow
 
 ### Phase 0 — Session check

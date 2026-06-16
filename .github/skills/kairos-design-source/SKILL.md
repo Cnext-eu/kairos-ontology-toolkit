@@ -45,6 +45,65 @@ Input type? ──→  Import flat files ──→ Generate vocab ──→  Rev
 
 ---
 
+## Interaction Modes & Decision Packets (Slice 7 — thin-chat)
+
+> **Concise mode is the default.** This skill is an *orchestrator*: the work and
+> the verbose detail live in **versioned artifacts** (the bronze vocabulary
+> `integration/sources/{system}.vocabulary.ttl` and the
+> `integration/sources/_analysis/` reports), **not** in a long chat transcript.
+> Chat carries only the **decisions**. See `kairos-help` §11 (*Skill interaction
+> modes & decision packets*) for the canonical definition shared by every
+> `kairos-design-*` skill.
+
+### Modes
+
+| Mode | What it does | When to use |
+|---|---|---|
+| `guided` | Full step-by-step explanation at every phase (the pre-Slice-7 behavior). | First-time users; teaching / onboarding. |
+| `concise` **(default)** | One compact **decision packet** per phase — summary, decision required, options, artifact path. Methodology stated **once**, then linked. | Day-to-day source work by someone who knows the flow. |
+| `silent-artifact` | Writes the vocabulary / analysis straight to disk with minimal chat; surfaces **only blocking decisions** (e.g. ambiguous descriptions). | Trusted fast iteration; review via the PR diff. |
+| `review-only` | **No writes** — inspects sources and emits decision packets / findings only. | Audits, second opinions, dry runs. |
+
+Switch modes any time (*"use guided mode"*, *"concise mode"*, …); the active
+mode is recorded in the session file so it persists across turns.
+
+### Decision-packet format
+
+```yaml
+# 🧩 Decision packet — Phase 2: Generate vocabulary (table description)
+summary: tblClient → "Client master record"; PK ClientID; 11 columns enriched.
+requires_decision: yes        # yes → STOP and wait for the user (never auto-approve)
+options:
+  - A) accept generated descriptions as-is (recommended)
+  - B) revise the "Type" column note (reference-data discriminator)
+artifact: integration/sources/adminpulse.vocabulary.ttl
+mode: concise
+```
+
+Render only the packet in chat; push full reasoning to the artifact / session
+file.
+
+### Shared thin-chat rules (identical across all `kairos-design-*` skills)
+
+1. **State methodology once per session, then link** to `kairos-help` instead of
+   re-explaining the source-import workflow.
+2. **One decision packet per phase / table** — don't bundle decisions or pad
+   packets with prose.
+3. **End each phase with PR-ready diffs**, not a chat recap: list the changed
+   files (vocabulary TTL, analysis reports) and say *"review in the GitHub PR"*.
+4. **Artifacts over transcript** — descriptions, provenance, and rejected
+   enrichments go into the vocabulary / analysis files, never only into chat.
+5. **No-autopilot preserved.** A `requires_decision: yes` packet always waits for
+   an explicit user response; no mode (incl. `silent-artifact`) auto-confirms a
+   blocking decision.
+
+> **C10 guard:** these modes are presentation rules for *this* skill's existing
+> phases — they do **not** add a new orchestration engine. The real work is done
+> by deterministic CLI commands (`import-flatfile`, `import-source`,
+> `analyse-sources`); prefer those over more prose here.
+
+---
+
 ## Phase 0 — Determine input type
 
 Ask the user what source material they have:
