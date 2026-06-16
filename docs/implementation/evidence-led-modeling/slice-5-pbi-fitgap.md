@@ -1,6 +1,6 @@
 # Slice 5 — Power BI/source fit-gap & gold seed
 
-**Status:** ⬜ not started · **Depends on:** 2, 3 · **Gates:** 8
+**Status:** ✅ done · **Depends on:** 2, 3 · **Gates:** 8
 
 ## Goal
 
@@ -28,16 +28,41 @@ basis (concept C7 guardrail).
 
 ## Tests
 
-- [ ] fit/gap/defer/reject classification on a scenario PBI + claims set
-- [ ] passthrough-dependency detection
-- [ ] gold-ext seed produces valid measure/hierarchy annotations
+- [x] fit/gap/defer/reject classification on a scenario PBI + claims set
+- [x] passthrough-dependency detection
+- [x] gold-ext seed produces valid measure/hierarchy annotations
 
 ## Acceptance criteria
 
-- [ ] Fit-gap report classifies every PBI field against claims.
-- [ ] Gold seed is candidate-only (no auto-approval).
-- [ ] version + CHANGELOG + ruff + ext-coverage + tests.
+- [x] Fit-gap report classifies every PBI field against claims.
+- [x] Gold seed is candidate-only (no auto-approval).
+- [x] version + CHANGELOG + ruff + ext-coverage + tests.
 
 ## Risks / notes
 
 - Resist as-is→to-be gravity: the report informs claims; it does not approve them.
+
+## Implementation note (2026-06-16)
+
+Slice 5 landed two **advisory** CLI commands (DD-EL-7) that treat existing Power BI
+as *evidence, not authority* (methodology §3.5, §7):
+
+- **`pbi-source-fit-gap SOURCE`** compares a TMDL/PBIP model against the approved
+  Claim Registry and writes an advisory markdown fit-gap report
+  (`integration/reports/{domain}-claim-fit-gap.md`). It classifies every PBI field /
+  measure / relationship as `fit`, `gap`, `defer`, `reject`, or
+  `passthrough-dependency`, and lists *source supply without reporting demand*. It is
+  advisory — always exits 0 when gaps exist (errors still non-zero) and it *informs*
+  claims, never approves them.
+- **`tmdl-to-gold-ext SOURCE`** seeds a **candidate** gold-layer extension TTL
+  (`model/extensions/{domain}-gold-ext.candidate.ttl`) emitting
+  `kairos-ext:measureExpression` / `measureFormatString` from PBI measures and
+  `kairos-ext:hierarchyName` / `hierarchyLevel` from PBI hierarchies, marked as a
+  human-confirm candidate for `kairos-design-gold`.
+
+The claim↔PBI linkage is **deterministic and AI-free**: claims link to PBI artifacts
+via their `tmdl_concept_mapping` evidence; a claim counts as *source-backed* when it
+carries an evidence type in `{source_table, source_column, affinity, skos_mapping,
+sample_signal}` bound to a system; *passthrough* means the claim disposition is
+`passthrough`. Both commands are exempt from the skill soft-gate, like `import-tmdl`.
+No new `kairos-ext:` annotations were introduced.

@@ -107,6 +107,33 @@ domain:hasOrderAmount
     kairos-ext:measureFormatString "$#,##0.00" .
 ```
 
+## Seeding gold from Power BI (fit-gap)
+
+When the engagement already has an existing Power BI estate, two **advisory** CLI
+commands (DD-EL-7) let you use it as *evidence, not authority* — they never approve
+claims or auto-apply gold annotations.
+
+- **`kairos-ontology tmdl-to-gold-ext SOURCE --domain {domain}`** seeds a
+  **candidate** gold extension TTL (default
+  `model/extensions/{domain}-gold-ext.candidate.ttl`) from existing Power BI. It emits
+  `kairos-ext:measureExpression` + `measureFormatString` from PBI measures and
+  `kairos-ext:hierarchyName` + `hierarchyLevel` from PBI hierarchies, with a header
+  comment marking the file as a human-confirm candidate. **Review and confirm** the
+  candidate here, then fold the approved annotations into your real
+  `{domain}-gold-ext.ttl` — it is never applied automatically.
+- **`kairos-ontology pbi-source-fit-gap SOURCE --domain {domain}`** writes an advisory
+  markdown fit-gap report (default `integration/reports/{domain}-claim-fit-gap.md`)
+  that reconciles existing reporting demand against approved **source-backed** claims.
+  Every PBI field / measure / relationship is classified as `fit`, `gap`, `defer`,
+  `reject`, or `passthrough-dependency`, and it lists *source supply without reporting
+  demand*. The report **informs** which gold measures/dimensions to design; it does not
+  approve them (it always exits 0 when gaps exist).
+
+> **Power BI is evidence, not authority** (methodology §3.5, §7). The seed is
+> candidate-only and the fit-gap report is advisory — source/stakeholder evidence and
+> the claim-approval gate remain the basis for what lands in gold. Both commands are
+> exempt from the skill soft-gate, like `import-tmdl`.
+
 ## Gold Annotation Reference
 
 ### Ontology-level

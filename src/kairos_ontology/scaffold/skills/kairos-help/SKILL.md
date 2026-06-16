@@ -250,6 +250,19 @@ kairos-ontology catalog-test
 # Import TMDL/PBIP files for ontology modeling input
 kairos-ontology import-tmdl <source> [--output PATH]
 
+# Power BI/source fit-gap (advisory, feeds gold design) — PBI is evidence, not authority.
+# Compares a TMDL/PBIP model against approved source-backed claims; classifies every PBI
+# field/measure/relationship as fit/gap/defer/reject/passthrough-dependency. Always exits 0
+# on gaps (advisory). Exempt from the skill soft-gate, like import-tmdl.
+kairos-ontology pbi-source-fit-gap <source> --domain DOMAIN [--claims-dir PATH] \
+  [--model NAME] [--output integration/reports/{domain}-claim-fit-gap.md]
+
+# Seed CANDIDATE gold annotations from existing Power BI (human-confirmed, never auto-applied).
+# Emits measureExpression/measureFormatString from PBI measures and hierarchyName/hierarchyLevel
+# from PBI hierarchies for the kairos-design-gold skill to review. Exempt from the skill soft-gate.
+kairos-ontology tmdl-to-gold-ext <source> --domain DOMAIN [--namespace IRI] [--claims-dir PATH] \
+  [--model NAME] [--output model/extensions/{domain}-gold-ext.candidate.ttl]
+
 # Import CSV/Excel flat files as source documentation
 kairos-ontology import-flatfile --from <path> [--system NAME] [--output PATH] \
   [--sample-size 5] [--max-rows 1000]

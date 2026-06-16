@@ -261,6 +261,16 @@ python -m kairos_ontology project --target powerbi
 - Hierarchies, perspectives, calculation groups
 - Gold-layer Mermaid ERD
 
+> **Seeding gold from existing Power BI (advisory).** If the engagement already has a
+> Power BI estate, two advisory CLI commands (DD-EL-7) feed gold design — *PBI is
+> evidence, not authority*: `kairos-ontology tmdl-to-gold-ext <source> --domain D` seeds
+> a **candidate** `*-gold-ext.candidate.ttl` (measure/hierarchy annotations) for
+> `kairos-design-gold` to confirm, and `kairos-ontology pbi-source-fit-gap <source>
+> --domain D` writes an advisory fit-gap report (fit/gap/defer/reject/
+> passthrough-dependency) reconciling reporting demand against approved source-backed
+> claims. Both are read-only, exit 0 on gaps, and are exempt from the skill soft-gate
+> like `import-tmdl`.
+
 ## Output structure
 
 Output is generated into `ontology-hub/output/<target>/`:

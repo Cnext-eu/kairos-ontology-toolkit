@@ -47,6 +47,23 @@ class TmdlPartition:
 
 
 @dataclass
+class TmdlHierarchyLevel:
+    """A single level within a TMDL hierarchy."""
+
+    name: str
+    column: str = ""
+    ordinal: int = 0
+
+
+@dataclass
+class TmdlHierarchy:
+    """A user-defined hierarchy within a TMDL table."""
+
+    name: str
+    levels: list[TmdlHierarchyLevel] = field(default_factory=list)
+
+
+@dataclass
 class TmdlTable:
     """A table definition parsed from TMDL."""
 
@@ -56,6 +73,7 @@ class TmdlTable:
     columns: list[TmdlColumn] = field(default_factory=list)
     measures: list[TmdlMeasure] = field(default_factory=list)
     partitions: list[TmdlPartition] = field(default_factory=list)
+    hierarchies: list[TmdlHierarchy] = field(default_factory=list)
     is_hidden: bool = False
 
     @property
@@ -186,6 +204,9 @@ def _parse_table(lines: list[str], start: int) -> tuple[TmdlTable, int]:
         elif stripped.startswith("measure "):
             measure, i = _parse_measure(lines, i, indent)
             table.measures.append(measure)
+        elif stripped.startswith("hierarchy "):
+            hierarchy, i = _parse_hierarchy(lines, i, indent)
+            table.hierarchies.append(hierarchy)
         elif stripped.startswith("partition "):
             partition, i = _parse_partition(lines, i, indent)
             table.partitions.append(partition)
@@ -332,6 +353,63 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
         i += 1
 
     return measure, i
+
+
+def _parse_hierarchy(
+    lines: list[str], start: int, parent_indent: int
+) -> tuple[TmdlHierarchy, int]:
+    """Parse a hierarchy block, including its ``level`` sub-blocks."""
+    header = lines[start].strip()
+    match = re.match(r"hierarchy\s+['\"]?(.+?)['\"]?\s*$", header)
+    name = match.group(1) if match else header[10:].strip().strip("'\"")
+    hierarchy = TmdlHierarchy(name=name)
+
+    i = start + 1
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if not stripped or stripped.startswith("///"):
+            i += 1
+            continue
+
+        indent = _get_indent(line)
+        if indent <= parent_indent and stripped:
+            break
+
+        if stripped.startswith("level "):
+            level_match = re.match(r"level\s+['\"]?(.+?)['\"]?\s*$", stripped)
+            level_name = (
+                level_match.group(1) if level_match else stripped[6:].strip().strip("'\"")
+            )
+            level = TmdlHierarchyLevel(name=level_name, ordinal=len(hierarchy.levels))
+            level_indent = indent
+            i += 1
+            while i < len(lines):
+                inner = lines[i]
+                inner_stripped = inner.strip()
+                if not inner_stripped or inner_stripped.startswith("///"):
+                    i += 1
+                    continue
+                if _get_indent(inner) <= level_indent:
+                    break
+                if ":" in inner_stripped:
+                    key, value = inner_stripped.split(":", 1)
+                    key = key.strip()
+                    value = _strip_quotes(value.strip())
+                    if key == "column":
+                        level.column = value
+                    elif key == "ordinal":
+                        try:
+                            level.ordinal = int(value)
+                        except ValueError:
+                            pass
+                i += 1
+            hierarchy.levels.append(level)
+        else:
+            i += 1
+
+    return hierarchy, i
 
 
 def _parse_partition(

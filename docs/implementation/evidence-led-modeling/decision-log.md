@@ -435,6 +435,105 @@ stays in the gate.
   MDM governance; golden registry output is unchanged because all new fields are omitted when
   default.
 
+---
+
+## DD-EL-7: Slice 5 — Power BI/source fit-gap simulation + gold seed (PBI as evidence, not authority)
+
+**Status:** Accepted
+**Date:** 2026-06-16
+**Affects:** new `pbi_fit_gap.py`, `tmdl_parser.py` (additive hierarchy parsing),
+`import_tmdl.py`, new `pbi-source-fit-gap` and `tmdl-to-gold-ext` CLI commands,
+`cli/main.py`, `integration/reports/{domain}-claim-fit-gap.md` (advisory output),
+`model/extensions/{domain}-gold-ext.candidate.ttl` (candidate seed), evidence-led
+design/execute skills (`kairos-design-gold`, `kairos-execute-project`, `kairos-help`)
+**Implementation:** Slice 5 (Power BI/source fit-gap & gold seed). Realizes the
+Power BI-as-evidence guardrail (concept C7, methodology §3.5, §7). Spec:
+`docs/implementation/evidence-led-modeling/slice-5-pbi-fitgap.md`
+
+### Context
+
+Most engagements arrive with an existing Power BI estate that encodes real reporting
+demand, but the methodology is explicit that **Power BI is evidence, not authority**
+(§3.5): copying an as-is PBI model into gold would let probabilistic reporting habits
+masquerade as governed source-backed claims. After Slices 1–4 the Claim Registry
+governs *what is approved to materialize* and approved claims drive projection, but
+there was no tooling to (a) reconcile existing reporting demand against approved
+source supply, or (b) bootstrap gold-layer measure/hierarchy annotations from validated
+reporting assets without auto-adopting them. Methodology §7 (Power BI/source fit-gap
+simulation) and §7.3 (the finding/meaning/action table) describe exactly this
+reconciliation; Slice 5 implements it as advisory tooling.
+
+### Decision
+
+Add two **advisory** CLI commands. Neither approves claims and neither mutates governed
+artifacts; both are **exempt from the skill soft-gate** like `import-tmdl` and
+`coverage-report` (not added to `_SKILL_COVERED_COMMANDS`).
+
+- **`pbi-source-fit-gap SOURCE`** — `SOURCE` is a PBIP zip / SemanticModel folder /
+  standalone `.tmdl` file. Options: `--domain` (required; which `{domain}-claims.yaml`
+  to compare), `--claims-dir` (default auto-detect `model/claims/`), `--model`
+  (optional TMDL model-name filter), `--output/-o` (default
+  `integration/reports/{domain}-claim-fit-gap.md`). It compares the PBI model against
+  the approved Claim Registry and writes a markdown fit-gap report classifying every
+  PBI field / measure / relationship as one of:
+  - `fit` — covered by an approved, source-backed claim;
+  - `gap` — reporting demand with a claim but no source supply, or no approved claim;
+  - `defer` — visible PBI artifact with no claim (needs a decision);
+  - `reject` — hidden PBI artifact with no claim (legacy);
+  - `passthrough-dependency` — a measure depends on a field whose claim disposition is
+    passthrough → review for promotion.
+  It also lists **source supply without reporting demand** (approved source-backed
+  claims with no PBI usage). It is **advisory**: it always exits 0 even when gaps exist
+  (only real errors exit non-zero).
+- **`tmdl-to-gold-ext SOURCE`** — seeds a **candidate** gold-layer extension TTL for the
+  `kairos-design-gold` skill to review/confirm (human-confirmed, never auto-applied).
+  Options: `--domain` (required), `--namespace` (optional; auto-derived from the domain
+  claims' `class_uri` namespace when `--claims-dir` is given), `--claims-dir`, `--model`,
+  `--output/-o` (default `model/extensions/{domain}-gold-ext.candidate.ttl`). It emits
+  `kairos-ext:measureExpression` + `kairos-ext:measureFormatString` from PBI measures and
+  `kairos-ext:hierarchyName` + `kairos-ext:hierarchyLevel` from PBI hierarchies as
+  candidate annotations, with a header comment marking the file as a human-confirm
+  candidate.
+
+**Deterministic, AI-free linkage.** The claim↔PBI join is pure plumbing with no model
+variance: a claim links to a PBI artifact via its `tmdl_concept_mapping` evidence; a
+claim is **source-backed** when it carries an evidence type in `{source_table,
+source_column, affinity, skos_mapping, sample_signal}` bound to a system; a field is
+**passthrough** when its claim disposition is `passthrough`. The TMDL parser gains
+**additive** hierarchy extraction (name + ordered levels) to feed the gold seed; no
+existing parse behavior changes. **No new `kairos-ext:` annotations are introduced** —
+all four annotations already exist in `kairos-ext.ttl`.
+
+### Rationale
+
+The fit-gap report **informs** claims; it never approves them, and the gold seed is
+**candidate-only**. Making both commands advisory (exit 0 on gaps) and the seed a
+human-confirm candidate enforces the §3.5 guardrail at the tooling level: the engineer
+cannot accidentally turn an as-is PBI model into governed gold without going through the
+`kairos-design-gold` review and the claim-approval gate. Keeping the linkage
+deterministic and AI-free (joining already-produced `tmdl_concept_mapping` and claim
+evidence) makes re-runs free, fast, and diffable, and keeps strong (source-backed) vs
+weak (reporting-only) evidence visible. Exempting both from the skill soft-gate matches
+`import-tmdl`/`coverage-report`: they are read-only evidence/seed producers, not
+governed mutating steps, so a soft-gate warning would be noise. Reusing the existing
+gold annotations (no `kairos-ext.ttl` change) keeps the reviewable ontology surface and
+vocabulary untouched.
+
+### Consequences
+
+- Engineers get an advisory, reproducible reconciliation of reporting demand (PBI)
+  against approved source supply, mapped directly to methodology §7.3's
+  finding/meaning/action guidance, without any risk of auto-approving claims.
+- Gold design can be bootstrapped from existing PBI measures/hierarchies as a reviewable
+  candidate TTL, accelerating `kairos-design-gold` without bypassing human confirmation.
+- Because both commands are advisory and exempt from the soft-gate, they fit naturally
+  into the evidence-gathering phase alongside `import-tmdl`; CI/governance gates
+  (`check-claims`, projector authority) are unaffected.
+- Power BI remains *evidence, not authority*: nothing in this slice can promote a PBI
+  artifact into a governed claim or applied gold extension on its own.
+
+---
+
 > **Note:** the placeholder `DD-EL-N` numbers in this log are reassigned to real
 > sequential `DD-NNN` numbers when merged into
 > `docs/design/toolkit-design-decisions.md`.

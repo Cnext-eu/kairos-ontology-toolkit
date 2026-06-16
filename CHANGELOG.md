@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0] — 2026-06-16
+
+### Added
+- **Power BI/source fit-gap simulation + gold seed (DD-EL-7).** Slice 5 adds two
+  **advisory** CLI commands that use existing Power BI as *evidence, not authority*
+  (methodology §7).
+  - **`pbi-source-fit-gap SOURCE`** — compares a Power BI TMDL/PBIP model
+    (`SOURCE` = PBIP zip / SemanticModel folder / standalone `.tmdl` file) against an
+    approved Claim Registry and writes an advisory markdown fit-gap report (default
+    `integration/reports/{domain}-claim-fit-gap.md`). Options: `--domain` (required;
+    which `{domain}-claims.yaml` to compare), `--claims-dir` (default auto-detect
+    `model/claims/`), `--model` (optional TMDL model-name filter), `--output/-o`.
+    It classifies every PBI field / measure / relationship as one of:
+    - `fit` — covered by an approved, source-backed claim;
+    - `gap` — reporting demand with a claim but no source supply, or no approved claim;
+    - `defer` — visible PBI artifact with no claim (needs a decision);
+    - `reject` — hidden PBI artifact with no claim (legacy);
+    - `passthrough-dependency` — a measure depends on a field whose claim disposition is
+      passthrough → review for promotion.
+    It also lists **source supply without reporting demand** (approved source-backed
+    claims with no PBI usage). The report is **advisory**: it always exits 0 even when
+    gaps exist (errors still non-zero) and it *informs* claims, never approves them.
+  - **`tmdl-to-gold-ext SOURCE`** — seeds a **candidate** gold-layer extension TTL from
+    existing Power BI for the `kairos-design-gold` skill to review/confirm
+    (human-confirmed, never auto-applied; default
+    `model/extensions/{domain}-gold-ext.candidate.ttl`). Options: `--domain` (required),
+    `--namespace` (optional; auto-derived from the domain claims' `class_uri` namespace
+    when `--claims-dir` is given), `--claims-dir`, `--model`, `--output/-o`. It emits
+    `kairos-ext:measureExpression` + `kairos-ext:measureFormatString` from PBI measures
+    and `kairos-ext:hierarchyName` + `kairos-ext:hierarchyLevel` from PBI hierarchies as
+    candidate annotations, with a header comment marking the file as a human-confirm
+    candidate.
+- **Additive TMDL hierarchy parsing.** The TMDL parser additively extracts PBI
+  hierarchies (name + ordered levels) to drive the gold-seed hierarchy annotations;
+  no existing parse behavior changes.
+
+### Notes
+- Both `pbi-source-fit-gap` and `tmdl-to-gold-ext` are **exempt from the skill
+  soft-gate**, exactly like `import-tmdl` and `coverage-report` (they are not added to
+  `_SKILL_COVERED_COMMANDS`).
+- No new `kairos-ext:` annotations are introduced — `measureExpression`,
+  `measureFormatString`, `hierarchyName`, and `hierarchyLevel` already exist in
+  `kairos-ext.ttl`.
+- See `docs/implementation/evidence-led-modeling/decision-log.md` (DD-EL-7) and
+  methodology §7 / §7.3 for the full rationale and finding/meaning/action mapping.
+
 ## [4.3.0] — 2026-06-15
 
 ### Added

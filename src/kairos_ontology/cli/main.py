@@ -1117,6 +1117,119 @@ def import_tmdl(source, output):
         raise SystemExit(1)
 
 
+@cli.command(name='pbi-source-fit-gap')
+@click.argument('source', type=click.Path(exists=True))
+@click.option('--domain', required=True, help='Domain whose Claim Registry to reconcile against.')
+@click.option('--claims-dir', type=click.Path(), default=None,
+              help='Path to model/claims/ directory (default: auto-detect).')
+@click.option('--model', 'model_filter', default=None,
+              help='Restrict to a single TMDL model name (default: all models in SOURCE).')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Report path (default: integration/reports/{domain}-claim-fit-gap.md).')
+def pbi_source_fit_gap(source, domain, claims_dir, model_filter, output):
+    """Reconcile Power BI reporting demand against approved source claims (advisory).
+
+    SOURCE is a PBIP ZIP, a SemanticModel folder, or a standalone .tmdl file.
+    Every PBI field / measure / relationship is classified against the domain's
+    approved Claim Registry as fit / gap / defer / reject / passthrough-dependency
+    (plus source-supply-without-demand). The markdown report *informs* claim
+    decisions — Power BI is evidence, not authority. Always exits 0 (advisory).
+    """
+    from ..claim_registry import load_registry, registry_path
+    from ..hub_utils import find_hub_root
+    from ..pbi_fit_gap import load_models, render_report, run_fit_gap
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
+    reg_path = registry_path(claims_path, domain)
+    if not reg_path.exists():
+        click.echo(f"❌ No claims registry at {reg_path}. Run propose-alignment / "
+                   "derive-claims first.", err=True)
+        raise SystemExit(1)
+    registry = load_registry(reg_path)
+
+    models = load_models(Path(source))
+    if model_filter:
+        models = [m for m in models if m.name.lower() == model_filter.lower()]
+    if not models:
+        click.echo("⚠️  No TMDL model found in SOURCE.", err=True)
+        raise SystemExit(1)
+
+    base = hub_root if hub_root else cwd
+    out_path = Path(output) if output else base / "integration" / "reports" / f"{domain}-claim-fit-gap.md"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    click.echo(f"🔎 Power BI / source fit-gap for '{domain}' ({len(models)} model(s))")
+    sections: list[str] = []
+    totals: dict[str, int] = {}
+    for model in models:
+        report = run_fit_gap(model, registry, model_name=model.name)
+        sections.append(render_report(report))
+        for cls, n in report.counts().items():
+            totals[cls] = totals.get(cls, 0) + n
+
+    out_path.write_text("\n\n---\n\n".join(sections) + "\n", encoding="utf-8")
+    summary = ", ".join(f"{cls}={n}" for cls, n in sorted(totals.items())) or "no findings"
+    click.echo(f"   {summary}")
+    click.echo(f"✅ Wrote fit-gap report: {out_path}")
+
+
+@cli.command(name='tmdl-to-gold-ext')
+@click.argument('source', type=click.Path(exists=True))
+@click.option('--domain', required=True, help='Domain the candidate gold-ext seed is for.')
+@click.option('--namespace', default=None,
+              help='Domain ontology namespace (default: derived from claims registry).')
+@click.option('--claims-dir', type=click.Path(), default=None,
+              help='Path to model/claims/ directory (for namespace derivation).')
+@click.option('--model', 'model_filter', default=None,
+              help='Restrict to a single TMDL model name.')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Output path (default: model/extensions/{domain}-gold-ext.candidate.ttl).')
+def tmdl_to_gold_ext(source, domain, namespace, claims_dir, model_filter, output):
+    """Seed a CANDIDATE gold-extension TTL from existing Power BI (human-confirmed).
+
+    SOURCE is a PBIP ZIP, a SemanticModel folder, or a standalone .tmdl file.
+    PBI measures seed kairos-ext:measureExpression / measureFormatString and PBI
+    hierarchy levels seed kairos-ext:hierarchyName / hierarchyLevel. The output is
+    a *candidate* for kairos-design-gold to review — it is never auto-applied.
+    """
+    from ..claim_registry import load_registry, registry_path
+    from ..hub_utils import find_hub_root
+    from ..pbi_fit_gap import load_models, seed_gold_ext
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
+    registry = None
+    reg_path = registry_path(claims_path, domain)
+    if reg_path.exists():
+        registry = load_registry(reg_path)
+
+    models = load_models(Path(source))
+    if model_filter:
+        models = [m for m in models if m.name.lower() == model_filter.lower()]
+    if not models:
+        click.echo("⚠️  No TMDL model found in SOURCE.", err=True)
+        raise SystemExit(1)
+
+    base = hub_root if hub_root else cwd
+    out_path = (
+        Path(output) if output
+        else base / "model" / "extensions" / f"{domain}-gold-ext.candidate.ttl"
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Merge measures/hierarchies from all selected models into one seed.
+    merged = models[0]
+    for extra in models[1:]:
+        merged.tables.extend(extra.tables)
+    ttl = seed_gold_ext(merged, domain, namespace=namespace, registry=registry)
+    out_path.write_text(ttl, encoding="utf-8")
+    click.echo(f"✅ Wrote candidate gold-ext seed: {out_path}")
+    click.echo("   ⚠️  Candidate only — review and map URIs via kairos-design-gold before use.")
+
+
 @cli.command(name='import-source')
 @click.option('--from', 'from_path', type=click.Path(exists=True), required=True,
               help='Path to source-schema YAML file or extracted/<system>/ directory.')
