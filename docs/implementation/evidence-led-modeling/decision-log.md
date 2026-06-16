@@ -778,7 +778,9 @@ candidate and nothing is pushed to other repositories yet.
 3. **MDM-first discovery** — `kairos-design-discovery` captures reference/master-
    data anchors early; **dataplatform consumption notes** added to
    `kairos-package-dataplatform`.
-4. **Version freeze to `4.0.0-rc1`.** Set `__version__ = "4.0.0-rc1"` and fold the
+4. **Version freeze to `4.0.0rc1`.** Set `__version__ = "4.0.0rc1"` (canonical
+   PEP 440; the git tag is `v4.0.0rc1`, with `4.0.0-rc1` used only as the display
+   label) and fold the
    interim `4.0.0`–`4.6.0` CHANGELOG sections into a single `[4.0.0-rc1]` section.
    No further version bumps for this track.
 5. **No cross-repo push.** Rollout to downstream hubs is **documented, not
