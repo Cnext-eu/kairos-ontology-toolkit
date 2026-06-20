@@ -565,8 +565,13 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     print("🚀 Kairos Ontology Projections")
     print("=" * 50)
     
-    # Get all ontology files
-    ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
+    # Get ontology files. `ontologies_path` may be the model/ontologies directory
+    # or one concrete ontology file selected by `kairos-ontology project --ontology`.
+    ontology_root = ontologies_path.parent if ontologies_path.is_file() else ontologies_path
+    if ontologies_path.is_file():
+        ontology_files = [ontologies_path] if ontologies_path.suffix in {".ttl", ".rdf"} else []
+    else:
+        ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
     # Skip non-domain files: silver-ext annotations, _master imports, etc.
     ontology_files = [f for f in ontology_files if _is_domain_ontology(f)]
     
@@ -651,7 +656,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     template_base = Path(__file__).parent / "templates"
     
     # Look for SHACL shapes directory — hub layout: model/ontologies/, model/shapes/
-    hub_root = ontologies_path.parent.parent if ontologies_path.parent else None
+    hub_root = ontology_root.parent.parent if ontology_root.parent else None
     shapes_dir = hub_root / "model" / "shapes" if hub_root else None
     if shapes_dir and shapes_dir.exists():
         print(f"  Found SHACL shapes directory: {shapes_dir}\n")

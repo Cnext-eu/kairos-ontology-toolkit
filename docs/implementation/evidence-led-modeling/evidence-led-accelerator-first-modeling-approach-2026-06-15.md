@@ -1025,7 +1025,7 @@ Use skills for:
 | decision checkpoints | ask approve/reject/defer at the right moments |
 | pre-flight checks | verify sources, claims, mappings, extensions, projections, and contract impact |
 | artifact generation | create/update claim files, mappings, extensions, reports, and decision logs |
-| resume state | continue from `.sessions-design/`, Claim Registry files, and reports |
+| resume state | continue from `.kairos-state/`, Claim Registry files, and reports |
 | guardrails | avoid unsafe direct CLI use and preserve validation gates |
 
 ### 18.2 What skills should not be used for

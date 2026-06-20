@@ -15,7 +15,7 @@ prefer CLI-does-the-work / skills-as-thin-wrappers.
   `concise` (new default), `silent-artifact`, `review-only`.
 - **Decision-packet convention** — each checkpoint emits a compact YAML/Markdown
   packet (summary + `requires_decision` + options + artifact path); chat renders
-  only the decision rows, full detail goes to the repo / `.sessions-design/`.
+  only the decision rows, full detail goes to the repo / `.kairos-state/phases/`.
 - **Stop repeating methodology** after first invocation; link to help/artifacts.
 - **End each phase with PR-ready diffs** ("files changed; review in GitHub PR"),
   not a long chat recap.

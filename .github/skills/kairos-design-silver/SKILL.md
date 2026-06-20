@@ -971,21 +971,21 @@ setup instructions on adding it as a dependency via `packages.yml`.
 ### On start — Check for existing session
 
 ```
-ontology-hub/.sessions-design/
-  └── silver-{domain}-{YYYY-MM-DD}.md
+ontology-hub/.kairos-state/phases/silver/
+  └── {domain}.md
 ```
 
 If a previous session exists, ask the user whether to continue or start fresh.
 
 > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
 > start a new session instead of resuming, first move any existing
-> `.sessions-design/silver-{domain}-*.md` log(s) for this domain into
-> `ontology-hub/.sessions-design/_archive/` (create it if missing; keep the
-> original filename). Never delete a previous log. Then create the new session log.
+> `ontology-hub/.kairos-state/phases/silver/{domain}.md` log for this domain into
+> `ontology-hub/.kairos-state/_archive/` (create it if missing; use a
+> collision-safe filename). Never delete a previous log. Then create the new phase log.
 
 ### Session file format
 
-Save to `ontology-hub/.sessions-design/silver-{domain}-{YYYY-MM-DD}.md`:
+Save to `ontology-hub/.kairos-state/phases/silver/{domain}.md`:
 
 ```markdown
 # Silver Design Session: {Domain}

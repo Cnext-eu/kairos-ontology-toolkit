@@ -684,6 +684,8 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
 @cli.command()
 @click.option('--ontologies', type=click.Path(exists=True), default=None,
               help='Path to ontologies directory (default: auto-detect from hub).')
+@click.option('--ontology', type=click.Path(exists=True, dir_okay=False), default=None,
+              help='Path to a single ontology file to project.')
 @click.option('--catalog', type=click.Path(exists=True),
               default=None,
               help='Path to catalog file for resolving imports '
@@ -695,24 +697,30 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
               default='all', help='Projection target')
 @click.option('--namespace', type=str, default=None,
               help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
-def project(ontologies, catalog, output, target, namespace):
+def project(ontologies, ontology, catalog, output, target, namespace):
     """Generate projections from ontologies."""
     from ..hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
 
-    if ontologies is not None:
+    if ontology is not None and ontologies is not None:
+        raise click.UsageError("Use either --ontology for one file or --ontologies for a directory, not both.")
+
+    if ontology is not None:
+        ontologies_path = Path(ontology)
+    elif ontologies is not None:
         ontologies_path = Path(ontologies)
     elif hub_root is not None:
         ontologies_path = hub_root / "model" / "ontologies"
     else:
         ontologies_path = cwd / "ontology-hub" / "model" / "ontologies"
 
-    if not ontologies_path.is_dir():
+    if not ontologies_path.is_dir() and not ontologies_path.is_file():
         click.echo(
-            f"❌ Cannot find ontologies directory at {ontologies_path}. "
-            "Run from the hub root (or inside ontology-hub/), or pass --ontologies.",
+            f"❌ Cannot find ontology input at {ontologies_path}. "
+            "Run from the hub root (or inside ontology-hub/), pass --ontologies "
+            "for a directory, or pass --ontology for one file.",
             err=True,
         )
         raise SystemExit(1)
@@ -787,10 +795,15 @@ def init(domain, company_domain, force):
         hub / "output" / "prompt",
         hub / "output" / "report",
         hub / ".sessions-projection",
-        hub / ".sessions-design",
         hub / ".sessions-design-import",
         hub / ".kairos-state",
+        hub / ".kairos-state" / "_archive",
         hub / ".kairos-state" / "phases",
+        hub / ".kairos-state" / "phases" / "source",
+        hub / ".kairos-state" / "phases" / "domain",
+        hub / ".kairos-state" / "phases" / "mapping",
+        hub / ".kairos-state" / "phases" / "silver",
+        hub / ".kairos-state" / "phases" / "gold",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -811,13 +824,27 @@ def init(domain, company_domain, force):
         if not gitkeep.exists():
             gitkeep.touch()
 
-    # Place .gitkeep in session folders so git tracks them
+    # Place .gitkeep in audit session folders so git tracks them
     for session_folder in [
         ".sessions-projection",
-        ".sessions-design",
         ".sessions-design-import",
     ]:
         sk = hub / session_folder / ".gitkeep"
+        if not sk.exists():
+            sk.touch()
+
+    # Place .gitkeep in OKF state folders so git tracks the lifecycle memory skeleton
+    for state_folder in [
+        ".kairos-state",
+        ".kairos-state/_archive",
+        ".kairos-state/phases",
+        ".kairos-state/phases/source",
+        ".kairos-state/phases/domain",
+        ".kairos-state/phases/mapping",
+        ".kairos-state/phases/silver",
+        ".kairos-state/phases/gold",
+    ]:
+        sk = hub / state_folder / ".gitkeep"
         if not sk.exists():
             sk.touch()
 
@@ -4131,10 +4158,15 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "output" / "prompt",
         hub / "output" / "report",
         hub / ".sessions-projection",
-        hub / ".sessions-design",
         hub / ".sessions-design-import",
         hub / ".kairos-state",
+        hub / ".kairos-state" / "_archive",
         hub / ".kairos-state" / "phases",
+        hub / ".kairos-state" / "phases" / "source",
+        hub / ".kairos-state" / "phases" / "domain",
+        hub / ".kairos-state" / "phases" / "mapping",
+        hub / ".kairos-state" / "phases" / "silver",
+        hub / ".kairos-state" / "phases" / "gold",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -4155,13 +4187,27 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         if not gitkeep.exists():
             gitkeep.touch()
 
-    # Place .gitkeep in session folders so git tracks them
+    # Place .gitkeep in audit session folders so git tracks them
     for session_folder in [
         ".sessions-projection",
-        ".sessions-design",
         ".sessions-design-import",
     ]:
         sk = hub / session_folder / ".gitkeep"
+        if not sk.exists():
+            sk.touch()
+
+    # Place .gitkeep in OKF state folders so git tracks the lifecycle memory skeleton
+    for state_folder in [
+        ".kairos-state",
+        ".kairos-state/_archive",
+        ".kairos-state/phases",
+        ".kairos-state/phases/source",
+        ".kairos-state/phases/domain",
+        ".kairos-state/phases/mapping",
+        ".kairos-state/phases/silver",
+        ".kairos-state/phases/gold",
+    ]:
+        sk = hub / state_folder / ".gitkeep"
         if not sk.exists():
             sk.touch()
 

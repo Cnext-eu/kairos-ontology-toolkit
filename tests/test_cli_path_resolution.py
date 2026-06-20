@@ -165,3 +165,38 @@ def test_project_explicit_output_wins(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["project", "--target", "neo4j", "--output", str(custom_out)])
     assert result.exit_code == 0, result.output
     assert calls["projection"]["output_path"] == custom_out
+
+
+def test_project_single_ontology_file(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    calls = _patch_projections(monkeypatch)
+    ontology = hub / "model" / "ontologies" / "client.ttl"
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["project", "--target", "neo4j", "--ontology", str(ontology)])
+
+    assert result.exit_code == 0, result.output
+    assert calls["projection"]["ontologies_path"] == ontology
+    assert calls["projection"]["output_path"] == hub / "output"
+
+
+def test_project_ontology_and_ontologies_are_mutually_exclusive(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    ontology = hub / "model" / "ontologies" / "client.ttl"
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "project",
+            "--target",
+            "neo4j",
+            "--ontology",
+            str(ontology),
+            "--ontologies",
+            str(hub / "model" / "ontologies"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Use either --ontology" in result.output

@@ -16,6 +16,14 @@ kairos-ontology project
 
 # Generate a single target
 kairos-ontology project --target prompt
+
+# Optional: install hub-side dbt validation tools
+uv sync --extra dbt-validate
+
+# Validate generated dbt package structure after dbt projection
+cd ontology-hub/output/medallion/dbt
+uv run --extra dbt-validate dbt deps
+uv run --extra dbt-validate dbt parse
 ```
 
 ## Repository structure

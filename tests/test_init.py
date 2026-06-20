@@ -34,6 +34,21 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/output/azure-search").is_dir()
             assert Path("ontology-hub/output/a2ui").is_dir()
             assert Path("ontology-hub/output/prompt").is_dir()
+            assert Path("ontology-hub/.sessions-projection").is_dir()
+            assert Path("ontology-hub/.sessions-design-import").is_dir()
+            assert not Path("ontology-hub/.sessions-design").exists()
+            for okf_dir in [
+                ".kairos-state",
+                ".kairos-state/_archive",
+                ".kairos-state/phases",
+                ".kairos-state/phases/source",
+                ".kairos-state/phases/domain",
+                ".kairos-state/phases/mapping",
+                ".kairos-state/phases/silver",
+                ".kairos-state/phases/gold",
+            ]:
+                assert Path("ontology-hub", okf_dir).is_dir()
+                assert Path("ontology-hub", okf_dir, ".gitkeep").is_file()
 
             # Business discovery (DD-048/DD-056): glossary under hub, .import at repo root
             assert Path("ontology-hub/businessdiscovery").is_dir()
@@ -55,6 +70,8 @@ def test_init_creates_hub_structure(tmp_path):
 
             # Check copilot instructions
             assert Path(".github/copilot-instructions.md").is_file()
+            env_example = Path(".env.example").read_text(encoding="utf-8")
+            assert "KAIROS_DBT_CORE_VERSION=>=1.9,<1.10" in env_example
 
             # No submodule calls (reference models are fetched separately)
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
@@ -173,6 +190,21 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / "ontology-hub" / "model" / "shapes" / "README.md").is_file()
     assert (repo / "ontology-hub" / "model" / "mappings" / "README.md").is_file()
     assert (repo / "ontology-hub" / "output" / "medallion" / "dbt").is_dir()
+    assert (repo / "ontology-hub" / ".sessions-projection").is_dir()
+    assert (repo / "ontology-hub" / ".sessions-design-import").is_dir()
+    assert not (repo / "ontology-hub" / ".sessions-design").exists()
+    for okf_dir in [
+        ".kairos-state",
+        ".kairos-state/_archive",
+        ".kairos-state/phases",
+        ".kairos-state/phases/source",
+        ".kairos-state/phases/domain",
+        ".kairos-state/phases/mapping",
+        ".kairos-state/phases/silver",
+        ".kairos-state/phases/gold",
+    ]:
+        assert (repo / "ontology-hub" / okf_dir).is_dir()
+        assert (repo / "ontology-hub" / okf_dir / ".gitkeep").is_file()
 
     # Business discovery (DD-048/DD-056): glossary under hub, .import at repo root
     assert (repo / "ontology-hub" / "businessdiscovery").is_dir()
@@ -198,6 +230,9 @@ def test_new_repo_creates_full_structure(tmp_path):
     pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
     assert "kairos-ontology-toolkit" in pyproject
     assert "contoso-ontology-hub" in pyproject
+    assert "dbt-validate" in pyproject
+    assert '"dbt-core>=1.9,<1.10"' in pyproject
+    assert '"dbt-fabric>=1.9,<1.10"' in pyproject
 
 
 def test_new_repo_fails_if_dir_exists(tmp_path):

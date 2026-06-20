@@ -190,6 +190,9 @@ python -m kairos_ontology project --target prompt
 # Generate silver layer (requires *-silver-ext.ttl in model/extensions/)
 python -m kairos_ontology project --target silver
 
+# Generate one domain only
+python -m kairos_ontology project --ontology model/ontologies/party.ttl --target silver
+
 # Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver, powerbi, report
 ```
 
@@ -244,6 +247,38 @@ python -m kairos_ontology project --target silver
 python -m kairos_ontology project --target dbt
 python -m kairos_ontology project --target powerbi
 ```
+
+### Offline dbt validation after dbt projection
+
+When the requested target is `dbt` or `all`, validate the generated dbt package
+before reporting success.
+
+1. Generate the dbt output:
+   ```bash
+   python -m kairos_ontology project --target dbt
+   ```
+2. Install the hub-side validation extra if needed:
+   ```bash
+   uv sync --extra dbt-validate
+   ```
+3. From `ontology-hub/output/medallion/dbt/`, install dbt package dependencies and
+   run an offline parse:
+   ```bash
+   uv run --extra dbt-validate dbt deps
+   uv run --extra dbt-validate dbt parse
+   ```
+
+If `dbt parse` fails because no profile is available, create a temporary
+parse-only profile outside source control (for example under
+`ontology-hub/output/medallion/dbt/.kairos-dbt-profiles/`) using the generated
+`profile:` value from `dbt_project.yml`, then rerun with
+`--profiles-dir .kairos-dbt-profiles`. Do not commit profiles or credentials.
+
+Run `dbt compile` only when a usable profile is configured. If parse/compile
+reports model, YAML, macro, or SQL-generation errors, fix the projector or source
+mapping issue, regenerate the dbt projection, and rerun validation. If compile
+fails because credentials, driver, warehouse, or network access are missing,
+report that as an environment/profile issue rather than a generated-model defect.
 
 ### Prerequisites for each medallion target
 

@@ -41,7 +41,7 @@ them means the modeling process has failed, regardless of output quality.
 
 ### Gate 1: Session file prerequisite
 
-> **You MUST create a `.sessions-design/modeling-{domain}-*.md` file BEFORE
+> **You MUST create `ontology-hub/.kairos-state/phases/domain/{domain}.md` BEFORE
 > writing any domain `.ttl` file.**
 
 If no session file exists for the domain being modeled, you are NOT permitted
@@ -163,8 +163,8 @@ Use this quick-reference to determine which section applies:
 At the beginning of every modeling session, look for saved configuration files:
 
 ```
-ontology-hub/.sessions-design/
-  └── modeling-{domain}-{YYYY-MM-DD}.md    # Saved session state
+ontology-hub/.kairos-state/phases/domain/
+  └── {domain}.md    # Saved OKF phase state
 ```
 
 **Ask the user:**
@@ -189,14 +189,13 @@ If no session exists, start fresh and create one immediately.
 
 > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
 > start a new session instead of resuming, first move any existing
-> `.sessions-design/modeling-{domain}-*.md` log(s) for this domain (including
-> `modeling-{domain}-FINAL-*.md`) into `ontology-hub/.sessions-design/_archive/`
-> (create it if missing; keep the original filename). Never delete a previous log.
-> Then create the new session log.
+> `ontology-hub/.kairos-state/phases/domain/{domain}.md` log into
+> `ontology-hub/.kairos-state/_archive/` (create it if missing; use a
+> collision-safe filename). Never delete a previous log. Then create the new phase log.
 
 ### Session file format
 
-Save progress to `ontology-hub/.sessions-design/modeling-{domain}-{YYYY-MM-DD}.md`:
+Save progress to `ontology-hub/.kairos-state/phases/domain/{domain}.md`:
 
 ```markdown
 # Modeling Session: {Domain Name}
@@ -316,10 +315,10 @@ and Gate 3 — these are non-negotiable.
 ```bash
 ls ontology-hub/integration/sources/        # any source systems imported?
 ls ontology-hub/integration/sources/_analysis/ 2>/dev/null   # analysed?
-ls ontology-hub/.sessions-design/modeling-* 2>/dev/null      # prior modeling session(s)?
+ls ontology-hub/.kairos-state/phases/domain/*.md 2>/dev/null # prior modeling phase log(s)?
 ls ontology-hub/model/ontologies/           # existing domain .ttl files?
 ls ontology-hub/businessdiscovery/*.ttl 2>/dev/null                  # discovery artifacts?
-ls ontology-hub/.sessions-design/businessdiscovery-* 2>/dev/null     # discovery session(s)?
+ls ontology-hub/.kairos-state/phases/discovery.md 2>/dev/null        # discovery phase log?
 ```
 
 **P1b — Discovery-Completeness Checkpoint (ALWAYS, every start — fires in P2a AND the
@@ -330,7 +329,7 @@ glossary that improves naming alignment and flags business terms for modeling. I
 
 ```bash
 ls businessdiscovery/*.ttl 2>/dev/null                        # company model / glossary TTL
-ls .sessions-design/businessdiscovery-*.md 2>/dev/null        # discovery session(s)
+ls .kairos-state/phases/discovery.md 2>/dev/null              # discovery phase log?
 ```
 
 - **If discovery artifacts are absent** (no `businessdiscovery/*.ttl` and no
@@ -436,7 +435,7 @@ already imported/analysed.
 2a. **Read business-discovery context (gate — see P1b)** — by now the **P1b
    Discovery-Completeness Checkpoint** has already fired (it prompts to run
    **kairos-design-discovery** when no discovery artifacts exist). Read the latest
-   `ontology-hub/.sessions-design/businessdiscovery-*.md` and any
+   `ontology-hub/.kairos-state/phases/discovery.md` and any
    `ontology-hub/businessdiscovery/*.ttl` produced by the **kairos-design-discovery**
    skill. If they are **present**, you MUST read them and use them as **background
    context** (what the company does, its sector,
@@ -2189,7 +2188,7 @@ kairos-ontology check-claims --domains <target-domain> --strict
 documented exception.
 
 When the user confirms all classes and properties for a domain, generate a final
-report. Save to `ontology-hub/.sessions-design/modeling-{domain}-FINAL-{YYYY-MM-DD}.md`:
+report. Append to `ontology-hub/.kairos-state/phases/domain/{domain}.md`:
 
 ```markdown
 # Modeling Configuration Report: {Domain Name}

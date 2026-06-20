@@ -11,6 +11,10 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+dbt-validate = [
+    "dbt-core>=1.9,<1.10",
+    "dbt-fabric>=1.9,<1.10",
+]
 
 [tool.kairos]
 # Channel controls which toolkit version is installed on `kairos-ontology update --upgrade`.

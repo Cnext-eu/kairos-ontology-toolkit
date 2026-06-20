@@ -37,7 +37,7 @@ process — never guess mappings without evidence and user confirmation.
 
 ### Gate 1: Session file prerequisite
 
-> **You MUST create a `ontology-hub/.sessions-design/mapping-{source}-to-{domain}-{date}.md`
+> **You MUST create a `ontology-hub/.kairos-state/phases/mapping/{source}-to-{domain}.md`
 > file BEFORE writing any mapping TTL.**
 
 If no session file exists for the source→domain pair being mapped, you are NOT
@@ -86,13 +86,13 @@ The user can override any auto-approved mapping.
 1. List source systems in `integration/sources/` that have a `*.vocabulary.ttl`
 2. Ask user which source system to map
 3. Ask user which domain(s) to target (list available from `model/ontologies/`)
-4. Create session file: `ontology-hub/.sessions-design/mapping-{source}-to-{domain}-{YYYY-MM-DD}.md`
+4. Create phase log: `ontology-hub/.kairos-state/phases/mapping/{source}-to-{domain}.md`
    > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
    > start a new session instead of resuming, first move any existing
-   > `.sessions-design/mapping-{source}-to-{domain}-*.md` log(s) for this
-   > source→domain pair into `ontology-hub/.sessions-design/_archive/` (create it if
-   > missing; keep the original filename). Never delete a previous log. Then create
-   > the new session log.
+   > `ontology-hub/.kairos-state/phases/mapping/{source}-to-{domain}.md` log for
+   > this source→domain pair into `ontology-hub/.kairos-state/_archive/` (create it
+   > if missing; use a collision-safe filename). Never delete a previous log. Then
+   > create the new phase log.
 5. **Load the business glossary (if present):** check
    `ontology-hub/businessdiscovery/*.ttl` (produced by the **kairos-design-discovery**
    skill). Index each `skos:Concept`'s `skos:altLabel`s and the domain IRI it links

@@ -27,6 +27,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Writes back through the canonical `write_registry`, so curation produces minimal,
   reviewable diffs instead of hand-edited YAML noise.
 
+### Changed
+- **OKF phase logs replace interactive `.sessions-design` logs (DD-085).** New hubs
+  use `.kairos-state/phases/...` as the required design-session memory for
+  discovery/source/domain/mapping/silver/gold skills. Legacy `.sessions-design/*.md`
+  files are historical only and are not auto-migrated. Import audit logs
+  (`.sessions-design-import/`) and projection reports (`.sessions-projection/`)
+  remain separate.
+- **`project --ontology` supports single-domain projection.** Operators can now run
+  `kairos-ontology project --ontology model/ontologies/party.ttl --target silver`
+  to regenerate one ontology file while preserving hub-root discovery for
+  extensions, mappings, sources, shapes, and claims. Existing `--ontologies`
+  directory mode remains unchanged.
+- **Hub-side offline dbt validation guidance.** Ontology-hub scaffolds now include
+  a `dbt-validate` optional dependency group (`dbt-core` + Fabric adapter in the
+  1.9 family) and `.env.example` version guidance so `kairos-execute-project` can
+  run `dbt deps` + `dbt parse` against `output/medallion/dbt/` after dbt
+  projection. Downstream dataplatform repos are not given extra validation-only
+  dependencies.
+
 ### Fixed
 - **Claim projection sync now fails loudly on invalid intra-hub ontology bases.**
   `_collect_hub_domain_bases` no longer silently skips malformed Turtle while

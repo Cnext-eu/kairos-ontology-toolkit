@@ -33,8 +33,8 @@ later mapping is accurate.
 
 This skill produces two things:
 
-1. A **company-context summary** in
-   `ontology-hub/.sessions-design/businessdiscovery-{YYYY-MM-DD}.md`.
+1. A **company-context summary** in the OKF phase log
+   `ontology-hub/.kairos-state/phases/discovery.md`.
 2. A **company business glossary** in
    `ontology-hub/businessdiscovery/{company}-glossary.ttl` (SKOS overlay — the domain
    ontology is never modified).
@@ -58,7 +58,7 @@ This skill produces two things:
 
 ### Gate 1: Session file prerequisite
 
-> **You MUST create a `ontology-hub/.sessions-design/businessdiscovery-{YYYY-MM-DD}.md`
+> **You MUST create a `ontology-hub/.kairos-state/phases/discovery.md`
 > file BEFORE writing any glossary TTL.**
 
 ### Gate 2: No unconfirmed facts
@@ -113,7 +113,7 @@ company facts or glossary terms.
 
 ### Phase 0 — Session check
 
-1. Look for an existing `ontology-hub/.sessions-design/businessdiscovery-*.md`.
+1. Look for an existing `ontology-hub/.kairos-state/phases/discovery.md`.
 2. If found, ask the user:
    > "I found a business-discovery session from `{date}`. **Continue**, **start
    > fresh**, or **review** it first?"
@@ -121,9 +121,10 @@ company facts or glossary terms.
 
 > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
 > start a new session instead of resuming, first move any existing
-> `.sessions-design/businessdiscovery-*.md` log(s) into
-> `ontology-hub/.sessions-design/_archive/` (create it if missing; keep the
-> original filename). Never delete a previous log. Then create the new session log.
+> `ontology-hub/.kairos-state/phases/discovery.md` log into
+> `ontology-hub/.kairos-state/_archive/` (create it if missing; use a
+> collision-safe filename). Never delete a previous log. Then create the new
+> phase log.
 
 > **Discovery is incremental and idempotent — reruns are expected.** A hub grows
 > one domain at a time, but discovery is **company-wide** and runs *before* the
@@ -310,7 +311,7 @@ glossary:TransportDocument a skos:Concept ;
    and any terms flagged for domain modeling.
 2. Hand off:
    > "Business discovery is captured.
-   > - Company context → `.sessions-design/businessdiscovery-{date}.md`
+   > - Company context → `.kairos-state/phases/discovery.md`
    > - Glossary → `businessdiscovery/{company}-glossary.ttl`
    > - Per-document provenance → `businessdiscovery/_extractions/*.extraction.yaml`
    >   (run `kairos-ontology discovery-status` any time to see what's new/changed)
@@ -353,7 +354,7 @@ the next domain), do **continue**, not start-fresh:
 
 ## Session file format
 
-Save to `ontology-hub/.sessions-design/businessdiscovery-{YYYY-MM-DD}.md`:
+Save to `ontology-hub/.kairos-state/phases/discovery.md`:
 
 ```markdown
 # Business Discovery: {Company Name}

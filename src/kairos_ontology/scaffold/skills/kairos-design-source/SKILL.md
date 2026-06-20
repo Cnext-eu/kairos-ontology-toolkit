@@ -535,23 +535,23 @@ ontology-hub/integration/sources/{system-name}/
 ### On start — Check for existing session
 
 ```
-ontology-hub/.sessions-design/
-  └── source-{system-name}-{YYYY-MM-DD}.md
+ontology-hub/.kairos-state/phases/source/
+  └── {system-name}.md
 ```
 
 If a previous session exists, ask the user whether to continue or start fresh.
 
 > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
 > start a new session instead of resuming, first move any existing
-> `.sessions-design/source-{system-name}-*.md` log(s) for this source system into
-> `ontology-hub/.sessions-design/_archive/` (create it if missing; keep the
-> original filename). Never delete a previous log. Then create the new session log.
-> This applies only to the interactive `.sessions-design/source-*.md` log, not the
+> `ontology-hub/.kairos-state/phases/source/{system-name}.md` log for this source
+> system into `ontology-hub/.kairos-state/_archive/` (create it if missing; use a
+> collision-safe filename). Never delete a previous log. Then create the new phase log.
+> This applies only to the interactive OKF source phase log, not the
 > separate `.sessions-design-import/` audit logs.
 
 ### Session file format
 
-Save to `ontology-hub/.sessions-design/source-{system-name}-{YYYY-MM-DD}.md`:
+Save to `ontology-hub/.kairos-state/phases/source/{system-name}.md`:
 
 ```markdown
 # Source Design Session: {system-name}
@@ -622,8 +622,8 @@ ontology-hub/.sessions-design-import/
 This audit file records what each import run produced (tables, columns, change
 report, enrichment) using a template consistent with the session files above.
 It is written best-effort whenever a command runs inside a detected hub, and is
-distinct from the interactive `.sessions-design/source-*.md` session file you
-maintain.
+distinct from the interactive `.kairos-state/phases/source/{system}.md` phase log
+you maintain.
 
 ---
 

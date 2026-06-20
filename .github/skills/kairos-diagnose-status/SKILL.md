@@ -44,7 +44,7 @@ your report; the deep-dive sections below only **explain and enrich** that resul
    If outdated, note it in the report but continue.
 
 2. **Ignore archived session logs (DD-071)** — when listing or grepping
-   `.sessions-design` or `.sessions-projection` for the last/most-recent session
+   `.kairos-state` or `.sessions-projection` for the last/most-recent session
    log, do not descend into the `_archive/` subfolder. Archived logs are
    historical and must be ignored when determining current progress.
 
