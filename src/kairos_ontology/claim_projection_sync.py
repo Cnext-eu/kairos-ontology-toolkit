@@ -19,6 +19,7 @@ from pathlib import Path
 
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import OWL, RDF, XSD
+from rdflib.plugins.parsers.notation3 import BadSyntax
 
 from .claim_registry import load_registry
 from .projections.shared import KAIROS_EXT
@@ -92,14 +93,14 @@ def _collect_hub_domain_bases(ontologies_dir: Path) -> set[str]:
     for path in sorted(ontologies_dir.glob("*.ttl")):
         if path.name.endswith("-ext.ttl"):
             continue
+        graph = Graph()
         try:
-            graph = Graph()
             graph.parse(path, format="turtle")
-            subj = _ontology_subject(graph)
-            if subj is not None:
-                bases.add(str(subj).rstrip("#/"))
-        except Exception:
-            continue
+        except BadSyntax as exc:
+            raise ValueError(f"Invalid Turtle in hub ontology base {path}: {exc}") from exc
+        subj = _ontology_subject(graph)
+        if subj is not None:
+            bases.add(str(subj).rstrip("#/"))
     return bases
 
 

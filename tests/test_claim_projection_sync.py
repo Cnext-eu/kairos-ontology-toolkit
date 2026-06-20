@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import yaml
+import pytest
 from click.testing import CliRunner
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF
@@ -237,6 +238,15 @@ def test_collect_hub_domain_bases_includes_underscore_prefixed(tmp_path):
     assert foundation_iri in bases
     # -ext.ttl extension surfaces are not domain bases.
     assert "https://example.org/domain/party-ext" not in bases
+
+
+def test_collect_hub_domain_bases_rejects_invalid_turtle(tmp_path):
+    ontologies = tmp_path / "ontologies"
+    ontologies.mkdir(parents=True)
+    (ontologies / "_broken.ttl").write_text("@prefix broken: <unterminated", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid Turtle in hub ontology base"):
+        _collect_hub_domain_bases(ontologies)
 
 
 def test_foundation_import_not_flagged_or_stripped(tmp_path):
