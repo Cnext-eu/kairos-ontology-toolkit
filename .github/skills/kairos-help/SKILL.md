@@ -83,6 +83,7 @@ discovery → source → domain → mapping → silver → gold → validate →
 | # | Phase | Invoke skill | Produces | Required for a first projection? |
 |---|-------|--------------|----------|----------------------------------|
 | 1 | **Orient** | `kairos-help` | Understanding of the toolkit | — |
+| 1b | **Start / resume** | `kairos-flow` | Lifecycle status overview + clean-start/continue routing (owns `.kairos-state/`) | — (recommended entry) |
 | 2 | **Setup — create repo** | `kairos-setup-init` | GitHub repo + scaffold + first domain | ✅ |
 | 3 | **Setup — configure** (optional) | `kairos-setup-config` | Folder/config/SHACL tuning | — |
 | 4 | **Design — discovery** | `kairos-design-discovery` | Company context (`.sessions-design/businessdiscovery-*.md`) + business glossary (`businessdiscovery/`) | — (recommended first) |
@@ -93,7 +94,7 @@ discovery → source → domain → mapping → silver → gold → validate →
 | 9 | **Design — gold** | `kairos-design-gold` | `*-gold-ext.ttl` annotations | Needed for `powerbi` |
 | 10 | **Execute — validate** | `kairos-execute-validate` | Syntax + SHACL pass/fail | ✅ |
 | 11 | **Execute — project** | `kairos-execute-project` | All output artifacts | ✅ |
-| 12 | **Diagnose** | `kairos-diagnose-status` | Completeness / gap report | — |
+| 12 | **Diagnose** | `kairos-diagnose-status` | Completeness / gap report (deep dive on `kairos-ontology status`) | — |
 | 13 | **Consume** | `kairos-package-dataplatform` | Downstream dbt consumption | — |
 
 > **Discovery first (recommended):** before modeling, run **kairos-design-discovery**

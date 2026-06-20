@@ -520,6 +520,8 @@ _LIFECYCLE_TABLE = """\
 ├──────────┼──────────────────────────────────────────────────────────────┤
 │ Orient   │  kairos-help                                                  │
 ├──────────┼──────────────────────────────────────────────────────────────┤
+│ Start    │  kairos-flow              (status + start/continue)           │
+├──────────┼──────────────────────────────────────────────────────────────┤
 │ Setup    │  kairos-setup-init        (create new hub repo)               │
 │          │  kairos-setup-config      (folder structure + config)         │
 │          │  kairos-setup-migrate     (flat → grouped layout)            │
@@ -786,6 +788,8 @@ def init(domain, company_domain, force):
         hub / ".sessions-projection",
         hub / ".sessions-design",
         hub / ".sessions-design-import",
+        hub / ".kairos-state",
+        hub / ".kairos-state" / "phases",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -3109,6 +3113,71 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
         click.echo("\n✅ All discovery documents are processed and up to date.")
 
 
+@cli.command(name='status')
+@click.option('--hub', 'hub_path', type=click.Path(), default=None,
+              help='Path to the ontology-hub root (default: auto-detect).')
+@click.option('--format', 'output_format',
+              type=click.Choice(['text', 'json', 'markdown']), default='text',
+              help='Output format. `markdown` emits the scan-derived block for '
+                   '.kairos-state/status.md.')
+def status_cmd(hub_path, output_format):
+    """Report the deterministic lifecycle status of an ontology hub (DD-080).
+
+    Deterministic, AI-free helper for the ``kairos-flow`` orchestrator and the
+    ``kairos-diagnose-status`` skill.  Scans committed hub artifacts and reports,
+    per lifecycle phase and per instance, an objective state
+    (``not-started`` / ``in-progress`` / ``done``).  This is the *objective*
+    layer; continuation context (open questions, decisions, intent) lives in the
+    markdown layer under ``ontology-hub/.kairos-state/``.
+
+    \\b
+    Examples:
+      kairos-ontology status
+      kairos-ontology status --format json
+      kairos-ontology status --format markdown
+    """
+    import datetime as _dt
+    from ..status import scan_hub_status, render_markdown
+    from ..hub_utils import find_hub_root
+
+    if hub_path:
+        hub_root = Path(hub_path)
+    else:
+        hub_root = find_hub_root(Path.cwd(), require_model=False)
+
+    if not hub_root or not hub_root.is_dir():
+        click.echo("❌ Could not locate an ontology-hub root. Pass --hub <path>.", err=True)
+        raise SystemExit(1)
+
+    status = scan_hub_status(hub_root, toolkit_version=_toolkit_version)
+
+    if output_format == 'json':
+        click.echo(json.dumps(status.to_dict(), indent=2))
+        return
+
+    if output_format == 'markdown':
+        stamped = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec='seconds')
+        click.echo(render_markdown(status, last_scanned_at=stamped))
+        return
+
+    icons = {"done": "✅", "in-progress": "🟡", "not-started": "⬜"}
+    click.echo(f"🔎 Hub lifecycle status: {hub_root}")
+    for p in status.phases:
+        icon = icons.get(p.state, "")
+        done = sum(1 for i in p.instances if i.state == 'done')
+        total = len(p.instances)
+        suffix = f" ({done}/{total})" if total else ""
+        click.echo(f"   {icon} {p.phase:<10} {p.state}{suffix}")
+        for inst in p.instances:
+            if inst.state != 'done':
+                click.echo(f"        - {inst.name}: {inst.state} ({inst.detail})")
+    nxt = status.next_phase
+    if nxt:
+        click.echo(f"\n➡️  Next phase: {nxt}  (run the kairos-flow skill to start/continue)")
+    else:
+        click.echo("\n✅ All lifecycle phases complete.")
+
+
 @cli.command(name='build-glossary')
 @click.option('--extraction-dir', type=click.Path(), default=None,
               help='Path to businessdiscovery/_extractions/ (default: auto-detect from hub).')
@@ -3824,6 +3893,8 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / ".sessions-projection",
         hub / ".sessions-design",
         hub / ".sessions-design-import",
+        hub / ".kairos-state",
+        hub / ".kairos-state" / "phases",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 

@@ -8,6 +8,22 @@ description: >
 
 # Kairos Source Design Skill
 
+## Lifecycle state (DD-080)
+
+> The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
+> `ontology-hub/.kairos-state/status.md`. This skill plugs into that shared state; it
+> does not maintain the global status file.
+
+**On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
+continuation region and this phase's log(s) at `phases/source/<system>.md` — to resume
+open questions. Ignore `_archive/`. (`kairos-ontology status` gives the objective view.)
+
+**On pause or finish:** append a *State update proposal* to `phases/source/<system>.md`
+with OKF frontmatter (`type: kairos-phase-log`, `phase: source`, `instance: <system>`,
+`status:`, `last_updated:`). Record decisions made and an **Open questions** list as the
+resume anchor. Do **not** edit `status.md` directly — kairos-flow folds your proposal in.
+
+
 > **🔒 Skill context:** Before running any `kairos-ontology` /
 > `python -m kairos_ontology` command in this skill, set the sentinel env var so
 > the CLI knows it runs inside a skill and suppresses its skill-gate warning:

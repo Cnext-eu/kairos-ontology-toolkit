@@ -1158,6 +1158,97 @@ The approach is safe when:
 - new systems go through source-delta/change management,
 - silver/gold contracts are versioned.
 
+---
+
+## 21. Lifecycle state model and single-entry orchestration
+
+Section 18 argues that skills should be thin orchestrators while the repository
+remains the source of truth. This section makes that concrete with a **two-layer
+lifecycle state model**, a single **`kairos-flow`** entry point, and an
+**Open Knowledge Format (OKF)** storage convention for resumable state.
+
+### 21.1 The problem
+
+Each design phase was previously a separate skill with its own bespoke pre-flight
+and its own ad-hoc `.sessions-design/{phase}-{name}-{date}.md` log. There was no
+single formal status overview, no resumable per-step state that captured open
+questions, and no single "start" instruction — the operator had to already know
+which phase skill to invoke.
+
+### 21.2 Two layers of truth
+
+State is split into two layers that are **never conflated**:
+
+| Layer | Authority over | Produced by | Hand-editable |
+|---|---|---|---|
+| **Objective** (scan) | *what exists* — phase/instance `not-started \| in-progress \| done` | `kairos-ontology status` (deterministic, AI-free) | No |
+| **Continuation** (markdown) | *intent* — open questions, decisions, next actions, `blocked` / `open-questions` | `kairos-flow` + phase skills | Yes |
+
+Reconciliation rule of thumb: **the scan wins for objective facts; the
+continuation state wins for intent and open questions.** This prevents a
+hand-maintained markdown cache from silently contradicting the committed
+artifacts (TTL, mappings, outputs).
+
+### 21.3 Deterministic status (`kairos-ontology status`)
+
+A read-only, AI-free CLI scans committed hub artifacts and emits, per lifecycle
+phase **and per instance**, an objective state. It is exempt from the skill-gate
+(like `check-alignment` / `check-source-coverage`) and reproducible: the same hub
+on disk always yields the same result, which makes it unit-testable and safe to
+regenerate on demand. `kairos-diagnose-status` becomes a thin wrapper that runs
+this scan and enriches it (vocabulary quality, reference-model strategy, version
+drift).
+
+### 21.4 OKF state bundle (`ontology-hub/.kairos-state/`)
+
+The continuation layer uses the **Open Knowledge Format (OKF v0.1)** — a directory
+of markdown files with YAML frontmatter, the file path as identity, and `xrefs`
+cross-links — purely as a *storage convention* (not as a cross-organization
+interoperability claim).
+
+```text
+.kairos-state/
+  status.md                 # OKF index, three regions:
+                            #   1. Scan-derived status (AUTO, do-not-edit)
+                            #   2. Continuation state (open questions / decisions / next actions)
+                            #   3. Phase index (xrefs to instance logs)
+  phases/
+    discovery.md
+    source/   index.md + <system>.md
+    domain/   index.md + <domain>.md
+    mapping/  index.md + <source>-to-<domain>.md
+    silver/   index.md + <domain>.md
+    gold/     index.md + <model>.md
+  _archive/                 # superseded logs (ignored for current status — DD-071)
+```
+
+Per-instance logs match the real cardinality of the lifecycle (source is
+per-system, mapping per source->domain pair, etc.), and each carries an
+**Open questions** section that is the resume anchor.
+
+### 21.5 Single entry point (`kairos-flow`)
+
+`kairos-flow` is the one instruction to start or resume work. It:
+
+1. locates the hub and runs `kairos-ontology status`;
+2. loads the continuation state and reconciles it against the scan;
+3. presents a compact overview (per-phase state + next phase + open questions);
+4. offers **clean start** vs **continue**; and
+5. **hands off** to the correct phase skill ("use skill X next") — it never
+   executes modeling/mapping/projection itself, and runs interactive-only (no
+   autopilot), since it orchestrates design skills.
+
+### 21.6 Write ownership
+
+- `kairos-ontology status` computes the objective block; it writes nothing.
+- `kairos-flow` is the **only writer of `status.md`** (refreshes region 1 from the
+  CLI, maintains regions 2-3).
+- Phase skills never edit `status.md`; they only **read** the bundle and **append a
+  "state update proposal"** to their own instance log, which `kairos-flow` folds in.
+
+This realizes section 18's model — chat is the control surface, files are the
+record — with a deterministic objective backbone underneath. See DD-080.
+
 Do not use the accelerator as an automatic model generator. Use it as the
 standard vocabulary against which customer evidence is claimed, checked, and
 projected.

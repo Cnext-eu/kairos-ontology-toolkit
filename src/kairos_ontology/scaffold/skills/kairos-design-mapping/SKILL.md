@@ -9,6 +9,24 @@ description: >
 
 # Source-to-Domain Mapping Skill
 
+## Lifecycle state (DD-080)
+
+> The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
+> `ontology-hub/.kairos-state/status.md`. This skill plugs into that shared state; it
+> does not maintain the global status file.
+
+**On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
+continuation region and this phase's log(s) at `phases/mapping/<source>-to-<domain>.md`
+— to resume open questions. Ignore `_archive/`. (`kairos-ontology status` gives the
+objective view.)
+
+**On pause or finish:** append a *State update proposal* to
+`phases/mapping/<source>-to-<domain>.md` with OKF frontmatter (`type: kairos-phase-log`,
+`phase: mapping`, `instance: <source>-to-<domain>`, `status:`, `last_updated:`). Record
+decisions made and an **Open questions** list as the resume anchor. Do **not** edit
+`status.md` directly — kairos-flow folds your proposal in.
+
+
 You guide the user through creating SKOS mapping files that link source system
 columns to domain ontology properties. This is a **structured, interactive**
 process — never guess mappings without evidence and user confirmation.

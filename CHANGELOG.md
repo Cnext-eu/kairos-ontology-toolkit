@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0] — 2026-06-20
+
+### Added
+- **Two-layer lifecycle state, deterministic `status` CLI, and the `kairos-flow`
+  single entry point (DD-080).** Introduces a formal, resumable lifecycle state model
+  for ontology hubs.
+  - **`kairos-ontology status`** — a new read-only, AI-free CLI (`status.py`) that
+    deterministically scans committed hub artifacts and reports a per-phase /
+    per-instance objective state (`not-started` / `in-progress` / `done`) for the
+    whole lifecycle (`discovery, source, domain, mapping, claims, silver, gold,
+    validate, project`). Supports `--format text|json|markdown`; exempt from the
+    skill-gate like the other deterministic gates.
+  - **`kairos-flow` skill** — the single entry point ("start / where are we /
+    continue / resume"). Runs the scan, reconciles it against the saved continuation
+    state, presents a lifecycle overview, offers clean-start vs continue, and hands
+    off to the correct phase skill. Interactive-only; it is the only writer of
+    `status.md`.
+  - **OKF continuation-state bundle** at `ontology-hub/.kairos-state/` (created by
+    `init` / `new-repo`): `status.md` (scan-derived / continuation / phase-index
+    regions) plus per-instance `phases/<phase>/<instance>.md` logs with an Open
+    Questions resume anchor, following the Open Knowledge Format v0.1 as a storage
+    convention.
+
+### Changed
+- **`kairos-diagnose-status`** now defers objective status to `kairos-ontology
+  status` (deterministic backbone) and focuses on enrichment/diagnostics.
+- **Phase design/execute skills** (discovery, source, domain, mapping, silver, gold,
+  validate, project) gain a lightweight read-state + state-proposal contract against
+  `.kairos-state/`; they no longer maintain global status themselves.
+- Methodology doc gains §21 (lifecycle state model and single-entry orchestration);
+  skill routing table, `kairos-help`, and the CLI lifecycle table point to
+  `kairos-flow`.
+
 ## [4.3.0] — 2026-06-15
 
 ### Added
