@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reviewable diffs instead of hand-edited YAML noise.
 
 ### Fixed
+- **Claim projection sync now fails loudly on invalid intra-hub ontology bases.**
+  `_collect_hub_domain_bases` no longer silently skips malformed Turtle while
+  collecting `_foundation.ttl` / `_master.ttl` imports, avoiding false "in sync"
+  reports when a shared hub base is broken.
 - **Intra-hub shared bases (`_foundation.ttl`, `_master.ttl`) are no longer stripped
   from domain `owl:imports` (issue #190).** `_collect_hub_domain_bases` skipped every
   `_`-prefixed file, so foundation/master imports were flagged as `extra` and removed
