@@ -7,13 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0] — 2026-06-20
+
 ### Fixed
+- **`analyse-sources --domains` no longer forces unrelated tables into the filtered
+  domain (issue #189).** `--domains` previously pruned the LLM **candidate** domain
+  set before classification, so every table was forced into the requested domain (or
+  `unclassified`), polluting affinity evidence and downstream `check-claims` counts.
+  It is now a pure **post-classification output filter**: tables are always classified
+  against the full accelerator/reference domain set (getting their true primary domain),
+  then only tables whose primary domain matches `--domains` are written. A system with
+  no matching tables now writes an empty affinity report instead of erroring. `--max-domains`
+  (which still truncates candidates as a rate-limit guard) now warns when it truncates.
 - **`release.yml` now normalizes the release tag to PEP 440 before comparing it to
   `__version__`**, mirroring `_tag_to_version()`. Both `vX.Y.Zrc1` and the
   SemVer-style `vX.Y.Z-rc.1` (the form the channel resolver and `_whl_url` already
   expect) now validate, instead of only the exact PEP 440 string.
-
-## [4.4.0] — 2026-06-20
 
 ### Added
 - **Two-layer lifecycle state, deterministic `status` CLI, and the `kairos-flow`

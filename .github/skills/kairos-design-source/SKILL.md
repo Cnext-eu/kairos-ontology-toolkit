@@ -349,11 +349,11 @@ kairos-ontology analyse-sources --accelerator logistics
 | Option | Default | When to use |
 |---|---|---|
 | `--accelerator <name>` | none | Classify toward an accelerator pack's **data domains** (party, commercial, ...) with their model URIs — recommended; fast (no owl:imports resolution) |
-| `--domains "party,booking"` | all | Focus on specific domains |
+| `--domains "party,booking"` | all | **Output focus only (issue #189).** Tables are always classified against the full domain set; this filters the *written* affinity to matching primary domains. It does **not** restrict what each table is classified against, so unrelated tables are never forced into the requested domain. |
 | `--model gpt-5.4-mini` | gpt-5.4-mini | LLM model for semantic matching |
 | `--max-workers N` | 8 | **Concurrent** per-table LLM calls — the primary speedup on large hubs. Lower to `3-4` on low-TPM Azure deployments; `1` runs serially (old behaviour) |
 | `--force` | off | Bypass caching and re-run every table (see 4d) |
-| `--max-domains N` | all | Rate limit protection |
+| `--max-domains N` | all | Rate limit protection — truncates the **candidate** set, so it can bias classification; avoid for modeling evidence (warns when it truncates) |
 | `--shallow` | off | Skip module-class grounding + owl:imports resolution (faster) |
 | `--materialize .resolved/` | none | Write the resolved analysis context (manifest + per-domain YAML) for inspection |
 | `--verbose` / `--quiet` | off | Per-table progress / suppress progress **and the cost banner** |

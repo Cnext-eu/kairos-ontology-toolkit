@@ -84,6 +84,30 @@ class SourceAnalysis:
     table_assignments: list[TableAssignment] = field(default_factory=list)
 
 
+def _filter_analysis_by_domain(
+    analysis: SourceAnalysis, output_domain_filter: list[str]
+) -> SourceAnalysis:
+    """Return a copy of *analysis* keeping only tables whose **primary** domain
+    matches one of the (lower-cased) ``output_domain_filter`` values.
+
+    The ``--domains`` flag is an output focus, applied *after* classification
+    against the full candidate set (issue #189). Matching mirrors the legacy
+    substring semantics: a table is kept when any filter value is a substring of
+    its primary ``domain`` id. Downstream coverage buckets by primary domain
+    only, so secondary domains are deliberately ignored here.
+    """
+    kept = [
+        ta for ta in analysis.table_assignments
+        if any(f in ta.domain.lower() for f in output_domain_filter)
+    ]
+    return SourceAnalysis(
+        system=analysis.system,
+        analysed_at=analysis.analysed_at,
+        model_used=analysis.model_used,
+        table_assignments=kept,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Source vocabulary parsing
 # ---------------------------------------------------------------------------
@@ -1315,22 +1339,33 @@ def run_analyse_sources(
                         domain["data_domain_meta"] = dd_meta
                         break
 
-    # Apply --domains filter
-    if domains_filter:
-        filter_lower = [d.lower() for d in domains_filter]
-        ref_domains = [
-            d for d in ref_domains
-            if any(f in d["domain_name"].lower() for f in filter_lower)
+    # --domains is a post-classification OUTPUT filter, NOT a candidate-set
+    # restriction (issue #189). Tables are always classified against the full
+    # domain set so each table gets its true primary domain; we then keep only
+    # the requested domain(s) in the written output. Restricting candidates here
+    # would force every table into the filtered domain (or unclassified).
+    output_domain_filter = [d.lower() for d in domains_filter] if domains_filter else None
+    if output_domain_filter:
+        known = {d["domain_name"].lower() for d in ref_domains}
+        unmatched = [
+            f for f in output_domain_filter if not any(f in name for name in known)
         ]
-        if not ref_domains:
-            raise ValueError(
-                f"No domains matched filter: {domains_filter}."
+        if unmatched:
+            report(
+                f"  ⚠ --domains value(s) {unmatched} match no domain in the "
+                f"candidate set; output for them will be empty.",
             )
 
     if max_domains and len(ref_domains) > max_domains:
         logger.info(
             "Limiting to %d of %d domains (--max-domains)",
             max_domains, len(ref_domains),
+        )
+        report(
+            f"  ⚠ --max-domains={max_domains} truncates the candidate set from "
+            f"{len(ref_domains)} domains; classification may be biased toward the "
+            f"retained domains. Prefer running without --max-domains for modeling "
+            f"evidence.",
         )
         ref_domains = ref_domains[:max_domains]
 
@@ -1381,16 +1416,28 @@ def run_analyse_sources(
             vocab_path, ref_domains, model=model, threshold=threshold, report=report,
             max_workers=max_workers, cache=cache,
         )
+        classified_count = len(analysis.table_assignments)
+        # Apply the --domains OUTPUT filter (primary-domain match) after the
+        # table was classified against the full candidate set (issue #189).
+        if output_domain_filter:
+            analysis = _filter_analysis_by_domain(analysis, output_domain_filter)
         analyses.append(analysis)
 
         output_file = write_analysis_output(analysis, output_dir)
         output_files.append(output_file)
         n_tables = len(analysis.table_assignments)
         domains_hit = {ta.domain for ta in analysis.table_assignments}
-        report(
-            f"    → {n_tables} table(s) classified into {len(domains_hit)} "
-            f"domain(s) → {output_file.name}"
-        )
+        if output_domain_filter:
+            report(
+                f"    → {n_tables}/{classified_count} table(s) kept "
+                f"(--domains filter) into {len(domains_hit)} domain(s) "
+                f"→ {output_file.name}"
+            )
+        else:
+            report(
+                f"    → {n_tables} table(s) classified into {len(domains_hit)} "
+                f"domain(s) → {output_file.name}"
+            )
 
     cache.flush()
 

@@ -1502,7 +1502,10 @@ def generate_staging(from_dir, output, source_name):
 @click.option('--max-domains', type=int, default=None,
               help='Maximum reference domains to analyse (rate limit protection).')
 @click.option('--domains', 'domains_filter', default=None,
-              help='Comma-separated domain names to include (case-insensitive substring match).')
+              help='Comma-separated domain names — OUTPUT filter only (issue #189): '
+                   'tables are always classified against the full domain set, then '
+                   'only matching primary domains are written (case-insensitive '
+                   'substring match).')
 @click.option('--materialize', 'materialize_dir', type=click.Path(), default=None,
               help='Write the resolved analysis context (manifest + per-domain YAML) '
                    'to this directory for inspection.')
@@ -1536,6 +1539,11 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
 
     Produces per-source affinity reports that the modeling skill uses to scope
     context and seed evidence tables.
+
+    --domains is an OUTPUT focus, not a candidate restriction: every table is
+    always classified against the full domain set (so it gets its true primary
+    domain), then only tables whose primary domain matches --domains are written
+    (issue #189). This avoids forcing unrelated tables into the requested domain.
 
     Requires AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
 
@@ -1596,7 +1604,8 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         if accelerator:
             click.echo(f"   Accelerator: {accelerator} (data-domain-first)")
         if domains_filter:
-            click.echo(f"   Domain filter: {domains_filter}")
+            click.echo(f"   Domain filter: {domains_filter} "
+                       f"(output focus only — full set is classified)")
         click.echo()
 
     # Detect catalog for owl:imports resolution
