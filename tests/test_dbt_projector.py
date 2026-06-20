@@ -3791,3 +3791,189 @@ class TestScd2SourceDataUsesAliasedColumns:
         assert "uniqueIdentifier" in block, (
             "mapped CTE must use source column 'uniqueIdentifier' in its expression:\n" + block
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #194: SCD2 inherited FK joins must stay in CTE scope
+# ---------------------------------------------------------------------------
+
+_ISSUE_194_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix party: <http://kairos.example/ontology/party#> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology/party> a owl:Ontology ;
+        rdfs:label "Party FK Scope Test" ;
+        owl:versionInfo "1.0.0" .
+
+    party:TradeParty a owl:Class ;
+        rdfs:label "Trade Party" ;
+        rdfs:comment "A trading party" .
+
+    party:CargoOperator a owl:Class ;
+        rdfs:subClassOf party:TradeParty ;
+        rdfs:label "Cargo Operator" ;
+        rdfs:comment "A cargo operator" ;
+        kairos-ext:naturalKey "partyIdentifier" .
+
+    party:Address a owl:Class ;
+        rdfs:label "Address" ;
+        rdfs:comment "A postal address" ;
+        kairos-ext:naturalKey "streetAddress" .
+
+    party:partyIdentifier a owl:DatatypeProperty ;
+        rdfs:label "party identifier" ;
+        rdfs:domain party:CargoOperator ;
+        rdfs:range xsd:string .
+
+    party:partyName a owl:DatatypeProperty ;
+        rdfs:label "party name" ;
+        rdfs:domain party:TradeParty ;
+        rdfs:range xsd:string .
+
+    party:streetAddress a owl:DatatypeProperty ;
+        rdfs:label "street address" ;
+        rdfs:domain party:Address ;
+        rdfs:range xsd:string .
+
+    party:hasBillingAddress a owl:ObjectProperty ;
+        rdfs:label "has billing address" ;
+        rdfs:domain party:TradeParty ;
+        rdfs:range party:Address ;
+        kairos-ext:silverForeignKey "true" ;
+        kairos-ext:silverColumnName "billing_address_sk" .
+""")
+
+_ISSUE_194_SILVER_EXT_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix party: <http://kairos.example/ontology/party#> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology/party-silver-ext> a owl:Ontology ;
+        rdfs:label "Party Silver Ext" ;
+        owl:versionInfo "1.0.0" .
+
+    party:CargoOperator kairos-ext:scdType "2" .
+""")
+
+_ISSUE_194_BRONZE_TTL = textwrap.dedent("""\
+    @prefix bronze-qargo: <https://example.com/bronze/qargo#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+    bronze-qargo:Qargo a kairos-bronze:SourceSystem ;
+        rdfs:label "Qargo" ;
+        kairos-bronze:connectionType "jdbc" .
+
+    bronze-qargo:companies a kairos-bronze:SourceTable ;
+        rdfs:label "companies" ;
+        kairos-bronze:sourceSystem bronze-qargo:Qargo ;
+        kairos-bronze:tableName "companies" .
+
+    bronze-qargo:companies_company_id a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-qargo:companies ;
+        kairos-bronze:columnName "company_id" ;
+        kairos-bronze:dataType "nvarchar" ;
+        kairos-bronze:nullable "false"^^xsd:boolean .
+
+    bronze-qargo:companies_name a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-qargo:companies ;
+        kairos-bronze:columnName "name" ;
+        kairos-bronze:dataType "nvarchar" ;
+        kairos-bronze:nullable "true"^^xsd:boolean .
+
+    bronze-qargo:companies_billing_address a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-qargo:companies ;
+        kairos-bronze:columnName "billing_address" ;
+        kairos-bronze:dataType "nvarchar" ;
+        kairos-bronze:nullable "true"^^xsd:boolean .
+""")
+
+_ISSUE_194_MAPPING_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix bronze-qargo: <https://example.com/bronze/qargo#> .
+    @prefix party: <http://kairos.example/ontology/party#> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+
+    bronze-qargo:companies skos:exactMatch party:CargoOperator ;
+        kairos-map:mappingType "direct" .
+
+    bronze-qargo:companies_company_id skos:exactMatch party:partyIdentifier ;
+        kairos-map:transform "source.companies.company_id" .
+
+    bronze-qargo:companies_name skos:exactMatch party:partyName ;
+        kairos-map:transform "source.companies.name" .
+
+    bronze-qargo:companies_billing_address skos:exactMatch party:hasBillingAddress ;
+        kairos-map:transform "source.companies.billing_address" .
+""")
+
+
+class TestIssue194Scd2InheritedFkScope:
+    """Issue #194 — inherited FK joins in SCD2 models must not leak out of scope."""
+
+    @pytest.fixture
+    def sources_dir(self, tmp_path):
+        d = tmp_path / "sources" / "qargo"
+        d.mkdir(parents=True)
+        (d / "qargo.vocabulary.ttl").write_text(_ISSUE_194_BRONZE_TTL, encoding="utf-8")
+        return tmp_path / "sources"
+
+    @pytest.fixture
+    def mappings_dir(self, tmp_path):
+        d = tmp_path / "mappings"
+        d.mkdir(parents=True)
+        (d / "qargo-to-party.ttl").write_text(_ISSUE_194_MAPPING_TTL, encoding="utf-8")
+        return d
+
+    @pytest.fixture
+    def silver_ext_path(self, tmp_path):
+        ext_file = tmp_path / "party-silver-ext.ttl"
+        ext_file.write_text(_ISSUE_194_SILVER_EXT_TTL, encoding="utf-8")
+        return ext_file
+
+    def _get_sql(self, template_dir, sources_dir, mappings_dir, silver_ext_path):
+        graph = Graph()
+        graph.parse(data=_ISSUE_194_ONTOLOGY_TTL, format="turtle")
+        classes = [{
+            "uri": "http://kairos.example/ontology/party#CargoOperator",
+            "name": "CargoOperator",
+            "label": "Cargo Operator",
+            "comment": "A cargo operator",
+        }]
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/party#",
+            ontology_name="party",
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            silver_ext_path=silver_ext_path,
+        )
+        sql_key = next(k for k in artifacts if "cargo_operator.sql" in k)
+        return artifacts[sql_key]
+
+    def test_inherited_fk_lookup_is_selected_in_mapped_cte(
+        self, template_dir, sources_dir, mappings_dir, silver_ext_path
+    ):
+        sql = self._get_sql(template_dir, sources_dir, mappings_dir, silver_ext_path)
+        mapped_block = sql.split("mapped as (", 1)[1].split(
+            "\n\n),\n\nsource_data", 1
+        )[0]
+        source_data_block = sql.split("source_data as (", 1)[1].split("\n\n)", 1)[0]
+
+        assert "address_ref.address_sk as billing_address_sk" in mapped_block, (
+            "FK lookup must be selected while address_ref is in scope:\n" + mapped_block
+        )
+        assert "billing_address_sk," in source_data_block, (
+            "source_data must read the mapped FK alias from mapped:\n" + source_data_block
+        )
+        assert "address_ref.address_sk" not in source_data_block, (
+            "source_data reads from mapped, so the FK join alias is out of scope:\n"
+            + source_data_block
+        )

@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependencies.
 
 ### Fixed
+- **dbt SCD2 FK joins stay in scope for inherited role/subclass relationships
+  (issue #194).** SCD2 silver models now select FK lookup columns in the
+  `mapped` CTE where the FK join aliases are visible, then reference the mapped
+  FK aliases from `source_data`. This fixes invalid SQL such as
+  `address_ref.address_sk` being emitted after `address_ref` has gone out of
+  scope.
 - **Claim projection sync now fails loudly on invalid intra-hub ontology bases.**
   `_collect_hub_domain_bases` no longer silently skips malformed Turtle while
   collecting `_foundation.ttl` / `_master.ttl` imports, avoiding false "in sync"
