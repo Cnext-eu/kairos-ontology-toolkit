@@ -155,6 +155,9 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
 
     # Coverage grouped by system → table.
     coverage_by_system: dict[str, dict[str, CoverageTable]] = {}
+    # Issue #192 (Phase A1): advisory, deterministic relationship candidates
+    # surfaced to the modeling skill's Relationship & Satellite-Entity Review gate.
+    relationship_candidates: list[dict[str, Any]] = []
     # Dedup concept claims; preserve aggregated evidence.
     class_claims: dict[str, Claim] = {}            # key: ref_class
     property_claims: dict[tuple[str, str], Claim] = {}  # key: (ref_class, ref_property)
@@ -167,6 +170,10 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
         columns = table.get("columns", []) or []
         custom_columns = table.get("custom_columns", []) or []
         anchor_state = str(table.get("ref_class_status", "") or "matched")
+
+        for cand in table.get("relationship_candidates", []) or []:
+            if isinstance(cand, dict):
+                relationship_candidates.append(cand)
 
         coverage_by_system.setdefault(system, {})[tname] = CoverageTable(
             table=tname,
@@ -264,6 +271,12 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
         list(custom_claims.values())
     all_claims.sort(key=lambda c: c.id)
 
+    relationship_candidates.sort(key=lambda c: (
+        str(c.get("source_table", "")),
+        str(c.get("suggested_relationship", "")),
+        str(c.get("role") or ""),
+    ))
+
     return ClaimRegistry(
         domain=domain,
         generated_at=data.get("generated_at"),
@@ -271,6 +284,7 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
         freshness=freshness,
         coverage=coverage,
         claims=all_claims,
+        relationship_candidates=relationship_candidates,
     )
 
 

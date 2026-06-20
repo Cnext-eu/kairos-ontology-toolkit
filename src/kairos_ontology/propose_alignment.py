@@ -141,6 +141,10 @@ class TableAlignment:
     ref_class_status: str = "matched"
     #: The original invalid class the model proposed, when it was rejected/fell back.
     rejected_ref_class: str | None = None
+    #: Issue #192 (Phase A1) — deterministic, additive relationship candidates
+    #: (e.g. clustered address columns). Populated only when a detector fires, so
+    #: default output stays unchanged.
+    relationship_candidates: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -1437,6 +1441,122 @@ def _is_address_property(ref_property: str) -> bool:
     return any(t in tokens or t in compact for t in _ADDRESS_PROPERTY_TOKENS)
 
 
+# ---------------------------------------------------------------------------
+# Relationship-candidate detection (issue #192, Phase A1)
+# ---------------------------------------------------------------------------
+#
+# Deterministic, no-LLM, no-cross-module-widening detector that PROMOTES the
+# DD-069 address-part prose into a machine-readable, table-level relationship
+# candidate. It groups address-part columns by role (qualifier prefix) and emits
+# a candidate only when a role has >=2 *complementary* address parts (e.g.
+# street + city), so single columns (``country_of_origin``) and non-address
+# columns (``billing_email``) never fire. Candidates are ADDITIVE (the scalar
+# column dispositions are untouched), carry ``requires_human_confirmation``, and
+# deliberately omit a target URI — naming/binding to a concrete shared ``Address``
+# class is deferred (issue #192 Phase A2). Emitted only when a cluster is found,
+# so tables without an address cluster keep byte-identical output.
+
+#: Address-part KINDS keyed on exact source tokens (safe; no substring matching).
+#: Ordered most-specific first so a column lands on a single kind.
+_ADDRESS_PART_TOKEN_KINDS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("street", frozenset({"street"})),
+    ("house_number", frozenset({"house"})),
+    ("postal", frozenset({"zip", "postal", "postcode"})),
+    ("city", frozenset({"city", "town"})),
+    ("state", frozenset({"state", "province", "region"})),
+    ("country", frozenset({"country"})),
+    ("address_line", frozenset({"addressline", "address"})),
+)
+
+#: Compound address-part KINDS matched against the compacted name only. Limited
+#: to long, unambiguous concatenations so e.g. ``email_address`` is unaffected.
+_ADDRESS_PART_COMPACT_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("house_number", ("housenumber", "houseno")),
+    ("postal", ("postalcode", "zipcode")),
+    ("address_line", ("addressline",)),
+)
+
+
+def _address_part_kind(column_name: str) -> str | None:
+    """Classify *column_name* into a canonical address part kind, or ``None``."""
+    tokens = _tokenize_text(column_name)
+    for kind, kws in _ADDRESS_PART_TOKEN_KINDS:
+        if tokens & kws:
+            return kind
+    compact = _compact_name(column_name)
+    for kind, kws in _ADDRESS_PART_COMPACT_KINDS:
+        if any(kw in compact for kw in kws):
+            return kind
+    return None
+
+
+def _address_role(column_name: str) -> str:
+    """Return the address role (qualifier prefix) of *column_name*.
+
+    A qualifier such as ``billing`` / ``shipping`` separates role-specific
+    address clusters so ``billing_*`` and ``shipping_*`` become two distinct
+    relationships rather than one merged Address. Unqualified parts (e.g. a bare
+    ``street`` / ``postal_code``) group under ``default``.
+    """
+    roles = sorted(_tokenize_text(column_name) & _ADDRESS_QUALIFIER_TOKENS)
+    return roles[0] if roles else "default"
+
+
+def _address_relationship_name(role: str) -> str:
+    """Suggest a ``has<Role>Address`` object-property name for a role group."""
+    if role == "default":
+        return "hasAddress"
+    return f"has{role[:1].upper()}{role[1:]}Address"
+
+
+def _detect_address_relationship_candidates(
+    table_name: str,
+    columns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Detect clustered address columns and emit relationship candidates.
+
+    Deterministic and additive (issue #192 Phase A1). Groups address-part columns
+    by role, and emits one candidate per role that has >=2 distinct part kinds.
+    """
+    by_role: dict[str, dict[str, list[str]]] = {}
+    for col in columns:
+        name = str(col.get("name", "") or "")
+        if not name or not _detect_address_part(name):
+            continue
+        kind = _address_part_kind(name)
+        if kind is None:
+            continue
+        by_role.setdefault(_address_role(name), {}).setdefault(kind, []).append(name)
+
+    candidates: list[dict[str, Any]] = []
+    for role in sorted(by_role):
+        kinds = by_role[role]
+        if len(kinds) < 2:  # require >=2 complementary address parts
+            continue
+        source_columns = sorted({c for cols in kinds.values() for c in cols})
+        part_kinds = sorted(kinds)
+        rel = _address_relationship_name(role)
+        role_phrase = "" if role == "default" else f" under role '{role}'"
+        candidates.append({
+            "type": "address_relationship_candidate",
+            "source_table": table_name,
+            "role": None if role == "default" else role,
+            "suggested_relationship": rel,
+            "target_concept": "Address",
+            "source_columns": source_columns,
+            "address_parts": part_kinds,
+            "requires_human_confirmation": True,
+            "rationale": (
+                f"{len(part_kinds)} complementary address parts "
+                f"({', '.join(part_kinds)}){role_phrase}; consider modelling a "
+                f"'{rel}' 1:n relationship to a shared Address concept IN ADDITION "
+                f"to the scalar column mappings, rather than only scalar "
+                f"passthroughs. Target class/URI to be confirmed during modeling."
+            ),
+        })
+    return candidates
+
+
 def _review_column_alignment(
     *,
     column_name: str,
@@ -1995,6 +2115,11 @@ def _propose_alignments(
                 ta.structural_hints = _detect_structural_hints(
                     table, columns, ref_classes
                 ) + address_hints
+            # Issue #192 (Phase A1): deterministic, always-on, additive
+            # relationship-candidate detection (no LLM, no cross-module widening).
+            rel_candidates = _detect_address_relationship_candidates(table, columns)
+            if rel_candidates:
+                ta.relationship_candidates = rel_candidates
             alignment.tables.append(ta)
 
             matched = len(col_alignments)
@@ -2296,6 +2421,9 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
         # DD-045: emit structural hints only when present (default unchanged)
         if ta.structural_hints:
             table_dict["structural_hints"] = ta.structural_hints
+        # Issue #192 (Phase A1): emit relationship candidates only when detected.
+        if ta.relationship_candidates:
+            table_dict["relationship_candidates"] = ta.relationship_candidates
         data["tables"].append(table_dict)
 
     # DD-070: emit cross-module sections only in cross-module mode (default unchanged)

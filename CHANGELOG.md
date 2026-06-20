@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Deterministic address relationship candidates surfaced during alignment
+  (issue #192, Phase A1).** `propose-alignment` now promotes clustered address-part
+  columns (e.g. `billing_street` + `billing_city` + `billing_postal_code`) into a
+  machine-readable, **advisory** `relationship_candidates` entry on the Claim Registry
+  (`hasBillingAddress → Address`), in addition to the existing scalar column
+  dispositions. The detector is role-aware (`billing_*` vs `shipping_*` are separate
+  relationships), always-on, additive, and uses **no LLM / no cross-module widening**;
+  candidates carry the source columns and `requires_human_confirmation: true` but no
+  resolvable target URI. A new MANDATORY *Checkpoint 3c — Relationship &
+  Satellite-Entity Review* in `kairos-design-domain` blocks TTL generation until each
+  candidate has an explicit model/relate/defer decision. Concrete target-URI naming
+  (A2) and FK-driven satellite detection (Phase B) are deferred. See DD-084.
 - **`decide-claims` CLI — query + bulk-curate claim status/disposition (issue #190).**
   A new AI-free command (`decide_claims.py`) to list claims by selector
   (`--status`/`--disposition`/`--type`/`--origin`/`--id`/`--column` globs) and to

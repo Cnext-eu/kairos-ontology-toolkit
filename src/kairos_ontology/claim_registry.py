@@ -412,6 +412,12 @@ class ClaimRegistry:
     freshness: Freshness = field(default_factory=Freshness)
     coverage: list[CoverageSystem] = field(default_factory=list)
     claims: list[Claim] = field(default_factory=list)
+    #: Issue #192 (Phase A1) — advisory, deterministic relationship candidates
+    #: (e.g. clustered address columns → a ``hasAddress`` relationship). These are
+    #: NOT governed claims: they carry ``requires_human_confirmation`` and are
+    #: surfaced to the modeling skill's Relationship & Satellite-Entity Review gate.
+    #: Emitted only when a detector fires, so default output stays unchanged.
+    relationship_candidates: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -427,6 +433,8 @@ class ClaimRegistry:
             out["freshness"] = freshness
         if self.coverage:
             out["coverage"] = {"systems": [s.to_dict() for s in self.coverage]}
+        if self.relationship_candidates:
+            out["relationship_candidates"] = self.relationship_candidates
         out["claims"] = [c.to_dict() for c in self.claims]
         return out
 
@@ -442,6 +450,7 @@ class ClaimRegistry:
             freshness=Freshness.from_dict(data.get("freshness") or {}),
             coverage=[CoverageSystem.from_dict(s) for s in systems],
             claims=[Claim.from_dict(c) for c in data.get("claims", [])],
+            relationship_candidates=list(data.get("relationship_candidates") or []),
         )
 
 
@@ -715,4 +724,5 @@ def merge_preserving_decisions(
         freshness=new.freshness,
         coverage=new.coverage,
         claims=merged,
+        relationship_candidates=new.relationship_candidates,
     )

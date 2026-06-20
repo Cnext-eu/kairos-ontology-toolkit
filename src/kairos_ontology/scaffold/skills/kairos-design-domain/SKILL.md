@@ -1921,6 +1921,55 @@ property, use `rdfs:subPropertyOf` instead of creating an unrelated property:
   creating domain-specific duplicates.
 - Document the reuse decision in the session file under "Design Decisions."
 
+### Checkpoint 3c: Relationship & Satellite-Entity Review (MANDATORY before TTL — issue #192 / DD-084)
+
+When a source table force-fits a **clustered set of address columns** into scalar
+properties (e.g. `billing_street` + `billing_city` + `billing_postal_code`), the
+relationship to a shared `Address` concept is easy to miss during initial design.
+The toolkit now surfaces this deterministically: `propose-alignment` writes an
+**advisory** `relationship_candidates` section into `model/claims/{domain}-claims.yaml`.
+
+> **These candidates are advisory metadata, NOT governed claims.** They carry the
+> detected source columns and a suggested relationship name (`hasAddress`,
+> `hasBillingAddress`, …) with **no resolvable target URI**. They never replace the
+> scalar column dispositions — the passthrough/model claims for those columns remain
+> (dropping them would silently lose columns from silver/gold and coverage).
+
+**You MUST NOT generate TTL while any `relationship_candidate` is undecided.**
+Present the full list and record an explicit decision per candidate:
+
+> **Relationship candidates to review** (from `{domain}-claims.yaml`
+> `relationship_candidates`):
+>
+> | # | Source table | Role | Suggested relationship | Source columns | Decision |
+> |---|---|---|---|---|---|
+> | 1 | `tblCompany` | billing | `hasBillingAddress → Address` | `BillingStreet`, `BillingCity`, `BillingPostalCode` | model / relate / defer |
+> | 2 | `tblCompany` | shipping | `hasShippingAddress → Address` | `ShippingStreet`, `ShippingCity` | model / relate / defer |
+
+**Decision values:**
+- `model` — introduce a local `Address` (or reuse an imported one) and an object
+  property; the clustered scalar columns become the address node's attributes
+  (still carried to silver via the existing passthrough claims).
+- `relate` — the shared `Address` concept exists in an installed reference/shared
+  model; reuse it and add only the object property linking this class to it.
+- `defer` — keep the scalar passthroughs for now; revisit in the mapping/silver
+  phase. Record the rationale in the session file.
+
+**Rules:**
+- The candidate is **additive** — never delete the scalar column claims when you
+  act on a relationship candidate.
+- Candidates are **role-aware**: `billing_*` and `shipping_*` are *separate*
+  relationships, not one merged `hasAddress`. Treat each row independently.
+- Watch the false-positive traps the detector already excludes but you should
+  re-check by eye: `country_of_origin` is **not** an address; `billing_email` is a
+  **Contact**, not an Address.
+- A re-run of `propose-alignment --force` regenerates the candidates deterministically
+  and preserves your curated claim decisions; re-confirm any candidate whose source
+  columns changed.
+- Naming a concrete target (`→ Address` with a real URI) and detecting
+  satellite/child entities from source FKs are **not yet automated** (deferred A2 /
+  Phase B). Until then, resolve the target concept by hand during this checkpoint.
+
 ### Checkpoint 4: Domain Boundary Verification
 
 Before modeling any class, verify it belongs to this domain by checking the
