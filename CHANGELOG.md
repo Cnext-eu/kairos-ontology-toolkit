@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`release.yml` now normalizes the release tag to PEP 440 before comparing it to
+  `__version__`**, mirroring `_tag_to_version()`. Both `vX.Y.Zrc1` and the
+  SemVer-style `vX.Y.Z-rc.1` (the form the channel resolver and `_whl_url` already
+  expect) now validate, instead of only the exact PEP 440 string.
+
 ## [4.4.0] — 2026-06-20
 
 ### Added
