@@ -59,7 +59,7 @@
 {%- if scd_type == "2" %}
 {%- set mapped_cols = [] %}
 {%- for col in columns %}
-{%- if not col.target_name.endswith("_sk") and not col.target_name.endswith("_iri") %}
+{%- if col.target_name != model_name + "_sk" and col.target_name != model_name + "_iri" %}
 {%- set _ = mapped_cols.append(col) %}
 {%- endif %}
 {%- endfor %}
@@ -86,7 +86,7 @@ source_data as (
 
     select
 {%- for col in columns %}
-{%- if col.target_name.endswith("_sk") or col.target_name.endswith("_iri") %}
+{%- if col.target_name == model_name + "_sk" or col.target_name == model_name + "_iri" %}
         {{ col.expression }} as {{ col.target_name }},
 {%- else %}
         {{ col.target_name }},
