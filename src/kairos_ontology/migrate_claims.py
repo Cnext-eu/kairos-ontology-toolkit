@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,65 @@ from .claim_registry import (
 logger = logging.getLogger(__name__)
 
 LEGACY_ALIGNMENT_GLOB = "*-alignment.yaml"
+
+#: A resolved URI index: ``(class_uri_by_name, property_uri_by_class_and_property)``.
+#: Only *unambiguously* resolvable names are kept — a name mapping to more than one
+#: URI (same class name in different reference modules) is dropped so migration never
+#: guesses a URI. Unresolved claims keep ``class_uri`` / ``property_uri`` = null and
+#: stay approvable only after a human supplies the URI.
+UriIndex = tuple[dict[str, str], dict[tuple[str, str], str]]
+
+
+def _namespace_of(uri: str) -> str:
+    """Return the namespace prefix (up to and including ``#`` or final ``/``)."""
+    if "#" in uri:
+        return uri.rsplit("#", 1)[0] + "#"
+    if "/" in uri:
+        return uri.rsplit("/", 1)[0] + "/"
+    return uri
+
+
+def build_uri_index(inventory_classes: list[dict[str, Any]]) -> UriIndex:
+    """Build a deterministic URI index from materialized inventory classes (DD-044).
+
+    Each inventory class carries its ``uri``; property URIs are derived from the
+    owning class' namespace + property ``name`` (the convention used across the
+    reference models). Names that resolve to more than one URI are *omitted* so the
+    caller never materializes an ambiguous guess.
+    """
+    name_to_class_uris: dict[str, set[str]] = defaultdict(set)
+    prop_to_uris: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for cls in inventory_classes:
+        uri = cls.get("uri")
+        name = cls.get("name")
+        if not uri or not name:
+            continue
+        name_to_class_uris[name].add(str(uri))
+        namespace = _namespace_of(str(uri))
+        for prop in cls.get("properties", []) or []:
+            pname = prop.get("name")
+            if pname:
+                prop_to_uris[(name, pname)].add(namespace + pname)
+    class_uri = {n: next(iter(u)) for n, u in name_to_class_uris.items() if len(u) == 1}
+    property_uri = {k: next(iter(v)) for k, v in prop_to_uris.items() if len(v) == 1}
+    return class_uri, property_uri
+
+
+def load_inventory_uri_index(inventory_dir: Path) -> UriIndex:
+    """Load every ``*-inventory.yaml`` under *inventory_dir* into a :data:`UriIndex`."""
+    from .inventory import load_inventory
+
+    classes: list[dict[str, Any]] = []
+    if not inventory_dir.is_dir():
+        return {}, {}
+    for yaml_file in sorted(inventory_dir.glob("*.yaml")):
+        try:
+            inv = load_inventory(yaml_file)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to load inventory %s: %s", yaml_file, exc)
+            continue
+        classes.extend(inv.get("classes", []) or [])
+    return build_uri_index(classes)
 
 
 def _slug(value: str) -> str:
@@ -74,13 +134,19 @@ def find_legacy_alignment_files(search_dir: Path) -> list[Path]:
     return sorted(search_dir.glob(LEGACY_ALIGNMENT_GLOB))
 
 
-def alignment_to_registry(data: dict[str, Any]) -> ClaimRegistry:
+def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = None) -> ClaimRegistry:
     """Convert a parsed alignment YAML mapping into a :class:`ClaimRegistry`.
 
     Pure function — deterministic for a given input. Claims and coverage are
     emitted in a stable (sorted) order so the output is byte-stable for golden
     tests.
+
+    When *uri_index* is supplied (issue #190 item 4), ``class_uri`` / ``property_uri``
+    are back-filled from the reference-model inventory for unambiguously resolvable
+    names, so anchored claims become approvable without manual URI entry. Ambiguous
+    or unknown names stay null (still valid while ``proposed``).
     """
+    class_uri_map, property_uri_map = uri_index if uri_index else ({}, {})
     domain = str(data.get("domain", "") or "")
     freshness = Freshness(
         affinity_sha256=data.get("source_sha256"),
@@ -122,6 +188,7 @@ def alignment_to_registry(data: dict[str, Any]) -> ClaimRegistry:
                     status="proposed",
                     disposition="claim",
                     origin="imported",
+                    class_uri=class_uri_map.get(ref_class),
                     rationale=f"Migrated from alignment: source tables aligned to "
                               f"reference class '{ref_class}'.",
                 )
@@ -145,6 +212,7 @@ def alignment_to_registry(data: dict[str, Any]) -> ClaimRegistry:
                     status="proposed",
                     disposition="claim",
                     origin="imported",
+                    property_uri=property_uri_map.get((col_ref_class, ref_prop)),
                     rationale=f"Migrated from alignment: maps to property "
                               f"'{ref_prop}' on '{col_ref_class}'.",
                 )
@@ -206,10 +274,15 @@ def alignment_to_registry(data: dict[str, Any]) -> ClaimRegistry:
     )
 
 
-def migrate_alignment_file(path: Path) -> ClaimRegistry:
-    """Load an alignment YAML file and convert it to a :class:`ClaimRegistry`."""
+def migrate_alignment_file(path: Path, *, inventory_dir: Path | None = None) -> ClaimRegistry:
+    """Load an alignment YAML file and convert it to a :class:`ClaimRegistry`.
+
+    When *inventory_dir* is given, ``class_uri`` / ``property_uri`` are back-filled
+    from the materialized reference-model inventories under it (issue #190 item 4).
+    """
     with open(path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{path}: alignment file is not a mapping")
-    return alignment_to_registry(data)
+    uri_index = load_inventory_uri_index(inventory_dir) if inventory_dir else None
+    return alignment_to_registry(data, uri_index=uri_index)

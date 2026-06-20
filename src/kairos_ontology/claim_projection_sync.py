@@ -77,11 +77,20 @@ def _expected_external_imports(approved_imported_class_uris: set[str]) -> set[st
 
 
 def _collect_hub_domain_bases(ontologies_dir: Path) -> set[str]:
+    """Collect the IRIs of every intra-hub ``owl:Ontology`` base.
+
+    Any ``*.ttl`` under ``model/ontologies/`` that declares an ``owl:Ontology`` is
+    a legitimate intra-hub import target — including the ``_``-prefixed shared bases
+    (``_foundation.ttl``, ``_master.ttl``) that every domain ontology is expected to
+    import. Only the ``-ext.ttl`` extension surfaces are excluded, since they are
+    silver/gold extension files, not domain bases. Imports of any collected base are
+    neither flagged as ``extra`` nor stripped during sync.
+    """
     bases: set[str] = set()
     if not ontologies_dir.is_dir():
         return bases
     for path in sorted(ontologies_dir.glob("*.ttl")):
-        if path.name.startswith("_") or path.name.endswith("-ext.ttl"):
+        if path.name.endswith("-ext.ttl"):
             continue
         try:
             graph = Graph()
@@ -179,7 +188,11 @@ def evaluate_domain_projection_sync(
     actual_imports: set[str] = set()
     for obj in ontology_graph.objects(ontology_subj, OWL.imports):
         iri = str(obj).rstrip("#/")
-        if iri in hub_domain_bases:
+        # Intra-hub shared bases (e.g. _foundation/_master) are neither required
+        # nor "extra" — skip them so they aren't flagged/stripped (issue #190). But
+        # if a base is *also* a claim-driven expected import, it must still count as
+        # a satisfied import rather than being silently dropped.
+        if iri in hub_domain_bases and iri not in expected_imports:
             continue
         actual_imports.add(iri)
 
@@ -292,13 +305,135 @@ def _rewrite_domain_projection_surfaces(
     ext_graph.serialize(destination=str(extension_file), format="turtle")
 
 
+def _infer_hub_base(ontologies_dir: Path) -> str:
+    """Infer the hub's ontology base namespace from existing domain ontologies.
+
+    Takes any existing ``owl:Ontology`` IRI under *ontologies_dir* and strips its
+    last path segment to get the shared base (e.g. ``https://acme.com/ont/_foundation``
+    → ``https://acme.com/ont``). Falls back to a clearly-placeholder base when the
+    directory holds no ontologies yet, so a brand-new hub still produces valid TTL.
+    """
+    bases = _collect_hub_domain_bases(ontologies_dir)
+    for iri in sorted(bases):
+        trimmed = iri.rstrip("#/")
+        if "/" in trimmed:
+            return trimmed.rsplit("/", 1)[0]
+    return "https://example.org/ont"
+
+
+def _domain_iri_for(domain: str, ontologies_dir: Path) -> str:
+    return f"{_infer_hub_base(ontologies_dir)}/{domain}"
+
+
+#: Provenance header prepended to scaffolded skeletons (DD-072). Authored content
+#: (local subclasses, gap properties, labels) belongs below it; the managed
+#: ``owl:imports`` / ``silverInclude`` triples are synced from the Claim Registry.
+_SCAFFOLD_HEADER = (
+    "# ---------------------------------------------------------------------------\n"
+    "# Skeleton scaffolded by `kairos-ontology claims-to-silver-ext` (DD-072).\n"
+    "# Managed surfaces (owl:imports / kairos-ext:silverInclude) are synced from the\n"
+    "# Claim Registry. Add local subclasses, gap properties, labels and comments\n"
+    "# below — authored content is yours to maintain.\n"
+    "# ---------------------------------------------------------------------------\n"
+)
+
+
+def _write_with_header(graph: Graph, destination: Path) -> None:
+    body = graph.serialize(format="turtle")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(_SCAFFOLD_HEADER + "\n" + body, encoding="utf-8")
+
+
+def _scaffold_ontology_skeleton(
+    *, domain: str, ontology_file: Path, ontologies_dir: Path
+) -> str:
+    """Create a minimal valid domain ontology skeleton and return its IRI."""
+    from rdflib.namespace import RDFS
+
+    domain_iri = _domain_iri_for(domain, ontologies_dir)
+    graph = Graph()
+    subj = URIRef(domain_iri)
+    graph.add((subj, RDF.type, OWL.Ontology))
+    graph.add((subj, RDFS.label, Literal(domain.replace("-", " ").title(), lang="en")))
+    # Share the hub foundation base when one is present (scaffold convention).
+    for base in _collect_hub_domain_bases(ontologies_dir):
+        if base.rstrip("#/").rsplit("/", 1)[-1].startswith("_foundation"):
+            graph.add((subj, OWL.imports, URIRef(base)))
+            break
+    _write_with_header(graph, ontology_file)
+    return domain_iri
+
+
+def _scaffold_extension_skeleton(
+    *, domain: str, extension_file: Path, domain_iri: str
+) -> None:
+    """Create a minimal valid silver-extension skeleton for *domain*."""
+    graph = Graph()
+    graph.add((URIRef(domain_iri.rstrip("#/") + "-ext"), RDF.type, OWL.Ontology))
+    _write_with_header(graph, extension_file)
+
+
+def scaffold_missing_surfaces(
+    *,
+    claims_dir: Path,
+    ontologies_dir: Path,
+    extensions_dir: Path,
+    domains_filter: list[str] | None = None,
+) -> list[Path]:
+    """Create skeleton ``{domain}.ttl`` / ``{domain}-silver-ext.ttl`` files when absent.
+
+    ``claims-to-silver-ext`` is a generator: rather than silently skipping a domain
+    whose authored surfaces don't exist yet (issue #190 item 5), bootstrap a minimal,
+    valid skeleton so the sync can proceed. Existing files are never touched.
+    Returns the list of files created.
+    """
+    created: list[Path] = []
+    if not claims_dir.is_dir():
+        return created
+
+    lowers = [d.lower() for d in domains_filter] if domains_filter else None
+
+    def _in_scope(name: str) -> bool:
+        if lowers is None:
+            return True
+        return any(token in name.lower() for token in lowers)
+
+    for claims_file in sorted(claims_dir.glob("*-claims.yaml")):
+        domain = claims_file.name.replace("-claims.yaml", "")
+        if not _in_scope(domain):
+            continue
+        ontology_file = ontologies_dir / f"{domain}.ttl"
+        extension_file = extensions_dir / f"{domain}-silver-ext.ttl"
+        if not ontology_file.exists():
+            domain_iri = _scaffold_ontology_skeleton(
+                domain=domain, ontology_file=ontology_file, ontologies_dir=ontologies_dir
+            )
+            created.append(ontology_file)
+        else:
+            domain_iri = _domain_iri_for(domain, ontologies_dir)
+        if not extension_file.exists():
+            _scaffold_extension_skeleton(
+                domain=domain, extension_file=extension_file, domain_iri=domain_iri
+            )
+            created.append(extension_file)
+    return created
+
+
 def apply_projection_sync(
     *,
     claims_dir: Path,
     ontologies_dir: Path,
     extensions_dir: Path,
     domains_filter: list[str] | None = None,
+    scaffold_missing: bool = True,
 ) -> ProjectionSyncReport:
+    if scaffold_missing:
+        scaffold_missing_surfaces(
+            claims_dir=claims_dir,
+            ontologies_dir=ontologies_dir,
+            extensions_dir=extensions_dir,
+            domains_filter=domains_filter,
+        )
     report = evaluate_projection_sync(
         claims_dir=claims_dir,
         ontologies_dir=ontologies_dir,

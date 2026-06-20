@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`decide-claims` CLI — query + bulk-curate claim status/disposition (issue #190).**
+  A new AI-free command (`decide_claims.py`) to list claims by selector
+  (`--status`/`--disposition`/`--type`/`--origin`/`--id`/`--column` globs) and to
+  bulk-set status via `--by-disposition` or `--set-status` (`--dry-run` for counts).
+  Writes back through the canonical `write_registry`, so curation produces minimal,
+  reviewable diffs instead of hand-edited YAML noise.
+
+### Fixed
+- **Intra-hub shared bases (`_foundation.ttl`, `_master.ttl`) are no longer stripped
+  from domain `owl:imports` (issue #190).** `_collect_hub_domain_bases` skipped every
+  `_`-prefixed file, so foundation/master imports were flagged as `extra` and removed
+  by projection sync. It now treats any `owl:Ontology`-declaring `*.ttl` under
+  `model/ontologies/` as an allowed intra-hub base (only `-ext.ttl` surfaces are skipped).
+- **`migrate-claims` now back-fills `class_uri`/`property_uri` from the reference-model
+  inventory (issue #190),** so anchored claims can be approved without manual URI lookup.
+  Ambiguous names stay null (never guessed); resolved/unresolved counts are printed.
+  `--no-resolve-uris` opts out; `--inventory-dir` overrides discovery.
+- **`claims-to-silver-ext` now scaffolds a minimal valid ontology / `*-silver-ext.ttl`
+  skeleton for a fresh domain instead of silently writing nothing (issue #190).**
+  The skeleton carries a provenance header and inferred hub base / foundation import;
+  `--no-scaffold` disables it.
+- **The MDM-anchor warning in `check-claims` now prints a concrete `mdm_anchor: true`
+  reference_data claim example and points to the skill / `--no-mdm-anchor` (issue #190).**
+
+> The destructive whole-graph rdflib rewrite of projection surfaces (issue #190 item 6)
+> is tracked separately as **issue #191**.
+
 ## [4.4.0] — 2026-06-20
 
 ### Fixed

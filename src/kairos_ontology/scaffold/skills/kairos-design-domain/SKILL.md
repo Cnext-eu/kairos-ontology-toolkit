@@ -1797,12 +1797,30 @@ human decision (the merge keeps curated fields and only refreshes evidence). Thi
 is what makes the triage verifiable — `check-claims --strict` reads it (see the
 Completion gate).
 
+> **Curate at scale with `decide-claims` (preferred over hand-editing YAML).**
+> Rather than editing `{domain}-claims.yaml` by hand (which produces large,
+> unreviewable diffs), use the deterministic `decide-claims` command. It queries by
+> selector and bulk-sets `status`, writing back through the canonical serializer so
+> diffs stay minimal:
+>
+> ```bash
+> # Inspect what matches before mutating (read-only)
+> kairos-ontology decide-claims --domains <domain> --status proposed --list
+>
+> # Bulk-decide by disposition (only mutates status; honours valid transitions)
+> kairos-ontology decide-claims --domains <domain> \
+>     --by-disposition "claim=approved,passthrough=approved,skip=rejected" --dry-run
+> # drop --dry-run to apply
+> ```
+>
+> Selectors compose: `--status`, `--disposition`, `--type`, `--origin`, and
+> `--id` / `--column` globs. Invalid/terminal transitions are skipped and reported.
+
 > **Transition note (DD-EL-1):** the former alignment-YAML disposition workflow
 > (writing `disposition:` onto `custom_columns`, the `--accept-heuristics` /
 > `--check-anchors` flags) is retired. Disposition now lives on registry claims.
-> The detailed registry-curation UX is being finalised in the skills thin-chat
-> redesign; until then, curate claim `status`/`disposition` directly and gate with
-> `check-claims --strict`.
+> Curate claim `status`/`disposition` with `decide-claims` (or by hand) and gate
+> with `check-claims --strict`.
 
 > **Sanity-check anchors before triaging.** If a proposed claim points at a
 > reference class that exists in **no** installed reference model (a hallucinated
@@ -2093,11 +2111,23 @@ kairos-ontology check-claims --domains <target-domain> --strict
 - **Exit 0** → every candidate claim is decided (`approved` / `rejected` /
   `deferred`) — no undecided `proposed` claims remain. Proceed to the final report.
 - **Exit 1** → undecided claims remain. STOP, return to Checkpoint 3b, set the
-  `status`/`disposition` on the listed claims in `{domain}-claims.yaml`, and
+  `status`/`disposition` on the listed claims in `{domain}-claims.yaml` (use
+  `kairos-ontology decide-claims` for bulk curation), and
   re-run. Do not mark the domain COMPLETED while this gate is red — undecided
   claims are exactly the source-evidenced business attributes (banking, billing,
   credit, lifecycle flags) that otherwise resurface as unmappable columns during
   **kairos-design-mapping**.
+
+> **Anchored claims need URIs.** Approving a `claim`/`specialize` claim requires
+> its `class_uri` (class / reference_data) or `property_uri` (property / measure).
+> `migrate-claims` back-fills these from the reference-model inventory automatically
+> (run with `--inventory-dir` if discovery fails; `--no-resolve-uris` opts out).
+> Anything left null was ambiguous or unresolved — fill it before approving.
+
+> **Fresh domains bootstrap themselves.** `claims-to-silver-ext` scaffolds a minimal
+> valid ontology + `{domain}-silver-ext.ttl` skeleton (with a provenance header and
+> inferred hub base / foundation import) when those files don't yet exist, then
+> proceeds with the sync. Pass `--no-scaffold` to require the files up front.
 
 `--warn-only` overrides `--strict` and must only be used as a deliberate,
 documented exception.

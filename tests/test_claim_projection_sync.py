@@ -11,7 +11,12 @@ from kairos_ontology.alignment_coverage import (
     ALIGNMENT_ALGORITHM_VERSION,
     compute_affinity_hash,
 )
-from kairos_ontology.claim_projection_sync import apply_projection_sync, evaluate_projection_sync
+from kairos_ontology.claim_projection_sync import (
+    _collect_hub_domain_bases,
+    apply_projection_sync,
+    evaluate_projection_sync,
+    scaffold_missing_surfaces,
+)
 from kairos_ontology.claim_registry import (
     Claim,
     ClaimRegistry,
@@ -201,3 +206,158 @@ def test_check_claims_blocks_on_sync_drift_and_passes_after_generation(tmp_path)
         ],
     )
     assert after.exit_code == 0, after.output
+
+
+def _write_foundation(ontologies_dir: Path) -> str:
+    """Write a ``_`` -prefixed shared base ontology and return its IRI."""
+    ontologies_dir.mkdir(parents=True, exist_ok=True)
+    foundation_iri = "https://example.org/domain/_foundation"
+    foundation = f"""@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<{foundation_iri}> a owl:Ontology ;
+    rdfs:label "Foundation"@en .
+"""
+    (ontologies_dir / "_foundation.ttl").write_text(foundation, encoding="utf-8")
+    return foundation_iri
+
+
+def test_collect_hub_domain_bases_includes_underscore_prefixed(tmp_path):
+    ontologies = tmp_path / "ontologies"
+    foundation_iri = _write_foundation(ontologies)
+    (ontologies / "party-silver-ext.ttl").write_text(
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "<https://example.org/domain/party-ext> a owl:Ontology .\n",
+        encoding="utf-8",
+    )
+
+    bases = _collect_hub_domain_bases(ontologies)
+
+    # _foundation (underscore-prefixed shared base) is a legitimate intra-hub base.
+    assert foundation_iri in bases
+    # -ext.ttl extension surfaces are not domain bases.
+    assert "https://example.org/domain/party-ext" not in bases
+
+
+def test_foundation_import_not_flagged_or_stripped(tmp_path):
+    """Regression for issue #190 item 1: an intra-hub ``_foundation`` import must
+    not be reported as an ``extra owl:imports`` nor stripped during sync."""
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    ontologies = model / "ontologies"
+    _write_registry(claims_dir)
+    _write_domain_files(model, with_drift=False)
+    foundation_iri = _write_foundation(ontologies)
+
+    # party.ttl imports BOTH the external ref base (expected) and _foundation (intra-hub).
+    ontology = f"""@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix dom: <https://example.org/domain/party#> .
+
+<https://example.org/domain/party> a owl:Ontology ;
+    rdfs:label "Party"@en ;
+    owl:imports <{foundation_iri}> ;
+    owl:imports <https://example.org/ref/party> .
+
+dom:Party a owl:Class ;
+    rdfs:label "Party"@en ;
+    rdfs:comment "Party entity."@en .
+"""
+    (ontologies / "party.ttl").write_text(ontology, encoding="utf-8")
+
+    report = evaluate_projection_sync(
+        claims_dir=claims_dir,
+        ontologies_dir=ontologies,
+        extensions_dir=model / "extensions",
+    )
+    domain = report.domains[0]
+    assert domain.extra_imports == []
+    assert domain.in_sync, (
+        f"unexpected drift: extra={domain.extra_imports} missing={domain.missing_imports}"
+    )
+
+    # apply must preserve the intra-hub foundation import.
+    apply_projection_sync(
+        claims_dir=claims_dir,
+        ontologies_dir=ontologies,
+        extensions_dir=model / "extensions",
+    )
+    onto_graph = Graph()
+    onto_graph.parse(ontologies / "party.ttl", format="turtle")
+    onto_subj = next(onto_graph.subjects(RDF.type, OWL.Ontology))
+    imports = {str(o).rstrip("#/") for o in onto_graph.objects(onto_subj, OWL.imports)}
+    assert foundation_iri in imports
+    assert "https://example.org/ref/party" in imports
+
+
+def test_scaffold_missing_surfaces_creates_valid_skeletons(tmp_path):
+    """Regression for issue #190 item 5: a fresh domain with no ontology/ext files
+    is bootstrapped instead of silently skipped."""
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    ontologies = model / "ontologies"
+    extensions = model / "extensions"
+    _write_registry(claims_dir)
+    # Provide a foundation base so the skeleton infers the hub namespace + import.
+    _write_foundation(ontologies)
+
+    created = scaffold_missing_surfaces(
+        claims_dir=claims_dir,
+        ontologies_dir=ontologies,
+        extensions_dir=extensions,
+    )
+    onto_file = ontologies / "party.ttl"
+    ext_file = extensions / "party-silver-ext.ttl"
+    assert onto_file in created
+    assert ext_file in created
+
+    # Skeletons are valid TTL with an owl:Ontology subject + provenance header.
+    onto_graph = Graph()
+    onto_graph.parse(onto_file, format="turtle")
+    onto_subj = next(onto_graph.subjects(RDF.type, OWL.Ontology))
+    assert str(onto_subj) == "https://example.org/domain/party"
+    assert "skeleton scaffolded" in onto_file.read_text(encoding="utf-8").lower()
+    # Inferred hub base → imports the foundation shared base.
+    imports = {str(o).rstrip("#/") for o in onto_graph.objects(onto_subj, OWL.imports)}
+    assert "https://example.org/domain/_foundation" in imports
+
+
+def test_scaffold_does_not_touch_existing_files(tmp_path):
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    _write_registry(claims_dir)
+    _write_domain_files(model, with_drift=False)
+    before = (model / "ontologies" / "party.ttl").read_text(encoding="utf-8")
+
+    created = scaffold_missing_surfaces(
+        claims_dir=claims_dir,
+        ontologies_dir=model / "ontologies",
+        extensions_dir=model / "extensions",
+    )
+    assert created == []
+    assert (model / "ontologies" / "party.ttl").read_text(encoding="utf-8") == before
+
+
+def test_apply_bootstraps_then_syncs_fresh_domain(tmp_path):
+    """End-to-end: apply on a fresh domain scaffolds skeletons then reaches sync."""
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    ontologies = model / "ontologies"
+    extensions = model / "extensions"
+    _write_registry(claims_dir)
+    _write_foundation(ontologies)
+
+    report = apply_projection_sync(
+        claims_dir=claims_dir,
+        ontologies_dir=ontologies,
+        extensions_dir=extensions,
+    )
+    assert not report.is_blocking, [
+        (d.domain, d.error, d.missing_imports) for d in report.out_of_sync
+    ]
+    # The approved imported TradeParty claim drove the external import into the skeleton.
+    onto_graph = Graph()
+    onto_graph.parse(ontologies / "party.ttl", format="turtle")
+    onto_subj = next(onto_graph.subjects(RDF.type, OWL.Ontology))
+    imports = {str(o).rstrip("#/") for o in onto_graph.objects(onto_subj, OWL.imports)}
+    assert "https://example.org/ref/party" in imports

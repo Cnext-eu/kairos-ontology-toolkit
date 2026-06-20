@@ -18,8 +18,10 @@ from kairos_ontology.claim_registry import (
 from kairos_ontology.cli.main import cli
 from kairos_ontology.migrate_claims import (
     alignment_to_registry,
+    build_uri_index,
     find_legacy_alignment_files,
     legacy_alignment_error,
+    load_inventory_uri_index,
     migrate_alignment_file,
 )
 
@@ -262,3 +264,79 @@ class TestMigrateCli:
         )
         assert result.exit_code == 1
         assert "No matching" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# URI back-fill from inventory (issue #190 item 4)
+# --------------------------------------------------------------------------- #
+
+_INVENTORY_CLASSES = [
+    {
+        "uri": "https://ex.org/ont/party#TradeParty",
+        "name": "TradeParty",
+        "properties": [{"name": "legalName"}, {"name": "taxId"}],
+    },
+    # Ambiguous name: same class name in two modules → must be dropped.
+    {"uri": "https://ex.org/ont/imo/party#MaritimeParty", "name": "MaritimeParty",
+     "properties": [{"name": "imoNumber"}]},
+    {"uri": "https://ex.org/ont/mmt/party#MaritimeParty", "name": "MaritimeParty",
+     "properties": [{"name": "imoNumber"}]},
+]
+
+
+class TestUriIndex:
+    def test_build_index_resolves_unambiguous(self):
+        class_uri, prop_uri = build_uri_index(_INVENTORY_CLASSES)
+        assert class_uri["TradeParty"] == "https://ex.org/ont/party#TradeParty"
+        assert prop_uri[("TradeParty", "legalName")] == "https://ex.org/ont/party#legalName"
+
+    def test_ambiguous_name_dropped(self):
+        class_uri, _ = build_uri_index(_INVENTORY_CLASSES)
+        assert "MaritimeParty" not in class_uri
+
+    def test_load_inventory_uri_index_from_dir(self, tmp_path):
+        inv_dir = tmp_path / "referencemodels-unpacked"
+        inv_dir.mkdir()
+        (inv_dir / "party-inventory.yaml").write_text(
+            yaml.safe_dump({"classes": _INVENTORY_CLASSES[:1]}), encoding="utf-8"
+        )
+        class_uri, prop_uri = load_inventory_uri_index(inv_dir)
+        assert class_uri["TradeParty"] == "https://ex.org/ont/party#TradeParty"
+
+    def test_missing_inventory_dir_is_empty(self, tmp_path):
+        assert load_inventory_uri_index(tmp_path / "nope") == ({}, {})
+
+
+class TestBackfillIntoClaims:
+    def test_class_and_property_uris_populated(self):
+        index = build_uri_index(_INVENTORY_CLASSES)
+        reg = alignment_to_registry(SAMPLE_ALIGNMENT, uri_index=index)
+        cls = next(c for c in reg.claims if c.id == "party-tradeparty")
+        assert cls.class_uri == "https://ex.org/ont/party#TradeParty"
+        prop = next(c for c in reg.claims if c.id == "party-tradeparty-legalname")
+        assert prop.property_uri == "https://ex.org/ont/party#legalName"
+
+    def test_backfilled_class_claim_is_approvable(self):
+        index = build_uri_index(_INVENTORY_CLASSES)
+        reg = alignment_to_registry(SAMPLE_ALIGNMENT, uri_index=index)
+        for claim in reg.claims:
+            if claim.disposition == "claim":
+                claim.status = "approved"
+        assert validation_errors(validate_registry(reg)) == []
+
+    def test_without_index_uris_stay_null(self):
+        reg = alignment_to_registry(SAMPLE_ALIGNMENT)
+        cls = next(c for c in reg.claims if c.id == "party-tradeparty")
+        assert cls.class_uri is None
+
+    def test_migrate_alignment_file_with_inventory_dir(self, tmp_path):
+        align = tmp_path / "party-alignment.yaml"
+        align.write_text(yaml.safe_dump(SAMPLE_ALIGNMENT), encoding="utf-8")
+        inv_dir = tmp_path / "referencemodels-unpacked"
+        inv_dir.mkdir()
+        (inv_dir / "party-inventory.yaml").write_text(
+            yaml.safe_dump({"classes": _INVENTORY_CLASSES[:1]}), encoding="utf-8"
+        )
+        reg = migrate_alignment_file(align, inventory_dir=inv_dir)
+        cls = next(c for c in reg.claims if c.id == "party-tradeparty")
+        assert cls.class_uri == "https://ex.org/ont/party#TradeParty"

@@ -81,6 +81,7 @@ _SKILL_COVERED_COMMANDS = {
     "generate-staging": "kairos-design-source",
     "analyse-sources": "kairos-design-source",
     "derive-claims": "kairos-design-source",
+    "decide-claims": "kairos-design-domain",
     "init-dataplatform": "kairos-setup-dataplatform",
     "suggest-shapes": "kairos-execute-validate",
 }
@@ -2367,15 +2368,25 @@ def _resolve_model_path(
               help='Migrate only this domain (default: every *-alignment.yaml found).')
 @click.option('--output', '-o', type=click.Path(), default=None,
               help='Output directory for {domain}-claims.yaml (default: model/claims/).')
+@click.option('--inventory-dir', type=click.Path(), default=None,
+              help='Path to referencemodels-unpacked/ for URI back-fill '
+                   '(default: auto-detect).')
+@click.option('--no-resolve-uris', is_flag=True, default=False,
+              help='Do not back-fill class_uri/property_uri from the inventory.')
 @click.option('--force', is_flag=True, default=False,
               help='Overwrite an existing {domain}-claims.yaml.')
-def migrate_claims_cmd(analysis_dir, domain_filter, output, force):
+def migrate_claims_cmd(analysis_dir, domain_filter, output, inventory_dir, no_resolve_uris, force):
     """One-way migrate legacy alignment YAML → Claim Registry (DD-EL-1).
 
     Deterministic, AI-free conversion of each ``{domain}-alignment.yaml`` into a
     ``model/claims/{domain}-claims.yaml`` of ``proposed`` claims, so no prior
     analysis is lost.  The alignment YAML is **not** modified, but is retired:
     downstream commands reject it (run this once and switch to claims).
+
+    Unless ``--no-resolve-uris`` is passed, ``class_uri`` / ``property_uri`` are
+    back-filled from the materialized reference-model inventories
+    (``referencemodels-unpacked/``) for unambiguously resolvable reference names,
+    so anchored claims are approvable without manual URI entry (issue #190).
 
     \\b
     Examples:
@@ -2406,6 +2417,18 @@ def migrate_claims_cmd(analysis_dir, domain_filter, output, force):
 
     out_dir = Path(output) if output else _resolve_claims_dir(cwd, hub_root)
 
+    inv_dir: Path | None = None
+    if not no_resolve_uris:
+        if inventory_dir:
+            inv_dir = Path(inventory_dir)
+        elif hub_root:
+            inv_dir = hub_root / "referencemodels-unpacked"
+        else:
+            candidate = cwd / "referencemodels-unpacked"
+            inv_dir = candidate if candidate.is_dir() else None
+        if inv_dir and not inv_dir.is_dir():
+            inv_dir = None
+
     legacy = find_legacy_alignment_files(src_dir)
     if domain_filter:
         legacy = [p for p in legacy if p.name == f"{domain_filter}-alignment.yaml"]
@@ -2416,6 +2439,12 @@ def migrate_claims_cmd(analysis_dir, domain_filter, output, force):
     click.echo("🔄 Migrating alignment → Claim Registry")
     click.echo(f"   Source: {src_dir}")
     click.echo(f"   Output: {out_dir}")
+    if no_resolve_uris:
+        click.echo("   URI back-fill: disabled (--no-resolve-uris)")
+    elif inv_dir:
+        click.echo(f"   URI back-fill: {inv_dir}")
+    else:
+        click.echo("   URI back-fill: no inventory found (URIs stay null)")
 
     exit_code = 0
     for align_file in legacy:
@@ -2427,7 +2456,7 @@ def migrate_claims_cmd(analysis_dir, domain_filter, output, force):
             exit_code = 1
             continue
         try:
-            registry = migrate_alignment_file(align_file)
+            registry = migrate_alignment_file(align_file, inventory_dir=inv_dir)
         except Exception as exc:  # noqa: BLE001
             click.echo(f"   ❌ {domain}: migration failed: {exc}", err=True)
             exit_code = 1
@@ -2440,9 +2469,179 @@ def migrate_claims_cmd(analysis_dir, domain_filter, output, force):
             exit_code = 1
             continue
         write_registry(registry, target)
-        click.echo(f"   ✓ {domain}: {len(registry.claims)} claim(s) → {target.name}")
+        anchored = [c for c in registry.claims if c.disposition in ("claim", "specialize")
+                    and c.type in ("class", "property", "reference_data", "measure")]
+        resolved = sum(1 for c in anchored if c.identifying_uri())
+        uri_note = (
+            f" ({resolved}/{len(anchored)} anchored URIs resolved)" if anchored else ""
+        )
+        click.echo(f"   ✓ {domain}: {len(registry.claims)} claim(s) → {target.name}{uri_note}")
 
     raise SystemExit(exit_code)
+
+
+@cli.command(name='decide-claims')
+@click.option('--claims-dir', type=click.Path(), default=None,
+              help='Path to model/claims/ directory (default: auto-detect).')
+@click.option('--domains', 'domains', default=None,
+              help='Comma-separated domains to curate (default: every *-claims.yaml).')
+@click.option('--status', 'status_filter', default=None,
+              help='Only select claims with this status (repeatable via comma).')
+@click.option('--disposition', 'disposition_filter', default=None,
+              help='Only select claims with this disposition (comma-separated).')
+@click.option('--type', 'type_filter', default=None,
+              help='Only select claims of this type (comma-separated).')
+@click.option('--origin', 'origin_filter', default=None,
+              help='Only select claims with this origin (comma-separated).')
+@click.option('--id', 'id_globs', multiple=True,
+              help='Select claims whose id matches this glob (repeatable).')
+@click.option('--column', 'column_globs', multiple=True,
+              help='Select claims with an evidence source column matching this glob '
+                   '(case-insensitive, repeatable).')
+@click.option('--set-status', 'set_status', default=None,
+              help='Set every selected claim to this status.')
+@click.option('--by-disposition', 'by_disposition', default=None,
+              help='Map dispositions to statuses, e.g. '
+                   '"claim=approved,passthrough=approved,skip=rejected".')
+@click.option('--list', 'list_only', is_flag=True, default=False,
+              help='List the selected claims without changing anything.')
+@click.option('--dry-run', is_flag=True, default=False,
+              help='Show what would change without writing the registry.')
+def decide_claims_cmd(claims_dir, domains, status_filter, disposition_filter, type_filter,
+                      origin_filter, id_globs, column_globs, set_status, by_disposition,
+                      list_only, dry_run):
+    """Query and bulk-curate claim ``status`` decisions (issue #190).
+
+    The Claim Registry stays the single git-tracked source of truth — this command
+    is the missing **query + bulk-update API** over it. Selected claims are filtered
+    by any combination of ``--status`` / ``--disposition`` / ``--type`` / ``--origin``
+    plus ``--id`` / ``--column`` globs; ``--list`` just prints matches. To decide,
+    pass exactly one of ``--set-status`` or ``--by-disposition``. Only the ``status``
+    field changes (along allowed transitions); the registry is written back via the
+    canonical serializer, so diffs stay minimal.
+
+    \\b
+    Examples:
+      kairos-ontology decide-claims --domains party --list --status proposed
+      kairos-ontology decide-claims --domains party \\
+          --by-disposition claim=approved,passthrough=approved,skip=rejected
+      kairos-ontology decide-claims --domains party --disposition claim \\
+          --column "*_id" --set-status rejected --dry-run
+    """
+    from ..claim_registry import load_registry, registry_path, write_registry
+    from ..decide_claims import (
+        ClaimSelector,
+        apply_decisions,
+        parse_by_disposition,
+        select_claims,
+        validate_filter_values,
+    )
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
+
+    def _split(value):
+        return [v.strip() for v in value.split(",") if v.strip()] if value else None
+
+    status_list = _split(status_filter)
+    disposition_list = _split(disposition_filter)
+    type_list = _split(type_filter)
+    origin_list = _split(origin_filter)
+
+    try:
+        validate_filter_values(
+            status=status_list,
+            disposition=disposition_list,
+            type_=type_list,
+            origin=origin_list,
+        )
+        disposition_map = parse_by_disposition(by_disposition) if by_disposition else None
+    except ValueError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    deciding = bool(set_status) or bool(disposition_map)
+    if not list_only and not deciding:
+        click.echo(
+            "❌ Nothing to do: pass --list, or one of --set-status / --by-disposition.",
+            err=True,
+        )
+        raise SystemExit(2)
+    if set_status and disposition_map:
+        click.echo("❌ Use only one of --set-status or --by-disposition.", err=True)
+        raise SystemExit(2)
+
+    domain_names = _split(domains)
+    if domain_names:
+        registry_files = [registry_path(claims_path, d) for d in domain_names]
+        missing = [p for p in registry_files if not p.exists()]
+        if missing:
+            for path in missing:
+                click.echo(f"❌ No claims file: {path}", err=True)
+            raise SystemExit(1)
+    else:
+        registry_files = sorted(claims_path.glob("*-claims.yaml")) if claims_path.is_dir() else []
+    if not registry_files:
+        click.echo(f"❌ No *-claims.yaml found in {claims_path}", err=True)
+        raise SystemExit(1)
+
+    selector = ClaimSelector(
+        status=status_list,
+        disposition=disposition_list,
+        type=type_list,
+        origin=origin_list,
+        id_globs=list(id_globs),
+        column_globs=list(column_globs),
+    )
+
+    verb = "Listing" if list_only else ("Previewing (dry-run)" if dry_run else "Deciding")
+    click.echo(f"🗳️  {verb} claim decisions")
+    click.echo(f"   Registry dir: {claims_path}")
+
+    total_changed = 0
+    for reg_file in registry_files:
+        domain = reg_file.name.replace("-claims.yaml", "")
+        registry = load_registry(reg_file)
+
+        if list_only:
+            matches = select_claims(registry, selector)
+            click.echo(f"   • {domain}: {len(matches)} match(es)")
+            for claim in matches:
+                click.echo(
+                    f"      - {claim.id}  [{claim.type}/{claim.disposition}]  {claim.status}"
+                )
+            continue
+
+        summary = apply_decisions(
+            registry,
+            selector=selector,
+            set_status=set_status or None,
+            by_disposition=disposition_map,
+            dry_run=dry_run,
+        )
+        applied = summary.applied
+        skipped = summary.skipped
+        click.echo(
+            f"   • {domain}: {len(applied)} change(s), {len(skipped)} skipped"
+        )
+        for result in applied:
+            click.echo(f"      ✓ {result.claim_id}: {result.from_status} → {result.to_status}")
+        for result in skipped:
+            click.echo(f"      ⤫ {result.claim_id}: {result.reason}")
+
+        if summary.changed and not dry_run:
+            write_registry(registry, reg_file)
+            total_changed += len(applied)
+
+    if not list_only:
+        if dry_run:
+            click.echo("ℹ️  Dry run — no files written.")
+        elif total_changed:
+            click.echo(f"✅ Wrote {total_changed} decision(s).")
+        else:
+            click.echo("ℹ️  No changes applied.")
 
 
 @cli.command(name='check-claims')
@@ -2699,6 +2898,17 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             "   → Identify the domain's major reference anchors "
             "(conformed dimensions / code lists / natural keys)."
         )
+        click.echo(
+            "   → Declare each as a reference_data claim with mdm_anchor: true, e.g.\n"
+            "        - id: <domain>-<anchor>\n"
+            "          type: reference_data\n"
+            "          disposition: claim\n"
+            "          mdm_anchor: true\n"
+            "          class_uri: <reference class URI>\n"
+            "          reference_data: {authority_system: <MDM>, key: <natural key>}\n"
+            "     then approve it. See the kairos-design-domain skill (MDM anchors) "
+            "or pass --no-mdm-anchor to skip this gate."
+        )
 
     if report.shared_dimensions:
         click.echo(
@@ -2848,14 +3058,26 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
               help='Comma-separated domain names to include (case-insensitive substring match).')
 @click.option('--check-only', is_flag=True, default=False,
               help='Report drift only (exit 1 when out of sync, no writes).')
-def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter, check_only):
+@click.option('--no-scaffold', is_flag=True, default=False,
+              help='Do not bootstrap missing {domain}.ttl / *-silver-ext.ttl skeletons.')
+def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter, check_only,
+                             no_scaffold):
     """Generate projection-facing imports/includes from approved claims (Slice 2).
 
     A1 authority: approved imported class claims deterministically drive:
     1) domain ontology ``owl:imports``, and 2) per-class
     ``kairos-ext:silverInclude`` in ``*-silver-ext.ttl``.
+
+    Unless ``--check-only`` or ``--no-scaffold`` is passed, a minimal valid skeleton
+    is created for any domain whose ``{domain}.ttl`` / ``{domain}-silver-ext.ttl`` is
+    missing, so a fresh domain bootstraps instead of silently writing nothing
+    (issue #190).
     """
-    from ..claim_projection_sync import apply_projection_sync, evaluate_projection_sync
+    from ..claim_projection_sync import (
+        apply_projection_sync,
+        evaluate_projection_sync,
+        scaffold_missing_surfaces,
+    )
     from ..hub_utils import find_hub_root
 
     cwd = Path.cwd()
@@ -2876,26 +3098,35 @@ def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter,
     if domains_filter:
         filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
 
-    report = (
-        evaluate_projection_sync(
-            claims_dir=claims_path,
-            ontologies_dir=ontologies_path,
-            extensions_dir=extensions_path,
-            domains_filter=filter_list,
-        )
-        if check_only
-        else apply_projection_sync(
-            claims_dir=claims_path,
-            ontologies_dir=ontologies_path,
-            extensions_dir=extensions_path,
-            domains_filter=filter_list,
-        )
-    )
-
     click.echo("🔄 Claim-driven projection sync")
     click.echo(f"   Claims:     {claims_path}")
     click.echo(f"   Ontologies: {ontologies_path}")
     click.echo(f"   Extensions: {extensions_path}")
+
+    if check_only:
+        report = evaluate_projection_sync(
+            claims_dir=claims_path,
+            ontologies_dir=ontologies_path,
+            extensions_dir=extensions_path,
+            domains_filter=filter_list,
+        )
+    else:
+        if not no_scaffold:
+            created = scaffold_missing_surfaces(
+                claims_dir=claims_path,
+                ontologies_dir=ontologies_path,
+                extensions_dir=extensions_path,
+                domains_filter=filter_list,
+            )
+            for path in created:
+                click.echo(f"   🆕 scaffolded skeleton: {path.name}")
+        report = apply_projection_sync(
+            claims_dir=claims_path,
+            ontologies_dir=ontologies_path,
+            extensions_dir=extensions_path,
+            domains_filter=filter_list,
+            scaffold_missing=False,
+        )
 
     if not report.domains:
         click.echo("   ⏭ No claims registries found in scope.")
