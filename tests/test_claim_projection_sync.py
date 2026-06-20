@@ -361,3 +361,142 @@ def test_apply_bootstraps_then_syncs_fresh_domain(tmp_path):
     onto_subj = next(onto_graph.subjects(RDF.type, OWL.Ontology))
     imports = {str(o).rstrip("#/") for o in onto_graph.objects(onto_subj, OWL.imports)}
     assert "https://example.org/ref/party" in imports
+
+
+# ---------------------------------------------------------------------------
+# Issue #191 — managed-block writer preserves authored TTL
+# ---------------------------------------------------------------------------
+
+_AUTHORED_ONTOLOGY = """\
+# ===========================================================================
+# Party domain ontology — AUTHORED provenance header (DD-072). KEEP THIS.
+# ===========================================================================
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix dom: <https://example.org/domain/party#> .
+
+<https://example.org/domain/party> a owl:Ontology ;
+    rdfs:label "Party"@en ;
+    owl:imports <https://example.org/domain/_foundation> .
+
+# A locally authored subclass with an explanatory comment that must survive.
+dom:VipParty a owl:Class ;
+    rdfs:subClassOf <https://example.org/ref/party#TradeParty> ;
+    rdfs:label "VIP Party"@en .
+"""
+
+_AUTHORED_EXT = """\
+# Authored silver extension — keep my comments!
+@prefix dom: <https://example.org/domain/party#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+# Local class include — authored, must survive untouched.
+dom:VipParty kairos-ext:silverInclude true .
+"""
+
+
+def _setup_authored(tmp_path):
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    ontologies = model / "ontologies"
+    extensions = model / "extensions"
+    ontologies.mkdir(parents=True, exist_ok=True)
+    extensions.mkdir(parents=True, exist_ok=True)
+    _write_registry(claims_dir)
+    _write_foundation(ontologies)
+    (ontologies / "party.ttl").write_text(_AUTHORED_ONTOLOGY, encoding="utf-8")
+    (extensions / "party-silver-ext.ttl").write_text(_AUTHORED_EXT, encoding="utf-8")
+    return claims_dir, ontologies, extensions
+
+
+def test_managed_block_preserves_authored_content(tmp_path):
+    """Issue #191: sync must not destroy header/comments/local triples."""
+    claims_dir, ontologies, extensions = _setup_authored(tmp_path)
+
+    report = apply_projection_sync(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    assert not report.is_blocking
+
+    onto_text = (ontologies / "party.ttl").read_text(encoding="utf-8")
+    ext_text = (extensions / "party-silver-ext.ttl").read_text(encoding="utf-8")
+
+    # Authored provenance header + comments + local subclass survive verbatim.
+    assert "AUTHORED provenance header (DD-072). KEEP THIS." in onto_text
+    assert "A locally authored subclass with an explanatory comment" in onto_text
+    assert "dom:VipParty a owl:Class ;" in onto_text
+    assert "keep my comments!" in ext_text
+    assert "dom:VipParty kairos-ext:silverInclude true ." in ext_text
+
+    # Managed block was appended with the external import + imported-class include.
+    assert "# >>> kairos-managed" in onto_text
+    assert "<https://example.org/domain/party> <http://www.w3.org/2002/07/owl#imports> " \
+        "<https://example.org/ref/party> ." in onto_text
+
+    # Foundation (intra-hub) import stays in the authored region, not the block.
+    authored_region = onto_text.split("# >>> kairos-managed")[0]
+    assert "<https://example.org/domain/_foundation>" in authored_region
+
+    # And the result is semantically in sync.
+    report2 = evaluate_projection_sync(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    assert not report2.is_blocking
+
+
+def test_managed_block_sync_is_idempotent(tmp_path):
+    claims_dir, ontologies, extensions = _setup_authored(tmp_path)
+
+    apply_projection_sync(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    onto_after_1 = (ontologies / "party.ttl").read_text(encoding="utf-8")
+    ext_after_1 = (extensions / "party-silver-ext.ttl").read_text(encoding="utf-8")
+
+    apply_projection_sync(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    onto_after_2 = (ontologies / "party.ttl").read_text(encoding="utf-8")
+    ext_after_2 = (extensions / "party-silver-ext.ttl").read_text(encoding="utf-8")
+
+    assert onto_after_1 == onto_after_2
+    assert ext_after_1 == ext_after_2
+    # Exactly one managed block (no marker accumulation).
+    assert onto_after_2.count("# >>> kairos-managed") == 1
+
+
+def test_managed_block_migrates_legacy_inline_imports(tmp_path):
+    """A legacy file with an inline external import (no markers) is migrated:
+    the managed import moves into the block, authored local triples are kept."""
+    claims_dir, ontologies, extensions = _setup_authored(tmp_path)
+    legacy = """@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix dom: <https://example.org/domain/party#> .
+
+<https://example.org/domain/party> a owl:Ontology ;
+    rdfs:label "Party"@en ;
+    owl:imports <https://example.org/domain/_foundation> ;
+    owl:imports <https://example.org/ref/party> .
+
+dom:VipParty a owl:Class ;
+    rdfs:label "VIP Party"@en .
+"""
+    (ontologies / "party.ttl").write_text(legacy, encoding="utf-8")
+
+    apply_projection_sync(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    onto_text = (ontologies / "party.ttl").read_text(encoding="utf-8")
+
+    # The external import now lives only inside the managed block...
+    authored_region, _, managed_region = onto_text.partition("# >>> kairos-managed")
+    assert "<https://example.org/ref/party>" in managed_region
+    assert "<https://example.org/ref/party>" not in authored_region
+    # ...the foundation import stays authored, and the local class is retained.
+    assert "<https://example.org/domain/_foundation>" in authored_region
+    assert "VipParty" in onto_text
+
+    report = evaluate_projection_sync(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    assert not report.is_blocking

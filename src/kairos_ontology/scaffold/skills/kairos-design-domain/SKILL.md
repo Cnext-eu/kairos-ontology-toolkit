@@ -2129,6 +2129,13 @@ kairos-ontology check-claims --domains <target-domain> --strict
 > inferred hub base / foundation import) when those files don't yet exist, then
 > proceeds with the sync. Pass `--no-scaffold` to require the files up front.
 
+> **Your authored TTL is preserved.** `claims-to-silver-ext` only owns the triples
+> inside a `# >>> kairos-managed … # <<< kairos-managed` block it appends to the file
+> (the synced `owl:imports` / `silverInclude` surfaces). Everything outside the block —
+> your provenance header, comments, prefix layout, local subclasses, and gap properties —
+> is kept verbatim, and re-running the sync is idempotent. Don't hand-edit inside the
+> managed block; edit anywhere outside it freely.
+
 `--warn-only` overrides `--strict` and must only be used as a deliberate,
 documented exception.
 

@@ -252,6 +252,98 @@ def evaluate_projection_sync(
     return report
 
 
+# Managed-block markers (issue #191). ``claims-to-silver-ext`` owns only the triples
+# *between* these markers; everything else in the file is authored content preserved
+# verbatim. The managed region is regenerated wholesale as text (full URIs, so it is
+# independent of the authored prefix declarations), which means authored comments, the
+# DD-072 provenance header, prefix layout and triple ordering all survive every sync —
+# instead of being destroyed by a whole-graph rdflib re-serialize.
+_MANAGED_BEGIN = "# >>> kairos-managed (generated from the Claim Registry — do not edit)"
+_MANAGED_END = "# <<< kairos-managed"
+
+
+def _strip_managed_block(text: str) -> str:
+    """Return *text* with the managed block (and its markers) removed."""
+    begin = text.find(_MANAGED_BEGIN)
+    if begin == -1:
+        return text
+    end = text.find(_MANAGED_END, begin)
+    if end == -1:
+        # Malformed/truncated block: drop everything from the begin marker on.
+        return text[:begin]
+    end_full = end + len(_MANAGED_END)
+    if end_full < len(text) and text[end_full] == "\n":
+        end_full += 1
+    return text[:begin] + text[end_full:]
+
+
+def _leading_comment_lines(text: str) -> str:
+    """Capture the leading blank/comment lines (e.g. the provenance header)."""
+    out: list[str] = []
+    for line in text.splitlines():
+        if line.strip() == "" or line.lstrip().startswith("#"):
+            out.append(line)
+        else:
+            break
+    return "\n".join(out).strip("\n")
+
+
+def _turtle_statement(subject: URIRef, predicate: URIRef, obj: object) -> str:
+    if isinstance(obj, Literal):
+        if obj.datatype is not None:
+            rendered = f'"{obj}"^^<{obj.datatype}>'
+        elif obj.language:
+            rendered = f'"{obj}"@{obj.language}'
+        else:
+            rendered = f'"{obj}"'
+    else:
+        rendered = f"<{obj}>"
+    return f"<{subject}> <{predicate}> {rendered} ."
+
+
+def _compose_managed_file(authored_text: str, managed_lines: list[str]) -> str:
+    """Stitch preserved *authored_text* with a freshly rendered managed block."""
+    authored = authored_text.strip("\n")
+    parts = [authored] if authored else []
+    if managed_lines:
+        block = _MANAGED_BEGIN + "\n" + "\n".join(managed_lines) + "\n" + _MANAGED_END
+        parts.append(block)
+    return ("\n\n".join(parts) + "\n") if parts else ""
+
+
+def _sync_managed_surface(
+    path: Path,
+    *,
+    managed_triples: list[tuple[URIRef, URIRef, object]],
+    is_managed_authored,
+) -> None:
+    """Rewrite only the managed block of *path*, preserving authored content (#191).
+
+    Steady-state files (managed triples already confined to the block) keep their
+    authored region byte-for-byte. Legacy files written by the pre-#191 whole-graph
+    serializer may carry managed triples inline in the authored region; those are
+    stripped one time (such files have no authored comments to lose, having already
+    been re-serialized), preserving any leading provenance header.
+    """
+    text = path.read_text(encoding="utf-8")
+    authored_text = _strip_managed_block(text)
+
+    authored_graph = Graph()
+    authored_graph.parse(data=authored_text, format="turtle")
+    stray = [t for t in authored_graph if is_managed_authored(t)]
+    if stray:
+        leading = _leading_comment_lines(authored_text)
+        for triple in stray:
+            authored_graph.remove(triple)
+        serialized = authored_graph.serialize(format="turtle")
+        authored_text = f"{leading}\n\n{serialized}" if leading else serialized
+
+    managed_lines = sorted(
+        _turtle_statement(s, p, o) for (s, p, o) in managed_triples
+    )
+    path.write_text(_compose_managed_file(authored_text, managed_lines), encoding="utf-8")
+
+
 def _rewrite_domain_projection_surfaces(
     *,
     claims_file: Path,
@@ -262,8 +354,6 @@ def _rewrite_domain_projection_surfaces(
     registry = load_registry(claims_file)
     ontology_graph = Graph()
     ontology_graph.parse(ontology_file, format="turtle")
-    ext_graph = Graph()
-    ext_graph.parse(extension_file, format="turtle")
 
     ontology_subj = _ontology_subject(ontology_graph)
     if ontology_subj is None:
@@ -272,37 +362,42 @@ def _rewrite_domain_projection_surfaces(
     expected_includes = _approved_imported_class_uris(registry, ontology_iri)
     expected_imports = _expected_external_imports(expected_includes)
 
-    # Rewrite external imports according to approved imported claims (A1).
-    for obj in list(ontology_graph.objects(ontology_subj, OWL.imports)):
-        iri = str(obj).rstrip("#/")
-        if iri in hub_domain_bases:
-            continue
-        ontology_graph.remove((ontology_subj, OWL.imports, obj))
-    for iri in sorted(expected_imports):
-        ontology_graph.add((ontology_subj, OWL.imports, URIRef(iri)))
+    # Ontology owl:imports (A1): managed = external (non-hub-base) imports driven by
+    # approved imported claims. Intra-hub bases (_foundation/_master) stay authored.
+    import_triples: list[tuple[URIRef, URIRef, object]] = [
+        (ontology_subj, OWL.imports, URIRef(iri)) for iri in sorted(expected_imports)
+    ]
 
-    # Rewrite imported class silverInclude set from approved imported claims.
-    for subj, obj in list(ext_graph.subject_objects(KAIROS_EXT.silverInclude)):
-        subj_iri = str(subj)
-        if _is_local_class_uri(subj_iri, ontology_iri):
-            continue
-        ext_graph.remove((subj, KAIROS_EXT.silverInclude, obj))
-    for class_uri in sorted(expected_includes):
-        ext_graph.set(
-            (
-                URIRef(class_uri),
-                KAIROS_EXT.silverInclude,
-                Literal(True, datatype=XSD.boolean),
-            )
-        )
+    def _is_managed_import(triple) -> bool:
+        _s, p, o = triple
+        return p == OWL.imports and str(o).rstrip("#/") not in hub_domain_bases
 
-    # A1 forbids bulk include-imports as a bypass.
-    bulk_subj = URIRef(ontology_iri.rstrip("#/"))
-    for obj in list(ext_graph.objects(bulk_subj, KAIROS_EXT.silverIncludeImports)):
-        ext_graph.remove((bulk_subj, KAIROS_EXT.silverIncludeImports, obj))
+    _sync_managed_surface(
+        ontology_file,
+        managed_triples=import_triples,
+        is_managed_authored=_is_managed_import,
+    )
 
-    ontology_graph.serialize(destination=str(ontology_file), format="turtle")
-    ext_graph.serialize(destination=str(extension_file), format="turtle")
+    # Silver extension silverInclude: managed = imported (non-local) class includes.
+    # The bulk silverIncludeImports flag is forbidden (A1) and stripped if authored.
+    include_triples: list[tuple[URIRef, URIRef, object]] = [
+        (URIRef(class_uri), KAIROS_EXT.silverInclude, Literal(True, datatype=XSD.boolean))
+        for class_uri in sorted(expected_includes)
+    ]
+
+    def _is_managed_include(triple) -> bool:
+        s, p, _o = triple
+        if p == KAIROS_EXT.silverIncludeImports:
+            return True
+        if p == KAIROS_EXT.silverInclude:
+            return not _is_local_class_uri(str(s), ontology_iri)
+        return False
+
+    _sync_managed_surface(
+        extension_file,
+        managed_triples=include_triples,
+        is_managed_authored=_is_managed_include,
+    )
 
 
 def _infer_hub_base(ontologies_dir: Path) -> str:

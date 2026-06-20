@@ -31,9 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--no-scaffold` disables it.
 - **The MDM-anchor warning in `check-claims` now prints a concrete `mdm_anchor: true`
   reference_data claim example and points to the skill / `--no-mdm-anchor` (issue #190).**
+- **`claims-to-silver-ext` no longer destroys authored TTL when syncing projection
+  surfaces (issue #191).** The destructive whole-graph rdflib re-serialize is replaced
+  by a **block-delimited managed region** (`# >>> kairos-managed … # <<< kairos-managed`)
+  that the tool regenerates with full URIs; the provenance header, comments, prefix
+  layout, local subclasses, and triple ordering outside the block are preserved
+  verbatim. Managed import/include sync is unchanged and still enforced by `check-claims`.
+  Repeated syncs are idempotent, and legacy inline imports migrate into the block on the
+  next sync. Also closes the DD-082 item-5 limitation (scaffolded header survives the
+  first sync with approved imported claims). See DD-083.
 
-> The destructive whole-graph rdflib rewrite of projection surfaces (issue #190 item 6)
-> is tracked separately as **issue #191**.
+> ~~The destructive whole-graph rdflib rewrite of projection surfaces (issue #190 item 6)
+> is tracked separately as **issue #191**.~~ Resolved above (issue #191).
 
 ## [4.4.0] — 2026-06-20
 
