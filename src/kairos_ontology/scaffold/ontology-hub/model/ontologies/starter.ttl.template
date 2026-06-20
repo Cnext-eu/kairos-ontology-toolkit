@@ -8,4 +8,7 @@
     rdfs:comment "Ontology for the {label} domain"@en ;
     owl:versionInfo "0.1.0" .
 
-## -- Add your classes and properties below --
+## -- Thin domain ontology: model classes below.
+## -- To share base conventions, import the foundation ontology:
+##   owl:imports <https://{company_domain}/ont/_foundation> ;
+## -- (add a matching catalog-v001.xml <uri> entry so it resolves offline).

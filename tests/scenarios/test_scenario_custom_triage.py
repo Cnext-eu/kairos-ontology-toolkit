@@ -27,7 +27,12 @@ from unittest import mock
 import yaml
 
 from kairos_ontology.analyse_sources import parse_reference_model
-from kairos_ontology.propose_alignment import run_propose_alignment
+from kairos_ontology.claim_registry import load_registry, write_registry
+from kairos_ontology.propose_alignment import (
+    alignment_to_dict,
+    build_domain_alignments,
+    run_propose_alignment,
+)
 
 ACME_HUB = Path(__file__).parent / "acme-hub"
 SOURCES_DIR = ACME_HUB / "integration" / "sources"
@@ -101,7 +106,26 @@ def _affinity_dir(tmp_path):
     return analysis
 
 
-def _run(tmp_path, output):
+def _run(tmp_path):
+    """Build the in-memory client alignment dict (no files written)."""
+    with mock.patch(
+        "kairos_ontology.propose_alignment.get_ai_client", return_value=_mock_client()
+    ), mock.patch(
+        "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+        side_effect=_inventory_side_effect,
+    ):
+        alignments = build_domain_alignments(
+            analysis_dir=_affinity_dir(tmp_path),
+            sources_dir=SOURCES_DIR,
+            catalog_path=None,
+            force=True,
+        )
+    client = next(a for a in alignments if a.domain == "client")
+    return alignment_to_dict(client)
+
+
+def _run_to_disk(tmp_path, claims_dir, *, force=True):
+    """Run the producer end-to-end, writing the Claim Registry to *claims_dir*."""
     with mock.patch(
         "kairos_ontology.propose_alignment.get_ai_client", return_value=_mock_client()
     ), mock.patch(
@@ -112,12 +136,10 @@ def _run(tmp_path, output):
             analysis_dir=_affinity_dir(tmp_path),
             sources_dir=SOURCES_DIR,
             catalog_path=None,
-            output_dir=output,
-            force=True,
+            output_dir=claims_dir,
+            force=force,
         )
-    return yaml.safe_load(
-        (output / "client-alignment.yaml").read_text(encoding="utf-8")
-    )
+    return claims_dir / "client-claims.yaml"
 
 
 def _custom(data, column):
@@ -130,28 +152,31 @@ def _custom(data, column):
 
 class TestCustomTriageScenario:
     def test_low_confidence_suggestion_dropped(self, tmp_path):
-        data = _run(tmp_path, tmp_path / "out")
+        data = _run(tmp_path)
         vat = _custom(data, "VATNumber")
         # WS1: confident-but-wrong guess is suppressed below the floor.
         assert vat["suggested_property"] is None
         # Advisory recommendation is always present (empty → human must decide).
         assert "recommended_disposition" in vat
 
-    def test_human_disposition_survives_regeneration(self, tmp_path):
-        output = tmp_path / "out"
-        data = _run(tmp_path, output)
-        path = output / "client-alignment.yaml"
+    def test_human_decision_survives_regeneration(self, tmp_path):
+        # DD-EL-1: a human decision recorded on a claim must survive a producer
+        # re-run via merge_preserving_decisions (the claim-level analog of the
+        # retired alignment-YAML disposition preservation).
+        claims_dir = tmp_path / "claims"
+        reg_path = _run_to_disk(tmp_path, claims_dir)
 
-        # Modeler hand-triages VATNumber as a real domain property.
-        for table in data["tables"]:
-            for col in table.get("custom_columns", []):
-                if col["column"] == "VATNumber":
-                    col["disposition"] = "model"
-                    col["disposition_source"] = "human"
-        path.write_text(yaml.dump(data, sort_keys=False), encoding="utf-8")
+        registry = load_registry(reg_path)
+        vat_claim = next(
+            c for c in registry.claims if "vatnumber" in c.id.lower()
+        )
+        vat_claim.status = "approved"
+        vat_claim.disposition = "specialize"
+        write_registry(registry, reg_path)
 
-        # Regenerate (force) — the hand-triaged disposition must survive.
-        data2 = _run(tmp_path, output)
-        vat = _custom(data2, "VATNumber")
-        assert vat["disposition"] == "model"
-        assert vat["disposition_source"] == "human"
+        # Regenerate (force) — the hand-made decision must survive.
+        _run_to_disk(tmp_path, claims_dir)
+        registry2 = load_registry(reg_path)
+        vat2 = next(c for c in registry2.claims if "vatnumber" in c.id.lower())
+        assert vat2.status == "approved"
+        assert vat2.disposition == "specialize"

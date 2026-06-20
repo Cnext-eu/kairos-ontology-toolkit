@@ -1,0 +1,9 @@
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://{company_domain}/ont/_foundation> a owl:Ontology ;
+    rdfs:label "{company_name} Foundation Ontology"@en ;
+    rdfs:comment "Shared base ontology for generated thin domain ontologies."@en ;
+    owl:versionInfo "0.1.0" .
+
+## -- Keep shared imports and global conventions here --

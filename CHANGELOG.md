@@ -7,6 +7,236 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Deterministic address relationship candidates surfaced during alignment
+  (issue #192, Phase A1).** `propose-alignment` now promotes clustered address-part
+  columns (e.g. `billing_street` + `billing_city` + `billing_postal_code`) into a
+  machine-readable, **advisory** `relationship_candidates` entry on the Claim Registry
+  (`hasBillingAddress → Address`), in addition to the existing scalar column
+  dispositions. The detector is role-aware (`billing_*` vs `shipping_*` are separate
+  relationships), always-on, additive, and uses **no LLM / no cross-module widening**;
+  candidates carry the source columns and `requires_human_confirmation: true` but no
+  resolvable target URI. A new MANDATORY *Checkpoint 3c — Relationship &
+  Satellite-Entity Review* in `kairos-design-domain` blocks TTL generation until each
+  candidate has an explicit model/relate/defer decision. Concrete target-URI naming
+  (A2) and FK-driven satellite detection (Phase B) are deferred. See DD-084.
+- **`decide-claims` CLI — query + bulk-curate claim status/disposition (issue #190).**
+  A new AI-free command (`decide_claims.py`) to list claims by selector
+  (`--status`/`--disposition`/`--type`/`--origin`/`--id`/`--column` globs) and to
+  bulk-set status via `--by-disposition` or `--set-status` (`--dry-run` for counts).
+  Writes back through the canonical `write_registry`, so curation produces minimal,
+  reviewable diffs instead of hand-edited YAML noise.
+
+### Changed
+- **OKF phase logs replace interactive `.sessions-design` logs (DD-085).** New hubs
+  use `.kairos-state/phases/...` as the required design-session memory for
+  discovery/source/domain/mapping/silver/gold skills. Legacy `.sessions-design/*.md`
+  files are historical only and are not auto-migrated. Import audit logs
+  (`.sessions-design-import/`) and projection reports (`.sessions-projection/`)
+  remain separate.
+- **`project --ontology` supports single-domain projection.** Operators can now run
+  `kairos-ontology project --ontology model/ontologies/party.ttl --target silver`
+  to regenerate one ontology file while preserving hub-root discovery for
+  extensions, mappings, sources, shapes, and claims. Existing `--ontologies`
+  directory mode remains unchanged.
+- **Hub-side offline dbt validation guidance.** Ontology-hub scaffolds now include
+  a `dbt-validate` optional dependency group (`dbt-core` + Fabric adapter in the
+  1.9 family) and `.env.example` version guidance so `kairos-execute-project` can
+  run `dbt deps` + `dbt parse` against `output/medallion/dbt/` after dbt
+  projection. Downstream dataplatform repos are not given extra validation-only
+  dependencies.
+
+### Fixed
+- **Claim projection sync now fails loudly on invalid intra-hub ontology bases.**
+  `_collect_hub_domain_bases` no longer silently skips malformed Turtle while
+  collecting `_foundation.ttl` / `_master.ttl` imports, avoiding false "in sync"
+  reports when a shared hub base is broken.
+- **Intra-hub shared bases (`_foundation.ttl`, `_master.ttl`) are no longer stripped
+  from domain `owl:imports` (issue #190).** `_collect_hub_domain_bases` skipped every
+  `_`-prefixed file, so foundation/master imports were flagged as `extra` and removed
+  by projection sync. It now treats any `owl:Ontology`-declaring `*.ttl` under
+  `model/ontologies/` as an allowed intra-hub base (only `-ext.ttl` surfaces are skipped).
+- **`migrate-claims` now back-fills `class_uri`/`property_uri` from the reference-model
+  inventory (issue #190),** so anchored claims can be approved without manual URI lookup.
+  Ambiguous names stay null (never guessed); resolved/unresolved counts are printed.
+  `--no-resolve-uris` opts out; `--inventory-dir` overrides discovery.
+- **`claims-to-silver-ext` now scaffolds a minimal valid ontology / `*-silver-ext.ttl`
+  skeleton for a fresh domain instead of silently writing nothing (issue #190).**
+  The skeleton carries a provenance header and inferred hub base / foundation import;
+  `--no-scaffold` disables it.
+- **The MDM-anchor warning in `check-claims` now prints a concrete `mdm_anchor: true`
+  reference_data claim example and points to the skill / `--no-mdm-anchor` (issue #190).**
+- **`claims-to-silver-ext` no longer destroys authored TTL when syncing projection
+  surfaces (issue #191).** The destructive whole-graph rdflib re-serialize is replaced
+  by a **block-delimited managed region** (`# >>> kairos-managed … # <<< kairos-managed`)
+  that the tool regenerates with full URIs; the provenance header, comments, prefix
+  layout, local subclasses, and triple ordering outside the block are preserved
+  verbatim. Managed import/include sync is unchanged and still enforced by `check-claims`.
+  Repeated syncs are idempotent, and legacy inline imports migrate into the block on the
+  next sync. Also closes the DD-082 item-5 limitation (scaffolded header survives the
+  first sync with approved imported claims). See DD-083.
+
+> ~~The destructive whole-graph rdflib rewrite of projection surfaces (issue #190 item 6)
+> is tracked separately as **issue #191**.~~ Resolved above (issue #191).
+
+## [4.4.0] — 2026-06-20
+
+### Fixed
+- **`analyse-sources --domains` no longer forces unrelated tables into the filtered
+  domain (issue #189).** `--domains` previously pruned the LLM **candidate** domain
+  set before classification, so every table was forced into the requested domain (or
+  `unclassified`), polluting affinity evidence and downstream `check-claims` counts.
+  It is now a pure **post-classification output filter**: tables are always classified
+  against the full accelerator/reference domain set (getting their true primary domain),
+  then only tables whose primary domain matches `--domains` are written. A system with
+  no matching tables now writes an empty affinity report instead of erroring. `--max-domains`
+  (which still truncates candidates as a rate-limit guard) now warns when it truncates.
+- **`release.yml` now normalizes the release tag to PEP 440 before comparing it to
+  `__version__`**, mirroring `_tag_to_version()`. Both `vX.Y.Zrc1` and the
+  SemVer-style `vX.Y.Z-rc.1` (the form the channel resolver and `_whl_url` already
+  expect) now validate, instead of only the exact PEP 440 string.
+
+### Added
+- **Two-layer lifecycle state, deterministic `status` CLI, and the `kairos-flow`
+  single entry point (DD-080).** Introduces a formal, resumable lifecycle state model
+  for ontology hubs.
+  - **`kairos-ontology status`** — a new read-only, AI-free CLI (`status.py`) that
+    deterministically scans committed hub artifacts and reports a per-phase /
+    per-instance objective state (`not-started` / `in-progress` / `done`) for the
+    whole lifecycle (`discovery, source, domain, mapping, claims, silver, gold,
+    validate, project`). Supports `--format text|json|markdown`; exempt from the
+    skill-gate like the other deterministic gates.
+  - **`kairos-flow` skill** — the single entry point ("start / where are we /
+    continue / resume"). Runs the scan, reconciles it against the saved continuation
+    state, presents a lifecycle overview, offers clean-start vs continue, and hands
+    off to the correct phase skill. Interactive-only; it is the only writer of
+    `status.md`.
+  - **OKF continuation-state bundle** at `ontology-hub/.kairos-state/` (created by
+    `init` / `new-repo`): `status.md` (scan-derived / continuation / phase-index
+    regions) plus per-instance `phases/<phase>/<instance>.md` logs with an Open
+    Questions resume anchor, following the Open Knowledge Format v0.1 as a storage
+    convention.
+
+### Changed
+- **`kairos-diagnose-status`** now defers objective status to `kairos-ontology
+  status` (deterministic backbone) and focuses on enrichment/diagnostics.
+- **Phase design/execute skills** (discovery, source, domain, mapping, silver, gold,
+  validate, project) gain a lightweight read-state + state-proposal contract against
+  `.kairos-state/`; they no longer maintain global status themselves.
+- Methodology doc gains §21 (lifecycle state model and single-entry orchestration);
+  skill routing table, `kairos-help`, and the CLI lifecycle table point to
+  `kairos-flow`.
+
+## [4.3.0] — 2026-06-15
+
+### Added
+- **MDM/reference-data rules + ownership hardening in `check-claims` (DD-EL-6).**
+  Slice 4 adds four deterministic governance checks to the single `check-claims`
+  gate plus the Claim Registry schema they need.
+  - **MDM-anchor gate (§5.4).** A *broad domain claim* (an approved class claim
+    with disposition claim/specialize) is blocked with `anchor_pending` when the
+    domain declares `mdm_anchor` reference-data claims that are still `proposed`,
+    and warned with `anchor_missing` (pragmatic — anchors must be *known*, not
+    fully implemented) when broad claims have no declared anchors at all.
+  - **deviation-log check (§12/§14).** Approved `gap` (client-native) claims that
+    lack a deviation record (owner + reason) block with `deviation_missing`.
+  - **ownership-boundary check (§14).** Approved claims whose `class_uri` falls
+    under another data-domain's `data-domains.yaml` `uris` prefix block with
+    `ownership_conflicts` unless an `ownership_override` (owner + rationale) is
+    present.
+  - **passthrough-review check (§11.2).** High-use passthrough claims (evidence
+    across ≥2 source systems, a powerbi measure/slicer/filter/hierarchy/join/fk/
+    sample_signal evidence type, or any evidence carrying a `measure`) that are not
+    yet `passthrough_reviewed` warn with `passthrough_review`.
+  - **Shared-conformed-dimension escape hatch.** Cross-file same-URI approved
+    claims now route to a `shared_dimensions` warning instead of the
+    `duplicate_approved` block when either claim carries an `ownership_override`.
+- **Claim Registry schema fields (DD-EL-6).** New `ReferenceData`
+  (`authority_system` / `code_system` / `key` / `scd_type`), `Deviation`
+  (`reason` / `owner` / `gap_request`), and `OwnershipOverride`
+  (`owner` / `rationale`) dataclasses, plus `Claim` fields `reference_data`,
+  `mdm_anchor`, `deviation`, `ownership_override`, and `passthrough_reviewed`. All
+  are omitted from serialized output when default (byte-stable golden output
+  preserved) and preserved across re-runs by `merge_preserving_decisions`.
+  `validate_registry` gains structural checks (warns on `reference_data`/`mdm_anchor`
+  set on a non-`reference_data` claim; errors on an `ownership_override` missing owner
+  or rationale).
+- **`check-claims` flags.** `--no-mdm-anchor` and `--no-ownership` skip the
+  respective gates.
+
+## [4.2.0] — 2026-06-15
+
+### Added
+- **`derive-claims` command (DD-EL-5).** A **deterministic, AI-free** aggregator
+  that merges/enriches the Claim Registry (`model/claims/{domain}-claims.yaml`)
+  into `proposed` candidate claims, reducing hand-authoring. The
+  semantically-hard LLM work already happened upstream in `analyse-sources`
+  (affinity) and `propose-alignment` (column→property); `derive-claims` is the
+  deterministic merge/enrich layer. It joins **five evidence streams**
+  deterministically on `(system, table[, column])` and ref_class/ref_property
+  names — the existing claims registry, `analyse-sources` affinity,
+  `import-tmdl` concept-mapping, SKOS mappings, and sample-derived signals —
+  attaching **multiple `evidence_sources` per claim**. All derived/new claims are
+  `status: proposed` and are **never** auto-`approved` (the C4 guard); human
+  decisions survive re-runs via the existing `merge_preserving_decisions()`. For
+  parity with the AI commands it reuses `--max-workers` (default 8) and `--force`
+  (`_concurrency` / `_cache`), but **deliberately omits the cost banner** because
+  nothing is billed. A future opt-in `--llm-reconcile` flag (LLM tie-breaking /
+  rationale synthesis, with a cost banner) is **deferred** to a later slice.
+
+## [4.1.0] — 2026-06-15
+
+### Added
+- **`claims-to-silver-ext` command (DD-EL-4).** Deterministically generates/
+  regenerates a domain's external `owl:imports` set and per-class
+  `kairos-ext:silverInclude` assertions in `{domain}-silver-ext.ttl` from the
+  **approved imported** class claims in `model/claims/{domain}-claims.yaml`
+  (realizing A1 — claims drive imports). `--check-only` reports drift and exits 1
+  without writing.
+- **Foundation/thin-ontology scaffold (A2-lite).** New
+  `scaffold/ontology-hub/model/ontologies/foundation.ttl.template`; the starter
+  domain ontology now `owl:imports` the thin `_foundation` ontology.
+
+### Changed
+- **`check-claims` claim↔projection sync gate (DD-EL-4).** `check-claims` now
+  blocks when a domain's `owl:imports` / `silverInclude` surfaces drift from its
+  approved claims, or when a `silverIncludeImports` bulk-bypass flag is present.
+  Add `--no-extension-sync` to skip the gate.
+- **Projector claim-authority gate for silver/dbt/powerbi (DD-EL-4).** For those
+  targets, if `model/claims/{domain}-claims.yaml` exists, projection of that domain
+  fails (records a projection error) when the claim-derived imports/includes are out
+  of sync. Retains the DD-021 no-bypass guarantee but makes materialization
+  claim-driven.
+
+## [4.0.0] — 2026-06-15
+
+### Changed (BREAKING)
+- **Claim Registry replaces the alignment YAML (DD-EL-1).** The evidence-led
+  cutover retires `{domain}-alignment.yaml` in favour of a single governed
+  `model/claims/{domain}-claims.yaml` registry as the source of truth for which
+  concepts are approved to materialize.
+  - `propose-alignment` now emits candidate (`proposed`) claims into the registry
+    (default output `model/claims/`) instead of alignment YAML, preserving
+    table/column coverage, the freshness digest, and custom-column disposition
+    triage. Re-runs merge over existing claims without clobbering human decisions.
+  - **New `check-claims` gate** replaces **both** `check-alignment` and
+    `check-source-coverage` (now removed). It verifies, per affinity domain, that a
+    `{domain}-claims.yaml` exists, is structurally valid, covers every affinity
+    table, and is fresh; it blocks on cross-file duplicate `approved` claims and
+    (unless `--no-source-coverage`) on unmapped tables, and — with `--strict` —
+    on undecided (`proposed`) claims. It rejects any leftover `*-alignment.yaml`
+    with a migration message (no dual path).
+  - **New `migrate-claims`** command performs the one-way
+    `{domain}-alignment.yaml` → `{domain}-claims.yaml` conversion.
+  - Design/help skills updated to the claims workflow (`check-claims`,
+    registry-based curation).
+
+### Removed (BREAKING)
+- `check-alignment` and `check-source-coverage` CLI commands (folded into
+  `check-claims`).
+- Alignment-YAML reader machinery in `alignment_coverage` (the module now provides
+  only the reused affinity/freshness primitives and triage heuristics).
+
 ## [3.24.1] — 2026-06-14
 
 ### Changed

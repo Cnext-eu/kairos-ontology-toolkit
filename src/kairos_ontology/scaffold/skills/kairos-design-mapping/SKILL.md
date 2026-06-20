@@ -9,6 +9,24 @@ description: >
 
 # Source-to-Domain Mapping Skill
 
+## Lifecycle state (DD-080)
+
+> The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
+> `ontology-hub/.kairos-state/status.md`. This skill plugs into that shared state; it
+> does not maintain the global status file.
+
+**On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
+continuation region and this phase's log(s) at `phases/mapping/<source>-to-<domain>.md`
+— to resume open questions. Ignore `_archive/`. (`kairos-ontology status` gives the
+objective view.)
+
+**On pause or finish:** append a *State update proposal* to
+`phases/mapping/<source>-to-<domain>.md` with OKF frontmatter (`type: kairos-phase-log`,
+`phase: mapping`, `instance: <source>-to-<domain>`, `status:`, `last_updated:`). Record
+decisions made and an **Open questions** list as the resume anchor. Do **not** edit
+`status.md` directly — kairos-flow folds your proposal in.
+
+
 You guide the user through creating SKOS mapping files that link source system
 columns to domain ontology properties. This is a **structured, interactive**
 process — never guess mappings without evidence and user confirmation.
@@ -19,7 +37,7 @@ process — never guess mappings without evidence and user confirmation.
 
 ### Gate 1: Session file prerequisite
 
-> **You MUST create a `ontology-hub/.sessions-design/mapping-{source}-to-{domain}-{date}.md`
+> **You MUST create a `ontology-hub/.kairos-state/phases/mapping/{source}-to-{domain}.md`
 > file BEFORE writing any mapping TTL.**
 
 If no session file exists for the source→domain pair being mapped, you are NOT
@@ -68,13 +86,13 @@ The user can override any auto-approved mapping.
 1. List source systems in `integration/sources/` that have a `*.vocabulary.ttl`
 2. Ask user which source system to map
 3. Ask user which domain(s) to target (list available from `model/ontologies/`)
-4. Create session file: `ontology-hub/.sessions-design/mapping-{source}-to-{domain}-{YYYY-MM-DD}.md`
+4. Create phase log: `ontology-hub/.kairos-state/phases/mapping/{source}-to-{domain}.md`
    > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
    > start a new session instead of resuming, first move any existing
-   > `.sessions-design/mapping-{source}-to-{domain}-*.md` log(s) for this
-   > source→domain pair into `ontology-hub/.sessions-design/_archive/` (create it if
-   > missing; keep the original filename). Never delete a previous log. Then create
-   > the new session log.
+   > `ontology-hub/.kairos-state/phases/mapping/{source}-to-{domain}.md` log for
+   > this source→domain pair into `ontology-hub/.kairos-state/_archive/` (create it
+   > if missing; use a collision-safe filename). Never delete a previous log. Then
+   > create the new phase log.
 5. **Load the business glossary (if present):** check
    `ontology-hub/businessdiscovery/*.ttl` (produced by the **kairos-design-discovery**
    skill). Index each `skos:Concept`'s `skos:altLabel`s and the domain IRI it links
@@ -242,9 +260,8 @@ mapped** but annotated:
 
 **Rules:**
 
-1. **Review flags never block.** `check-alignment` lists them in a report-only
-   "flagged for review" section; they are independent of the `--strict`
-   custom-column gate (issue #164).
+1. **Review flags never block.** The `check-claims` gate surfaces them in a
+   report-only section; they are independent of the `--strict` curation gate.
 2. **Address-part columns** (`SHIPPER_STREET`, `billing_zip`, …) flagged onto a
    party scalar usually belong on a shared `Address` concept via an address
    relationship. With **cross-module alignment** (DD-070, see below) the shared

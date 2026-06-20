@@ -12,6 +12,29 @@ You are performing a **status review** of an ontology hub repository. Your goal 
 to inspect the hub structure and produce a clear, actionable report showing where
 the implementation stands and what remains to be done.
 
+## Objective status comes from the deterministic scanner (DD-080)
+
+> **Run `kairos-ontology status` first — it is the authoritative objective layer.**
+> Do **not** hand-derive per-phase completion by ad-hoc reasoning; that is exactly
+> what the deterministic scanner exists to prevent.
+
+```bash
+kairos-ontology status              # human summary
+kairos-ontology status --format json   # machine-readable, per-phase/per-instance
+```
+
+The scanner reports, deterministically and AI-free, a `not-started | in-progress |
+done` state for every lifecycle phase (`discovery, source, domain, mapping, claims,
+silver, gold, validate, project`) and its instances. Use this as the backbone of
+your report; the deep-dive sections below only **explain and enrich** that result
+(quality of vocabularies, reference-model strategy, version drift, etc.).
+
+> **For "start / where are we / continue / resume", use the `kairos-flow` skill**
+> instead — it owns the `.kairos-state/` continuation state (open questions,
+> decisions, intent) and routes to the right phase skill. This status-review skill
+> is for a detailed *read-only diagnostic*, not for driving the lifecycle.
+
+
 ## Before you start
 
 0. **Locate the hub root** — look for `catalog-v001.xml` or `model/ontologies/`
@@ -21,7 +44,7 @@ the implementation stands and what remains to be done.
    If outdated, note it in the report but continue.
 
 2. **Ignore archived session logs (DD-071)** — when listing or grepping
-   `.sessions-design` or `.sessions-projection` for the last/most-recent session
+   `.kairos-state` or `.sessions-projection` for the last/most-recent session
    log, do not descend into the `_archive/` subfolder. Archived logs are
    historical and must be ignored when determining current progress.
 

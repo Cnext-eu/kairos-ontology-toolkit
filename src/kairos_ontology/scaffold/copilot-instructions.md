@@ -130,7 +130,7 @@ When designing or modifying ontologies, use the **kairos-design-domain** skill.
 It combines core modeling knowledge (class hierarchies, property design, naming
 conventions, reference-model-first workflow, extension annotations) with an
 interactive configurator (business alignment checkpoints, session persistence in
-`ontology-hub/.sessions-design/`, and structured validation gates). For minor
+`ontology-hub/.kairos-state/phases/`, and structured validation gates). For minor
 edits (adding a property, fixing a label) it supports a quick-edit mode that
 skips checkpoints.
 
@@ -174,6 +174,7 @@ Use this table to pick the correct skill for a user's intent:
 
 | User intent | Correct skill |
 |---|---|
+| "Start / where are we / what's next / continue / resume" | **kairos-flow** (single entry point — reads deterministic status + continuation state, then hands off) |
 | "Explore company / business model / capture business terminology" | **kairos-design-discovery** |
 | "Model / design / create classes / add properties / extend ontology" | **kairos-design-domain** (= begin the modeling lifecycle: fresh hub → auto-hand off to kairos-design-source/discovery first; sources exist → mandatory source-completeness check, first pass included) |
 | "Create a new hub repo from scratch" | **kairos-setup-init** |
@@ -189,7 +190,7 @@ Use this table to pick the correct skill for a user's intent:
 | "Import CSV/Excel flat files as source" | **kairos-design-source** (Phase 1) |
 | "Release / upgrade / version check / update reference models" | **kairos-toolkit-ops** |
 | "Map source columns to domain / create SKOS mappings" | **kairos-design-mapping** |
-| "Status / progress / what's missing / where are we" | **kairos-diagnose-status** |
+| "Status / progress / what's missing / where are we" | **kairos-flow** (start/continue) or **kairos-diagnose-status** (detailed read-only diagnostic). Both build on the deterministic `kairos-ontology status` CLI. |
 | "Set up / scaffold a dataplatform dbt repo" | **kairos-setup-dataplatform** |
 | "Import source schema / refresh vocabulary from bronze" | **kairos-design-source** (Phase 2) |
 | "Generate coverage report" | CLI: `kairos-ontology coverage-report` |

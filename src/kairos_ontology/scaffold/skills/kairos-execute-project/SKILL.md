@@ -7,6 +7,22 @@ description: >
 
 # Projection Generation Skill
 
+## Lifecycle state (DD-080)
+
+> The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
+> `ontology-hub/.kairos-state/status.md`. This skill plugs into that shared state; it
+> does not maintain the global status file.
+
+**On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
+continuation region and the project log at `phases/project.md` — to resume open
+questions. Ignore `_archive/`. (`kairos-ontology status` gives the objective view.)
+
+**On pause or finish:** append a *State update proposal* to `phases/project.md` with OKF
+frontmatter (`type: kairos-phase-log`, `phase: project`, `instance: <target>`, `status:`,
+`last_updated:`). Record decisions made and an **Open questions** list as the resume
+anchor. Do **not** edit `status.md` directly — kairos-flow folds your proposal in.
+
+
 > **🔒 Skill context:** Before running any `kairos-ontology` /
 > `python -m kairos_ontology` command in this skill, set the sentinel env var so
 > the CLI knows it runs inside a skill and suppresses its skill-gate warning:
@@ -65,12 +81,12 @@ that prerequisite files exist. Non-medallion targets (`prompt`, `neo4j`, `azure-
 ### Source-coverage gate (silver / dbt — MANDATORY, DD-061)
 
 When the hub has affinity reports (`integration/sources/_analysis/*-affinity.yaml`),
-**also** run the deterministic source-coverage gate before projecting `silver` or
+**also** run the deterministic claims gate before projecting `silver` or
 `dbt`, so the silver layer is built against a **complete** ontology rather than a
-partial one:
+partial one (the gate includes the pre-silver mapping-coverage check):
 
 ```bash
-kairos-ontology check-source-coverage
+kairos-ontology check-claims
 ```
 
 - **Exit 0** → every affinity-assigned source table is mapped to a domain entity.
@@ -80,8 +96,51 @@ kairos-ontology check-source-coverage
   **kairos-design-domain** if classes are missing) to close the gaps, then re-run
   the gate. Override only deliberately with `--warn-only`.
 
-`check-source-coverage` is read-only and deterministic (no AI). Skip it only when
+`check-claims` is read-only and deterministic (no AI). Skip it only when
 no affinity reports exist yet (the hub hasn't run `analyse-sources`).
+
+#### Claim-driven extension sync (Slice 2)
+
+When a domain has an **approved** Claim Registry (`model/claims/{domain}-claims.yaml`),
+approved imported-class claims deterministically drive that domain's external
+`owl:imports` and silver-extension `silverInclude` annotations. `check-claims`
+includes a **sync gate** that flags drift between the approved claims and the
+generated projection surfaces; materialize the surfaces with:
+
+```bash
+kairos-ontology claims-to-silver-ext
+```
+
+This rewrites the domain ontology's external `owl:imports` and the
+`*-silver-ext.ttl` `silverInclude` set to exactly match the approved imported
+claims (A1). The generated TTL stays human-reviewable (A2-lite). The
+`silver`, `dbt`, and `powerbi` projectors enforce an **authority gate**: if a
+claims file exists and the surfaces are out of sync, projection fails with a
+pointer to run `claims-to-silver-ext`. Use `check-claims --no-extension-sync`
+to skip only the sync portion of the gate.
+
+#### MDM / reference-data + ownership gates (Slice 4)
+
+`check-claims` also enforces four MDM/ownership rules over the registry's curated
+governance fields (`reference_data`, `mdm_anchor`, `deviation`, `ownership_override`,
+`passthrough_reviewed`):
+
+- **MDM-anchor gate (§5.4)** — broad domain claims (approved class claims with
+  disposition claim/specialize) block with `anchor_pending` when declared
+  `mdm_anchor` reference-data claims are still `proposed`, and warn `anchor_missing`
+  (pragmatic — anchors must be *known*, not fully implemented) when no anchors are
+  declared at all.
+- **deviation-log (§12/§14)** — approved `gap` (client-native) claims without a
+  `deviation` (owner + reason) block with `deviation_missing`.
+- **ownership-boundary (§14)** — approved claims crossing another data-domain's
+  `data-domains.yaml` `uris` prefix block with `ownership_conflicts` unless an
+  `ownership_override` (owner + rationale) is present; that override also downgrades
+  a cross-file same-URI duplicate from `duplicate_approved` to a `shared_dimensions`
+  warning (conformed-dimension share).
+- **passthrough-review (§11.2)** — high-use passthrough claims not yet
+  `passthrough_reviewed` warn with `passthrough_review`.
+
+Skip those gates with `check-claims --no-mdm-anchor` / `--no-ownership`.
 
 
 ### Example interaction
@@ -130,6 +189,9 @@ python -m kairos_ontology project --target prompt
 
 # Generate silver layer (requires *-silver-ext.ttl in model/extensions/)
 python -m kairos_ontology project --target silver
+
+# Generate one domain only
+python -m kairos_ontology project --ontology model/ontologies/party.ttl --target silver
 
 # Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver, powerbi, report
 ```
@@ -185,6 +247,38 @@ python -m kairos_ontology project --target silver
 python -m kairos_ontology project --target dbt
 python -m kairos_ontology project --target powerbi
 ```
+
+### Offline dbt validation after dbt projection
+
+When the requested target is `dbt` or `all`, validate the generated dbt package
+before reporting success.
+
+1. Generate the dbt output:
+   ```bash
+   python -m kairos_ontology project --target dbt
+   ```
+2. Install the hub-side validation extra if needed:
+   ```bash
+   uv sync --extra dbt-validate
+   ```
+3. From `ontology-hub/output/medallion/dbt/`, install dbt package dependencies and
+   run an offline parse:
+   ```bash
+   uv run --extra dbt-validate dbt deps
+   uv run --extra dbt-validate dbt parse
+   ```
+
+If `dbt parse` fails because no profile is available, create a temporary
+parse-only profile outside source control (for example under
+`ontology-hub/output/medallion/dbt/.kairos-dbt-profiles/`) using the generated
+`profile:` value from `dbt_project.yml`, then rerun with
+`--profiles-dir .kairos-dbt-profiles`. Do not commit profiles or credentials.
+
+Run `dbt compile` only when a usable profile is configured. If parse/compile
+reports model, YAML, macro, or SQL-generation errors, fix the projector or source
+mapping issue, regenerate the dbt projection, and rerun validation. If compile
+fails because credentials, driver, warehouse, or network access are missing,
+report that as an environment/profile issue rather than a generated-model defect.
 
 ### Prerequisites for each medallion target
 

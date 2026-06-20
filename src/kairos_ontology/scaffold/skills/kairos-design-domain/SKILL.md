@@ -11,6 +11,22 @@ description: >
 
 # Ontology Modeling Skill
 
+## Lifecycle state (DD-080)
+
+> The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
+> `ontology-hub/.kairos-state/status.md`. This skill plugs into that shared state; it
+> does not maintain the global status file.
+
+**On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
+continuation region and this phase's log(s) at `phases/domain/<domain>.md` — to resume
+open questions. Ignore `_archive/`. (`kairos-ontology status` gives the objective view.)
+
+**On pause or finish:** append a *State update proposal* to `phases/domain/<domain>.md`
+with OKF frontmatter (`type: kairos-phase-log`, `phase: domain`, `instance: <domain>`,
+`status:`, `last_updated:`). Record decisions made and an **Open questions** list as the
+resume anchor. Do **not** edit `status.md` directly — kairos-flow folds your proposal in.
+
+
 You are an expert in OWL 2 ontology modeling using Turtle (TTL) syntax. This
 skill combines core modeling knowledge with an interactive configurator workflow
 that ensures naming decisions and design choices are validated with stakeholders
@@ -25,7 +41,7 @@ them means the modeling process has failed, regardless of output quality.
 
 ### Gate 1: Session file prerequisite
 
-> **You MUST create a `.sessions-design/modeling-{domain}-*.md` file BEFORE
+> **You MUST create `ontology-hub/.kairos-state/phases/domain/{domain}.md` BEFORE
 > writing any domain `.ttl` file.**
 
 If no session file exists for the domain being modeled, you are NOT permitted
@@ -147,8 +163,8 @@ Use this quick-reference to determine which section applies:
 At the beginning of every modeling session, look for saved configuration files:
 
 ```
-ontology-hub/.sessions-design/
-  └── modeling-{domain}-{YYYY-MM-DD}.md    # Saved session state
+ontology-hub/.kairos-state/phases/domain/
+  └── {domain}.md    # Saved OKF phase state
 ```
 
 **Ask the user:**
@@ -173,14 +189,13 @@ If no session exists, start fresh and create one immediately.
 
 > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
 > start a new session instead of resuming, first move any existing
-> `.sessions-design/modeling-{domain}-*.md` log(s) for this domain (including
-> `modeling-{domain}-FINAL-*.md`) into `ontology-hub/.sessions-design/_archive/`
-> (create it if missing; keep the original filename). Never delete a previous log.
-> Then create the new session log.
+> `ontology-hub/.kairos-state/phases/domain/{domain}.md` log into
+> `ontology-hub/.kairos-state/_archive/` (create it if missing; use a
+> collision-safe filename). Never delete a previous log. Then create the new phase log.
 
 ### Session file format
 
-Save progress to `ontology-hub/.sessions-design/modeling-{domain}-{YYYY-MM-DD}.md`:
+Save progress to `ontology-hub/.kairos-state/phases/domain/{domain}.md`:
 
 ```markdown
 # Modeling Session: {Domain Name}
@@ -300,10 +315,10 @@ and Gate 3 — these are non-negotiable.
 ```bash
 ls ontology-hub/integration/sources/        # any source systems imported?
 ls ontology-hub/integration/sources/_analysis/ 2>/dev/null   # analysed?
-ls ontology-hub/.sessions-design/modeling-* 2>/dev/null      # prior modeling session(s)?
+ls ontology-hub/.kairos-state/phases/domain/*.md 2>/dev/null # prior modeling phase log(s)?
 ls ontology-hub/model/ontologies/           # existing domain .ttl files?
 ls ontology-hub/businessdiscovery/*.ttl 2>/dev/null                  # discovery artifacts?
-ls ontology-hub/.sessions-design/businessdiscovery-* 2>/dev/null     # discovery session(s)?
+ls ontology-hub/.kairos-state/phases/discovery.md 2>/dev/null        # discovery phase log?
 ```
 
 **P1b — Discovery-Completeness Checkpoint (ALWAYS, every start — fires in P2a AND the
@@ -314,7 +329,7 @@ glossary that improves naming alignment and flags business terms for modeling. I
 
 ```bash
 ls businessdiscovery/*.ttl 2>/dev/null                        # company model / glossary TTL
-ls .sessions-design/businessdiscovery-*.md 2>/dev/null        # discovery session(s)
+ls .kairos-state/phases/discovery.md 2>/dev/null              # discovery phase log?
 ```
 
 - **If discovery artifacts are absent** (no `businessdiscovery/*.ttl` and no
@@ -420,7 +435,7 @@ already imported/analysed.
 2a. **Read business-discovery context (gate — see P1b)** — by now the **P1b
    Discovery-Completeness Checkpoint** has already fired (it prompts to run
    **kairos-design-discovery** when no discovery artifacts exist). Read the latest
-   `ontology-hub/.sessions-design/businessdiscovery-*.md` and any
+   `ontology-hub/.kairos-state/phases/discovery.md` and any
    `ontology-hub/businessdiscovery/*.ttl` produced by the **kairos-design-discovery**
    skill. If they are **present**, you MUST read them and use them as **background
    context** (what the company does, its sector,
@@ -548,10 +563,10 @@ ls integration/sources/_analysis/
 > **`propose-alignment` lives here.** The `propose-alignment` step is embedded
 > **primarily in this skill** — it is run as part of the Step 0a.2 alignment-coverage
 > gate (below) to pre-populate the Source Evidence Table. There is no dedicated
-> alignment skill; treat `propose-alignment` (and its `check-alignment` gate) as
+> alignment skill; treat `propose-alignment` (and its `check-claims` gate) as
 > part of the `kairos-design-domain` workflow.
 
-**Step 0a.2 — Alignment-coverage gate (MANDATORY — DD-061):**
+**Step 0a.2 — Claims-coverage gate (MANDATORY — DD-EL-1):**
 
 > **BLOCKING GATE (symmetric to the Step 0c.1b inventory gate).** Before building
 > the Source Evidence Table, verify that `propose-alignment` was run **completely**
@@ -559,22 +574,22 @@ ls integration/sources/_analysis/
 > hand-reading a subset of tables (e.g. mining 2 of 67 domain tables):
 
 ```bash
-kairos-ontology check-alignment --domains <target-domain>
+kairos-ontology check-claims --domains <target-domain>
 ```
 
 - **Exit 0** → every affinity table for the domain has a fresh, complete
-  `{domain}-alignment.yaml`. Proceed.
+  `{domain}-claims.yaml` registry. Proceed.
 - **Exit 1 (missing / incomplete / stale)** → STOP. Run the full alignment pass
   (no domain filter so every domain table is covered), then re-check:
   ```bash
   kairos-ontology propose-alignment
-  kairos-ontology check-alignment --domains <target-domain>
+  kairos-ontology check-claims --domains <target-domain>
   ```
   `propose-alignment` requires affinity reports (`analyse-sources`) to exist first.
   Do **not** proceed to the Source Evidence Table while this gate is red — a red
   gate means some domain tables would be invisible to modeling.
 
-`check-alignment` is read-only and deterministic (no AI). Use `--warn-only` only
+`check-claims` is read-only and deterministic (no AI). Use `--warn-only` only
 as a deliberate, documented override.
 
 > **💸 `propose-alignment` cost, speed & caching (DD-065):** like `analyse-sources`,
@@ -627,9 +642,11 @@ the Source Evidence Table:
   - Focus manual review on `custom_columns` (no ref-model match) and low-confidence alignments
   - The `reference_rollup` shows coverage gaps per ref class
 
-> **Legacy alignment files:** a `schema_version: 1` alignment (no `source_sha256`)
-> is reported by `check-alignment` as *unverifiable* (a warning, not a block).
-> Regenerate it with `propose-alignment` to restore freshness checking.
+> **Legacy alignment files (retired — DD-EL-1):** `{domain}-alignment.yaml` is
+> retired in favour of the Claim Registry (`model/claims/{domain}-claims.yaml`). A
+> hub that still has alignment files must run a one-time
+> `kairos-ontology migrate-claims`; `check-claims` then rejects any remaining
+> alignment YAML. Regenerate with `propose-alignment` to refresh the registry.
 
 
 **Using the affinity report during modeling:**
@@ -1771,29 +1788,44 @@ record an explicit disposition for each:
 - `skip` — operational/audit/technical column with no business value; intentionally
   dropped.
 
-**You MUST write each decision back into `{domain}-alignment.yaml`** by setting the
-`disposition:` field on the matching `custom_columns` entry, and stamp
-`disposition_source: human` so a future `propose-alignment --force` preserves your
-decision (DD-077 WS9 merges human-owned dispositions back; only heuristic-owned
-fields are recomputed). This is what makes the triage verifiable —
-`check-alignment --strict` reads it (see the Completion gate).
+**You MUST record each decision in the Claim Registry**
+(`model/claims/{domain}-claims.yaml`) by setting the candidate claim's `status`
+(`approved` / `rejected` / `deferred`) and `disposition` (`claim` / `specialize`
+/ `passthrough` / `skip`). A re-run of `propose-alignment --force` preserves your
+human decision (the merge keeps curated fields and only refreshes evidence). This
+is what makes the triage verifiable — `check-claims --strict` reads it (see the
+Completion gate).
 
-**Bulk option for large files (hundreds of columns):** when the recommended
-heuristics look right for the audit/vendor-slot columns, run
-`check-alignment --accept-heuristics --strict`: this treats columns whose only
-remaining gap is a heuristic `recommended_disposition` (e.g. CF-slot
-passthrough) as disposed, so you only manually triage the genuine business
-columns. Audit columns already auto-skip. Always eyeball the business columns
-(`recommended_disposition` empty) by hand.
+> **Curate at scale with `decide-claims` (preferred over hand-editing YAML).**
+> Rather than editing `{domain}-claims.yaml` by hand (which produces large,
+> unreviewable diffs), use the deterministic `decide-claims` command. It queries by
+> selector and bulk-sets `status`, writing back through the canonical serializer so
+> diffs stay minimal:
+>
+> ```bash
+> # Inspect what matches before mutating (read-only)
+> kairos-ontology decide-claims --domains <domain> --status proposed --list
+>
+> # Bulk-decide by disposition (only mutates status; honours valid transitions)
+> kairos-ontology decide-claims --domains <domain> \
+>     --by-disposition "claim=approved,passthrough=approved,skip=rejected" --dry-run
+> # drop --dry-run to apply
+> ```
+>
+> Selectors compose: `--status`, `--disposition`, `--type`, `--origin`, and
+> `--id` / `--column` globs. Invalid/terminal transitions are skipped and reported.
 
-> **Hallucinated anchors (Gate-6, DD-077 WS6).** Before triaging, sanity-check the
-> table anchors. If a `tables[].ref_class` is a class that exists in **no**
-> reference model (e.g. a `Booking`/`Shipment` invented by an older toolkit run),
-> the whole triage is built on fiction. Run `check-alignment --check-anchors` to
-> validate every `ref_class` against the installed reference-model class set; it
-> reports/blocks on hallucinated or unanchored tables (`ref_class_status:
-> rejected|unmatched`). Fix the anchor (or re-run `propose-alignment`) **before**
-> grinding through the columns.
+> **Transition note (DD-EL-1):** the former alignment-YAML disposition workflow
+> (writing `disposition:` onto `custom_columns`, the `--accept-heuristics` /
+> `--check-anchors` flags) is retired. Disposition now lives on registry claims.
+> Curate claim `status`/`disposition` with `decide-claims` (or by hand) and gate
+> with `check-claims --strict`.
+
+> **Sanity-check anchors before triaging.** If a proposed claim points at a
+> reference class that exists in **no** installed reference model (a hallucinated
+> anchor from an older run), the triage is built on fiction. Reject the claim or
+> re-run `propose-alignment` to refresh candidates **before** grinding through the
+> columns.
 
 Every column dispositioned `model` flows into the Tier-1 property proposal below.
 
@@ -1887,6 +1919,55 @@ property, use `rdfs:subPropertyOf` instead of creating an unrelated property:
 - If named individuals already exist for a concept, reuse them rather than
   creating domain-specific duplicates.
 - Document the reuse decision in the session file under "Design Decisions."
+
+### Checkpoint 3c: Relationship & Satellite-Entity Review (MANDATORY before TTL — issue #192 / DD-084)
+
+When a source table force-fits a **clustered set of address columns** into scalar
+properties (e.g. `billing_street` + `billing_city` + `billing_postal_code`), the
+relationship to a shared `Address` concept is easy to miss during initial design.
+The toolkit now surfaces this deterministically: `propose-alignment` writes an
+**advisory** `relationship_candidates` section into `model/claims/{domain}-claims.yaml`.
+
+> **These candidates are advisory metadata, NOT governed claims.** They carry the
+> detected source columns and a suggested relationship name (`hasAddress`,
+> `hasBillingAddress`, …) with **no resolvable target URI**. They never replace the
+> scalar column dispositions — the passthrough/model claims for those columns remain
+> (dropping them would silently lose columns from silver/gold and coverage).
+
+**You MUST NOT generate TTL while any `relationship_candidate` is undecided.**
+Present the full list and record an explicit decision per candidate:
+
+> **Relationship candidates to review** (from `{domain}-claims.yaml`
+> `relationship_candidates`):
+>
+> | # | Source table | Role | Suggested relationship | Source columns | Decision |
+> |---|---|---|---|---|---|
+> | 1 | `tblCompany` | billing | `hasBillingAddress → Address` | `BillingStreet`, `BillingCity`, `BillingPostalCode` | model / relate / defer |
+> | 2 | `tblCompany` | shipping | `hasShippingAddress → Address` | `ShippingStreet`, `ShippingCity` | model / relate / defer |
+
+**Decision values:**
+- `model` — introduce a local `Address` (or reuse an imported one) and an object
+  property; the clustered scalar columns become the address node's attributes
+  (still carried to silver via the existing passthrough claims).
+- `relate` — the shared `Address` concept exists in an installed reference/shared
+  model; reuse it and add only the object property linking this class to it.
+- `defer` — keep the scalar passthroughs for now; revisit in the mapping/silver
+  phase. Record the rationale in the session file.
+
+**Rules:**
+- The candidate is **additive** — never delete the scalar column claims when you
+  act on a relationship candidate.
+- Candidates are **role-aware**: `billing_*` and `shipping_*` are *separate*
+  relationships, not one merged `hasAddress`. Treat each row independently.
+- Watch the false-positive traps the detector already excludes but you should
+  re-check by eye: `country_of_origin` is **not** an address; `billing_email` is a
+  **Contact**, not an Address.
+- A re-run of `propose-alignment --force` regenerates the candidates deterministically
+  and preserves your curated claim decisions; re-confirm any candidate whose source
+  columns changed.
+- Naming a concrete target (`→ Address` with a real URI) and detecting
+  satellite/child entities from source FKs are **not yet automated** (deferred A2 /
+  Phase B). Until then, resolve the target concept by hand during this checkpoint.
 
 ### Checkpoint 4: Domain Boundary Verification
 
@@ -2066,29 +2147,48 @@ When finishing a domain model, remind the user that extension files will need:
 
 ## Completion: Final Configuration Report
 
-**MANDATORY pre-completion gate — Custom Column Triage (issue #164):**
+**MANDATORY pre-completion gate — Claim curation (DD-EL-1):**
 
 Before generating the final report or marking the domain COMPLETED, run the
 deterministic strict gate and confirm it passes:
 
 ```bash
-kairos-ontology check-alignment --domains <target-domain> --strict
+kairos-ontology check-claims --domains <target-domain> --strict
 ```
 
-- **Exit 0** → every source-evidenced custom column carries a `disposition`
-  (model / silver-passthrough / skip). Proceed to the final report.
-- **Exit 1** → untriaged custom columns remain. STOP, return to Checkpoint 3b,
-  disposition the listed columns in `{domain}-alignment.yaml`, and re-run. Do not
-  mark the domain COMPLETED while this gate is red — undisposed columns are exactly
-  the source-evidenced business attributes (banking, billing, credit, lifecycle
-  flags) that otherwise resurface as unmappable columns during
+- **Exit 0** → every candidate claim is decided (`approved` / `rejected` /
+  `deferred`) — no undecided `proposed` claims remain. Proceed to the final report.
+- **Exit 1** → undecided claims remain. STOP, return to Checkpoint 3b, set the
+  `status`/`disposition` on the listed claims in `{domain}-claims.yaml` (use
+  `kairos-ontology decide-claims` for bulk curation), and
+  re-run. Do not mark the domain COMPLETED while this gate is red — undecided
+  claims are exactly the source-evidenced business attributes (banking, billing,
+  credit, lifecycle flags) that otherwise resurface as unmappable columns during
   **kairos-design-mapping**.
+
+> **Anchored claims need URIs.** Approving a `claim`/`specialize` claim requires
+> its `class_uri` (class / reference_data) or `property_uri` (property / measure).
+> `migrate-claims` back-fills these from the reference-model inventory automatically
+> (run with `--inventory-dir` if discovery fails; `--no-resolve-uris` opts out).
+> Anything left null was ambiguous or unresolved — fill it before approving.
+
+> **Fresh domains bootstrap themselves.** `claims-to-silver-ext` scaffolds a minimal
+> valid ontology + `{domain}-silver-ext.ttl` skeleton (with a provenance header and
+> inferred hub base / foundation import) when those files don't yet exist, then
+> proceeds with the sync. Pass `--no-scaffold` to require the files up front.
+
+> **Your authored TTL is preserved.** `claims-to-silver-ext` only owns the triples
+> inside a `# >>> kairos-managed … # <<< kairos-managed` block it appends to the file
+> (the synced `owl:imports` / `silverInclude` surfaces). Everything outside the block —
+> your provenance header, comments, prefix layout, local subclasses, and gap properties —
+> is kept verbatim, and re-running the sync is idempotent. Don't hand-edit inside the
+> managed block; edit anywhere outside it freely.
 
 `--warn-only` overrides `--strict` and must only be used as a deliberate,
 documented exception.
 
 When the user confirms all classes and properties for a domain, generate a final
-report. Save to `ontology-hub/.sessions-design/modeling-{domain}-FINAL-{YYYY-MM-DD}.md`:
+report. Append to `ontology-hub/.kairos-state/phases/domain/{domain}.md`:
 
 ```markdown
 # Modeling Configuration Report: {Domain Name}

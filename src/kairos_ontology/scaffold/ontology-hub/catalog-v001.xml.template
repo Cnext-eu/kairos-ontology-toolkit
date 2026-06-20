@@ -22,6 +22,13 @@
        uri="model/ontologies/customer.ttl"/>
   -->
 
+  <!-- Shared foundation ontology (imported by thin domain ontologies).
+       Uncomment if your domain ontologies owl:imports the foundation. -->
+  <!--
+  <uri name="https://{company_domain}/ont/_foundation"
+       uri="model/ontologies/_foundation.ttl"/>
+  -->
+
   <!-- ============================================================
        Chain to shared reference-models catalog (FIBO, etc.)
        Remove or comment out if you don't use reference models.

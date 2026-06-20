@@ -22,7 +22,7 @@ company operates before any modeling or mapping begins.
 
 1. **kairos-design-discovery** reads these artifacts (plus public web research)
    and synthesizes a confirmed company-context summary into
-   `ontology-hub/.sessions-design/businessdiscovery-{date}.md`.
+   `ontology-hub/.kairos-state/phases/discovery.md`.
 2. It captures the company's **alternative names** as a SKOS glossary in
    `ontology-hub/businessdiscovery/{company}-glossary.ttl`.
 3. The glossary then helps **kairos-design-mapping** match source columns to

@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import yaml
-
 from kairos_ontology.propose_alignment import (
     ColumnAlignment,
     DomainAlignment,
@@ -16,7 +14,7 @@ from kairos_ontology.propose_alignment import (
     _lookup_property_range,
     _normalize_logical_type,
     _transform_hint,
-    write_alignment_output,
+    alignment_to_dict,
 )
 
 # ---------------------------------------------------------------------------
@@ -209,7 +207,7 @@ class TestPropertyRangeIndex:
 
 
 # ---------------------------------------------------------------------------
-# write_alignment_output — hint serialization (Phase 2 regression guard)
+# alignment_to_dict — hint serialization (Phase 2 regression guard)
 # ---------------------------------------------------------------------------
 
 
@@ -238,8 +236,7 @@ def _domain_with_column(**hint_fields):
 class TestHintSerialization:
     def test_default_output_has_no_hint_keys(self, tmp_path):
         """Regression guard: without hints, output is unchanged (design-domain)."""
-        out = write_alignment_output(_domain_with_column(), tmp_path)
-        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        data = alignment_to_dict(_domain_with_column())
         col = data["tables"][0]["columns"][0]
         for key in (
             "transform_hint", "transform_confidence",
@@ -258,8 +255,7 @@ class TestHintSerialization:
         dom.tables[0].structural_hints = [
             {"type": "split_candidate", "source_table": "tblClient"}
         ]
-        out = write_alignment_output(dom, tmp_path)
-        data = yaml.safe_load(out.read_text(encoding="utf-8"))
+        data = alignment_to_dict(dom)
         col = data["tables"][0]["columns"][0]
         assert col["transform_hint"] == "source.IsActive"
         assert col["requires_human_confirmation"] is False

@@ -8,6 +8,22 @@ description: >
 
 # Kairos Medallion Gold Skill
 
+## Lifecycle state (DD-080)
+
+> The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
+> `ontology-hub/.kairos-state/status.md`. This skill plugs into that shared state; it
+> does not maintain the global status file.
+
+**On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
+continuation region and this phase's log(s) at `phases/gold/<model>.md` — to resume open
+questions. Ignore `_archive/`. (`kairos-ontology status` gives the objective view.)
+
+**On pause or finish:** append a *State update proposal* to `phases/gold/<model>.md` with
+OKF frontmatter (`type: kairos-phase-log`, `phase: gold`, `instance: <model>`, `status:`,
+`last_updated:`). Record decisions made and an **Open questions** list as the resume
+anchor. Do **not** edit `status.md` directly — kairos-flow folds your proposal in.
+
+
 You are an expert at generating Power BI star-schema models from OWL ontologies
 using the Kairos gold-layer projection.
 
@@ -272,21 +288,21 @@ with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
 ### On start — Check for existing session
 
 ```
-ontology-hub/.sessions-design/
-  └── gold-{domain}-{YYYY-MM-DD}.md
+ontology-hub/.kairos-state/phases/gold/
+  └── {domain}.md
 ```
 
 If a previous session exists, ask the user whether to continue or start fresh.
 
 > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
 > start a new session instead of resuming, first move any existing
-> `.sessions-design/gold-{domain}-*.md` log(s) for this domain into
-> `ontology-hub/.sessions-design/_archive/` (create it if missing; keep the
-> original filename). Never delete a previous log. Then create the new session log.
+> `ontology-hub/.kairos-state/phases/gold/{domain}.md` log for this domain into
+> `ontology-hub/.kairos-state/_archive/` (create it if missing; use a
+> collision-safe filename). Never delete a previous log. Then create the new phase log.
 
 ### Session file format
 
-Save to `ontology-hub/.sessions-design/gold-{domain}-{YYYY-MM-DD}.md`:
+Save to `ontology-hub/.kairos-state/phases/gold/{domain}.md`:
 
 ```markdown
 # Gold Design Session: {Domain}

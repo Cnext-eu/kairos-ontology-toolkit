@@ -9,6 +9,22 @@ description: >
 
 # Kairos Medallion Silver Skill
 
+## Lifecycle state (DD-080)
+
+> The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
+> `ontology-hub/.kairos-state/status.md`. This skill plugs into that shared state; it
+> does not maintain the global status file.
+
+**On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
+continuation region and this phase's log(s) at `phases/silver/<domain>.md` — to resume
+open questions. Ignore `_archive/`. (`kairos-ontology status` gives the objective view.)
+
+**On pause or finish:** append a *State update proposal* to `phases/silver/<domain>.md`
+with OKF frontmatter (`type: kairos-phase-log`, `phase: silver`, `instance: <domain>`,
+`status:`, `last_updated:`). Record decisions made and an **Open questions** list as the
+resume anchor. Do **not** edit `status.md` directly — kairos-flow folds your proposal in.
+
+
 You are helping the user **design** the silver layer of the medallion architecture.
 This skill covers annotation design and output interpretation:
 
@@ -380,15 +396,16 @@ ref:hasConsignmentItem
 
 ## Phase 4 — Generate output (handoff to projection skill)
 
-> **Pre-silver source-coverage gate (MANDATORY — DD-061).** Before generating the
+> **Pre-silver claims gate (MANDATORY — DD-EL-1).** Before generating the
 > silver layer, verify that the ontology + mappings actually cover every source
 > table the affinity reports assign to the in-scope domains — so silver is built
-> against a **complete** ontology, not a partial one:
+> against a **complete** ontology, not a partial one (`check-claims` includes the
+> pre-silver mapping-coverage check):
 >
 > ```bash
-> kairos-ontology check-source-coverage
+> kairos-ontology check-claims
 > # or scope to a single domain:
-> kairos-ontology check-source-coverage --domains <domain>
+> kairos-ontology check-claims --domains <domain>
 > ```
 >
 > - **Exit 0** → every affinity-assigned source table is mapped to a domain entity.
@@ -398,10 +415,10 @@ ref:hasConsignmentItem
 >   Complete the mappings via the **kairos-design-mapping** skill (and, if classes
 >   are missing, the **kairos-design-domain** skill), then re-check.
 >
-> `check-source-coverage` is read-only and deterministic (no AI). Use `--warn-only`
+> `check-claims` is read-only and deterministic (no AI). Use `--warn-only`
 > only as a deliberate, documented override (e.g. a domain you intentionally defer).
 
-Once your silver extension annotations are complete **and the source-coverage gate
+Once your silver extension annotations are complete **and the claims gate
 is green**, generate the artifacts by invoking the **kairos-execute-project** skill
 with target `silver` (for DDL + ERD) or `dbt` (for dbt models — requires SKOS
 mappings).
@@ -954,21 +971,21 @@ setup instructions on adding it as a dependency via `packages.yml`.
 ### On start — Check for existing session
 
 ```
-ontology-hub/.sessions-design/
-  └── silver-{domain}-{YYYY-MM-DD}.md
+ontology-hub/.kairos-state/phases/silver/
+  └── {domain}.md
 ```
 
 If a previous session exists, ask the user whether to continue or start fresh.
 
 > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
 > start a new session instead of resuming, first move any existing
-> `.sessions-design/silver-{domain}-*.md` log(s) for this domain into
-> `ontology-hub/.sessions-design/_archive/` (create it if missing; keep the
-> original filename). Never delete a previous log. Then create the new session log.
+> `ontology-hub/.kairos-state/phases/silver/{domain}.md` log for this domain into
+> `ontology-hub/.kairos-state/_archive/` (create it if missing; use a
+> collision-safe filename). Never delete a previous log. Then create the new phase log.
 
 ### Session file format
 
-Save to `ontology-hub/.sessions-design/silver-{domain}-{YYYY-MM-DD}.md`:
+Save to `ontology-hub/.kairos-state/phases/silver/{domain}.md`:
 
 ```markdown
 # Silver Design Session: {Domain}

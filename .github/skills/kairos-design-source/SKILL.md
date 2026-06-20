@@ -8,6 +8,22 @@ description: >
 
 # Kairos Source Design Skill
 
+## Lifecycle state (DD-080)
+
+> The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
+> `ontology-hub/.kairos-state/status.md`. This skill plugs into that shared state; it
+> does not maintain the global status file.
+
+**On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
+continuation region and this phase's log(s) at `phases/source/<system>.md` — to resume
+open questions. Ignore `_archive/`. (`kairos-ontology status` gives the objective view.)
+
+**On pause or finish:** append a *State update proposal* to `phases/source/<system>.md`
+with OKF frontmatter (`type: kairos-phase-log`, `phase: source`, `instance: <system>`,
+`status:`, `last_updated:`). Record decisions made and an **Open questions** list as the
+resume anchor. Do **not** edit `status.md` directly — kairos-flow folds your proposal in.
+
+
 > **🔒 Skill context:** Before running any `kairos-ontology` /
 > `python -m kairos_ontology` command in this skill, set the sentinel env var so
 > the CLI knows it runs inside a skill and suppresses its skill-gate warning:
@@ -333,11 +349,11 @@ kairos-ontology analyse-sources --accelerator logistics
 | Option | Default | When to use |
 |---|---|---|
 | `--accelerator <name>` | none | Classify toward an accelerator pack's **data domains** (party, commercial, ...) with their model URIs — recommended; fast (no owl:imports resolution) |
-| `--domains "party,booking"` | all | Focus on specific domains |
+| `--domains "party,booking"` | all | **Output focus only (issue #189).** Tables are always classified against the full domain set; this filters the *written* affinity to matching primary domains. It does **not** restrict what each table is classified against, so unrelated tables are never forced into the requested domain. |
 | `--model gpt-5.4-mini` | gpt-5.4-mini | LLM model for semantic matching |
 | `--max-workers N` | 8 | **Concurrent** per-table LLM calls — the primary speedup on large hubs. Lower to `3-4` on low-TPM Azure deployments; `1` runs serially (old behaviour) |
 | `--force` | off | Bypass caching and re-run every table (see 4d) |
-| `--max-domains N` | all | Rate limit protection |
+| `--max-domains N` | all | Rate limit protection — truncates the **candidate** set, so it can bias classification; avoid for modeling evidence (warns when it truncates) |
 | `--shallow` | off | Skip module-class grounding + owl:imports resolution (faster) |
 | `--materialize .resolved/` | none | Write the resolved analysis context (manifest + per-domain YAML) for inspection |
 | `--verbose` / `--quiet` | off | Per-table progress / suppress progress **and the cost banner** |
@@ -412,6 +428,83 @@ After the source vocabulary and analysis are complete:
 > the default alignment output (used by **kairos-design-domain** pre-modeling) is
 > unchanged. See `docs/instruction-guides/context-engineer-methodology-guide.md`.
 
+### Derive candidate claims (`derive-claims`)
+
+> **When to use:** after `analyse-sources` (Phase 4) **and** `propose-alignment`
+> have run, and **before** human curation/approval of claims. This step sits
+> between evidence production and approval — it never replaces human review.
+
+`derive-claims` is a **deterministic, AI-free** command that aggregates all the
+evidence you have already produced into `proposed` candidate claims in
+`model/claims/{domain}-claims.yaml`, so you curate rather than hand-author. The
+hard interpretation already happened upstream (`analyse-sources` affinity and
+`propose-alignment` column→property — the latter already writes the claims file);
+`derive-claims` is the deterministic merge/enrich layer. It joins **five evidence
+streams** deterministically on `(system, table[, column])` and ref_class/
+ref_property names:
+
+1. **Existing claims registry** — base candidates + any human curation (preserved).
+2. **`analyse-sources` affinity** (`integration/sources/_analysis/*-affinity.yaml`)
+   — table→domain routing; corroborates class claims and creates new `proposed`
+   candidates for affinity tables that have no alignment anchor yet.
+3. **`import-tmdl` concept-mapping** (`integration/sources/powerbi/*-concept-mapping.yaml`)
+   — corroborates matching class claims; `new_class` actions become `proposed`
+   gap candidates when a single domain is processed.
+4. **SKOS mappings** (`model/mappings/*.ttl`) — `skos:*Match` links attached as
+   `skos_mapping` evidence.
+5. **Sample-derived signals** — enum-candidate / FK-shape signals attached as
+   `sample_signal` evidence.
+
+Each claim can carry **multiple `evidence_sources`**, keeping strong (anchored
+alignment) vs weak (affinity-only) evidence distinguishable.
+
+```bash
+kairos-ontology derive-claims --domains client,invoice --max-workers 8
+```
+
+Key flags: `--claims-dir`, `--analysis-dir`, `--sources`, `--mappings`,
+`--tmdl-dir`, `--domains` (comma-separated filter), `--max-workers` (default 8;
+`1` = serial), `--force` (bypass the sidecar cache), `--quiet`. Path defaults
+auto-resolve via the hub root.
+
+> **Never auto-approves (C4 guard).** All derived/new claims are
+> `status: proposed` — probabilistic evidence must never masquerade as approval.
+> Human decisions survive re-runs (`merge_preserving_decisions`), and conflicting
+> evidence is surfaced, not silently resolved. There is **no cost banner** because
+> nothing is billed (no LLM calls). A future opt-in `--llm-reconcile` flag (LLM
+> tie-breaking / rationale synthesis, with a cost banner) is deferred.
+
+→ Curate the proposed claims, then approve them (gated by `check-claims`).
+
+### Claim governance gates (`check-claims`) — MDM / ownership (Slice 4)
+
+`check-claims` is the single deterministic governance gate for the registry. Beyond
+coverage/sync, it enforces four MDM/reference-data + ownership rules over the
+**curated** registry fields, so set these as you curate:
+
+- **`reference_data`** (`authority_system` / `code_system` / `key` / `scd_type`) +
+  **`mdm_anchor: true`** mark a claim as a reference/master anchor (conformed
+  dimension, code list, natural key). The **MDM-anchor gate** blocks broad domain
+  claims (approved class claims with disposition claim/specialize) with
+  `anchor_pending` when declared anchors are still `proposed`, and warns
+  `anchor_missing` (pragmatic — anchors must be *known*, not fully built) when a
+  domain with broad claims declares no anchors at all.
+- **`deviation`** (`reason` / `owner` / `gap_request`) records a client-native
+  decision; the **deviation-log** check blocks approved `gap` claims that lack an
+  owner + reason with `deviation_missing`.
+- **`ownership_override`** (`owner` / `rationale`) is the explicit escape hatch when
+  a claim crosses another data-domain's `data-domains.yaml` boundary or is a shared
+  conformed dimension. Without it, a cross-boundary approved claim blocks with
+  `ownership_conflicts`; with it, a cross-file same-URI duplicate downgrades from the
+  `duplicate_approved` block to a `shared_dimensions` warning.
+- **`passthrough_reviewed: true`** clears the **passthrough-review** warning
+  (`passthrough_review`) raised on high-use passthrough fields (multi-source, or used
+  in powerbi measures/slicers/filters/hierarchies/joins/fks, or carrying a `measure`).
+
+Use `check-claims --no-mdm-anchor` / `--no-ownership` to skip those gates for hubs
+not yet doing MDM governance. These are governance fields in the YAML registry, not
+kairos-ext TTL annotations.
+
 ---
 
 ## Source system folder structure reference
@@ -442,23 +535,23 @@ ontology-hub/integration/sources/{system-name}/
 ### On start — Check for existing session
 
 ```
-ontology-hub/.sessions-design/
-  └── source-{system-name}-{YYYY-MM-DD}.md
+ontology-hub/.kairos-state/phases/source/
+  └── {system-name}.md
 ```
 
 If a previous session exists, ask the user whether to continue or start fresh.
 
 > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
 > start a new session instead of resuming, first move any existing
-> `.sessions-design/source-{system-name}-*.md` log(s) for this source system into
-> `ontology-hub/.sessions-design/_archive/` (create it if missing; keep the
-> original filename). Never delete a previous log. Then create the new session log.
-> This applies only to the interactive `.sessions-design/source-*.md` log, not the
+> `ontology-hub/.kairos-state/phases/source/{system-name}.md` log for this source
+> system into `ontology-hub/.kairos-state/_archive/` (create it if missing; use a
+> collision-safe filename). Never delete a previous log. Then create the new phase log.
+> This applies only to the interactive OKF source phase log, not the
 > separate `.sessions-design-import/` audit logs.
 
 ### Session file format
 
-Save to `ontology-hub/.sessions-design/source-{system-name}-{YYYY-MM-DD}.md`:
+Save to `ontology-hub/.kairos-state/phases/source/{system-name}.md`:
 
 ```markdown
 # Source Design Session: {system-name}
@@ -529,8 +622,8 @@ ontology-hub/.sessions-design-import/
 This audit file records what each import run produced (tables, columns, change
 report, enrichment) using a template consistent with the session files above.
 It is written best-effort whenever a command runs inside a detected hub, and is
-distinct from the interactive `.sessions-design/source-*.md` session file you
-maintain.
+distinct from the interactive `.kairos-state/phases/source/{system}.md` phase log
+you maintain.
 
 ---
 
