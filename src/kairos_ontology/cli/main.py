@@ -2172,7 +2172,12 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
       kairos-ontology generate-inventory --output-dir referencemodels-unpacked/
       kairos-ontology generate-inventory --ref-models-dir path/to/refs/
     """
-    from ..inventory import generate_inventory, inventory_filename, write_inventory
+    from ..inventory import (
+        generate_inventory,
+        inventory_filename,
+        iter_reference_inventory_sources,
+        write_inventory,
+    )
     from ..hub_utils import find_hub_root
 
     cwd = Path.cwd()
@@ -2212,7 +2217,7 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
     produced_by: dict[str, Path] = {}
     if ref_path and ref_path.is_dir():
         click.echo(f"   Reference models: {ref_path}")
-        ref_ttls = sorted(ref_path.glob("**/*.ttl"))
+        ref_ttls = iter_reference_inventory_sources(ref_path)
         for ttl_file in ref_ttls:
             try:
                 inv = generate_inventory(ttl_file)
@@ -2629,48 +2634,75 @@ def decide_claims_cmd(claims_dir, domains, status_filter, disposition_filter, ty
     click.echo(f"🗳️  {verb} claim decisions")
     click.echo(f"   Registry dir: {claims_path}")
 
-    total_changed = 0
-    for reg_file in registry_files:
-        domain = reg_file.name.replace("-claims.yaml", "")
-        registry = load_registry(reg_file)
+    def _print_summary(domain, summary):
+        applied = summary.applied
+        skipped = summary.skipped
+        blocked = summary.blocked
+        block_note = f", {len(blocked)} blocker(s)" if blocked else ""
+        click.echo(
+            f"   • {domain}: {len(applied)} change(s), {len(skipped)} skipped{block_note}"
+        )
+        for result in applied:
+            click.echo(f"      ✓ {result.claim_id}: {result.from_status} → {result.to_status}")
+        for result in skipped:
+            marker = "❌" if result.blocking else "⤫"
+            click.echo(f"      {marker} {result.claim_id}: {result.reason}")
 
-        if list_only:
+    loaded = [
+        (reg_file.name.replace("-claims.yaml", ""), reg_file, load_registry(reg_file))
+        for reg_file in registry_files
+    ]
+
+    if list_only:
+        for domain, _reg_file, registry in loaded:
             matches = select_claims(registry, selector)
             click.echo(f"   • {domain}: {len(matches)} match(es)")
             for claim in matches:
                 click.echo(
                     f"      - {claim.id}  [{claim.type}/{claim.disposition}]  {claim.status}"
                 )
-            continue
+        return
 
+    previews = []
+    for domain, reg_file, registry in loaded:
         summary = apply_decisions(
             registry,
             selector=selector,
             set_status=set_status or None,
             by_disposition=disposition_map,
-            dry_run=dry_run,
+            dry_run=True,
         )
-        applied = summary.applied
-        skipped = summary.skipped
-        click.echo(
-            f"   • {domain}: {len(applied)} change(s), {len(skipped)} skipped"
-        )
-        for result in applied:
-            click.echo(f"      ✓ {result.claim_id}: {result.from_status} → {result.to_status}")
-        for result in skipped:
-            click.echo(f"      ⤫ {result.claim_id}: {result.reason}")
+        previews.append((domain, reg_file, registry, summary))
+        _print_summary(domain, summary)
 
-        if summary.changed and not dry_run:
-            write_registry(registry, reg_file)
-            total_changed += len(applied)
-
-    if not list_only:
+    if any(summary.blocked for _domain, _reg_file, _registry, summary in previews):
         if dry_run:
             click.echo("ℹ️  Dry run — no files written.")
-        elif total_changed:
-            click.echo(f"✅ Wrote {total_changed} decision(s).")
-        else:
-            click.echo("ℹ️  No changes applied.")
+            return
+        click.echo("\n❌ Approval blocked; no files written.")
+        raise SystemExit(1)
+
+    total_changed = 0
+    if not dry_run:
+        for domain, reg_file, registry in loaded:
+            # Re-run after the command-wide preflight so only this pass mutates.
+            summary = apply_decisions(
+                registry,
+                selector=selector,
+                set_status=set_status or None,
+                by_disposition=disposition_map,
+                dry_run=False,
+            )
+            if summary.changed:
+                write_registry(registry, reg_file)
+                total_changed += len(summary.applied)
+
+    if dry_run:
+        click.echo("ℹ️  Dry run — no files written.")
+    elif total_changed:
+        click.echo(f"✅ Wrote {total_changed} decision(s).")
+    else:
+        click.echo("ℹ️  No changes applied.")
 
 
 @cli.command(name='check-claims')

@@ -174,6 +174,9 @@ xrefs:
    - **Clean start** -> begin the first `not-started` phase (or `next_phase`).
    - **Continue** -> resume the `in-progress` / `open-questions` instance, opening
      its phase log's **Open questions** as the agenda.
+   - **Data-product vertical slice** -> when `next_phase` is `domain`, or the user
+     asks for a quick report pack / semantic model / data product, keep the lifecycle
+     gates but scope the next domain pass to that product (see §6).
 7. **Hand off** to the matching phase skill (§6). After it returns, update
    `status.md` regions 2 & 3 and the phase index.
 
@@ -220,15 +223,23 @@ draft evidence packs and one cross-domain ERD under `model/planning/draft-model/
 After mapping/claims work, the same report may be re-run as a post-mapping
 fit-gap view.
 
-**Optional data-product vertical slice:** When the user wants a quick reporting
-slice for a specific report pack or semantic model, keep the canonical lifecycle
-but narrow the agenda to that product. Capture demand under
-`model/planning/data-products/<product>/contract.yaml` with
-`projection_authority: false`, then run `kairos-ontology draft-model-report
---contract <contract>` to produce `data-product-plan.yaml`,
-`data-product-report.md`, and `data-product-erd.mmd`. These files are planning
-views only: projectors ignore them, claims remain the approval gate, and phase
-skills must confirm any mapping, silver, or gold TTL changes.
+**Optional data-product vertical slice (DD-087):** When `next_phase` is `domain`
+and the user wants a quick reporting slice for a specific report pack, Power BI
+semantic model, or data product, offer it as an explicit decision option before
+the domain hand-off:
+
+> "**Data-product vertical slice** — keep the canonical lifecycle gates, but
+> narrow the next domain-modeling agenda to one report pack/data product."
+
+Capture demand under `model/planning/data-products/<product>/contract.yaml` with
+`projection_authority: false`, then have **kairos-design-domain** run
+`kairos-ontology draft-model-report --contract <contract>` (or
+`--data-product <product>` once the contract exists) to produce
+`data-product-plan.yaml`, `data-product-report.md`, and `data-product-erd.mmd`.
+These files are planning views only: projectors ignore them, claims remain the
+approval gate, and phase skills must confirm any domain, mapping, silver, or gold
+TTL changes. You only route and hand off; do not create the contract, run the
+report, model classes, or approve decisions inside `kairos-flow`.
 
 ---
 

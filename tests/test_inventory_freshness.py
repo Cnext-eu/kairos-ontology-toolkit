@@ -190,6 +190,39 @@ class TestCollisionFreshness:
         # No key may appear in both ok and stale (the old double-listing glitch).
         assert set(report.ok).isdisjoint(report.stale)
 
+    def test_archived_versions_do_not_make_current_inventory_stale(self, tmp_path):
+        from kairos_ontology.inventory import inventory_filename
+
+        ref_root = tmp_path / "ontology-reference-models"
+        inv_dir = tmp_path / "model" / "inventory"
+        inv_dir.mkdir(parents=True)
+        current = self._write(ref_root, "BSP", "CurrentTradeParty")
+        archived = (
+            ref_root / "derived-ontologies" / "BSP" / "archive" / "1.4.0"
+            / "party" / "party.ttl"
+        )
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        archived.write_text(
+            f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://kairos.cnext.eu/ref/ArchivedTradeParty> a owl:Ontology ; rdfs:label "BSP" .
+<https://kairos.cnext.eu/ref/ArchivedTradeParty#ArchivedTradeParty> a owl:Class ;
+    rdfs:label "ArchivedTradeParty" .
+""",
+            encoding="utf-8",
+        )
+        inv = generate_inventory(current)
+        write_inventory(inv, inv_dir / inventory_filename(current, ref_models_dir=ref_root))
+
+        report = check_inventories(
+            ontology_dir=None, ref_models_dir=ref_root, inventory_dir=inv_dir
+        )
+
+        assert report.ok == ["bsp-party"]
+        assert report.stale == []
+        assert not report.is_blocking
+
 
 class TestCheckInventoryCLI:
 

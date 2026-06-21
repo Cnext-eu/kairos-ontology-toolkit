@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0rc13] — 2026-06-21
+
+### Added
+- Scaffolded hub repos now expose a `flatfile` optional dependency that installs
+  the toolkit's Excel support (`openpyxl`) via `kairos-ontology-toolkit[flatfile]`,
+  enabling `uv sync --extra flatfile` before Excel `import-flatfile` runs.
+
+### Changed
+- `kairos-design-source` now recommends analysing all ready source systems in one
+  `analyse-sources` pass by default, reserving scoped `--sources` runs for
+  explicit exclusions, rate-limit workarounds, or targeted retries.
+- `kairos-design-discovery` now treats image-heavy artifacts as first-class
+  discovery evidence, including screenshots, diagrams, scanned PDFs, embedded slide
+  images, and OCR/visible text, with optional visual provenance in extraction YAML.
+- `kairos-flow` and `kairos-design-domain` now offer a governed data-product
+  vertical-slice route for report/TMDL/semantic-model intent while preserving source
+  analysis, claim, mapping, silver, and gold confirmation gates.
+- `kairos-design-domain` now batch-scans in-scope domains for stale, missing,
+  incomplete, empty, or unverifiable claim evidence and proposes one costed refresh
+  plan using scoped `--domains ... --max-workers` runs instead of one-domain-at-a-time
+  refresh loops.
+
+### Fixed
+- `generate-inventory` and `check-inventory` now ignore archived reference-model TTLs,
+  preventing current/archive duplicates from fighting over the same inventory file and
+  falsely marking fresh inventories stale.
+- `decide-claims` now blocks unsafe approvals before writing: materializing
+  `claim`/`specialize` claims cannot be approved without required URI/evidence, while
+  reviewed `passthrough` approvals remain URI-free.
+
 ## [4.4.0rc12] — 2026-06-21
 
 ### Changed

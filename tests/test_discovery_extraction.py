@@ -59,6 +59,7 @@ def _write_extraction_for(doc: Path, extraction_dir: Path, *, sha: str | None) -
         ("weird__name!!.docx", "weird-name-docx"),
         ("report.pdf", "report-pdf"),
         ("report.docx", "report-docx"),
+        ("Process Flow.PNG", "process-flow-png"),
     ],
 )
 def test_slugify_source_name(name, expected):
@@ -67,6 +68,7 @@ def test_slugify_source_name(name, expected):
 
 def test_extraction_filename_suffix():
     assert extraction_filename("Abbreviations.pdf") == "abbreviations-pdf.extraction.yaml"
+    assert extraction_filename("Process Flow.PNG") == "process-flow-png.extraction.yaml"
 
 
 def test_same_stem_different_ext_no_collision():
@@ -101,11 +103,12 @@ def test_load_extraction_rejects_non_mapping(tmp_path):
 def test_iter_discovery_documents_filters(tmp_path):
     imp = tmp_path / "import"
     _make_doc(imp, "a.pdf")
+    _make_doc(imp, "process-flow.png")
     _make_doc(imp, "README.md")
     _make_doc(imp, ".hidden")
     (imp / "subdir").mkdir()
     docs = [p.name for p in iter_discovery_documents(imp)]
-    assert docs == ["a.pdf"]
+    assert docs == ["a.pdf", "process-flow.png"]
 
 
 def test_iter_discovery_documents_missing_dir(tmp_path):

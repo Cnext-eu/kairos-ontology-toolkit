@@ -12,6 +12,7 @@ company operates before any modeling or mapping begins.
 
 - Meeting notes / workshop write-ups
 - Company decks and PowerPoints (exported to PDF/text where possible)
+- Screenshots, diagrams, scanned PDFs, slide images, and visual process flows
 - Product / service brochures, "about us" exports
 - Process descriptions, internal terminology lists
 - Anything that explains **how this specific company operates** — especially
@@ -33,8 +34,9 @@ company operates before any modeling or mapping begins.
 Every document dropped here is processed **once** and recorded as a per-document
 extraction file under `ontology-hub/businessdiscovery/_extractions/`
 (`{slug}.extraction.yaml`). Each extraction stores the document's `source_sha256`,
-a summary, and the extracted terms — so you always know **what was extracted from
-which document**.
+a summary, the extracted terms, and optional visual-evidence notes for images,
+screenshots, diagrams, and scanned text — so you always know **what was extracted
+from which document**.
 
 Run `kairos-ontology discovery-status` to see which documents are **new**,
 **changed**, or already **up to date**. When you add more files later, only the
@@ -44,6 +46,6 @@ incremental).
 
 ## ⚠️ Sensitive content
 
-These files may contain confidential business information. Keep the hub repository
-**private**, and do **not** commit secrets, credentials, or personal data (PII).
-Sanitize artifacts before adding them where possible.
+These files may contain confidential business information, including screenshots.
+Keep the hub repository **private**, and do **not** commit secrets, credentials, or
+personal data (PII). Sanitize artifacts before adding them where possible.

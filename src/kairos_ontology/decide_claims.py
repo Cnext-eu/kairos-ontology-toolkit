@@ -33,6 +33,7 @@ from .claim_registry import (
     VALID_TYPES,
     Claim,
     ClaimRegistry,
+    approval_gate_errors,
     is_valid_transition,
 )
 
@@ -129,6 +130,7 @@ class DecisionResult:
     to_status: str
     applied: bool
     reason: str | None = None  # populated when ``applied`` is False
+    blocking: bool = False
 
 
 @dataclass
@@ -144,6 +146,10 @@ class DecisionSummary:
     @property
     def skipped(self) -> list[DecisionResult]:
         return [r for r in self.results if not r.applied]
+
+    @property
+    def blocked(self) -> list[DecisionResult]:
+        return [r for r in self.results if r.blocking]
 
     @property
     def changed(self) -> bool:
@@ -165,6 +171,36 @@ def _decide_one(claim: Claim, target_status: str, *, apply: bool) -> DecisionRes
     if apply:
         claim.status = target_status
     return DecisionResult(claim.id, current, target_status, True)
+
+
+def _target_for_claim(
+    claim: Claim,
+    *,
+    set_status: str | None,
+    by_disposition: dict[str, str] | None,
+) -> str | None:
+    if set_status is not None:
+        return set_status
+    return by_disposition.get(claim.disposition) if by_disposition is not None else None
+
+
+def _approval_blocker(claim: Claim, target_status: str) -> DecisionResult | None:
+    current = claim.status
+    if target_status != "approved" or current == target_status:
+        return None
+    if not is_valid_transition(current, target_status):
+        return None
+    errors = approval_gate_errors(claim, target_status=target_status)
+    if not errors:
+        return None
+    return DecisionResult(
+        claim.id,
+        current,
+        target_status,
+        False,
+        "approval blocked: " + "; ".join(errors),
+        True,
+    )
 
 
 def apply_decisions(
@@ -193,13 +229,22 @@ def apply_decisions(
         raise ValueError(f"unknown status {set_status!r} (allowed: {', '.join(VALID_STATUSES)})")
 
     summary = DecisionSummary()
+    targets: list[tuple[Claim, str]] = []
     for claim in select_claims(registry, selector):
-        if set_status is not None:
-            target = set_status
-        else:
-            target = by_disposition.get(claim.disposition)  # type: ignore[union-attr]
-            if target is None:
-                continue
+        target = _target_for_claim(
+            claim, set_status=set_status, by_disposition=by_disposition
+        )
+        if target is None:
+            continue
+        targets.append((claim, target))
+        blocker = _approval_blocker(claim, target)
+        if blocker is not None:
+            summary.results.append(blocker)
+
+    if summary.blocked:
+        return summary
+
+    for claim, target in targets:
         summary.results.append(_decide_one(claim, target, apply=not dry_run))
     return summary
 

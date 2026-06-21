@@ -72,6 +72,9 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path(".github/copilot-instructions.md").is_file()
             env_example = Path(".env.example").read_text(encoding="utf-8")
             assert "KAIROS_DBT_CORE_VERSION=>=1.9,<1.10" in env_example
+            pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+            assert "flatfile = [" in pyproject
+            assert "kairos-ontology-toolkit[flatfile]" in pyproject
 
             # No submodule calls (reference models are fetched separately)
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
@@ -233,6 +236,8 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert "dbt-validate" in pyproject
     assert '"dbt-core>=1.9,<1.10"' in pyproject
     assert '"dbt-fabric>=1.9,<1.10"' in pyproject
+    assert "flatfile = [" in pyproject
+    assert "kairos-ontology-toolkit[flatfile]" in pyproject
 
 
 def test_new_repo_fails_if_dir_exists(tmp_path):

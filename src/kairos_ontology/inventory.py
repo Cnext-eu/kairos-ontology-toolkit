@@ -89,6 +89,27 @@ def _ref_model_id(ttl_path: Path, *, ref_models_dir: Path | None) -> str | None:
     return None
 
 
+def is_archived_ref_model_source(ttl_path: Path, *, ref_models_dir: Path | None = None) -> bool:
+    """Return True when *ttl_path* is under an archived reference-model version."""
+    if ref_models_dir is not None:
+        try:
+            parts = ttl_path.resolve().relative_to(ref_models_dir.resolve()).parts
+        except ValueError:
+            parts = ttl_path.parts
+    else:
+        parts = ttl_path.parts
+    return any(part.lower() == "archive" for part in parts)
+
+
+def iter_reference_inventory_sources(ref_models_dir: Path) -> list[Path]:
+    """Return current reference-model TTLs that should produce/check inventories."""
+    return [
+        ttl
+        for ttl in sorted(ref_models_dir.glob("**/*.ttl"))
+        if not is_archived_ref_model_source(ttl, ref_models_dir=ref_models_dir)
+    ]
+
+
 def generate_inventory(
     ttl_path: Path | None = None,
     *,
@@ -225,7 +246,7 @@ def check_inventories(
 
     sources: list[tuple[Path, bool]] = []
     if ref_models_dir and ref_models_dir.is_dir():
-        sources += [(p, True) for p in sorted(ref_models_dir.glob("**/*.ttl"))]
+        sources += [(p, True) for p in iter_reference_inventory_sources(ref_models_dir)]
     if ontology_dir and ontology_dir.is_dir():
         sources += [(p, False) for p in sorted(ontology_dir.glob("**/*.ttl"))]
 

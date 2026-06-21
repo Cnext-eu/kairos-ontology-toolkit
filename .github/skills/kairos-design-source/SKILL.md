@@ -93,10 +93,11 @@ mkdir -p ontology-hub/integration/sources/{system-name}
 > **When to use:** The user has CSV exports, Excel workbooks, Parquet files, or a
 > directory of flat files from the source system.
 >
-> **Note:** Excel support requires the `[flatfile]` extra (openpyxl); Parquet
-> support requires the `[parquet]` extra (pyarrow). Install with
-> `pip install kairos-ontology-toolkit[flatfile]` /
-> `pip install kairos-ontology-toolkit[parquet]` if prompted.
+> **Note:** Excel support requires the `[flatfile]` extra (openpyxl). In a
+> scaffolded hub repo, install it with `uv sync --extra flatfile`, then rerun
+> `uv run kairos-ontology import-flatfile ...`. Outside a hub, install the
+> package extra with `pip install "kairos-ontology-toolkit[flatfile]"`.
+> Parquet support is available in current toolkit installs via pyarrow.
 
 ### 1a — Determine options
 
@@ -316,6 +317,18 @@ Verify source vocabularies exist:
 ls ontology-hub/integration/sources/*/*.vocabulary.ttl
 ```
 
+**Default recommendation: analyse all ready sources together.** Treat Phase 4 as
+one cross-source evidence pass, not a per-source loop. Unless the user explicitly
+needs to exclude a source, run `analyse-sources` without `--sources` so it scans
+all vocabularies under `integration/sources/` in one go. This gives domain
+modeling a single consistent evidence baseline, avoids fragmented LLM restarts,
+and still remains practical because unchanged tables are cached and table-level
+LLM calls run concurrently (`--max-workers`, default 8).
+
+Before running, present the detected source systems and ask only whether any
+should be excluded because they are incomplete, out of scope, or should wait for
+documentation cleanup.
+
 Verify reference models are available:
 
 ```bash
@@ -341,7 +354,17 @@ kairos-ontology check-inventory    # verify the unpacked inventory is present & 
 ### 4b — Run the analysis
 
 ```bash
-kairos-ontology analyse-sources --accelerator logistics
+kairos-ontology analyse-sources --accelerator logistics --max-workers 8
+```
+
+This default command analyses all ready source systems in the hub. Use a scoped
+source run only as an exception, for example when retrying one problematic source,
+working around provider rate limits, or intentionally excluding unfinished sources:
+
+```bash
+kairos-ontology analyse-sources \
+  --sources ontology-hub/integration/sources/{system-name}/ \
+  --accelerator logistics
 ```
 
 **Available options:**
