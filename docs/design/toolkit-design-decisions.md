@@ -5143,9 +5143,9 @@ their semantics.
 
 ## DD-087: Data-product vertical-slice planning reports
 
-**Status:** Accepted  
-**Date:** 2026-06-21  
-**Affects:** `src/kairos_ontology/draft_model_report.py`, `cli/main.py`, design skills  
+**Status:** Accepted
+**Date:** 2026-06-21
+**Affects:** `src/kairos_ontology/draft_model_report.py`, `cli/main.py`, design skills
 **Implementation:** `kairos-ontology draft-model-report --contract ...`
 
 ### Context
