@@ -134,6 +134,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-084](#dd-084-deterministic-address-relationship-candidates-surfaced-as-advisory-metadata-issue-192) | Deterministic address relationship candidates surfaced as advisory metadata (issue #192) | Accepted | 2026-06-20 |
 | [DD-085](#dd-085-okf-phase-logs-replace-interactive-sessions-design-logs) | OKF phase logs replace interactive `.sessions-design` logs | Accepted | 2026-06-20 |
 | [DD-086](#dd-086-reporting-informed-draft-model-planning-report) | Reporting-informed draft-model planning report | Accepted | 2026-06-21 |
+| [DD-087](#dd-087-data-product-vertical-slice-planning-reports) | Data-product vertical-slice planning reports | Accepted | 2026-06-21 |
 
 ---
 
