@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0rc12] — 2026-06-21
+
+### Changed
+- Clarified the V3 stable hotfix workflow while V4 release-candidate work lives
+  on `main`, including worktree setup, tag-from-stable guardrails, and
+  stable/preview channel expectations.
+
 ## [4.4.0rc11] — 2026-06-21
 
 ### Added
