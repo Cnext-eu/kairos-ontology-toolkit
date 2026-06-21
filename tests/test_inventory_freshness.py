@@ -203,7 +203,7 @@ class TestCollisionFreshness:
         )
         archived.parent.mkdir(parents=True, exist_ok=True)
         archived.write_text(
-            f"""\
+            """\
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 <https://kairos.cnext.eu/ref/ArchivedTradeParty> a owl:Ontology ; rdfs:label "BSP" .
