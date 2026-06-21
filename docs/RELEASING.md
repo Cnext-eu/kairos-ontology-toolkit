@@ -39,6 +39,12 @@ pins and `kairos-ontology update --upgrade` (DD-066, DD-013).
 forward. This is what keeps the branching model simple: there are **no maintenance
 branches**, only `main` plus the occasional ephemeral hotfix branch.
 
+Pre-releases do **not** become the latest supported stable line. If `main` contains
+V4 release-candidate work (for example `v4.4.0rc11`) while the GitHub **Latest**
+stable release is still `v3.24.1`, production/stable fixes still target the
+`v3.24.x` line. In that situation, never tag `main` as a stable patch; cut the
+patch from the stable tag as described in Case B below.
+
 > If the team ever needs to support multiple older minors at once, revisit DD-067
 > and introduce `release/X.Y` maintenance branches. Don't add that machinery before
 > it's actually needed.
@@ -122,6 +128,81 @@ gh pr create --base main --head hotfix/3.16.1 \
 > only support the latest line, a maintenance branch would sit idle between hotfixes
 > and just add merge overhead. The `hotfix/*` branch is created only when needed and
 > deleted after back-merge.
+
+### Case C — V4 RC on `main`, V3 still latest stable
+
+This is a special case of Case B. `main` is the V4 preview line, but stable users
+still consume the latest GA release (for example `v3.24.1`). A V3 production fix
+must be made from the stable tag, not from `main`.
+
+Recommended local setup: use a separate worktree so V3 hotfix work cannot be
+mixed with V4 RC work:
+
+```powershell
+cd G:\Git
+git -C kairos-ontology-toolkit fetch --tags origin
+git -C kairos-ontology-toolkit worktree add kairos-ontology-toolkit-v3 v3.24.1
+```
+
+Start each V3 hotfix from that worktree:
+
+```powershell
+cd G:\Git\kairos-ontology-toolkit-v3
+git switch -c hotfix/3.24.2-short-bug-name
+```
+
+Before tagging a V3 patch, run these guardrails:
+
+```powershell
+git merge-base --is-ancestor v3.24.1 HEAD
+git log --oneline v3.24.1..HEAD
+git branch --show-current
+```
+
+The `merge-base` command should exit 0, proving the hotfix branch descends from
+the stable tag. The log should contain only the V3 bugfix, its regression test,
+and the patch version/changelog bump. If it contains V4 feature commits, stop:
+you are on the wrong line.
+
+Patch-release runbook:
+
+```powershell
+# In G:\Git\kairos-ontology-toolkit-v3 on hotfix/3.24.2-short-bug-name
+# 1. Fix + regression test
+# 2. Bump src/kairos_ontology/__init__.py: 3.24.1 -> 3.24.2
+# 3. Add CHANGELOG.md heading: ## [3.24.2] — YYYY-MM-DD
+uv lock
+uv build
+git add .
+git commit -m "fix: short bug description"
+git tag -a v3.24.2 -m "Release v3.24.2"
+git push -u origin hotfix/3.24.2-short-bug-name
+git push origin v3.24.2
+```
+
+After the release workflow succeeds, bring the actual fix back to `main` without
+replacing `main`'s V4 version:
+
+```powershell
+cd G:\Git\kairos-ontology-toolkit
+git switch main
+git pull origin main
+git switch -c fix/backmerge-v3.24.2
+git cherry-pick <fix-commit-sha>       # avoid cherry-picking the V3 version bump if possible
+```
+
+If the version or changelog conflicts, keep `main`'s V4 version and add the bugfix
+note to `main`'s current changelog section. Open a PR to `main`; if CI's
+version-check flags the back-merge because `src/` changed without bumping V4, add
+the `skip-version` label.
+
+Stable/preview channel expectations:
+
+| Hub channel | Should resolve to | Why |
+|-------------|-------------------|-----|
+| `stable` | latest GA, e.g. `v3.24.1` or `v3.24.2` | skips RC/beta/alpha releases |
+| `preview` | latest release including RC, e.g. `v4.4.0rc11` | used for V4 validation |
+| explicit tag | exactly that tag | reproducible testing or pinned production |
 
 ---
 
