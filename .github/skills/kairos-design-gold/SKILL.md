@@ -33,6 +33,16 @@ using the Kairos gold-layer projection.
 > fact/dimension, hierarchy, and TMDL relationship entries as candidate gold-design
 > prompts only. Do not turn report measures into gold annotations without explicit
 > user confirmation.
+>
+> **Data-product vertical slice:** If
+> `model/planning/data-products/<product>/data-product-plan.yaml` or
+> `gold-candidates.yaml` exists, treat it as a scoped planning view for one report
+> pack/data product. It is not projection authority. Only convert
+> `gold-annotation-needed` candidates into `goldTableType`, `measureExpression`,
+> hierarchy, or `perspective` annotations when the item is already claim-backed or
+> mapping-backed and the user confirms the decision in this skill. Prefer a gold
+> `perspective` for report-pack scoping rather than creating a competing grouping
+> mechanism.
 
 ## Architecture Context
 

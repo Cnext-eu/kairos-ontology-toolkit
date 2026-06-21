@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0rc11] — 2026-06-21
+
+### Added
+- **Data-product vertical-slice planning reports (DD-087).**
+  `draft-model-report` now accepts a planning-only data-product contract to emit
+  scoped `data-product-plan.yaml`, Markdown, and Mermaid ERD artifacts under
+  `model/planning/data-products/{product}/`. The slice remains advisory
+  (`projection_authority: false`) and derives triage from DD-086 evidence
+  statuses instead of bypassing claims, mappings, silver, or gold design.
+
 ## [4.4.0rc10] — 2026-06-21
 
 ### Added

@@ -42,6 +42,13 @@ This skill covers annotation design and output interpretation:
 > FK entries as review prompts only. A draft-report relationship or TMDL join is
 > not an approved `silverForeignKey` / `silverForeignKeyOn` annotation until the
 > user confirms it in this skill.
+>
+> **Data-product vertical slice:** If
+> `model/planning/data-products/<product>/data-product-plan.yaml` exists, read it
+> as a scoped agenda for one report pack/data product. Use `silver-question`
+> entries to focus natural-key, FK, SCD, and reference-data review. The plan is
+> advisory (`projection_authority: false`) and must never write silver TTL or
+> bypass claim/mapping approval.
 
 ---
 

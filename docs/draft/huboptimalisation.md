@@ -64,7 +64,8 @@ For each detected data domain, the report should show:
 - natural-key and FK questions for silver review;
 - measure/fact/dimension candidates for gold review;
 - mapping gaps and source coverage gaps;
-- suggested dispositions: claim, specialize, passthrough, skip, gap, gold-only,
+- suggested dispositions: claim, specialize, passthrough, skip, gap,
+  gold-candidate,
   or defer.
 
 Domains without ontology files still receive an evidence pack and next-action
@@ -84,3 +85,31 @@ or labelled by data domain and show evidence status where possible:
 
 This gives reviewers a visual draft of the whole proposed model before approving
 domain, silver, or gold design decisions.
+
+## Data-product vertical slice
+
+For a quick report pack or semantic-model exercise, use a **data-product vertical
+slice** instead of a direct source-to-gold shortcut.
+
+The slice captures demand under:
+
+`model/planning/data-products/{product}/contract.yaml`
+
+The contract is planning input only and must declare `projection_authority:
+false`. A product-scoped draft report can then filter the evidence:
+
+```bash
+kairos-ontology draft-model-report --contract model/planning/data-products/sales/contract.yaml
+```
+
+The command writes advisory artifacts in the same product folder:
+
+- `data-product-plan.yaml`
+- `data-product-report.md`
+- `data-product-erd.mmd`
+- `domains/*.yaml`
+
+The product plan narrows the agenda for mapping, silver, and gold design. It does
+not approve claims, write TTL, or feed projectors. Measures become
+`gold-annotation-needed` only after the underlying concept is claim-backed or
+mapping-backed; otherwise they remain claim/domain gaps.
