@@ -224,8 +224,13 @@ class TestConceptMapping:
         customer = next(t for t in data["tables"] if t["tmdl_name"] == "d_Customer")
         assert customer["type"] == "dimension"
         assert "CustomerKey" in customer["columns"]
+        assert customer["domain"] == ""
+        assert customer["measures"] == []
         assert customer["reference_model_match"] == ""
         assert customer["action"] == ""
+
+        sales = next(t for t in data["tables"] if t["tmdl_name"] == "f_Sales")
+        assert sales["measures"][0]["name"] == "TotalSales"
 
     def test_relationship_fields(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
@@ -239,6 +244,7 @@ class TestConceptMapping:
         assert rel["from"] == "f_Sales.CustomerKey"
         assert rel["to"] == "d_Customer.CustomerKey"
         assert rel["cardinality"] == "many-to-one"
+        assert rel["domain"] == ""
 
 
 # ---------------------------------------------------------------------------

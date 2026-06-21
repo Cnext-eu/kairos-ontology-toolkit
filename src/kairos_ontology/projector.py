@@ -565,8 +565,13 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     print("🚀 Kairos Ontology Projections")
     print("=" * 50)
     
-    # Get all ontology files
-    ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
+    # Get ontology files. `ontologies_path` may be the model/ontologies directory
+    # or one concrete ontology file selected by `kairos-ontology project --ontology`.
+    ontology_root = ontologies_path.parent if ontologies_path.is_file() else ontologies_path
+    if ontologies_path.is_file():
+        ontology_files = [ontologies_path] if ontologies_path.suffix in {".ttl", ".rdf"} else []
+    else:
+        ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
     # Skip non-domain files: silver-ext annotations, _master imports, etc.
     ontology_files = [f for f in ontology_files if _is_domain_ontology(f)]
     
@@ -651,7 +656,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     template_base = Path(__file__).parent / "templates"
     
     # Look for SHACL shapes directory — hub layout: model/ontologies/, model/shapes/
-    hub_root = ontologies_path.parent.parent if ontologies_path.parent else None
+    hub_root = ontology_root.parent.parent if ontology_root.parent else None
     shapes_dir = hub_root / "model" / "shapes" if hub_root else None
     if shapes_dir and shapes_dir.exists():
         print(f"  Found SHACL shapes directory: {shapes_dir}\n")
@@ -660,6 +665,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     sources_dir = hub_root / "integration" / "sources" if hub_root else None
     mappings_dir = hub_root / "model" / "mappings" if hub_root else None
     extensions_dir = hub_root / "model" / "extensions" if hub_root else None
+    claims_dir = hub_root / "model" / "claims" if hub_root else None
     if sources_dir and sources_dir.exists():
         print(f"  Found source system references: {sources_dir}")
     if mappings_dir and mappings_dir.exists():
@@ -737,6 +743,44 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                     print(f"  [{onto_name}] Using gold ext: {gold_ext_path.name}")
                     report.record("info", f"Using gold ext: {gold_ext_path.name}",
                                   domain=onto_name, target=target_name)
+
+                # Slice 2 authority gate: when a claims registry exists for the
+                # domain, projection surfaces must be claim-driven and in sync.
+                if target_name in ("silver", "dbt", "powerbi") and claims_dir:
+                    claims_file = claims_dir / f"{onto_name}-claims.yaml"
+                    if claims_file.exists():
+                        from .claim_projection_sync import evaluate_domain_projection_sync
+
+                        sync_status = evaluate_domain_projection_sync(
+                            domain=onto_name,
+                            claims_file=claims_file,
+                            ontology_file=onto_info["file"],
+                            extension_file=(
+                                ext_path
+                                if ext_path is not None
+                                else (extensions_dir / f"{onto_name}-silver-ext.ttl")
+                            ),
+                            hub_domain_bases=hub_domain_namespaces,
+                        )
+                        if not sync_status.in_sync:
+                            details: list[str] = []
+                            if sync_status.error:
+                                details.append(sync_status.error)
+                            details.extend(f"missing owl:imports {x}" for x in sync_status.missing_imports[:5])
+                            details.extend(f"extra owl:imports {x}" for x in sync_status.extra_imports[:5])
+                            details.extend(
+                                f"missing silverInclude {x}" for x in sync_status.missing_includes[:5]
+                            )
+                            details.extend(
+                                f"extra silverInclude {x}" for x in sync_status.extra_includes[:5]
+                            )
+                            if sync_status.has_bulk_include_imports:
+                                details.append("silverIncludeImports bulk flag present")
+                            raise RuntimeError(
+                                "Claim/projection drift for domain "
+                                f"'{onto_name}'. Run `kairos-ontology claims-to-silver-ext` first. "
+                                + ("; ".join(details) if details else "")
+                            )
 
                 # DD-023: Discover reference model default extensions
                 ref_defaults = _discover_ref_model_defaults(

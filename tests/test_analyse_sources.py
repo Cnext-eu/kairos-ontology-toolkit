@@ -16,6 +16,8 @@ from kairos_ontology.analyse_sources import (
     analyse_source_system,
     write_analysis_output,
     write_affinity_matrix,
+    run_analyse_sources,
+    _filter_analysis_by_domain,
     resolve_reference_models,
     load_data_domains,
     build_data_domain_targets,
@@ -1288,3 +1290,197 @@ class TestAffinityConcurrencyAndCaching:
             [a.table for a in parallel.table_assignments]
         assert [a.domain for a in serial.table_assignments] == \
             [a.domain for a in parallel.table_assignments]
+
+    def test_reports_each_table_as_it_completes(self, tmp_path, monkeypatch):
+        vocab_file, ref_domains = self._setup(tmp_path)
+        monkeypatch.setattr(
+            "kairos_ontology.analyse_sources._get_openai_client",
+            lambda: self._counting_client([]),
+        )
+        messages: list[str] = []
+
+        analyse_source_system(
+            vocab_file,
+            ref_domains,
+            max_workers=4,
+            report=lambda message, level="info": messages.append(message),
+        )
+
+        assert any("✓" in message and "→ party" in message.lower() for message in messages)
+
+
+# ---------------------------------------------------------------------------
+# Tests: --domains is an OUTPUT filter, never a candidate restriction (issue #189)
+# ---------------------------------------------------------------------------
+
+TWO_TABLE_VOCAB_TTL = """\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix testapp: <https://kairos.cnext.eu/source/testapp#> .
+
+testapp:testapp a kairos-bronze:SourceSystem ;
+    rdfs:label "testapp" .
+
+testapp:tblClient a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "tblClient" ;
+    kairos-bronze:belongsToSystem testapp:testapp .
+
+testapp:tblClient_Name a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "Name" ;
+    kairos-bronze:dataType "varchar(200)" ;
+    kairos-bronze:belongsToTable testapp:tblClient .
+
+testapp:tblContract a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "tblContract" ;
+    kairos-bronze:belongsToSystem testapp:testapp .
+
+testapp:tblContract_Ref a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "ContractRef" ;
+    kairos-bronze:dataType "varchar(50)" ;
+    kairos-bronze:belongsToTable testapp:tblContract .
+"""
+
+
+class TestFilterAnalysisByDomain:
+    """Unit tests for the post-classification output filter helper."""
+
+    def _analysis(self):
+        return SourceAnalysis(
+            system="s", analysed_at="t", model_used="m",
+            table_assignments=[
+                TableAssignment(table="a", total_columns=1, domain="party"),
+                TableAssignment(table="b", total_columns=1, domain="commercial"),
+            ],
+        )
+
+    def test_keeps_only_primary_domain_matches(self):
+        out = _filter_analysis_by_domain(self._analysis(), ["party"])
+        assert [t.table for t in out.table_assignments] == ["a"]
+
+    def test_substring_match(self):
+        out = _filter_analysis_by_domain(self._analysis(), ["comm"])
+        assert [t.table for t in out.table_assignments] == ["b"]
+
+    def test_no_match_returns_empty(self):
+        out = _filter_analysis_by_domain(self._analysis(), ["booking"])
+        assert out.table_assignments == []
+        # Identity metadata preserved even when empty
+        assert out.system == "s" and out.model_used == "m"
+
+
+class TestDomainsOutputFilter:
+    """--domains classifies against the full candidate set, then filters output."""
+
+    def _setup_hub(self, tmp_path):
+        ref_dir = tmp_path / "refs"
+        ref_dir.mkdir()
+        _write_logistics_pack(ref_dir)  # party + commercial data domains
+        sys_dir = tmp_path / "sources" / "testapp"
+        sys_dir.mkdir(parents=True)
+        (sys_dir / "testapp.vocabulary.ttl").write_text(
+            TWO_TABLE_VOCAB_TTL, encoding="utf-8"
+        )
+        return ref_dir, tmp_path / "sources", tmp_path / "out"
+
+    def _routing_client(self, seen_candidate_counts):
+        """Mock LLM: routes tblContract→commercial, else→party, and records how
+        many candidate domains were present in each prompt."""
+        client = MagicMock()
+
+        def create(**kwargs):
+            text = " ".join(
+                str(m.get("content", "")) for m in kwargs.get("messages", [])
+            )
+            present = sum(1 for d in ("party", "commercial") if d in text)
+            seen_candidate_counts.append(present)
+            domain = "commercial" if "tblContract" in text else "party"
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = json.dumps(
+                {"domain": domain, "confidence": 0.9, "likely_entity": domain}
+            )
+            return resp
+
+        client.chat.completions.create.side_effect = create
+        return client
+
+    def test_classifies_against_full_set_then_filters_output(self, tmp_path, monkeypatch):
+        import yaml as _yaml
+
+        ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
+        seen: list[int] = []
+        monkeypatch.setattr(
+            "kairos_ontology.analyse_sources._get_openai_client",
+            lambda: self._routing_client(seen),
+        )
+
+        run_analyse_sources(
+            sources_dir=sources_dir,
+            ref_models_dir=ref_dir,
+            output_dir=out_dir,
+            accelerator="logistics",
+            domains_filter=["party"],
+            shallow=True,
+            max_workers=1,
+            cost_warning=False,
+        )
+
+        # Every table was classified against BOTH candidate domains (not pruned).
+        assert seen and all(count == 2 for count in seen)
+
+        # Output keeps only the party table; the commercial one is dropped.
+        affinity = _yaml.safe_load(
+            (out_dir / "testapp-affinity.yaml").read_text(encoding="utf-8")
+        )
+        tables = {t["table"]: t["domain"] for t in affinity["tables"]}
+        assert tables == {"tblClient": "party"}
+
+    def test_zero_matching_tables_writes_empty_no_error(self, tmp_path, monkeypatch):
+        import yaml as _yaml
+
+        ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
+        monkeypatch.setattr(
+            "kairos_ontology.analyse_sources._get_openai_client",
+            lambda: self._routing_client([]),
+        )
+
+        # No table classifies as 'booking' → output must be empty, not an error.
+        run_analyse_sources(
+            sources_dir=sources_dir,
+            ref_models_dir=ref_dir,
+            output_dir=out_dir,
+            accelerator="logistics",
+            domains_filter=["booking"],
+            shallow=True,
+            max_workers=1,
+            cost_warning=False,
+        )
+        affinity = _yaml.safe_load(
+            (out_dir / "testapp-affinity.yaml").read_text(encoding="utf-8")
+        )
+        assert affinity["tables"] == []
+        assert affinity["schema_version"] == 2
+
+    def test_no_filter_keeps_all_tables(self, tmp_path, monkeypatch):
+        import yaml as _yaml
+
+        ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
+        monkeypatch.setattr(
+            "kairos_ontology.analyse_sources._get_openai_client",
+            lambda: self._routing_client([]),
+        )
+
+        run_analyse_sources(
+            sources_dir=sources_dir,
+            ref_models_dir=ref_dir,
+            output_dir=out_dir,
+            accelerator="logistics",
+            shallow=True,
+            max_workers=1,
+            cost_warning=False,
+        )
+        affinity = _yaml.safe_load(
+            (out_dir / "testapp-affinity.yaml").read_text(encoding="utf-8")
+        )
+        tables = {t["table"]: t["domain"] for t in affinity["tables"]}
+        assert tables == {"tblClient": "party", "tblContract": "commercial"}

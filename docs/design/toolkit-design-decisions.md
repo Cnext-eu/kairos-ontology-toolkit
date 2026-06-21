@@ -127,6 +127,13 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-077](#dd-077-custom-column-triage-hardening-issue-182) | Custom-column triage hardening (issue #182) | Accepted | 2026-06-15 |
 | [DD-078](#dd-078-user-facing-extras-packaging--foundry-token-credential-fallback) | User-facing extras packaging + Foundry token-credential fallback | Accepted | 2026-06-14 |
 | [DD-079](#dd-079-dbt-cross-table-warning-conflates-inherited-vs-own-properties-issue-181) | dbt cross-table warning conflates inherited vs own properties (issue #181) | Accepted | 2026-06-15 |
+| [DD-080](#dd-080-two-layer-lifecycle-state-deterministic-status-cli-and-the-kairos-flow-single-entry-point) | Two-layer lifecycle state, deterministic `status` CLI, and the `kairos-flow` single entry point | Accepted | 2026-06-20 |
+| [DD-081](#dd-081-analyse-sources---domains-is-an-output-filter-not-a-candidate-restriction) | `analyse-sources --domains` is an output filter, not a candidate restriction | Accepted | 2026-06-20 |
+| [DD-082](#dd-082-claim-curation-ergonomics-decide-claims-uri-back-fill-skeleton-bootstrap-intra-hub-imports-issue-190) | Claim-curation ergonomics: `decide-claims`, URI back-fill, skeleton bootstrap, intra-hub imports (issue #190) | Accepted | 2026-06-20 |
+| [DD-083](#dd-083-claims-to-silver-ext-preserves-authored-ttl-via-a-managed-block-issue-191) | `claims-to-silver-ext` preserves authored TTL via a managed block (issue #191) | Accepted | 2026-06-20 |
+| [DD-084](#dd-084-deterministic-address-relationship-candidates-surfaced-as-advisory-metadata-issue-192) | Deterministic address relationship candidates surfaced as advisory metadata (issue #192) | Accepted | 2026-06-20 |
+| [DD-085](#dd-085-okf-phase-logs-replace-interactive-sessions-design-logs) | OKF phase logs replace interactive `.sessions-design` logs | Accepted | 2026-06-20 |
+| [DD-086](#dd-086-reporting-informed-draft-model-planning-report) | Reporting-informed draft-model planning report | Accepted | 2026-06-21 |
 
 ---
 
@@ -4682,6 +4689,455 @@ counts.
 - `_get_class_and_parents` still follows a single `subClassOf` chain (pre-existing
   limitation, shared with column extraction so classification stays consistent
   with what was actually excluded) — multiple inheritance is out of scope here.
+
+---
+
+## DD-080: Two-layer lifecycle state, deterministic `status` CLI, and the `kairos-flow` single entry point
+
+**Status:** Accepted  
+**Date:** 2026-06-20  
+**Affects:** `src/kairos_ontology/status.py`, `cli/main.py` (`status` command),
+`.github/skills/kairos-flow/`, `.github/skills/kairos-diagnose-status/`, scaffold
+skills, `kairos-help`, methodology doc §21  
+**Implementation:** `src/kairos_ontology/status.py` (scanner),
+`status` CLI command, `kairos-flow` skill (state owner + orchestrator)
+
+### Context
+
+Each design phase was a separate skill with its own bespoke pre-flight and its own
+ad-hoc `.sessions-design/{phase}-{name}-{date}.md` log. There was no single formal
+status overview, no resumable per-step state that captured open questions, and no
+single "start" instruction. Status was re-derived by LLM scanning in
+`kairos-diagnose-status`, which is non-deterministic and not authoritative.
+
+### Decision
+
+Split lifecycle state into **two layers**:
+
+1. **Objective** — derived deterministically from committed artifacts by a new
+   read-only, AI-free CLI `kairos-ontology status` (module `status.py`). It emits
+   per-phase / per-instance `not-started | in-progress | done`. Exempt from the
+   skill-gate (like `check-alignment`). `kairos-diagnose-status` becomes a thin
+   wrapper that runs it and enriches the result.
+2. **Continuation** — an **OKF v0.1** markdown bundle at
+   `ontology-hub/.kairos-state/` (`status.md` with scan/continuation/phase-index
+   regions + per-instance `phases/<phase>/<instance>.md` logs with an Open
+   Questions resume anchor). OKF is used purely as a storage convention.
+
+A new **`kairos-flow`** skill is the single entry point: it runs the scan, loads
+and reconciles the continuation state, presents the overview, offers clean-start
+vs continue, and **hands off** to the correct phase skill (interactive-only).
+`kairos-flow` is the only writer of `status.md`; phase skills only read state and
+append a "state update proposal" to their own instance log.
+
+### Rationale
+
+A persisted hand-maintained status file risks drifting from the real artifacts, so
+objective facts are computed deterministically and the markdown layer is confined
+to intent/open-questions. Centralizing `status.md` writes in `kairos-flow` (rather
+than a write-contract spread across eight prose skills) avoids reliance on
+distributed LLM obedience. Per-instance logs match the real cardinality of source/
+mapping/silver/gold work. Clean-hub assumption: no `.sessions-design/` migration —
+`.kairos-state/` is the only state system going forward.
+
+### Consequences
+
+- New deterministic CLI `kairos-ontology status` (+ unit tests on the acme-hub
+  scenario) is the authoritative objective backbone.
+- New `kairos-flow` skill is the recommended starting point ("start / where are we
+  / continue"); `kairos-help` and the routing table point to it.
+- Phase skills gain a lightweight read-state + state-proposal contract (rolled out
+  incrementally); they stop writing new `.sessions-design/` logs.
+- Reconciliation rules are explicit (scan wins for facts; continuation wins for
+  intent).
+
+---
+
+## DD-081: `analyse-sources --domains` is an output filter, not a candidate restriction
+
+**Status:** Accepted  
+**Date:** 2026-06-20  
+**Affects:** `src/kairos_ontology/analyse_sources.py`, `cli/main.py`
+(`analyse-sources`), `kairos-design-source` skill  
+**Implementation:** `run_analyse_sources` (remove candidate prune; add
+`_filter_analysis_by_domain` post-classification); issue #189
+
+### Context
+
+`--domains` pruned the LLM **candidate** domain set *before* classification. Because
+each source table is classified in a single call against all candidates and must pick
+one primary domain, restricting candidates to e.g. `party` forced every table into
+`party` or `unclassified`. This produced false modeling evidence (cargo/vessel/route
+tables labelled `party`) and inflated downstream `check-claims --domains party` counts.
+
+### Decision
+
+Treat `--domains` as a **post-classification output focus**:
+
+- Always classify every table against the **full** accelerator/reference domain set so
+  each table gets its true primary domain.
+- After classification, write only the tables whose **primary** domain matches
+  `--domains` (substring match), in each per-system `*-affinity.yaml` and the matrix.
+  Secondary domains are deliberately ignored, matching downstream coverage bucketing
+  (`alignment_coverage.load_affinity_domain_tables`, which keys on primary `domain`).
+- A system with zero matching tables writes an empty (`schema_version: 2`, `tables: []`)
+  report instead of raising.
+- `--max-domains` still truncates the candidate set (rate-limit guard) but now emits a
+  warning that classification may be biased; it is unsuitable for modeling evidence.
+
+### Consequences
+
+- Fixes the evidence pollution at the source; no change needed in `check-claims` /
+  coverage (they already bucket by primary domain).
+- The per-table cache key includes the candidate signature, so switching between
+  filtered and unfiltered runs does not reuse stale (candidate-pruned) classifications.
+- Behaviour change: scripts relying on the old exclusive-candidate semantics now get
+  full-set classification with a focused output (the correct evidence).
+
+---
+
+## DD-082: Claim-curation ergonomics: `decide-claims`, URI back-fill, skeleton bootstrap, intra-hub imports (issue #190)
+
+**Status:** Accepted  
+**Date:** 2026-06-20  
+**Affects:** `src/kairos_ontology/decide_claims.py` (new),
+`claim_projection_sync.py`, `migrate_claims.py`, `cli/main.py`,
+`kairos-design-domain` skill  
+**Implementation:** issue #190 (items 1–5, 7); item 6 split to issue #191
+
+### Context
+
+Curating `*-claims.yaml` and running `claims-to-silver-ext` on a real hub
+(`cldn-ontology-hub`, party domain, 1183 claims) surfaced one hard blocker plus
+several workflow-friction gaps:
+
+1. Intra-hub shared bases (`_foundation.ttl`, `_master.ttl`) were flagged as
+   `extra owl:imports` and stripped, because `_collect_hub_domain_bases` skipped
+   every `_`-prefixed file.
+2. There was no CLI to query or bulk-curate claim `status`/`disposition` — the
+   skill told users to curate but provided no command, so they hand-edited YAML
+   (producing huge, unreviewable diffs).
+3. `migrate-claims` always left `class_uri`/`property_uri` empty, but the validator
+   requires those URIs before an anchored claim can be approved.
+4. `claims-to-silver-ext` silently refused to bootstrap a domain whose ontology /
+   `*-silver-ext.ttl` files did not yet exist (it set `status.error` and wrote
+   nothing).
+5. The MDM-anchor warning gave no concrete example of how to satisfy it.
+
+### Decision
+
+Keep `*-claims.yaml` as the canonical, **git-tracked** source of truth — no
+database (in-memory or on-disk). The runtime already loads the full registry into
+memory; a DB would sacrifice git-diff governance (DD-EL-1) without solving the real
+gap, which is a missing **query + bulk-update API**. Address each item:
+
+- **Intra-hub imports (item 1):** `_collect_hub_domain_bases` now treats any
+  `owl:Ontology`-declaring `*.ttl` under `model/ontologies/` (including
+  `_`-prefixed shared bases) as an allowed intra-hub base; it only skips
+  `-ext.ttl` extension surfaces. Such imports are neither flagged nor stripped.
+- **`decide-claims` (items 2/3):** new `decide_claims.py` provides a pure,
+  AI-free query layer (`select_claims` with status/disposition/type/origin/id-glob/
+  column-glob selectors) and a bulk-status mutator (`apply_decisions`) that honors
+  `STATUS_TRANSITIONS` and reports skipped/invalid transitions. The CLI writes back
+  through the existing canonical `write_registry` (deterministic `safe_dump`,
+  `width=100`), so curation diffs stay minimal — no new serializer needed (item 3
+  was solved by routing through the existing one).
+- **URI back-fill (item 4):** `migrate-claims` loads the reference-model inventory
+  and resolves `class_uri`/`property_uri` at claim-creation time. Ambiguous names
+  (same name → multiple URIs) stay null rather than guessing; resolved/unresolved
+  counts are printed. `--no-resolve-uris` is an escape hatch.
+- **Skeleton bootstrap (item 5):** `claims-to-silver-ext` scaffolds a minimal valid
+  `owl:Ontology` skeleton (with provenance header and inferred hub base / foundation
+  import) for any missing ontology or `*-silver-ext.ttl`, then proceeds with the
+  normal sync. `--no-scaffold` disables it.
+- **MDM-anchor warning (item 7):** the warning now prints a concrete
+  `mdm_anchor: true` reference_data claim example and points to the skill /
+  `--no-mdm-anchor`.
+
+### Consequences
+
+- Shared foundation/master bases survive projection sync; multi-domain hubs no
+  longer lose their intra-hub imports.
+- Claim curation is a reviewable, scriptable CLI flow with minimal diffs.
+- Anchored claims migrated from alignment can be approved without manual URI lookup.
+- A fresh domain can be bootstrapped end-to-end from claims alone.
+- **Out of scope:** the destructive whole-graph rdflib rewrite of projection
+  surfaces (item 6) is tracked separately as **issue #191**; the scaffolded
+  provenance header can still be stripped by that rewrite when approved imported
+  claims exist, which #191 will address.
+
+---
+
+## DD-083: `claims-to-silver-ext` preserves authored TTL via a managed block (issue #191)
+
+**Status:** Accepted  
+**Date:** 2026-06-20  
+**Affects:** `src/kairos_ontology/claim_projection_sync.py`,
+`kairos-design-domain` skill  
+**Implementation:** issue #191 (split from #190 item 6); supersedes the
+whole-graph rewrite
+
+### Context
+
+`_rewrite_domain_projection_surfaces` synced the managed `owl:imports` /
+`kairos-ext:silverInclude` surfaces by re-serializing the **whole** rdflib graph
+(`graph.serialize(destination=…)`). But `model/ontologies/{domain}.ttl` and
+`{domain}-silver-ext.ttl` are also **hand-authored** (local subclasses, gap
+properties, prefix layout, the DD-072 provenance header). Every sync therefore
+stripped comments/header, collapsed prefixes, and reordered triples — one file was
+simultaneously tool-owned and human-owned, written by a destructive whole-graph
+re-serialize. (This was also the root of the DD-082 item-5 limitation: a scaffolded
+provenance header was stripped on the first sync that had approved imported claims.)
+
+Two options from the issue were rejected after auditing the loader:
+
+- **Split into a generated `{domain}-imports.ttl` the authored file imports** —
+  the projection loader follows `owl:imports` **direct-only, no transitive walk**
+  (`catalog_utils.load_graph_with_catalog`; the no-catalog path follows none), and
+  extension discovery is a fixed `*-silver-ext.ttl` glob (`projector._discover_extensions`).
+  A generated intermediate import file would not resolve, and a separate includes
+  file would not be discovered, without broad loader/discovery/sync changes.
+- **Surgical rdflib writer** — rdflib preserves no formatting, degenerating into a
+  fragile full-Turtle text patcher.
+
+### Decision
+
+Introduce a **block-delimited managed region**. The tool owns only the triples
+between sentinel-comment markers; everything else is authored content preserved
+verbatim:
+
+```turtle
+# >>> kairos-managed (generated from the Claim Registry — do not edit)
+<https://acme.com/ont/party> <http://www.w3.org/2002/07/owl#imports> <https://refmodel.example/ontology/party> .
+# <<< kairos-managed
+```
+
+- The managed block is regenerated **wholesale as text** with **full URIs** (so it
+  is independent of the authored prefix declarations) and appended at the end of
+  the file. `_strip_managed_block` removes the prior block; `_compose_managed_file`
+  re-stitches authored text + fresh block.
+- **No loader/discovery/semantic change.** The file keeps its name and structure;
+  rdflib ignores the marker comments on parse, so both the projector and
+  `check-claims` (`evaluate_domain_projection_sync`) read it exactly as before.
+  `owl:imports` stays directly on the ontology subject (no transitivity needed).
+- **Managed vs authored split:** external (non-hub-base) `owl:imports` and imported
+  (non-local) `silverInclude` plus the forbidden `silverIncludeImports` bulk flag are
+  managed; intra-hub `_foundation`/`_master` imports and local-class `silverInclude`
+  stay authored.
+- **Steady state is byte-stable** outside the block (idempotent). **Legacy migration:**
+  a pre-#191 file with managed triples inline in the authored region has just those
+  triples stripped on the first sync (those files carry no authored comments to lose),
+  preserving any leading provenance header; thereafter the file has a managed block
+  and is preserved.
+
+### Consequences
+
+- `claims-to-silver-ext` no longer destroys provenance headers, comments, prefix
+  layout, or triple ordering; managed import/include sync is unchanged and still
+  enforced by `check-claims`.
+- Closes the DD-082 item-5 limitation — a scaffolded header now survives the first
+  and subsequent syncs.
+- Repeated syncs are idempotent (no marker accumulation).
+
+---
+
+## DD-084: Deterministic address relationship candidates surfaced as advisory metadata (issue #192)
+
+**Status:** Accepted  
+**Date:** 2026-06-20  
+**Affects:** `src/kairos_ontology/propose_alignment.py`,
+`src/kairos_ontology/claim_registry.py`,
+`src/kairos_ontology/migrate_claims.py`, `kairos-design-domain` skill  
+**Implementation:** issue #192 Phase A1 (A2 target-URI naming + Phase B
+satellite/child-entity detection deferred)
+
+### Context
+
+During initial domain design a source table that spreads an address across several
+scalar columns (`billing_street` / `billing_city` / `billing_postal_code`) was
+silently force-fit into unrelated scalar properties. DD-069 already detects
+address-part columns and emits a **prose** `review_reason` ("…model an address
+relationship / shared Address concept"), but it only *flags* — nothing
+machine-readable is produced, so the relationship is easy to miss and there is no
+gate that blocks TTL generation until a human decides.
+
+Issue #192 proposed promoting these into relationship claims, defaulting
+cross-module LLM widening on for accelerator domains, and adding satellite/child
+detection from name suffixes. Auditing the code and the governing methodology
+(`evidence-led-accelerator-first-modeling-approach`) showed several of those levers
+drift from the methodology: the accelerator must not become an automatic generator
+(lines 72/222/1252), LLM output stays candidate-only until approval (1139),
+relationships come from **source-confirmed** silver FKs (525), and DD-070 guarantees
+the default (non-`--cross-module`) output is byte-identical with a cache signature
+that encodes the cross-module params. Also, `relationship` is already a valid claim
+`type`, but a `Claim` only carries one URI (`class_uri` / `property_uri` via
+`identifying_uri()`) — it has no source/target/cardinality/source-columns fields, so
+it cannot yet faithfully encode a 1:n relationship.
+
+### Decision
+
+Ship the smallest evidence-led slice (**Phase A1**): a deterministic, always-on,
+**additive** detector that promotes the existing address-part signal into a
+machine-readable **advisory candidate**, plus a mandatory skill gate. No LLM, no
+cross-module widening, no new claim type, no registry migration.
+
+- **Detector** (`_detect_address_relationship_candidates`): groups address-part
+  columns by **role** (the qualifier prefix, e.g. `billing` / `shipping`), requires
+  **≥2 distinct complementary part kinds** per role, and emits one candidate per
+  qualifying role. Reuses the DD-069 `_detect_address_part` gate (so
+  `country_of_origin` and `billing_email` stay excluded) and exact-token matching to
+  avoid false positives (e.g. "ethnicity" ≠ city).
+- **Candidate shape:** `{type: address_relationship_candidate, source_table, role,
+  suggested_relationship (hasAddress / has{Role}Address), target_concept: "Address",
+  source_columns, address_parts, requires_human_confirmation: true, rationale}`.
+  It carries **no resolvable target URI** — naming a concrete `→ Address` (Phase A2)
+  needs the shared/accelerator pack loaded and is deferred.
+- **Additive, advisory:** candidates are emitted *in addition to* the scalar column
+  dispositions (deleting those would lose columns from silver/gold + coverage). They
+  ride along as a registry-level `relationship_candidates` list — **not** as governed
+  `relationship` claims — so we don't prematurely encode under-specified relationship
+  semantics. `alignment_to_registry` ignores them for claim generation;
+  `merge_preserving_decisions` regenerates them deterministically each run while
+  preserving human claim decisions.
+- **Enforcement is the skill gate, not an LLM default.** A new MANDATORY
+  *Checkpoint 3c — Relationship & Satellite-Entity Review* in `kairos-design-domain`
+  blocks TTL generation until every candidate has an explicit model / relate / defer
+  decision. Issue #192's cross-module default-on is **rejected** (it would break the
+  DD-070 byte-identical contract, enlarge the LLM pool/cost, and drift toward
+  accelerator-as-generator); `--cross-module` stays an opt-in deep pass invokable
+  from the gate.
+
+### Consequences
+
+- The address-relationship gap is now surfaced as reproducible, reviewable metadata
+  and gated before TTL generation, without LLM cost or DD-070 breakage.
+- The relationship-claim schema gap is documented but untouched: governed
+  `relationship` claims (with source/target/cardinality/columns) and FK-driven
+  satellite detection remain future work (Phase A2 / Phase B) once the schema
+  semantics settle.
+- New deterministic surface area: `relationship_candidates` on `TableAlignment`,
+  `alignment_to_dict`, and `ClaimRegistry` (round-tripped through `to_dict` /
+  `from_dict` and the migrate path). Covered by `tests/test_relationship_candidates.py`
+  and `tests/scenarios/test_scenario_relationship_candidates.py`.
+
+---
+
+## DD-085: OKF phase logs replace interactive `.sessions-design` logs
+
+**Status:** Accepted  
+**Date:** 2026-06-20  
+**Affects:** `cli/main.py`, design skill instructions, scaffold skill copies,
+`kairos-help`, `kairos-diagnose-status`, `tests/test_init.py`  
+**Implementation:** scaffold and skill cleanup following DD-080
+
+### Context
+
+DD-080 introduced the OKF continuation-state bundle at
+`ontology-hub/.kairos-state/` and explicitly states that `.kairos-state/` is the
+only state system going forward. The migration was partial: phase skills gained
+OKF read/proposal headers, but their hard gates and session-management sections
+still required bespoke interactive `.sessions-design/{phase}-*.md` logs. New hubs
+also still scaffolded `.sessions-design/`, leaving two competing places for the
+same design-session memory.
+
+### Decision
+
+Use `.kairos-state/phases/...` OKF phase logs as the **only required interactive
+design-session state** for discovery, source, domain, mapping, silver, and gold
+skills. Superseded interactive phase logs move to `.kairos-state/_archive/` when a
+user starts fresh. Do not create `.sessions-design/` for new hubs.
+
+Existing `.sessions-design/*.md` files are historical only. There is no automatic
+migration helper; when resuming an existing hub, a user or skill may manually
+summarize relevant open questions and decisions into the appropriate OKF phase log.
+
+This does **not** migrate the separate machine/audit surfaces:
+
+- `.sessions-design-import/` remains the import-results audit log location for
+  source-import commands.
+- `.sessions-projection/` remains the projection-run report location.
+
+### Rationale
+
+Keeping both interactive `.sessions-design` logs and OKF phase logs creates
+conflicting prerequisites and split resume anchors. OKF already provides
+per-instance phase logs, frontmatter status, xrefs, and a shared continuation
+index owned by `kairos-flow`; duplicating the same state in `.sessions-design`
+adds drift without adding capability. Avoiding automatic migration keeps the
+change simple and prevents LLM-generated summaries from rewriting historical
+session evidence.
+
+### Consequences
+
+- Design skills must require their OKF phase log before changing design artifacts.
+- `init` and `new-repo` scaffold `.kairos-state/` phase directories and no longer
+  scaffold interactive `.sessions-design/`.
+- Documentation and diagnostics refer to `.sessions-design` only as legacy
+  historical context, not as current design state.
+- Existing hubs are backward-readable by humans, but current continuation state is
+  maintained in `.kairos-state/`.
+
+---
+
+## DD-086: Reporting-informed draft-model planning report
+
+**Status:** Accepted  
+**Date:** 2026-06-21  
+**Affects:** `src/kairos_ontology/draft_model_report.py`, `import_tmdl.py`,
+`derive_claims.py` evidence workflow, `cli/main.py`, design skills  
+**Implementation:** `kairos-ontology draft-model-report`
+
+### Context
+
+Real hubs with TMDL/Power BI evidence, glossary terms, source affinity, mappings,
+and claim registries can discover high-value reporting concepts late and repeatedly
+across domain, silver, and gold design. The first proposal was to generate a silver
+seed, but that would drift from evidence-led claim governance and could turn BI joins
+into approved natural keys or FKs too early.
+
+### Decision
+
+Add a deterministic, AI-free `draft-model-report` command that extends the claim
+extraction evidence workflow with richer TMDL/reporting evidence and emits a
+read-only draft model planning report:
+
+- one all-domain summary YAML;
+- per-domain draft evidence YAML files;
+- a Markdown report;
+- one cross-domain Mermaid ERD-style view.
+
+The report is advisory (`projection_authority: false`). It may contain candidate
+classes, relationship questions, natural-key/FK questions, gold measure candidates,
+mapping gaps, glossary matches, and next actions, but it never approves claims,
+writes ontology TTL, or writes silver extension annotations.
+
+The methodology uses it in two passes:
+
+1. early intake after source analysis, before domain design, using only evidence
+   available at that point (affinity, TMDL, glossary, resumed claims);
+2. post-mapping fit-gap in the existing claims phase, reconciling reporting demand
+   with mappings, approved/source-backed claims, and passthrough decisions.
+
+The canonical lifecycle order remains `discovery -> source -> domain -> mapping ->
+claims -> silver -> gold -> validate -> project`.
+
+### Rationale
+
+This keeps the useful visual "draft model" experience while avoiding a fourth
+claim-like source of truth. Claim state remains in `model/claims/{domain}-claims.yaml`,
+projection-facing TTL remains controlled by approved claims and the silver skill,
+and TMDL relationships remain questions until source/stakeholder evidence confirms
+their semantics.
+
+### Consequences
+
+- Users get an all-domain ERD-style view before committing to domain TTL.
+- TMDL concept mappings now carry `domain` and measure metadata to support routing
+  and gold review.
+- Skills can consume the draft as an agenda, but must still require explicit user
+  confirmation before modeling, silver annotations, or gold semantics.
+- Future Slice 5 work (`pbi-source-fit-gap`, `tmdl-to-gold-ext`) should reuse this
+  evidence/reporting backbone rather than introduce a competing reconciler.
 
 ---
 

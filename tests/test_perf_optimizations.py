@@ -44,10 +44,22 @@ class TestMapConcurrent:
         with pytest.raises(ValueError, match="bad"):
             map_concurrent(boom, [1, 2, 3], max_workers=4)
 
-    def test_unordered_still_returns_input_order(self):
+    def test_unordered_returns_all_results(self):
         items = list(range(10))
         result = map_concurrent(lambda x: x, items, max_workers=4, ordered=False)
-        assert result == items
+        assert sorted(result) == items
+
+    def test_on_result_reports_completion_without_changing_order(self):
+        items = [3, 1, 2]
+        completed = []
+        result = map_concurrent(
+            lambda x: x * 10,
+            items,
+            max_workers=3,
+            on_result=completed.append,
+        )
+        assert result == [30, 10, 20]
+        assert sorted(completed) == [10, 20, 30]
 
 
 # ---------------------------------------------------------------------------

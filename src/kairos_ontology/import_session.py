@@ -4,8 +4,8 @@
 
 When `import-source` or `import-flatfile` runs against an ontology hub, this
 module records what was imported into
-`ontology-hub/.sessions-design-import/import-{system}-{YYYY-MM-DD}.md`, using a
-template consistent with the other `.sessions-design/` session files.
+`ontology-hub/.sessions-design-import/import-{system}-{YYYY-MM-DD}.md`. This is
+an import audit log, separate from OKF lifecycle state under `.kairos-state/`.
 
 The writer is best-effort: it never raises and is skipped when no hub root is
 detected (e.g. when running outside a hub).

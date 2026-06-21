@@ -101,6 +101,23 @@ class TestProjector:
         # Should load both files
         assert "customer.ttl" in captured.out or "✓ Loaded" in captured.out
         assert "person.ttl" in captured.out or "✓ Loaded" in captured.out
+
+    def test_load_single_ontology_file_path(self, temp_dir, ontology_files, capsys):
+        """Test loading one ontology file path instead of the whole directory."""
+        output_dir = temp_dir / "output"
+
+        run_projections(
+            ontologies_path=ontology_files['customer'],
+            catalog_path=None,
+            output_path=output_dir,
+            target='neo4j'
+        )
+
+        captured = capsys.readouterr()
+        assert "Found 1 ontology file(s)" in captured.out
+        assert "customer.ttl" in captured.out
+        assert "person.ttl" not in captured.out
+        assert (output_dir / "projection-report.json").is_file()
     
     def test_empty_directory(self, temp_dir, capsys):
         """Test handling of empty directory."""
