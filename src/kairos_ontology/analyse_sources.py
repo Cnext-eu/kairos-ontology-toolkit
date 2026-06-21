@@ -1086,7 +1086,20 @@ def analyse_source_system(
         return {"table": tbl_name, "columns": columns, "res": res,
                 "cache_key": cache_key, "from_cache": False}
 
-    classified = map_concurrent(_classify, table_items, max_workers=max_workers)
+    def _report_classified(entry: dict[str, Any]) -> None:
+        res = entry["res"]
+        cache_marker = " (cached)" if entry["from_cache"] else ""
+        report(
+            f"      ✓ {entry['table']} → {res['domain']} "
+            f"({res['confidence']:.2f}) {res['likely_entity']}{cache_marker}",
+        )
+
+    classified = map_concurrent(
+        _classify,
+        table_items,
+        max_workers=max_workers,
+        on_result=_report_classified,
+    )
 
     assignments: list[TableAssignment] = []
     for entry in classified:
@@ -1108,12 +1121,6 @@ def analyse_source_system(
                 "domain_uris": smeta.get("uris", []),
             })
 
-        cache_marker = " (cached)" if entry["from_cache"] else ""
-        report(
-            f"      ├─ {tbl_name} → {domain_id} "
-            f"({res['confidence']:.2f}) {res['likely_entity']}{cache_marker}",
-            level="verbose",
-        )
         assignments.append(TableAssignment(
             table=tbl_name,
             total_columns=len(columns),
@@ -1411,7 +1418,9 @@ def run_analyse_sources(
 
     for vocab_path in vocab_files:
         sys_name = vocab_path.stem.replace(".vocabulary", "")
-        report(f"  • {sys_name} …")
+        table_count = len(parse_source_vocabulary(vocab_path))
+        worker_count = min(max_workers, table_count) if table_count else 0
+        report(f"  • {sys_name} … {table_count} table(s), up to {worker_count} concurrent LLM call(s)")
         analysis = analyse_source_system(
             vocab_path, ref_domains, model=model, threshold=threshold, report=report,
             max_workers=max_workers, cache=cache,

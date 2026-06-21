@@ -36,6 +36,13 @@ This skill covers annotation design and output interpretation:
 > **Design/Execute separation (DD-033):** This skill creates annotation files.
 > To generate output, invoke the **kairos-execute-project** skill.
 
+> **Draft model input (DD-086):** If
+> `model/planning/draft-model/draft-model-report.md` or
+> `draft-model-erd.mmd` exists, read it during pre-flight. Use natural-key and
+> FK entries as review prompts only. A draft-report relationship or TMDL join is
+> not an approved `silverForeignKey` / `silverForeignKeyOn` annotation until the
+> user confirms it in this skill.
+
 ---
 
 ## Part A — Silver Schema Design

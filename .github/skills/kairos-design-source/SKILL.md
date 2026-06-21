@@ -412,13 +412,44 @@ The command produces `{system}-affinity.yaml` files in
 
 After the source vocabulary and analysis are complete:
 
-1. **Design domain ontology** — invoke the **kairos-design-domain** skill.
+1. **Create a draft model report when reporting/business evidence exists** — run
+   `kairos-ontology draft-model-report` to produce all-domain draft evidence packs
+   and one advisory cross-domain Mermaid ERD before domain design. Use this when
+   `integration/sources/powerbi/` or `businessdiscovery/*.ttl` exists.
+2. **Design domain ontology** — invoke the **kairos-design-domain** skill.
    It uses the affinity reports from Phase 4 as a mandatory prerequisite
    (Step 0a) to scope which tables to model per domain.
-2. **Create SKOS mappings** — invoke the **kairos-design-mapping** skill to
+3. **Create SKOS mappings** — invoke the **kairos-design-mapping** skill to
    map source columns to domain ontology properties
-3. **Design silver annotations** — invoke the **kairos-design-silver** skill
-4. **Generate output** — invoke the **kairos-execute-project** skill
+4. **Design silver annotations** — invoke the **kairos-design-silver** skill
+5. **Generate output** — invoke the **kairos-execute-project** skill
+
+### Draft model report (`draft-model-report`)
+
+> **When to use:** after `analyse-sources` when TMDL/Power BI or glossary evidence
+> exists. It can also be re-run later after mappings and claim curation to enrich
+> the same review view.
+
+`draft-model-report` is deterministic and AI-free. It extends the claim-evidence
+workflow with richer TMDL-specific evidence and writes advisory planning artifacts
+under `model/planning/draft-model/`:
+
+- `draft-model-report.yaml` — all-domain machine-readable summary;
+- `domains/{domain}.yaml` — data-domain-specific draft model evidence packs;
+- `draft-model-report.md` — reviewer-facing report;
+- `draft-model-erd.mmd` — one cross-domain Mermaid ERD-style view.
+
+```bash
+kairos-ontology draft-model-report
+```
+
+The report is **not** claim authority, not TTL, and not projection input. TMDL
+joins are relationship questions, measures are gold candidates, and all decisions
+still require the relevant domain/silver/gold skill confirmation.
+
+When writing the Phase 5 State update proposal, add `model/planning/draft-model/`
+and the relevant `domains/{domain}.yaml` files as `xrefs` so `kairos-flow` can
+resume from the draft evidence packs.
 
 > **Optional (DD-045):** Before mapping, you can run
 > `kairos-ontology propose-alignment --include-mapping-hints` to enrich the

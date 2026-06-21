@@ -1291,6 +1291,23 @@ class TestAffinityConcurrencyAndCaching:
         assert [a.domain for a in serial.table_assignments] == \
             [a.domain for a in parallel.table_assignments]
 
+    def test_reports_each_table_as_it_completes(self, tmp_path, monkeypatch):
+        vocab_file, ref_domains = self._setup(tmp_path)
+        monkeypatch.setattr(
+            "kairos_ontology.analyse_sources._get_openai_client",
+            lambda: self._counting_client([]),
+        )
+        messages: list[str] = []
+
+        analyse_source_system(
+            vocab_file,
+            ref_domains,
+            max_workers=4,
+            report=lambda message, level="info": messages.append(message),
+        )
+
+        assert any("✓" in message and "→ party" in message.lower() for message in messages)
+
 
 # ---------------------------------------------------------------------------
 # Tests: --domains is an OUTPUT filter, never a candidate restriction (issue #189)

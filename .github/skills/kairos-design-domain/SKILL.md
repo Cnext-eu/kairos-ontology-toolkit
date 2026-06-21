@@ -694,6 +694,18 @@ which class each table feeds, and `indicative_columns` highlights the most relev
 Before selecting reference models or designing classes, inventory all available
 input signals that can inform the modeling process.
 
+**Check for an advisory draft model report (DD-086):**
+
+```bash
+ls ontology-hub/model/planning/draft-model/
+```
+
+If `draft-model-report.md` or `domains/{DOMAIN}.yaml` exists, read the relevant
+domain evidence pack before Checkpoint 1. Treat it as an agenda of source/TMDL/
+glossary-backed questions, not as approved ontology design. The cross-domain ERD
+(`draft-model-erd.mmd`) is useful for spotting shared dimensions and relationship
+questions across domains, but it is not TTL and not projection authority.
+
 **Check for source system documentation:**
 
 ```bash

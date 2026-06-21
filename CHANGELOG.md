@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0rc10] — 2026-06-21
+
 ### Added
+- **Reporting-informed draft model reports (DD-086).** New deterministic,
+  advisory `draft-model-report` command builds all-domain draft evidence packs
+  from claim extraction inputs, richer TMDL evidence, source affinity, mappings,
+  and glossary terms. It writes YAML/Markdown plus one cross-domain Mermaid ERD
+  under `model/planning/draft-model/` and is explicitly non-authoritative:
+  no claim auto-approval, no TTL writes, and no projection authority.
 - **Deterministic address relationship candidates surfaced during alignment
   (issue #192, Phase A1).** `propose-alignment` now promotes clustered address-part
   columns (e.g. `billing_street` + `billing_city` + `billing_postal_code`) into a
@@ -28,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reviewable diffs instead of hand-edited YAML noise.
 
 ### Changed
+- **`analyse-sources` now reports table completions as concurrent LLM workers finish.**
+  The command already used up to 8 per-table LLM calls by default; progress is now
+  streamed per completed table while output YAML remains deterministic.
 - **OKF phase logs replace interactive `.sessions-design` logs (DD-085).** New hubs
   use `.kairos-state/phases/...` as the required design-session memory for
   discovery/source/domain/mapping/silver/gold skills. Legacy `.sessions-design/*.md`

@@ -216,6 +216,11 @@ def generate_concept_mapping(model: TmdlModel) -> str:
             "tmdl_name": t.name,
             "type": t.table_type,
             "columns": [c.name for c in t.columns],
+            "measures": [
+                {"name": m.name, "expression": m.expression, "format_string": m.format_string}
+                for m in t.measures
+            ],
+            "domain": "",
             "reference_model_match": "",
             "action": "",
             "notes": "",
@@ -229,6 +234,7 @@ def generate_concept_mapping(model: TmdlModel) -> str:
             "from": f"{rel.from_table}.{rel.from_column}",
             "to": f"{rel.to_table}.{rel.to_column}",
             "cardinality": f"{rel.from_cardinality}-to-{rel.to_cardinality}",
+            "domain": "",
             "reference_model_match": "",
         }
         if not rel.is_active:

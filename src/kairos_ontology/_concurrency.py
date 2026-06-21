@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Iterable, Sequence, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -89,13 +89,16 @@ def map_concurrent(
     *,
     max_workers: int = DEFAULT_MAX_WORKERS,
     ordered: bool = True,
+    on_result: Callable[[R], None] | None = None,
 ) -> list[R]:
     """Apply ``fn`` to each item using a bounded thread pool.
 
-    Results are returned in **input order** regardless of completion order
-    (``ordered=True``), which keeps generated YAML deterministic. With
-    ``max_workers <= 1`` the work runs serially in the calling thread — an exact
-    reproduction of the legacy path and a cheap escape hatch.
+    Results are returned in **input order** when ``ordered=True`` (the default),
+    which keeps generated YAML deterministic. ``on_result`` is called as each
+    item completes, so callers can print progress without waiting for the whole
+    ordered result set. With ``max_workers <= 1`` the work runs serially in the
+    calling thread — an exact reproduction of the legacy path and a cheap escape
+    hatch.
 
     Exceptions raised by ``fn`` propagate (the analysis commands wrap their
     per-item work so a single table failure does not abort the run).
@@ -104,15 +107,25 @@ def map_concurrent(
     if not work:
         return []
     if max_workers <= 1:
-        return [fn(item) for item in work]
+        results = []
+        for item in work:
+            result = fn(item)
+            if on_result is not None:
+                on_result(result)
+            results.append(result)
+        return results
 
     workers = min(max_workers, len(work))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        if ordered:
-            return list(pool.map(fn, work))
-        # Unordered: still collect into input order via index mapping.
         futures = {pool.submit(fn, item): idx for idx, item in enumerate(work)}
         results: list[R | None] = [None] * len(work)
-        for fut in futures:
-            results[futures[fut]] = fut.result()
-        return [r for r in results]  # type: ignore[misc]
+        completion_order: list[R] = []
+        for fut in as_completed(futures):
+            result = fut.result()
+            results[futures[fut]] = result
+            completion_order.append(result)
+            if on_result is not None:
+                on_result(result)
+        if ordered:
+            return [r for r in results]  # type: ignore[misc]
+        return completion_order

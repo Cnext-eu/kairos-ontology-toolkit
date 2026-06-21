@@ -81,6 +81,7 @@ _SKILL_COVERED_COMMANDS = {
     "generate-staging": "kairos-design-source",
     "analyse-sources": "kairos-design-source",
     "derive-claims": "kairos-design-source",
+    "draft-model-report": "kairos-design-domain",
     "decide-claims": "kairos-design-domain",
     "init-dataplatform": "kairos-setup-dataplatform",
     "suggest-shapes": "kairos-execute-validate",
@@ -783,6 +784,7 @@ def init(domain, company_domain, force):
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
+        hub / "model" / "planning",
         hub / "referencemodels-unpacked",
         hub / "businessdiscovery",
         hub / "businessdiscovery" / "_extractions",
@@ -3297,6 +3299,82 @@ def derive_claims_cmd(claims_dir, analysis_dir, mappings, tmdl_dir, domains_filt
     )
 
 
+@cli.command(name='draft-model-report')
+@click.option('--claims-dir', type=click.Path(), default=None,
+              help='Path to model/claims/ directory (default: auto-detect when present).')
+@click.option('--analysis-dir', type=click.Path(), default=None,
+              help='Path to _analysis/ directory with affinity reports (default: auto-detect).')
+@click.option('--mappings', type=click.Path(), default=None,
+              help='Path to model/mappings/ directory with SKOS mappings (default: auto-detect).')
+@click.option('--tmdl-dir', type=click.Path(), default=None,
+              help='Path to import-tmdl output (default: integration/sources/powerbi/).')
+@click.option('--glossary-dir', type=click.Path(), default=None,
+              help='Path to business-discovery glossary TTL directory (default: businessdiscovery/).')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Output directory (default: model/planning/draft-model/).')
+@click.option('--domains', 'domains_filter', default=None,
+              help='Comma-separated domain names to include (case-insensitive substring match).')
+def draft_model_report_cmd(
+    claims_dir,
+    analysis_dir,
+    mappings,
+    tmdl_dir,
+    glossary_dir,
+    output,
+    domains_filter,
+):
+    """Create advisory draft domain-model evidence packs and a cross-domain ERD.
+
+    The report extends the claim-extraction evidence workflow with richer
+    TMDL/reporting context, but it is read-only: it never approves claims, writes
+    ontology TTL, or acts as projection authority.
+    """
+    from ..draft_model_report import build_draft_model_report, write_draft_model_report
+    from ..hub_utils import find_hub_root
+
+    _warn_if_no_skill_context("draft-model-report")
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    base = hub_root if hub_root else cwd
+
+    claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
+    analysis_path = (
+        Path(analysis_dir) if analysis_dir else _autodetect_analysis_dir(cwd, hub_root)
+    )
+    mappings_path = (
+        Path(mappings)
+        if mappings
+        else _resolve_model_path(cwd, hub_root, subdir="mappings", claims_path=claims_path)
+    )
+    tmdl_path = Path(tmdl_dir) if tmdl_dir else base / "integration" / "sources" / "powerbi"
+    glossary_path = Path(glossary_dir) if glossary_dir else base / "businessdiscovery"
+    output_path = Path(output) if output else base / "model" / "planning" / "draft-model"
+    filters = [f for f in (domains_filter.split(",") if domains_filter else []) if f.strip()]
+
+    click.echo("🧭 Building advisory draft model report")
+    click.echo(f"   Claims:   {claims_path if claims_path.is_dir() else '(none)'}")
+    click.echo(f"   Affinity: {analysis_path if analysis_path else '(none)'}")
+    click.echo(f"   Mappings: {mappings_path if mappings_path.is_dir() else '(none)'}")
+    click.echo(f"   TMDL:     {tmdl_path if tmdl_path.is_dir() else '(none)'}")
+    click.echo(f"   Glossary: {glossary_path if glossary_path.exists() else '(none)'}")
+
+    report = build_draft_model_report(
+        claims_dir=claims_path if claims_path.is_dir() else None,
+        analysis_dir=analysis_path,
+        mappings_dir=mappings_path if mappings_path.is_dir() else None,
+        tmdl_dir=tmdl_path if tmdl_path.is_dir() else None,
+        glossary_dir=glossary_path if glossary_path.exists() else None,
+        domains_filter=filters,
+    )
+    artifacts = write_draft_model_report(report, output_path)
+
+    click.echo(f"   ✓ summary: {artifacts.summary_yaml}")
+    click.echo(f"   ✓ report:  {artifacts.markdown}")
+    click.echo(f"   ✓ ERD:     {artifacts.mermaid}")
+    click.echo(f"✅ Draft model evidence packs for {report['summary']['domains']} domain(s).")
+
+
 @cli.command(name='discovery-status')
 @click.option('--import-dir', type=click.Path(), default=None,
               help='Path to .import/businessdiscovery/ (default: auto-detect from hub).')
@@ -3906,6 +3984,7 @@ def migrate(check, hub_path):
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
+        hub / "model" / "planning",
         hub / "referencemodels-unpacked",
         hub / "integration" / "sources",
         hub / "output" / "medallion" / "powerbi",
@@ -4146,6 +4225,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "model" / "shapes",
         hub / "model" / "extensions",
         hub / "model" / "mappings",
+        hub / "model" / "planning",
         hub / "referencemodels-unpacked",
         hub / "businessdiscovery",
         hub / "businessdiscovery" / "_extractions",

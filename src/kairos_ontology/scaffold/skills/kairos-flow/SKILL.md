@@ -212,6 +212,14 @@ Follow the canonical order `discovery → source → domain → mapping → clai
 silver → gold → validate → project`. Respect each target skill's own pre-flight
 (it runs after the hand-off).
 
+**Optional evidence-planning report (DD-086):** When source analysis exists and
+`integration/sources/powerbi/` or `businessdiscovery/*.ttl` is present, surface
+`kairos-ontology draft-model-report` as an optional step before handing off to
+domain design. This does **not** change the canonical order; it creates advisory
+draft evidence packs and one cross-domain ERD under `model/planning/draft-model/`.
+After mapping/claims work, the same report may be re-run as a post-mapping
+fit-gap view.
+
 ---
 
 ## 7  Guardrails

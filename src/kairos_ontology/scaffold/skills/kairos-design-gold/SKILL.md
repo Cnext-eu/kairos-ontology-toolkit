@@ -27,6 +27,13 @@ anchor. Do **not** edit `status.md` directly — kairos-flow folds your proposal
 You are an expert at generating Power BI star-schema models from OWL ontologies
 using the Kairos gold-layer projection.
 
+> **Draft model input (DD-086):** If
+> `model/planning/draft-model/draft-model-report.md` or
+> `draft-model-erd.mmd` exists, read it during pre-flight. Use measure,
+> fact/dimension, hierarchy, and TMDL relationship entries as candidate gold-design
+> prompts only. Do not turn report measures into gold annotations without explicit
+> user confirmation.
+
 ## Architecture Context
 
 The Kairos projection system uses a three-layer rule architecture:
