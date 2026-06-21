@@ -239,6 +239,36 @@ class TestInventoryCollisionRegression:
         assert gen.exit_code == 0, gen.output
         assert (inv_dir / "party-inventory.yaml").exists()
 
+    def test_generate_inventory_ignores_archived_reference_model_versions(
+        self, tmp_path, monkeypatch
+    ):
+        ref_root = tmp_path / "ontology-reference-models"
+        current = (
+            ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        )
+        archived = (
+            ref_root / "derived-ontologies" / "BSP" / "archive" / "1.4.0"
+            / "party" / "party.ttl"
+        )
+        current.parent.mkdir(parents=True, exist_ok=True)
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        current.write_text(self._ref_ttl("BSP", "CurrentTradeParty"), encoding="utf-8")
+        archived.write_text(self._ref_ttl("BSP", "ArchivedTradeParty"), encoding="utf-8")
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(cli, ["generate-inventory"])
+
+        assert result.exit_code == 0, result.output
+        with open(
+            tmp_path / "referencemodels-unpacked" / "bsp-party-inventory.yaml",
+            encoding="utf-8",
+        ) as fh:
+            inv = yaml.safe_load(fh)
+        names = {c["name"] for c in inv["classes"]}
+        assert "CurrentTradeParty" in names
+        assert "ArchivedTradeParty" not in names
+
 
 class TestResolveRefModelsDir:
 
@@ -266,4 +296,3 @@ class TestResolveRefModelsDir:
         from kairos_ontology.cli.main import _resolve_ref_models_dir
 
         assert _resolve_ref_models_dir(tmp_path, tmp_path) is None
-

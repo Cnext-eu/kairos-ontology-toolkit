@@ -60,6 +60,17 @@ DD047_ANCHORS = [
     "STOP",
 ]
 
+# DD-EL-1 / DD-065 — batch evidence refresh instead of one-domain-at-a-time loops.
+BATCH_REFRESH_ANCHORS = [
+    "batch preflight across all in-scope",
+    "empty claims",
+    "batch refresh proposal",
+    "single scoped invocations",
+    "--domains ... --max-workers <N>",
+    "with `--force`",
+    "Process-level fan-out",
+]
+
 
 @pytest.mark.parametrize("skill_path", SKILL_PATHS, ids=lambda p: p.parent.parent.parent.name)
 class TestDesignDomainSkillContract:
@@ -82,4 +93,12 @@ class TestDesignDomainSkillContract:
         assert anchor in text, (
             f"DD-047 anchor {anchor!r} missing from {skill_path} — the inventory "
             f"freshness pre-flight gate may have been removed."
+        )
+
+    @pytest.mark.parametrize("anchor", BATCH_REFRESH_ANCHORS)
+    def test_batch_evidence_refresh_guidance_present(self, skill_path, anchor):
+        text = skill_path.read_text(encoding="utf-8")
+        assert anchor in text, (
+            f"Batch refresh anchor {anchor!r} missing from {skill_path} — the modeler "
+            f"may fall back to one-domain-at-a-time stale/empty claims refresh loops."
         )

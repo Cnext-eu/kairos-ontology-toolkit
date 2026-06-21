@@ -46,14 +46,30 @@ extracted_terms:
     definition: ...
     category: documentation               # domain / category bucket
     company_specific: true                # true = company-specific, false = generic industry
+    source_locator: page 3 diagram        # optional: page/slide/image locator
+    evidence_type: diagram                # optional: text | image | ocr | diagram | screenshot
     linked_iri: https://example.com/ont/logistics#TransportDocument   # optional
+visual_evidence:                          # optional; summarize, never embed raw images
+  - locator: page 3 / slide 7 / screenshot.png
+    visual_type: process_diagram          # process_diagram | org_chart | screenshot | table | scanned_text | other
+    extracted_text:
+      - HBL
+      - Customer Portal
+    observed_entities:
+      - Transport Document
+      - Shipment
+    notes: Diagram appears to show how house bills flow through the portal.
+    confidence: medium                    # high | medium | low
 notes: ...                                # optional free text
 status: processed                         # processed | partial | skipped
 ```
 
 The schema is **generic**. Company-specific terminology extraction is the worked
 example, not a hard requirement — adapt `strategy` and `extracted_terms` to the
-discovery focus at hand.
+discovery focus at hand. Use `visual_evidence` for screenshots, diagrams, scanned
+PDF pages, embedded slide images, and other image-heavy artifacts. Do not store raw
+images or sensitive screenshot data in extraction YAML; summarize the observed
+business evidence only.
 
 ## How it is used
 

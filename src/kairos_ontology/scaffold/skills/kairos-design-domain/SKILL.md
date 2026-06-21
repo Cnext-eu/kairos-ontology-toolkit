@@ -423,6 +423,48 @@ already imported/analysed.
 > the user's **answer** is not hard-blocked — if they knowingly proceed with the
 > current sources, continue (Gate 6 remains the hard evidence constraint).
 
+**P2d — Data-product vertical-slice routing (OPTIONAL, after P2c only — DD-087).**
+Only after sources are imported, analysed, and the P2c source-completeness question
+has been answered, check whether the user is really asking for a scoped report pack
+or semantic-model path rather than broad domain modeling.
+
+Offer this option when the user mentions a quick mapping exercise, a specific set of
+reports, a Power BI semantic model, TMDL, a dashboard/report pack, or a named data
+product. Do **not** offer it as an escape hatch in P2a/P2b: if sources are missing
+or unanalysed, hand off to `kairos-design-source` first.
+
+Ask:
+
+> "Do you want to continue **broad domain modeling**, or switch to a
+> **data-product vertical slice** for this report pack first?"
+
+Present the recommended choice exactly:
+
+> **Yes — switch to a data-product vertical slice.** We'll use the report/TMDL/
+> business concepts to create an advisory scoped plan, then model only the
+> claim-backed domain elements needed for that product. This is faster, but still
+> keeps normal claims, mapping, silver, and gold confirmation gates.
+
+If the user selects the vertical slice:
+
+1. Create or locate `model/planning/data-products/<product>/contract.yaml`.
+2. Ensure it explicitly has `projection_authority: false`; a product contract is
+   planning input only and must never be projection authority.
+3. Then run one of:
+   ```bash
+   kairos-ontology draft-model-report --data-product <product>
+   # or
+   kairos-ontology draft-model-report --contract model/planning/data-products/<product>/contract.yaml
+   ```
+4. Read the generated product planning artifacts from
+   `model/planning/data-products/<product>/` and use them as the scoped agenda for
+   Checkpoint 1, the Source Evidence Table, custom-column triage, relationship
+   review, and later mapping/gold work.
+
+The vertical slice is **advisory only**: no source-to-gold bypass, no TTL from
+report intent alone, no claim approval without evidence, and no domain/mapping/
+silver/gold annotation without explicit user confirmation in the owning skill.
+
 0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
    at the start of the session.  If it reports outdated files, run
    `python -m kairos_ontology update` and commit the refresh before doing any other work.
@@ -566,42 +608,80 @@ ls integration/sources/_analysis/
 > alignment skill; treat `propose-alignment` (and its `check-claims` gate) as
 > part of the `kairos-design-domain` workflow.
 
-**Step 0a.2 — Claims-coverage gate (MANDATORY — DD-EL-1):**
+**Step 0a.2 — Claims-coverage gate + batch evidence refresh (MANDATORY — DD-EL-1):**
 
 > **BLOCKING GATE (symmetric to the Step 0c.1b inventory gate).** Before building
-> the Source Evidence Table, verify that `propose-alignment` was run **completely**
-> for the target domain. This is the deterministic guard that prevents
-> hand-reading a subset of tables (e.g. mining 2 of 67 domain tables):
+> the Source Evidence Table, verify that `propose-alignment` / Claim Registry
+> evidence is fresh and complete. Do this as a **batch preflight across all in-scope
+> domains**, not one domain at a time, so the session does not refresh `booking`,
+> then discover `reference-data`, then discover `commercial`, and so on.
 
-```bash
-kairos-ontology check-claims --domains <target-domain>
-```
+**Scope first.** "In scope" means the domain the user is about to model plus any
+other domains the user explicitly wants to prepare in this session. Do **not** silently
+refresh the whole hub. Present the scope and let the user deselect domains before any
+paid LLM work.
 
-- **Exit 0** → every affinity table for the domain has a fresh, complete
-  `{domain}-claims.yaml` registry. Proceed.
-- **Exit 1 (missing / incomplete / stale)** → STOP. Run the full alignment pass
-  (no domain filter so every domain table is covered), then re-check:
-  ```bash
-  kairos-ontology propose-alignment
-  kairos-ontology check-claims --domains <target-domain>
-  ```
-  `propose-alignment` requires affinity reports (`analyse-sources`) to exist first.
-  Do **not** proceed to the Source Evidence Table while this gate is red — a red
-  gate means some domain tables would be invisible to modeling.
+1. **Classify evidence state for every in-scope domain** using `check-claims` as the
+   backbone (read-only, deterministic), plus an explicit empty-claims check:
+   ```bash
+   kairos-ontology check-claims --domains <comma-separated-scope>
+   ```
+   Classification buckets:
+   - **OK** — fresh, complete, non-empty registry; proceed.
+   - **missing / incomplete / stale** — refreshable; run alignment for that scope.
+   - **empty claims** — `{domain}-claims.yaml` exists but has no usable claim/evidence
+     rows; this is **not OK** even if hashes look fresh. It would hide source columns
+     from modeling.
+   - **unverifiable / bad prior output** — refreshable, but must be forced.
+   - **no upstream affinity/source evidence** — do **not** spend `propose-alignment`
+     calls; route back to `analyse-sources` / source import first.
+
+2. **Present one batch refresh proposal before spending.** Show a table:
+   `domain | state | cause | action | force? | estimated LLM scope`.
+   Ask for confirmation once. This approval is only for evidence refresh / LLM cost;
+   it is **not** approval of claims, class names, properties, mappings, or TTL edits.
+
+3. **Refresh in ordered phases, with single scoped invocations.**
+   - If affinity is missing/stale, run `analyse-sources` first for the affected scope.
+   - Then run `propose-alignment` for refreshable domains.
+   - Then run deterministic claim derivation / checks.
+   - **Never launch one process per domain.** Use one scoped command with
+     `--domains ... --max-workers <N>` and rely on the command's internal concurrency.
+     Process-level fan-out can multiply LLM calls (`domains × workers`) and corrupt
+     shared sidecar caches under `integration/sources/_analysis/.cache/`.
+
+4. **Split forced from cache-friendly refreshes.** Existing `propose-alignment` can
+   skip a domain whose hashes match, even when the claims file is empty. Therefore:
+   - Run cache-friendly domains without `--force`.
+   - Run **empty / unverifiable / bad prior output** domains in a separate scoped
+     invocation **with `--force`** so they cannot be silently skipped.
+   - Do not use `--force` for domains that are merely stale/missing unless needed;
+     preserve sidecar cache savings.
+
+5. **Re-check before modeling.**
+   ```bash
+   kairos-ontology check-claims --domains <comma-separated-scope>
+   ```
+   Use `check-claims` / the classifier result as the evidence truth. Do **not** rely
+   on presence-based `status` output: a present but empty claims file can still be
+   unusable. If a domain remains empty after forced refresh, stop and surface it as a
+   source/affinity/modeling gap; do not loop or keep re-billing.
 
 `check-claims` is read-only and deterministic (no AI). Use `--warn-only` only
 as a deliberate, documented override.
 
 > **💸 `propose-alignment` cost, speed & caching (DD-065):** like `analyse-sources`,
-> `propose-alignment` issues **one paid LLM call per source table**, now run
-> **concurrently** (`--max-workers`, default 8; `1` = serial). It prints a cost
-> banner before running and recommends a cost/value-optimized model
-> (**`gpt-5.4-mini`**, the default). Re-runs are cheap:
-> - **Domain-level skip** — a domain whose `{domain}-alignment.yaml` is already fresh
->   against the affinity set (matching `source_sha256`) is skipped entirely.
+> `propose-alignment` issues **one paid LLM call per source table**, run
+> **concurrently inside the command** (`--max-workers`, default 8; `1` = serial).
+> It prints a cost banner before running and recommends a cost/value-optimized model
+> (**`gpt-5.4-mini`**, the default). Re-runs are cheap when you avoid unnecessary
+> `--force`:
+> - **Domain-level skip** — a domain whose claims/alignment are already fresh
+>   against the affinity set is skipped entirely.
 > - **Per-table sidecar cache** (`integration/sources/_analysis/.cache/`) reuses
 >   unchanged tables even when other tables in the domain changed.
-> - `--force` bypasses both cache layers and re-bills every table.
+> - `--force` bypasses both cache layers and re-bills every table; reserve it for
+>   empty/unverifiable/bad prior output domains that would otherwise be skipped.
 >
 > The class selection is **anchored on the affinity `likely_entity`**: the model
 > confirms (rather than re-derives) the entity, and falls back to `likely_entity`
@@ -705,6 +785,25 @@ domain evidence pack before Checkpoint 1. Treat it as an agenda of source/TMDL/
 glossary-backed questions, not as approved ontology design. The cross-domain ERD
 (`draft-model-erd.mmd`) is useful for spotting shared dimensions and relationship
 questions across domains, but it is not TTL and not projection authority.
+
+**Check for an advisory data-product vertical-slice plan (DD-087):**
+
+```bash
+ls ontology-hub/model/planning/data-products/
+```
+
+If `model/planning/data-products/<product>/data-product-plan.yaml` or
+`data-product-report.md` exists for the selected product, read those artifacts
+before Checkpoint 1. Also read `data-product-erd.mmd`, `gold-candidates.yaml`, and
+`mapping-plan.yaml` when present. Treat them as a scoped backlog for the report pack
+or data product, not as ontology/mapping/gold authority. Use them to focus:
+
+- Checkpoint 1 naming decisions on classes needed by the product;
+- the Source Evidence Table on product-relevant tables and columns;
+- Checkpoint 3b custom-column triage on product-critical passthroughs or gaps;
+- Checkpoint 3c relationship review on TMDL/report relationships;
+- later `kairos-design-mapping` and `kairos-design-gold` sessions on the same
+  scoped agenda.
 
 **Check for source system documentation:**
 

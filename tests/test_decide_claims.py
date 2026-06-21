@@ -11,6 +11,8 @@ from kairos_ontology.claim_registry import (
     EvidenceSource,
     load_registry,
     registry_path,
+    validate_registry,
+    validation_errors,
     write_registry,
 )
 from kairos_ontology.cli.main import cli
@@ -33,6 +35,7 @@ def _registry() -> ClaimRegistry:
                 status="proposed",
                 disposition="claim",
                 origin="imported",
+                class_uri="https://example.org/ref/party#TradeParty",
                 evidence_sources=[
                     EvidenceSource(type="source_table", system="crm", table="account")
                 ],
@@ -155,6 +158,33 @@ def test_apply_by_disposition_bulk():
     assert reg.claims[2].status == "rejected"
 
 
+def test_apply_blocks_approval_when_required_uri_missing():
+    reg = _registry()
+    reg.claims[0].class_uri = None
+
+    summary = apply_decisions(
+        reg,
+        selector=ClaimSelector(),
+        by_disposition={"claim": "approved", "passthrough": "approved", "skip": "rejected"},
+    )
+
+    assert len(summary.blocked) == 1
+    assert "requires 'class_uri'" in summary.blocked[0].reason
+    assert [c.status for c in reg.claims] == ["proposed", "proposed", "proposed"]
+
+
+def test_passthrough_approval_does_not_require_uri():
+    reg = _registry()
+    summary = apply_decisions(
+        reg,
+        selector=ClaimSelector(disposition=["passthrough"]),
+        set_status="approved",
+    )
+
+    assert summary.blocked == []
+    assert reg.claims[1].status == "approved"
+
+
 def test_apply_skips_invalid_transition():
     reg = _registry()
     reg.claims[0].status = "rejected"  # terminal
@@ -264,6 +294,53 @@ def test_cli_by_disposition_writes(tmp_path):
         "party-custom-note": "approved",
         "party-legacy-id": "rejected",
     }
+    assert validation_errors(validate_registry(reg)) == []
+
+
+def test_cli_blocks_invalid_approval_without_writing(tmp_path):
+    claims_dir = _seed_claims_dir(tmp_path)
+    path = registry_path(claims_dir, "party")
+    reg = load_registry(path)
+    reg.claims[0].class_uri = None
+    write_registry(reg, path)
+    before = path.read_text(encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        ["decide-claims", "--claims-dir", str(claims_dir), "--domains", "party",
+         "--by-disposition", "claim=approved,passthrough=approved,skip=rejected"],
+    )
+
+    assert result.exit_code == 1
+    assert "Approval blocked" in result.output
+    assert "requires 'class_uri'" in result.output
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_cli_blocks_command_wide_without_partial_writes(tmp_path):
+    claims_dir = _seed_claims_dir(tmp_path)
+    other = _registry()
+    other.domain = "billing"
+    other.claims[0].id = "billing-trade-party"
+    other.claims[1].id = "billing-custom-note"
+    other.claims[2].id = "billing-legacy-id"
+    other.claims[0].class_uri = None
+    write_registry(other, registry_path(claims_dir, "billing"))
+
+    party_path = registry_path(claims_dir, "party")
+    billing_path = registry_path(claims_dir, "billing")
+    party_before = party_path.read_text(encoding="utf-8")
+    billing_before = billing_path.read_text(encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        ["decide-claims", "--claims-dir", str(claims_dir),
+         "--by-disposition", "claim=approved,passthrough=approved,skip=rejected"],
+    )
+
+    assert result.exit_code == 1
+    assert party_path.read_text(encoding="utf-8") == party_before
+    assert billing_path.read_text(encoding="utf-8") == billing_before
 
 
 def test_cli_dry_run_writes_nothing(tmp_path):

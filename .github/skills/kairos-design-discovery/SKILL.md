@@ -96,7 +96,7 @@ company facts or glossary terms.
 
 | Source | Location | Notes |
 |--------|----------|-------|
-| Raw artifacts (notes, decks, PPT/PDF) | **`.import/businessdiscovery/`** at the **repo root** | User drops these in; read them first |
+| Raw artifacts (notes, decks, PPT/PDF, screenshots, diagrams, scanned docs, image files) | **`.import/businessdiscovery/`** at the **repo root** | User drops these in; read them first, including text embedded in images |
 | **Per-document extractions** | **`ontology-hub/businessdiscovery/_extractions/*.extraction.yaml`** | **One file per processed document — provenance + `source_sha256` for incremental reruns (DD-060)** |
 | Public web research | web search / fetch | Mark findings `[INFERRED — public web]` until confirmed |
 | Hub README | `ontology-hub/README.md` | Company name + domain context |
@@ -190,6 +190,19 @@ company facts or glossary terms.
 2. **Process each new/changed document** and write **one extraction file per document**
    to `ontology-hub/businessdiscovery/_extractions/{slug}.extraction.yaml`
    (`{slug}` = slugified source filename incl. extension, e.g. `abbreviations-pdf`).
+   Inspect **all evidence in the artifact**, not only selectable text:
+   - standalone images (`.png`, `.jpg`, screenshots);
+   - scanned PDFs and OCR-visible text;
+   - embedded images in PDF/PPT/deck exports;
+   - diagrams, process flows, org charts, swimlanes, tables, captions, legends, and
+     screenshots.
+
+   Pull visible labels, OCR text, diagram entities, system/application names,
+   process steps, roles, product names, and business terms from visual content. If a
+   visual/OCR finding is uncertain, mark it as low confidence and keep it
+   **inferred** until the user confirms it (Gate 2 / Gate 3). Do not copy raw
+   screenshots or sensitive image content into the extraction YAML; summarize only.
+
    This records **what was extracted from which document** so provenance travels with
    the hub and later reruns stay incremental. Each file follows this schema:
    ```yaml
@@ -207,18 +220,32 @@ company facts or glossary terms.
        definition: ...
        category: documentation               # domain / category bucket
        company_specific: true                # true = company-specific, false = generic
+       source_locator: page 3 diagram        # optional: page/slide/image locator
+       evidence_type: diagram                # optional: text | image | ocr | diagram | screenshot
        linked_iri: null                      # optional; resolved in Phase 2
        link_relation: seeAlso                # optional; seeAlso (default) | relatedMatch
+   visual_evidence:                          # optional; summarize, never embed raw images
+     - locator: page 3 / slide 7 / screenshot.png
+       visual_type: process_diagram          # process_diagram | org_chart | screenshot | table | scanned_text | other
+       extracted_text:
+         - HBL
+         - Customer Portal
+       observed_entities:
+         - Transport Document
+         - Shipment
+       notes: Diagram appears to show how house bills flow through the portal.
+       confidence: medium                    # high | medium | low
    notes: ...
    status: processed                         # processed | partial | skipped
    ```
    > **Worked example (generic strategy):** for a terminology-extraction pass, pull the
-   > full text from each document and keep only **company-specific** terms — internal
-   > system/app names, proprietary identifiers, route/vessel codes, and industry terms
-   > the company uses with a *different* meaning — and filter out generic industry
-   > jargon (`company_specific: false`). A `Domain`/category column in the source (if
-   > present) helps bucket terms. The schema is generic: adapt `strategy` and
-   > `extracted_terms` to whatever the discovery focus is.
+   > full text and visual content from each document and keep only
+   > **company-specific** terms — internal system/app names, proprietary identifiers,
+   > route/vessel codes, diagram labels, screenshot labels, and industry terms the
+   > company uses with a *different* meaning — and filter out generic industry jargon
+   > (`company_specific: false`). A `Domain`/category column in the source (if
+   > present) helps bucket terms. The schema is generic: adapt `strategy`,
+   > `extracted_terms`, and `visual_evidence` to whatever the discovery focus is.
    >
    > After writing the files, you may re-run `kairos-ontology discovery-status` to
    > confirm every processed document now shows **up to date**.

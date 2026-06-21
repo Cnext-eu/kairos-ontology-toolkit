@@ -495,6 +495,31 @@ def write_registry(registry: ClaimRegistry, path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def approval_gate_errors(claim: Claim, *, target_status: str | None = None) -> list[str]:
+    """Return errors that would make *claim* invalid as an approved claim.
+
+    ``target_status`` lets curation commands pre-flight a transition before mutating
+    the claim, while ``validate_registry`` uses the claim's persisted status.
+    """
+    status = target_status if target_status is not None else claim.status
+    if status != "approved":
+        return []
+
+    errors: list[str] = []
+    needs_uri = claim.disposition in ("claim", "specialize")
+    if needs_uri:
+        if claim.type in ("class", "reference_data") and not claim.class_uri:
+            errors.append(f"approved {claim.type} claim requires 'class_uri'")
+        if claim.type in ("property", "measure") and not claim.property_uri:
+            errors.append(f"approved {claim.type} claim requires 'property_uri'")
+        if claim.type == "relationship" and not claim.identifying_uri():
+            errors.append("approved relationship claim requires a class_uri or property_uri")
+
+    if not claim.evidence_sources:
+        errors.append("approved claim has no evidence_sources")
+    return errors
+
+
 @dataclass
 class ValidationIssue:
     """A single structural validation finding."""
@@ -551,18 +576,10 @@ def validate_registry(registry: ClaimRegistry) -> list[ValidationIssue]:
         if claim.origin not in VALID_ORIGINS:
             err(f"invalid origin {claim.origin!r}", cid)
 
-        # Identifying URI is an *approval* gate, not a structural one: at proposal
-        # time a candidate may not yet have a resolved URI (migrated from alignment
-        # output, or a not-yet-authored specialization). Only approved materializing
-        # claims (claim/specialize) must carry a resolvable URI (methodology §8.5).
-        needs_uri = claim.disposition in ("claim", "specialize")
-        if claim.status == "approved" and needs_uri:
-            if claim.type in ("class", "reference_data") and not claim.class_uri:
-                err(f"approved {claim.type} claim requires 'class_uri'", cid)
-            if claim.type in ("property", "measure") and not claim.property_uri:
-                err(f"approved {claim.type} claim requires 'property_uri'", cid)
-            if claim.type == "relationship" and not claim.identifying_uri():
-                err("approved relationship claim requires a class_uri or property_uri", cid)
+        # Approval gates are not proposal-time structural requirements: candidates
+        # may lack resolved URIs/evidence until a curator approves them.
+        for message in approval_gate_errors(claim):
+            err(message, cid)
 
         if claim.silver_impact and claim.silver_impact.change_type not in VALID_CHANGE_TYPES:
             err(
@@ -574,10 +591,6 @@ def validate_registry(registry: ClaimRegistry) -> list[ValidationIssue]:
         for ev in claim.evidence_sources:
             if not ev.type:
                 err("evidence_source is missing 'type'", cid)
-
-        # approved claims must carry evidence (proposed/deferred may not yet)
-        if claim.status == "approved" and not claim.evidence_sources:
-            err("approved claim has no evidence_sources", cid)
 
         # reference_data block belongs only on reference_data claims (Slice 4 §5.3)
         if claim.reference_data is not None and claim.type != "reference_data":
