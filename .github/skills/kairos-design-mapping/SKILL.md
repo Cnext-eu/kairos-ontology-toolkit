@@ -31,6 +31,14 @@ You guide the user through creating SKOS mapping files that link source system
 columns to domain ontology properties. This is a **structured, interactive**
 process — never guess mappings without evidence and user confirmation.
 
+> **Data-product vertical slice:** If
+> `model/planning/data-products/<product>/data-product-plan.yaml` or
+> `mapping-plan.yaml` exists, use it only as a scoped backlog for the report pack
+> or data product. It is advisory (`projection_authority: false`) and must not be
+> treated as mapping authority. Every table→entity and column→property mapping
+> still requires this skill's evidence review and user confirmation before writing
+> SKOS TTL.
+
 ---
 
 ## Hard Gates (BLOCKING — must not be bypassed)

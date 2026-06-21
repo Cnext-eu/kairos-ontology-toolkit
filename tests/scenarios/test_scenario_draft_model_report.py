@@ -108,3 +108,40 @@ def test_scenario_draft_report_keeps_visual_model_advisory(tmp_path: Path):
     assert artifacts.mermaid.exists()
     assert "many-to-one" in artifacts.mermaid.read_text(encoding="utf-8")
     assert not (tmp_path / "model" / "ontologies").exists(), "report must not scaffold TTL"
+
+    contract = tmp_path / "model" / "planning" / "data-products" / "sales" / "contract.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "artifact": "data-product-contract",
+                "projection_authority": False,
+                "product": "sales",
+                "tables": [
+                    {"name": "d_Client", "domain": "client", "columns": ["ClientNo"]},
+                    {
+                        "name": "f_Invoice",
+                        "domain": "invoice",
+                        "columns": ["Amount"],
+                        "measures": ["Invoice Amount"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    product_report = build_draft_model_report(
+        claims_dir=claims_dir,
+        analysis_dir=analysis_dir,
+        tmdl_dir=tmdl_dir,
+        data_product_contract_path=contract,
+    )
+    product_artifacts = write_draft_model_report(product_report, contract.parent)
+
+    assert product_report["projection_authority"] is False
+    assert product_report["artifact"] == "data-product-draft-model-report"
+    assert product_report["contract"]["projection_authority"] is False
+    assert (contract.parent / "data-product-plan.yaml").exists()
+    assert product_artifacts.mermaid.exists()
+    assert not (tmp_path / "model" / "extensions").exists(), "product plan must not write TTL"

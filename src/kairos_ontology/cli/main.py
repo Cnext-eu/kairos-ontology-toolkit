@@ -3314,6 +3314,10 @@ def derive_claims_cmd(claims_dir, analysis_dir, mappings, tmdl_dir, domains_filt
               help='Output directory (default: model/planning/draft-model/).')
 @click.option('--domains', 'domains_filter', default=None,
               help='Comma-separated domain names to include (case-insensitive substring match).')
+@click.option('--contract', type=click.Path(), default=None,
+              help='Planning-only data-product contract YAML to scope the report.')
+@click.option('--data-product', default=None,
+              help='Data product name; loads model/planning/data-products/<name>/contract.yaml.')
 def draft_model_report_cmd(
     claims_dir,
     analysis_dir,
@@ -3322,6 +3326,8 @@ def draft_model_report_cmd(
     glossary_dir,
     output,
     domains_filter,
+    contract,
+    data_product,
 ):
     """Create advisory draft domain-model evidence packs and a cross-domain ERD.
 
@@ -3349,7 +3355,19 @@ def draft_model_report_cmd(
     )
     tmdl_path = Path(tmdl_dir) if tmdl_dir else base / "integration" / "sources" / "powerbi"
     glossary_path = Path(glossary_dir) if glossary_dir else base / "businessdiscovery"
-    output_path = Path(output) if output else base / "model" / "planning" / "draft-model"
+    contract_path = Path(contract) if contract else None
+    if data_product and not contract_path:
+        contract_path = (
+            base / "model" / "planning" / "data-products" / data_product / "contract.yaml"
+        )
+    if contract_path and not contract_path.exists():
+        raise click.ClickException(f"Data-product contract not found: {contract_path}")
+    if output:
+        output_path = Path(output)
+    elif contract_path:
+        output_path = contract_path.parent
+    else:
+        output_path = base / "model" / "planning" / "draft-model"
     filters = [f for f in (domains_filter.split(",") if domains_filter else []) if f.strip()]
 
     click.echo("🧭 Building advisory draft model report")
@@ -3358,21 +3376,33 @@ def draft_model_report_cmd(
     click.echo(f"   Mappings: {mappings_path if mappings_path.is_dir() else '(none)'}")
     click.echo(f"   TMDL:     {tmdl_path if tmdl_path.is_dir() else '(none)'}")
     click.echo(f"   Glossary: {glossary_path if glossary_path.exists() else '(none)'}")
+    if contract_path:
+        click.echo(f"   Product:  {contract_path}")
 
-    report = build_draft_model_report(
-        claims_dir=claims_path if claims_path.is_dir() else None,
-        analysis_dir=analysis_path,
-        mappings_dir=mappings_path if mappings_path.is_dir() else None,
-        tmdl_dir=tmdl_path if tmdl_path.is_dir() else None,
-        glossary_dir=glossary_path if glossary_path.exists() else None,
-        domains_filter=filters,
-    )
+    try:
+        report = build_draft_model_report(
+            claims_dir=claims_path if claims_path.is_dir() else None,
+            analysis_dir=analysis_path,
+            mappings_dir=mappings_path if mappings_path.is_dir() else None,
+            tmdl_dir=tmdl_path if tmdl_path.is_dir() else None,
+            glossary_dir=glossary_path if glossary_path.exists() else None,
+            domains_filter=filters,
+            data_product_contract_path=contract_path,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     artifacts = write_draft_model_report(report, output_path)
 
     click.echo(f"   ✓ summary: {artifacts.summary_yaml}")
     click.echo(f"   ✓ report:  {artifacts.markdown}")
     click.echo(f"   ✓ ERD:     {artifacts.mermaid}")
-    click.echo(f"✅ Draft model evidence packs for {report['summary']['domains']} domain(s).")
+    if report.get("artifact") == "data-product-draft-model-report":
+        click.echo(
+            "✅ Data-product vertical-slice plan for "
+            f"{report['product']} across {report['summary']['domains']} domain(s)."
+        )
+    else:
+        click.echo(f"✅ Draft model evidence packs for {report['summary']['domains']} domain(s).")
 
 
 @cli.command(name='discovery-status')
