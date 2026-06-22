@@ -527,6 +527,31 @@ def _discover_extensions(
     return ext_path, gold_ext_path
 
 
+def _discover_silver_extension_for_sync(
+    onto_name: str,
+    onto_info: dict,
+    extensions_dir: Optional[Path],
+) -> Path:
+    """Return the exact silver extension path used by the claim sync gate.
+
+    Projection discovery has legacy wildcard fallbacks. The claim-authority gate
+    must not borrow another domain's silver extension, because that can mask or
+    create drift in multi-domain hubs.
+    """
+    filename = f"{onto_name}-silver-ext.ttl"
+    src_file: Path = onto_info["file"]
+
+    grouped_exact = extensions_dir / filename if extensions_dir is not None else None
+    if grouped_exact is not None and grouped_exact.exists():
+        return grouped_exact
+
+    legacy_exact = src_file.parent / filename
+    if legacy_exact.exists():
+        return legacy_exact
+
+    return grouped_exact if grouped_exact is not None else legacy_exact
+
+
 def _write_artifacts(artifacts: dict[str, str], target_output: Path) -> int:
     """Write projection artifacts to disk.
 
@@ -755,10 +780,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                             domain=onto_name,
                             claims_file=claims_file,
                             ontology_file=onto_info["file"],
-                            extension_file=(
-                                ext_path
-                                if ext_path is not None
-                                else (extensions_dir / f"{onto_name}-silver-ext.ttl")
+                            extension_file=_discover_silver_extension_for_sync(
+                                onto_name, onto_info, extensions_dir
                             ),
                             hub_domain_bases=hub_domain_namespaces,
                         )

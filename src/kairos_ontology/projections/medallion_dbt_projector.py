@@ -41,6 +41,8 @@ from .shared import KAIROS_EXT, merge_ext_graph, str_val, bool_val
 
 logger = logging.getLogger(__name__)
 
+SourceRef = tuple[str, str, str] | tuple[str, str, str, str]
+
 
 def _prefixed_iri(uri: str) -> str:
     """Derive a compact prefixed IRI from a full URI.
@@ -849,6 +851,137 @@ def _gen_sources(
     return artifacts
 
 
+def _nearest_projected_ancestor(
+    graph: Graph,
+    cls_uri: URIRef,
+    projected_uris: set[str],
+) -> URIRef | None:
+    """Find the nearest projected ancestor using the silver S3 traversal rules."""
+    visited: set[str] = {str(cls_uri)}
+    frontier: list[URIRef] = [cls_uri]
+    while frontier:
+        claimed_here: list[URIRef] = []
+        next_frontier: list[URIRef] = []
+        for current in frontier:
+            parents = sorted(
+                (p for p in graph.objects(current, RDFS.subClassOf) if isinstance(p, URIRef)),
+                key=str,
+            )
+            for parent in parents:
+                parent_str = str(parent)
+                if parent_str in visited:
+                    continue
+                visited.add(parent_str)
+                if parent_str.startswith("http://www.w3.org/"):
+                    continue
+                if parent_str in projected_uris:
+                    claimed_here.append(parent)
+                else:
+                    next_frontier.append(parent)
+        if claimed_here:
+            claimed_here.sort(key=str)
+            if len(claimed_here) > 1:
+                strategies = {
+                    str_val(graph, c, KAIROS_EXT.inheritanceStrategy, "") or ""
+                    for c in claimed_here
+                }
+                if len(strategies) > 1:
+                    logger.warning(
+                        "Class %s reaches multiple nearest projected ancestors with "
+                        "conflicting inheritance strategies (%s); using %s.",
+                        cls_uri,
+                        ", ".join(str(c) for c in claimed_here),
+                        claimed_here[0],
+                    )
+            return claimed_here[0]
+        frontier = sorted(next_frontier, key=str)
+    return None
+
+
+def _resolve_projected_discriminator_parent(
+    graph: Graph,
+    class_uri: str,
+    projected_uris: set[str],
+) -> str | None:
+    """Resolve *class_uri* to its projected S3 discriminator parent, if any."""
+    ancestor = _nearest_projected_ancestor(graph, URIRef(class_uri), projected_uris)
+    if ancestor is None:
+        return None
+    strategy = graph.value(ancestor, KAIROS_EXT.inheritanceStrategy)
+    if strategy and str(strategy) == "discriminator":
+        return str(ancestor)
+    return None
+
+
+def _append_unique_source_ref(
+    refs: list[SourceRef],
+    source_ref: SourceRef,
+) -> None:
+    """Append a source ref only once while preserving order."""
+    if source_ref not in refs:
+        refs.append(source_ref)
+
+
+def _source_ref_parts(source_ref: SourceRef) -> tuple[str, str, str]:
+    """Return source system, raw table name, and table URI from a source ref."""
+    return source_ref[0], source_ref[1], source_ref[2]
+
+
+def _source_ref_target(source_ref: SourceRef) -> str | None:
+    """Return the original mapped target URI carried by a folded source ref."""
+    return source_ref[3] if len(source_ref) > 3 else None
+
+
+def _filter_target_for_source_ref(
+    cls_uri: str,
+    source_ref: SourceRef,
+    folded_source_targets: dict[SourceRef, str],
+) -> str:
+    """Return the original mapping target used for filter lookup."""
+    return folded_source_targets.get(source_ref) or _source_ref_target(source_ref) or cls_uri
+
+
+def _apply_folded_discriminator_column(
+    graph: Graph,
+    parent_cls_uri: str,
+    folded_subtype_uri: str,
+    columns: list[dict],
+    model_name: str,
+) -> None:
+    """Inject the parent discriminator value for a source folded from a subtype."""
+    disc_col = str_val(graph, URIRef(parent_cls_uri), KAIROS_EXT.discriminatorColumn)
+    if not disc_col:
+        disc_col = f"{model_name}_type"
+    disc_value = str_val(graph, URIRef(folded_subtype_uri), KAIROS_EXT.conditionalOnType)
+    if not disc_value:
+        disc_value = extract_local_name(folded_subtype_uri)
+    escaped_value = disc_value.replace("'", "''")
+    discriminator_col = {
+        "expression": f"'{escaped_value}'",
+        "target_name": disc_col,
+        "comment": f"S3 folded subtype discriminator: {extract_local_name(folded_subtype_uri)}",
+    }
+    for index, col in enumerate(columns):
+        if col.get("target_name") == disc_col:
+            columns[index] = discriminator_col
+            return
+    columns.append(discriminator_col)
+
+
+def _merge_columns_by_target_name(*column_groups: list[dict]) -> list[dict]:
+    """Merge column lists by target name, letting later groups add missing columns."""
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for columns in column_groups:
+        for col in columns:
+            target_name = col.get("target_name")
+            if not target_name or target_name in seen:
+                continue
+            merged.append(col)
+            seen.add(target_name)
+    return merged
+
+
 def _gen_silver_models(
     classes: list[dict],
     graph: Graph,
@@ -883,7 +1016,9 @@ def _gen_silver_models(
 
     # Build reverse map: silver class URI → [(source_name, raw_table_name, table_uri)]
     SUPPORTED_MAPPING_TYPES = {"direct", "split", "merge"}
-    class_to_sources: dict[str, list[tuple[str, str, str]]] = {}
+    class_to_sources: dict[str, list[SourceRef]] = {}
+    folded_source_targets: dict[SourceRef, str] = {}
+    projected_uris = {c["uri"] for c in classes}
     for sys in systems:
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
         for tbl in sys["tables"]:
@@ -903,9 +1038,29 @@ def _gen_silver_models(
                     logger.warning(msg)
                     warnings.append(msg)
                     continue
-                class_to_sources.setdefault(target, []).append(
-                    (source_name, tbl["name"], tbl["uri"])
+                folded_parent = _resolve_projected_discriminator_parent(
+                    graph, target, projected_uris,
                 )
+                effective_target = folded_parent or target
+                source_ref: SourceRef = (
+                    (source_name, tbl["name"], tbl["uri"], target)
+                    if folded_parent and folded_parent != target
+                    else (source_name, tbl["name"], tbl["uri"])
+                )
+                _append_unique_source_ref(
+                    class_to_sources.setdefault(effective_target, []),
+                    source_ref,
+                )
+                if folded_parent and folded_parent != target:
+                    folded_source_targets[source_ref] = target
+                    msg = (
+                        f"Table mapping → '{extract_local_name(target)}' targets an "
+                        f"S3-folded subtype; routing source '{tbl['name']}' to "
+                        f"projected discriminator parent "
+                        f"'{extract_local_name(folded_parent)}'."
+                    )
+                    logger.warning(msg)
+                    warnings.append(msg)
 
     # Issue #179: a table mapping whose target class is never projected (an
     # unclaimed imported subtype — silverIncludeImports=false and no per-class
@@ -915,7 +1070,6 @@ def _gen_silver_models(
     # Detect such orphaned targets and either fold them onto a projected
     # discriminator parent (so the contribution is preserved) or, failing that,
     # emit a loud warning so the drop is never silent.
-    projected_uris = {c["uri"] for c in classes}
     for target in list(class_to_sources.keys()):
         if target in projected_uris:
             continue
@@ -1056,7 +1210,11 @@ def _gen_silver_models(
             union_template = env.get_template("silver_union_model.sql.jinja2")
 
             # Detect same-source collisions requiring table-name disambiguation
-            source_system_counts = Counter(src for src, _, _ in source_refs)
+            source_system_counts = Counter(_source_ref_parts(ref)[0] for ref in source_refs)
+            source_table_counts = Counter(
+                (_source_ref_parts(ref)[0], _source_ref_parts(ref)[1])
+                for ref in source_refs
+            )
             needs_table_suffix = {
                 src for src, count in source_system_counts.items() if count > 1
             }
@@ -1071,10 +1229,16 @@ def _gen_silver_models(
             per_source_data: list[list[dict]] = []
             per_source_fk: list[list[dict]] = []
 
-            for i, (src, raw_tbl, tbl_uri) in enumerate(source_refs):
+            for i, source_ref in enumerate(source_refs):
+                src, raw_tbl, tbl_uri = _source_ref_parts(source_ref)
                 src_suffix = _camel_to_snake(src)
                 if src in needs_table_suffix:
                     tbl_suffix = _camel_to_snake(raw_tbl.split(".")[-1])
+                    subtype_target = _source_ref_target(source_ref)
+                    if subtype_target and source_table_counts[(src, raw_tbl)] > 1:
+                        tbl_suffix = (
+                            f"{tbl_suffix}__{_camel_to_snake(extract_local_name(subtype_target))}"
+                        )
                     src_model_name = f"{model_name}__from_{src_suffix}__{tbl_suffix}"
                 else:
                     src_model_name = f"{model_name}__from_{src_suffix}"
@@ -1082,27 +1246,36 @@ def _gen_silver_models(
 
                 # Get the set of column URIs for this specific source table
                 tbl_col_uris = _get_table_column_uris(systems, tbl_uri)
+                folded_subtype_uri = folded_source_targets.get(source_ref)
+                extraction_cls_uri = folded_subtype_uri or cls_uri
 
                 # Extract data columns scoped to this source (no SK/IRI)
                 src_columns = _extract_silver_columns(
-                    graph, cls_uri, namespace, mappings, platform=platform,
+                    graph, extraction_cls_uri, namespace, mappings, platform=platform,
                     source_refs=source_refs, systems=systems,
                     table_column_uris=tbl_col_uris, include_sk_iri=False,
                     mapping_ns=mapping_ns,
                 )
+                if folded_subtype_uri:
+                    _apply_folded_discriminator_column(
+                        graph, cls_uri, folded_subtype_uri, src_columns, model_name,
+                    )
 
                 # FK joins resolved within this single-source staging view
                 fk_cols, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
-                    graph, cls_uri, mappings, [(src, raw_tbl, tbl_uri)],
+                    graph, extraction_cls_uri, mappings, [source_ref],
                     systems=systems,
                 )
                 warnings.extend(fk_warnings)
 
                 # Resolve filter condition
                 cte_filter = ""
+                filter_target_uri = _filter_target_for_source_ref(
+                    cls_uri, source_ref, folded_source_targets,
+                )
                 tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
                 for tbl_map in tbl_maps_list:
-                    if (tbl_map.get("target_uri") == cls_uri
+                    if (tbl_map.get("target_uri") == filter_target_uri
                             and tbl_map.get("filter_condition")):
                         cte_filter = tbl_map["filter_condition"].replace("source.", "")
                         break
@@ -1203,7 +1376,9 @@ def _gen_silver_models(
         # Extract properties for column list with platform-aware types.
         # Scope to primary table columns so inherited properties from other
         # source tables are excluded (they would require a JOIN to resolve).
-        primary_col_uris = _get_table_column_uris(systems, source_refs[0][2])
+        source_ref = source_refs[0]
+        primary_col_uris = _get_table_column_uris(systems, _source_ref_parts(source_ref)[2])
+        folded_subtype_uri = folded_source_targets.get(source_ref)
         columns = _extract_silver_columns(
             graph, cls_uri, namespace, mappings, platform=platform,
             source_refs=source_refs, systems=systems,
@@ -1211,6 +1386,18 @@ def _gen_silver_models(
             mapping_ns=mapping_ns,
             scd_type=scd_type,
         )
+        if folded_subtype_uri:
+            subtype_columns = _extract_silver_columns(
+                graph, folded_subtype_uri, namespace, mappings, platform=platform,
+                source_refs=source_refs, systems=systems,
+                table_column_uris=primary_col_uris or None,
+                include_sk_iri=False,
+                mapping_ns=mapping_ns,
+            )
+            columns = _merge_columns_by_target_name(columns, subtype_columns)
+            _apply_folded_discriminator_column(
+                graph, cls_uri, folded_subtype_uri, columns, model_name,
+            )
 
         # Cross-table column detection: warn if mapped columns reference source
         # tables other than the primary source (would require a JOIN to resolve).
@@ -1222,7 +1409,7 @@ def _gen_silver_models(
         # misleading warnings.
         info_notes: list[str] = []
         if systems and source_refs and len(source_refs) == 1:
-            primary_tbl_uri = source_refs[0][2]
+            primary_tbl_uri = _source_ref_parts(source_ref)[2]
             primary_col_uris = _get_table_column_uris(systems, primary_tbl_uri)
             self_domain = {cls_uri}
             ancestor_domain = _get_class_and_parents(graph, cls_uri) - self_domain
@@ -1293,8 +1480,9 @@ def _gen_silver_models(
                 )
 
         # Extract FK columns from object properties (cross-domain joins)
+        fk_extraction_cls_uri = folded_subtype_uri or cls_uri
         fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
-            graph, cls_uri, mappings, source_refs, systems=systems,
+            graph, fk_extraction_cls_uri, mappings, source_refs, systems=systems,
         )
         warnings.extend(fk_warnings)
 
@@ -1302,13 +1490,20 @@ def _gen_silver_models(
         # (or bronze_expanded via ref() when silverSourceRef is set — DD-039)
         source_ctes = []
         filter_conditions = []
-        for i, (src, raw_tbl, tbl_uri) in enumerate(source_refs):
+        for i, source_ref in enumerate(source_refs):
+            src, raw_tbl, tbl_uri = _source_ref_parts(source_ref)
             alias = _camel_to_snake(raw_tbl) if len(source_refs) == 1 else f"src_{i + 1}"
             # Resolve per-CTE filter condition
             cte_filter = ""
+            filter_target_uri = _filter_target_for_source_ref(
+                cls_uri, source_ref, folded_source_targets,
+            )
             tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
             for tbl_map in tbl_maps_list:
-                if tbl_map.get("target_uri") == cls_uri and tbl_map.get("filter_condition"):
+                if (
+                    tbl_map.get("target_uri") == filter_target_uri
+                    and tbl_map.get("filter_condition")
+                ):
                     cte_filter = tbl_map["filter_condition"].replace("source.", "")
                     filter_conditions.append(cte_filter)
                     break
@@ -1755,7 +1950,7 @@ def _extract_silver_columns(
     namespace: str,
     mappings: dict,
     platform: str = DEFAULT_PLATFORM,
-    source_refs: list[tuple[str, str, str]] | None = None,
+    source_refs: list[SourceRef] | None = None,
     systems: list[dict] | None = None,
     table_column_uris: set[str] | None = None,
     include_sk_iri: bool = True,
@@ -2060,7 +2255,7 @@ def _resolve_fk_source_column(
     bronze_col_lookup: dict[str, dict],
     graph: Graph,
     range_cls,
-    source_refs: list[tuple[str, str, str]],
+    source_refs: list[SourceRef],
     systems: list[dict] | None,
     fk_col_name: str,
     range_local: str,
@@ -2094,7 +2289,8 @@ def _resolve_fk_source_column(
     current_table_col_names: set[str] = set()
     if systems is not None:
         current_table_col_uris = set()
-        for (_, _, tbl_uri_ref) in source_refs:
+        for source_ref in source_refs:
+            _, _, tbl_uri_ref = _source_ref_parts(source_ref)
             current_table_col_uris.update(_get_table_column_uris(systems, tbl_uri_ref))
             current_table_col_names.update(_get_table_column_names(systems, tbl_uri_ref))
 
@@ -2243,7 +2439,7 @@ def _extract_fk_columns_and_joins(
     graph: Graph,
     class_uri: str,
     mappings: dict,
-    source_refs: list[tuple[str, str, str]],
+    source_refs: list[SourceRef],
     systems: list[dict] | None = None,
 ) -> tuple[list[dict], list[dict], list[str]]:
     """Extract FK columns and joins from object properties.
@@ -2581,6 +2777,7 @@ def _gen_schema_yaml(
     shacl_graph = _load_shacl_graph(shapes_dir) if shapes_dir else None
 
     models_data = []
+    class_uris = {c["uri"] for c in classes}
     for cls in classes:
         # Skip classes that didn't generate a silver model (no bronze mapping)
         if generated_class_names is not None and cls["name"] not in generated_class_names:
@@ -2608,6 +2805,11 @@ def _gen_schema_yaml(
         )
 
         cols = []
+        folded_subtype_uris = {
+            c["uri"] for c in classes
+            if c["uri"] != cls["uri"]
+            and _resolve_projected_discriminator_parent(graph, c["uri"], class_uris) == cls["uri"]
+        }
         # SK + IRI columns
         cols.append({
             "name": f"{model_name}_sk",
@@ -2623,8 +2825,19 @@ def _gen_schema_yaml(
         })
 
         # Datatype properties (including inherited from parent classes)
-        domain_classes = _get_class_and_parents(graph, cls["uri"])
+        domain_classes = _get_class_and_parents(graph, cls["uri"]) | folded_subtype_uris
         seen_schema_cols: set[str] = set()
+        if folded_subtype_uris:
+            disc_col = str_val(graph, URIRef(cls["uri"]), KAIROS_EXT.discriminatorColumn)
+            if not disc_col:
+                disc_col = f"{model_name}_type"
+            cols.append({
+                "name": disc_col,
+                "description": "Type discriminator for S3-folded subtypes",
+                "meta": {"data_type": "VARCHAR(255)"},
+                "tests": [],
+            })
+            seen_schema_cols.add(disc_col)
         for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
             domain = graph.value(prop, RDFS.domain)
             if domain and str(domain) in domain_classes:

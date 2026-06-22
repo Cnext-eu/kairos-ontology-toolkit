@@ -21,6 +21,7 @@ Namespace:  kairos-ext:  https://kairos.cnext.eu/ext#
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -42,6 +43,17 @@ from .shared import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PLATFORM_SCHEMA = (
+    "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/"
+    "platformProperties/2.0.0/schema.json"
+)
+_PBISM_SCHEMA = (
+    "https://developer.microsoft.com/json-schemas/fabric/item/semanticModel/"
+    "definitionProperties/1.0.0/schema.json"
+)
+_DEFAULT_LOGICAL_ID = "00000000-0000-0000-0000-000000000000"
+_DEFAULT_COMPATIBILITY_LEVEL = 1604
 
 # ---------------------------------------------------------------------------
 # XSD → SQL type mapping (G8 — Power BI / DirectLake optimised types)
@@ -871,9 +883,13 @@ def generate_gold_artifacts(
         mmd_lines.append("")
 
     # FK relationships
+    local_table_names = _local_gold_table_names(all_tables)
     for tbl in all_tables:
         for col, ref_full, ref_col, label in tbl.fk_constraints:
-            ref_tbl_name = ref_full.split(".")[-1].upper()
+            ref_tbl_name = _relationship_target_table_name(ref_full)
+            if not _is_local_relationship(tbl.name, ref_tbl_name, local_table_names):
+                continue
+            ref_tbl_name = local_table_names[ref_tbl_name.casefold()].upper()
             if tbl.table_type == "fact":
                 mmd_lines.append(
                     f"    {ref_tbl_name} ||--o{{ {tbl.name.upper()} : \"{label}\"")
@@ -914,6 +930,8 @@ def generate_gold_artifacts(
     sm_prefix = (
         f"{ontology_name}/{_to_pascal_case(ontology_name)}.SemanticModel/definition"
     )
+    model_name = _to_pascal_case(ontology_name)
+    model_prefix = f"{ontology_name}/{model_name}.SemanticModel"
 
     result: dict[str, str] = {
         f"{ontology_name}/{ontology_name}-gold-ddl.sql": "\n".join(ddl_lines),
@@ -927,6 +945,9 @@ def generate_gold_artifacts(
 
     # TMDL files — standard Power BI layout:
     # {Domain}.SemanticModel/definition/model.tmdl
+    result[f"{model_prefix}/.platform"] = _render_platform_metadata(model_name)
+    result[f"{model_prefix}/definition.pbism"] = _render_definition_pbism()
+    result[f"{sm_prefix}/database.tmdl"] = _render_database_tmdl()
     result[f"{sm_prefix}/model.tmdl"] = tmdl_definition
     for tmdl_path, tmdl_content in tmdl_tables.items():
         result[f"{sm_prefix}/{tmdl_path}"] = tmdl_content
@@ -1212,23 +1233,109 @@ def _build_gold_bridge_tables(
 # TMDL renderers
 # ---------------------------------------------------------------------------
 
+def _json_artifact(payload: dict) -> str:
+    """Render a stable JSON artifact."""
+    return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+
+def _tmdl_string(value: object) -> str:
+    """Escape a Python value for a quoted TMDL string literal."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _render_platform_metadata(display_name: str) -> str:
+    """Render Fabric semantic-model platform metadata."""
+    return _json_artifact(
+        {
+            "$schema": _PLATFORM_SCHEMA,
+            "metadata": {
+                "type": "SemanticModel",
+                "displayName": display_name,
+            },
+            "config": {
+                "version": "2.0",
+                "logicalId": _DEFAULT_LOGICAL_ID,
+            },
+        }
+    )
+
+
+def _render_definition_pbism() -> str:
+    """Render the semantic-model definition marker."""
+    return _json_artifact(
+        {
+            "$schema": _PBISM_SCHEMA,
+            "version": "4.2",
+            "settings": {},
+        }
+    )
+
+
+def _render_database_tmdl(
+    compatibility_level: int = _DEFAULT_COMPATIBILITY_LEVEL,
+) -> str:
+    """Render the TMDL database root definition."""
+    return f"database\n\tcompatibilityLevel: {compatibility_level}\n"
+
+
+def _relationship_target_table_name(ref_full: str) -> str:
+    """Extract the target table name from a schema-qualified FK reference."""
+    return ref_full.split(".")[-1]
+
+
+def _local_gold_table_names(tables: list[GoldTableDef]) -> dict[str, str]:
+    """Return case-insensitive table-name lookup for one SemanticModel."""
+    return {tbl.name.casefold(): tbl.name for tbl in tables}
+
+
+def _is_local_relationship(
+    from_table: str,
+    to_table: str,
+    local_table_names: dict[str, str],
+) -> bool:
+    """Return whether both relationship endpoints exist in this SemanticModel."""
+    return (
+        from_table.casefold() in local_table_names
+        and to_table.casefold() in local_table_names
+    )
+
+
+def _log_skipped_cross_domain_relationship(
+    from_table: str,
+    from_col: str,
+    to_table: str,
+    to_col: str,
+) -> None:
+    logger.warning(
+        "Skipping cross-domain gold TMDL relationship %s.%s -> %s.%s because "
+        "target table %s is not present in this per-domain SemanticModel.",
+        from_table,
+        from_col,
+        to_table,
+        to_col,
+        to_table,
+    )
+
+
 def _render_tmdl_definition(schema: str, domain: str, meta: dict) -> str:
     """Render TMDL model definition file."""
     lines = [
-        f"/// Gold semantic model: {schema}",
-        f"/// Domain: {domain}",
-    ]
-    if meta.get("toolkit_version"):
-        lines.append(f"/// Toolkit version: {meta['toolkit_version']}")
-    if meta.get("generated_at"):
-        lines.append(f"/// Generated at: {meta['generated_at']}")
-    lines.extend([
-        "",
         "model Model",
         "\tculture: en-US",
         "\tdataAccessOptions",
         "\t\tlegacyRedirects",
         "\t\treturnErrorValuesAsNull",
+        "",
+        f'\tannotation Kairos_GoldSchema = "{_tmdl_string(schema)}"',
+        f'\tannotation Kairos_Domain = "{_tmdl_string(domain)}"',
+    ]
+    if meta.get("toolkit_version"):
+        lines.append(
+            f'\tannotation Kairos_ToolkitVersion = "{_tmdl_string(meta["toolkit_version"])}"'
+        )
+    if meta.get("generated_at"):
+        lines.append(f'\tannotation Kairos_GeneratedAt = "{_tmdl_string(meta["generated_at"])}"')
+    lines.extend([
         "",
         "\tannotation __PBI_TimeIntelligenceEnabled = 0",
         "",
@@ -1239,11 +1346,13 @@ def _render_tmdl_definition(schema: str, domain: str, meta: dict) -> str:
 def _render_tmdl_table(tbl: GoldTableDef, schema: str) -> str:
     """Render TMDL table definition."""
     lines = [
-        f"/// {tbl.table_type.capitalize()}: {tbl.source_class_label or tbl.name}",
         f"table {tbl.name}",
         f"\tlineageTag: {_tmdl_guid(tbl.name)}",
+        f'\tannotation Kairos_TableType = "{_tmdl_string(tbl.table_type)}"',
         "",
     ]
+    if tbl.source_class_label:
+        lines.insert(2, f'\tdescription: "{_tmdl_string(tbl.source_class_label)}"')
 
     # Physical columns
     for col in tbl.columns:
@@ -1260,8 +1369,7 @@ def _render_tmdl_table(tbl: GoldTableDef, schema: str) -> str:
         lines.append("\t\tsummarizeBy: none")
         lines.append(f"\t\tsourceColumn: {col.name}")
         if col.comment:
-            safe_desc = col.comment.replace('"', '\\"')
-            lines.append(f'\t\tannotation PBI_Description = "{safe_desc}"')
+            lines.append(f'\t\tannotation PBI_Description = "{_tmdl_string(col.comment)}"')
         lines.append("")
 
     # Measures
@@ -1270,8 +1378,7 @@ def _render_tmdl_table(tbl: GoldTableDef, schema: str) -> str:
         lines.append(f"\t\tformatString: {m.measure_format}")
         lines.append(f"\t\tlineageTag: {_tmdl_guid(f'{tbl.name}.m.{m.name}')}")
         if m.comment:
-            safe_desc = m.comment.replace('"', '\\"')
-            lines.append(f'\t\tdescription: "{safe_desc}"')
+            lines.append(f'\t\tdescription: "{_tmdl_string(m.comment)}"')
         lines.append("")
 
     # Hierarchies
@@ -1288,7 +1395,7 @@ def _render_tmdl_table(tbl: GoldTableDef, schema: str) -> str:
             lines.append("")
 
     # Partition (source query)
-    lines.append(f"\tpartition {tbl.name} = m")
+    lines.append(f"\tpartition {tbl.name} = entity")
     lines.append("\t\tmode: directLake")
     lines.append("\t\tsource")
     lines.append(f'\t\t\tentityName: "{schema}.{tbl.name}"')
@@ -1300,14 +1407,16 @@ def _render_tmdl_table(tbl: GoldTableDef, schema: str) -> str:
 
 def _render_tmdl_relationships(tables: list[GoldTableDef], schema: str) -> str:
     """Render TMDL relationships file."""
-    lines = [
-        f"/// Star schema relationships: {schema}",
-        "",
-    ]
+    lines: list[str] = []
+    local_table_names = _local_gold_table_names(tables)
     rel_idx = 0
     for tbl in tables:
         for col, ref_full, ref_col, label in tbl.fk_constraints:
-            ref_tbl_name = ref_full.split(".")[-1]
+            ref_tbl_name = _relationship_target_table_name(ref_full)
+            if not _is_local_relationship(tbl.name, ref_tbl_name, local_table_names):
+                _log_skipped_cross_domain_relationship(tbl.name, col, ref_tbl_name, ref_col)
+                continue
+            ref_tbl_name = local_table_names[ref_tbl_name.casefold()]
             lines.append(
                 f"relationship {_tmdl_guid(f'rel.{tbl.name}.{col}.{rel_idx}')}")
             lines.append("\tjoinOnDateBehavior: datePartOnly")
@@ -1323,10 +1432,7 @@ def _render_tmdl_relationships(tables: list[GoldTableDef], schema: str) -> str:
 
 def _render_tmdl_rls_roles(tables: list[GoldTableDef], schema: str) -> str:
     """Render TMDL RLS roles for GDPR dimensions (G4) and OLS column restrictions."""
-    lines = [
-        f"/// Row-Level Security roles: {schema}",
-        "",
-    ]
+    lines: list[str] = []
     has_roles = False
 
     # RLS roles from GDPR satellites (G4)
@@ -1351,8 +1457,6 @@ def _render_tmdl_rls_roles(tables: list[GoldTableDef], schema: str) -> str:
 
     if ols_columns:
         has_roles = True
-        lines.append(f"/// Object-Level Security roles: {schema}")
-        lines.append("")
         lines.append("role 'RestrictedColumns'")
         lines.append("\tmodelPermission: read")
         lines.append("")
@@ -1375,10 +1479,7 @@ def _render_tmdl_perspectives(tables: list[GoldTableDef], schema: str) -> str:
     if not perspective_tables:
         return ""
 
-    lines = [
-        f"/// Perspectives: {schema}",
-        "",
-    ]
+    lines: list[str] = []
     for name, tbl_names in sorted(perspective_tables.items()):
         lines.append(f"perspective '{name}'")
         lines.append("")
@@ -1398,14 +1499,14 @@ def _render_tmdl_calculation_group(schema: str, meta: dict) -> str:
     QTD, MTD, PY, YoY%) that Power BI authors can customize.
     """
     lines = [
-        f"/// Time Intelligence calculation group: {schema}",
-    ]
-    if meta.get("toolkit_version"):
-        lines.append(f"/// Toolkit version: {meta['toolkit_version']}")
-    lines.extend([
-        "",
         "table 'Time Intelligence'",
         f"\tlineageTag: {_tmdl_guid(f'{schema}.calcgroup.timeintel')}",
+    ]
+    if meta.get("toolkit_version"):
+        lines.append(
+            f'\tannotation Kairos_ToolkitVersion = "{_tmdl_string(meta["toolkit_version"])}"'
+        )
+    lines.extend([
         "",
         "\tcalculationGroup",
         "",

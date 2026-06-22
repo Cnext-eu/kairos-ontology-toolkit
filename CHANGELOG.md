@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0rc15] — 2026-06-22
+
+### Fixed
+- Silver FK metadata now resolves S3 discriminator-folded FK targets to the
+  projected parent table, so DDL comments, ALTER documentation, and ERD lineage no
+  longer point at skipped child tables.
+- dbt projection now routes table mappings targeting S3-folded subtypes into the
+  projected parent model while preserving subtype discriminator values, mapped
+  subtype columns, and mapping filters.
+- `audit-silver-samples` now accepts dbt lineage comments and full target URIs
+  when checking mapped-target SQL presence, avoiding false positives for object
+  properties rendered as FK columns.
+- Power BI projection claim-sync gating now validates `silverInclude` against the
+  exact domain silver extension while still passing gold extensions to the
+  Power BI projector.
+- Power BI gold projection now emits Fabric semantic-model wrapper files and
+  parser-ready TMDL directly, so generated SemanticModel folders no longer need
+  downstream sanitation before deployment.
+- Per-domain Power BI SemanticModel output now omits cross-domain relationships
+  to tables that are absent from the local model, avoiding invalid TMDL while a
+  future master SemanticModel covers cross-domain reporting.
+
 ## [4.4.0rc14] — 2026-06-22
 
 ### Added

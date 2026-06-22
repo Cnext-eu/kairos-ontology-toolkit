@@ -1689,6 +1689,178 @@ def test_dd022_silver_foreign_key_on_reverse():
     assert found_fk_on_item, "FK column should be on ConsignmentItem table"
 
 
+def test_dd022_reverse_fk_to_s3_folded_domain_references_parent_metadata():
+    """S3-folded reverse FK targets should reference the projected parent table."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Booking a owl:Class ;
+            rdfs:label "Booking"@en ;
+            rdfs:comment "."@en ;
+            kairos-ext:inheritanceStrategy "discriminator" .
+
+        ex:ConfirmedBooking a owl:Class ;
+            rdfs:subClassOf ex:Booking ;
+            rdfs:label "Confirmed Booking"@en ;
+            rdfs:comment "."@en .
+
+        ex:TransportPlanLeg a owl:Class ;
+            rdfs:label "Transport Plan Leg"@en ;
+            rdfs:comment "."@en .
+
+        ex:hasTransportPlan a owl:ObjectProperty ;
+            rdfs:domain ex:ConfirmedBooking ;
+            rdfs:range ex:TransportPlanLeg ;
+            rdfs:label "has transport plan"@en ;
+            kairos-ext:silverForeignKeyOn ex:TransportPlanLeg ;
+            kairos-ext:silverColumnName "booking_sk" .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Booking", "name": "Booking", "label": "Booking", "comment": ""},
+        {
+            "uri": f"{BASE}ConfirmedBooking",
+            "name": "ConfirmedBooking",
+            "label": "Confirmed Booking",
+            "comment": "",
+        },
+        {
+            "uri": f"{BASE}TransportPlanLeg",
+            "name": "TransportPlanLeg",
+            "label": "Transport Plan Leg",
+            "comment": "",
+        },
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+    alter = next(v for k, v in result.items() if k.endswith("-alter.sql"))
+    erd = next(v for k, v in result.items() if k.endswith("-erd.mmd"))
+
+    assert "-- FK: booking_sk -> silver_test.booking (booking_sk)" in ddl
+    assert "REFERENCES silver_test.booking (booking_sk)" in alter
+    assert 'BOOKING ||--o{ TRANSPORT_PLAN_LEG : "has_transport_plan"' in erd
+    assert "confirmed_booking" not in ddl.lower()
+    assert "confirmed_booking" not in alter.lower()
+    assert "CONFIRMED_BOOKING" not in erd
+
+
+def test_dd022_normal_fk_to_s3_folded_range_references_parent_metadata():
+    """Normal FK targets should also resolve S3-folded range classes to parent tables."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Booking a owl:Class ;
+            rdfs:label "Booking"@en ;
+            rdfs:comment "."@en ;
+            kairos-ext:inheritanceStrategy "discriminator" .
+
+        ex:ConfirmedBooking a owl:Class ;
+            rdfs:subClassOf ex:Booking ;
+            rdfs:label "Confirmed Booking"@en ;
+            rdfs:comment "."@en .
+
+        ex:TransportPlanLeg a owl:Class ;
+            rdfs:label "Transport Plan Leg"@en ;
+            rdfs:comment "."@en .
+
+        ex:bookedAs a owl:ObjectProperty ;
+            rdfs:domain ex:TransportPlanLeg ;
+            rdfs:range ex:ConfirmedBooking ;
+            rdfs:label "booked as"@en ;
+            kairos-ext:silverForeignKey true .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Booking", "name": "Booking", "label": "Booking", "comment": ""},
+        {
+            "uri": f"{BASE}ConfirmedBooking",
+            "name": "ConfirmedBooking",
+            "label": "Confirmed Booking",
+            "comment": "",
+        },
+        {
+            "uri": f"{BASE}TransportPlanLeg",
+            "name": "TransportPlanLeg",
+            "label": "Transport Plan Leg",
+            "comment": "",
+        },
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+
+    assert "-- FK: booking_sk -> silver_test.booking (booking_sk)" in ddl
+    assert "confirmed_booking_sk" not in ddl.lower()
+
+
+def test_dd022_normal_fk_to_non_folded_range_still_references_child_table():
+    """Class-per-table inheritance must keep FK metadata pointing to the child table."""
+    ttl = f"""
+        @prefix ex:  <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
+
+        ex:Booking a owl:Class ;
+            rdfs:label "Booking"@en ;
+            rdfs:comment "."@en ;
+            kairos-ext:inheritanceStrategy "class-per-table" .
+
+        ex:ConfirmedBooking a owl:Class ;
+            rdfs:subClassOf ex:Booking ;
+            rdfs:label "Confirmed Booking"@en ;
+            rdfs:comment "."@en .
+
+        ex:TransportPlanLeg a owl:Class ;
+            rdfs:label "Transport Plan Leg"@en ;
+            rdfs:comment "."@en .
+
+        ex:bookedAs a owl:ObjectProperty ;
+            rdfs:domain ex:TransportPlanLeg ;
+            rdfs:range ex:ConfirmedBooking ;
+            rdfs:label "booked as"@en ;
+            kairos-ext:silverForeignKey true .
+    """
+    g = _make_graph(ttl)
+    classes = [
+        {"uri": f"{BASE}Booking", "name": "Booking", "label": "Booking", "comment": ""},
+        {
+            "uri": f"{BASE}ConfirmedBooking",
+            "name": "ConfirmedBooking",
+            "label": "Confirmed Booking",
+            "comment": "",
+        },
+        {
+            "uri": f"{BASE}TransportPlanLeg",
+            "name": "TransportPlanLeg",
+            "label": "Transport Plan Leg",
+            "comment": "",
+        },
+    ]
+    result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
+    ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
+
+    assert "-- FK: confirmed_booking_sk -> silver_test.confirmed_booking" in ddl
+    assert "(confirmed_booking_sk)" in ddl
+
+
 def test_dd022_silver_foreign_key_on_implies_silver_foreign_key():
     """silverForeignKeyOn should work without explicit silverForeignKey true."""
     ttl = f"""

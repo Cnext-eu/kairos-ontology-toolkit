@@ -2342,6 +2342,278 @@ class TestUnprojectedClassMapping:
 
 
 # ---------------------------------------------------------------------------
+# Issue #202: projected S3-folded subtype mappings must route to parent dbt model
+# ---------------------------------------------------------------------------
+
+_FOLDED_SUBTYPE_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/booking/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+    <http://kairos.example/ontology/booking> a owl:Ontology ;
+        rdfs:label "Booking" ; owl:versionInfo "1.0.0" .
+
+    ex:Booking a owl:Class ; rdfs:label "Booking" ; rdfs:comment "booking" ;
+        kairos-ext:naturalKey "carrier_booking_reference" ;
+        kairos-ext:inheritanceStrategy "discriminator" ;
+        kairos-ext:discriminatorColumn "booking_type" .
+    ex:BookingRequest a owl:Class ; rdfs:subClassOf ex:Booking ;
+        rdfs:label "Booking Request" ; rdfs:comment "request" ;
+        kairos-ext:conditionalOnType "request" .
+    ex:ConfirmedBooking a owl:Class ; rdfs:subClassOf ex:Booking ;
+        rdfs:label "Confirmed Booking" ; rdfs:comment "confirmed" .
+
+    ex:carrierBookingReference a owl:DatatypeProperty ;
+        rdfs:domain ex:Booking ; rdfs:range xsd:string ;
+        kairos-ext:silverColumnName "carrier_booking_reference" .
+    ex:confirmedAt a owl:DatatypeProperty ;
+        rdfs:domain ex:ConfirmedBooking ; rdfs:range xsd:string ;
+        kairos-ext:silverColumnName "confirmed_at" .
+    ex:requestedAt a owl:DatatypeProperty ;
+        rdfs:domain ex:BookingRequest ; rdfs:range xsd:string ;
+        kairos-ext:silverColumnName "requested_at" .
+""")
+
+_FOLDED_SUBTYPE_BRONZE_TTL = textwrap.dedent("""\
+    @prefix bronze-qargo: <https://example.com/bronze/qargo#> .
+    @prefix bronze-qlik: <https://example.com/bronze/qlik#> .
+    @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+    bronze-qlik:Qlik a kairos-bronze:SourceSystem ;
+        rdfs:label "Qlik" ;
+        kairos-bronze:database "db" ;
+        kairos-bronze:schema "dbo" .
+    bronze-qlik:bookings a kairos-bronze:SourceTable ;
+        rdfs:label "bookings" ;
+        kairos-bronze:sourceSystem bronze-qlik:Qlik ;
+        kairos-bronze:tableName "bookings" ;
+        kairos-bronze:primaryKeyColumns "booking_ref" .
+    bronze-qlik:bookings_booking_ref a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-qlik:bookings ;
+        kairos-bronze:columnName "booking_ref" ;
+        kairos-bronze:dataType "nvarchar(255)" .
+
+    bronze-qargo:Qargo a kairos-bronze:SourceSystem ;
+        rdfs:label "Qargo" ;
+        kairos-bronze:database "db" ;
+        kairos-bronze:schema "dbo" .
+    bronze-qargo:bookings a kairos-bronze:SourceTable ;
+        rdfs:label "bookings" ;
+        kairos-bronze:sourceSystem bronze-qargo:Qargo ;
+        kairos-bronze:tableName "bookings" ;
+        kairos-bronze:primaryKeyColumns "booking_ref" .
+    bronze-qargo:bookings_booking_ref a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-qargo:bookings ;
+        kairos-bronze:columnName "booking_ref" ;
+        kairos-bronze:dataType "nvarchar(255)" .
+    bronze-qargo:bookings_confirmed_at a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-qargo:bookings ;
+        kairos-bronze:columnName "confirmed_at" ;
+        kairos-bronze:dataType "nvarchar(255)" .
+
+    bronze-qargo:orders a kairos-bronze:SourceTable ;
+        rdfs:label "orders" ;
+        kairos-bronze:sourceSystem bronze-qargo:Qargo ;
+        kairos-bronze:tableName "orders" ;
+        kairos-bronze:primaryKeyColumns "booking_ref" .
+    bronze-qargo:orders_booking_ref a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-qargo:orders ;
+        kairos-bronze:columnName "booking_ref" ;
+        kairos-bronze:dataType "nvarchar(255)" .
+    bronze-qargo:orders_requested_at a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-qargo:orders ;
+        kairos-bronze:columnName "requested_at" ;
+        kairos-bronze:dataType "nvarchar(255)" .
+""")
+
+_FOLDED_SUBTYPE_MAPPING_TTL = textwrap.dedent("""\
+    @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+    @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix bronze-qargo: <https://example.com/bronze/qargo#> .
+    @prefix bronze-qlik: <https://example.com/bronze/qlik#> .
+    @prefix ex: <http://kairos.example/ontology/booking/> .
+
+    bronze-qlik:bookings skos:exactMatch ex:Booking ;
+        kairos-map:mappingType "direct" .
+    bronze-qlik:bookings_booking_ref skos:exactMatch ex:carrierBookingReference .
+
+    bronze-qargo:bookings skos:exactMatch ex:ConfirmedBooking ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:filterCondition "source.status = 'confirmed'" .
+    bronze-qargo:bookings_booking_ref skos:exactMatch ex:carrierBookingReference .
+    bronze-qargo:bookings_confirmed_at skos:exactMatch ex:confirmedAt .
+
+    bronze-qargo:orders skos:exactMatch ex:BookingRequest ;
+        kairos-map:mappingType "direct" .
+    bronze-qargo:orders_booking_ref skos:exactMatch ex:carrierBookingReference .
+    bronze-qargo:orders_requested_at skos:exactMatch ex:requestedAt .
+""")
+
+
+class TestProjectedFoldedSubtypeMappings:
+    """Issue #202: projected S3-folded subtype mappings feed the parent dbt model."""
+
+    def _setup(
+        self,
+        tmp_path,
+        ontology_ttl: str = _FOLDED_SUBTYPE_ONTOLOGY_TTL,
+        mapping_ttl: str = _FOLDED_SUBTYPE_MAPPING_TTL,
+        classes: list[dict] | None = None,
+    ):
+        graph = Graph()
+        graph.parse(data=ontology_ttl, format="turtle")
+        bronze = tmp_path / "bronze"
+        bronze.mkdir()
+        (bronze / "sources.ttl").write_text(_FOLDED_SUBTYPE_BRONZE_TTL, encoding="utf-8")
+        mappings = tmp_path / "mappings"
+        mappings.mkdir()
+        (mappings / "to-booking.ttl").write_text(mapping_ttl, encoding="utf-8")
+        if classes is None:
+            classes = [
+                {
+                    "uri": "http://kairos.example/ontology/booking/Booking",
+                    "name": "Booking", "label": "Booking", "comment": "booking",
+                },
+                {
+                    "uri": "http://kairos.example/ontology/booking/ConfirmedBooking",
+                    "name": "ConfirmedBooking", "label": "Confirmed Booking",
+                    "comment": "confirmed",
+                },
+                {
+                    "uri": "http://kairos.example/ontology/booking/BookingRequest",
+                    "name": "BookingRequest", "label": "Booking Request",
+                    "comment": "request",
+                },
+            ]
+        return graph, bronze, mappings, classes
+
+    def test_projected_folded_subtype_mappings_route_to_parent_union(
+        self, tmp_path, template_dir
+    ):
+        graph, bronze, mappings, classes = self._setup(tmp_path)
+        artifacts = generate_dbt_artifacts(
+            classes=classes, graph=graph, template_dir=template_dir,
+            namespace="http://kairos.example/ontology/booking/",
+            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+        )
+
+        assert "models/silver/booking/booking.sql" in artifacts
+        assert "models/silver/booking/booking__from_qlik.sql" in artifacts
+        assert "models/silver/booking/booking__from_qargo__bookings.sql" in artifacts
+        assert "models/silver/booking/booking__from_qargo__orders.sql" in artifacts
+        assert "models/silver/booking/confirmed_booking.sql" not in artifacts
+        assert "models/silver/booking/booking_request.sql" not in artifacts
+
+    def test_folded_subtype_sources_preserve_discriminator_columns_and_filters(
+        self, tmp_path, template_dir
+    ):
+        graph, bronze, mappings, classes = self._setup(tmp_path)
+        artifacts = generate_dbt_artifacts(
+            classes=classes, graph=graph, template_dir=template_dir,
+            namespace="http://kairos.example/ontology/booking/",
+            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+        )
+
+        confirmed_sql = artifacts["models/silver/booking/booking__from_qargo__bookings.sql"]
+        request_sql = artifacts["models/silver/booking/booking__from_qargo__orders.sql"]
+        assert "'ConfirmedBooking' as booking_type" in confirmed_sql
+        assert "where status = 'confirmed'" in confirmed_sql
+        assert "'request' as booking_type" in request_sql
+
+    def test_folded_subtype_specific_columns_survive_parent_union(
+        self, tmp_path, template_dir
+    ):
+        graph, bronze, mappings, classes = self._setup(tmp_path)
+        artifacts = generate_dbt_artifacts(
+            classes=classes, graph=graph, template_dir=template_dir,
+            namespace="http://kairos.example/ontology/booking/",
+            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+        )
+
+        confirmed_sql = artifacts["models/silver/booking/booking__from_qargo__bookings.sql"]
+        request_sql = artifacts["models/silver/booking/booking__from_qargo__orders.sql"]
+        union_sql = artifacts["models/silver/booking/booking.sql"]
+        schema_yml = yaml.safe_load(artifacts["models/silver/booking/_booking__models.yml"])
+        booking_model = next(m for m in schema_yml["models"] if m["name"] == "booking")
+        schema_columns = {c["name"] for c in booking_model["columns"]}
+        assert "confirmed_at as confirmed_at" in confirmed_sql
+        assert "requested_at as requested_at" in request_sql
+        assert "confirmed_at" in union_sql
+        assert "requested_at" in union_sql
+        assert {"booking_type", "confirmed_at", "requested_at"} <= schema_columns
+
+    def test_single_source_folded_subtype_generates_parent_model(
+        self, tmp_path, template_dir
+    ):
+        single_mapping = textwrap.dedent("""\
+            @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+            @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+            @prefix bronze-qargo: <https://example.com/bronze/qargo#> .
+            @prefix ex: <http://kairos.example/ontology/booking/> .
+
+            bronze-qargo:bookings skos:exactMatch ex:ConfirmedBooking ;
+                kairos-map:mappingType "direct" ;
+                kairos-map:filterCondition "source.status = 'confirmed'" .
+            bronze-qargo:bookings_booking_ref skos:exactMatch ex:carrierBookingReference .
+            bronze-qargo:bookings_confirmed_at skos:exactMatch ex:confirmedAt .
+        """)
+        graph, bronze, mappings, classes = self._setup(tmp_path, mapping_ttl=single_mapping)
+        artifacts = generate_dbt_artifacts(
+            classes=classes, graph=graph, template_dir=template_dir,
+            namespace="http://kairos.example/ontology/booking/",
+            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+        )
+
+        assert "models/silver/booking/booking.sql" in artifacts
+        assert "models/silver/booking/confirmed_booking.sql" not in artifacts
+        booking_sql = artifacts["models/silver/booking/booking.sql"]
+        assert "'ConfirmedBooking' as booking_type" in booking_sql
+        assert "confirmed_at" in booking_sql
+        assert "where status = 'confirmed'" in booking_sql
+
+    def test_transitive_folded_subtype_mapping_routes_to_parent(
+        self, tmp_path, template_dir
+    ):
+        transitive_ontology = _FOLDED_SUBTYPE_ONTOLOGY_TTL.replace(
+            "ex:ConfirmedBooking a owl:Class ; rdfs:subClassOf ex:Booking ;",
+            "ex:BookedProduct a owl:Class ; rdfs:subClassOf ex:Booking ;\n"
+            "        rdfs:label \"Booked Product\" ; rdfs:comment \"intermediate\" .\n"
+            "    ex:ConfirmedBooking a owl:Class ; rdfs:subClassOf ex:BookedProduct ;",
+        )
+        graph, bronze, mappings, classes = self._setup(
+            tmp_path, ontology_ttl=transitive_ontology,
+        )
+        artifacts = generate_dbt_artifacts(
+            classes=classes, graph=graph, template_dir=template_dir,
+            namespace="http://kairos.example/ontology/booking/",
+            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+        )
+
+        assert "models/silver/booking/booking__from_qargo__bookings.sql" in artifacts
+        assert "models/silver/booking/confirmed_booking.sql" not in artifacts
+
+    def test_class_per_table_subtype_mapping_stays_separate(self, tmp_path, template_dir):
+        cpt_ontology = _FOLDED_SUBTYPE_ONTOLOGY_TTL.replace(
+            'kairos-ext:inheritanceStrategy "discriminator" ;',
+            'kairos-ext:inheritanceStrategy "class-per-table" ;',
+        )
+        graph, bronze, mappings, classes = self._setup(
+            tmp_path, ontology_ttl=cpt_ontology,
+        )
+        artifacts = generate_dbt_artifacts(
+            classes=classes, graph=graph, template_dir=template_dir,
+            namespace="http://kairos.example/ontology/booking/",
+            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+        )
+
+        assert "models/silver/booking/confirmed_booking.sql" in artifacts
+        assert "models/silver/booking/booking_request.sql" in artifacts
+
+
+# ---------------------------------------------------------------------------
 # Split pattern filter condition tests
 # ---------------------------------------------------------------------------
 

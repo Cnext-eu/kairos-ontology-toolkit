@@ -2,6 +2,8 @@
 # Copyright 2026 Cnext.eu
 """Tests for the gold layer projector (G1-G8 rules — Power BI star schema)."""
 
+import json
+import logging
 import textwrap
 from pathlib import Path
 
@@ -313,6 +315,22 @@ class TestOutputArtifacts:
         sm = "test/Test.SemanticModel/definition"
         assert f"{sm}/relationships/relationships.tmdl" in result
 
+    def test_fabric_semantic_model_wrappers_generated(self):
+        g, classes = _simple_ontology()
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+
+        model = "test/Test.SemanticModel"
+        platform = json.loads(result[f"{model}/.platform"])
+        pbism = json.loads(result[f"{model}/definition.pbism"])
+        database = result[f"{model}/definition/database.tmdl"]
+
+        assert platform["metadata"]["type"] == "SemanticModel"
+        assert platform["metadata"]["displayName"] == "Test"
+        assert platform["config"]["version"] == "2.0"
+        assert pbism["version"] == "4.2"
+        assert database == "database\n\tcompatibilityLevel: 1604\n"
+        assert "test/Test.pbip" not in result
+
     def test_views_for_scd2_dimensions(self):
         """SCD2 framing views generated for dimensions with SCD2."""
         g, classes = _simple_ontology()
@@ -362,6 +380,64 @@ class TestTMDLContent:
         cust_key = [k for k in result if "dim_customer" in k and k.endswith(".tmdl")]
         content = result[cust_key[0]]
         assert "directLake" in content
+
+    def test_tmdl_output_is_parser_ready_for_fabric_package(self):
+        g, classes = _simple_ontology()
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+
+        for path, content in result.items():
+            if path.endswith(".tmdl"):
+                assert "///" not in content
+                assert " = m" not in content
+        table_tmdl = result["test/Test.SemanticModel/definition/tables/dim_customer.tmdl"]
+        assert "partition dim_customer = entity" in table_tmdl
+
+    def test_tmdl_relationships_omit_cross_domain_targets(self, caplog):
+        ttl = f"""
+            @prefix ex:  <{BASE}> .
+            @prefix ref: <https://example.org/ref/location#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en .
+
+            ex:Customer a owl:Class ; rdfs:label "Customer"@en .
+            ex:Order a owl:Class ; rdfs:label "Order"@en .
+            ref:Location a owl:Class ; rdfs:label "Location"@en .
+
+            ex:orderAmount a owl:DatatypeProperty ;
+                rdfs:domain ex:Order ;
+                rdfs:range xsd:decimal ;
+                rdfs:label "order amount"@en .
+
+            ex:hasCustomer a owl:ObjectProperty, owl:FunctionalProperty ;
+                rdfs:domain ex:Order ;
+                rdfs:range ex:Customer ;
+                rdfs:label "has customer"@en .
+
+            ex:hasLocation a owl:ObjectProperty, owl:FunctionalProperty ;
+                rdfs:domain ex:Order ;
+                rdfs:range ref:Location ;
+                rdfs:label "has location"@en .
+        """
+        g = _make_graph(ttl)
+        classes = [
+            {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
+            {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+        ]
+
+        caplog.set_level(logging.WARNING, logger="kairos_ontology.projections")
+        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
+        sm = "test/Test.SemanticModel/definition"
+        rels = result[f"{sm}/relationships/relationships.tmdl"]
+        erd = result["test/test-gold-erd.mmd"]
+
+        assert "toColumn: dim_customer.customer_sk" in rels
+        assert "dim_location" not in rels
+        assert "DIM_CUSTOMER ||--o{ FACT_ORDER" in erd
+        assert "DIM_LOCATION" not in erd
+        assert "Skipping cross-domain gold TMDL relationship" in caplog.text
 
 
 # ---------------------------------------------------------------------------

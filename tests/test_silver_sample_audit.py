@@ -113,6 +113,132 @@ def test_run_silver_sample_audit_reports_warnings(tmp_path):
     assert data["summary"]["findings"]["warning"] >= 2
 
 
+def _write_single_mapping_fixture(tmp_path, target: str, sql: str):
+    sources = tmp_path / "integration" / "sources" / "app"
+    mappings = tmp_path / "model" / "mappings"
+    dbt = tmp_path / "output" / "medallion" / "dbt" / "models" / "silver"
+    sources.mkdir(parents=True)
+    mappings.mkdir(parents=True)
+    dbt.mkdir(parents=True)
+    (sources / "app.vocabulary.ttl").write_text(
+        """\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix app: <https://kairos.cnext.eu/source/app#> .
+
+app:app a kairos-bronze:SourceSystem ;
+    rdfs:label "App" .
+
+app:Order a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "Order" ;
+    kairos-bronze:sourceSystem app:app .
+
+app:Order_OrderNo a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "OrderNo" ;
+    kairos-bronze:dataType "varchar(100)" ;
+    kairos-bronze:sampleValues "BKG-1 | BKG-2" ;
+    kairos-bronze:sourceTable app:Order .
+""",
+        encoding="utf-8",
+    )
+    (mappings / "app-to-domain.ttl").write_text(
+        f"""\
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix app: <https://kairos.cnext.eu/source/app#> .
+@prefix booking: <https://example.com/domain/booking#> .
+@prefix ex: <https://example.com/domain#> .
+
+app:Order_OrderNo skos:closeMatch {target} .
+""",
+        encoding="utf-8",
+    )
+    (dbt / "order.sql").write_text(sql, encoding="utf-8")
+    return sources.parent, mappings, dbt.parent.parent.parent
+
+
+def test_audit_accepts_object_property_fk_lineage_comment(tmp_path):
+    sources, mappings, dbt = _write_single_mapping_fixture(
+        tmp_path,
+        "booking:hasTransportPlan",
+        (
+            "select booking.booking_sk as booking_sk "
+            "-- booking:hasTransportPlan\n"
+            "from {{ source('app', 'Order') }}"
+        ),
+    )
+
+    report = run_silver_sample_audit(
+        sources_dir=sources,
+        mappings_dir=mappings,
+        dbt_output_dir=dbt,
+    )
+
+    assert not [
+        finding for finding in report.findings
+        if finding.code == "target_alias_not_found_in_sql"
+    ]
+
+
+def test_audit_warns_when_alias_and_lineage_are_missing(tmp_path):
+    sources, mappings, dbt = _write_single_mapping_fixture(
+        tmp_path,
+        "booking:hasTransportPlan",
+        "select booking.booking_sk as booking_sk from {{ source('app', 'Order') }}",
+    )
+
+    report = run_silver_sample_audit(
+        sources_dir=sources,
+        mappings_dir=mappings,
+        dbt_output_dir=dbt,
+    )
+
+    warning = next(
+        finding for finding in report.findings
+        if finding.code == "target_alias_not_found_in_sql"
+    )
+    assert "booking:hasTransportPlan" in warning.evidence["expected_tokens"]
+    assert "has_transport_plan" in warning.evidence["expected_tokens"]
+
+
+def test_audit_alias_matching_uses_identifier_boundaries(tmp_path):
+    sources, mappings, dbt = _write_single_mapping_fixture(
+        tmp_path,
+        "ex:partySk",
+        "select counterparty_sk from {{ source('app', 'Order') }}",
+    )
+
+    report = run_silver_sample_audit(
+        sources_dir=sources,
+        mappings_dir=mappings,
+        dbt_output_dir=dbt,
+    )
+
+    assert any(
+        finding.code == "target_alias_not_found_in_sql"
+        for finding in report.findings
+    )
+
+
+def test_audit_accepts_full_uri_lineage_comment(tmp_path):
+    target_uri = "https://example.com/domain/booking#hasTransportPlan"
+    sources, mappings, dbt = _write_single_mapping_fixture(
+        tmp_path,
+        "<https://example.com/domain/booking#hasTransportPlan>",
+        f"select booking_sk -- {target_uri}\nfrom {{ source('app', 'Order') }}",
+    )
+
+    report = run_silver_sample_audit(
+        sources_dir=sources,
+        mappings_dir=mappings,
+        dbt_output_dir=dbt,
+    )
+
+    assert not [
+        finding for finding in report.findings
+        if finding.code == "target_alias_not_found_in_sql"
+    ]
+
+
 def test_cli_audit_silver_samples_non_blocking_by_default(tmp_path):
     sources, mappings, dbt = _write_fixture(tmp_path)
     out = tmp_path / "audit"

@@ -208,6 +208,16 @@ def _nearest_claimed_ancestor(
     return None
 
 
+def _resolve_s3_projected_class(
+    cls_uri: URIRef,
+    subtype_parents: dict[str, str] | None,
+) -> URIRef:
+    """Return the table-owning class URI after S3 discriminator folding."""
+    if not subtype_parents:
+        return cls_uri
+    return URIRef(subtype_parents.get(str(cls_uri), str(cls_uri)))
+
+
 # PII keywords for projection-time GDPR warning (mirrors validator.PII_KEYWORDS)
 _PII_KEYWORDS: list[str] = [
     "first_name", "last_name", "date_of_birth", "national_id", "iban",
@@ -647,6 +657,7 @@ def generate_silver_artifacts(
         # TPC subtypes inherit parent's FK columns via inherit_from
         _add_object_property_fk_cols(merged, cls_uri, tbl, table_name_for, schema_name,
                                      class_uris, naming_conv,
+                                     subtype_parents=subtype_parents,
                                      inherit_ancestors=True,
                                      inherit_from=tpc_parents if tpc_parents else None)
 
@@ -715,6 +726,7 @@ def generate_silver_artifacts(
             _add_object_property_fk_cols(
                 merged, sub_uri, parent_tbl, table_name_for, schema_name,
                 class_uris, naming_conv,
+                subtype_parents=subtype_parents,
                 inherit_ancestors=True,
                 comment_prefix=f"from {sub_name}"
             )
@@ -723,7 +735,7 @@ def generate_silver_artifacts(
     # DD-022 post-pass: inject redirected FK columns (silverForeignKeyOn)
     # ----------------------------------------------------------------
     _add_redirected_fk_cols(merged, tables, table_name_for, schema_name,
-                            class_uris, naming_conv)
+                            class_uris, naming_conv, subtype_parents)
 
     # ----------------------------------------------------------------
     # S4 post-pass: inline small reference tables into parent
@@ -1115,6 +1127,7 @@ def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
 def _add_object_property_fk_cols(
     graph: Graph, cls_uri: URIRef, tbl: TableDef,
     table_name_for, schema_name: str, class_uris: set[str], naming_conv: str,
+    subtype_parents: dict[str, str] | None = None,
     comment_prefix: str = "",
     inherit_ancestors: bool = False,
     inherit_from: set[str] | None = None,
@@ -1186,8 +1199,9 @@ def _add_object_property_fk_cols(
             )
             ref_full = f"{ref_schema}.{range_tbl}"
         else:
-            range_local = _local_name(str(range_cls))
-            range_tbl = table_name_for(range_cls, range_local)
+            effective_range_cls = _resolve_s3_projected_class(range_cls, subtype_parents)
+            range_local = _local_name(str(effective_range_cls))
+            range_tbl = table_name_for(effective_range_cls, range_local)
             ref_full = f"{schema_name}.{range_tbl}"
 
         col_name_override = _str_val(graph, prop, KAIROS_EXT.silverColumnName)
@@ -1255,6 +1269,7 @@ def _add_redirected_fk_cols(
     schema_name: str,
     class_uris: set[str],
     naming_conv: str,
+    subtype_parents: dict[str, str] | None = None,
 ) -> None:
     """Inject FK columns for properties with ``silverForeignKeyOn`` (DD-022).
 
@@ -1320,8 +1335,9 @@ def _add_redirected_fk_cols(
         # Resolve referenced table
         ref_uri_str = str(referenced_uri)
         if ref_uri_str in class_uris:
-            ref_local = _local_name(ref_uri_str)
-            ref_tbl = table_name_for(referenced_uri, ref_local)
+            effective_ref_uri = _resolve_s3_projected_class(referenced_uri, subtype_parents)
+            ref_local = _local_name(str(effective_ref_uri))
+            ref_tbl = table_name_for(effective_ref_uri, ref_local)
             ref_full = f"{schema_name}.{ref_tbl}"
         else:
             ref_schema, ref_tbl = _resolve_external_table(
