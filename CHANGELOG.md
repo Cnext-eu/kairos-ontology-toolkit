@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Silver FK metadata now resolves S3 discriminator-folded FK targets to the
   projected parent table, so DDL comments, ALTER documentation, and ERD lineage no
   longer point at skipped child tables.
+- dbt projection now routes table mappings targeting S3-folded subtypes into the
+  projected parent model while preserving subtype discriminator values, mapped
+  subtype columns, and mapping filters.
 
 ## [4.4.0rc14] — 2026-06-22
 
