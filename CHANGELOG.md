@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - dbt projection now routes table mappings targeting S3-folded subtypes into the
   projected parent model while preserving subtype discriminator values, mapped
   subtype columns, and mapping filters.
+- `audit-silver-samples` now accepts dbt lineage comments and full target URIs
+  when checking mapped-target SQL presence, avoiding false positives for object
+  properties rendered as FK columns.
 
 ## [4.4.0rc14] — 2026-06-22
 

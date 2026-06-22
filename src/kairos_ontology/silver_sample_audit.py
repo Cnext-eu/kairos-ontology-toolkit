@@ -146,6 +146,57 @@ def _all_dbt_sql(dbt_output_dir: Path) -> dict[str, str]:
     }
 
 
+def _prefixed_iri(uri: str) -> str:
+    """Derive the dbt projector's fallback compact IRI form for a URI."""
+    local = extract_local_name(uri)
+    if "#" in uri:
+        namespace = uri.rsplit("#", 1)[0]
+    elif "/" in uri:
+        namespace = uri.rsplit("/", 1)[0]
+    else:
+        return local
+    prefix = namespace.rsplit("/", 1)[-1] if "/" in namespace else namespace
+    return f"{prefix}:{local}"
+
+
+def _target_sql_tokens(target_uri: str, mapping_ns: dict[str, str] | None = None) -> set[str]:
+    """Return accepted SQL lineage/alias tokens for a mapped target URI."""
+    if not target_uri:
+        return set()
+    tokens = {
+        camel_to_snake(extract_local_name(target_uri)),
+        target_uri,
+        _prefixed_iri(target_uri),
+    }
+    for prefix, namespace in (mapping_ns or {}).items():
+        if target_uri.startswith(namespace):
+            local = target_uri[len(namespace):]
+            if local:
+                tokens.add(f"{prefix}:{local}")
+    return {token for token in tokens if token}
+
+
+def _is_identifier_token(token: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token))
+
+
+def _sql_contains_token(sql: str, token: str) -> bool:
+    if not token:
+        return False
+    if _is_identifier_token(token):
+        pattern = rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])"
+        return re.search(pattern, sql, flags=re.IGNORECASE) is not None
+    return token.lower() in sql.lower()
+
+
+def _sql_contains_any_token(sql_artifacts: dict[str, str], tokens: set[str]) -> bool:
+    return any(
+        _sql_contains_token(sql, token)
+        for sql in sql_artifacts.values()
+        for token in tokens
+    )
+
+
 def _samples_parse_as(sql_type: str, samples: list[str]) -> tuple[int, int]:
     type_text = sql_type.lower()
     total = len(samples)
@@ -271,9 +322,8 @@ def run_silver_sample_audit(
 ) -> SilverSampleAuditReport:
     """Run an offline advisory audit over generated dbt silver artifacts."""
     source_columns = load_source_samples(sources_dir)
-    mappings, _ = _parse_skos_mappings(mappings_dir)
+    mappings, mapping_ns = _parse_skos_mappings(mappings_dir)
     sql_artifacts = _all_dbt_sql(dbt_output_dir)
-    all_sql = "\n".join(sql_artifacts.values()).lower()
 
     findings: list[AuditFinding] = []
     grouped_shapes: dict[str, list[tuple[SourceColumnSample, str]]] = {}
@@ -340,16 +390,20 @@ def run_silver_sample_audit(
                         evidence={"samples_checked": total, "cast_type": cast_type},
                     ))
 
-            alias = camel_to_snake(extract_local_name(target))
-            if sql_artifacts and alias.lower() not in all_sql:
+            target_tokens = _target_sql_tokens(target, mapping_ns)
+            if sql_artifacts and not _sql_contains_any_token(sql_artifacts, target_tokens):
                 findings.append(AuditFinding(
                     severity=SEVERITY_WARNING,
                     code="target_alias_not_found_in_sql",
-                    message=f"Expected mapped target alias '{alias}' was not found in generated dbt SQL.",
+                    message=(
+                        "Expected mapped target alias or lineage token was not found "
+                        "in generated dbt SQL."
+                    ),
                     source=column.system,
                     table=column.table_name,
                     column=column.name,
                     target=target,
+                    evidence={"expected_tokens": sorted(target_tokens)},
                 ))
 
     for target, entries in grouped_shapes.items():
