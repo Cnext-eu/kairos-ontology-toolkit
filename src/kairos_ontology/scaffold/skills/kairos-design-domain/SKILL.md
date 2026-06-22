@@ -11,6 +11,17 @@ description: >
 
 # Ontology Modeling Skill
 
+## Design fleet mode (DD-088)
+
+Default is interactive: ask the user to confirm naming alignment, class/property
+choices, reference-model reuse, and TTL generation checkpoints. If the user
+explicitly requests design fleet mode, make those checkpoint decisions with AI
+judgment for testing speed, but mark them as **AI-approved** rather than
+user-confirmed. Record rationale, confidence, source evidence, and reference
+model evidence in `phases/domain/<domain>.md`; stop for low-confidence naming,
+missing Gate 6/source evidence, unresolved reference-model gaps, proprietary/PII
+risk, or ontology changes that would be hard to reverse.
+
 ## Lifecycle state (DD-080)
 
 > The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of

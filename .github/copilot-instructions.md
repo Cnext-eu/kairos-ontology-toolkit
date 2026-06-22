@@ -227,11 +227,12 @@ invoke the named skill instead.
 
 **If you are unsure which skill to use**, invoke **kairos-help** for guidance.
 
-### No-autopilot for design skills (MANDATORY)
+### Design mode policy (MANDATORY)
 
-The following skills are **interactive by design** — they require explicit user
-confirmation at multiple checkpoints (naming alignment, mapping confirmation,
-annotation review). They MUST NEVER be run in autopilot or autopilot-fleet mode:
+Design skills are **interactive by default**. They require explicit stakeholder
+confirmation at checkpoints (naming alignment, mapping confirmation, annotation
+review) unless the user explicitly requests **design fleet mode** for the current
+task.
 
 | Skill | Reason |
 |-------|--------|
@@ -242,9 +243,22 @@ annotation review). They MUST NEVER be run in autopilot or autopilot-fleet mode:
 | **kairos-design-gold** | Gold measure definitions and star-schema design need stakeholder sign-off |
 | **kairos-design-source** | Source vocabulary descriptions need verification against source docs |
 
-When these skills are invoked, always use **interactive mode** — present proposals,
-wait for user confirmation, and proceed step-by-step. Never batch or auto-approve
-design decisions.
+**Default:** when these skills are invoked, use **interactive mode** — present
+proposals, wait for user confirmation, and proceed step-by-step.
+
+**Opt-in design fleet mode:** only when the user explicitly asks for fleet,
+autopilot, or AI-approved design decisions, the same six design skills may run in
+autopilot/autopilot-fleet mode for testing and acceleration. In fleet mode:
+
+- Announce that design fleet mode is active and AI will make checkpoint decisions.
+- Execute the same phases, pre-flight checks, evidence gates, validations, and
+  skill routing as interactive mode; never skip quality gates to go faster.
+- Record each AI-made checkpoint decision in the phase log or generated review
+  output with rationale, confidence, and evidence references.
+- Mark AI-approved business facts, glossary terms, mappings, ontology choices,
+  silver annotations, and gold model choices as AI-approved, not user-confirmed.
+- Stop and ask the user for ambiguity, low confidence, policy-sensitive choices,
+  destructive/irreversible actions, or proprietary/PII risk.
 
 ## Validation rules
 

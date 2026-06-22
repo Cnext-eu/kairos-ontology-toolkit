@@ -8,6 +8,17 @@ description: >
 
 # Kairos Source Design Skill
 
+## Design fleet mode (DD-088)
+
+Default is interactive: ask the user to confirm source scope, vocabulary
+descriptions, enrichment findings, and source-analysis review checkpoints. If the
+user explicitly requests design fleet mode, make those checkpoint decisions with
+AI judgment for testing speed, but mark them as **AI-approved** rather than
+user-confirmed. Record rationale, confidence, sample-data warnings, and source
+evidence in `phases/source/<system>.md`; stop for incomplete source evidence,
+low-confidence descriptions, proprietary/PII risk, or destructive source refresh
+choices.
+
 ## Lifecycle state (DD-080)
 
 > The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
@@ -329,6 +340,13 @@ Before running, present the detected source systems and ask only whether any
 should be excluded because they are incomplete, out of scope, or should wait for
 documentation cleanup.
 
+Also check sample-data readiness. `analyse-sources` uses
+`kairos-bronze:sampleValues` as high-value semantic evidence; when fewer than
+half of a source system's analysed tables have sample values, the CLI emits a
+clear **non-blocking warning**. Treat that warning as an evidence-quality issue:
+continue only if the user accepts schema-only analysis for those tables, or route
+back to source import/profiling to capture samples first.
+
 Verify reference models are available:
 
 ```bash
@@ -421,10 +439,14 @@ The command produces `{system}-affinity.yaml` files in
 - **`indicative_columns`** — key columns that signal domain membership
 - **`rationale`** — natural language explanation of the primary choice
 - **`domain_summary`** — a rollup grouping tables by primary domain (with `table_count`)
+- **`sample_evidence`** — advisory sample coverage metadata; if status is `low`,
+  explicitly review whether schema-only tables could be semantically misleading
 
 **Checkpoint:** Review the affinity reports with the user. Ask:
 - Do the domain assignments make sense?
 - Are there any unexpected matches or missing domains?
+- If `sample_evidence.status` is `low`, should missing samples be captured before
+  domain modeling, or is schema-only analysis acceptable for those tables?
 - Should any domains be re-run with different parameters?
 
 → Proceed to **Phase 5**.

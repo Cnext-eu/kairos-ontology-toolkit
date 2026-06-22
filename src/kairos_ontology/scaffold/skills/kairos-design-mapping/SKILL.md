@@ -9,6 +9,25 @@ description: >
 
 # Source-to-Domain Mapping Skill
 
+## Design fleet mode (DD-088)
+
+Default is interactive: ask the user to confirm every table→entity and
+column→property mapping, confidence level, transform, and coverage checkpoint. If
+the user explicitly requests design fleet mode, make those checkpoint decisions
+with AI judgment for testing speed, but mark them as **AI-approved** rather than
+user-confirmed. Record rationale, confidence, examples/transform warnings, and
+evidence references in `phases/mapping/<source>-to-<domain>.md`; stop for
+low-confidence mappings, lossy transforms, PII/proprietary risk, or unmapped
+business-critical columns.
+
+## Offline sample audit feedback (DD-089)
+
+After dbt/silver projection, `kairos-ontology audit-silver-samples` can review
+the generated dbt SQL against source samples and mappings without a warehouse.
+Use its findings as mapping feedback: missing mapped samples, transform/type
+risks, cross-source sample-shape mismatches, and target aliases missing from SQL
+should be corrected here before dataplatform handoff.
+
 ## Lifecycle state (DD-080)
 
 > The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of

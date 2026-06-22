@@ -135,6 +135,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-085](#dd-085-okf-phase-logs-replace-interactive-sessions-design-logs) | OKF phase logs replace interactive `.sessions-design` logs | Accepted | 2026-06-20 |
 | [DD-086](#dd-086-reporting-informed-draft-model-planning-report) | Reporting-informed draft-model planning report | Accepted | 2026-06-21 |
 | [DD-087](#dd-087-data-product-vertical-slice-planning-reports) | Data-product vertical-slice planning reports | Accepted | 2026-06-21 |
+| [DD-088](#dd-088-opt-in-design-fleet-mode) | Opt-in design fleet mode | Accepted | 2026-06-22 |
+| [DD-089](#dd-089-offline-silver-sample-audit) | Offline silver sample audit | Accepted | 2026-06-22 |
 
 ---
 
@@ -5191,6 +5193,95 @@ of creating a separate semantic-model grouping mechanism.
 - Mapping, silver, and gold skills may consume product plans as scoped agendas,
   but still require explicit confirmation before writing TTL.
 - Projectors and validators ignore data-product planning artifacts.
+
+---
+
+## DD-088: Opt-in design fleet mode
+
+**Status:** Accepted
+**Date:** 2026-06-22
+**Affects:** Copilot instructions, interactive design skills, scaffold managed files
+**Implementation:** `.github/copilot-instructions.md`,
+`.github/skills/kairos-design-*/SKILL.md`, scaffold copies
+
+### Context
+
+Kairos design skills were originally interactive-only. This protected stakeholder
+confirmation gates for discovery terms, source vocabulary descriptions, domain
+modeling, mappings, silver annotations, and gold semantic-model choices. However,
+testing a complete lifecycle can be slow when every checkpoint must wait for a
+human even when the user explicitly wants AI to make decisions for a test run.
+
+### Decision
+
+Replace the absolute design-skill autopilot ban with an opt-in **design fleet
+mode**. Interactive mode remains the default. Fleet mode is allowed only when the
+user explicitly requests fleet/autopilot/AI-approved design decisions for the
+current task.
+
+In fleet mode, the design skills may let AI approve normal checkpoint decisions,
+but they must still execute the same phases, evidence gates, validations, and
+skill routing as interactive mode. Each AI-made decision must be recorded as
+AI-approved with rationale, confidence, and evidence references in the relevant
+phase log or review output.
+
+### Rationale
+
+This preserves the quality model while enabling faster lifecycle testing. The
+speedup comes from replacing repeated human confirmations with traceable AI
+decisions, not from skipping evidence, validation, or review artifacts.
+
+### Consequences
+
+- Interactive remains the normal governance mode for stakeholder-facing design.
+- Fleet mode decisions are explicitly marked AI-approved, not user-confirmed.
+- Skills must still stop for ambiguity, low confidence, policy-sensitive choices,
+  destructive or irreversible actions, and proprietary/PII risk.
+- Existing validation and scaffold sync tests guard the instruction copies.
+
+---
+
+## DD-089: Offline silver sample audit
+
+**Status:** Accepted
+**Date:** 2026-06-22
+**Affects:** `src/kairos_ontology/silver_sample_audit.py`, `cli/main.py`,
+dbt/silver projection QA, design and packaging skills
+**Implementation:** `kairos-ontology audit-silver-samples`
+
+### Context
+
+Generated dbt silver models can be parsed offline, but parse/compile does not
+prove that mappings and transforms preserve source semantics. Full validation
+against actual bronze data belongs in the downstream dataplatform, but waiting
+until then delays feedback on obvious mapping risks such as missing samples,
+incompatible casts, cross-source format mismatches, or SQL artifacts that do not
+trace back to mapped properties.
+
+### Decision
+
+Introduce an offline advisory **silver sample audit**. The command reads source
+vocabulary samples, SKOS mappings, and generated dbt SQL from the ontology hub.
+It emits structured YAML and Markdown findings without requiring dbt profiles,
+warehouse credentials, network access, or real bronze tables.
+
+The audit is non-blocking by default. It may be made blocking in CI with
+`--fail-on warning|error`, but its findings remain advisory because source
+samples are not equivalent to full production data.
+
+### Rationale
+
+This creates a low-cost pre-handoff QA layer. It improves hub-side feedback while
+preserving the dataplatform as the authority for executed dbt runs, data tests,
+row counts, referential integrity, and production distributions.
+
+### Consequences
+
+- Projection users can run `kairos-ontology audit-silver-samples` after dbt
+  projection and before releasing/consuming the package.
+- Findings are scoped to available sample values and generated artifacts.
+- Dataplatform validation remains required for actual bronze data correctness and
+  SQL engine behavior.
 
 ---
 

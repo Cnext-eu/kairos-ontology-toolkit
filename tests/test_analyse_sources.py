@@ -12,6 +12,7 @@ from kairos_ontology.analyse_sources import (
     parse_source_vocabulary,
     parse_reference_model,
     find_specializations,
+    analyse_sample_evidence,
     analyse_table_single_call,
     analyse_source_system,
     write_analysis_output,
@@ -36,6 +37,7 @@ from kairos_ontology.analyse_sources import (
     _domain_display_name,
     SourceAnalysis,
     TableAssignment,
+    SampleEvidence,
     FALLBACK_DOMAIN_IDS,
 )
 from kairos_ontology.coverage_report import (
@@ -158,6 +160,43 @@ ref-party:lastName a owl:DatatypeProperty ;
     rdfs:label "Last name" ;
     rdfs:domain ref-party:Person ;
     rdfs:range xsd:string .
+"""
+
+LOW_SAMPLE_COVERAGE_VOCAB_TTL = """\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix testapp: <https://kairos.cnext.eu/source/testapp#> .
+
+testapp:testapp a kairos-bronze:SourceSystem ;
+    rdfs:label "testapp" .
+
+testapp:Sampled a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "Sampled" ;
+    kairos-bronze:belongsToSystem testapp:testapp .
+
+testapp:Sampled_Name a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "Name" ;
+    kairos-bronze:dataType "varchar(200)" ;
+    kairos-bronze:sampleValues "Acme | Globex" ;
+    kairos-bronze:belongsToTable testapp:Sampled .
+
+testapp:UnsampledOne a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "UnsampledOne" ;
+    kairos-bronze:belongsToSystem testapp:testapp .
+
+testapp:UnsampledOne_Code a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "Code" ;
+    kairos-bronze:dataType "varchar(50)" ;
+    kairos-bronze:belongsToTable testapp:UnsampledOne .
+
+testapp:UnsampledTwo a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "UnsampledTwo" ;
+    kairos-bronze:belongsToSystem testapp:testapp .
+
+testapp:UnsampledTwo_Ref a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "Ref" ;
+    kairos-bronze:dataType "varchar(50)" ;
+    kairos-bronze:belongsToTable testapp:UnsampledTwo .
 """
 
 SAMPLE_ONTOLOGY_TTL = """\
@@ -417,6 +456,105 @@ class TestLoadDataDomains:
         )
         tables = parse_source_vocabulary(vocab_file)
         assert tables == {}
+
+
+# ---------------------------------------------------------------------------
+# Tests: sample evidence coverage
+# ---------------------------------------------------------------------------
+
+
+class TestSampleEvidence:
+    """Warnings and metadata for low sample-data coverage."""
+
+    def test_analyse_sample_evidence_warns_below_half(self):
+        evidence = analyse_sample_evidence({
+            "Sampled": [{"name": "Name", "samples": ["Acme"]}],
+            "UnsampledOne": [{"name": "Code", "samples": []}],
+            "UnsampledTwo": [{"name": "Ref", "samples": []}],
+        })
+
+        assert evidence.analysed_tables == 3
+        assert evidence.sampled_tables == 1
+        assert evidence.coverage_ratio == 0.3333
+        assert evidence.warning is True
+        assert evidence.missing_sample_tables == ["UnsampledOne", "UnsampledTwo"]
+
+    def test_analyse_sample_evidence_allows_half_or_more(self):
+        evidence = analyse_sample_evidence({
+            "Sampled": [{"name": "Name", "samples": ["Acme"]}],
+            "Unsampled": [{"name": "Code", "samples": []}],
+        })
+
+        assert evidence.coverage_ratio == 0.5
+        assert evidence.warning is False
+
+    def test_analyse_source_system_reports_low_sample_warning(self, tmp_path, monkeypatch):
+        vocab_file = tmp_path / "testapp.vocabulary.ttl"
+        vocab_file.write_text(LOW_SAMPLE_COVERAGE_VOCAB_TTL, encoding="utf-8")
+        ref_file = tmp_path / "party.ttl"
+        ref_file.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+        ref_domains = [parse_reference_model(ref_file)]
+
+        client = MagicMock()
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = json.dumps({
+            "domain": "Party",
+            "confidence": 0.8,
+            "likely_entity": "Party",
+            "rationale": "Party-like table",
+            "indicative_columns": ["Name"],
+        })
+        client.chat.completions.create.return_value = response
+        monkeypatch.setattr(
+            "kairos_ontology.analyse_sources._get_openai_client", lambda: client
+        )
+        messages: list[str] = []
+
+        analysis = analyse_source_system(
+            vocab_file,
+            ref_domains,
+            max_workers=1,
+            report=lambda message, level="info": messages.append(message),
+        )
+
+        assert analysis.sample_evidence is not None
+        assert analysis.sample_evidence.warning is True
+        warning = next(message for message in messages if "Sample data coverage is low" in message)
+        assert "1/3 analysed table(s)" in warning
+        assert "Missing samples: UnsampledOne, UnsampledTwo" in warning
+
+    def test_write_analysis_output_includes_sample_evidence(self, tmp_path):
+        import yaml as _yaml
+
+        analysis = SourceAnalysis(
+            system="testapp",
+            analysed_at="2026-01-01T00:00:00Z",
+            model_used="gpt-5.4-mini",
+            table_assignments=[
+                TableAssignment(table="Sampled", total_columns=1, domain="Party"),
+            ],
+            sample_evidence=SampleEvidence(
+                analysed_tables=3,
+                sampled_tables=1,
+                coverage_ratio=0.3333,
+                warning=True,
+                missing_sample_tables=["UnsampledOne", "UnsampledTwo"],
+            ),
+        )
+
+        out = write_analysis_output(analysis, tmp_path)
+        data = _yaml.safe_load(out.read_text(encoding="utf-8"))
+
+        assert data["sample_evidence"] == {
+            "analysed_tables": 3,
+            "sampled_tables": 1,
+            "coverage_ratio": 0.3333,
+            "threshold": 0.5,
+            "status": "low",
+            "warning": True,
+            "missing_sample_tables": ["UnsampledOne", "UnsampledTwo"],
+        }
 
 
 # ---------------------------------------------------------------------------
