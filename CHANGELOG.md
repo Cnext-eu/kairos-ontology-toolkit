@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Power BI projection claim-sync gating now validates `silverInclude` against the
   exact domain silver extension while still passing gold extensions to the
   Power BI projector.
+- Power BI gold projection now emits Fabric semantic-model wrapper files and
+  parser-ready TMDL directly, so generated SemanticModel folders no longer need
+  downstream sanitation before deployment.
+- Per-domain Power BI SemanticModel output now omits cross-domain relationships
+  to tables that are absent from the local model, avoiding invalid TMDL while a
+  future master SemanticModel covers cross-domain reporting.
 
 ## [4.4.0rc14] — 2026-06-22
 
