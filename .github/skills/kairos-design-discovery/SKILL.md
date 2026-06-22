@@ -10,6 +10,16 @@ description: >
 
 # Business Discovery Skill
 
+## Design fleet mode (DD-088)
+
+Default is interactive: ask the user to confirm company facts, inferred business
+terms, and glossary entries. If the user explicitly requests design fleet mode,
+make those checkpoint decisions with AI judgment for testing speed, but mark them
+as **AI-approved** rather than user-confirmed. Record rationale, confidence, and
+source evidence in `phases/discovery.md`; stop for low-confidence company facts,
+conflicting evidence, proprietary/PII risk, or terms that could materially affect
+later domain/mapping design.
+
 ## Lifecycle state (DD-080)
 
 > The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of

@@ -49,6 +49,10 @@ MAX_SECONDARY_DOMAINS = 2
 # ``unclassified``.
 FALLBACK_DOMAIN_IDS = ["mdm", "reference-data"]
 
+# Sample evidence is advisory: source analysis may continue without samples, but
+# low coverage should be visible because values often disambiguate weak schemas.
+LOW_SAMPLE_COVERAGE_THRESHOLD = 0.5
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -76,12 +80,25 @@ class TableAssignment:
 
 
 @dataclass
+class SampleEvidence:
+    """Source-level sample data coverage for an analysis run."""
+
+    analysed_tables: int
+    sampled_tables: int
+    coverage_ratio: float
+    threshold: float = LOW_SAMPLE_COVERAGE_THRESHOLD
+    warning: bool = False
+    missing_sample_tables: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SourceAnalysis:
     """Complete analysis result for one source system."""
     system: str
     analysed_at: str
     model_used: str
     table_assignments: list[TableAssignment] = field(default_factory=list)
+    sample_evidence: SampleEvidence | None = None
 
 
 def _filter_analysis_by_domain(
@@ -105,6 +122,7 @@ def _filter_analysis_by_domain(
         analysed_at=analysis.analysed_at,
         model_used=analysis.model_used,
         table_assignments=kept,
+        sample_evidence=analysis.sample_evidence,
     )
 
 
@@ -151,6 +169,32 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
         tables[tbl_name] = columns
 
     return tables
+
+
+def analyse_sample_evidence(
+    tables: dict[str, list[dict[str, Any]]],
+    *,
+    threshold: float = LOW_SAMPLE_COVERAGE_THRESHOLD,
+) -> SampleEvidence:
+    """Compute table-level sample coverage for source-analysis evidence."""
+    analysed = {name: cols for name, cols in tables.items() if cols}
+    analysed_count = len(analysed)
+    sampled_tables = [
+        name for name, columns in analysed.items()
+        if any(col.get("samples") for col in columns)
+    ]
+    sampled_count = len(sampled_tables)
+    coverage = round(sampled_count / analysed_count, 4) if analysed_count else 1.0
+    sampled_set = set(sampled_tables)
+    missing = sorted(name for name in analysed if name not in sampled_set)
+    return SampleEvidence(
+        analysed_tables=analysed_count,
+        sampled_tables=sampled_count,
+        coverage_ratio=coverage,
+        threshold=threshold,
+        warning=analysed_count > 0 and coverage < threshold,
+        missing_sample_tables=missing,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1049,6 +1093,20 @@ def analyse_source_system(
             analysed_at=datetime.now(timezone.utc).isoformat(),
             model_used=model,
         )
+    sample_evidence = analyse_sample_evidence(tables)
+    if sample_evidence.warning:
+        missing = ", ".join(sample_evidence.missing_sample_tables[:8])
+        if len(sample_evidence.missing_sample_tables) > 8:
+            missing += f", +{len(sample_evidence.missing_sample_tables) - 8} more"
+        report(
+            "  ⚠ Sample data coverage is low for "
+            f"{sys_name}: {sample_evidence.sampled_tables}/"
+            f"{sample_evidence.analysed_tables} analysed table(s) have sample values "
+            f"({sample_evidence.coverage_ratio:.0%}; threshold "
+            f"{sample_evidence.threshold:.0%}). Source analysis will continue, "
+            "but schema-only tables may be semantically ambiguous; review sample "
+            f"availability before modeling. Missing samples: {missing or '(none)'}."
+        )
 
     client = _get_openai_client()
     candidates = _build_candidates(ref_domains)
@@ -1139,6 +1197,7 @@ def analyse_source_system(
         analysed_at=datetime.now(timezone.utc).isoformat(),
         model_used=model,
         table_assignments=assignments,
+        sample_evidence=sample_evidence,
     )
 
 
@@ -1165,6 +1224,17 @@ def write_analysis_output(analysis: SourceAnalysis, output_dir: Path) -> Path:
         "schema_version": 2,
         "tables": [],
     }
+    if analysis.sample_evidence is not None:
+        se = analysis.sample_evidence
+        data["sample_evidence"] = {
+            "analysed_tables": se.analysed_tables,
+            "sampled_tables": se.sampled_tables,
+            "coverage_ratio": se.coverage_ratio,
+            "threshold": se.threshold,
+            "status": "low" if se.warning else "ok",
+            "warning": se.warning,
+            "missing_sample_tables": se.missing_sample_tables,
+        }
 
     summary: dict[str, dict[str, Any]] = {}
     for ta in analysis.table_assignments:

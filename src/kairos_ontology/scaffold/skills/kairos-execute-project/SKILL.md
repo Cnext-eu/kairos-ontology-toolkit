@@ -280,6 +280,21 @@ mapping issue, regenerate the dbt projection, and rerun validation. If compile
 fails because credentials, driver, warehouse, or network access are missing,
 report that as an environment/profile issue rather than a generated-model defect.
 
+### Offline silver sample audit after dbt projection
+
+After `dbt parse`/`compile` validation, run the advisory offline sample audit to
+check mapping quality without a warehouse connection:
+
+```bash
+kairos-ontology audit-silver-samples
+```
+
+This reads source vocabulary samples, SKOS mappings, silver annotations, and the
+generated dbt SQL. It catches missing sample evidence, transform/type risks,
+cross-source sample-shape mismatches, and generated SQL traceability issues. It
+does **not** replace dataplatform dbt runs against real bronze data; treat it as
+pre-handoff QA.
+
 ### Prerequisites for each medallion target
 
 | Target | Required files | Skill for guidance |

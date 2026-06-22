@@ -8,6 +8,16 @@ description: >
 
 # Kairos Medallion Gold Skill
 
+## Design fleet mode (DD-088)
+
+Default is interactive: ask the user to confirm fact/dimension choices, measures,
+hierarchies, RLS, star-schema design, and semantic-model review checkpoints. If
+the user explicitly requests design fleet mode, make those checkpoint decisions
+with AI judgment for testing speed, but mark them as **AI-approved** rather than
+user-confirmed. Record rationale, confidence, silver/source evidence, and BI
+impact in `phases/gold/<model>.md`; stop for ambiguous metric definitions,
+security/RLS risk, PII/proprietary exposure, or low-confidence business logic.
+
 ## Lifecycle state (DD-080)
 
 > The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of

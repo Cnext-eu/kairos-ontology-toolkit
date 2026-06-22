@@ -9,6 +9,24 @@ description: >
 
 # Kairos Medallion Silver Skill
 
+## Design fleet mode (DD-088)
+
+Default is interactive: ask the user to confirm SCD type, natural key, foreign
+key, schema, inheritance, and passthrough annotation choices. If the user
+explicitly requests design fleet mode, make those checkpoint decisions with AI
+judgment for testing speed, but mark them as **AI-approved** rather than
+user-confirmed. Record rationale, confidence, mapping/source evidence, and
+projection implications in `phases/silver/<domain>.md`; stop for low-confidence
+keys/FKs, destructive history choices, PII/proprietary risk, or annotations that
+could break downstream joins.
+
+## Offline sample audit feedback (DD-089)
+
+After dbt/silver projection, `kairos-ontology audit-silver-samples` provides
+offline advisory QA for silver design choices. Review findings about missing
+natural-key samples, FK-vs-target key shape mismatches, transform/type risks, and
+generated SQL traceability before handing the package to the dataplatform.
+
 ## Lifecycle state (DD-080)
 
 > The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of

@@ -18,6 +18,13 @@ You help users set up and manage the integration between an **ontology-hub** rep
    at the start of the session. If it reports outdated files, run
    `python -m kairos_ontology update` and commit the refresh before doing any other work.
 
+1. **Hub-side offline QA check** — ask whether the producer hub ran
+   `kairos-ontology audit-silver-samples` after dbt projection. This advisory
+   audit validates source samples, mappings, transforms, and generated dbt SQL
+   before the dataplatform runs against real bronze data. Treat unresolved
+   warnings as hub pre-handoff issues; treat actual dbt run/data-test failures as
+   dataplatform validation findings.
+
 ## Key Principle: Ontology-Hub is the Producer
 
 ```

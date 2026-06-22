@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0rc14] — 2026-06-22
+
+### Added
+- `analyse-sources` now reports advisory sample-data coverage in affinity YAML and
+  warns non-blockingly when fewer than half of a source system's analysed tables
+  have sample values, because schema-only analysis can be semantically ambiguous.
+- Design skills now support explicit opt-in **design fleet mode** for test runs,
+  where AI can make checkpoint decisions while preserving evidence, validation,
+  and traceable AI-approved decision logs.
+- Added `audit-silver-samples`, an offline advisory QA command that checks
+  generated dbt silver mappings against source sample values without a warehouse
+  connection.
+
 ## [4.4.0rc13] — 2026-06-21
 
 ### Added

@@ -1730,6 +1730,71 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         raise SystemExit(1)
 
 
+@cli.command(name='audit-silver-samples')
+@click.option('--sources', type=click.Path(exists=True), default=None,
+              help='Path to integration/sources/ directory (default: auto-detect).')
+@click.option('--mappings', type=click.Path(exists=True), default=None,
+              help='Path to model/mappings/ directory (default: auto-detect).')
+@click.option('--dbt-output', type=click.Path(exists=True), default=None,
+              help='Path to generated dbt output directory (default: output/medallion/dbt).')
+@click.option('--output', '-o', type=click.Path(), default=None,
+              help='Report output directory (default: output/reports/silver-sample-audit).')
+@click.option('--fail-on', type=click.Choice(['none', 'warning', 'error']), default='none',
+              help='Exit non-zero when findings at this severity exist (default: none).')
+def audit_silver_samples_cmd(sources, mappings, dbt_output, output, fail_on):
+    """Offline advisory audit of generated silver dbt mappings using source samples.
+
+    This command reads source vocabularies, SKOS mappings, and generated dbt SQL
+    only. It does not require a dbt profile, warehouse credentials, or live bronze
+    data. Findings are advisory by default.
+    """
+    from ..hub_utils import find_hub_root
+    from ..silver_sample_audit import run_silver_sample_audit
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    base = hub_root or cwd
+
+    sources_path = Path(sources) if sources else base / "integration" / "sources"
+    mappings_path = Path(mappings) if mappings else base / "model" / "mappings"
+    dbt_output_path = Path(dbt_output) if dbt_output else base / "output" / "medallion" / "dbt"
+    output_path = Path(output) if output else base / "output" / "reports" / "silver-sample-audit"
+
+    click.echo("🔎 Running offline silver sample audit")
+    click.echo(f"   Sources:    {sources_path}")
+    click.echo(f"   Mappings:   {mappings_path}")
+    click.echo(f"   dbt output: {dbt_output_path}")
+    click.echo(f"   Report:     {output_path}")
+    click.echo()
+
+    report = run_silver_sample_audit(
+        sources_dir=sources_path,
+        mappings_dir=mappings_path,
+        dbt_output_dir=dbt_output_path,
+        output_dir=output_path,
+    )
+
+    counts = report.counts
+    click.echo(
+        f"✅ Audit complete: {report.mapped_columns} mapped column(s), "
+        f"{report.sampled_mapped_columns} with samples "
+        f"({report.sample_coverage_ratio:.0%} coverage)"
+    )
+    click.echo(
+        f"   Findings: {counts['error']} error(s), "
+        f"{counts['warning']} warning(s), {counts['info']} info"
+    )
+    click.echo(f"   📄 {output_path / 'silver-sample-audit.yaml'}")
+    click.echo(f"   📄 {output_path / 'silver-sample-audit.md'}")
+
+    should_fail = (
+        (fail_on == 'error' and counts['error'] > 0)
+        or (fail_on == 'warning' and (counts['error'] > 0 or counts['warning'] > 0))
+    )
+    if should_fail:
+        raise SystemExit(1)
+
+
 @cli.command(name='propose-alignment')
 @click.option('--analysis', type=click.Path(exists=True), default=None,
               help='Path to _analysis/ directory with affinity reports (default: auto-detect).')
