@@ -111,6 +111,7 @@ company facts or glossary terms.
 | Public web research | web search / fetch | Mark findings `[INFERRED — public web]` until confirmed |
 | Hub README | `ontology-hub/README.md` | Company name + domain context |
 | **Reference-model inventories** | **`ontology-hub/referencemodels-unpacked/*.yaml`** | **Materialized in Phase 1a — read-only view of the *full* domain breadth used to link glossary terms** |
+| **Business archetypes (contract v0.2)** | **`<refmodels-root>/blueprints/archetypes/<id>.yaml`** (+ `_schema/outcome-codes.yaml`, `accelerator-packs/*/discovery/<id>.md`) | **Machine catalog of core concepts + tiers per archetype; drives Phase 2.5. Root resolved via `--refmodels-root` → `KAIROS_REFMODELS_ROOT` → fallback** |
 | User statements | conversation | Highest-confidence input |
 
 > **Location note:** `.import/` lives at the **repository root** (alongside
@@ -342,6 +343,114 @@ glossary:TransportDocument a skos:Concept ;
    `businessdiscovery/glossary-template.ttl` (installed by the scaffold) shows a
    worked example of the same shape.
 
+### Phase 2.5 — Core Concepts Conformance (archetype contract v0.2)
+
+> **What this phase answers:** *Which industry-standard concepts MUST exist for this
+> kind of business, and does the company actually conform to them?* This is the gap
+> that otherwise surfaces mid-modeling as ad-hoc reference-model debates and
+> undocumented deviations. It runs **after** the business model + glossary are
+> captured (Phase 2) and **before** handoff (Phase 3), producing a machine artifact
+> that **kairos-design-domain** consumes when selecting reference models.
+
+> **Contract source.** Reference-models **v1.11.0+** ships the *archetype + discovery
+> contract (v0.2)*: a machine catalog per archetype
+> (`blueprints/archetypes/<id>.yaml`: ref-model modules + core concepts + tiers), a
+> shared outcome enum (`blueprints/archetypes/_schema/outcome-codes.yaml`), and SME
+> interview prose (`accelerator-packs/<pack>/discovery/<id>.md`, paired by filename
+> stem). The toolkit loads, validates, derives topology, and persists; this skill
+> drives the interview.
+
+> **Mode (DD-088).** Interactive by default — present each concept's proposed outcome
+> and **wait for user confirmation**. In **design fleet mode** only, the AI may
+> pre-fill per-concept outcome *proposals* from the glossary + business model, but
+> they remain AI-inferred (logged with rationale/confidence) until confirmed.
+
+> **Single archetype per session.** Pick exactly one archetype. A company spanning two
+> archetypes runs a second discovery session (contract composability rule).
+
+**Outcome codes** (loaded from the ref-models `outcome-codes.yaml` — codes are
+authoritative there, the prose lives here):
+
+| Code | Meaning |
+|------|---------|
+| `conforms` | The concept exists in the business exactly as the standard defines it. |
+| `conforms-with-rename` | The concept exists but the business calls it something else (capture the alt-label in the glossary). |
+| `partial` | The concept partly applies — some attributes/relationships are missing or differ. |
+| `deviates` | The business does something materially different from the standard (capture the deviation reason). |
+| `not-applicable` | The concept does not apply to this business at all (capture why). |
+
+**Steps:**
+
+0. **Locate the reference-models root.** Resolution precedence: explicit
+   `--refmodels-root` → `KAIROS_REFMODELS_ROOT` env var → the existing
+   `_resolve_ref_models_dir()` fallback chain. The root is normalized (accepts the
+   repo root *or* its `ontology-reference-models/` child) and validated by presence of
+   `catalog-v001.xml` + `blueprints/archetypes/`. If it can't be found, stop with an
+   actionable message (set the env var or unpack the reference models).
+
+1. **Pick a single archetype.** List the available archetypes and let the user choose
+   the one that matches the business:
+
+   ```bash
+   kairos-ontology discovery-conformance list-archetypes
+   ```
+
+2. **Load the archetype + auto-derive topology.** This emits the catalog (modules +
+   core concepts + tiers), the derived relationship topology (domain/range edges +
+   declared cardinality), and the paired discovery-doc path as **clean JSON/YAML on
+   stdout** (all progress/diagnostics go to stderr):
+
+   ```bash
+   kairos-ontology discovery-conformance load --archetype <id> --format json
+   ```
+
+   - **Counts are dynamic** — read the concept/module counts from the loaded archetype;
+    never hardcode them (e.g. `shipping-carrier` currently has 186 concepts / 27
+    modules).
+   - A **version-drift warning** may appear if the archetype's `compatible_with`
+    range doesn't match the resolved ref-models `VERSION` or per-module
+    `owl:versionInfo`. It's a warning, not a blocker.
+   - If a core-concept URI can't be resolved in the modules, it's **warned and
+    skipped** — continue with the rest.
+
+3. **Run the conformance interview — keep it light.** Drive it from the discovery-doc
+   prose, grouped by business area, **tier-gated**:
+   - **`required` concepts first** — confirm an outcome code for each.
+   - **`recommended` / `optional`** — batch or skip; don't belabor them.
+   - **Topology is a yes/no checklist**, not open questions — the standard relationships
+    are auto-derived; just confirm each holds. Concepts with `minCardinality >= 1`
+    are already ontology-declared mandatory — don't re-ask; only genuinely-undeclared
+    1-vs-many cardinality gets a fresh question.
+
+4. **Structural / lifecycle questions.** Ask the small number of genuinely-undeclared
+   questions the discovery doc flags (lifecycle states, the undeclared cardinalities
+   from step 3).
+
+5. **Coverage scorecard.** Summarize counts per outcome and per tier (conforms /
+   rename / partial / deviates / N-A), so the user sees how well the business fits the
+   archetype before handoff.
+
+6. **Persist (dual persistence — DD-080).**
+   - **Machine artifact** → `integration/discovery/core-concepts-conformance.yaml`
+    (validated, hashed for stale-detection, carries the resolved `ref_model_modules`
+    so design-domain can pre-seed imports). Write/validate via:
+
+    ```bash
+    kairos-ontology discovery-conformance validate --file \
+      integration/discovery/core-concepts-conformance.yaml
+    ```
+
+   - **OKF phase log** → append a **Core Concepts Conformance** section to
+    `.kairos-state/phases/discovery.md` recording the chosen archetype, the outcome
+    decisions, deviations/renames, and any **open questions** (resume anchor). Do not
+    write `status.md` — kairos-flow folds the deterministic status in.
+
+> **Handoff effect.** `kairos-design-domain` reads
+> `integration/discovery/core-concepts-conformance.yaml` during reference-model
+> selection: it pre-seeds the imports from the persisted `ref_model_modules`,
+> pre-justifies known deviations/renames, and surfaces `not-applicable` exclusions.
+> Consumption is **warn-only** in v1 (missing or stale artifact warns, never blocks).
+
 ### Phase 3 — Persist & handoff
 
 1. Update the session file: confirmed context, glossary entries, open questions,
@@ -350,6 +459,7 @@ glossary:TransportDocument a skos:Concept ;
    > "Business discovery is captured.
    > - Company context → `.kairos-state/phases/discovery.md`
    > - Glossary → `businessdiscovery/{company}-glossary.ttl`
+   > - Core-concepts conformance → `integration/discovery/core-concepts-conformance.yaml`
    > - Per-document provenance → `businessdiscovery/_extractions/*.extraction.yaml`
    >   (run `kairos-ontology discovery-status` any time to see what's new/changed)
    >

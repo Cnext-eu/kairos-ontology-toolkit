@@ -563,6 +563,38 @@ At the **very start** of any modeling session, ask:
 - If the user says **no reference model** is needed, skip to the standard
   modeling workflow (class design, property design, etc.).
 
+### Step 0-conformance — Read the discovery conformance artifact (warn-only)
+
+> **Source:** `kairos-design-discovery` Phase 2.5 persists a machine artifact at
+> `integration/discovery/core-concepts-conformance.yaml` describing which archetype
+> core concepts the business conforms to, renames, partially supports, deviates from,
+> or marks not-applicable — plus the resolved `ref_model_modules` for the chosen
+> archetype. Read it **before** reference-model selection to pre-seed and pre-justify
+> your choices.
+
+1. **Check for the artifact.** If
+   `integration/discovery/core-concepts-conformance.yaml` exists, validate it:
+
+   ```bash
+   kairos-ontology discovery-conformance validate \
+     --file integration/discovery/core-concepts-conformance.yaml
+   ```
+
+2. **Pre-seed reference-model imports.** Use the persisted `ref_model_modules`
+   (iri + tier + resolved path/version) as the **starting set** of `owl:imports`
+   for this domain — you don't have to rediscover them.
+
+3. **Pre-justify deviations / renames.** Concepts marked `conforms-with-rename`
+   pre-fill Checkpoint 1 naming-alignment alt-labels; `deviates` / `partial`
+   concepts carry their captured reason into the modeling rationale; `not-applicable`
+   concepts are surfaced as **exclusions** (don't import/model them without new
+   evidence).
+
+4. **Warn-only (v1).** If the artifact is **missing** or **stale** — stale =
+   the persisted `concept_set_hash` no longer matches the current archetype catalog —
+   **warn and continue**; do not block. Recommend rerunning `kairos-design-discovery`
+   Phase 2.5 to refresh it. (A blocking gate is deferred to a future DD.)
+
 ### Step 0a — Source Domain Analysis (MANDATORY prerequisite)
 
 > **BLOCKING GATE:** Before proceeding to modeling, verify that source systems
