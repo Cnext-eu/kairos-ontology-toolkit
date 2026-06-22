@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0rc16] — 2026-06-22
+
+### Added
+- **Core Concepts Conformance** (archetype + discovery contract v0.2, ref-models
+  v1.11.0): new `discovery-conformance` CLI command group (`list-archetypes`,
+  `load`, `validate`) and supporting modules `archetype_loader.py`,
+  `archetype_topology.py`, `conformance_artifact.py`. Loads a business archetype's
+  machine catalog (modules + core concepts + tiers), validates it against the
+  shipped JSON Schema, derives relationship topology by parsing each
+  `ref_model_modules[].iri` directly, and persists a validated
+  `integration/discovery/core-concepts-conformance.yaml` artifact.
+- `kairos-design-discovery` gains a **Phase 2.5 — Core Concepts Conformance**
+  interview (interactive by default; fleet pre-fill); `kairos-design-domain` now
+  reads the conformance artifact during reference-model selection (warn-only).
+- New scaffold dir `ontology-hub/integration/discovery/` created by `init` /
+  `new-repo`. New `KAIROS_REFMODELS_ROOT` env var for refmodels-root resolution.
+- New runtime dependency `jsonschema>=4.0.0`. See **DD-090**.
+
 ## [4.4.0rc15] — 2026-06-22
 
 ### Fixed

@@ -2,10 +2,15 @@
 # Copyright 2026 Cnext.eu
 """Test fixtures and configuration."""
 
+import sys
 import pytest
 from pathlib import Path
 import tempfile
 import shutil
+
+# Make sibling helper modules (e.g. archetype_fixtures.py) importable by name even
+# though `tests` is a package.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 # ---------------------------------------------------------------------------

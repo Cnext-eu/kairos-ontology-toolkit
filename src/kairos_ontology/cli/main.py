@@ -83,6 +83,7 @@ _SKILL_COVERED_COMMANDS = {
     "derive-claims": "kairos-design-source",
     "draft-model-report": "kairos-design-domain",
     "decide-claims": "kairos-design-domain",
+    "discovery-conformance": "kairos-design-discovery",
     "init-dataplatform": "kairos-setup-dataplatform",
     "suggest-shapes": "kairos-execute-validate",
 }
@@ -789,6 +790,7 @@ def init(domain, company_domain, force):
         hub / "businessdiscovery",
         hub / "businessdiscovery" / "_extractions",
         hub / "integration" / "sources",
+        hub / "integration" / "discovery",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
@@ -3585,6 +3587,198 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
         click.echo("\n✅ All discovery documents are processed and up to date.")
 
 
+@cli.group(name='discovery-conformance')
+def discovery_conformance():
+    """Core Concepts Conformance helpers for the design-discovery skill (DD-090).
+
+    Deterministic, machine-output helpers that load the archetype + discovery contract
+    from a reference-models checkout (>= v1.11.0), derive relationship topology, and
+    validate the conformance artifact.  The interactive interview itself is driven by the
+    **kairos-design-discovery** skill — these subcommands give it clean JSON/YAML to work
+    from.  All human-readable progress goes to **stderr**; stdout is machine output only.
+    """
+
+
+def _resolve_conformance_root(refmodels_root):
+    """Resolve the reference-models root for conformance commands, exiting on failure."""
+    from ..archetype_loader import ArchetypeError, resolve_refmodels_root
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    try:
+        return resolve_refmodels_root(explicit=refmodels_root, cwd=cwd, hub_root=hub_root)
+    except ArchetypeError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(2) from exc
+
+
+def _emit(payload, output_format):
+    """Write *payload* to stdout as clean JSON or YAML (no diagnostics mixed in)."""
+    if output_format == "yaml":
+        import yaml
+
+        click.echo(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), nl=False)
+    else:
+        click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+
+
+_FORMAT_OPTION = click.option(
+    '--format', 'output_format', type=click.Choice(['json', 'yaml']), default='json',
+    help='Machine-output format on stdout (default: json).')
+_REFMODELS_OPTION = click.option(
+    '--refmodels-root', 'refmodels_root', type=click.Path(), default=None,
+    help='Reference-models checkout (default: $KAIROS_REFMODELS_ROOT or sibling scan).')
+
+
+@discovery_conformance.command(name='list-archetypes')
+@_REFMODELS_OPTION
+@_FORMAT_OPTION
+def conformance_list(refmodels_root, output_format):
+    """List archetype ids available in the reference-models checkout."""
+    from ..archetype_loader import list_archetypes, load_outcome_codes
+
+    root = _resolve_conformance_root(refmodels_root)
+    click.echo(f"🔎 Reference-models root: {root}", err=True)
+    _emit(
+        {
+            "refmodels_root": str(root),
+            "archetypes": list_archetypes(root),
+            "outcome_codes": load_outcome_codes(root),
+        },
+        output_format,
+    )
+
+
+@discovery_conformance.command(name='load')
+@click.option('--archetype', 'archetype_id', required=True, help='Archetype id to load.')
+@_REFMODELS_OPTION
+@_FORMAT_OPTION
+def conformance_load(archetype_id, refmodels_root, output_format):
+    """Load an archetype: emit catalog, derived topology, and discovery-doc path.
+
+    The skill uses this payload to drive the conformance interview. Concept coverage,
+    relationship edges (with declared cardinality), and version-drift warnings are all
+    included; warnings are also echoed to stderr.
+    """
+    from ..archetype_loader import (
+        ArchetypeError,
+        check_version_drift,
+        load_archetype,
+        locate_discovery_doc,
+        _refmodels_version,
+    )
+    from ..archetype_topology import derive_archetype_topology
+
+    root = _resolve_conformance_root(refmodels_root)
+    try:
+        archetype = load_archetype(root, archetype_id)
+    except ArchetypeError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    try:
+        discovery_doc = locate_discovery_doc(root, archetype_id)
+    except ArchetypeError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    topology = derive_archetype_topology(root, archetype)
+    drift = check_version_drift(archetype, root)
+
+    for w in drift + topology.warnings():
+        click.echo(f"⚠ {w}", err=True)
+    if discovery_doc is None:
+        click.echo(
+            f"⚠ No discovery doc paired with '{archetype_id}'; "
+            "the skill will run a generic per-concept flow.",
+            err=True,
+        )
+
+    payload = {
+        "archetype": {
+            "id": archetype.id,
+            "label": archetype.label,
+            "description": archetype.description,
+            "source": archetype.source_path.name,
+            "catalog_hash": archetype.catalog_hash,
+            "concept_set_hash": archetype.concept_set_hash(),
+            "compatible_with": archetype.compatible_with,
+        },
+        "refmodels_version": _refmodels_version(root),
+        "discovery_doc": str(discovery_doc) if discovery_doc else None,
+        "ref_model_modules": [
+            {"iri": m.iri, "tier": m.tier} for m in archetype.ref_model_modules
+        ],
+        "core_concepts": [
+            {"uri": c.uri, "label": c.label, "tier": c.tier} for c in archetype.core_concepts
+        ],
+        "topology": {
+            "present_concepts": topology.present_concepts,
+            "missing_concepts": topology.missing_concepts,
+            "loaded_modules": topology.loaded_modules,
+            "edges": [
+                {
+                    "property": e.property_uri,
+                    "label": e.property_label,
+                    "domain": e.domain_uri,
+                    "range": e.range_uri,
+                    "min_cardinality": e.min_cardinality,
+                    "max_cardinality": e.max_cardinality,
+                    "exact_cardinality": e.exact_cardinality,
+                    "functional": e.functional,
+                    "cardinality_declared": e.cardinality_declared,
+                    "mandatory": e.mandatory,
+                }
+                for e in topology.edges
+            ],
+        },
+        "warnings": drift + topology.warnings(),
+    }
+    _emit(payload, output_format)
+
+
+@discovery_conformance.command(name='validate')
+@click.option('--file', 'artifact_file', type=click.Path(), default=None,
+              help='Conformance artifact (default: <hub>/integration/discovery/'
+                   'core-concepts-conformance.yaml).')
+@_REFMODELS_OPTION
+def conformance_validate(artifact_file, refmodels_root):
+    """Validate a conformance artifact against the shared outcome-codes enum."""
+    from ..archetype_loader import load_outcome_codes
+    from ..conformance_artifact import (
+        ARTIFACT_RELPATH,
+        ConformanceArtifactError,
+        read_artifact,
+        validate_artifact,
+    )
+    from ..hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    if artifact_file:
+        path = Path(artifact_file)
+    elif hub_root:
+        path = hub_root / ARTIFACT_RELPATH
+    else:
+        path = cwd / ARTIFACT_RELPATH
+
+    root = _resolve_conformance_root(refmodels_root)
+    try:
+        artifact = read_artifact(path)
+    except ConformanceArtifactError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    errors = validate_artifact(artifact, load_outcome_codes(root))
+    if errors:
+        click.echo(f"❌ Conformance artifact invalid ({len(errors)} error(s)):", err=True)
+        for e in errors:
+            click.echo(f"   • {e}", err=True)
+        raise SystemExit(1)
+    click.echo(f"✅ Conformance artifact valid: {path}", err=True)
+
+
 @cli.command(name='status')
 @click.option('--hub', 'hub_path', type=click.Path(), default=None,
               help='Path to the ontology-hub root (default: auto-detect).')
@@ -4114,6 +4308,7 @@ def migrate(check, hub_path):
         hub / "model" / "planning",
         hub / "referencemodels-unpacked",
         hub / "integration" / "sources",
+        hub / "integration" / "discovery",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
     ]
@@ -4357,6 +4552,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "businessdiscovery",
         hub / "businessdiscovery" / "_extractions",
         hub / "integration" / "sources",
+        hub / "integration" / "discovery",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
