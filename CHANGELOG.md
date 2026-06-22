@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0rc15] — 2026-06-22
+
+### Fixed
+- Silver FK metadata now resolves S3 discriminator-folded FK targets to the
+  projected parent table, so DDL comments, ALTER documentation, and ERD lineage no
+  longer point at skipped child tables.
+
 ## [4.4.0rc14] — 2026-06-22
 
 ### Added
