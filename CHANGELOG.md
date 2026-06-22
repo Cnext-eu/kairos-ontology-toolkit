@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `audit-silver-samples` now accepts dbt lineage comments and full target URIs
   when checking mapped-target SQL presence, avoiding false positives for object
   properties rendered as FK columns.
+- Power BI projection claim-sync gating now validates `silverInclude` against the
+  exact domain silver extension while still passing gold extensions to the
+  Power BI projector.
 
 ## [4.4.0rc14] — 2026-06-22
 
