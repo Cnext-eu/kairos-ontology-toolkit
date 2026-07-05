@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0rc17] — 2026-07-05
+
+### Added
+- **Optional DDD governance overlay** (DD-091): a new, additive Domain-Driven
+  Design design layer expressed in `model/extensions/{domain}-ddd-ext.ttl`
+  overlays, driven by the managed `kairos-ddd` vocabulary
+  (`https://kairos.cnext.eu/ddd#`) with typed bounded contexts, reified context
+  relationships, and controlled tactical-pattern individuals.
+  - `kairos-ontology validate --ddd` (also run by `validate --all`) validates
+    overlays through a dedicated path that merges each overlay with its domain
+    ontology + the `kairos-ddd` vocabulary and applies packaged DDD SHACL shapes.
+    Overlays that leak `kairos-ext:silver*`/`gold*` predicates fail.
+  - `kairos-ontology project --target ddd` renders one-way documentation
+    (Mermaid context map + aggregate overview + Markdown report) to
+    `output/architecture/ddd/`. It never changes silver/gold/dbt/Power BI output.
+  - Governance (ownership, approval, disposition, materialization) stays in the
+    claim registry; XMI / Enterprise Architect round-trip is out of scope.
+  - New modules `ddd.py`, `projections/ddd_projector.py`; scaffold assets
+    `kairos-ddd.ttl` and `kairos-ddd-shapes.shacl.ttl`. See **DD-091**.
+
 ## [4.4.0rc16] — 2026-06-22
 
 ### Added

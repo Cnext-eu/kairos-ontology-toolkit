@@ -1,0 +1,43 @@
+@prefix acme-inv:   <https://acme.example/ontology/invoice#> .
+@prefix acme-ddd:   <https://acme.example/ddd/invoice#> .
+@prefix kairos-ddd: <https://kairos.cnext.eu/ddd#> .
+@prefix rdfs:       <http://www.w3.org/2000/01/rdf-schema#> .
+
+# ---------------------------------------------------------------------------
+# DDD overlay for the Invoice domain (DD-091) — architecture documentation only.
+# ---------------------------------------------------------------------------
+
+# Strategic — bounded contexts
+acme-ddd:BillingContext a kairos-ddd:BoundedContext ;
+    rdfs:label "Billing" ;
+    kairos-ddd:publishedLanguage true ;
+    kairos-ddd:designNote "Owns invoicing, line items, and settlement." .
+
+acme-ddd:TaxContext a kairos-ddd:BoundedContext ;
+    rdfs:label "Taxation" ;
+    kairos-ddd:designNote "Computes and applies tax to invoice lines." .
+
+# Context map
+acme-ddd:BillingUsesTax a kairos-ddd:ContextRelationship ;
+    rdfs:label "Billing uses Tax" ;
+    kairos-ddd:sourceContext acme-ddd:BillingContext ;
+    kairos-ddd:targetContext acme-ddd:TaxContext ;
+    kairos-ddd:relationshipPattern kairos-ddd:CustomerSupplier .
+
+# Tactical — aggregate roots, members, value objects
+acme-inv:Invoice
+    kairos-ddd:boundedContext acme-ddd:BillingContext ;
+    kairos-ddd:tacticalPattern kairos-ddd:AggregateRoot ;
+    kairos-ddd:designNote "Invoice aggregate root; owns its lines." .
+
+acme-inv:InvoiceLine
+    kairos-ddd:tacticalPattern kairos-ddd:AggregateMember ;
+    kairos-ddd:aggregateRoot acme-inv:Invoice .
+
+acme-inv:InvoiceLineTax
+    kairos-ddd:boundedContext acme-ddd:TaxContext ;
+    kairos-ddd:tacticalPattern kairos-ddd:AggregateMember ;
+    kairos-ddd:aggregateRoot acme-inv:Invoice .
+
+acme-inv:InvoiceTag
+    kairos-ddd:tacticalPattern kairos-ddd:ValueObject .

@@ -191,7 +191,7 @@ ontology-reference-models/          # Imported industry reference models
 
 ## 4  Available Projections
 
-The toolkit supports 8 projection targets:
+The toolkit supports 9 projection targets:
 
 | Target | Command flag | What it generates | When to use |
 |---|---|---|---|
@@ -203,7 +203,20 @@ The toolkit supports 8 projection targets:
 | `a2ui` | `--target a2ui` | A2UI navigation model | UI integration |
 | `prompt` | `--target prompt` | LLM-optimised ontology descriptions | AI / copilot context |
 | `report` | `--target report` | HTML mapping report with data flow diagrams and coverage dashboards | Documentation / governance |
+| `ddd` | `--target ddd` | Mermaid context maps + aggregate overviews + Markdown architecture report from `*-ddd-ext.ttl` overlays → `output/architecture/ddd/` | DDD architecture documentation |
 | `all` | `--target all` | All of the above | Full regeneration |
+
+> **Optional DDD overlay (DD-091):** DDD design intent — bounded contexts,
+> context maps, aggregate roots, value objects — lives in optional
+> `model/extensions/{domain}-ddd-ext.ttl` overlays using the `kairos-ddd`
+> vocabulary. It is **additive documentation only**: it never changes
+> silver/gold/dbt/Power BI output, and governance (ownership, approval,
+> disposition, materialization) stays in the claim registry. Validate overlays
+> with `kairos-ontology validate --ddd` (also part of `validate --all`) and
+> render docs with `kairos-ontology project --target ddd`. It slots into the
+> lifecycle after `domain/claims`:
+> `discovery → source → domain/claims → optional DDD overlay → mapping → silver → gold → validate → project`.
+
 
 > **Import whitelisting (DD-021):** When a domain ontology uses `owl:imports`
 > to reference external models, imported classes are NOT projected by default.

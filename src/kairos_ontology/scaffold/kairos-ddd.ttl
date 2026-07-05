@@ -1,0 +1,161 @@
+# kairos-ddd: Kairos Domain-Driven Design Overlay Vocabulary
+#
+# Namespace: https://kairos.cnext.eu/ddd#
+# Prefix:    kairos-ddd:
+#
+# This ontology defines the OPTIONAL, ADDITIVE Domain-Driven Design (DDD) design
+# overlay used to document strategic (bounded contexts, context maps) and tactical
+# (aggregate roots, value objects, domain events) design intent alongside a domain
+# ontology. It is architecture-documentation only (DD-091): it never drives
+# silver/gold/dbt/Power BI generation, and it is NOT a governance source —
+# ownership, approval, disposition, materialization, and certification remain in
+# the claim registry.
+#
+# These annotations belong in SEPARATE overlay files named `{domain}-ddd-ext.ttl`
+# under `model/extensions/`. Domain ontologies must remain free of DDD design
+# concerns (R1). Never reuse a local name across the kairos-ext / kairos-bronze /
+# kairos-map / kairos-ddd vocabularies.
+
+@prefix kairos-ddd: <https://kairos.cnext.eu/ddd#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/ddd> a owl:Ontology ;
+    rdfs:label "Kairos DDD Overlay Vocabulary"@en ;
+    rdfs:comment "Typed classes, properties, and controlled individuals for the optional Domain-Driven Design architecture overlay (DD-091). Documentation only — not a governance or projection-control source."@en ;
+    owl:versionInfo "1.0.0" .
+
+# ===========================================================================
+# Classes
+# ===========================================================================
+
+kairos-ddd:BoundedContext a owl:Class ;
+    rdfs:label "Bounded Context"@en ;
+    rdfs:comment "A named DDD bounded context — an explicit boundary within which a domain model and its ubiquitous language are consistent."@en .
+
+kairos-ddd:ContextRelationship a owl:Class ;
+    rdfs:label "Context Relationship"@en ;
+    rdfs:comment "A reified edge on the context map between a source and a target bounded context, carrying a relationship pattern (e.g. shared kernel, customer-supplier)."@en .
+
+kairos-ddd:TacticalPattern a owl:Class ;
+    rdfs:label "Tactical Pattern"@en ;
+    rdfs:comment "Controlled class whose named individuals enumerate the tactical DDD building-block roles a domain class may play (aggregate root, entity, value object, etc.)."@en .
+
+kairos-ddd:ContextRelationshipPattern a owl:Class ;
+    rdfs:label "Context Relationship Pattern"@en ;
+    rdfs:comment "Controlled class whose named individuals enumerate the context-map relationship patterns (shared kernel, customer-supplier, conformist, ACL, etc.)."@en .
+
+# ===========================================================================
+# Properties
+# ===========================================================================
+
+kairos-ddd:boundedContext a owl:AnnotationProperty ;
+    rdfs:label "bounded context"@en ;
+    rdfs:comment "Assigns a semantic element (ontology, class, or property) to a bounded context."@en ;
+    rdfs:range kairos-ddd:BoundedContext .
+
+kairos-ddd:tacticalPattern a owl:AnnotationProperty ;
+    rdfs:label "tactical pattern"@en ;
+    rdfs:comment "Marks a domain class with a tactical DDD role. Value must be one of the kairos-ddd tactical pattern individuals."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range kairos-ddd:TacticalPattern .
+
+kairos-ddd:aggregateRoot a owl:AnnotationProperty ;
+    rdfs:label "aggregate root"@en ;
+    rdfs:comment "Links an aggregate member class to the owl:Class that is its aggregate root."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range owl:Class .
+
+kairos-ddd:publishedLanguage a owl:AnnotationProperty ;
+    rdfs:label "published language"@en ;
+    rdfs:comment "Marks a concept (ontology, class, or bounded context) as intentionally exposed across context boundaries as a published language."@en ;
+    rdfs:range xsd:boolean .
+
+kairos-ddd:designNote a owl:AnnotationProperty ;
+    rdfs:label "design note"@en ;
+    rdfs:comment "Architecture rationale for a semantic element or context, kept separate from the business definition in rdfs:comment."@en ;
+    rdfs:range xsd:string .
+
+kairos-ddd:sourceContext a owl:AnnotationProperty ;
+    rdfs:label "source context"@en ;
+    rdfs:comment "The source bounded context of a context-map relationship."@en ;
+    rdfs:domain kairos-ddd:ContextRelationship ;
+    rdfs:range kairos-ddd:BoundedContext .
+
+kairos-ddd:targetContext a owl:AnnotationProperty ;
+    rdfs:label "target context"@en ;
+    rdfs:comment "The target bounded context of a context-map relationship."@en ;
+    rdfs:domain kairos-ddd:ContextRelationship ;
+    rdfs:range kairos-ddd:BoundedContext .
+
+kairos-ddd:relationshipPattern a owl:AnnotationProperty ;
+    rdfs:label "relationship pattern"@en ;
+    rdfs:comment "The context-map pattern of a relationship (e.g. shared kernel, customer-supplier). Value must be one of the kairos-ddd relationship pattern individuals."@en ;
+    rdfs:domain kairos-ddd:ContextRelationship ;
+    rdfs:range kairos-ddd:ContextRelationshipPattern .
+
+# ===========================================================================
+# Controlled individuals — tactical patterns
+# ===========================================================================
+
+kairos-ddd:AggregateRoot a kairos-ddd:TacticalPattern ;
+    rdfs:label "Aggregate Root"@en ;
+    rdfs:comment "The entry-point entity of an aggregate; guards the aggregate's invariants and is the only member referenced from outside."@en .
+
+kairos-ddd:AggregateMember a kairos-ddd:TacticalPattern ;
+    rdfs:label "Aggregate Member"@en ;
+    rdfs:comment "An entity or value object that belongs to an aggregate and is reached only through its aggregate root."@en .
+
+kairos-ddd:Entity a kairos-ddd:TacticalPattern ;
+    rdfs:label "Entity"@en ;
+    rdfs:comment "An object defined by a thread of identity/continuity rather than by its attributes."@en .
+
+kairos-ddd:ValueObject a kairos-ddd:TacticalPattern ;
+    rdfs:label "Value Object"@en ;
+    rdfs:comment "An immutable object defined entirely by its attributes, with no conceptual identity."@en .
+
+kairos-ddd:DomainService a kairos-ddd:TacticalPattern ;
+    rdfs:label "Domain Service"@en ;
+    rdfs:comment "A stateless domain operation that does not naturally belong to an entity or value object."@en .
+
+kairos-ddd:DomainEvent a kairos-ddd:TacticalPattern ;
+    rdfs:label "Domain Event"@en ;
+    rdfs:comment "Something significant that happened in the domain, modelled as an immutable record of fact."@en .
+
+kairos-ddd:Policy a kairos-ddd:TacticalPattern ;
+    rdfs:label "Policy"@en ;
+    rdfs:comment "A domain rule or reaction (\"when X then Y\") coordinating behaviour within the domain."@en .
+
+# ===========================================================================
+# Controlled individuals — context relationship patterns
+# ===========================================================================
+
+kairos-ddd:SharedKernel a kairos-ddd:ContextRelationshipPattern ;
+    rdfs:label "Shared Kernel"@en ;
+    rdfs:comment "Two contexts share a subset of the model that both agree to keep consistent."@en .
+
+kairos-ddd:CustomerSupplier a kairos-ddd:ContextRelationshipPattern ;
+    rdfs:label "Customer-Supplier"@en ;
+    rdfs:comment "An upstream (supplier) context provides for a downstream (customer) context, which has a say in the supplier's roadmap."@en .
+
+kairos-ddd:Conformist a kairos-ddd:ContextRelationshipPattern ;
+    rdfs:label "Conformist"@en ;
+    rdfs:comment "A downstream context conforms to the upstream model as-is, with no translation."@en .
+
+kairos-ddd:AnticorruptionLayer a kairos-ddd:ContextRelationshipPattern ;
+    rdfs:label "Anticorruption Layer"@en ;
+    rdfs:comment "A downstream context isolates itself from the upstream model behind a translating layer."@en .
+
+kairos-ddd:OpenHostService a kairos-ddd:ContextRelationshipPattern ;
+    rdfs:label "Open Host Service"@en ;
+    rdfs:comment "An upstream context exposes a well-defined, documented protocol for many downstream consumers."@en .
+
+kairos-ddd:PublishedLanguage a kairos-ddd:ContextRelationshipPattern ;
+    rdfs:label "Published Language"@en ;
+    rdfs:comment "Contexts integrate through a shared, well-documented interchange language."@en .
+
+kairos-ddd:SeparateWays a kairos-ddd:ContextRelationshipPattern ;
+    rdfs:label "Separate Ways"@en ;
+    rdfs:comment "Contexts have no integration; each solves its needs independently."@en .

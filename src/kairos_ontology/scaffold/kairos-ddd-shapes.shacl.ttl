@@ -1,0 +1,115 @@
+# kairos-ddd SHACL shapes (DD-091)
+#
+# Validation shapes for the optional Domain-Driven Design overlay. Applied by the
+# dedicated DDD validation path against a MERGED graph containing the domain
+# ontology + the matching *-ddd-ext.ttl overlay + the kairos-ddd vocabulary.
+#
+# Rule 7 ("overlays must not use kairos-ext:silver*/gold* predicates") is enforced
+# in Python against the overlay graph ALONE (ddd.py), because the merged graph may
+# legitimately contain kairos-ext annotations inherited from the domain ontology.
+
+@prefix sh:         <http://www.w3.org/ns/shacl#> .
+@prefix owl:        <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:        <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:       <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix kairos-ddd: <https://kairos.cnext.eu/ddd#> .
+
+# ---------------------------------------------------------------------------
+# Rule 1: BoundedContext must have rdfs:label
+# ---------------------------------------------------------------------------
+kairos-ddd:BoundedContextShape a sh:NodeShape ;
+    sh:targetClass kairos-ddd:BoundedContext ;
+    sh:property [
+        sh:path rdfs:label ;
+        sh:minCount 1 ;
+        sh:severity sh:Violation ;
+        sh:message "Bounded context must have an rdfs:label." ;
+    ] .
+
+# ---------------------------------------------------------------------------
+# Rule 2: tacticalPattern values must be known tactical pattern individuals
+# ---------------------------------------------------------------------------
+kairos-ddd:TacticalPatternValueShape a sh:NodeShape ;
+    sh:targetObjectsOf kairos-ddd:tacticalPattern ;
+    sh:in (
+        kairos-ddd:AggregateRoot
+        kairos-ddd:AggregateMember
+        kairos-ddd:Entity
+        kairos-ddd:ValueObject
+        kairos-ddd:DomainService
+        kairos-ddd:DomainEvent
+        kairos-ddd:Policy
+    ) ;
+    sh:severity sh:Violation ;
+    sh:message "kairos-ddd:tacticalPattern value must be a known tactical pattern individual (AggregateRoot, AggregateMember, Entity, ValueObject, DomainService, DomainEvent, Policy)." .
+
+# ---------------------------------------------------------------------------
+# Rule 3: AggregateMember classes must declare an aggregateRoot
+# ---------------------------------------------------------------------------
+kairos-ddd:AggregateMemberShape a sh:NodeShape ;
+    sh:targetSubjectsOf kairos-ddd:tacticalPattern ;
+    sh:sparql [
+        sh:severity sh:Violation ;
+        sh:message "A class marked as an AggregateMember must declare its kairos-ddd:aggregateRoot." ;
+        sh:prefixes kairos-ddd: ;
+        sh:select """
+            PREFIX kairos-ddd: <https://kairos.cnext.eu/ddd#>
+            SELECT $this WHERE {
+                $this kairos-ddd:tacticalPattern kairos-ddd:AggregateMember .
+                FILTER NOT EXISTS { $this kairos-ddd:aggregateRoot ?root . }
+            }
+        """ ;
+    ] .
+
+# ---------------------------------------------------------------------------
+# Rule 4: aggregateRoot targets must be known owl:Class resources
+# ---------------------------------------------------------------------------
+kairos-ddd:AggregateRootTargetShape a sh:NodeShape ;
+    sh:targetObjectsOf kairos-ddd:aggregateRoot ;
+    sh:class owl:Class ;
+    sh:severity sh:Violation ;
+    sh:message "kairos-ddd:aggregateRoot must point to an owl:Class present in the merged domain graph." .
+
+# ---------------------------------------------------------------------------
+# Rule 5: ContextRelationship must have source, target, and pattern
+# Rule 6: relationship endpoints must be typed kairos-ddd:BoundedContext
+# ---------------------------------------------------------------------------
+kairos-ddd:ContextRelationshipShape a sh:NodeShape ;
+    sh:targetClass kairos-ddd:ContextRelationship ;
+    sh:property [
+        sh:path kairos-ddd:sourceContext ;
+        sh:minCount 1 ;
+        sh:class kairos-ddd:BoundedContext ;
+        sh:severity sh:Violation ;
+        sh:message "Context relationship must have a kairos-ddd:sourceContext typed as a BoundedContext." ;
+    ] ;
+    sh:property [
+        sh:path kairos-ddd:targetContext ;
+        sh:minCount 1 ;
+        sh:class kairos-ddd:BoundedContext ;
+        sh:severity sh:Violation ;
+        sh:message "Context relationship must have a kairos-ddd:targetContext typed as a BoundedContext." ;
+    ] ;
+    sh:property [
+        sh:path kairos-ddd:relationshipPattern ;
+        sh:minCount 1 ;
+        sh:severity sh:Violation ;
+        sh:message "Context relationship must declare a kairos-ddd:relationshipPattern." ;
+    ] .
+
+# ---------------------------------------------------------------------------
+# relationshipPattern values must be known context relationship individuals
+# ---------------------------------------------------------------------------
+kairos-ddd:RelationshipPatternValueShape a sh:NodeShape ;
+    sh:targetObjectsOf kairos-ddd:relationshipPattern ;
+    sh:in (
+        kairos-ddd:SharedKernel
+        kairos-ddd:CustomerSupplier
+        kairos-ddd:Conformist
+        kairos-ddd:AnticorruptionLayer
+        kairos-ddd:OpenHostService
+        kairos-ddd:PublishedLanguage
+        kairos-ddd:SeparateWays
+    ) ;
+    sh:severity sh:Violation ;
+    sh:message "kairos-ddd:relationshipPattern value must be a known context relationship pattern individual." .
