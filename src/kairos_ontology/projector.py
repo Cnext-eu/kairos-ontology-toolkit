@@ -14,13 +14,16 @@ from rdflib.namespace import OWL, RDF, RDFS
 from .projections.uri_utils import extract_local_name
 from .projections.shared import OntologyClassInfo
 
-VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report"]
+VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report", "ddd"]
 
 # Public-to-internal target name mapping (user-facing aliases → dispatch names).
 _TARGET_ALIASES = {"gold": "powerbi"}
 
 # Targets that live under output/medallion/ (medallion architecture outputs).
 _MEDALLION_TARGETS = {"dbt", "silver", "powerbi"}
+
+# Targets that live under output/architecture/ (design documentation outputs).
+_ARCHITECTURE_TARGETS = {"ddd"}
 
 # Targets processed after the per-domain loop (they span all domains).
 _POST_DOMAIN_TARGETS = {"report"}
@@ -524,6 +527,15 @@ def _discover_extensions(
             candidates += list(src_file.parent.glob("*-gold-ext.ttl"))
             gold_ext_path = candidates[0] if candidates else None
 
+    elif target_name == "ddd":
+        # DDD overlay documentation projection (DD-091): {onto}-ddd-ext.ttl
+        if extensions_dir and extensions_dir.exists():
+            candidates = list(extensions_dir.glob(f"{onto_name}-ddd-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+        if not ext_path:
+            candidates = list(src_file.parent.glob(f"{onto_name}-ddd-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+
     return ext_path, gold_ext_path
 
 
@@ -697,7 +709,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         print(f"  Found SKOS mappings directory: {mappings_dir}\n")
 
     targets_to_run = (
-        ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report']
+        ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report', 'ddd']
         if target == 'all'
         else [_TARGET_ALIASES.get(target, target)]
     )
@@ -720,6 +732,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             target_output = output_path / "medallion" / (
                 "dbt" if target_name == "silver" else target_name
             )
+        elif target_name in _ARCHITECTURE_TARGETS:
+            target_output = output_path / "architecture" / target_name
         else:
             target_output = output_path / target_name
         target_output.mkdir(parents=True, exist_ok=True)
@@ -1585,7 +1599,19 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         ref_model_defaults: Optional list of Paths to reference model default
             extension files (DD-023). Loaded as fallback beneath domain extension.
     """
-    
+
+    # DDD documentation overlay (DD-091) — handled before class collection so
+    # that import-only domains with DDD overlays still produce documentation.
+    if target == 'ddd':
+        from .projections.ddd_projector import generate_ddd_artifacts
+        return generate_ddd_artifacts(
+            graph=graph,
+            namespace=namespace,
+            ontology_name=ontology_name or "domain",
+            overlay_path=projection_ext_path,
+            ontology_metadata=ontology_metadata or {},
+        )
+
     query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>

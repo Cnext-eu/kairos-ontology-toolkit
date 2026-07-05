@@ -1,0 +1,44 @@
+@prefix acme:       <https://acme.example/ontology/client#> .
+@prefix acme-ddd:   <https://acme.example/ddd/client#> .
+@prefix kairos-ddd: <https://kairos.cnext.eu/ddd#> .
+@prefix rdfs:       <http://www.w3.org/2000/01/rdf-schema#> .
+
+# ---------------------------------------------------------------------------
+# DDD overlay for the Client domain (DD-091) — architecture documentation only.
+# Optional and additive: no silver/gold projection annotations here.
+# ---------------------------------------------------------------------------
+
+# Strategic — bounded contexts
+acme-ddd:ClientContext a kairos-ddd:BoundedContext ;
+    rdfs:label "Client Management" ;
+    kairos-ddd:publishedLanguage true ;
+    kairos-ddd:designNote "Owns client identity, classification, and GDPR-sensitive data." .
+
+acme-ddd:ReferenceContext a kairos-ddd:BoundedContext ;
+    rdfs:label "Reference Data" ;
+    kairos-ddd:designNote "Shared code lists (client types) maintained centrally." .
+
+# Context map
+acme-ddd:ClientUsesReference a kairos-ddd:ContextRelationship ;
+    rdfs:label "Client uses Reference Data" ;
+    kairos-ddd:sourceContext acme-ddd:ClientContext ;
+    kairos-ddd:targetContext acme-ddd:ReferenceContext ;
+    kairos-ddd:relationshipPattern kairos-ddd:Conformist .
+
+# Tactical — aggregate roots, members, value objects
+acme:Client
+    kairos-ddd:boundedContext acme-ddd:ClientContext ;
+    kairos-ddd:tacticalPattern kairos-ddd:AggregateRoot ;
+    kairos-ddd:designNote "Aggregate root guarding client identity and lifecycle." .
+
+acme:Identifier
+    kairos-ddd:tacticalPattern kairos-ddd:AggregateMember ;
+    kairos-ddd:aggregateRoot acme:Client .
+
+acme:ClientPII
+    kairos-ddd:tacticalPattern kairos-ddd:AggregateMember ;
+    kairos-ddd:aggregateRoot acme:Client .
+
+acme:ClientType
+    kairos-ddd:boundedContext acme-ddd:ReferenceContext ;
+    kairos-ddd:tacticalPattern kairos-ddd:ValueObject .

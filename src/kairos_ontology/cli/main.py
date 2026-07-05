@@ -630,8 +630,10 @@ def _resolve_catalog(
 @click.option('--shacl', is_flag=True, help='Validate SHACL only')
 @click.option('--consistency', is_flag=True, help='Validate consistency only')
 @click.option('--gdpr', is_flag=True, help='Scan for PII properties without GDPR satellite protection')
-def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consistency, gdpr):
-    """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan)."""
+@click.option('--ddd', 'ddd', is_flag=True,
+              help='Validate DDD design overlays (*-ddd-ext.ttl) via the dedicated DDD path')
+def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consistency, gdpr, ddd):
+    """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan, DDD overlays)."""
     from ..hub_utils import find_hub_root
 
     cwd = Path.cwd()
@@ -662,16 +664,32 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
     catalog_path = _resolve_catalog(catalog, hub_root, cwd)
 
     # Default to all if nothing specified
-    if not any([validate_all, syntax, shacl, consistency, gdpr]):
+    if not any([validate_all, syntax, shacl, consistency, gdpr, ddd]):
         validate_all = True
-    
+
     if gdpr or validate_all:
         run_gdpr_validation(
             ontologies_path=ontologies_path,
             catalog_path=catalog_path,
         )
-        if gdpr and not any([validate_all, syntax, shacl, consistency]):
+        if gdpr and not any([validate_all, syntax, shacl, consistency, ddd]):
             return  # GDPR-only mode
+
+    # DDD overlay validation (DD-091) — dedicated path (merged domain + overlay).
+    ddd_failures = 0
+    if ddd or validate_all:
+        from ..ddd import run_ddd_validation
+
+        extensions_path = ontologies_path.parent / "extensions"
+        ddd_failures = run_ddd_validation(
+            extensions_dir=extensions_path,
+            ontologies_dir=ontologies_path,
+            catalog_path=catalog_path,
+        )
+        if ddd and not any([validate_all, syntax, shacl, consistency]):
+            if ddd_failures:
+                raise SystemExit(1)
+            return  # DDD-only mode
 
     run_validation(
         ontologies_path=ontologies_path,
@@ -681,6 +699,11 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
         do_shacl=validate_all or shacl,
         do_consistency=validate_all or consistency
     )
+
+    # run_validation() exits non-zero on its own failures; if it fell through
+    # (its checks passed) but DDD overlays failed, still fail the overall run.
+    if ddd_failures:
+        raise SystemExit(1)
 
 
 @cli.command()
@@ -695,7 +718,7 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
                    'ontology-reference-models/catalog-v001.xml)')
 @click.option('--output', type=click.Path(), default=None,
               help='Output directory for projections (default: <hub>/output).')
-@click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report']),
+@click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report', 'ddd']),
               default='all', help='Projection target')
 @click.option('--namespace', type=str, default=None,
               help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
