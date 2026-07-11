@@ -29,6 +29,13 @@ azure-search, a2ui, prompt), and CLI-based ontology management.
 ## Code conventions
 
 - Python 3.12+, src-layout (`src/kairos_ontology/`).
+- **Package split (MDM-DD-002):** ontology functionality lives in
+  `kairos_ontology.core` (validator, projector, `core/projections/`, etc.); the
+  design-time MDM layer lives in `kairos_ontology.mdm`. The boundary is **one-way** —
+  `mdm` may import `core`, but `core` must **never** import `mdm` (enforced by
+  `tests/test_layering.py`; MDM is wired via the projector registry, not a direct
+  import). `cli/` depends on both. Public API is re-exported from top-level
+  `kairos_ontology/__init__.py`.
 - Line length: 100 characters (black + ruff).
 - Use `rdflib.Graph` for all RDF operations. Never serialize RDF by string concatenation.
 - Tests live under `tests/`.
@@ -185,6 +192,7 @@ Use this table to pick the correct skill for a user's intent:
 | "Create source/bronze vocabulary" | **kairos-design-source** |
 | "Design silver schema / FK annotations" | **kairos-design-silver** |
 | "Design gold / Power BI model" | **kairos-design-gold** |
+| "Design MDM policy / mastered concepts / match rules / survivorship" | **kairos-design-mdm** |
 | "Import / extract TMDL or PBIP files" | CLI: `kairos-ontology import-tmdl` |
 | "Analyse sources / pre-model domain contributions" | **kairos-design-source** (Phase 4) |
 | "Import CSV/Excel flat files as source" | **kairos-design-source** (Phase 1) |
@@ -209,6 +217,8 @@ Running CLI directly can produce incomplete or incorrect output without warning.
 - ❌ `python -m kairos_ontology project --target silver` → use **kairos-execute-project** skill
 - ❌ `python -m kairos_ontology project --target dbt` → use **kairos-execute-project** skill
 - ❌ `python -m kairos_ontology project --target powerbi` → use **kairos-execute-project** skill
+- ❌ `python -m kairos_ontology project --target mdm-profile` → use **kairos-execute-project** skill (author policy with **kairos-design-mdm**)
+- ❌ `python -m kairos_ontology mdm-validate` → use **kairos-design-mdm** skill
 - ❌ `python -m kairos_ontology validate` → use **kairos-execute-validate** skill
 - ❌ `python -m kairos_ontology new-repo` → use **kairos-setup-init** skill
 - ❌ Directly editing `.ttl` files without invoking the modeling/mapping skill
@@ -218,7 +228,8 @@ commands have no corresponding skill and may be run directly via CLI.
 
 **CLI soft skill-gate:** Skill-managed commands (`validate`, `project`, `init`,
 `new-repo`, `migrate`, `update`, `update-refmodels`, `import-source`,
-`import-flatfile`, `generate-staging`, `analyse-sources`, `init-dataplatform`)
+`import-flatfile`, `generate-staging`, `analyse-sources`, `mdm-validate`,
+`init-dataplatform`)
 emit a loud stderr warning when run directly, redirecting to the owning skill,
 then still run (soft gate — see DD entry in the design-decisions log). When a
 skill legitimately wraps one of these commands, it sets `KAIROS_SKILL_CONTEXT=1`
@@ -241,13 +252,14 @@ task.
 | **kairos-design-mapping** | Every table→entity and column→property mapping needs explicit user approval |
 | **kairos-design-silver** | Extension annotations (SCD types, natural keys, FK) need design review |
 | **kairos-design-gold** | Gold measure definitions and star-schema design need stakeholder sign-off |
+| **kairos-design-mdm** | MDM policy (match keys, survivorship, auto-action bounds, reference-data licensing) is governance-owned and reviewed before the profile is trusted |
 | **kairos-design-source** | Source vocabulary descriptions need verification against source docs |
 
 **Default:** when these skills are invoked, use **interactive mode** — present
 proposals, wait for user confirmation, and proceed step-by-step.
 
 **Opt-in design fleet mode:** only when the user explicitly asks for fleet,
-autopilot, or AI-approved design decisions, the same six design skills may run in
+autopilot, or AI-approved design decisions, the same seven design skills may run in
 autopilot/autopilot-fleet mode for testing and acceleration. In fleet mode:
 
 - Announce that design fleet mode is active and AI will make checkpoint decisions.
@@ -268,8 +280,16 @@ autopilot/autopilot-fleet mode for testing and acceleration. In fleet mode:
 
 ## Projection targets
 
-Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`, `powerbi`, `report`.
+Available targets: `dbt`, `neo4j`, `azure-search`, `a2ui`, `prompt`, `silver`, `powerbi`, `report`, `mdm-profile`.
 Each ontology domain produces separate output artifacts per target.
+
+> **Design-time MDM (`mdm-profile`):** an additive, opt-in projection target
+> (not part of `--target all`) owned by the `kairos_ontology.mdm` package. It reads
+> `model/extensions/{domain}-mdm-ext.ttl` (`kairos-mdm:` vocabulary) and emits an
+> immutable, runtime-neutral MDM profile to `output/mdm/`. Author policy with the
+> **kairos-design-mdm** skill; runtime matching/stewardship lives in the separate
+> `kairos-mdm-runtime` repo. `core` never imports `mdm` (registry pattern,
+> MDM-DD-002). See `docs/mdm/`.
 
 > **Silver FK annotations:** When a domain ontology imports reference models via
 > `owl:imports`, imported object properties lack cardinality restrictions and will

@@ -131,7 +131,7 @@ def test_hub(tmp_path):
 
 def _generate(test_hub: Path, source_ref: str | None = None) -> dict[str, str]:
     """Run dbt projection and return artifacts."""
-    from kairos_ontology.projections.medallion_dbt_projector import (
+    from kairos_ontology.core.projections.medallion_dbt_projector import (
         generate_dbt_artifacts,
     )
 

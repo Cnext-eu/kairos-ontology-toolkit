@@ -208,6 +208,7 @@ xrefs:
 | claims | `kairos-design-domain` (claim governance) | mappings + evidence |
 | silver | `kairos-design-silver` | domain + mappings |
 | gold | `kairos-design-gold` | silver |
+| mdm (optional) | `kairos-design-mdm` | domain present; runs independently of medallion |
 | validate | `kairos-execute-validate` | model present |
 | project | `kairos-execute-project` | validate passed |
 

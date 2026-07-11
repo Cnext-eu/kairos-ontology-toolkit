@@ -16,7 +16,7 @@ This module provides:
 * :func:`apply_decisions` — a **bulk** ``status`` mutation that only touches the
   ``status`` field, honours :data:`STATUS_TRANSITIONS`, and reports skipped/invalid
   transitions. Callers persist via the existing canonical
-  :func:`kairos_ontology.claim_registry.write_registry`, so diffs stay minimal.
+  :func:`kairos_ontology.core.claim_registry.write_registry`, so diffs stay minimal.
 
 The module is AI-free and side-effect-free (no I/O); the CLI owns load/write.
 """

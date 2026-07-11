@@ -8,7 +8,7 @@ that the DDD overlay does not alter silver/gold projection output (isolation).
 
 import pytest
 
-from kairos_ontology.projections.ddd_projector import generate_ddd_artifacts
+from kairos_ontology.core.projections.ddd_projector import generate_ddd_artifacts
 
 from .conftest import EXTENSIONS_DIR
 
@@ -91,7 +91,7 @@ class TestDddIsolation:
     def test_silver_output_unaffected_by_ddd_overlay(self, client_ontology):
         # Silver extension discovery globs *-silver-ext.ttl and must ignore the
         # DDD overlay entirely. Re-projecting silver yields identical artifacts.
-        from kairos_ontology.projections.medallion_silver_projector import (
+        from kairos_ontology.core.projections.medallion_silver_projector import (
             generate_silver_artifacts,
         )
         from .conftest import SHAPES_DIR

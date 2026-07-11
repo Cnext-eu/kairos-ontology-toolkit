@@ -14,13 +14,13 @@ from rdflib import Graph, Literal, Namespace, RDF, RDFS, URIRef, OWL
 # ---------------------------------------------------------------------------
 
 try:
-    from kairos_ontology.projector import extract_ontology_metadata
+    from kairos_ontology.core.projector import extract_ontology_metadata
     _HAS_EXTRACT = True
 except ImportError:
     _HAS_EXTRACT = False
 
 try:
-    from kairos_ontology.projector import _auto_detect_namespace
+    from kairos_ontology.core.projector import _auto_detect_namespace
     _HAS_DETECT_NS = True
 except ImportError:
     _HAS_DETECT_NS = False
@@ -64,7 +64,7 @@ class TestExtractOntologyMetadata:
         assert meta["version"] == ""
 
 
-from kairos_ontology.projector import run_projections
+from kairos_ontology.core.projector import run_projections
 
 
 class TestProjector:
@@ -292,7 +292,7 @@ class TestProjector:
     
     def test_http_namespace_slash_based(self, temp_dir, http_ontology):
         """Test that path-based HTTP namespaces are properly handled."""
-        from kairos_ontology.projector import run_projections
+        from kairos_ontology.core.projector import run_projections
         
         ontologies_dir = temp_dir / "ontologies"
         ontologies_dir.mkdir()
@@ -323,7 +323,7 @@ class TestProjector:
     
     def test_http_namespace_hash_based(self, temp_dir, hash_ontology):
         """Test that fragment-based HTTP namespaces (with #) are properly handled."""
-        from kairos_ontology.projector import run_projections
+        from kairos_ontology.core.projector import run_projections
         
         ontologies_dir = temp_dir / "ontologies"
         ontologies_dir.mkdir()
@@ -356,7 +356,7 @@ class TestProjector:
     
     def test_namespace_auto_detection(self, temp_dir, http_ontology):
         """Test that namespace is auto-detected when not provided."""
-        from kairos_ontology.projector import run_projections
+        from kairos_ontology.core.projector import run_projections
         
         ontologies_dir = temp_dir / "ontologies"
         ontologies_dir.mkdir()
@@ -384,7 +384,7 @@ class TestProjector:
     @pytest.mark.slow
     def test_windows_safe_filenames_from_http_uris(self, temp_dir, http_ontology):
         """Test that HTTP URIs generate Windows-safe filenames (no colons in paths)."""
-        from kairos_ontology.projector import run_projections
+        from kairos_ontology.core.projector import run_projections
         
         ontologies_dir = temp_dir / "ontologies"
         ontologies_dir.mkdir()
@@ -418,7 +418,7 @@ class TestProjector:
     
     def test_auto_detect_prefers_custom_namespace_over_fibo(self, temp_dir, ontology_with_fibo_imports):
         """Test that auto-detection picks custom namespace even when FIBO has more classes."""
-        from kairos_ontology.projector import run_projections
+        from kairos_ontology.core.projector import run_projections
         
         ontologies_dir = temp_dir / "ontologies"
         ontologies_dir.mkdir()
@@ -464,7 +464,7 @@ class TestProjector:
     
     def test_owl_ontology_declaration_method(self, temp_dir, ontology_with_declaration):
         """Test that owl:Ontology declaration is used for namespace detection (semantic web standard)."""
-        from kairos_ontology.projector import run_projections
+        from kairos_ontology.core.projector import run_projections
         
         ontologies_dir = temp_dir / "ontologies"
         ontologies_dir.mkdir()
@@ -521,7 +521,7 @@ class TestProjector:
         output_dir = temp_dir / "output"
         
         # Manually call the DBT projector to avoid emoji encoding issues
-        from kairos_ontology.projections.medallion_dbt_projector import generate_dbt_artifacts
+        from kairos_ontology.core.projections.medallion_dbt_projector import generate_dbt_artifacts
         
         # Load ontology
         graph = Graph()
@@ -1088,26 +1088,26 @@ class TestIsDomainOntology:
     """Tests for the _is_domain_ontology file filter."""
 
     def test_regular_domain_file_accepted(self):
-        from kairos_ontology.projector import _is_domain_ontology
+        from kairos_ontology.core.projector import _is_domain_ontology
         assert _is_domain_ontology(Path("ontologies/customer.ttl")) is True
         assert _is_domain_ontology(Path("ontologies/order.ttl")) is True
 
     def test_silver_ext_file_skipped(self):
-        from kairos_ontology.projector import _is_domain_ontology
+        from kairos_ontology.core.projector import _is_domain_ontology
         assert _is_domain_ontology(Path("ontologies/client-silver-ext.ttl")) is False
         assert _is_domain_ontology(Path("ontologies/party-silver-ext.ttl")) is False
 
     def test_generic_ext_file_skipped(self):
-        from kairos_ontology.projector import _is_domain_ontology
+        from kairos_ontology.core.projector import _is_domain_ontology
         assert _is_domain_ontology(Path("ontologies/common-ext.ttl")) is False
 
     def test_underscore_prefix_skipped(self):
-        from kairos_ontology.projector import _is_domain_ontology
+        from kairos_ontology.core.projector import _is_domain_ontology
         assert _is_domain_ontology(Path("ontologies/_master.ttl")) is False
         assert _is_domain_ontology(Path("ontologies/_imports.ttl")) is False
 
     def test_validator_has_same_filter(self):
-        from kairos_ontology.validator import _is_domain_ontology
+        from kairos_ontology.core.validator import _is_domain_ontology
         assert _is_domain_ontology(Path("ontologies/customer.ttl")) is True
         assert _is_domain_ontology(Path("ontologies/client-silver-ext.ttl")) is False
         assert _is_domain_ontology(Path("ontologies/_master.ttl")) is False
@@ -1224,7 +1224,7 @@ class TestAutoDetectNamespace:
 # ---------------------------------------------------------------------------
 
 try:
-    from kairos_ontology.projector import (
+    from kairos_ontology.core.projector import (
         _discover_whitelisted_imports,
         _get_reference_model_namespaces,
     )
@@ -1431,7 +1431,7 @@ class TestDiscoverRefModelDefaults:
 
     def test_discovers_silver_defaults_beside_ontology(self, tmp_path):
         """Finds *-silver-defaults.ttl alongside the resolved import file."""
-        from kairos_ontology.projector import _discover_ref_model_defaults
+        from kairos_ontology.core.projector import _discover_ref_model_defaults
 
         # Create reference model file + defaults
         ref_file = tmp_path / "bsp-party.ttl"
@@ -1471,7 +1471,7 @@ class TestDiscoverRefModelDefaults:
 
     def test_discovers_defaults_in_extensions_subdir(self, tmp_path):
         """Finds defaults in a sibling extensions/ directory."""
-        from kairos_ontology.projector import _discover_ref_model_defaults
+        from kairos_ontology.core.projector import _discover_ref_model_defaults
 
         # Create reference model file
         ref_file = tmp_path / "bsp-party.ttl"
@@ -1512,7 +1512,7 @@ class TestDiscoverRefModelDefaults:
 
     def test_returns_empty_without_catalog(self, tmp_path):
         """Returns empty list when catalog_path is None."""
-        from kairos_ontology.projector import _discover_ref_model_defaults
+        from kairos_ontology.core.projector import _discover_ref_model_defaults
 
         onto_file = tmp_path / "domain.ttl"
         onto_file.write_text("@prefix owl: <http://www.w3.org/2002/07/owl#> .\n")
@@ -1521,7 +1521,7 @@ class TestDiscoverRefModelDefaults:
 
     def test_returns_empty_for_unsupported_target(self, tmp_path):
         """Returns empty list for targets other than silver/gold."""
-        from kairos_ontology.projector import _discover_ref_model_defaults
+        from kairos_ontology.core.projector import _discover_ref_model_defaults
 
         onto_file = tmp_path / "domain.ttl"
         onto_file.write_text("@prefix owl: <http://www.w3.org/2002/07/owl#> .\n")
@@ -1537,7 +1537,7 @@ class TestDiscoverRefModelDefaults:
 
     def test_gold_defaults_discovery(self, tmp_path):
         """Finds *-gold-defaults.ttl for gold target."""
-        from kairos_ontology.projector import _discover_ref_model_defaults
+        from kairos_ontology.core.projector import _discover_ref_model_defaults
 
         ref_file = tmp_path / "bsp-party.ttl"
         ref_file.write_text(
@@ -1577,7 +1577,7 @@ class TestMergeExtGraphWithFallbacks:
 
     def test_fallback_triples_added_when_no_domain_ext(self):
         """Fallback triples are added when ext_path is None."""
-        from kairos_ontology.projections.shared import merge_ext_graph
+        from kairos_ontology.core.projections.shared import merge_ext_graph
         from rdflib import Graph, URIRef, Namespace
 
         KAIROS_EXT = Namespace("https://kairos.community/ns/ext#")
@@ -1608,7 +1608,7 @@ class TestMergeExtGraphWithFallbacks:
 
     def test_domain_ext_overrides_fallback(self):
         """Domain extension wins over fallback for same subject+predicate."""
-        from kairos_ontology.projections.shared import merge_ext_graph
+        from kairos_ontology.core.projections.shared import merge_ext_graph
         from rdflib import Graph, URIRef, Namespace
 
         KAIROS_EXT = Namespace("https://kairos.community/ns/ext#")

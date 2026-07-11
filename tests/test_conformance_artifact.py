@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Unit tests for kairos_ontology.conformance_artifact (DD-090)."""
+"""Unit tests for kairos_ontology.core.conformance_artifact (DD-090)."""
 
 from __future__ import annotations
 
 import pytest
 
 from archetype_fixtures import build_refmodels_root
-from kairos_ontology.archetype_loader import load_archetype, load_outcome_codes
-from kairos_ontology.conformance_artifact import (
+from kairos_ontology.core.archetype_loader import load_archetype, load_outcome_codes
+from kairos_ontology.core.conformance_artifact import (
     ARTIFACT_RELPATH,
     ConformanceArtifactError,
     build_artifact,

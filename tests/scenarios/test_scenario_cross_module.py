@@ -24,8 +24,8 @@ from unittest import mock
 
 import yaml
 
-from kairos_ontology.analyse_sources import parse_reference_model
-from kairos_ontology.propose_alignment import alignment_to_dict, build_domain_alignments
+from kairos_ontology.core.analyse_sources import parse_reference_model
+from kairos_ontology.core.propose_alignment import alignment_to_dict, build_domain_alignments
 
 ACME_HUB = Path(__file__).parent / "acme-hub"
 SOURCES_DIR = ACME_HUB / "integration" / "sources"
@@ -143,12 +143,12 @@ def _run(tmp_path, *, cross_module):
         kw = {"cross_module": True, "accelerator": "logistics",
               "ref_models_dir": tmp_path}
     with mock.patch(
-        "kairos_ontology.propose_alignment.get_ai_client", return_value=_mock_client()
+        "kairos_ontology.core.propose_alignment.get_ai_client", return_value=_mock_client()
     ), mock.patch(
-        "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+        "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
         side_effect=_inventory_side_effect,
     ), mock.patch(
-        "kairos_ontology.analyse_sources.load_accelerator_uri_modules",
+        "kairos_ontology.core.analyse_sources.load_accelerator_uri_modules",
         return_value={
             PARTY_URI: {"module": "client", "domains": ["client"]},
             ADDRESS_URI: {"module": "reference-data",

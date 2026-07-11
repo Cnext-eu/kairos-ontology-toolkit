@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from kairos_ontology.claim_registry import (
+from kairos_ontology.core.claim_registry import (
     Claim,
     ClaimRegistry,
     EvidenceSource,
@@ -16,7 +16,7 @@ from kairos_ontology.claim_registry import (
     write_registry,
 )
 from kairos_ontology.cli.main import cli
-from kairos_ontology.decide_claims import (
+from kairos_ontology.core.decide_claims import (
     ClaimSelector,
     apply_decisions,
     parse_by_disposition,

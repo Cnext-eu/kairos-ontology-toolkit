@@ -2,10 +2,10 @@
 # Copyright 2026 Cnext.eu
 """Relationship-topology derivation for the Core Concepts Conformance phase (DD-090).
 
-Given a loaded :class:`~kairos_ontology.archetype_loader.Archetype`, this module:
+Given a loaded :class:`~kairos_ontology.core.archetype_loader.Archetype`, this module:
 
 * resolves and parses **each ``ref_model_modules[].iri`` directly** via
-  :class:`~kairos_ontology.catalog_utils.CatalogResolver` — it does *not* rely on
+  :class:`~kairos_ontology.core.catalog_utils.CatalogResolver` — it does *not* rely on
   ``owl:imports`` from an umbrella ontology (a DCSA umbrella file only follows its direct
   imports, so the archetype's leaf concepts never load that way),
 * reports which ``core_concepts`` are present/missing in the resolved graph,

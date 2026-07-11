@@ -1,0 +1,87 @@
+# client-mdm-ext.ttl — MDM policy overlay for the acme client domain (scenario).
+#
+# Design-time MDM extension consumed by the `mdm-profile` projection target.
+# Annotates ontology IRIs from client.ttl with mastering / governance policy.
+# Never edit client.ttl to add MDM policy — it belongs here (ADR-1).
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix acme: <https://acme.example/ontology/client#> .
+@prefix kairos-mdm: <https://kairos.cnext.eu/mdm#> .
+
+# Domain-level probabilistic-model reference (weights are out-of-band — ADR-5).
+<https://acme.example/ontology/client> a owl:Ontology ;
+    kairos-mdm:probabilisticArtifact [
+        kairos-mdm:artifactDigest "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff0" ;
+        kairos-mdm:artifactVersion "1.0.0" ;
+        kairos-mdm:artifactUri "https://models.acme.example/client-match@1.0.0"
+    ] .
+
+# --- Mastered concept: Client -------------------------------------------------
+acme:Client
+    kairos-mdm:mastered true ;
+    kairos-mdm:mdmStyle "coexistence" ;
+    kairos-mdm:makerChecker true ;
+    kairos-mdm:autoActionBound 0.95 ;
+    kairos-mdm:slaHours 48 ;
+    kairos-mdm:escalationRole "client-data-owner" .
+
+acme:clientId
+    kairos-mdm:matchAttribute true ;
+    kairos-mdm:survivorship "source-precedence" ;
+    kairos-mdm:survivorshipPriority 1 ;
+    kairos-mdm:authoritativeSource "crmsystem" .
+
+acme:vatNumber
+    kairos-mdm:identifier true ;
+    kairos-mdm:identifierType "VAT" ;
+    kairos-mdm:matchAttribute true ;
+    kairos-mdm:authoritativeSource "adminpulse" ;
+    kairos-mdm:survivorship "most-trusted" .
+
+acme:clientName
+    kairos-mdm:matchAttribute true ;
+    kairos-mdm:survivorship "completeness" .
+
+# Deterministic match rules (probabilistic scoring is referenced, not authored).
+acme:vatExactRule a kairos-mdm:MatchRule ;
+    kairos-mdm:appliesTo acme:Client ;
+    kairos-mdm:onAttribute acme:vatNumber ;
+    kairos-mdm:comparator "normalized" ;
+    kairos-mdm:threshold 1.0 ;
+    kairos-mdm:matchAction "auto-merge" .
+
+acme:nameRule a kairos-mdm:MatchRule ;
+    kairos-mdm:appliesTo acme:Client ;
+    kairos-mdm:onAttribute acme:clientName ;
+    kairos-mdm:comparator "fuzzy-reference" ;
+    kairos-mdm:threshold 0.85 ;
+    kairos-mdm:matchAction "candidate" .
+
+# Data-quality rules on the six DAMA dimensions (§11).
+acme:vatCompleteness a kairos-mdm:DataQualityRule ;
+    kairos-mdm:appliesTo acme:Client ;
+    kairos-mdm:onAttribute acme:vatNumber ;
+    kairos-mdm:dimension "completeness" ;
+    kairos-mdm:scorecardThreshold 0.98 ;
+    kairos-mdm:severity "error" .
+
+acme:emailValidity a kairos-mdm:DataQualityRule ;
+    kairos-mdm:appliesTo acme:Client ;
+    kairos-mdm:onAttribute acme:email ;
+    kairos-mdm:dimension "validity" ;
+    kairos-mdm:scorecardThreshold 0.90 ;
+    kairos-mdm:severity "warning" .
+
+# --- Reference data: ClientType ----------------------------------------------
+acme:ClientType
+    kairos-mdm:referenceList true ;
+    kairos-mdm:referenceOwner "client-reference-data-team" ;
+    kairos-mdm:releasePolicy "quarterly" ;
+    kairos-mdm:license "internal" .
+
+# --- Abstract steward roles (environment identity mapping stays external) -----
+acme:clientSteward a kairos-mdm:StewardRole ;
+    kairos-mdm:roleName "Client Steward" ;
+    kairos-mdm:scope "client" .

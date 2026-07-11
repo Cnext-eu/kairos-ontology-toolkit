@@ -3,7 +3,7 @@
 """Tests for the validation module."""
 
 import pytest
-from kairos_ontology.validator import run_validation, validate_gdpr, run_gdpr_validation
+from kairos_ontology.core.validator import run_validation, validate_gdpr, run_gdpr_validation
 
 
 class TestValidator:
@@ -270,7 +270,7 @@ class TestGdprValidation:
 class TestWhitelistMappingValidation:
 
     def test_whitelisted_not_mapped_warning(self, tmp_path):
-        from kairos_ontology.validator import validate_whitelist_mapping
+        from kairos_ontology.core.validator import validate_whitelist_mapping
 
         ext_dir = tmp_path / "extensions"
         ext_dir.mkdir()
@@ -291,7 +291,7 @@ ref:Person kairos-ext:silverInclude true .
         assert "Person" in warnings[0]["message"]
 
     def test_no_warnings_when_both_empty(self, tmp_path):
-        from kairos_ontology.validator import validate_whitelist_mapping
+        from kairos_ontology.core.validator import validate_whitelist_mapping
 
         ext_dir = tmp_path / "extensions"
         ext_dir.mkdir()

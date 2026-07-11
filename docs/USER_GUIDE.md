@@ -291,6 +291,7 @@ kairos-ontology project --target prompt
 | **azure-search** | JSON index definitions                               | Azure AI Search                 |
 | **a2ui**         | JSON Schema for message payloads                     | UI generation                   |
 | **prompt**       | Compact + detailed JSON context                      | LLM/AI assistant context        |
+| **mdm-profile**  | Immutable, content-addressed MDM policy profile (JSON + review MD) | Master Data Management (opt-in; requires `{domain}-mdm-ext.ttl`; consumed by `kairos-mdm-runtime`) |
 
 ### Output Structure
 

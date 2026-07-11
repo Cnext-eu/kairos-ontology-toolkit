@@ -20,7 +20,7 @@ from .conftest import (
 @contextmanager
 def _caplog_context(level=logging.WARNING):
     """Context manager that captures log records at the given level."""
-    logger = logging.getLogger("kairos_ontology.projections.medallion_dbt_projector")
+    logger = logging.getLogger("kairos_ontology.core.projections.medallion_dbt_projector")
     records: list[logging.LogRecord] = []
 
     class _Handler(logging.Handler):
@@ -799,7 +799,7 @@ class TestCrossDomainNaturalKeyResolution:
     @pytest.fixture(scope="class")
     def invoice_with_peer_exts(self):
         """Generate invoice dbt artifacts WITH peer ext paths for cross-domain NK."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             generate_dbt_artifacts,
         )
         from .conftest import (
@@ -853,8 +853,8 @@ class TestCrossDomainNaturalKeyResolution:
         resolve Client's NK as 'clientId' → 'client_id'.
         """
         from rdflib import Graph
-        from kairos_ontology.projections.shared import merge_ext_graph
-        from kairos_ontology.projections.medallion_dbt_projector import _get_natural_key
+        from kairos_ontology.core.projections.shared import merge_ext_graph
+        from kairos_ontology.core.projections.medallion_dbt_projector import _get_natural_key
         from .conftest import ONTOLOGIES_DIR, EXTENSIONS_DIR
 
         # Load invoice graph only (no client data)
@@ -912,7 +912,7 @@ class TestDbtSessionLog:
 
     def test_write_dbt_session_log_creates_file(self, tmp_path):
         """write_dbt_session_log should create a markdown file with entity table."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             write_dbt_session_log,
         )
 
@@ -985,7 +985,7 @@ class TestDbtSessionLog:
 
     def test_write_dbt_session_log_no_warnings_no_skipped(self, tmp_path):
         """When no skipped and no warnings, show 'No issues' section."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             write_dbt_session_log,
         )
 
@@ -1015,7 +1015,7 @@ class TestDbtSessionLog:
 
     def test_write_dbt_session_log_returns_none_for_empty(self, tmp_path):
         """Returns None when entity_metadata is empty."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             write_dbt_session_log,
         )
 
@@ -1028,7 +1028,7 @@ class TestDbtSessionLog:
 
     def test_write_dbt_session_log_deduplicates_warnings(self, tmp_path):
         """Duplicate warnings should appear only once in the output."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             write_dbt_session_log,
         )
 
@@ -1066,7 +1066,7 @@ class TestDbtSessionLog:
 
     def test_write_dbt_session_log_excludes_skip_reason_from_warnings(self, tmp_path):
         """Warnings matching a skip_reason should not appear in Warnings section."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             write_dbt_session_log,
         )
 
@@ -1288,7 +1288,7 @@ class TestGoldSkipsUnmappedImports:
 
     def test_silver_model_name_returns_none_when_not_in_registry(self):
         """_silver_model_name_for_class returns None for unregistered classes."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             _silver_model_name_for_class,
         )
 
@@ -1323,7 +1323,7 @@ class TestGoldSkipsUnmappedImports:
 
     def test_silver_model_name_falls_back_without_registry(self):
         """Without a registry, falls back to classes list (standalone gold)."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             _silver_model_name_for_class,
         )
 
@@ -1756,7 +1756,7 @@ class TestLogisticsDomain:
         )
         with _caplog_context() as records:
             # Re-generate to capture warnings (fixture is cached but we need logs)
-            from kairos_ontology.projections.medallion_dbt_projector import (
+            from kairos_ontology.core.projections.medallion_dbt_projector import (
                 generate_dbt_artifacts,
             )
             from .conftest import (
@@ -1866,7 +1866,7 @@ class TestCrossTableWarnings:
     def test_cross_table_warning_fires_for_domain_properties(self, client_ontology):
         """Single-source entities with cross-table mappings emit warnings."""
         import logging
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             generate_dbt_artifacts,
         )
 
@@ -1903,7 +1903,7 @@ class TestCrossTableWarnings:
     def test_no_cross_table_warning_for_other_domain_properties(self, client_ontology):
         """Properties with domain != current class must NOT produce warnings."""
         import logging
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             generate_dbt_artifacts,
         )
 
@@ -2031,7 +2031,7 @@ class TestCrossTableWarnings:
         by design). Instead, a single consolidated info note is recorded.
         """
         from jinja2 import Environment, FileSystemLoader
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             _gen_silver_models,
         )
 
@@ -2060,7 +2060,7 @@ class TestCrossTableWarnings:
         """Own-domain cross-table props remain genuine ⚠️ warnings (own precedence)."""
         from rdflib import RDFS
         from jinja2 import Environment, FileSystemLoader
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             _gen_silver_models,
         )
 
@@ -2088,7 +2088,7 @@ class TestCrossTableWarnings:
     def test_inherited_info_renders_in_session_log(self, tmp_path):
         """The consolidated info note surfaces under a ## ℹ️ Info session-log section."""
         from jinja2 import Environment, FileSystemLoader
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             _gen_silver_models, write_dbt_session_log,
         )
 
@@ -2163,7 +2163,7 @@ class TestCrossDomainRefValidation:
 
     def test_no_false_positive_for_join_refs(self):
         """ref() targets in JOIN clauses should not trigger validation warnings."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             _validate_dbt_artifacts,
         )
 
@@ -2249,7 +2249,7 @@ class TestSilverColumnNameOverride:
 
     def test_real_typo_still_triggers_warning(self):
         """ref() targets that are genuinely missing still get warned about."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             _validate_dbt_artifacts,
         )
 
@@ -2289,7 +2289,7 @@ class TestLogicalSourcesMode:
 
     def test_logical_mode_omits_database_schema(self):
         """logical_sources_only=True should omit database/schema from _sources.yml."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             generate_dbt_artifacts,
         )
 
@@ -2321,7 +2321,7 @@ class TestLogicalSourcesMode:
 
     def test_logical_mode_still_generates_valid_models(self):
         """Silver models should still be generated correctly in logical mode."""
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             generate_dbt_artifacts,
         )
 
@@ -2414,7 +2414,7 @@ class TestCompositeNaturalKeyScenario:
 
     def test_identifier_sk_has_two_separate_columns(self, client_dbt_artifacts):
         """generate_surrogate_key for Identifier must list both NK columns as separate items."""
-        from kairos_ontology.projections.medallion_dbt_projector import _get_natural_key
+        from kairos_ontology.core.projections.medallion_dbt_projector import _get_natural_key
         from tests.scenarios.conftest import _load_ontology
 
         g, _, _ = _load_ontology("client")
@@ -2476,7 +2476,7 @@ class TestCoverageReportMerge:
         self, client_dbt_artifacts, invoice_dbt_artifacts
     ):
         """_build_coverage_summary should aggregate stats across domains."""
-        from kairos_ontology.projector import _build_coverage_summary
+        from kairos_ontology.core.projector import _build_coverage_summary
 
         domain_data = {
             "client": client_dbt_artifacts.get("__coverage_data__", {}),
@@ -2646,7 +2646,7 @@ class TestCrossEntityNaturalKeyPassThrough:
         """
         from rdflib import Graph, Literal, Namespace, URIRef
         from rdflib.namespace import OWL, RDF, RDFS, XSD
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             _extract_silver_columns,
         )
 
@@ -2716,7 +2716,7 @@ class TestCrossEntityNaturalKeyPassThrough:
         """When no bronze mapping exists, pass-through falls back to domain name."""
         from rdflib import Graph, Literal, Namespace, URIRef
         from rdflib.namespace import OWL, RDF, RDFS, XSD
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             _extract_silver_columns,
         )
 
@@ -2759,7 +2759,7 @@ class TestCrossEntityNaturalKeyPassThrough:
         """
         from rdflib import Graph, Literal, Namespace, URIRef
         from rdflib.namespace import OWL, RDF, RDFS, XSD
-        from kairos_ontology.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
             _extract_silver_columns,
         )
 

@@ -92,6 +92,7 @@ discovery → source → domain → mapping → silver → gold → validate →
 | 7 | **Design — mapping** | `kairos-design-mapping` | SKOS source→domain mappings (uses the glossary) | Needed for `dbt` |
 | 8 | **Design — silver** | `kairos-design-silver` | `*-silver-ext.ttl` annotations | Needed for `silver`/`dbt` |
 | 9 | **Design — gold** | `kairos-design-gold` | `*-gold-ext.ttl` annotations | Needed for `powerbi` |
+| 9b | **Design — MDM** (optional) | `kairos-design-mdm` | `*-mdm-ext.ttl` policy | Needed for `mdm-profile` |
 | 10 | **Execute — validate** | `kairos-execute-validate` | Syntax + SHACL pass/fail | ✅ |
 | 11 | **Execute — project** | `kairos-execute-project` | All output artifacts | ✅ |
 | 12 | **Diagnose** | `kairos-diagnose-status` | Completeness / gap report (deep dive on `kairos-ontology status`) | — |
@@ -191,7 +192,7 @@ ontology-reference-models/          # Imported industry reference models
 
 ## 4  Available Projections
 
-The toolkit supports 9 projection targets:
+The toolkit supports the following projection targets:
 
 | Target | Command flag | What it generates | When to use |
 |---|---|---|---|
@@ -204,6 +205,7 @@ The toolkit supports 9 projection targets:
 | `prompt` | `--target prompt` | LLM-optimised ontology descriptions | AI / copilot context |
 | `report` | `--target report` | HTML mapping report with data flow diagrams and coverage dashboards | Documentation / governance |
 | `ddd` | `--target ddd` | Mermaid context maps + aggregate overviews + Markdown architecture report from `*-ddd-ext.ttl` overlays → `output/architecture/ddd/` | DDD architecture documentation |
+| `mdm-profile` | `--target mdm-profile` | Immutable, content-addressed MDM policy profile (JSON + review MD) from `*-mdm-ext.ttl` → `output/mdm/` | Master Data Management (opt-in; consumed by `kairos-mdm-runtime`) |
 | `all` | `--target all` | All of the above | Full regeneration |
 
 > **Optional DDD overlay (DD-091):** DDD design intent — bounded contexts,
@@ -216,6 +218,14 @@ The toolkit supports 9 projection targets:
 > render docs with `kairos-ontology project --target ddd`. It slots into the
 > lifecycle after `domain/claims`:
 > `discovery → source → domain/claims → optional DDD overlay → mapping → silver → gold → validate → project`.
+
+> **Optional MDM layer (MDM-DD-001..003):** Master Data Management policy — mastered
+> concepts, match rules, survivorship, workflow, DQ — lives in optional
+> `model/extensions/{domain}-mdm-ext.ttl` overlays using the `kairos-mdm` vocabulary.
+> Like `ddd`, the `mdm-profile` target is **opt-in and excluded from `--target all`**;
+> run it explicitly. It emits an immutable, content-addressed profile to `output/mdm/`
+> consumed by the separate `kairos-mdm-runtime` repo. Author policy with
+> **kairos-design-mdm**, validate with `kairos-ontology mdm-validate`. See `docs/mdm/`.
 
 
 > **Import whitelisting (DD-021):** When a domain ontology uses `owl:imports`

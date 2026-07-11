@@ -20,7 +20,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from kairos_ontology.claim_registry import (
+from kairos_ontology.core.claim_registry import (
     Claim,
     ClaimRegistry,
     CoverageSystem,
@@ -30,7 +30,7 @@ from kairos_ontology.claim_registry import (
     write_registry,
 )
 from kairos_ontology.cli.main import cli
-from kairos_ontology.derive_claims import (
+from kairos_ontology.core.derive_claims import (
     class_claim_id,
     load_skos_links,
     property_claim_id,

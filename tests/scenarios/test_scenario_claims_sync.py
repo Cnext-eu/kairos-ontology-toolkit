@@ -26,8 +26,8 @@ from click.testing import CliRunner
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF
 
-from kairos_ontology.claim_projection_sync import evaluate_projection_sync
-from kairos_ontology.claim_registry import (
+from kairos_ontology.core.claim_projection_sync import evaluate_projection_sync
+from kairos_ontology.core.claim_registry import (
     Claim,
     ClaimRegistry,
     CoverageSystem,
@@ -38,7 +38,7 @@ from kairos_ontology.claim_registry import (
     write_registry,
 )
 from kairos_ontology.cli.main import cli
-from kairos_ontology.projections.shared import KAIROS_EXT
+from kairos_ontology.core.projections.shared import KAIROS_EXT
 
 from .conftest import HUB_ROOT
 
@@ -223,7 +223,7 @@ def test_silver_projection_gate_passes_in_sync_and_blocks_drift(tmp_path):
     result = _run_claims_to_silver_ext(hub, domains="client")
     assert result.exit_code == 0, result.output
 
-    from kairos_ontology.projector import run_projections
+    from kairos_ontology.core.projector import run_projections
 
     output_path = hub / "output"
     run_projections(

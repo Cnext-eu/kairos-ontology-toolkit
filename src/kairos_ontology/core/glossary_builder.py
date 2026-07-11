@@ -18,7 +18,7 @@ the confirmed extractions and emits a valid SKOS ``ConceptScheme`` glossary
 The *judgement* (which prefLabel, which IRI to link, splitting multi-IRI terms)
 stays in the interactive skill; only the AI-free TTL writing lives here so it is
 consistent, testable and idempotent.  This mirrors the split already used for
-discovery bookkeeping in :mod:`kairos_ontology.discovery_extraction`.
+discovery bookkeeping in :mod:`kairos_ontology.core.discovery_extraction`.
 """
 
 from __future__ import annotations

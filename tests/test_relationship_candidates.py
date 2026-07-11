@@ -9,13 +9,13 @@ round-trip through the Claim Registry (including merge preservation).
 
 from __future__ import annotations
 
-from kairos_ontology.claim_registry import (
+from kairos_ontology.core.claim_registry import (
     Claim,
     ClaimRegistry,
     merge_preserving_decisions,
 )
-from kairos_ontology.migrate_claims import alignment_to_registry
-from kairos_ontology.propose_alignment import (
+from kairos_ontology.core.migrate_claims import alignment_to_registry
+from kairos_ontology.core.propose_alignment import (
     ColumnAlignment,
     DomainAlignment,
     TableAlignment,

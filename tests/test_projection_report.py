@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rdflib import Graph
 
-from kairos_ontology.projector import ProjectionReport, project_graph, run_projections
+from kairos_ontology.core.projector import ProjectionReport, project_graph, run_projections
 
 
 # Minimal valid ontology with one class.
@@ -331,7 +331,7 @@ class TestProjectionSessionLogArchival:
     """DD-071-style archival of prior projection session logs."""
 
     def test_archive_moves_prior_logs(self, tmp_path):
-        from kairos_ontology.projector import _archive_prior_projection_logs
+        from kairos_ontology.core.projector import _archive_prior_projection_logs
 
         sessions = tmp_path / ".sessions-projection"
         sessions.mkdir()
@@ -353,14 +353,14 @@ class TestProjectionSessionLogArchival:
         assert len(archived) == 2
 
     def test_archive_no_dir_is_noop(self, tmp_path):
-        from kairos_ontology.projector import _archive_prior_projection_logs
+        from kairos_ontology.core.projector import _archive_prior_projection_logs
 
         missing = tmp_path / "does-not-exist"
         assert _archive_prior_projection_logs(missing, ["client"]) == []
         assert _archive_prior_projection_logs(None, ["client"]) == []
 
     def test_archive_handles_name_collision(self, tmp_path):
-        from kairos_ontology.projector import _archive_prior_projection_logs
+        from kairos_ontology.core.projector import _archive_prior_projection_logs
 
         sessions = tmp_path / ".sessions-projection"
         archive = sessions / "_archive"

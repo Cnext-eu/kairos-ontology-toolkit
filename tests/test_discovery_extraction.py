@@ -11,7 +11,7 @@ import yaml
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
-from kairos_ontology.discovery_extraction import (
+from kairos_ontology.core.discovery_extraction import (
     EXTRACTION_VERSION,
     DiscoveryStatusReport,
     check_discovery_docs,
@@ -21,7 +21,7 @@ from kairos_ontology.discovery_extraction import (
     slugify_source_name,
     write_extraction,
 )
-from kairos_ontology.inventory import compute_source_hash
+from kairos_ontology.core.inventory import compute_source_hash
 
 
 # --------------------------------------------------------------------------- #

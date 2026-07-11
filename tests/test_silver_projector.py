@@ -7,7 +7,7 @@ import textwrap
 import pytest
 from rdflib import Graph, Namespace
 
-from kairos_ontology.projections.medallion_silver_projector import (
+from kairos_ontology.core.projections.medallion_silver_projector import (
     ColumnDef,
     TableDef,
     _camel_to_snake,
@@ -2796,7 +2796,7 @@ def test_silver_fk_complete_no_warning(caplog):
 # Issue #172 — _nearest_claimed_ancestor (transitive discriminator fold)
 # ---------------------------------------------------------------------------
 
-from kairos_ontology.projections.medallion_silver_projector import (  # noqa: E402
+from kairos_ontology.core.projections.medallion_silver_projector import (  # noqa: E402
     _nearest_claimed_ancestor,
 )
 from rdflib import URIRef  # noqa: E402

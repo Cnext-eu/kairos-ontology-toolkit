@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from kairos_ontology.ai_provider import (
+from kairos_ontology.core.ai_provider import (
     resolve_provider_config,
     get_ai_client,
     GITHUB_MODELS_ENDPOINT,
@@ -25,7 +25,7 @@ class TestDotenvAutoLoad:
         root_env.write_text("AZURE_AI_ENDPOINT=https://example\n", encoding="utf-8")
 
         monkeypatch.chdir(hub_dir)
-        with patch("kairos_ontology.ai_provider.load_dotenv") as load_dotenv_mock:
+        with patch("kairos_ontology.core.ai_provider.load_dotenv") as load_dotenv_mock:
             _load_dotenv_from_hub()
 
         load_dotenv_mock.assert_called_once_with(root_env, override=False)
@@ -40,7 +40,7 @@ class TestDotenvAutoLoad:
         hub_env.write_text("AZURE_AI_ENDPOINT=https://hub\n", encoding="utf-8")
 
         monkeypatch.chdir(hub_dir)
-        with patch("kairos_ontology.ai_provider.load_dotenv") as load_dotenv_mock:
+        with patch("kairos_ontology.core.ai_provider.load_dotenv") as load_dotenv_mock:
             _load_dotenv_from_hub()
 
         load_dotenv_mock.assert_called_once_with(hub_env, override=False)
@@ -51,7 +51,7 @@ class TestDotenvAutoLoad:
         (hub_dir / "model" / "ontologies").mkdir(parents=True)
 
         monkeypatch.chdir(hub_dir)
-        with patch("kairos_ontology.ai_provider.load_dotenv") as load_dotenv_mock:
+        with patch("kairos_ontology.core.ai_provider.load_dotenv") as load_dotenv_mock:
             _load_dotenv_from_hub()
 
         load_dotenv_mock.assert_not_called()
@@ -253,7 +253,7 @@ class TestPerRoleEndpoints:
         assert config.model == DEFAULT_MODEL
 
     def test_resolve_role_model_helper(self):
-        from kairos_ontology.ai_provider import resolve_role_model
+        from kairos_ontology.core.ai_provider import resolve_role_model
         with patch.dict(os.environ, {"KAIROS_AI_AFFINITY_MODEL": "mini-x"}, clear=True):
             assert resolve_role_model("affinity", "fallback") == "mini-x"
             assert resolve_role_model("alignment", "fallback") == "fallback"
@@ -291,7 +291,7 @@ class TestGetAiClient:
         )
         assert client is not None
 
-    @patch("kairos_ontology.ai_provider.logger")
+    @patch("kairos_ontology.core.ai_provider.logger")
     @patch("openai.OpenAI")
     def test_logs_sanitized_endpoint(self, mock_openai_cls, mock_logger):
         mock_openai_cls.return_value = MagicMock()
@@ -306,7 +306,7 @@ class TestGetAiClient:
         info_args = mock_logger.info.call_args.args
         assert info_args[2] == "https://strong.example.com"
 
-    @patch("kairos_ontology.ai_provider._create_foundry_client")
+    @patch("kairos_ontology.core.ai_provider._create_foundry_client")
     def test_foundry_delegates_to_create_foundry_client(self, mock_create):
         mock_create.return_value = MagicMock()
         env = {
@@ -326,7 +326,7 @@ class TestCreateFoundryClient:
 
     def test_foundry_missing_sdk_raises(self):
         """Missing azure-ai-projects package should raise EnvironmentError."""
-        from kairos_ontology.ai_provider import _create_foundry_client, AIProviderConfig
+        from kairos_ontology.core.ai_provider import _create_foundry_client, AIProviderConfig
         config = AIProviderConfig(
             provider="foundry",
             endpoint="https://my.ai.azure.com/api/projects/proj",
@@ -348,7 +348,7 @@ class TestCreateFoundryClient:
 
     def test_foundry_with_api_key(self):
         """Foundry with API key uses AzureKeyCredential when the SDK accepts it."""
-        from kairos_ontology.ai_provider import _create_foundry_client, AIProviderConfig
+        from kairos_ontology.core.ai_provider import _create_foundry_client, AIProviderConfig
 
         mock_project_client = MagicMock()
         mock_openai = MagicMock()
@@ -381,7 +381,7 @@ class TestCreateFoundryClient:
     def test_foundry_api_key_falls_back_to_token_credential(self):
         """When the Foundry SDK rejects the API key (needs get_token), fall back
         to DefaultAzureCredential and succeed."""
-        from kairos_ontology.ai_provider import _create_foundry_client, AIProviderConfig
+        from kairos_ontology.core.ai_provider import _create_foundry_client, AIProviderConfig
 
         key_sentinel = object()
         token_sentinel = object()
@@ -428,7 +428,7 @@ class TestCreateFoundryClient:
 
     def test_foundry_api_key_fallback_no_identity_raises(self):
         """API key rejected by SDK and azure-identity missing → clear error."""
-        from kairos_ontology.ai_provider import _create_foundry_client, AIProviderConfig
+        from kairos_ontology.core.ai_provider import _create_foundry_client, AIProviderConfig
 
         key_sentinel = object()
         key_project = MagicMock()
@@ -466,7 +466,7 @@ class TestCreateFoundryClient:
 
     def test_foundry_no_key_no_identity_raises(self):
         """Foundry without API key and without azure-identity should error."""
-        from kairos_ontology.ai_provider import _create_foundry_client, AIProviderConfig
+        from kairos_ontology.core.ai_provider import _create_foundry_client, AIProviderConfig
         config = AIProviderConfig(
             provider="foundry",
             endpoint="https://my.ai.azure.com/api/projects/proj",

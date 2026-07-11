@@ -4,9 +4,9 @@
 
 from rdflib import Graph, Literal, Namespace, RDF, RDFS, XSD
 
-from kairos_ontology.analyse_sources import KAIROS_BRONZE
-from kairos_ontology.suggest_shapes import build_shapes_graph, suggest_shapes
-from kairos_ontology.validator import validate_content
+from kairos_ontology.core.analyse_sources import KAIROS_BRONZE
+from kairos_ontology.core.suggest_shapes import build_shapes_graph, suggest_shapes
+from kairos_ontology.core.validator import validate_content
 
 SH = Namespace("http://www.w3.org/ns/shacl#")
 SRC = Namespace("https://kairos.cnext.eu/source/test#")

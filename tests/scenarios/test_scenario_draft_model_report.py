@@ -6,8 +6,8 @@ from pathlib import Path
 
 import yaml
 
-from kairos_ontology.claim_registry import Claim, ClaimRegistry, EvidenceSource, write_registry
-from kairos_ontology.draft_model_report import build_draft_model_report, write_draft_model_report
+from kairos_ontology.core.claim_registry import Claim, ClaimRegistry, EvidenceSource, write_registry
+from kairos_ontology.core.draft_model_report import build_draft_model_report, write_draft_model_report
 
 
 def test_scenario_draft_report_keeps_visual_model_advisory(tmp_path: Path):

@@ -36,12 +36,12 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
-from kairos_ontology.alignment_coverage import (
+from kairos_ontology.core.alignment_coverage import (
     ALIGNMENT_ALGORITHM_VERSION,
     compute_affinity_hash,
 )
-from kairos_ontology.claim_coverage import check_claims_coverage
-from kairos_ontology.claim_registry import (
+from kairos_ontology.core.claim_coverage import check_claims_coverage
+from kairos_ontology.core.claim_registry import (
     Claim,
     ClaimRegistry,
     CoverageSystem,

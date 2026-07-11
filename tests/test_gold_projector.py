@@ -10,7 +10,7 @@ from pathlib import Path
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import XSD
 
-from kairos_ontology.projections.medallion_gold_projector import (
+from kairos_ontology.core.projections.medallion_gold_projector import (
     _camel_to_snake,
     _classify_tables,
     _generate_date_dimension,
@@ -427,7 +427,7 @@ class TestTMDLContent:
             {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
         ]
 
-        caplog.set_level(logging.WARNING, logger="kairos_ontology.projections")
+        caplog.set_level(logging.WARNING, logger="kairos_ontology.core.projections")
         result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
         sm = "test/Test.SemanticModel/definition"
         rels = result[f"{sm}/relationships/relationships.tmdl"]

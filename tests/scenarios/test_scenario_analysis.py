@@ -10,13 +10,13 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from kairos_ontology.analyse_sources import (
+from kairos_ontology.core.analyse_sources import (
     parse_source_vocabulary,
     parse_reference_model,
     analyse_source_system,
     run_analyse_sources,
 )
-from kairos_ontology.coverage_report import (
+from kairos_ontology.core.coverage_report import (
     parse_domain_ontology,
     run_coverage_report,
     trace_source_evidence,
@@ -134,7 +134,7 @@ class TestAcmeHubOntologyParsing:
 class TestAnalyseSourcesScenario:
     """End-to-end analysis with mocked LLM calls."""
 
-    @patch("kairos_ontology.analyse_sources._get_openai_client")
+    @patch("kairos_ontology.core.analyse_sources._get_openai_client")
     def test_analyse_crmsystem_against_party(self, mock_get_client):
         """CRM tables should be assigned to the Party domain (single-call)."""
         mock_client = MagicMock()
@@ -170,7 +170,7 @@ class TestAnalyseSourcesScenario:
         assert first.confidence > 0
         assert first.likely_entity == "Party"
 
-    @patch("kairos_ontology.analyse_sources._get_openai_client")
+    @patch("kairos_ontology.core.analyse_sources._get_openai_client")
     def test_run_analyse_all_sources(self, mock_get_client, tmp_path):
         """Run analysis across all acme-hub sources."""
         mock_client = MagicMock()

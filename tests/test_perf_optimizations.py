@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import pytest
 
-from kairos_ontology._concurrency import (
+from kairos_ontology.core._concurrency import (
     call_with_backoff,
     map_concurrent,
     _is_rate_limit_error,
 )
-from kairos_ontology._cache import SidecarCache, compute_entry_hash, open_cache
-from kairos_ontology._cost import RECOMMENDED_MODEL, build_cost_warning, print_cost_warning
+from kairos_ontology.core._cache import SidecarCache, compute_entry_hash, open_cache
+from kairos_ontology.core._cost import RECOMMENDED_MODEL, build_cost_warning, print_cost_warning
 
 
 # ---------------------------------------------------------------------------

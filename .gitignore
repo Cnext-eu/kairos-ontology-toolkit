@@ -50,3 +50,7 @@ htmlcov/
 
 # Local ontology hub checkouts
 newton-ontology-hub/
+
+# Scenario test byproducts (projection/design session phase logs written into the hub)
+tests/scenarios/**/.sessions-projection/
+tests/scenarios/**/.kairos-state/

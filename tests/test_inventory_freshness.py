@@ -8,7 +8,7 @@ import yaml
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
-from kairos_ontology.inventory import (
+from kairos_ontology.core.inventory import (
     check_inventories,
     compute_source_hash,
     generate_inventory,
@@ -170,7 +170,7 @@ class TestCollisionFreshness:
         return ttl
 
     def test_all_models_fresh_no_spurious_stale(self, tmp_path):
-        from kairos_ontology.inventory import inventory_filename
+        from kairos_ontology.core.inventory import inventory_filename
 
         ref_root = tmp_path / "ontology-reference-models"
         inv_dir = tmp_path / "model" / "inventory"
@@ -191,7 +191,7 @@ class TestCollisionFreshness:
         assert set(report.ok).isdisjoint(report.stale)
 
     def test_archived_versions_do_not_make_current_inventory_stale(self, tmp_path):
-        from kairos_ontology.inventory import inventory_filename
+        from kairos_ontology.core.inventory import inventory_filename
 
         ref_root = tmp_path / "ontology-reference-models"
         inv_dir = tmp_path / "model" / "inventory"

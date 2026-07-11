@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from rdflib import Graph
 
 from kairos_ontology import __version__
-from kairos_ontology._provenance import (
+from kairos_ontology.core._provenance import (
     prepend_provenance,
     provenance_comment,
     strip_provenance,

@@ -4,7 +4,7 @@
 
 import pytest
 
-from kairos_ontology.extract_schema import (
+from kairos_ontology.core.extract_schema import (
     ColumnInfo,
     TableInfo,
     classify_json_column,
@@ -215,7 +215,7 @@ class TestDatabricksIntrospection:
     """Tests for Databricks-specific introspection logic."""
 
     def test_detect_json_in_string_columns(self):
-        from kairos_ontology.extract_schema import _detect_json_columns_databricks
+        from kairos_ontology.core.extract_schema import _detect_json_columns_databricks
 
         cols = [
             ColumnInfo(
@@ -236,7 +236,7 @@ class TestDatabricksIntrospection:
         assert cols[1].json_detected is False
 
     def test_no_detection_for_non_string_columns(self):
-        from kairos_ontology.extract_schema import _detect_json_columns_databricks
+        from kairos_ontology.core.extract_schema import _detect_json_columns_databricks
 
         cols = [
             ColumnInfo(
@@ -249,7 +249,7 @@ class TestDatabricksIntrospection:
         assert cols[0].json_detected is False
 
     def test_connect_databricks_missing_host(self):
-        from kairos_ontology.extract_schema import _connect_databricks
+        from kairos_ontology.core.extract_schema import _connect_databricks
 
         try:
             from databricks import sql as _  # noqa: F401
@@ -260,7 +260,7 @@ class TestDatabricksIntrospection:
             _connect_databricks({"http_path": "/sql/1.0/warehouses/abc", "token": "x"})
 
     def test_connect_databricks_missing_http_path(self):
-        from kairos_ontology.extract_schema import _connect_databricks
+        from kairos_ontology.core.extract_schema import _connect_databricks
 
         try:
             from databricks import sql as _  # noqa: F401

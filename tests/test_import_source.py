@@ -6,7 +6,7 @@ import pytest
 from rdflib import Graph, Namespace
 from rdflib.namespace import RDF, RDFS, OWL
 
-from kairos_ontology.import_source import (
+from kairos_ontology.core.import_source import (
     validate_source_schema,
     parse_source_schema,
     generate_vocabulary_ttl,
@@ -433,8 +433,8 @@ class TestChangeReport:
 
 
 # Import ColumnChange for the test above
-from kairos_ontology.import_source import ColumnChange  # noqa: E402
-from kairos_ontology.import_source import parse_source_schema_dir  # noqa: E402
+from kairos_ontology.core.import_source import ColumnChange  # noqa: E402
+from kairos_ontology.core.import_source import parse_source_schema_dir  # noqa: E402
 
 
 class TestParseSourceSchemaDir:

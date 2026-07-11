@@ -8,7 +8,7 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from kairos_ontology.claim_registry import (
+from kairos_ontology.core.claim_registry import (
     ClaimRegistry,
     dump_registry,
     load_registry,
@@ -16,7 +16,7 @@ from kairos_ontology.claim_registry import (
     validation_errors,
 )
 from kairos_ontology.cli.main import cli
-from kairos_ontology.migrate_claims import (
+from kairos_ontology.core.migrate_claims import (
     alignment_to_registry,
     build_uri_index,
     find_legacy_alignment_files,

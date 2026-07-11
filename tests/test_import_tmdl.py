@@ -10,7 +10,7 @@ import yaml
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
-from kairos_ontology.import_tmdl import (
+from kairos_ontology.core.import_tmdl import (
     detect_input_type,
     find_definition_dirs,
     generate_concept_mapping,
@@ -166,7 +166,7 @@ class TestFindDefinitionDirs:
 class TestEngineeringPack:
     def test_pack_contains_sections(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
-        from kairos_ontology.tmdl_parser import parse_model_folder
+        from kairos_ontology.core.tmdl_parser import parse_model_folder
 
         model = parse_model_folder(sm_dir / "definition")
         pack = generate_engineering_pack(model, "test/source")
@@ -183,7 +183,7 @@ class TestEngineeringPack:
 
     def test_pack_shows_relationship(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
-        from kairos_ontology.tmdl_parser import parse_model_folder
+        from kairos_ontology.core.tmdl_parser import parse_model_folder
 
         model = parse_model_folder(sm_dir / "definition")
         pack = generate_engineering_pack(model)
@@ -200,7 +200,7 @@ class TestEngineeringPack:
 class TestConceptMapping:
     def test_yaml_is_valid(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
-        from kairos_ontology.tmdl_parser import parse_model_folder
+        from kairos_ontology.core.tmdl_parser import parse_model_folder
 
         model = parse_model_folder(sm_dir / "definition")
         mapping_str = generate_concept_mapping(model)
@@ -215,7 +215,7 @@ class TestConceptMapping:
 
     def test_table_fields(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
-        from kairos_ontology.tmdl_parser import parse_model_folder
+        from kairos_ontology.core.tmdl_parser import parse_model_folder
 
         model = parse_model_folder(sm_dir / "definition")
         mapping_str = generate_concept_mapping(model)
@@ -234,7 +234,7 @@ class TestConceptMapping:
 
     def test_relationship_fields(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
-        from kairos_ontology.tmdl_parser import parse_model_folder
+        from kairos_ontology.core.tmdl_parser import parse_model_folder
 
         model = parse_model_folder(sm_dir / "definition")
         mapping_str = generate_concept_mapping(model)

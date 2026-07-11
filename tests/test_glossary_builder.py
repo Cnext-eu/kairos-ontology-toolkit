@@ -12,7 +12,7 @@ from rdflib import RDFS, SKOS, Graph, Literal, URIRef
 from rdflib.namespace import RDF
 
 from kairos_ontology.cli.main import cli
-from kairos_ontology.glossary_builder import (
+from kairos_ontology.core.glossary_builder import (
     aggregate_concepts,
     build_glossary,
     build_glossary_graph,

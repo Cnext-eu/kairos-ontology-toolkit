@@ -509,4 +509,5 @@ After displaying the validation report in chat, **always** save it as a Markdown
 | Design silver layer (DDL, SCD, FK annotations) | **kairos-design-silver** |
 | Run projections (generate artifacts after validation) | **kairos-execute-project** |
 | Map source columns to domain properties | **kairos-design-mapping** |
+| Design/validate MDM policy (`*-mdm-ext.ttl`, `mdm-validate`) | **kairos-design-mdm** |
 | Check hub status and completeness | **kairos-diagnose-status** |

@@ -26,9 +26,9 @@ from unittest import mock
 
 import yaml
 
-from kairos_ontology.analyse_sources import parse_reference_model
-from kairos_ontology.claim_registry import load_registry, write_registry
-from kairos_ontology.propose_alignment import (
+from kairos_ontology.core.analyse_sources import parse_reference_model
+from kairos_ontology.core.claim_registry import load_registry, write_registry
+from kairos_ontology.core.propose_alignment import (
     alignment_to_dict,
     build_domain_alignments,
     run_propose_alignment,
@@ -109,9 +109,9 @@ def _affinity_dir(tmp_path):
 def _run(tmp_path):
     """Build the in-memory client alignment dict (no files written)."""
     with mock.patch(
-        "kairos_ontology.propose_alignment.get_ai_client", return_value=_mock_client()
+        "kairos_ontology.core.propose_alignment.get_ai_client", return_value=_mock_client()
     ), mock.patch(
-        "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+        "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
         side_effect=_inventory_side_effect,
     ):
         alignments = build_domain_alignments(
@@ -127,9 +127,9 @@ def _run(tmp_path):
 def _run_to_disk(tmp_path, claims_dir, *, force=True):
     """Run the producer end-to-end, writing the Claim Registry to *claims_dir*."""
     with mock.patch(
-        "kairos_ontology.propose_alignment.get_ai_client", return_value=_mock_client()
+        "kairos_ontology.core.propose_alignment.get_ai_client", return_value=_mock_client()
     ), mock.patch(
-        "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+        "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
         side_effect=_inventory_side_effect,
     ):
         run_propose_alignment(

@@ -4,7 +4,7 @@
 
 from pathlib import Path
 
-from kairos_ontology.status import (
+from kairos_ontology.core.status import (
     STATE_DONE,
     STATE_IN_PROGRESS,
     STATE_NOT_STARTED,
