@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from kairos_ontology.claim_registry import (
+from kairos_ontology.core.claim_registry import (
     CLAIM_REGISTRY_SCHEMA_VERSION,
     TRIAGE_TO_DISPOSITION,
     Claim,

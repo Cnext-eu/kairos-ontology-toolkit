@@ -4,7 +4,7 @@
 
 import pytest
 
-from kairos_ontology.import_flatfile import (
+from kairos_ontology.core.import_flatfile import (
     infer_column_type,
     read_csv_table,
     read_parquet_table,
@@ -274,7 +274,7 @@ class TestCsvFieldSizeLimitWindows:
     def test_import_does_not_raise_overflow(self):
         """csv.field_size_limit(min(sys.maxsize, 2**31-1)) should never overflow."""
         import importlib
-        import kairos_ontology.import_flatfile as mod
+        import kairos_ontology.core.import_flatfile as mod
         # Re-import should succeed without OverflowError
         importlib.reload(mod)
 
@@ -499,7 +499,7 @@ class TestSameFileCopyGuard:
 class TestFlatfileToImportSourcePipeline:
     def test_csv_to_vocabulary_ttl(self, tmp_path):
         """Full pipeline: CSV → YAML → TTL."""
-        from kairos_ontology.import_source import parse_source_schema_dir, generate_vocabulary_ttl
+        from kairos_ontology.core.import_source import parse_source_schema_dir, generate_vocabulary_ttl
 
         # Step 1: Create CSV
         csv_file = tmp_path / "accounts.csv"

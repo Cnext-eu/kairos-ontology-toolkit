@@ -14,9 +14,9 @@ import yaml
 from click.testing import CliRunner
 
 from archetype_fixtures import build_refmodels_root
-from kairos_ontology.archetype_loader import load_archetype
+from kairos_ontology.core.archetype_loader import load_archetype
 from kairos_ontology.cli.main import cli
-from kairos_ontology.conformance_artifact import build_artifact, write_artifact
+from kairos_ontology.core.conformance_artifact import build_artifact, write_artifact
 
 
 @pytest.fixture()

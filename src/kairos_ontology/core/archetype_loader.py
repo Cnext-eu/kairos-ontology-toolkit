@@ -162,7 +162,7 @@ def resolve_refmodels_root(
         return normalize_refmodels_root(Path(env_value))
 
     # Fallback: reuse the toolkit's folder-scan resolver (sibling / hub-relative dirs).
-    from .cli.main import _resolve_ref_models_dir  # local import to avoid a cycle
+    from ..cli.main import _resolve_ref_models_dir  # local import to avoid a cycle
 
     scanned = _resolve_ref_models_dir(cwd, hub_root)
     if scanned is not None and _looks_like_refmodels_root(scanned):

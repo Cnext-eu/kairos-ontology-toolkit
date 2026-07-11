@@ -5,7 +5,7 @@
 
 import pytest
 
-from kairos_ontology.inventory import (
+from kairos_ontology.core.inventory import (
     generate_inventory,
     inventory_filename,
     write_inventory,

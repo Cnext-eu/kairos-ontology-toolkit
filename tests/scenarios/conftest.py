@@ -62,7 +62,7 @@ def _load_ontology(name: str) -> tuple[Graph, str, list[dict]]:
         cls_uri = str(cls)
         if not cls_uri.startswith(namespace):
             continue
-        from kairos_ontology.projections.uri_utils import extract_local_name
+        from kairos_ontology.core.projections.uri_utils import extract_local_name
         local = extract_local_name(cls_uri)
         label = g.value(cls, OWL.Class) or local
         for lbl in g.objects(cls, OWL.Class):
@@ -115,7 +115,7 @@ def _load_ontology_with_imports(name: str) -> tuple[Graph, str, list[dict]]:
     assert namespace, f"No owl:Ontology for domain '{name}' found in {ttl_path}"
 
     # Extract local classes (domain namespace)
-    from kairos_ontology.projections.uri_utils import extract_local_name
+    from kairos_ontology.core.projections.uri_utils import extract_local_name
     classes = []
     for cls in g.subjects(RDF.type, OWL.Class):
         cls_uri = str(cls)
@@ -129,7 +129,7 @@ def _load_ontology_with_imports(name: str) -> tuple[Graph, str, list[dict]]:
         })
 
     # DD-021: Discover whitelisted imports
-    from kairos_ontology.projector import _discover_whitelisted_imports
+    from kairos_ontology.core.projector import _discover_whitelisted_imports
 
     # Build all_class_rows (mimics _run_projection SPARQL query)
     all_class_rows = []
@@ -191,7 +191,7 @@ def invoice_ontology():
 @pytest.fixture(scope="module")
 def client_dbt_artifacts(client_ontology):
     """Generate dbt artifacts for the client domain."""
-    from kairos_ontology.projections.medallion_dbt_projector import (
+    from kairos_ontology.core.projections.medallion_dbt_projector import (
         generate_dbt_artifacts,
     )
 
@@ -216,7 +216,7 @@ def client_dbt_artifacts(client_ontology):
 @pytest.fixture(scope="module")
 def invoice_dbt_artifacts(invoice_ontology):
     """Generate dbt artifacts for the invoice domain."""
-    from kairos_ontology.projections.medallion_dbt_projector import (
+    from kairos_ontology.core.projections.medallion_dbt_projector import (
         generate_dbt_artifacts,
     )
 
@@ -251,7 +251,7 @@ def logistics_ontology():
 @pytest.fixture(scope="module")
 def logistics_dbt_artifacts(logistics_ontology):
     """Generate dbt artifacts for the logistics domain (ref-model classes)."""
-    from kairos_ontology.projections.medallion_dbt_projector import (
+    from kairos_ontology.core.projections.medallion_dbt_projector import (
         generate_dbt_artifacts,
     )
 

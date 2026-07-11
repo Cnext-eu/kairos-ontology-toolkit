@@ -7,9 +7,9 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
-from kairos_ontology.claim_registry import Claim, ClaimRegistry, EvidenceSource, write_registry
+from kairos_ontology.core.claim_registry import Claim, ClaimRegistry, EvidenceSource, write_registry
 from kairos_ontology.cli.main import cli
-from kairos_ontology.draft_model_report import (
+from kairos_ontology.core.draft_model_report import (
     build_draft_model_report,
     load_data_product_contract,
     write_draft_model_report,

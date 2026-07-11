@@ -12,7 +12,7 @@ These tests verify that:
 import pytest
 from rdflib import Graph, Namespace, RDFS, URIRef
 
-from kairos_ontology.projections.medallion_silver_projector import (
+from kairos_ontology.core.projections.medallion_silver_projector import (
     generate_silver_artifacts,
 )
 

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Design-time MDM layer** (MDM-DD-001..003, mdmhubdesignv2.md ADR-1): a new,
+  additive Master Data Management design layer expressed in
+  `model/extensions/{domain}-mdm-ext.ttl` overlays, driven by the managed
+  `kairos-mdm` vocabulary (`https://kairos.cnext.eu/mdm#`) — mastered concepts +
+  MDM style, match attributes/identifiers, attribute authority + survivorship,
+  deterministic match rules/thresholds, a content-addressed probabilistic-artifact
+  reference (weights never in Turtle), maker/checker + SLA workflow policy, abstract
+  steward roles, reference-data policy, and six-dimension DQ rules.
+  - `kairos-ontology project --target mdm-profile` projects an **immutable,
+    runtime-neutral** MDM profile (`{domain}-mdm-profile.json` with a reproducible
+    `content_digest`, plus a `{domain}-mdm-profile.md` review summary) to
+    `output/mdm/`. The target is opt-in (not part of `--target all`).
+  - `kairos-ontology mdm-validate` runs a structural design-time gate over
+    `*-mdm-ext.ttl` (controlled enumerations, thresholds, match rules, DQ
+    dimensions, probabilistic-artifact digest). Skill-managed via **kairos-design-mdm**.
+  - **Source split**: ontology functionality moved into `kairos_ontology.core`;
+    the new `kairos_ontology.mdm` design-time package is an *additive consumer* of
+    core. A one-way boundary is enforced — `core` never imports `mdm` (registry
+    pattern; `tests/test_layering.py` guard). Public API is preserved via top-level
+    `kairos_ontology` re-exports.
+  - New scaffold asset `kairos-mdm.ttl`. See **MDM-DD-001..003** and
+    `docs/mdm/`.
+  - New **kairos-design-mdm** skill (`.github/skills/` + scaffold mirror) for
+    interactive `*-mdm-ext.ttl` authoring, plus MDM docs under `docs/mdm/`
+    (`mdm-design-decisions.md`, `user-stories.md`, `mdm-navigator-spec.md`).
+
 ## [4.4.0rc17] — 2026-07-05
 
 ### Added

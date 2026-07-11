@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from rdflib import Graph
 
-from kairos_ontology import ddd
+from kairos_ontology.core import ddd
 
 ACME_HUB = Path(__file__).parent / "scenarios" / "acme-hub"
 ONTOLOGIES = ACME_HUB / "model" / "ontologies"

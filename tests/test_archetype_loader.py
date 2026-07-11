@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Unit tests for kairos_ontology.archetype_loader (DD-090)."""
+"""Unit tests for kairos_ontology.core.archetype_loader (DD-090)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from archetype_fixtures import build_refmodels_root
-from kairos_ontology.archetype_loader import (
+from kairos_ontology.core.archetype_loader import (
     ArchetypeError,
     check_version_drift,
     list_archetypes,

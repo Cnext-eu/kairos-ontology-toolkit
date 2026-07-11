@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Unit tests for kairos_ontology.archetype_topology (DD-090)."""
+"""Unit tests for kairos_ontology.core.archetype_topology (DD-090)."""
 
 from __future__ import annotations
 
 import pytest
 
 from archetype_fixtures import build_refmodels_root
-from kairos_ontology.archetype_loader import load_archetype
-from kairos_ontology.archetype_topology import derive_archetype_topology
+from kairos_ontology.core.archetype_loader import load_archetype
+from kairos_ontology.core.archetype_topology import derive_archetype_topology
 
 
 @pytest.fixture()

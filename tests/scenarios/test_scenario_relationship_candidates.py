@@ -14,8 +14,8 @@ clustered set of address columns is written through ``write_claims_output`` into
 
 from __future__ import annotations
 
-from kairos_ontology.claim_registry import load_registry, registry_path
-from kairos_ontology.propose_alignment import (
+from kairos_ontology.core.claim_registry import load_registry, registry_path
+from kairos_ontology.core.propose_alignment import (
     ColumnAlignment,
     DomainAlignment,
     TableAlignment,

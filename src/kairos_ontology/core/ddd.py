@@ -34,7 +34,7 @@ KAIROS_EXT_NS = "https://kairos.cnext.eu/ext#"
 
 # Packaged vocabulary + shapes (bundled in scaffold/, loaded from the package so
 # existing hubs validate without a hub-local copy).
-_SCAFFOLD_DIR = Path(__file__).resolve().parent / "scaffold"
+_SCAFFOLD_DIR = Path(__file__).resolve().parent.parent / "scaffold"
 DDD_VOCAB_PATH = _SCAFFOLD_DIR / "kairos-ddd.ttl"
 DDD_SHAPES_PATH = _SCAFFOLD_DIR / "kairos-ddd-shapes.shacl.ttl"
 

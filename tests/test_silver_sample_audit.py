@@ -6,7 +6,7 @@ import yaml
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
-from kairos_ontology.silver_sample_audit import (
+from kairos_ontology.core.silver_sample_audit import (
     load_source_samples,
     run_silver_sample_audit,
 )

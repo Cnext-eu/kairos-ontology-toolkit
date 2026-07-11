@@ -75,6 +75,7 @@ kairos-ontology project --target all
 | **a2ui** | JSON Schema messages | UI generation / form builders |
 | **prompt** | JSON context documents | LLM prompt engineering |
 | **report** | HTML mapping report with data flow diagrams | Source-to-domain coverage review |
+| **mdm-profile** | Immutable, content-addressed MDM policy profile (JSON + review MD) | Master Data Management — consumed by `kairos-mdm-runtime` (opt-in; requires `*-mdm-ext.ttl`) |
 
 Each target produces per-domain output — deploy and version domains independently.
 

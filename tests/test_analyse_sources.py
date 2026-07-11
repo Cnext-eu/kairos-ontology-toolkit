@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from rdflib import RDF, RDFS, OWL
 
-from kairos_ontology.analyse_sources import (
+from kairos_ontology.core.analyse_sources import (
     parse_source_vocabulary,
     parse_reference_model,
     find_specializations,
@@ -40,7 +40,7 @@ from kairos_ontology.analyse_sources import (
     SampleEvidence,
     FALLBACK_DOMAIN_IDS,
 )
-from kairos_ontology.coverage_report import (
+from kairos_ontology.core.coverage_report import (
     parse_domain_ontology,
     CoverageReport,
     DomainCoverage,
@@ -507,7 +507,7 @@ class TestSampleEvidence:
         })
         client.chat.completions.create.return_value = response
         monkeypatch.setattr(
-            "kairos_ontology.analyse_sources._get_openai_client", lambda: client
+            "kairos_ontology.core.analyse_sources._get_openai_client", lambda: client
         )
         messages: list[str] = []
 
@@ -1327,21 +1327,21 @@ class TestSemanticGrounding:
 
     def test_resolve_uris_to_classes(self, tmp_path):
         catalog = self._setup(tmp_path)
-        from kairos_ontology.catalog_utils import CatalogResolver
+        from kairos_ontology.core.catalog_utils import CatalogResolver
         resolver = CatalogResolver(catalog)
         out = _resolve_uris_to_classes([self.PARTY_URI], resolver, {}, cap=18)
         assert {c["name"] for c in out} == {"TradeParty", "Consignee"}
 
     def test_resolve_uris_caps_results(self, tmp_path):
         catalog = self._setup(tmp_path)
-        from kairos_ontology.catalog_utils import CatalogResolver
+        from kairos_ontology.core.catalog_utils import CatalogResolver
         resolver = CatalogResolver(catalog)
         out = _resolve_uris_to_classes([self.PARTY_URI], resolver, {}, cap=1)
         assert len(out) == 1
 
     def test_resolve_uris_skips_unmapped(self, tmp_path):
         catalog = self._setup(tmp_path)
-        from kairos_ontology.catalog_utils import CatalogResolver
+        from kairos_ontology.core.catalog_utils import CatalogResolver
         resolver = CatalogResolver(catalog)
         out = _resolve_uris_to_classes(["https://unknown.example/x#"], resolver, {}, cap=18)
         assert out == []
@@ -1395,13 +1395,13 @@ class TestAffinityConcurrencyAndCaching:
         return client
 
     def test_sidecar_cache_skips_second_run(self, tmp_path, monkeypatch):
-        from kairos_ontology._cache import SidecarCache
+        from kairos_ontology.core._cache import SidecarCache
 
         vocab_file, ref_domains = self._setup(tmp_path)
         counter: list[int] = []
         client = self._counting_client(counter)
         monkeypatch.setattr(
-            "kairos_ontology.analyse_sources._get_openai_client", lambda: client
+            "kairos_ontology.core.analyse_sources._get_openai_client", lambda: client
         )
 
         cache = SidecarCache(tmp_path / ".cache" / "analyse-sources.json")
@@ -1419,7 +1419,7 @@ class TestAffinityConcurrencyAndCaching:
     def test_parallel_matches_serial(self, tmp_path, monkeypatch):
         vocab_file, ref_domains = self._setup(tmp_path)
         monkeypatch.setattr(
-            "kairos_ontology.analyse_sources._get_openai_client",
+            "kairos_ontology.core.analyse_sources._get_openai_client",
             lambda: self._counting_client([]),
         )
         serial = analyse_source_system(vocab_file, ref_domains, max_workers=1)
@@ -1432,7 +1432,7 @@ class TestAffinityConcurrencyAndCaching:
     def test_reports_each_table_as_it_completes(self, tmp_path, monkeypatch):
         vocab_file, ref_domains = self._setup(tmp_path)
         monkeypatch.setattr(
-            "kairos_ontology.analyse_sources._get_openai_client",
+            "kairos_ontology.core.analyse_sources._get_openai_client",
             lambda: self._counting_client([]),
         )
         messages: list[str] = []
@@ -1548,7 +1548,7 @@ class TestDomainsOutputFilter:
         ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
         seen: list[int] = []
         monkeypatch.setattr(
-            "kairos_ontology.analyse_sources._get_openai_client",
+            "kairos_ontology.core.analyse_sources._get_openai_client",
             lambda: self._routing_client(seen),
         )
 
@@ -1578,7 +1578,7 @@ class TestDomainsOutputFilter:
 
         ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
         monkeypatch.setattr(
-            "kairos_ontology.analyse_sources._get_openai_client",
+            "kairos_ontology.core.analyse_sources._get_openai_client",
             lambda: self._routing_client([]),
         )
 
@@ -1604,7 +1604,7 @@ class TestDomainsOutputFilter:
 
         ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
         monkeypatch.setattr(
-            "kairos_ontology.analyse_sources._get_openai_client",
+            "kairos_ontology.core.analyse_sources._get_openai_client",
             lambda: self._routing_client([]),
         )
 

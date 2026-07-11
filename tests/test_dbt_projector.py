@@ -11,7 +11,7 @@ import yaml
 from rdflib import Graph, URIRef
 from rdflib.namespace import RDFS
 
-from kairos_ontology.projections.medallion_dbt_projector import (
+from kairos_ontology.core.projections.medallion_dbt_projector import (
     _build_silver_model_registry,
     _build_sk_iri_columns,
     _camel_to_snake,
@@ -2973,7 +2973,7 @@ class TestNaturalKeyWarning:
                      "name": "Account", "label": "Account",
                      "comment": "An account entity"}]
 
-        with caplog.at_level(logging.WARNING, logger="kairos_ontology.projections.medallion_dbt_projector"):
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.projections.medallion_dbt_projector"):
             generate_dbt_artifacts(
                 classes=classes,
                 graph=g,
@@ -2995,7 +2995,7 @@ class TestNaturalKeyWarning:
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        with caplog.at_level(logging.WARNING, logger="kairos_ontology.projections.medallion_dbt_projector"):
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.projections.medallion_dbt_projector"):
             generate_dbt_artifacts(
                 classes=classes,
                 graph=g,
@@ -3018,7 +3018,7 @@ class TestNaturalKeyWarning:
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        with caplog.at_level(logging.WARNING, logger="kairos_ontology.projections.medallion_dbt_projector"):
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.projections.medallion_dbt_projector"):
             generate_dbt_artifacts(
                 classes=classes,
                 graph=g,
@@ -3042,7 +3042,7 @@ class TestNaturalKeyWarning:
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        with caplog.at_level(logging.WARNING, logger="kairos_ontology.projections.medallion_dbt_projector"):
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.projections.medallion_dbt_projector"):
             generate_dbt_artifacts(
                 classes=classes,
                 graph=g,

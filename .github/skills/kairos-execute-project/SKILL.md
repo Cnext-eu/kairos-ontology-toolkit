@@ -2,7 +2,7 @@
 name: kairos-execute-project
 description: >
   Knowledge about generating downstream artifacts from ontologies.
-  Covers all 7 projection targets and when to use each.
+  Covers all projection targets (including the opt-in mdm-profile) and when to use each.
 ---
 
 # Projection Generation Skill
@@ -168,6 +168,7 @@ You:
 | **silver** | DDL + ALTER + Mermaid ERD | MS Fabric / Delta Lake silver layer |
 | **powerbi** | Star schema DDL + TMDL + DAX + ERD | Power BI / MS Fabric gold layer |
 | **report** | HTML mapping reports | Business analyst mapping coverage review |
+| **mdm-profile** | Immutable MDM policy profile (JSON + review MD) | Master Data Management — consumed by `kairos-mdm-runtime` (opt-in; requires `*-mdm-ext.ttl`) |
 
 ## When to use each target
 
@@ -177,6 +178,7 @@ You:
 - **a2ui**: When generating UI forms. Creates JSON schemas that describe the data structure for automatic UI rendering.
 - **prompt**: When using the ontology as LLM context. Generates a compact version (entity→fields map) and a detailed version (with types, descriptions, relationships).
 - **silver**: When building the silver layer of a medallion data platform (e.g. MS Fabric warehouse). Generates T-SQL DDL (`CREATE TABLE`), FK/UNIQUE constraints (`ALTER TABLE`), and a Mermaid ERD. Requires a `*-silver-ext.ttl` annotation file in `model/extensions/`. Imported classes (via `owl:imports`) are not projected by default — use `silverInclude` or `silverIncludeImports` to claim them (DD-021). See the **kairos-design-silver** skill.
+- **mdm-profile**: When a domain has Master Data Management policy. Projects an **immutable, content-addressed** MDM profile (`output/mdm/{domain}-mdm-profile.json` + `.md` review summary) from a `*-mdm-ext.ttl` extension (`kairos-mdm:` vocabulary). **Opt-in** — not part of bare `project`/`--target all`; run it explicitly. Author policy with the **kairos-design-mdm** skill; validate with `mdm-validate`. The profile is consumed by the separate `kairos-mdm-runtime` repo (design-time only here).
 
 ## CLI commands
 
@@ -193,7 +195,7 @@ python -m kairos_ontology project --target silver
 # Generate one domain only
 python -m kairos_ontology project --ontology model/ontologies/party.ttl --target silver
 
-# Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver, powerbi, report
+# Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver, powerbi, report, mdm-profile
 ```
 
 ## Medallion pipeline

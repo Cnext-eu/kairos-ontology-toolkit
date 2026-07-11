@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from kairos_ontology.enrich_vocabulary import (
+from kairos_ontology.core.enrich_vocabulary import (
     detect_enums,
     detect_formats,
     infer_foreign_keys,

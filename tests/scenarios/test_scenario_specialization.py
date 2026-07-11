@@ -14,20 +14,20 @@ Uses the acme-hub kairos-ref-party.ttl which has:
 
 from pathlib import Path
 
-from kairos_ontology.analyse_sources import parse_reference_model
-from kairos_ontology.coverage_report import (
+from kairos_ontology.core.analyse_sources import parse_reference_model
+from kairos_ontology.core.coverage_report import (
     _align_properties,
     _build_ref_index,
     align_classes_deterministic,
     parse_domain_ontology,
 )
-from kairos_ontology.inventory import (
+from kairos_ontology.core.inventory import (
     INVENTORY_VERSION,
     generate_inventory,
     load_inventory,
     write_inventory,
 )
-from kairos_ontology.propose_alignment import _format_ref_inventory
+from kairos_ontology.core.propose_alignment import _format_ref_inventory
 
 REF_MODELS_DIR = Path(__file__).parent / "acme-hub" / "model" / "reference-models"
 

@@ -1,0 +1,226 @@
+# kairos-mdm: Kairos Master Data Management (MDM) Extension Vocabulary
+#
+# Namespace: https://kairos.cnext.eu/mdm#
+# Prefix:    kairos-mdm:
+#
+# This ontology defines the OPTIONAL, ADDITIVE Master Data Management (MDM) policy
+# overlay used to declare how governed concepts are mastered and governed
+# (mdmhubdesignv2.md, ADR-1). It is DESIGN-TIME policy: the `mdm-profile` projection
+# target reads these annotations and emits an immutable, runtime-neutral profile
+# (`output/mdm/<domain>-mdm-profile.json`) consumed by the separate
+# `kairos-mdm-runtime`. It never encodes runtime state (enterprise IDs, crosswalks,
+# scores) or environment bindings (endpoints, secrets, identity maps).
+#
+# These annotations belong in SEPARATE overlay files named `{domain}-mdm-ext.ttl`
+# under `model/extensions/`. Domain ontologies must remain free of MDM policy.
+# Never reuse a local name across the kairos-ext / kairos-bronze / kairos-map /
+# kairos-ddd / kairos-mdm vocabularies.
+#
+# ADR-5: probabilistic matching weights are NEVER authored here — only an immutable,
+# content-addressed reference (kairos-mdm:probabilisticArtifact) to an owned,
+# versioned artifact is declared; deterministic rules/thresholds are in Turtle.
+
+@prefix kairos-mdm: <https://kairos.cnext.eu/mdm#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/mdm> a owl:Ontology ;
+    rdfs:label "Kairos MDM Extension Vocabulary"@en ;
+    rdfs:comment "Annotation properties and classes for declaring master-data mastering and governance policy (mastered concepts, match attributes, deterministic rules, survivorship, workflow, reference-data and DQ policy). Design-time only; projected by the mdm-profile target."@en ;
+    owl:versionInfo "1.0.0" .
+
+# ===========================================================================
+# Classes (resources referenced from *-mdm-ext.ttl)
+# ===========================================================================
+
+kairos-mdm:MatchRule a owl:Class ;
+    rdfs:label "Match Rule"@en ;
+    rdfs:comment "A DETERMINISTIC identity-resolution rule: a comparator over one or more attributes with a threshold and an outcome action. Probabilistic models are referenced out-of-band (ADR-5)."@en .
+
+kairos-mdm:StewardRole a owl:Class ;
+    rdfs:label "Steward Role"@en ;
+    rdfs:comment "An ABSTRACT governance role (e.g. Region Steward). Environment identity mapping (Entra groups → roles) is a dataplatform binding and is never declared here."@en .
+
+kairos-mdm:DataQualityRule a owl:Class ;
+    rdfs:label "Data Quality Rule"@en ;
+    rdfs:comment "A data-quality rule scored against one of the six DAMA dimensions, with an optional scorecard threshold and a severity."@en .
+
+# ===========================================================================
+# Class-level annotation properties (on owl:Class)
+# ===========================================================================
+
+kairos-mdm:mastered a owl:DatatypeProperty ;
+    rdfs:label "mastered"@en ;
+    rdfs:comment "Boolean. Marks an owl:Class as a mastered entity (golden record produced and governed by MDM)."@en ;
+    rdfs:range xsd:boolean .
+
+kairos-mdm:mdmStyle a owl:DatatypeProperty ;
+    rdfs:label "MDM style"@en ;
+    rdfs:comment "The MDM implementation style for a mastered concept. One of: registry, consolidation, coexistence, centralized."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:referenceList a owl:DatatypeProperty ;
+    rdfs:label "reference list"@en ;
+    rdfs:comment "Boolean. Marks an owl:Class as governed reference data (code lists) rather than a mastered entity."@en ;
+    rdfs:range xsd:boolean .
+
+kairos-mdm:makerChecker a owl:DatatypeProperty ;
+    rdfs:label "maker/checker"@en ;
+    rdfs:comment "Boolean. Requires a separate approver (four-eyes) for stewardship decisions on this concept."@en ;
+    rdfs:range xsd:boolean .
+
+kairos-mdm:autoActionBound a owl:DatatypeProperty ;
+    rdfs:label "auto-action bound"@en ;
+    rdfs:comment "Decimal in 0..1. Match score at or above which the runtime may act automatically (e.g. auto-merge) without stewardship."@en ;
+    rdfs:range xsd:decimal .
+
+kairos-mdm:slaHours a owl:DatatypeProperty ;
+    rdfs:label "SLA hours"@en ;
+    rdfs:comment "Integer. Abstract service-level time budget (hours) for resolving a governance case on this concept."@en ;
+    rdfs:range xsd:integer .
+
+kairos-mdm:escalationRole a owl:DatatypeProperty ;
+    rdfs:label "escalation role"@en ;
+    rdfs:comment "Abstract role name a breached case escalates to."@en ;
+    rdfs:range xsd:string .
+
+# Reference-data policy (on a referenceList class)
+kairos-mdm:referenceOwner a owl:DatatypeProperty ;
+    rdfs:label "reference owner"@en ;
+    rdfs:comment "Owning body/team accountable for a governed reference list."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:releasePolicy a owl:DatatypeProperty ;
+    rdfs:label "release policy"@en ;
+    rdfs:comment "How new versions of a reference list are released (e.g. quarterly, on-change)."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:license a owl:DatatypeProperty ;
+    rdfs:label "license"@en ;
+    rdfs:comment "License / attribution for a reference list (§9.2)."@en ;
+    rdfs:range xsd:string .
+
+# ===========================================================================
+# Attribute-level annotation properties (on owl:DatatypeProperty / owl:ObjectProperty)
+# ===========================================================================
+
+kairos-mdm:matchAttribute a owl:DatatypeProperty ;
+    rdfs:label "match attribute"@en ;
+    rdfs:comment "Boolean. The attribute participates in identity resolution / candidate matching."@en ;
+    rdfs:range xsd:boolean .
+
+kairos-mdm:identifier a owl:DatatypeProperty ;
+    rdfs:label "identifier"@en ;
+    rdfs:comment "Boolean. The attribute is a match-capable identifier (e.g. VAT, LEI). Identifiers are normalized per the single normalization contract (ADR-4)."@en ;
+    rdfs:range xsd:boolean .
+
+kairos-mdm:identifierType a owl:DatatypeProperty ;
+    rdfs:label "identifier type"@en ;
+    rdfs:comment "The identifier scheme (e.g. VAT, KBO, LEI, EORI)."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:authoritativeSource a owl:DatatypeProperty ;
+    rdfs:label "authoritative source"@en ;
+    rdfs:comment "Source system(s) authoritative for this attribute's golden value. May repeat."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:survivorship a owl:DatatypeProperty ;
+    rdfs:label "survivorship"@en ;
+    rdfs:comment "Golden-value survivorship strategy. One of: source-precedence, recency, completeness, most-trusted, manual."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:survivorshipPriority a owl:DatatypeProperty ;
+    rdfs:label "survivorship priority"@en ;
+    rdfs:comment "Integer tie-breaker (lower wins) for source-precedence survivorship."@en ;
+    rdfs:range xsd:integer .
+
+# ===========================================================================
+# Match-rule properties (on kairos-mdm:MatchRule)
+# ===========================================================================
+
+kairos-mdm:appliesTo a owl:ObjectProperty ;
+    rdfs:label "applies to"@en ;
+    rdfs:comment "Links a MatchRule or DataQualityRule to the owl:Class it governs. If omitted, a rule is attributed to a concept when all its onAttribute properties belong to that concept."@en ;
+    rdfs:range owl:Class .
+
+kairos-mdm:onAttribute a owl:ObjectProperty ;
+    rdfs:label "on attribute"@en ;
+    rdfs:comment "Links a MatchRule or DataQualityRule to a property it evaluates. May repeat."@en .
+
+kairos-mdm:comparator a owl:DatatypeProperty ;
+    rdfs:label "comparator"@en ;
+    rdfs:comment "Deterministic comparator for a MatchRule. One of: exact, normalized, fuzzy-reference."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:threshold a owl:DatatypeProperty ;
+    rdfs:label "threshold"@en ;
+    rdfs:comment "Decimal in 0..1. Score at or above which the MatchRule's action fires."@en ;
+    rdfs:range xsd:decimal .
+
+kairos-mdm:matchAction a owl:DatatypeProperty ;
+    rdfs:label "match action"@en ;
+    rdfs:comment "Outcome of a MatchRule. One of: auto-merge, candidate, review."@en ;
+    rdfs:range xsd:string .
+
+# ===========================================================================
+# Probabilistic-artifact reference (on owl:Ontology) — ADR-5
+# ===========================================================================
+
+kairos-mdm:probabilisticArtifact a owl:ObjectProperty ;
+    rdfs:label "probabilistic artifact"@en ;
+    rdfs:comment "Links the domain ontology to an immutable reference for the owned probabilistic-matching model. Weights are NEVER in Turtle (ADR-5)."@en .
+
+kairos-mdm:artifactDigest a owl:DatatypeProperty ;
+    rdfs:label "artifact digest"@en ;
+    rdfs:comment "Content-addressed digest (e.g. sha256:...) of the probabilistic model, traced in every match record."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:artifactVersion a owl:DatatypeProperty ;
+    rdfs:label "artifact version"@en ;
+    rdfs:comment "Human-readable version of the referenced probabilistic model."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:artifactUri a owl:DatatypeProperty ;
+    rdfs:label "artifact URI"@en ;
+    rdfs:comment "Optional locator for the referenced probabilistic model artifact."@en ;
+    rdfs:range xsd:anyURI .
+
+# ===========================================================================
+# Steward-role properties (on kairos-mdm:StewardRole)
+# ===========================================================================
+
+kairos-mdm:roleName a owl:DatatypeProperty ;
+    rdfs:label "role name"@en ;
+    rdfs:comment "Human-readable name of an abstract steward role."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:scope a owl:DatatypeProperty ;
+    rdfs:label "scope"@en ;
+    rdfs:comment "Governance scope a steward role is authorized over (e.g. a region or domain)."@en ;
+    rdfs:range xsd:string .
+
+# ===========================================================================
+# Data-quality-rule properties (on kairos-mdm:DataQualityRule)
+# ===========================================================================
+
+kairos-mdm:dimension a owl:DatatypeProperty ;
+    rdfs:label "dimension"@en ;
+    rdfs:comment "The DAMA data-quality dimension. One of: accuracy, completeness, consistency, timeliness, uniqueness, validity."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:expression a owl:DatatypeProperty ;
+    rdfs:label "expression"@en ;
+    rdfs:comment "Optional human-readable / engine-neutral expression describing the quality check."@en ;
+    rdfs:range xsd:string .
+
+kairos-mdm:scorecardThreshold a owl:DatatypeProperty ;
+    rdfs:label "scorecard threshold"@en ;
+    rdfs:comment "Decimal in 0..1. Minimum passing score for the rule on the quality scorecard."@en ;
+    rdfs:range xsd:decimal .
+
+kairos-mdm:severity a owl:DatatypeProperty ;
+    rdfs:label "severity"@en ;
+    rdfs:comment "Severity of a DQ breach. One of: info, warning, error."@en ;
+    rdfs:range xsd:string .

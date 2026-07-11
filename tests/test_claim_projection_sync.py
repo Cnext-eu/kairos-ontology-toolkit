@@ -8,17 +8,17 @@ from click.testing import CliRunner
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF
 
-from kairos_ontology.alignment_coverage import (
+from kairos_ontology.core.alignment_coverage import (
     ALIGNMENT_ALGORITHM_VERSION,
     compute_affinity_hash,
 )
-from kairos_ontology.claim_projection_sync import (
+from kairos_ontology.core.claim_projection_sync import (
     _collect_hub_domain_bases,
     apply_projection_sync,
     evaluate_projection_sync,
     scaffold_missing_surfaces,
 )
-from kairos_ontology.claim_registry import (
+from kairos_ontology.core.claim_registry import (
     Claim,
     ClaimRegistry,
     CoverageSystem,
@@ -29,7 +29,7 @@ from kairos_ontology.claim_registry import (
     write_registry,
 )
 from kairos_ontology.cli.main import cli
-from kairos_ontology.projections.shared import KAIROS_EXT
+from kairos_ontology.core.projections.shared import KAIROS_EXT
 
 
 def _write_affinity(analysis_dir: Path) -> None:

@@ -7,7 +7,7 @@ from __future__ import annotations
 import yaml
 import pytest
 
-from kairos_ontology.generate_staging import (
+from kairos_ontology.core.generate_staging import (
     generate_staging_models,
     _generate_flat_expansion,
     _generate_array_expansion,

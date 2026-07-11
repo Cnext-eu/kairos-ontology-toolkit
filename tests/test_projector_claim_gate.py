@@ -3,9 +3,9 @@
 import json
 from pathlib import Path
 
-import kairos_ontology.projector as projector
-from kairos_ontology.alignment_coverage import ALIGNMENT_ALGORITHM_VERSION, compute_affinity_hash
-from kairos_ontology.claim_registry import (
+import kairos_ontology.core.projector as projector
+from kairos_ontology.core.alignment_coverage import ALIGNMENT_ALGORITHM_VERSION, compute_affinity_hash
+from kairos_ontology.core.claim_registry import (
     Claim,
     ClaimRegistry,
     CoverageSystem,
@@ -15,7 +15,7 @@ from kairos_ontology.claim_registry import (
     registry_path,
     write_registry,
 )
-from kairos_ontology.projector import run_projections
+from kairos_ontology.core.projector import run_projections
 
 
 def _write_synced_claim_domain(hub: Path, domain: str) -> tuple[Path, Path]:

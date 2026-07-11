@@ -466,7 +466,7 @@ def resolve_reference_models(
         if len(ttl_files) == 1 and catalog_path and catalog_path.exists():
             # Single file with catalog: resolve owl:imports
             try:
-                from kairos_ontology.catalog_utils import load_graph_with_catalog
+                from kairos_ontology.core.catalog_utils import load_graph_with_catalog
                 catalog_result = load_graph_with_catalog(ttl_files[0], catalog_path)
                 result = parse_reference_model(
                     graph=catalog_result.graph, domain_name=display_name,
@@ -516,7 +516,7 @@ def resolve_reference_models(
             if catalog_path and catalog_path.exists():
                 # Also resolve owl:imports from merged graph
                 try:
-                    from kairos_ontology.catalog_utils import CatalogResolver
+                    from kairos_ontology.core.catalog_utils import CatalogResolver
                     resolver = CatalogResolver(catalog_path)
                     for import_uri in list(merged.objects(predicate=OWL.imports)):
                         import_str = str(import_uri)
@@ -757,7 +757,7 @@ def resolve_domain_class_summaries(
         logger.debug("No catalog available; skipping semantic grounding")
         return
     try:
-        from kairos_ontology.catalog_utils import CatalogResolver
+        from kairos_ontology.core.catalog_utils import CatalogResolver
         resolver = CatalogResolver(Path(catalog_path))
     except Exception as e:
         logger.warning("Catalog load failed (%s); skipping semantic grounding", e)
@@ -881,7 +881,7 @@ def _get_openai_client():
     Uses the ``affinity`` role so a per-role endpoint/model override applies to the
     high-volume table → domain classification call (issue #182).
     """
-    from kairos_ontology.ai_provider import ROLE_AFFINITY, get_ai_client
+    from kairos_ontology.core.ai_provider import ROLE_AFFINITY, get_ai_client
     return get_ai_client(role=ROLE_AFFINITY)
 
 

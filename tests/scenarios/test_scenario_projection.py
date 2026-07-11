@@ -30,7 +30,7 @@ def projected_hub(tmp_path_factory):
     hub = tmp_path_factory.mktemp("acme-hub")
     shutil.copytree(HUB_ROOT, hub, dirs_exist_ok=True)
 
-    from kairos_ontology.projector import run_projections
+    from kairos_ontology.core.projector import run_projections
 
     run_projections(
         ontologies_path=hub / "model" / "ontologies",
@@ -357,7 +357,7 @@ def _parse_expected_mappings(mapping_file: Path) -> dict:
     regular column mappings because they produce SK join columns, not direct
     target-named columns in the SQL output.
     """
-    from kairos_ontology.projections.uri_utils import extract_local_name
+    from kairos_ontology.core.projections.uri_utils import extract_local_name
 
     g = Graph()
     g.parse(mapping_file, format="turtle")
@@ -653,7 +653,7 @@ def _parse_shacl_constraints(shapes_file: Path) -> dict[str, dict]:
             }
         }
     """
-    from kairos_ontology.projections.uri_utils import extract_local_name
+    from kairos_ontology.core.projections.uri_utils import extract_local_name
 
     g = Graph()
     g.parse(shapes_file, format="turtle")
@@ -921,10 +921,10 @@ class TestNaturalKeyCompleteness:
     def test_no_nk_warnings_in_projection(self, projected_hub, caplog):
         """Re-run projection and confirm no 'SK and IRI will be NULL' warnings."""
         hub = projected_hub
-        from kairos_ontology.projector import run_projections
+        from kairos_ontology.core.projector import run_projections
 
         import logging
-        with caplog.at_level(logging.WARNING, logger="kairos_ontology.projections.medallion_dbt_projector"):
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.projections.medallion_dbt_projector"):
             run_projections(
                 ontologies_path=hub / "model" / "ontologies",
                 catalog_path=hub / "catalog-v001.xml",
@@ -1008,7 +1008,7 @@ class TestRewriteURIScenario:
 
         output_dir = tmp_path / "output"
 
-        from kairos_ontology.projector import run_projections
+        from kairos_ontology.core.projector import run_projections
         run_projections(
             ontologies_path=ont_dir,
             output_path=output_dir,

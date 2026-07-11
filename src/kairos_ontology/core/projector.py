@@ -25,6 +25,55 @@ _MEDALLION_TARGETS = {"dbt", "silver", "powerbi"}
 # Targets that live under output/architecture/ (design documentation outputs).
 _ARCHITECTURE_TARGETS = {"ddd"}
 
+# ---------------------------------------------------------------------------
+# External projection targets (registry)
+#
+# Additive projection targets that live *outside* core (e.g. the design-time
+# ``kairos_ontology.mdm`` package) register themselves here at import time.  This
+# keeps the one-way boundary intact: ``core`` never imports ``mdm``; instead the
+# layer that depends on both (the CLI) imports ``mdm``, whose import triggers
+# registration.  See MDM-DD-002 and plan D3.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExternalTarget:
+    """A projection target contributed by a package outside core.
+
+    Attributes:
+        discover_ext: ``(onto_name, src_file, extensions_dir) -> Optional[Path]``
+            returning the domain's extension file (or ``None`` to skip the domain).
+        project: ``(graph, namespace, ontology_name, ext_path, ontology_metadata)
+            -> dict[str, str]`` returning ``{filename: content}`` artifacts.
+        output_subdir: sub-directory of ``output/`` the artifacts are written to.
+    """
+
+    discover_ext: Any
+    project: Any
+    output_subdir: str
+
+
+_EXTERNAL_TARGETS: Dict[str, ExternalTarget] = {}
+
+
+def register_target(
+    name: str,
+    *,
+    discover_ext: Any,
+    project: Any,
+    output_subdir: str,
+) -> None:
+    """Register an external projection target (idempotent).
+
+    Also appends *name* to :data:`VALID_TARGETS` so target validation accepts it.
+    Intended to be called from the contributing package's import path.
+    """
+    _EXTERNAL_TARGETS[name] = ExternalTarget(
+        discover_ext=discover_ext, project=project, output_subdir=output_subdir
+    )
+    if name not in VALID_TARGETS:
+        VALID_TARGETS.append(name)
+
 # Targets processed after the per-domain loop (they span all domains).
 _POST_DOMAIN_TARGETS = {"report"}
 
@@ -428,7 +477,7 @@ def project_graph(
 
     targets = targets or VALID_TARGETS
     report.targets_requested = list(targets)
-    template_base = Path(__file__).parent / "templates"
+    template_base = Path(__file__).parent.parent / "templates"
     ns = namespace or _auto_detect_namespace(graph)
     meta = extract_ontology_metadata(graph, ns)
 
@@ -535,6 +584,13 @@ def _discover_extensions(
         if not ext_path:
             candidates = list(src_file.parent.glob(f"{onto_name}-ddd-ext.ttl"))
             ext_path = candidates[0] if candidates else None
+
+    elif target_name in _EXTERNAL_TARGETS:
+        # Externally-registered target (e.g. mdm-profile) supplies its own
+        # extension-discovery callable — core stays agnostic of the package.
+        ext_path = _EXTERNAL_TARGETS[target_name].discover_ext(
+            onto_name, src_file, extensions_dir
+        )
 
     return ext_path, gold_ext_path
 
@@ -690,7 +746,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
     output_path.mkdir(parents=True, exist_ok=True)
     
     # Determine template directory
-    template_base = Path(__file__).parent / "templates"
+    template_base = Path(__file__).parent.parent / "templates"
     
     # Look for SHACL shapes directory — hub layout: model/ontologies/, model/shapes/
     hub_root = ontology_root.parent.parent if ontology_root.parent else None
@@ -734,6 +790,8 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
             )
         elif target_name in _ARCHITECTURE_TARGETS:
             target_output = output_path / "architecture" / target_name
+        elif target_name in _EXTERNAL_TARGETS:
+            target_output = output_path / _EXTERNAL_TARGETS[target_name].output_subdir
         else:
             target_output = output_path / target_name
         target_output.mkdir(parents=True, exist_ok=True)
@@ -832,7 +890,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
 
                 # Capture projector-level logger warnings
                 warn_handler = _ProjectionWarningHandler()
-                proj_logger = logging.getLogger("kairos_ontology.projections")
+                proj_logger = logging.getLogger("kairos_ontology.core.projections")
                 proj_logger.addHandler(warn_handler)
                 try:
                     # Compute peer ext paths (all silver-ext files except this domain's)
@@ -899,7 +957,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         # After all domains: generate dbt project config (once, with all domains)
         if target_name == "dbt" and dbt_domain_names:
             from .projections.medallion_dbt_projector import generate_dbt_project_config
-            dbt_template_dir = Path(__file__).parent / "templates" / "dbt"
+            dbt_template_dir = Path(__file__).parent.parent / "templates" / "dbt"
             hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "hub"
             project_config = generate_dbt_project_config(
                 systems=[],
@@ -1609,6 +1667,17 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             namespace=namespace,
             ontology_name=ontology_name or "domain",
             overlay_path=projection_ext_path,
+            ontology_metadata=ontology_metadata or {},
+        )
+
+    # Externally-registered targets (e.g. mdm-profile) — dispatched via the
+    # registry so core never imports the contributing package (MDM-DD-002).
+    if target in _EXTERNAL_TARGETS:
+        return _EXTERNAL_TARGETS[target].project(
+            graph=graph,
+            namespace=namespace,
+            ontology_name=ontology_name or "domain",
+            ext_path=projection_ext_path,
             ontology_metadata=ontology_metadata or {},
         )
 

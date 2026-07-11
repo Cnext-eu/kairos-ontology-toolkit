@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from kairos_ontology.propose_alignment import (
+from kairos_ontology.core.propose_alignment import (
     ColumnAlignment,
     DomainAlignment,
     TableAlignment,

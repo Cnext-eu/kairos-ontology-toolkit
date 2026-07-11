@@ -10,7 +10,7 @@ from unittest import mock
 import pytest
 import yaml
 
-from kairos_ontology.propose_alignment import (
+from kairos_ontology.core.propose_alignment import (
     ColumnAlignment,
     DomainAlignment,
     TableAlignment,
@@ -42,7 +42,7 @@ from kairos_ontology.propose_alignment import (
     run_propose_alignment,
     write_claims_output,
 )
-from kairos_ontology.claim_registry import load_registry
+from kairos_ontology.core.claim_registry import load_registry
 
 
 # ---------------------------------------------------------------------------
@@ -926,9 +926,9 @@ class TestRunProposeAlignment:
         client = self._mock_client(responses)
 
         with mock.patch(
-            "kairos_ontology.propose_alignment.get_ai_client", return_value=client
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
         ), mock.patch(
-            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
             return_value=[
                 {"name": "SalesContract", "label": "Sales Contract", "comment": "",
                  "properties": [
@@ -991,9 +991,9 @@ class TestRunProposeAlignment:
         }
         client = self._mock_client(responses)
         with mock.patch(
-            "kairos_ontology.propose_alignment.get_ai_client", return_value=client
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
         ), mock.patch(
-            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
             return_value=[
                 {"name": "TradeParty", "label": "Trade Party", "comment": "",
                  "properties": [
@@ -1026,9 +1026,9 @@ class TestRunProposeAlignment:
         )
 
         with mock.patch(
-            "kairos_ontology.propose_alignment.get_ai_client", return_value=client
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
         ), mock.patch(
-            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
             return_value=[],
         ):
             files = run_propose_alignment(
@@ -1110,9 +1110,9 @@ class TestRunProposeAlignment:
         ]
 
         with mock.patch(
-            "kairos_ontology.propose_alignment.get_ai_client", return_value=client
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
         ), mock.patch(
-            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
             return_value=ref_classes,
         ):
             files = run_propose_alignment(
@@ -1168,9 +1168,9 @@ class TestAlignmentConcurrencyAndCaching:
 
     def _run(self, client, analysis_dir, sources_dir, output_dir, **kw):
         with mock.patch(
-            "kairos_ontology.propose_alignment.get_ai_client", return_value=client
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
         ), mock.patch(
-            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
             return_value=self.REF_CLASSES,
         ):
             return run_propose_alignment(
@@ -1554,13 +1554,13 @@ class TestRunProposeAlignmentCrossModule:
 
     def _run(self, analysis_dir, party_sources, output, calls=None, **kw):
         with mock.patch(
-            "kairos_ontology.propose_alignment.get_ai_client",
+            "kairos_ontology.core.propose_alignment.get_ai_client",
             return_value=self._client(calls),
         ), mock.patch(
-            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
             side_effect=self._inventory_side_effect,
         ), mock.patch(
-            "kairos_ontology.analyse_sources.load_accelerator_uri_modules",
+            "kairos_ontology.core.analyse_sources.load_accelerator_uri_modules",
             return_value={
                 PARTY_URI: {"module": "party", "domains": ["party"]},
                 SIBLING_URI: {"module": "reference-data",
@@ -1578,13 +1578,13 @@ class TestRunProposeAlignmentCrossModule:
 
     def _build(self, analysis_dir, party_sources, calls=None, **kw):
         with mock.patch(
-            "kairos_ontology.propose_alignment.get_ai_client",
+            "kairos_ontology.core.propose_alignment.get_ai_client",
             return_value=self._client(calls),
         ), mock.patch(
-            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
             side_effect=self._inventory_side_effect,
         ), mock.patch(
-            "kairos_ontology.analyse_sources.load_accelerator_uri_modules",
+            "kairos_ontology.core.analyse_sources.load_accelerator_uri_modules",
             return_value={
                 PARTY_URI: {"module": "party", "domains": ["party"]},
                 SIBLING_URI: {"module": "reference-data",
@@ -1794,9 +1794,9 @@ class TestSampleEvidenceIntegration:
     def _build(self, analysis_dir, sources, **kw):
         client = TestRunProposeAlignment()._mock_client(self._responses())
         with mock.patch(
-            "kairos_ontology.propose_alignment.get_ai_client", return_value=client
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
         ), mock.patch(
-            "kairos_ontology.propose_alignment.extract_ref_model_inventory",
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
             return_value=[
                 {"name": "TradeParty", "label": "Trade Party", "comment": "",
                  "properties": [

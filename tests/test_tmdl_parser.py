@@ -3,7 +3,7 @@
 """Unit tests for the TMDL parser."""
 
 
-from kairos_ontology.tmdl_parser import (
+from kairos_ontology.core.tmdl_parser import (
     TmdlColumn,
     TmdlMeasure,
     TmdlRelationship,

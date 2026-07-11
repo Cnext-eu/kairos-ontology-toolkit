@@ -2,17 +2,17 @@
 # Copyright 2026 Cnext.eu
 """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
 
-__version__ = "4.4.0rc17"
+__version__ = "4.4.0rc18"
 
-from kairos_ontology.catalog_utils import (
+from kairos_ontology.core.catalog_utils import (
     CatalogLoadResult,
     CatalogResolver,
     load_graph_with_catalog,
     resolve_import_paths,
 )
-from kairos_ontology.validator import run_validation, validate_content, validate_gdpr
-from kairos_ontology.projector import run_projections, project_graph
-from kairos_ontology.ontology_ops import (
+from kairos_ontology.core.validator import run_validation, validate_content, validate_gdpr
+from kairos_ontology.core.projector import run_projections, project_graph
+from kairos_ontology.core.ontology_ops import (
     list_classes,
     list_properties,
     list_relationships,

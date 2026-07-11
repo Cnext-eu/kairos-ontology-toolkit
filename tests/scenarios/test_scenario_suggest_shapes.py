@@ -8,7 +8,7 @@ DD-075 PII masking guarantee for the CRM email column.
 
 from pathlib import Path
 
-from kairos_ontology.suggest_shapes import suggest_shapes
+from kairos_ontology.core.suggest_shapes import suggest_shapes
 
 ACME_HUB = Path(__file__).parent / "acme-hub"
 CRM_VOCAB = ACME_HUB / "integration" / "sources" / "crmsystem" / "crmsystem.vocabulary.ttl"

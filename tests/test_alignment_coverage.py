@@ -4,7 +4,7 @@
 
 The alignment-coverage *gate* is retired (DD-EL-1) — its replacement is the
 ``check-claims`` gate, covered by ``tests/test_claim_coverage.py``. What remains
-in :mod:`kairos_ontology.alignment_coverage` are the deterministic primitives the
+in :mod:`kairos_ontology.core.alignment_coverage` are the deterministic primitives the
 new gate and ``propose-alignment`` reuse, exercised here.
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from kairos_ontology.alignment_coverage import (
+from kairos_ontology.core.alignment_coverage import (
     auto_disposition,
     compute_affinity_hash,
     is_generic_vendor_slot,

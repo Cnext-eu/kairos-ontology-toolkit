@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from kairos_ontology.source_coverage import (
+from kairos_ontology.core.source_coverage import (
     check_source_coverage,
     collect_mapped_subjects,
     collect_source_tables,

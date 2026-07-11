@@ -10,11 +10,15 @@ import click
 import shutil
 import subprocess
 from pathlib import Path
-from ..validator import run_validation, run_gdpr_validation
-from ..projector import run_projections
-from ..catalog_test import test_catalog_resolution
+from ..core.validator import run_validation, run_gdpr_validation
+from ..core.projector import run_projections
+from ..core.catalog_test import test_catalog_resolution
 from .. import __version__ as _toolkit_version
-from .._provenance import provenance_comment
+from ..core._provenance import provenance_comment
+# Importing the design-time MDM package registers the additive ``mdm-profile``
+# projection target with the core projector (registry pattern, MDM-DD-002).
+# The CLI is the layer that legitimately depends on both core and mdm.
+from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target registration)
 
 
 def _ensure_utf8_stdio() -> None:
@@ -86,8 +90,8 @@ _SKILL_COVERED_COMMANDS = {
     "discovery-conformance": "kairos-design-discovery",
     "init-dataplatform": "kairos-setup-dataplatform",
     "suggest-shapes": "kairos-execute-validate",
+    "mdm-validate": "kairos-design-mdm",
 }
-
 # Env vars that signal the command was launched from within a skill context.
 _SKILL_CONTEXT_ENV_VARS = ("KAIROS_SKILL_CONTEXT", "KAIROS_VIA_SKILL")
 
@@ -534,6 +538,7 @@ _LIFECYCLE_TABLE = """\
 │          │  kairos-design-mapping    (SKOS source→domain)               │
 │          │  kairos-design-silver     (silver annotations)                │
 │          │  kairos-design-gold       (gold annotations)                  │
+│          │  kairos-design-mdm        (MDM policy → mdm-profile)          │
 ├──────────┼──────────────────────────────────────────────────────────────┤
 │ Execute  │  kairos-execute-project   (generate all projection targets)   │
 │          │  kairos-execute-validate  (syntax + SHACL check)              │
@@ -634,7 +639,7 @@ def _resolve_catalog(
               help='Validate DDD design overlays (*-ddd-ext.ttl) via the dedicated DDD path')
 def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consistency, gdpr, ddd):
     """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan, DDD overlays)."""
-    from ..hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
@@ -678,7 +683,7 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
     # DDD overlay validation (DD-091) — dedicated path (merged domain + overlay).
     ddd_failures = 0
     if ddd or validate_all:
-        from ..ddd import run_ddd_validation
+        from ..core.ddd import run_ddd_validation
 
         extensions_path = ontologies_path.parent / "extensions"
         ddd_failures = run_ddd_validation(
@@ -718,13 +723,13 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
                    'ontology-reference-models/catalog-v001.xml)')
 @click.option('--output', type=click.Path(), default=None,
               help='Output directory for projections (default: <hub>/output).')
-@click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report', 'ddd']),
+@click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report', 'ddd', 'mdm-profile']),
               default='all', help='Projection target')
 @click.option('--namespace', type=str, default=None,
               help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
 def project(ontologies, ontology, catalog, output, target, namespace):
     """Generate projections from ontologies."""
-    from ..hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
@@ -766,6 +771,90 @@ def project(ontologies, ontology, catalog, output, target, namespace):
         target=target,
         namespace=namespace
     )
+
+
+@cli.command(name='mdm-validate')
+@click.option('--ontologies', type=click.Path(exists=True), default=None,
+              help='Path to ontologies directory (default: auto-detect from hub).')
+@click.option('--catalog', type=click.Path(exists=True), default=None,
+              help='Path to catalog file for resolving imports.')
+def mdm_validate(ontologies, catalog):
+    """Validate MDM extension policy (``*-mdm-ext.ttl``) for each domain.
+
+    Structural design-time gate: checks controlled enumerations, thresholds, match
+    rules, DQ dimensions and the probabilistic-artifact reference before the
+    ``mdm-profile`` projection is trusted. Prefer the **kairos-design-mdm** skill,
+    which wraps this with interactive authoring guidance.
+    """
+    from ..core.hub_utils import find_hub_root
+    from ..core.catalog_utils import load_graph_with_catalog
+    from ..core.projections.shared import merge_ext_graph
+    from ..mdm.vocabulary import discover_mdm_extension
+    from ..mdm.validation import validate_mdm_extension
+    from rdflib import Graph
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+
+    if ontologies is not None:
+        ontologies_path = Path(ontologies)
+    elif hub_root is not None:
+        ontologies_path = hub_root / "model" / "ontologies"
+    else:
+        ontologies_path = cwd / "ontology-hub" / "model" / "ontologies"
+
+    if not ontologies_path.is_dir():
+        click.echo(
+            f"❌ Cannot find ontologies directory at {ontologies_path}. "
+            "Run from the hub root (or inside ontology-hub/), or pass --ontologies.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    extensions_dir = ontologies_path.parent / "extensions"
+    catalog_path = _resolve_catalog(catalog, hub_root, cwd)
+
+    onto_files = sorted(
+        p for p in ontologies_path.glob("*.ttl")
+        if not p.stem.endswith("-ext") and not p.stem.startswith("_")
+    )
+    if not onto_files:
+        click.echo(f"No ontology files found in {ontologies_path}.")
+        return
+
+    total_errors = 0
+    checked = 0
+    for onto_file in onto_files:
+        onto_name = onto_file.stem
+        ext_path = discover_mdm_extension(onto_name, onto_file, extensions_dir)
+        if ext_path is None:
+            continue  # no MDM policy for this domain — nothing to validate
+        checked += 1
+        if catalog_path is not None:
+            result = load_graph_with_catalog(onto_file, catalog_path)
+            base_graph = result.graph
+        else:
+            base_graph = Graph()
+            base_graph.parse(str(onto_file), format="turtle")
+        merged = merge_ext_graph(base_graph, ext_path)
+
+        report = validate_mdm_extension(merged)
+        icon = "✅" if report["passed"] else "❌"
+        click.echo(f"{icon} {onto_name} ({ext_path.name})")
+        for err in report["errors"]:
+            click.echo(f"    ✗ {err}", err=True)
+            total_errors += 1
+        for warn in report["warnings"]:
+            click.echo(f"    ⚠ {warn}")
+
+    if checked == 0:
+        click.echo("No *-mdm-ext.ttl extensions found — nothing to validate.")
+        return
+
+    if total_errors:
+        click.echo(f"\n❌ MDM validation failed with {total_errors} error(s).", err=True)
+        raise SystemExit(1)
+    click.echo(f"\n✅ MDM validation passed for {checked} domain(s).")
 
 
 @cli.command(name='catalog-test')
@@ -1159,7 +1248,7 @@ def import_tmdl(source, output):
     - An Engineering Pack (markdown) with table/column/measure inventory
     - A Concept Mapping template (YAML) for reference model alignment
     """
-    from ..import_tmdl import run_import_tmdl
+    from ..core.import_tmdl import run_import_tmdl
 
     source_path = Path(source)
     output_path = Path(output)
@@ -1214,7 +1303,7 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
       kairos-ontology import-source --from extracted/nms/ --no-enrich
       kairos-ontology import-source --from extracted/nms/ --split-tables
     """
-    from ..import_source import run_import_source, parse_source_schema_dir
+    from ..core.import_source import run_import_source, parse_source_schema_dir
 
     source_path = Path(from_path)
     output_dir = Path(output) if output else None
@@ -1370,7 +1459,7 @@ def import_flatfile(
     Next step after import-flatfile:
       kairos-ontology import-source --from integration/sources/{system}/
     """
-    from ..import_flatfile import run_import_flatfile
+    from ..core.import_flatfile import run_import_flatfile
 
     source_path = Path(from_path)
     output_dir = Path(output) if output else None
@@ -1447,7 +1536,7 @@ def extract_schema(profile_name, target, schema_name, system_name, output,
       kairos-ontology extract-schema --profile myproject --schema dbo --system nms \\
           --tables "tblClient,tblInvoice" --sample-size 10
     """
-    from ..extract_schema import run_extract_schema
+    from ..core.extract_schema import run_extract_schema
 
     tables = [t.strip() for t in table_list.split(",")] if table_list else None
     output_path = Path(output)
@@ -1516,7 +1605,7 @@ def generate_staging(from_dir, output, source_name):
       kairos-ontology generate-staging --from extracted/adminpulse/
       kairos-ontology generate-staging --from extracted/nms/ --output models/staging/nms
     """
-    from ..generate_staging import generate_staging_models
+    from ..core.generate_staging import generate_staging_models
 
     schema_dir = Path(from_dir)
     output_path = Path(output)
@@ -1609,13 +1698,13 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
       kairos-ontology analyse-sources --materialize .resolved/ --verbose
       kairos-ontology analyse-sources --sources path/to/sources/ --ref-models path/to/refs/
     """
-    from ..analyse_sources import (
+    from ..core.analyse_sources import (
         run_analyse_sources, resolve_reference_models,
         build_data_domain_targets, load_data_domains, list_accelerator_packs,
         make_reporter,
     )
-    from ..ai_provider import DEFAULT_MODEL, ROLE_AFFINITY, resolve_role_model
-    from ..hub_utils import find_hub_root
+    from ..core.ai_provider import DEFAULT_MODEL, ROLE_AFFINITY, resolve_role_model
+    from ..core.hub_utils import find_hub_root
 
     # Issue #182: a per-role model override (KAIROS_AI_AFFINITY_MODEL) acts as the
     # default for this step unless the operator pinned --model explicitly.
@@ -1773,8 +1862,8 @@ def audit_silver_samples_cmd(sources, mappings, dbt_output, output, fail_on):
     only. It does not require a dbt profile, warehouse credentials, or live bronze
     data. Findings are advisory by default.
     """
-    from ..hub_utils import find_hub_root
-    from ..silver_sample_audit import run_silver_sample_audit
+    from ..core.hub_utils import find_hub_root
+    from ..core.silver_sample_audit import run_silver_sample_audit
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -1893,9 +1982,9 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
       kairos-ontology propose-alignment --domains "commercial,party" --verbose
       kairos-ontology propose-alignment --analysis path/to/_analysis/
     """
-    from ..propose_alignment import HIGH_ACCURACY_MODEL, run_propose_alignment
-    from ..ai_provider import DEFAULT_MODEL, ROLE_ALIGNMENT, resolve_role_model
-    from ..hub_utils import find_hub_root
+    from ..core.propose_alignment import HIGH_ACCURACY_MODEL, run_propose_alignment
+    from ..core.ai_provider import DEFAULT_MODEL, ROLE_ALIGNMENT, resolve_role_model
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -2066,8 +2155,8 @@ def suggest_shapes_cmd(source, mappings, out, enum_distinct_max, no_sample_value
       kairos-ontology suggest-shapes
       kairos-ontology suggest-shapes --source integration/sources/crm/crm.vocabulary.ttl
     """
-    from ..suggest_shapes import suggest_shapes
-    from ..hub_utils import find_hub_root
+    from ..core.suggest_shapes import suggest_shapes
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -2151,14 +2240,14 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
       kairos-ontology coverage-report --format markdown
       kairos-ontology coverage-report --ontology path/to/ontologies/ --ref-models path/to/refs/
     """
-    from ..coverage_report import (
+    from ..core.coverage_report import (
         run_coverage_report,
         write_coverage_yaml,
         write_coverage_markdown,
     )
 
     # Auto-detect hub paths
-    from ..hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=True)
@@ -2262,13 +2351,13 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
       kairos-ontology generate-inventory --output-dir referencemodels-unpacked/
       kairos-ontology generate-inventory --ref-models-dir path/to/refs/
     """
-    from ..inventory import (
+    from ..core.inventory import (
         generate_inventory,
         inventory_filename,
         iter_reference_inventory_sources,
         write_inventory,
     )
-    from ..hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=True)
@@ -2391,8 +2480,8 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, war
       kairos-ontology check-inventory --strict
       kairos-ontology check-inventory --warn-only
     """
-    from ..inventory import check_inventories
-    from ..hub_utils import find_hub_root
+    from ..core.inventory import check_inventories
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=True)
@@ -2518,14 +2607,14 @@ def migrate_claims_cmd(analysis_dir, domain_filter, output, inventory_dir, no_re
       kairos-ontology migrate-claims --domain party
       kairos-ontology migrate-claims --output model/claims --force
     """
-    from ..claim_registry import (
+    from ..core.claim_registry import (
         registry_path,
         validate_registry,
         validation_errors,
         write_registry,
     )
-    from ..hub_utils import find_hub_root
-    from ..migrate_claims import find_legacy_alignment_files, migrate_alignment_file
+    from ..core.hub_utils import find_hub_root
+    from ..core.migrate_claims import find_legacy_alignment_files, migrate_alignment_file
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -2652,15 +2741,15 @@ def decide_claims_cmd(claims_dir, domains, status_filter, disposition_filter, ty
       kairos-ontology decide-claims --domains party --disposition claim \\
           --column "*_id" --set-status rejected --dry-run
     """
-    from ..claim_registry import load_registry, registry_path, write_registry
-    from ..decide_claims import (
+    from ..core.claim_registry import load_registry, registry_path, write_registry
+    from ..core.decide_claims import (
         ClaimSelector,
         apply_decisions,
         parse_by_disposition,
         select_claims,
         validate_filter_values,
     )
-    from ..hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -2854,11 +2943,11 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
       kairos-ontology check-claims --strict
       kairos-ontology check-claims --warn-only
     """
-    from ..analyse_sources import load_data_domains
-    from ..claim_coverage import check_claims_coverage
-    from ..hub_utils import find_hub_root
-    from ..migrate_claims import find_legacy_alignment_files, legacy_alignment_error
-    from ..source_coverage import check_source_coverage
+    from ..core.analyse_sources import load_data_domains
+    from ..core.claim_coverage import check_claims_coverage
+    from ..core.hub_utils import find_hub_root
+    from ..core.migrate_claims import find_legacy_alignment_files, legacy_alignment_error
+    from ..core.source_coverage import check_source_coverage
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -3134,7 +3223,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
 
     sync_blocking = False
     if not no_extension_sync and ontologies_path.is_dir():
-        from ..claim_projection_sync import evaluate_projection_sync
+        from ..core.claim_projection_sync import evaluate_projection_sync
 
         sync_report = evaluate_projection_sync(
             claims_dir=claims_path,
@@ -3224,12 +3313,12 @@ def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter,
     missing, so a fresh domain bootstraps instead of silently writing nothing
     (issue #190).
     """
-    from ..claim_projection_sync import (
+    from ..core.claim_projection_sync import (
         apply_projection_sync,
         evaluate_projection_sync,
         scaffold_missing_surfaces,
     )
-    from ..hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -3347,8 +3436,8 @@ def derive_claims_cmd(claims_dir, analysis_dir, mappings, tmdl_dir, domains_filt
       kairos-ontology derive-claims --domains "client,invoice"
       kairos-ontology derive-claims --max-workers 1 --force
     """
-    from ..derive_claims import run_derive_claims
-    from ..hub_utils import find_hub_root
+    from ..core.derive_claims import run_derive_claims
+    from ..core.hub_utils import find_hub_root
 
     _warn_if_no_skill_context("derive-claims")
 
@@ -3457,8 +3546,8 @@ def draft_model_report_cmd(
     TMDL/reporting context, but it is read-only: it never approves claims, writes
     ontology TTL, or acts as projection authority.
     """
-    from ..draft_model_report import build_draft_model_report, write_draft_model_report
-    from ..hub_utils import find_hub_root
+    from ..core.draft_model_report import build_draft_model_report, write_draft_model_report
+    from ..core.hub_utils import find_hub_root
 
     _warn_if_no_skill_context("draft-model-report")
 
@@ -3553,8 +3642,8 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
       kairos-ontology discovery-status
       kairos-ontology discovery-status --strict
     """
-    from ..discovery_extraction import check_discovery_docs
-    from ..hub_utils import find_hub_root
+    from ..core.discovery_extraction import check_discovery_docs
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
@@ -3624,8 +3713,8 @@ def discovery_conformance():
 
 def _resolve_conformance_root(refmodels_root):
     """Resolve the reference-models root for conformance commands, exiting on failure."""
-    from ..archetype_loader import ArchetypeError, resolve_refmodels_root
-    from ..hub_utils import find_hub_root
+    from ..core.archetype_loader import ArchetypeError, resolve_refmodels_root
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
@@ -3659,7 +3748,7 @@ _REFMODELS_OPTION = click.option(
 @_FORMAT_OPTION
 def conformance_list(refmodels_root, output_format):
     """List archetype ids available in the reference-models checkout."""
-    from ..archetype_loader import list_archetypes, load_outcome_codes
+    from ..core.archetype_loader import list_archetypes, load_outcome_codes
 
     root = _resolve_conformance_root(refmodels_root)
     click.echo(f"🔎 Reference-models root: {root}", err=True)
@@ -3684,14 +3773,14 @@ def conformance_load(archetype_id, refmodels_root, output_format):
     relationship edges (with declared cardinality), and version-drift warnings are all
     included; warnings are also echoed to stderr.
     """
-    from ..archetype_loader import (
+    from ..core.archetype_loader import (
         ArchetypeError,
         check_version_drift,
         load_archetype,
         locate_discovery_doc,
         _refmodels_version,
     )
-    from ..archetype_topology import derive_archetype_topology
+    from ..core.archetype_topology import derive_archetype_topology
 
     root = _resolve_conformance_root(refmodels_root)
     try:
@@ -3768,14 +3857,14 @@ def conformance_load(archetype_id, refmodels_root, output_format):
 @_REFMODELS_OPTION
 def conformance_validate(artifact_file, refmodels_root):
     """Validate a conformance artifact against the shared outcome-codes enum."""
-    from ..archetype_loader import load_outcome_codes
-    from ..conformance_artifact import (
+    from ..core.archetype_loader import load_outcome_codes
+    from ..core.conformance_artifact import (
         ARTIFACT_RELPATH,
         ConformanceArtifactError,
         read_artifact,
         validate_artifact,
     )
-    from ..hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
@@ -3826,8 +3915,8 @@ def status_cmd(hub_path, output_format):
       kairos-ontology status --format markdown
     """
     import datetime as _dt
-    from ..status import scan_hub_status, render_markdown
-    from ..hub_utils import find_hub_root
+    from ..core.status import scan_hub_status, render_markdown
+    from ..core.hub_utils import find_hub_root
 
     if hub_path:
         hub_root = Path(hub_path)
@@ -3899,8 +3988,8 @@ def build_glossary_cmd(extraction_dir, output_path, company_domain, company_name
       kairos-ontology build-glossary --company-specific-only
       kairos-ontology build-glossary --company-domain acme.com --output glossary.ttl
     """
-    from ..glossary_builder import build_glossary, derive_glossary_namespace, read_company_info
-    from ..hub_utils import find_hub_root
+    from ..core.glossary_builder import build_glossary, derive_glossary_namespace, read_company_info
+    from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
@@ -4006,7 +4095,7 @@ def update(check, upgrade):
     # live at the managed root.  Running from a content subdirectory (e.g. the
     # ontology-hub/ folder) must NOT scaffold a second hub — walk up to the real
     # root and operate there.
-    from ..hub_utils import find_managed_root
+    from ..core.hub_utils import find_managed_root
 
     managed_root = find_managed_root(Path.cwd())
     if managed_root is not None and managed_root != Path.cwd().resolve():

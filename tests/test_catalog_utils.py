@@ -4,7 +4,7 @@
 
 import pytest
 from pathlib import Path
-from kairos_ontology.catalog_utils import (
+from kairos_ontology.core.catalog_utils import (
     CatalogLoadResult,
     CatalogResolver,
     _get_rdf_format,
@@ -276,7 +276,7 @@ class TestLoadGraphWithCatalogDiagnostics:
 
     def test_returns_catalog_load_result(self, tmp_path):
         """load_graph_with_catalog returns a CatalogLoadResult."""
-        from kairos_ontology.catalog_utils import load_graph_with_catalog
+        from kairos_ontology.core.catalog_utils import load_graph_with_catalog
 
         onto = tmp_path / "test.ttl"
         onto.write_text(
@@ -299,7 +299,7 @@ class TestLoadGraphWithCatalogDiagnostics:
 
     def test_unresolved_import_produces_warning_diagnostic(self, tmp_path):
         """Unresolved owl:imports generates a warning in diagnostics."""
-        from kairos_ontology.catalog_utils import load_graph_with_catalog
+        from kairos_ontology.core.catalog_utils import load_graph_with_catalog
 
         onto = tmp_path / "domain.ttl"
         onto.write_text(
@@ -324,7 +324,7 @@ class TestLoadGraphWithCatalogDiagnostics:
 
     def test_warnings_helper_method(self, tmp_path):
         """CatalogLoadResult.warnings() returns only warning messages."""
-        from kairos_ontology.catalog_utils import load_graph_with_catalog
+        from kairos_ontology.core.catalog_utils import load_graph_with_catalog
 
         onto = tmp_path / "domain.ttl"
         onto.write_text(
@@ -349,7 +349,7 @@ class TestLoadGraphWithCatalogDiagnostics:
 
     def test_file_uri_produces_warning_diagnostic(self, tmp_path):
         """file:// imports produce a warning diagnostic."""
-        from kairos_ontology.catalog_utils import load_graph_with_catalog
+        from kairos_ontology.core.catalog_utils import load_graph_with_catalog
 
         onto = tmp_path / "domain.ttl"
         onto.write_text(

@@ -155,7 +155,7 @@ def check_discovery_docs(
     *extraction_dir* and that its stored ``source_sha256`` matches the current
     document content.
 
-    Classification (mirrors :class:`~kairos_ontology.inventory.InventoryCheckReport`):
+    Classification (mirrors :class:`~kairos_ontology.core.inventory.InventoryCheckReport`):
       - **unprocessed**  — document has no extraction file yet.
       - **changed**      — extraction exists but its stored hash differs.
       - **unverifiable** — extraction exists but has no stored hash → warn.

@@ -252,7 +252,7 @@ def extract_ref_model_inventory(
         return []
 
     try:
-        from kairos_ontology.catalog_utils import CatalogResolver
+        from kairos_ontology.core.catalog_utils import CatalogResolver
         resolver = CatalogResolver(catalog_path)
     except Exception as e:
         logger.warning("Catalog load failed (%s); skipping ref-model extraction", e)

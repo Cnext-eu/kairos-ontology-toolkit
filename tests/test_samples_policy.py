@@ -2,7 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Tests for the shared sample-exposure & PII-masking policy (DD-075)."""
 
-from kairos_ontology._samples import (
+from kairos_ontology.core._samples import (
     PII_KEYWORDS,
     example_values,
     is_pii_column,
@@ -97,6 +97,6 @@ class TestExampleValues:
 
 
 def test_pii_keywords_are_shared_with_validator():
-    from kairos_ontology import validator
+    from kairos_ontology.core import validator
 
     assert validator.PII_KEYWORDS is PII_KEYWORDS

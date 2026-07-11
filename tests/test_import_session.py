@@ -6,12 +6,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kairos_ontology.import_session import (
+from kairos_ontology.core.import_session import (
     IMPORT_SESSION_DIR,
     render_import_session_md,
     write_import_session,
 )
-from kairos_ontology.import_source import ChangeReport, ColumnChange
+from kairos_ontology.core.import_source import ChangeReport, ColumnChange
 
 TABLES = [
     {"name": "customer", "columns": [{"name": "id"}, {"name": "name"}]},
@@ -116,7 +116,7 @@ def test_run_import_flatfile_writes_session(tmp_path: Path, monkeypatch):
 
     monkeypatch.chdir(hub)
 
-    from kairos_ontology.import_flatfile import run_import_flatfile
+    from kairos_ontology.core.import_flatfile import run_import_flatfile
 
     run_import_flatfile(source_path=csv, system_name="erp")
 

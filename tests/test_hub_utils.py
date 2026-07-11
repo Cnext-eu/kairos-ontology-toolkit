@@ -2,7 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Tests for hub_utils.find_hub_root()."""
 
-from kairos_ontology.hub_utils import find_hub_root, find_managed_root
+from kairos_ontology.core.hub_utils import find_hub_root, find_managed_root
 
 
 class TestFindHubRoot:
