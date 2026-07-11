@@ -18,7 +18,7 @@ services (matching engine, stewardship UI, operational store, sync-back) live in
 separate `kairos-mdm-runtime` repository and are out of scope here.
 
 See `docs/mdm/mdm-design-decisions.md` (MDM-DD log), `docs/mdm/user-stories.md`
-(epics), and `docs/draft/mdmhubdesignv2.md` (full architecture).
+(epics), and the [full MDM architecture spec](https://github.com/Cnext-eu/kairos-ontology-toolkit/blob/main/docs/mdm/mdmhubdesignv2.md).
 
 ## Design fleet mode
 

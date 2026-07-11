@@ -1,7 +1,7 @@
 # MDM User Stories
 
 Product backlog for the Kairos MDM capability, organized by principal role. Migrated
-from `docs/design/mdmhubdesignv2.md` §18.
+from `mdmhubdesignv2.md` §18.
 
 **Ownership legend** — each epic is tagged with where its stories are *implemented*:
 

@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     interactive `*-mdm-ext.ttl` authoring, plus MDM docs under `docs/mdm/`
     (`mdm-design-decisions.md`, `user-stories.md`, `mdm-navigator-spec.md`).
 
+### Changed
+- **Docs housekeeping**: reorganised `docs/` for navigability. Added a
+  `docs/README.md` documentation map; consolidated all MDM docs under `docs/mdm/`
+  (moved `mdmhubdesignv2.md` from `docs/design/`); archived unreferenced historical
+  material (former `docs/draft/` and the `evidence-led-modeling` tracker) under
+  `docs/archive/` with a `README.md` frozen-history marker; removed a duplicate
+  `ddd-governance-implementation-plan.md`; and repathed all inbound references. Pure
+  relocation via `git mv` — no doc content was rewritten.
+
 ## [4.4.0rc17] — 2026-07-05
 
 ### Added

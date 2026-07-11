@@ -3,7 +3,7 @@
 """Design-time Master Data Management (MDM) layer for the Kairos toolkit.
 
 This subpackage is the **design-time** half of the MDM architecture described in
-``docs/draft/mdmhubdesignv2.md``.  It owns:
+``docs/mdm/mdmhubdesignv2.md``.  It owns:
 
 * the ``kairos-mdm:`` extension **vocabulary** (:mod:`.vocabulary`);
 * the runtime-neutral **profile** dataclasses (:mod:`.model`);

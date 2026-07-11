@@ -143,6 +143,7 @@ tools for ontology-driven data architecture.
 | 🔒 [Security Policy](SECURITY.md) | Vulnerability reporting |
 | 📝 [Changelog](CHANGELOG.md) | Release history |
 | 📖 [User Guide](docs/USER_GUIDE.md) | Complete walkthrough & reference |
+| 🗺️ [Documentation Map](docs/README.md) | Index of all docs (design, MDM, guides, archive) |
 | 🏗️ [Design Decisions](docs/design/toolkit-design-decisions.md) | ADR log for architectural choices |
 
 ## 📄 License

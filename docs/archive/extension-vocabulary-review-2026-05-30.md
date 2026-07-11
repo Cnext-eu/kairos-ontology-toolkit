@@ -183,7 +183,7 @@ declared in `kairos-ext.ttl` (implements recommendation §6.4).
 - Gold projector: `src/kairos_ontology/projections/medallion_gold_projector.py`
 - Dbt projector: `src/kairos_ontology/projections/medallion_dbt_projector.py`
 - Silver projector: `src/kairos_ontology/projections/medallion_silver_projector.py`
-- CR-3 document: `docs/draft/CR3-naturalKey-identity-strategy-2026-05-30.md`
+- CR-3 document: `CR3-naturalKey-identity-strategy-2026-05-30.md`
 - Design decisions: `docs/design/toolkit-design-decisions.md`
 
 ---
