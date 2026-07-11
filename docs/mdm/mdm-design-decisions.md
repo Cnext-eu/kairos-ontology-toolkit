@@ -6,7 +6,7 @@ ontology-core log (`docs/design/toolkit-design-decisions.md`) so MDM policy evol
 on its own cadence and the ontology↔MDM boundary stays explicit.
 
 The `MDM-DD-NNN` numbers below build on, and cross-reference, the architecture ADRs
-in `docs/design/mdmhubdesignv2.md` (ADR-1..12). The ADRs describe the *whole* MDM
+in `mdmhubdesignv2.md` (ADR-1..12). The ADRs describe the *whole* MDM
 architecture (including the runtime); the MDM-DD entries record how the **toolkit
 repo** realizes the design-time half.
 

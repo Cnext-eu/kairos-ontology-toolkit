@@ -1,7 +1,7 @@
 # Evidence-Led Accelerator-First Modeling — Implementation Tracking
 
 Tracking folder for implementing the methodology in
-[`../../draft/evidence-led-accelerator-first-modeling-approach-2026-06-15.md`](../../draft/evidence-led-accelerator-first-modeling-approach-2026-06-15.md).
+[`evidence-led-accelerator-first-modeling-approach-2026-06-15.md`](evidence-led-accelerator-first-modeling-approach-2026-06-15.md).
 
 Work is structured as **coherent vertical slices**, not horizontal feature
 phases. Each slice leaves the toolkit in a releasable state. Alignment YAML is

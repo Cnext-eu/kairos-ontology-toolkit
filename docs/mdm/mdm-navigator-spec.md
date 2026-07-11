@@ -4,7 +4,7 @@ Status: **Spec only** — no runnable UI ships from this repo. This documents th
 design-time authoring surface so the future Kairos portal can implement it against the
 toolkit's existing operations and the `kairos-design-mdm` skill.
 
-Source: `docs/design/mdmhubdesignv2.md` §17. Boundary rules: MDM-DD-001/002/003.
+Source: `mdmhubdesignv2.md` §17. Boundary rules: MDM-DD-001/002/003.
 
 ---
 

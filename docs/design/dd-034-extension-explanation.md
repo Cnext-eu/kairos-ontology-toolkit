@@ -154,7 +154,7 @@ consider denormalising it onto the parent table. Resolve via: kairos-design-silv
 There is **no `identityStrategy` annotation** — it was evaluated in CR-3 and
 **deferred** (DD-034). The improved warning (Option 4) is the current mechanism;
 add the appropriate `naturalKey` to resolve it. See
-`docs/draft/CR3-naturalKey-identity-strategy-2026-05-30.md`.
+`docs/archive/CR3-naturalKey-identity-strategy-2026-05-30.md`.
 
 ---
 

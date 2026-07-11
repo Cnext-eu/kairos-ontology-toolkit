@@ -15,7 +15,7 @@ these into `docs/design/toolkit-design-decisions.md` (and its Index) at merge.
 (retired), `propose_alignment.py`, `alignment_coverage.py`, silver/dbt projectors,
 `check-alignment` / `check-source-coverage`, evidence-led design skills
 **Implementation:** Slice 0B schema → Slice 1 migration → Slice 2 projector
-authority. Spec: `docs/implementation/evidence-led-modeling/0b-claim-registry-schema-v1.md`
+authority. Spec: `0b-claim-registry-schema-v1.md`
 
 ### Context
 
@@ -77,7 +77,7 @@ heuristics (still imported by `claim_coverage`, `source_coverage`, and
 **Affects:** domain `owl:imports`, generated `silverInclude` / `silverIncludeImports`,
 silver/dbt projectors, catalog wiring
 **Implementation:** Slice 2 (import generation). Evidence:
-`docs/implementation/evidence-led-modeling/slice-0a-closure-spike.md`
+`slice-0a-closure-spike.md`
 
 ### Context
 
@@ -119,7 +119,7 @@ no large unclaimed surface to police, no perf cliff, and no
 **Affects:** thin client ontology TTL, silver/gold extension TTL, `model/claims/`,
 projector generation
 **Implementation:** Slices 2–4. Spec:
-`docs/implementation/evidence-led-modeling/0b-claim-registry-schema-v1.md` §1
+`0b-claim-registry-schema-v1.md` §1
 
 ### Context
 
@@ -170,7 +170,7 @@ or imported — has exactly one registry row, so coverage/parity stay complete.
 `claims-to-silver-ext` CLI command (new), `check-claims` sync gate, `projector.py`
 authority gate (silver/dbt/powerbi), foundation/thin-ontology scaffold
 **Implementation:** Slice 2 (projection vertical slice). Realizes DD-EL-2 (A1) and
-DD-EL-3 (A2-lite). Spec: `docs/implementation/evidence-led-modeling/slice-2-projection.md`
+DD-EL-3 (A2-lite). Spec: `slice-2-projection.md`
 
 ### Context
 
@@ -251,7 +251,7 @@ A1 (claims drive imports) while retaining DD-021 as a claim-driven gate.
 (`kairos-design-source`, `kairos-execute-project`)
 **Implementation:** Slice 3 (richer evidence aggregation). Pure enhancement on top
 of the Slice 1/2 path. Spec:
-`docs/implementation/evidence-led-modeling/slice-3-derive-claims.md`
+`slice-3-derive-claims.md`
 
 ### Context
 
@@ -350,7 +350,7 @@ omission is intentional, not an oversight.
 (`kairos-design-source`, `kairos-execute-project`)
 **Implementation:** Slice 4 (MDM/reference-data rules + ownership hardening). Realizes the
 MDM-first concept (C6). Spec:
-`docs/implementation/evidence-led-modeling/slice-4-mdm-ownership.md`
+`slice-4-mdm-ownership.md`
 
 ### Context
 

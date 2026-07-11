@@ -1854,7 +1854,7 @@ In practice, these files:
 
 ### Context
 
-A consistency review (`docs/draft/extension-vocabulary-review-2026-05-30.md`) found
+A consistency review (`docs/archive/extension-vocabulary-review-2026-05-30.md`) found
 that several `kairos-ext:` annotations consumed by the gold projector
 (`perspective`, `generateTimeIntelligence`, `olsRestricted`, and a now-reserved
 `incrementalColumn`) were **never declared** in `kairos-ext.ttl`. Hub authors got no
