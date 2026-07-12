@@ -5,8 +5,8 @@
 The ontology ``core`` package must not depend on the design-time ``mdm`` package.
 MDM is an *additive* extension consumer of core, so imports may only flow
 ``mdm -> core``, never the reverse. This keeps the ontology/MDM boundary
-structural rather than conventional and allows the ``mdm`` subpackage to be
-lifted into a separate repository later without untangling core.
+structural rather than conventional and keeps ontology core independent from
+optional MDM policy concerns.
 """
 
 from __future__ import annotations
