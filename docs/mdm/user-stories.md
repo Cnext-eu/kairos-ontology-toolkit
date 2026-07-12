@@ -15,6 +15,9 @@ Design-time and runtime meet at one artifact: the **immutable, content-addressed
 profile** (`output/mdm/{domain}-mdm-profile.json`, MDM-DD-003). Design-time authors it;
 runtime and dataplatform consume the pinned digest.
 
+Repository setup and ownership boundaries for the operational product are documented in
+[`kairos-mdm-runtime.md`](kairos-mdm-runtime.md).
+
 ---
 
 ## MDM-DESIGN — Define mastered concepts and policy 🟦 *(design-time, this repo)*

@@ -11,8 +11,8 @@ decisions as explicit architecture decisions._
 >   `kairos-ontology-toolkit`, authored through a `kairos-design-mdm` skill — consistent
 >   with `kairos-design-silver` / `kairos-design-gold`.
 > - MDM **runtime** software (API, services, stewardship UI, DB migrations, deploy modules)
->   is a single product, `kairos-mdm-runtime`, that starts as a module and is split into its
->   own repo **only when its release cadence genuinely diverges**.
+>   is a single product developed from day one in the separate, private
+>   `Cnext-eu/kairos-mdm-runtime` repository.
 > - Three design-time UIs collapse to **two surfaces**: one design portal (Ontology
 >   Navigator, with an MDM authoring module) and one operational Stewardship UI.
 > - **One** identifier-normalization implementation, embedded into both batch and runtime —
@@ -294,10 +294,11 @@ Does **not** own: a customer's live DB, IDs, values or audit history; customer a
 survivorship / approval decisions; customer infra, secrets, identity assignments or support;
 source credentials or customer connectors; analytical models in a customer Warehouse.
 
-> **Repo-split rule (ADR-2):** `kairos-mdm-runtime` MAY start life as a package/module inside
-> the toolkit workspace. It is promoted to its own repository **only when** it needs an
-> independent release train (different cadence, different consumers, or different release
-> authority). Do not pay the pinning/compat-matrix cost before there is a second consumer.
+> **Repository boundary (ADR-2):** `kairos-mdm-runtime` starts in a separate private
+> repository. Runtime services, migrations, deploy modules and the Stewardship UI remain one
+> product and one repository; they are not split into per-service repositories. Compatibility
+> with this public toolkit is governed through the versioned, content-addressed MDM profile
+> contract rather than source co-location.
 
 ### 6.3 Dataplatform repo
 
@@ -343,7 +344,7 @@ license/attribution terms, they are tracked with the release and surfaced in `NO
 
 ## 7. Repository layout
 
-`kairos-mdm-runtime` (conceptual):
+Initial `kairos-mdm-runtime` repository layout:
 
 ```text
 kairos-mdm-runtime/
@@ -720,6 +721,9 @@ v1 proposed three design/operational UIs. v2 uses **two surfaces**:
    the dataplatform against the versioned API. Independently deployable; not embedded in the
    DB, dbt project or Warehouse.
 
+Repository setup and ownership boundaries are defined in
+[`kairos-mdm-runtime.md`](kairos-mdm-runtime.md).
+
 Stewardship UI minimum capabilities: search-before-create; side-by-side comparison with
 provenance; match explanation + confidence; create/change/merge/split/unmerge proposals;
 relationship/hierarchy editing; reference-list editing + release prep; assignment/SLA/
@@ -936,13 +940,18 @@ and versioning for free.
 **Rejects:** a standalone "MDM Navigator" application and a separate policy pipeline; three
 distinct design/operational UIs (collapsed to two surfaces, §17).
 
-### ADR-2 — One runtime product, split repo only on cadence divergence
-**Decision:** all MDM runtime software lives in a single `kairos-mdm-runtime` product, which
-may start as a module in the toolkit workspace and is promoted to its own repository **only
-when** it needs an independent release train.
-**Why:** premature repo-splitting imposes a pinning/compatibility-matrix tax before a second
-consumer exists.
-**Rejects:** day-one four-repo topology; per-service repos.
+### ADR-2 — Runtime starts as one separate private product repository
+**Decision:** all operational MDM software starts in the separate private
+`Cnext-eu/kairos-mdm-runtime` repository: APIs, services, normalization, database migrations,
+deploy modules and the Stewardship UI. It remains one product and is not divided into
+per-service repositories.
+**Why:** the public Apache-2.0 toolkit is a Python design-time package with a latest-only
+release policy, while the runtime is a private, polyglot operational product with independently
+pinned deployments, security ownership, migrations and support obligations. The immutable MDM
+profile already provides the required versioned compatibility boundary, so source co-location
+would not remove compatibility work.
+**Rejects:** placing proprietary runtime/UI source in the public toolkit; a day-one
+four-repository topology; per-service repositories.
 
 ### ADR-3 — No `<client>-mdm-hub` repo; sync-back gates "coexistence"
 **Decision:** the dataplatform is the default deployment boundary; a customer MDM repo is

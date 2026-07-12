@@ -51,8 +51,8 @@ must invoke the MDM profile projector. We resolve this with a **registry**:
 
 `tests/test_layering.py` statically scans every `core/*.py` and fails on any
 `from ..mdm` / `import kairos_ontology.mdm`. This makes the `mdm` subpackage cleanly
-liftable into a separate repository later (should cadence diverge — cf. ADR-2) without
-untangling core.
+additive: ontology core remains usable without depending on optional MDM policy concerns,
+while the MDM profile producer can consume stable core projection and RDF functionality.
 
 **Rejected:** a static `from ..mdm import …` in core (couples the layers); moving the whole
 dispatch loop out of core (duplicates the domain loop, extension discovery and output
@@ -80,6 +80,25 @@ lacks a digest.
 domain has an `*-mdm-ext.ttl` and is explicitly requested. Domains without MDM policy
 produce no MDM output. Policy changes reach runtime **only** through the reviewed hub loop
 (ADR-12) — never by editing generated artifacts.
+
+---
+
+## MDM-DD-004 — Operational MDM starts in a separate private repository
+
+**Status:** Accepted · **Refs:** ADR-2, ADR-11, ADR-12
+
+The operational MDM product starts in the private `Cnext-eu/kairos-mdm-runtime` repository.
+It owns APIs, mastering and workflow services, normalization, operational schema and
+migrations, deploy modules, runtime compatibility checks and the Stewardship UI. These
+concerns do not live in this public Apache-2.0 toolkit repository.
+
+The runtime and Stewardship UI remain one product and one repository initially; this decision
+does not introduce per-service repositories. The boundary is the immutable, content-addressed
+MDM profile emitted here and pinned by the dataplatform. Runtime/profile compatibility must
+therefore be explicit and tested rather than inferred from source co-location.
+
+**Rejected:** starting proprietary runtime or UI source inside this toolkit and extracting it
+later; splitting each runtime service into its own repository.
 
 ---
 

@@ -34,6 +34,8 @@ All Master Data Management documentation, consolidated:
 - [mdm-design-decisions.md](mdm/mdm-design-decisions.md) — MDM-specific decisions.
 - [user-stories.md](mdm/user-stories.md) — MDM epics & user stories.
 - [mdm-navigator-spec.md](mdm/mdm-navigator-spec.md) — MDM Navigator UI spec.
+- [kairos-mdm-runtime.md](mdm/kairos-mdm-runtime.md) — setup guide and boundaries for the
+  separate private runtime product.
 
 ### instruction-guides/
 
