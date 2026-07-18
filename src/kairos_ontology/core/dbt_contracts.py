@@ -90,6 +90,13 @@ class DbtContractDecision:
 
 
 @dataclass(frozen=True)
+class DbtSourceReplacement:
+    """Governed replacement of one canonical Bronze source table."""
+
+    table_iri: str
+
+
+@dataclass(frozen=True)
 class DbtContractModel:
     """A fully resolved custom dbt model contract."""
 
@@ -107,6 +114,7 @@ class DbtContractModel:
     decisions: tuple[DbtContractDecision, ...]
     properties_path: Path
     sql_path: Path
+    replaces_sources: tuple[DbtSourceReplacement, ...] = ()
 
 
 def _error(path: Path, message: str) -> DbtContractError:
@@ -255,6 +263,38 @@ def _parse_columns(model: dict[str, Any], path: Path, name: str) -> tuple[DbtCon
             raise _error(path, f"{context}.description must be a string")
         columns.append(DbtContractColumn(column_name, data_type, description))
     return tuple(columns)
+
+
+def _parse_source_replacements(
+    raw: object,
+    path: Path,
+    name: str,
+) -> tuple[DbtSourceReplacement, ...]:
+    """Parse asserted source replacements without resolving repository RDF."""
+
+    if raw is None:
+        return ()
+    context = f"model {name!r}.meta.kairos.replaces_sources"
+    if not isinstance(raw, list) or not raw:
+        raise _error(path, f"{context} must be a non-empty list of mappings")
+
+    replacements: list[DbtSourceReplacement] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw):
+        item_context = f"{context}[{index}]"
+        if not isinstance(item, dict):
+            raise _error(path, f"{item_context} must be a mapping")
+        unknown = sorted(set(item) - {"table_iri"})
+        if unknown:
+            raise _error(path, f"{item_context} contains unknown keys {unknown}")
+        table_iri = _required_string(item, "table_iri", path, item_context)
+        if not _is_http_iri(table_iri):
+            raise _error(path, f"{item_context}.table_iri must be an absolute HTTP(S) IRI")
+        if table_iri in seen:
+            raise _error(path, f"{context} contains duplicate table_iri {table_iri!r}")
+        seen.add(table_iri)
+        replacements.append(DbtSourceReplacement(table_iri))
+    return tuple(replacements)
 
 
 def _parse_approval(
@@ -489,6 +529,7 @@ def _parse_contract(
     decisions = _parse_decisions(
         meta.get("decisions"), path, name, hub_root, resource_names, test_names
     )
+    replaces_sources = _parse_source_replacements(meta.get("replaces_sources"), path, name)
     return DbtContractModel(
         name=name,
         description=description,
@@ -504,6 +545,7 @@ def _parse_contract(
         decisions=decisions,
         properties_path=path,
         sql_path=matches[0],
+        replaces_sources=replaces_sources,
     )
 
 

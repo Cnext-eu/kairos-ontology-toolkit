@@ -225,6 +225,8 @@ Each bundled model requires a dbt properties file containing:
 - `meta.kairos.virtual_source_iri`;
 - `meta.kairos.grain`;
 - `meta.kairos.supported_adapters`;
+- optional `meta.kairos.replaces_sources` with canonical Bronze table IRIs when the
+  contract is the governed replacement for an unsafe direct source path;
 - physical natural-key columns corresponding to the semantic key in the Silver extension;
 - required packages and macros; and
 - decision provenance for non-trivial business rules;
@@ -257,6 +259,9 @@ models:
           - dbt-labs/dbt_utils
         required_macros:
           - example_logistics__company_description
+        replaces_sources:
+          - table_iri: https://example.com/source/transport#booking
+          - table_iri: https://example.com/source/transport#stop
         decisions:
           - id: route-fallback
             statement: Use booking route, then stops, then shipment header.
@@ -313,7 +318,27 @@ models:
 6. A contract-breaking column removal, rename, or incompatible type change requires an
    explicit migration and package version decision.
 
-### 6.2 Decision provenance
+### 6.2 Governed source replacement
+
+`meta.kairos.replaces_sources` is an optional governance assertion that the contracted
+model replaces the listed canonical Bronze tables for `target_class`. It is not verified
+SQL lineage. Each entry contains exactly one absolute HTTP(S) `table_iri`; synchronization
+fails when the IRI is unknown, generated, duplicated, or defined by conflicting source
+vocabularies.
+
+Replacement coverage is deliberately stricter than ordinary table coverage. It requires:
+
+1. an approved source-table class claim whose `class_uri` equals `target_class`;
+2. current synchronized contract RDF;
+3. a table-level `skos:exactMatch` from the virtual table to `target_class`;
+4. `kairos-ext:silverSourceRef` routing that class to the contracted model; and
+5. no competing direct or second replacement authority for the same domain/source.
+
+The original Bronze tables remain available as dbt `source()` inputs through the contract
+declaration, so they must not receive unsafe direct SKOS mappings merely to generate
+`_sources.yml`.
+
+### 6.3 Decision provenance
 
 `meta.kairos.decisions` records why a non-trivial transformation rule exists and which
 artifacts support it. It is descriptive governance metadata, not executable configuration.
@@ -743,9 +768,11 @@ The first delivery is complete when:
     assertions for both adapters;
 11. decision metadata resolves to repository evidence, an implementing model, and existing
     dbt tests without influencing generated SQL;
-12. scenario tests cover a complex transformation containing joins, ranking, fallback
+12. a governed replacement can cover a wrong-grain source without an unsafe direct mapping,
+    but only when claims, exact virtual mapping, synchronized RDF, and Silver routing agree;
+13. scenario tests cover a complex transformation containing joins, ranking, fallback
     logic, aggregation, and a generated Silver wrapper; and
-13. `kairos-develop-dbt-transformation` enforces interactive evidence, semantic handoff,
+14. `kairos-develop-dbt-transformation` enforces interactive evidence, semantic handoff,
     state, synchronization, and validation checkpoints.
 
 ## 18. Best practices adopted

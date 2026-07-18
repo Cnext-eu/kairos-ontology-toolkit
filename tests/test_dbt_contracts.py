@@ -103,6 +103,23 @@ def test_discovers_valid_contract(tmp_path: Path) -> None:
     assert contract.sql_path.is_absolute()
     assert contract.decisions[0].approval is not None
     assert contract.decisions[0].evidence[0].artifact == "evidence.ttl"
+    assert contract.replaces_sources == ()
+
+
+def test_parses_canonical_source_replacements(tmp_path: Path) -> None:
+    model = _model()
+    model["meta"]["kairos"]["replaces_sources"] = [
+        {"table_iri": "https://example.com/source/crm#shipments"},
+        {"table_iri": "https://example.com/source/erp#orders"},
+    ]
+    hub, transforms, _ = _hub(tmp_path, model)
+
+    contract = discover_dbt_contracts(transforms, hub)[0]
+
+    assert [item.table_iri for item in contract.replaces_sources] == [
+        "https://example.com/source/crm#shipments",
+        "https://example.com/source/erp#orders",
+    ]
 
 
 def test_rejects_malformed_yaml(tmp_path: Path) -> None:
@@ -191,6 +208,36 @@ def test_rejects_unsafe_file_and_symlink_escape(tmp_path: Path) -> None:
         (
             lambda m: m["meta"]["kairos"]["decisions"][0].update(verified_by=["missing_test"]),
             "unknown verifying tests",
+        ),
+        (
+            lambda m: m["meta"]["kairos"].update(replaces_sources=[]),
+            "replaces_sources must be a non-empty list",
+        ),
+        (
+            lambda m: m["meta"]["kairos"].update(
+                replaces_sources=[{"table_iri": "urn:source:orders"}]
+            ),
+            r"table_iri must be an absolute HTTP\(S\) IRI",
+        ),
+        (
+            lambda m: m["meta"]["kairos"].update(
+                replaces_sources=[
+                    {
+                        "table_iri": "https://example.com/source#orders",
+                        "system": "erp",
+                    }
+                ]
+            ),
+            "contains unknown keys",
+        ),
+        (
+            lambda m: m["meta"]["kairos"].update(
+                replaces_sources=[
+                    {"table_iri": "https://example.com/source#orders"},
+                    {"table_iri": "https://example.com/source#orders"},
+                ]
+            ),
+            "duplicate table_iri",
         ),
     ],
 )

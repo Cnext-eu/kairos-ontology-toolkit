@@ -49,6 +49,8 @@ def test_sync_command_check_exits_nonzero_on_drift(tmp_path: Path, monkeypatch) 
             "custom/transforms",
             "--sources",
             "custom/sources",
+            "--bronze-sources",
+            "integration/sources",
         ],
         env={"KAIROS_SKILL_CONTEXT": "1"},
     )

@@ -44,10 +44,12 @@ silently approve its grain, identity, mappings, or Silver policy.
 8. **No sensitive context.** Do not place credentials, raw PII, proprietary sample values,
    or internal connection details in prompts, SQL comments, fixtures, decisions, or logs.
 
-## Design fleet mode
+## Design fleet mode (DD-088)
 
-Fleet mode is active only when the user explicitly requests fleet, autopilot, or
-AI-approved design decisions for this task.
+Default is interactive. Fleet mode is active only when the user explicitly
+requests fleet, autopilot, or AI-approved design decisions for this invocation.
+Any fleet override applies only to this skill invocation. It expires when the
+skill ends or pauses and is never inherited by another skill or a later resume.
 
 In fleet mode:
 
@@ -150,7 +152,9 @@ Propose the dbt contract before SQL:
 - approved grain sentence;
 - supported adapters (`fabric`, `databricks`);
 - physical natural-key columns;
-- approved required packages/macros; and
+- approved required packages/macros;
+- optional `meta.kairos.replaces_sources` entries using canonical Bronze
+  `SourceTable` IRIs when this model replaces an unsafe direct source path; and
 - `meta.kairos.decisions`.
 
 For each non-trivial rule, record:
@@ -178,6 +182,10 @@ Rules:
 - `implemented_by` names a dbt model, never an internal CTE.
 - `verified_by` names existing or planned dbt tests.
 - Decision text is descriptive metadata, never executable configuration.
+- `replaces_sources` is an asserted governance boundary, not mechanically verified SQL
+  lineage. Each entry contains only an absolute `table_iri`.
+- Use `replaces_sources` only when the source-table claim targets the same class as the
+  contract. Joined inputs representing other entities are dependencies, not replacements.
 
 Wait for approval before creating or replacing the contract.
 
@@ -224,11 +232,15 @@ Show the proposed diff and update the phase log.
 3. Inspect the generated managed vocabulary under
    `integration/sources/custom-transformations/`.
 4. Invoke `kairos-design-mapping` to map the virtual table and columns through SKOS.
+   A governed replacement requires table-level `skos:exactMatch` from the virtual table to
+   `target_class`. Do not map the replaced Bronze table directly merely to satisfy coverage.
 5. Invoke `kairos-design-silver` to confirm `silverSourceRef`, semantic natural key,
    SCD policy, and supported FKs.
 6. If either skill changes the semantic target or identity, return to Phase 2 and update
    the contract rather than forcing the previous design.
 7. Run `sync-dbt-contracts --check` after semantic handoffs.
+8. Run `check-claims --domains <domain>` and confirm it reports governed replacement
+   coverage without a direct/replacement authority conflict.
 
 Never hand-edit the managed virtual vocabulary.
 
@@ -265,6 +277,8 @@ The transformation is ready for review when:
 - grain and identity are approved;
 - contract and decision metadata validate;
 - the managed vocabulary is synchronized;
+- every governed replacement aligns its canonical source IRI, approved source claim,
+  virtual-table exact match, contract target, and `silverSourceRef`;
 - SKOS mappings and Silver policy passed their owning skill gates;
 - custom resources are self-contained and collision-free;
 - Fabric and Databricks parse successfully;

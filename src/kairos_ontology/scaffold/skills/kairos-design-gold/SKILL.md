@@ -18,6 +18,9 @@ user-confirmed. Record rationale, confidence, silver/source evidence, and BI
 impact in `phases/gold/<model>.md`; stop for ambiguous metric definitions,
 security/RLS risk, PII/proprietary exposure, or low-confidence business logic.
 
+Any fleet override applies only to this skill invocation. It expires when the
+skill ends or pauses and is never inherited by another skill or a later resume.
+
 ## Lifecycle state (DD-080)
 
 > The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of

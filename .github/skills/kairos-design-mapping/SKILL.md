@@ -20,6 +20,9 @@ evidence references in `phases/mapping/<source>-to-<domain>.md`; stop for
 low-confidence mappings, lossy transforms, PII/proprietary risk, or unmapped
 business-critical columns.
 
+Any fleet override applies only to this skill invocation. It expires when the
+skill ends or pauses and is never inherited by another skill or a later resume.
+
 ## Offline sample audit feedback (DD-089)
 
 After dbt/silver projection, `kairos-ontology audit-silver-samples` can review
@@ -115,6 +118,10 @@ The user can override any auto-approved mapping.
      `integration/sources/custom-transformations/`.
    - Never edit those generated vocabularies. If missing or stale, hand off to
      **kairos-develop-dbt-transformation** to run `sync-dbt-contracts`.
+   - When a contract declares `meta.kairos.replaces_sources`, map its virtual table to
+     `target_class` with table-level `skos:exactMatch`. Do not add a direct mapping from
+     the replaced Bronze table to the same domain merely to satisfy source coverage; that
+     creates a blocking source-authority conflict.
 2. Ask user which source system to map
 3. Ask user which domain(s) to target (list available from `model/ontologies/`)
 4. Create phase log: `ontology-hub/.kairos-state/phases/mapping/{source}-to-{domain}.md`

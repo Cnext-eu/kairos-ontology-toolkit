@@ -9,8 +9,15 @@ import yaml
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
 
+from kairos_ontology.core.claim_registry import (
+    Claim,
+    ClaimRegistry,
+    EvidenceSource,
+    write_registry,
+)
 from kairos_ontology.core.dbt_contract_sync import sync_dbt_contracts
 from kairos_ontology.core.projector import run_projections
+from kairos_ontology.core.source_coverage import check_source_coverage
 
 BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 EXT = Namespace("https://kairos.cnext.eu/ext#")
@@ -85,9 +92,6 @@ def _create_hub(root: Path) -> Path:
     )
 
     mapping = Graph()
-    for table in (SOURCE.booking, SOURCE.stop):
-        mapping.add((table, SKOS.exactMatch, DOMAIN.Shipment))
-        mapping.add((table, KMAP.mappingType, Literal("direct")))
     virtual_table = URIRef(str(VIRTUAL))
     mapping.add((virtual_table, SKOS.exactMatch, DOMAIN.Shipment))
     mapping.add((virtual_table, KMAP.mappingType, Literal("direct")))
@@ -143,6 +147,10 @@ having count(*) > 1
                         "natural_key": ["shipment_id"],
                         "required_packages": [],
                         "required_macros": [],
+                        "replaces_sources": [
+                            {"table_iri": str(SOURCE.booking)},
+                            {"table_iri": str(SOURCE.stop)},
+                        ],
                         "decisions": [
                             {
                                 "id": "route-fallback",
@@ -184,8 +192,63 @@ having count(*) > 1
         yaml.safe_dump(contract, sort_keys=False),
         encoding="utf-8",
     )
+    analysis = hub / "integration" / "sources" / "_analysis"
+    analysis.mkdir(parents=True)
+    (analysis / "transport-affinity.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "system": "transport",
+                "tables": [
+                    {"table": "booking", "domain": "shipment"},
+                    {"table": "stop", "domain": "shipment"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    write_registry(
+        ClaimRegistry(
+            domain="shipment",
+            claims=[
+                Claim(
+                    id="shipment-shipment",
+                    type="class",
+                    status="approved",
+                    disposition="claim",
+                    class_uri=str(DOMAIN.Shipment),
+                    evidence_sources=[
+                        EvidenceSource(type="source_table", system="transport", table="booking"),
+                        EvidenceSource(type="source_table", system="transport", table="stop"),
+                    ],
+                )
+            ],
+        ),
+        hub / "model" / "claims" / "shipment-claims.yaml",
+    )
     sync_dbt_contracts(hub)
     return hub
+
+
+def test_wrong_grain_sources_are_covered_only_by_governed_replacement(
+    tmp_path: Path,
+) -> None:
+    hub = _create_hub(tmp_path)
+
+    report = check_source_coverage(
+        analysis_dir=hub / "integration" / "sources" / "_analysis",
+        sources_dir=hub / "integration" / "sources",
+        mappings_dir=hub / "model" / "mappings",
+        claims_dir=hub / "model" / "claims",
+        extensions_dir=hub / "model" / "extensions",
+        hub_root=hub,
+    )
+
+    assert not report.is_blocking
+    assert report.domain_counts["shipment"] == (2, 2)
+    assert report.direct_counts["shipment"] == 0
+    assert report.replacement_counts["shipment"] == 2
 
 
 @pytest.mark.parametrize(
@@ -213,6 +276,9 @@ def test_advanced_transformation_projects_complete_package(
     wrapper = project / "models" / "silver" / "shipment" / "shipment.sql"
     assert custom_sql.is_file()
     assert "row_number() over" in custom_sql.read_text(encoding="utf-8")
+    sources_yaml = project / "models" / "silver" / "_transport__sources.yml"
+    assert "booking" in sources_yaml.read_text(encoding="utf-8")
+    assert "stop" in sources_yaml.read_text(encoding="utf-8")
     wrapper_sql = wrapper.read_text(encoding="utf-8")
     assert "ref('int_shipment_conformed')" in wrapper_sql
     assert "source(" not in wrapper_sql

@@ -19,6 +19,9 @@ evidence in `phases/source/<system>.md`; stop for incomplete source evidence,
 low-confidence descriptions, proprietary/PII risk, or destructive source refresh
 choices.
 
+Any fleet override applies only to this skill invocation. It expires when the
+skill ends or pauses and is never inherited by another skill or a later resume.
+
 ## Lifecycle state (DD-080)
 
 > The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
@@ -68,11 +71,80 @@ Input type? ──→  Import flat files ──→ Generate vocab ──→  Rev
 - The ontology hub must be initialized (`kairos-ontology init` or `new-repo`)
 - Source data or documentation should be available (CSV/Excel/Parquet files, SQL DDL,
   API specs, or sample data)
-- For Phase 4 (analysis): AI provider configured (GITHUB_TOKEN or AZURE_AI_ENDPOINT)
+- For Phase 4 (analysis): an AI provider and authentication mode selected during
+  the mandatory startup check below
 
 ---
 
-## Phase 0 — Determine input type
+## Phase 0a — Select AI provider and authentication (mandatory)
+
+Ask at the beginning of **every source-design invocation**, after any
+continue/start-fresh decision and before determining the input type. Do not infer
+consent to send source evidence from an existing `.env`; ask the user to confirm
+the detected configuration before the first LLM call.
+
+First inspect the effective environment safely. The provider layer automatically
+loads the first applicable `.env` from the working directory, hub, or repository
+root. Report only:
+
+- which provider and authentication mode appear configured;
+- which variable **names** are present; and
+- whether the required optional dependency is installed.
+
+Never display an endpoint containing sensitive query parameters, a token, API key,
+credential value, or `.env` contents. Never ask the user to paste a secret into
+chat. If configuration is needed, direct the user to the gitignored `.env`.
+
+Then explain that Phases 1-3 are deterministic and AI-free, while Phase 4
+`analyse-sources` sends source metadata and sample evidence to the selected LLM
+provider and may incur cost.
+
+When the detected `.env` configuration is complete, offer **Use detected `.env`
+settings (Recommended)** as the first and default choice. Include its safe
+provider/authentication/model summary in the question. Then offer these override
+choices:
+
+1. **Use detected `.env` settings (Recommended)** — use the safely summarized
+   effective configuration.
+2. **GitHub Models** — `KAIROS_AI_PROVIDER=github` + `GITHUB_TOKEN`.
+3. **Azure AI with API key** — `KAIROS_AI_PROVIDER=azure` +
+   `AZURE_AI_ENDPOINT` + `AZURE_AI_KEY`.
+4. **Azure AI with Azure identity** — `KAIROS_AI_PROVIDER=azure` +
+   `AZURE_AI_ENDPOINT`, with `AZURE_AI_KEY` absent. Authentication uses
+   `DefaultAzureCredential` (Azure CLI, workload identity, or managed identity)
+   and requires the toolkit `[azure]` extra.
+5. **Microsoft Foundry with Azure identity** —
+   `KAIROS_AI_PROVIDER=foundry` + `AZURE_FOUNDRY_ENDPOINT`.
+   Authentication uses `DefaultAzureCredential` and requires the toolkit
+   `[foundry]` extra.
+6. **Skip AI analysis for this invocation** — complete source import and
+   vocabulary work, but do not run Phase 4.
+
+If no complete `.env` configuration is detected, omit the first choice and ask
+the user to select one of the explicit providers or skip AI analysis.
+
+If a role-specific `KAIROS_AI_AFFINITY_ENDPOINT` is present, disclose that it
+takes precedence for `analyse-sources` and requires
+`KAIROS_AI_AFFINITY_KEY`; do not silently treat it as Azure-identity
+authentication.
+
+After selection:
+
+- verify the selected variable names are present without printing their values;
+- for Azure identity, verify `DefaultAzureCredential` can obtain a Cognitive
+  Services token without displaying the token;
+- stop with an actionable configuration message if authentication is unavailable;
+- never silently fall back to GitHub, another Azure credential mode, or another
+  provider; and
+- record only the selected provider, authentication mode, model, and whether the
+  pre-flight succeeded in `phases/source/<system>.md`.
+
+This provider choice is runtime consent for the current source-design invocation,
+not a fleet-mode decision and not reusable consent for another invocation.
+
+---
+
+## Phase 0b — Determine input type
 
 Ask the user what source material they have:
 
@@ -318,9 +390,37 @@ Verify:
 
 > **When to use:** All source vocabularies have been created (via any Phase 1-3
 > path) and you want to understand which reference model domains each source
-> contributes to. **Requires AI provider** (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
+> contributes to. **Requires the provider and authentication mode explicitly
+> selected in Phase 0a.** If the user chose to skip AI analysis, do not enter this
+> phase.
 
 ### 4a — Pre-flight check
+
+Reconfirm that the effective provider/authentication mode still matches the
+Phase 0a selection before making any LLM call. Configuration drift is blocking:
+stop rather than silently selecting another configured provider.
+
+Run the mandatory persisted-sample privacy gate before sending source evidence to
+the selected LLM:
+
+```bash
+kairos-ontology source-privacy --sources integration/sources
+```
+
+- If findings exist, recommend the deterministic remediation:
+  `kairos-ontology source-privacy --sources integration/sources --fix`.
+- Re-run the check and continue only when it passes.
+- Reports may show artifact path, table, column, detected kind, and count, but never
+  raw values.
+- Never offer committing raw samples, ignoring the files, or gitignore-only treatment
+  as a safe alternative. Generated vocabularies can already contain those literals.
+- The gate covers the toolkit's supported patterns (PII-related columns, email, IBAN,
+  phone-shaped values, and long numeric identifiers); it is not a universal PII
+  classifier. Stop for proprietary/PII risk outside those supported patterns.
+
+Fresh `import-flatfile`, `extract-schema`, and `import-source` writes apply the same
+opaque persistence policy automatically. The explicit gate also remediates artifacts
+created by earlier toolkit versions.
 
 Verify source vocabularies exist:
 
@@ -636,6 +736,9 @@ Save to `ontology-hub/.kairos-state/phases/source/{system-name}.md`:
 **Last updated:** {ISO-8601}
 **Status:** Complete | In Progress
 **Toolkit version:** {version}
+**AI provider:** GitHub Models | Azure AI | Microsoft Foundry | Skipped
+**AI authentication:** GitHub token | API key | Azure identity | Not applicable
+**AI pre-flight:** Passed | Not run | Blocked
 
 ## Import Method
 

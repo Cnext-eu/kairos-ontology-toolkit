@@ -135,11 +135,12 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-085](#dd-085-okf-phase-logs-replace-interactive-sessions-design-logs) | OKF phase logs replace interactive `.sessions-design` logs | Accepted | 2026-06-20 |
 | [DD-086](#dd-086-reporting-informed-draft-model-planning-report) | Reporting-informed draft-model planning report | Accepted | 2026-06-21 |
 | [DD-087](#dd-087-data-product-vertical-slice-planning-reports) | Data-product vertical-slice planning reports | Accepted | 2026-06-21 |
-| [DD-088](#dd-088-opt-in-design-fleet-mode) | Opt-in design fleet mode | Accepted | 2026-06-22 |
+| [DD-088](#dd-088-skill-scoped-opt-in-design-fleet-mode) | Skill-scoped opt-in design fleet mode | Accepted | 2026-06-22 |
 | [DD-089](#dd-089-offline-silver-sample-audit) | Offline silver sample audit | Accepted | 2026-06-22 |
 | [DD-090](#dd-090-core-concepts-conformance--toolkit-runtime-for-the-archetype--discovery-contract-v02) | Core Concepts Conformance — toolkit runtime for the archetype + discovery contract (v0.2) | Accepted | 2026-06-22 |
 | [DD-091](#dd-091-optional-ddd-governance-overlay-architecture-documentation-only) | Optional DDD governance overlay (architecture documentation only) | Accepted | 2026-06-22 |
 | [DD-092](#dd-092-contracted-custom-dbt-transformation-boundary) | Contracted custom dbt transformation boundary | Accepted | 2026-07-18 |
+| [DD-093](#dd-093-governed-contracted-source-replacement-in-source-coverage) | Governed contracted-source replacement in source coverage | Accepted | 2026-07-18 |
 
 ---
 
@@ -2241,8 +2242,9 @@ Separate all skills into two categories:
 ## DD-041: LLM-powered Source Affinity Analysis & Coverage Reporting
 
 **Status:** Accepted  
-**Date:** 2026-06-04 (updated 2026-06-04)  
-**Affects:** `analyse_sources.py`, `coverage_report.py`, `ai_provider.py`, CLI, `kairos-design-domain` skill  
+**Date:** 2026-06-04 (updated 2026-07-18)
+**Affects:** `analyse_sources.py`, `coverage_report.py`, `ai_provider.py`, CLI,
+`kairos-design-source` and `kairos-design-domain` skills
 **Implementation:** `src/kairos_ontology/analyse_sources.py`, `src/kairos_ontology/coverage_report.py`, `src/kairos_ontology/ai_provider.py`
 
 ### Context
@@ -2275,10 +2277,21 @@ Introduce two new CLI commands powered by LLM (gpt-5.4-mini, configurable via AI
    identifies custom vs. industry-standard concepts, and suggests improvements.
 
 **AI Provider abstraction** (`ai_provider.py`):
-- Configurable via `KAIROS_AI_PROVIDER=github|azure` env var
+- Configurable via `KAIROS_AI_PROVIDER=github|azure|foundry` env var
 - GitHub Models: `GITHUB_TOKEN` + `https://models.inference.ai.azure.com`
-- Azure AI Foundry: `AZURE_AI_ENDPOINT` + `AZURE_AI_KEY` (or managed identity)
+- Azure AI Foundry: `AZURE_AI_ENDPOINT` + `AZURE_AI_KEY` or
+  `DefaultAzureCredential`
+- Microsoft Foundry: `AZURE_FOUNDRY_ENDPOINT` + `DefaultAzureCredential`
 - Both return OpenAI-compatible client (same SDK)
+
+At the beginning of every `kairos-design-source` invocation, the skill asks the
+user to select the provider and authentication mode for that invocation. Existing
+`.env` configuration is summarized without exposing values and, when complete,
+is the recommended default; the user still confirms it before the first LLM call.
+The override choices include GitHub Models, Azure AI with a key, Azure AI with
+Azure identity, Microsoft Foundry with Azure identity, or skipping AI analysis.
+The skill must not silently fall back to another configured provider or
+credential mode.
 
 **Recursive reference model resolution** (`resolve_reference_models()`):
 - Discovers TTLs recursively (`**/*.ttl`)
@@ -2301,6 +2314,8 @@ Introduce two new CLI commands powered by LLM (gpt-5.4-mini, configurable via AI
 ### Consequences
 
 - AI provider env var is required for source analysis (GITHUB_TOKEN or AZURE_AI_ENDPOINT)
+- Provider/authentication consent is invocation-scoped and recorded without secrets
+  in the source phase log.
 - New prerequisite gate in modeling skill — sources must be analysed before design
 - Output stored in `integration/sources/_analysis/` (gitignored or committed per preference)
 - Coverage reports in `output/reports/` provide actionable improvement guidance
@@ -4389,11 +4404,16 @@ external dbt/medallion review, which both converged on superset + typed NULL pad
 
 **Status:** Accepted  
 **Date:** 2026-06-14  
-**Affects:** `src/kairos_ontology/_samples.py` (new),
-`src/kairos_ontology/propose_alignment.py`, `src/kairos_ontology/cli/main.py`,
+**Affects:** `src/kairos_ontology/core/_samples.py`,
+`src/kairos_ontology/core/source_privacy.py`,
+`src/kairos_ontology/core/import_flatfile.py`,
+`src/kairos_ontology/core/extract_schema.py`,
+`src/kairos_ontology/core/import_source.py`,
+`src/kairos_ontology/core/propose_alignment.py`, `src/kairos_ontology/cli/main.py`,
 `src/kairos_ontology/validator.py`, `.github/skills/kairos-design-mapping/SKILL.md`  
 **Implementation:** `_samples.py` (`is_pii_column`, `value_is_pii_shaped`,
-`mask_value`, `example_values`); `ColumnAlignment.example_values` /
+`mask_value`, `example_values`, opaque persistence redaction);
+`source-privacy [--fix]`; `ColumnAlignment.example_values` /
 `ColumnAlignment.transform_compat`; `_parses_as()` / `_transform_compat_note()`;
 `run_propose_alignment(include_sample_values=True)`; `--no-sample-values` CLI flag.
 
@@ -4417,6 +4437,16 @@ used to sanity-check a proposed `CAST(...)` transform.
   (email/IBAN/phone/long-digit regex). PII values are masked length-preservingly
   (`jo***@***.com`) and never enumerated. `validator.PII_KEYWORDS` now imports
   from `_samples` to avoid drift.
+- **Persisted samples use opaque typed redaction, not display masking.** Before
+  source YAML or Bronze RDF is written, a detected value is replaced as a whole
+  with a token such as
+  `<redacted kind=email source=contacts.email datatype=varchar(255)>`. The token
+  retains source context but no original characters and no hash. Detection is
+  recursive for row/JSON values and idempotent for existing tokens.
+- **Supported residual findings block publication.** Source writers sanitize before
+  persistence and verify that no supported raw pattern remains. Existing artifacts
+  are checked or deterministically rewritten with `source-privacy --fix`; reports
+  identify only path/table/column/kind/count.
 - **`transform_compat`** is an advisory note (`"N/M sample values are non-numeric
   — CAST may NULL/fail"`) emitted only for numeric/bool CAST targets. It never
   raises confidence, never auto-sets review, and never blocks.
@@ -4428,7 +4458,8 @@ used to sanity-check a proposed `CAST(...)` transform.
 Real values disambiguate mappings far better than names/types alone and let the
 modeler catch encoding traps before writing SQL. Forcing the feature on (vs.
 opt-in) maximises that value; masking PII unconditionally keeps the committed
-artifacts safe even though raw `sampleValues` are already in version control.
+artifacts safe. Persist-time opaque redaction closes the earlier gap where raw
+sample values could enter version control before display masking.
 Keeping `transform_compat` advisory respects the toolkit's warning-tolerant,
 human-confirmed mapping flow.
 
@@ -4438,8 +4469,12 @@ human-confirmed mapping flow.
   `--no-sample-values` / `include_sample_values=False` suppresses them.
 - The Examples column is for transient display only — skills must never copy raw
   values into committed TTL/comments/session logs.
-- A first masking layer now exists, but raw bronze `sampleValues` remain
-  committed (pre-existing); tightening that is out of scope here.
+- New source artifacts persist supported detected patterns only as opaque,
+  source-aware tokens. Non-PII examples remain available as semantic evidence.
+- Existing generated YAML and vocabulary TTL can be remediated with the
+  deterministic, value-free `source-privacy --fix` workflow.
+- Detection is deliberately bounded to supported patterns and PII-related column
+  names; this policy does not claim universal discovery of sensitive information.
 
 ---
 
@@ -5199,7 +5234,7 @@ of creating a separate semantic-model grouping mechanism.
 
 ---
 
-## DD-088: Opt-in design fleet mode
+## DD-088: Skill-scoped opt-in design fleet mode
 
 **Status:** Accepted
 **Date:** 2026-06-22
@@ -5217,26 +5252,37 @@ human even when the user explicitly wants AI to make decisions for a test run.
 
 ### Decision
 
-Replace the absolute design-skill autopilot ban with an opt-in **design fleet
-mode**. Interactive mode remains the default. Fleet mode is allowed only when the
-user explicitly requests fleet/autopilot/AI-approved design decisions for the
-current task.
+Keep the lifecycle-wide design autopilot ban. Interactive mode remains the
+default, and no fleet-mode authorization may be inferred from an earlier phase,
+stored as a global preference, or propagated during a skill handoff.
 
-In fleet mode, the design skills may let AI approve normal checkpoint decisions,
-but they must still execute the same phases, evidence gates, validations, and
-skill routing as interactive mode. Each AI-made decision must be recorded as
+A user may explicitly override the ban for **one specific design skill
+invocation**. The active skill may offer that choice at startup or accept an
+explicit fleet/autopilot/AI-approved request while it is active. Authorization
+ends when that skill invocation ends or pauses; another skill, or a later resume,
+starts interactive unless the user grants a new override.
+
+Within an authorized invocation, the skill may let AI approve normal checkpoint
+decisions, but it must still execute the same phases, evidence gates, validations,
+and skill routing as interactive mode. Each AI-made decision must be recorded as
 AI-approved with rationale, confidence, and evidence references in the relevant
 phase log or review output.
 
 ### Rationale
 
-This preserves the quality model while enabling faster lifecycle testing. The
-speedup comes from replacing repeated human confirmations with traceable AI
-decisions, not from skipping evidence, validation, or review artifacts.
+This preserves the no-autopilot governance boundary while allowing a user to
+accelerate one well-defined phase deliberately. The speedup comes from replacing
+repeated human confirmations inside that invocation with traceable AI decisions,
+not from granting blanket lifecycle autonomy or skipping evidence, validation, or
+review artifacts.
 
 ### Consequences
 
 - Interactive remains the normal governance mode for stakeholder-facing design.
+- Fleet consent is skill- and invocation-scoped; it never carries into another
+  skill or a resumed invocation.
+- A skill that offers fleet mode must explain the implications before asking and
+  must make interactive mode the recommended default.
 - Fleet mode decisions are explicitly marked AI-approved, not user-confirmed.
 - Skills must still stop for ambiguity, low confidence, policy-sensitive choices,
   destructive or irreversible actions, and proprietary/PII risk.
@@ -5515,6 +5561,72 @@ second hand-authored physical schema.
   deferred.
 - Contracted Silver interface breaks require an explicit downstream migration,
   independent of the toolkit's own release version.
+
+---
+
+## DD-093: Governed contracted-source replacement in source coverage
+
+**Status:** Accepted
+
+**Date:** 2026-07-18
+
+**Affects:** `src/kairos_ontology/core/dbt_contracts.py`,
+`src/kairos_ontology/core/dbt_contract_sync.py`,
+`src/kairos_ontology/core/source_coverage.py`,
+`src/kairos_ontology/core/projections/medallion_dbt_projector.py`,
+`src/kairos_ontology/cli/main.py`, advanced dbt/mapping/Silver skills
+
+**Implementation:** `meta.kairos.replaces_sources`,
+`kairos-dbt:replacesSource`, `sync-dbt-contracts --bronze-sources`,
+`check-claims` source coverage
+
+### Context
+
+A wrong-grain, duplicate-prone, or structurally unsuitable Bronze table may need a
+contracted dbt transformation before it is safe as a Silver source. DD-061 previously
+required the original table or one of its columns to be a SKOS mapping subject. Adding
+that mapping only to satisfy coverage creates a second source-authority path and can
+route projection around the governed transformation.
+
+Calling manually declared metadata "lineage" would overstate what the toolkit proves:
+Kairos does not parse arbitrary SQL into verified row- or column-level lineage.
+
+### Decision
+
+- A contract may declare `meta.kairos.replaces_sources`, containing canonical absolute
+  HTTP(S) Bronze `SourceTable` IRIs. Names, labels, and filenames are not authority.
+- The declaration is a governed replacement assertion, not verified SQL lineage.
+- `sync-dbt-contracts` validates each IRI against a separate non-generated Bronze input
+  root and emits `kairos-dbt:replacesSource` in the managed virtual vocabulary.
+- Replacement coverage requires agreement across the canonical source IRI, one approved
+  source-table class/reference-data claim, the contract `target_class`, a table-level
+  `skos:exactMatch`, synchronized managed RDF, and `silverSourceRef`.
+- Direct and replacement mappings for the same domain/source are a blocking conflict.
+  Multiple replacement contracts for the same authority path are also blocking.
+- Contract replacement inputs are included in generated dbt `_sources.yml` independently
+  of SKOS mappings, so executable SQL can use `source()` without granting direct semantic
+  mapping authority.
+- Hubs and contracts without replacement metadata keep the existing direct-coverage path
+  and do not acquire replacement-specific source resolution.
+
+### Rationale
+
+The invariant closes the coverage false negative without weakening the gate or inventing
+a second transformation DSL. Canonical IRIs avoid ambiguous source identity. Claims own
+semantic approval, SKOS owns virtual-source meaning, Silver extensions own routing, dbt
+SQL remains executable truth, and tests verify behavior. Requiring all surfaces to agree
+prevents metadata alone from laundering an unrelated joined table into coverage.
+
+### Consequences
+
+- Authors must copy stable Bronze table IRIs into contracts and synchronize before
+  mapping or projection.
+- `skos:closeMatch`, broader/narrower/related mappings, column-only mappings, and stale
+  generated vocabularies cannot authorize replacement.
+- A deliberate direct/replacement overlap must be resolved rather than hidden by
+  precedence.
+- SQL-internal lineage remains deferred; the replacement assertion is reviewable but not
+  a mechanical proof of which rows or columns the SQL consumes.
 
 ---
 

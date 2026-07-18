@@ -250,10 +250,10 @@ invoke the named skill instead.
 
 ### Design mode policy (MANDATORY)
 
-Design skills are **interactive by default**. They require explicit stakeholder
-confirmation at checkpoints (naming alignment, mapping confirmation, annotation
-review) unless the user explicitly requests **design fleet mode** for the current
-task.
+Design skills are **interactive by default** and lifecycle-wide autopilot is
+prohibited. They require explicit stakeholder confirmation at checkpoints
+(naming alignment, mapping confirmation, annotation review) unless the user
+grants a fleet-mode override for one specific active skill invocation.
 
 | Skill | Reason |
 |-------|--------|
@@ -269,12 +269,16 @@ task.
 **Default:** when these skills are invoked, use **interactive mode** — present
 proposals, wait for user confirmation, and proceed step-by-step.
 
-**Opt-in design fleet mode:** only when the user explicitly asks for fleet,
-autopilot, or AI-approved design decisions, the design skills and
-`kairos-develop-dbt-transformation` may run in
-autopilot/autopilot-fleet mode for testing and acceleration. In fleet mode:
+**Skill-scoped fleet override:** a design skill may offer this choice at startup,
+or accept an explicit request for fleet/autopilot/AI-approved decisions while it
+is active. The override applies only to that skill invocation. It expires when
+the skill ends or pauses and MUST NOT carry into another skill, a handoff, or a
+later resume. Without a current override, no design skill may run in autopilot.
+In an authorized invocation:
 
 - Announce that design fleet mode is active and AI will make checkpoint decisions.
+- If the skill offers the choice, explain the implications first and make
+  interactive mode the recommended default.
 - Execute the same phases, pre-flight checks, evidence gates, validations, and
   skill routing as interactive mode; never skip quality gates to go faster.
 - Record each AI-made checkpoint decision in the phase log or generated review

@@ -109,6 +109,8 @@ def build_dbt_contract_graph(contract: DbtContractModel) -> Graph:
     graph.add((table, KAIROS_DBT.sourceKind, Literal("dbt-contract")))
     graph.add((table, KAIROS_DBT.modelRef, Literal(contract.name)))
     graph.add((table, KAIROS_DBT.targetClass, URIRef(contract.target_class)))
+    for replacement in contract.replaces_sources:
+        graph.add((table, KAIROS_DBT.replacesSource, URIRef(replacement.table_iri)))
 
     natural_key = set(contract.natural_key)
     for column in contract.columns:
@@ -123,6 +125,62 @@ def build_dbt_contract_graph(contract: DbtContractModel) -> Graph:
         graph.add((column_iri, KAIROS_BRONZE.isPrimaryKey, Literal(is_key, datatype=XSD.boolean)))
         graph.add((column_iri, KAIROS_DBT.modelRef, Literal(contract.name)))
     return graph
+
+
+def _load_bronze_table_index(
+    bronze_sources_dir: Path,
+    generated_sources_dir: Path,
+) -> dict[str, Path]:
+    """Index canonical non-generated Bronze table IRIs and reject duplicate authority."""
+
+    if not bronze_sources_dir.is_dir():
+        raise DbtContractSyncError(f"Bronze sources directory does not exist: {bronze_sources_dir}")
+
+    generated_sources_dir = generated_sources_dir.resolve()
+    tables: dict[str, Path] = {}
+    for vocab_file in sorted(bronze_sources_dir.rglob("*.vocabulary.ttl")):
+        resolved_file = vocab_file.resolve()
+        if resolved_file.is_relative_to(generated_sources_dir):
+            continue
+        graph = Graph()
+        try:
+            graph.parse(vocab_file, format="turtle")
+        except Exception as exc:
+            raise DbtContractSyncError(
+                f"Could not parse Bronze vocabulary {vocab_file}: {exc}"
+            ) from exc
+
+        for table in graph.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
+            if str(graph.value(table, KAIROS_DBT.sourceKind) or "") == "dbt-contract":
+                continue
+            table_iri = str(table)
+            previous = tables.get(table_iri)
+            if previous is not None and previous != resolved_file:
+                raise DbtContractSyncError(
+                    f"Bronze SourceTable IRI {table_iri!r} is defined in both "
+                    f"{previous} and {resolved_file}"
+                )
+            tables[table_iri] = resolved_file
+    return tables
+
+
+def _validate_source_replacements(
+    contracts: tuple[DbtContractModel, ...],
+    bronze_sources_dir: Path,
+    generated_sources_dir: Path,
+) -> None:
+    """Require every asserted replacement to reference a canonical Bronze table."""
+
+    if not any(contract.replaces_sources for contract in contracts):
+        return
+    table_index = _load_bronze_table_index(bronze_sources_dir, generated_sources_dir)
+    for contract in contracts:
+        for replacement in contract.replaces_sources:
+            if replacement.table_iri not in table_index:
+                raise DbtContractSyncError(
+                    f"Contract {contract.name!r} replaces unknown or generated Bronze "
+                    f"SourceTable IRI {replacement.table_iri!r}"
+                )
 
 
 def _load_graph(path: Path) -> Graph | None:
@@ -150,6 +208,7 @@ def sync_dbt_contracts(
     *,
     transforms_dir: Path | None = None,
     sources_dir: Path | None = None,
+    bronze_sources_dir: Path | None = None,
     check: bool = False,
 ) -> DbtContractSyncReport:
     """Synchronize custom dbt contracts into generated Bronze vocabularies.
@@ -163,14 +222,18 @@ def sync_dbt_contracts(
     sources = Path(
         sources_dir or root / "integration" / "sources" / "custom-transformations"
     ).resolve()
+    bronze_sources = Path(bronze_sources_dir or root / "integration" / "sources").resolve()
     if not transforms.is_relative_to(root):
         raise DbtContractSyncError(f"Transforms directory must be inside hub root {root}")
     if not sources.is_relative_to(root):
         raise DbtContractSyncError(f"Sources directory must be inside hub root {root}")
+    if not bronze_sources.is_relative_to(root):
+        raise DbtContractSyncError(f"Bronze sources directory must be inside hub root {root}")
     if not transforms.is_dir():
         return DbtContractSyncReport(transforms, sources, check)
 
     contracts = discover_dbt_contracts(transforms, root)
+    _validate_source_replacements(contracts, bronze_sources, sources)
     items: list[DbtContractSyncItem] = []
     for contract in contracts:
         output_path = sources / f"{contract.name}.vocabulary.ttl"

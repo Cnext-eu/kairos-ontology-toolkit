@@ -897,6 +897,7 @@ def _gen_sources(
     systems: list[dict], env: Environment, mappings: dict,
     logical_sources_only: bool = False,
     excluded_table_uris: frozenset[str] = frozenset(),
+    required_table_uris: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
     """Generate a single minimal ``_sources.yml`` under ``models/silver/``.
 
@@ -905,7 +906,8 @@ def _gen_sources(
     Column-level documentation lives in the vocabulary TTL (the authoritative
     source of bronze table structure), not in the dbt sources YAML.
 
-    Only tables that have at least one mapping to a domain class are included.
+    Tables are included when mapped to a domain class or declared as governed inputs
+    to an active contracted transformation.
 
     When *logical_sources_only* is True, the generated sources omit ``database``
     and ``schema`` fields — physical binding is expected to be defined in the
@@ -913,7 +915,7 @@ def _gen_sources(
     """
     artifacts: dict[str, str] = {}
     template = env.get_template("sources.yml.jinja2")
-    mapped_table_uris = set(mappings.get("table_maps", {}).keys())
+    mapped_table_uris = set(mappings.get("table_maps", {}).keys()) | set(required_table_uris)
 
     for sys in systems:
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
@@ -3710,6 +3712,13 @@ def generate_dbt_artifacts(
     virtual_table_uris = frozenset(
         contract.virtual_source_iri for contract in contracts.values()
     )
+    class_uris = {item["uri"] for item in classes}
+    replacement_input_uris = frozenset(
+        replacement.table_iri
+        for contract in contracts.values()
+        if contract.target_class in class_uris
+        for replacement in contract.replaces_sources
+    )
 
     if not systems:
         logger.info("No source systems found — generating silver models only")
@@ -3723,6 +3732,7 @@ def generate_dbt_artifacts(
                 mappings,
                 logical_sources_only,
                 virtual_table_uris,
+                replacement_input_uris,
             )
         )
         logger.info("Generated %d source definition(s)", len(systems))

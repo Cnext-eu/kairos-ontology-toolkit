@@ -82,6 +82,7 @@ _SKILL_COVERED_COMMANDS = {
     "update-refmodels": "kairos-toolkit-ops",
     "import-source": "kairos-design-source",
     "import-flatfile": "kairos-design-source",
+    "source-privacy": "kairos-design-source",
     "generate-staging": "kairos-design-source",
     "analyse-sources": "kairos-design-source",
     "derive-claims": "kairos-design-source",
@@ -583,8 +584,14 @@ def lifecycle():
     type=click.Path(path_type=Path),
     help="Generated vocabulary directory (default: integration/sources/custom-transformations).",
 )
+@click.option(
+    "--bronze-sources",
+    type=click.Path(path_type=Path),
+    help="Bronze input vocabulary root used to validate replacements "
+    "(default: integration/sources).",
+)
 @click.option("--check", is_flag=True, help="Report drift without writing files.")
-def sync_dbt_contracts_cmd(transforms, sources, check):
+def sync_dbt_contracts_cmd(transforms, sources, bronze_sources, check):
     """Synchronize custom dbt contracts to Bronze-compatible RDF vocabularies."""
     from ..core.dbt_contract_sync import sync_dbt_contracts
     from ..core.hub_utils import find_hub_root
@@ -603,6 +610,7 @@ def sync_dbt_contracts_cmd(transforms, sources, check):
             hub_root,
             transforms_dir=resolve_override(transforms),
             sources_dir=resolve_override(sources),
+            bronze_sources_dir=resolve_override(bronze_sources),
             check=check,
         )
     except ValueError as exc:
@@ -1517,20 +1525,50 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
                 n_files = len(list(vocab_dir.glob("*.vocabulary.ttl")))
                 click.echo(f"   📂 Also written {n_files} per-table files to: {vocab_dir}")
 
-        # Copy .samples.yaml files from source directory to output directory
+        # Persist privacy-safe row-context files from directory inputs.
         if source_path.is_dir() and result_path:
-            import shutil as _shutil
+            import yaml as _yaml
+
+            from ..core.source_privacy import sanitize_samples_document
+
             dest_dir = result_path.parent if not split_tables else result_path.parent
             samples_copied = 0
             for samples_file in source_path.glob("*.samples.yaml"):
                 dest_file = dest_dir / samples_file.name
-                if samples_file.resolve() == dest_file.resolve():
-                    continue
-                _shutil.copy2(samples_file, dest_file)
+                document = _yaml.safe_load(samples_file.read_text(encoding="utf-8"))
+                table = (
+                    str(document.get("table"))
+                    if isinstance(document, dict) and document.get("table")
+                    else samples_file.name.removesuffix(".samples.yaml")
+                )
+                table_file = source_path / f"{table}.yaml"
+                table_data = (
+                    _yaml.safe_load(table_file.read_text(encoding="utf-8"))
+                    if table_file.is_file()
+                    else {}
+                ) or {}
+                column_types = {
+                    str(column.get("name", "")): str(column.get("data_type", "unknown"))
+                    for column in table_data.get("columns", [])
+                }
+                safe_document, _ = sanitize_samples_document(
+                    document,
+                    table=table,
+                    column_types=column_types,
+                )
+                dest_file.write_text(
+                    _yaml.safe_dump(
+                        safe_document,
+                        allow_unicode=True,
+                        sort_keys=False,
+                    ),
+                    encoding="utf-8",
+                )
                 samples_copied += 1
             if samples_copied:
                 click.echo(
-                    f"   📋 Copied {samples_copied} .samples.yaml file(s) for row-level context"
+                    f"   📋 Persisted {samples_copied} privacy-safe "
+                    ".samples.yaml file(s) for row-level context"
                 )
 
     # Clean up temp file if we created one
@@ -1538,21 +1576,121 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
         tmp_cleanup.unlink()
 
 
-@cli.command(name='import-flatfile')
-@click.option('--from', 'from_path', type=click.Path(exists=True), required=True,
-              help='Path to CSV file, Excel file, Parquet file, or directory of flat files.')
-@click.option('--system', 'system_name', default=None,
-              help='System name (default: derived from filename/directory).')
-@click.option('--output', '-o', type=click.Path(), default=None,
-              help='Output directory (default: integration/sources/{system}/).')
-@click.option('--sample-size', type=int, default=5,
-              help='Number of sample rows to store per table (default: 5).')
-@click.option('--max-rows', type=int, default=1000,
-              help='Maximum rows to read for type inference (default: 1000).')
-@click.option('--exclude-columns', default=None,
-              help='Comma-separated list of column names to exclude from output.')
-@click.option('--keep-technical', is_flag=True, default=False,
-              help='Keep auto-detected technical/metadata columns (volume, subfolder, etc.).')
+@cli.command(name="source-privacy")
+@click.option(
+    "--sources",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Source directory to inspect (default: integration/sources).",
+)
+@click.option(
+    "--fix",
+    is_flag=True,
+    help="Rewrite affected source YAML and vocabulary TTL with opaque redaction tokens.",
+)
+def source_privacy_cmd(sources, fix):
+    """Check or sanitize persisted source sample artifacts without exposing values."""
+    from collections import Counter
+
+    from ..core.hub_utils import find_hub_root
+    from ..core.source_privacy import run_source_privacy
+
+    if sources:
+        source_dir = Path(sources)
+    else:
+        hub_root = find_hub_root(Path.cwd(), require_model=False)
+        if hub_root is None:
+            click.echo(
+                "❌ Could not locate ontology-hub; pass --sources explicitly.",
+                err=True,
+            )
+            raise SystemExit(2)
+        source_dir = hub_root / "integration" / "sources"
+
+    try:
+        report = run_source_privacy(source_dir, fix=fix)
+    except (ValueError, OSError) as exc:
+        click.echo(f"❌ Source privacy check failed: {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    click.echo(f"🔒 Source privacy: scanned {report.files_scanned} artifact(s)")
+    summary = Counter(
+        (
+            str(path.relative_to(source_dir)),
+            finding.table,
+            finding.column,
+            finding.kind,
+        )
+        for path, finding in report.findings
+    )
+    for (path, table, column, kind), count in sorted(summary.items()):
+        click.echo(f"   ⚠ {path}: {table}.{column} [{kind}] × {count}")
+
+    if fix:
+        click.echo(f"   ✓ Rewritten {len(report.changed_files)} affected artifact(s)")
+        remaining = run_source_privacy(source_dir)
+        if remaining.findings:
+            click.echo(
+                f"❌ {len(remaining.findings)} unresolved privacy finding(s) remain.",
+                err=True,
+            )
+            raise SystemExit(1)
+        click.echo("✅ Source sample artifacts are privacy-safe for supported patterns.")
+        return
+
+    if report.findings:
+        click.echo(
+            f"❌ {len(report.findings)} privacy finding(s); rerun with --fix.",
+            err=True,
+        )
+        raise SystemExit(1)
+    click.echo("✅ Source sample artifacts are privacy-safe for supported patterns.")
+
+
+@cli.command(name="import-flatfile")
+@click.option(
+    "--from",
+    "from_path",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to CSV file, Excel file, Parquet file, or directory of flat files.",
+)
+@click.option(
+    "--system",
+    "system_name",
+    default=None,
+    help="System name (default: derived from filename/directory).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: integration/sources/{system}/).",
+)
+@click.option(
+    "--sample-size",
+    type=int,
+    default=5,
+    help="Number of sample rows to store per table (default: 5).",
+)
+@click.option(
+    "--max-rows",
+    type=int,
+    default=1000,
+    help="Maximum rows to read for type inference (default: 1000).",
+)
+@click.option(
+    "--exclude-columns",
+    default=None,
+    help="Comma-separated list of column names to exclude from output.",
+)
+@click.option(
+    "--keep-technical",
+    is_flag=True,
+    default=False,
+    help="Keep auto-detected technical/metadata columns (volume, subfolder, etc.).",
+)
 def import_flatfile(
     from_path, system_name, output, sample_size, max_rows, exclude_columns, keep_technical,
 ):
@@ -3317,6 +3455,10 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             sources_dir=sources_path,
             mappings_dir=mappings_path,
             domains_filter=filter_list,
+            claims_dir=claims_path,
+            extensions_dir=extensions_path,
+            hub_root=hub_root or cwd,
+            transforms_dir=(hub_root or cwd) / "integration" / "transforms" / "dbt",
         )
         click.echo("\n🔎 Checking source-to-domain mapping coverage")
         click.echo(f"   Sources:  {sources_path}")
@@ -3325,8 +3467,18 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             covered, total = src_report.domain_counts[domain]
             gaps = src_report.uncovered.get(domain, [])
             if not gaps:
-                click.echo(f"   ✓ {domain}: {covered}/{total} tables mapped "
-                           f"({src_report.coverage_pct(domain):.0f}%)")
+                replacements = src_report.replacement_counts.get(domain, 0)
+                if replacements:
+                    direct = src_report.direct_counts.get(domain, 0)
+                    click.echo(
+                        f"   ✓ {domain}: {covered}/{total} tables mapped "
+                        f"({direct} direct, {replacements} governed replacement)"
+                    )
+                else:
+                    click.echo(
+                        f"   ✓ {domain}: {covered}/{total} tables mapped "
+                        f"({src_report.coverage_pct(domain):.0f}%)"
+                    )
             else:
                 click.echo(f"   ❌ {domain}: {covered}/{total} tables mapped "
                            f"({src_report.coverage_pct(domain):.0f}%) — "
@@ -3335,12 +3487,14 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
                     click.echo(f"        • {tbl}", err=True)
                 if len(gaps) > 10:
                     click.echo(f"        … and {len(gaps) - 10} more", err=True)
+            for diagnostic in src_report.diagnostics.get(domain, []):
+                click.echo(f"        ⛔ {diagnostic}", err=True)
         source_blocking = src_report.is_blocking
         if source_blocking and not warn_only:
             click.echo(
                 f"\n❌ Source-coverage check failed: {src_report.total_uncovered} "
-                "affinity table(s) are not mapped to any domain entity. Complete "
-                "the mappings (kairos-design-mapping) before running silver.",
+                "affinity table(s) are uncovered or have conflicting source authority. "
+                "Complete mappings and governed replacement evidence before running silver.",
                 err=True,
             )
 

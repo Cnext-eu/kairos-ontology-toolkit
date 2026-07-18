@@ -6,13 +6,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
-from rdflib import Graph, URIRef
+from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF
 
 from kairos_ontology.core.dbt_contract_sync import (
     KAIROS_BRONZE,
     KAIROS_DBT,
+    DbtContractSyncError,
     sync_dbt_contracts,
 )
 from kairos_ontology.core.projections.medallion_dbt_projector import _parse_bronze
@@ -65,6 +67,18 @@ def _make_hub(tmp_path: Path) -> tuple[Path, Path]:
     return hub, properties
 
 
+def _declare_replacement(hub: Path, properties: Path, table_iri: str) -> None:
+    document = yaml.safe_load(properties.read_text(encoding="utf-8"))
+    document["models"][0]["meta"]["kairos"]["replaces_sources"] = [{"table_iri": table_iri}]
+    properties.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    source_dir = hub / "integration" / "sources" / "erp"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    graph = Graph()
+    graph.add((URIRef(table_iri), RDF.type, KAIROS_BRONZE.SourceTable))
+    graph.add((URIRef(table_iri), KAIROS_BRONZE.tableName, Literal("orders_raw")))
+    graph.serialize(source_dir / "erp.vocabulary.ttl", format="turtle")
+
+
 def test_writes_bronze_compatible_graph_with_stable_iris(tmp_path: Path) -> None:
     hub, _ = _make_hub(tmp_path)
     report = sync_dbt_contracts(hub)
@@ -103,6 +117,45 @@ def test_semantically_equal_graph_is_not_rewritten(tmp_path: Path) -> None:
     assert second.items[0].state == "unchanged"
     assert second.written_count == 0
     assert output.read_text(encoding="utf-8") == alternate
+
+
+def test_sync_emits_validated_source_replacement(tmp_path: Path) -> None:
+    hub, properties = _make_hub(tmp_path)
+    source_iri = "https://example.com/source/erp#orders_raw"
+    _declare_replacement(hub, properties, source_iri)
+
+    report = sync_dbt_contracts(hub)
+
+    graph = Graph().parse(report.items[0].output_path, format="turtle")
+    virtual = URIRef("https://example.com/source#orders")
+    assert (virtual, KAIROS_DBT.replacesSource, URIRef(source_iri)) in graph
+
+
+def test_sync_rejects_unknown_source_replacement(tmp_path: Path) -> None:
+    hub, properties = _make_hub(tmp_path)
+    (hub / "integration" / "sources").mkdir()
+    document = yaml.safe_load(properties.read_text(encoding="utf-8"))
+    document["models"][0]["meta"]["kairos"]["replaces_sources"] = [
+        {"table_iri": "https://example.com/source/erp#missing"}
+    ]
+    properties.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(DbtContractSyncError, match="unknown or generated"):
+        sync_dbt_contracts(hub)
+
+
+def test_sync_rejects_duplicate_source_table_authority(tmp_path: Path) -> None:
+    hub, properties = _make_hub(tmp_path)
+    source_iri = "https://example.com/source/erp#orders_raw"
+    _declare_replacement(hub, properties, source_iri)
+    duplicate = hub / "integration" / "sources" / "duplicate"
+    duplicate.mkdir()
+    graph = Graph()
+    graph.add((URIRef(source_iri), RDF.type, KAIROS_BRONZE.SourceTable))
+    graph.serialize(duplicate / "duplicate.vocabulary.ttl", format="turtle")
+
+    with pytest.raises(DbtContractSyncError, match="defined in both"):
+        sync_dbt_contracts(hub)
 
 
 def test_check_reports_missing_and_stale_without_writing(tmp_path: Path) -> None:

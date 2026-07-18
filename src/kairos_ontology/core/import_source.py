@@ -25,6 +25,7 @@ from rdflib import XSD, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 
 from ._provenance import prepend_provenance
+from .source_privacy import sanitize_source_data, sanitize_vocabulary_graph
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +312,7 @@ def generate_vocabulary_ttl(data: dict) -> str:
     Returns:
         Turtle-serialized string of the vocabulary.
     """
+    data, _ = sanitize_source_data(data)
     system_name = data["system"]
     platform = data.get("platform", "unknown")
     environment = data.get("environment", "")
@@ -481,6 +483,7 @@ def generate_vocabulary_ttl(data: dict) -> str:
                         g.add((prop_uri, KAIROS_BRONZE.dataType,
                                Literal(_json_type_to_sql(js.get("type", "string")))))
 
+    sanitize_vocabulary_graph(g)
     return prepend_provenance(
         g.serialize(format="turtle"),
         "import-source",
@@ -495,6 +498,7 @@ def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
     system declaration (SourceSystem) plus one table and its columns.
     This enables fine-grained git diffs and scoped LLM context loading.
     """
+    data, _ = sanitize_source_data(data)
     system_name = data["system"]
     connection = data.get("connection", {})
     database = connection.get("database", "")
@@ -532,6 +536,7 @@ def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
 
         # Generate table + columns (reuse same logic as generate_vocabulary_ttl)
         _add_table_to_graph(g, tbl, base_ns, sys_uri)
+        sanitize_vocabulary_graph(g)
 
         results[tbl["name"]] = prepend_provenance(
             g.serialize(format="turtle"),
@@ -666,6 +671,40 @@ def _add_table_to_graph(
 # --------------------------------------------------------------------------- #
 
 
+def _sync_managed_sample_predicates(
+    graph: Graph,
+    data: dict,
+    base_ns: Namespace,
+) -> None:
+    """Replace sample predicates for current columns during merge."""
+    for table in data.get("tables", []):
+        table_name = str(table.get("name", ""))
+        for column in table.get("columns", []):
+            column_name = str(column.get("name", ""))
+            subject = _column_uri(base_ns, table_name, column_name)
+            graph.remove((subject, KAIROS_BRONZE.sampleValues, None))
+            graph.remove((subject, KAIROS_BRONZE.enumValues, None))
+
+            samples = column.get("samples") or []
+            if samples:
+                graph.add(
+                    (
+                        subject,
+                        KAIROS_BRONZE.sampleValues,
+                        Literal(" | ".join(str(item) for item in samples[:5])),
+                    )
+                )
+            enum_values = column.get("enum_values") or []
+            if enum_values:
+                graph.add(
+                    (
+                        subject,
+                        KAIROS_BRONZE.enumValues,
+                        Literal(" | ".join(str(item) for item in enum_values)),
+                    )
+                )
+
+
 def merge_with_existing(
     data: dict, existing_path: Path
 ) -> tuple[str, ChangeReport]:
@@ -682,6 +721,7 @@ def merge_with_existing(
     Returns:
         Tuple of (updated TTL string, ChangeReport).
     """
+    data, _ = sanitize_source_data(data)
     report = ChangeReport()
     system_name = data["system"]
     base_uri = f"https://kairos.cnext.eu/source/{system_name}#"
@@ -897,6 +937,9 @@ def merge_with_existing(
             existing.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns,
                           Literal(" ".join(pk_names))))
 
+    _sync_managed_sample_predicates(existing, data, base_ns)
+    sanitize_vocabulary_graph(existing)
+
     return (
         prepend_provenance(
             existing.serialize(format="turtle"),
@@ -945,6 +988,7 @@ def run_import_source(
         from .enrich_vocabulary import enrich_source_schema
         enrich_source_schema(data, enum_threshold=enum_threshold)
 
+    data, _ = sanitize_source_data(data)
     sys_name = data["system"]
 
     if output_dir is None:
@@ -1004,6 +1048,9 @@ def run_import_source(
         ttl_content = generate_vocabulary_ttl(data)
         report = None
 
+    # Build every output before publishing any of them.
+    per_table = generate_vocabulary_per_table(data)
+
     if dry_run:
         return None, report
 
@@ -1014,7 +1061,6 @@ def run_import_source(
     # Always generate per-table files alongside the monolithic file
     vocab_dir = output_dir / "vocabulary"
     vocab_dir.mkdir(parents=True, exist_ok=True)
-    per_table = generate_vocabulary_per_table(data)
     for tbl_name, tbl_ttl in per_table.items():
         tbl_file = vocab_dir / f"{tbl_name}.vocabulary.ttl"
         tbl_file.write_text(tbl_ttl, encoding="utf-8")

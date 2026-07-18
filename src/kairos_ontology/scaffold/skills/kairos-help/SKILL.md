@@ -259,7 +259,11 @@ kairos-ontology project [--ontologies PATH] [--target TARGET] \
   [--platform fabric|databricks]
 
 # Synchronize custom dbt contracts to managed virtual-source RDF
-kairos-ontology sync-dbt-contracts [--check] [--transforms PATH] [--sources PATH]
+kairos-ontology sync-dbt-contracts [--check] [--transforms PATH] [--sources PATH] \
+  [--bronze-sources PATH]
+
+# Check or remediate persisted source sample privacy without printing values
+kairos-ontology source-privacy [--sources PATH] [--fix]
 
 # Validate generated dbt dependencies, parse, manifest graph, and compile
 kairos-ontology validate-dbt --platform fabric|databricks \
@@ -379,6 +383,8 @@ Default paths:
 1. Invoke **kairos-develop-dbt-transformation** for grain, contract, SQL, and tests.
 2. Run `sync-dbt-contracts`; map the generated virtual source with
    **kairos-design-mapping** and set Silver routing with **kairos-design-silver**.
+   For a governed wrong-grain replacement, declare canonical
+   `meta.kairos.replaces_sources[].table_iri`; do not add an unsafe direct mapping.
 3. Project and validate each required adapter:
    `project --target dbt --platform <fabric|databricks>`, then
    `validate-dbt --platform <fabric|databricks>`.

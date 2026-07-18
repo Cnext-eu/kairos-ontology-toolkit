@@ -20,6 +20,9 @@ projection implications in `phases/silver/<domain>.md`; stop for low-confidence
 keys/FKs, destructive history choices, PII/proprietary risk, or annotations that
 could break downstream joins.
 
+Any fleet override applies only to this skill invocation. It expires when the
+skill ends or pauses and is never inherited by another skill or a later resume.
+
 ## Offline sample audit feedback (DD-089)
 
 After dbt/silver projection, `kairos-ontology audit-silver-samples` provides
@@ -244,7 +247,7 @@ class in the domain MUST have at minimum:
 | `kairos-ext:scdType` | ✅ Always | `"2"` |
 | `kairos-ext:isReferenceData` | ✅ Always | `"false"` |
 | `kairos-ext:inheritanceStrategy` | Only if has subclasses | `"class-per-table"` |
-| `kairos-ext:silverSourceRef` | Only if sourcing from bronze_expanded (DD-039) | _(none — uses source())_ |
+| `kairos-ext:silverSourceRef` | If sourcing from bronze_expanded or a contracted model (DD-039/DD-093) | _(none — uses source())_ |
 | `kairos-ext:namingConvention` | Ontology-level | `"camel-to-snake"` |
 | `kairos-ext:includeNaturalKeyColumn` | Ontology-level | `"true"` |
 | `kairos-ext:inlineRefThreshold` | Ontology-level | `"3"` |
@@ -462,6 +465,9 @@ SCD/FK policy, and `kairos-ext:silverSourceRef`. The dbt contract owns physical 
 columns/types and key columns; custom SQL owns relational logic. Confirm
 `silverSourceRef` names the contracted model, then project separately for each required
 adapter with `project --target dbt --platform <fabric|databricks>`.
+For `meta.kairos.replaces_sources`, this annotation is a blocking part of governed
+replacement coverage: it must be on the approved target class and equal the declaring
+contract model name.
 
 > **Design/Execute separation (DD-033):** This skill handles annotation *design*.
 > The **kairos-execute-project** skill handles *generation*. If you need to
