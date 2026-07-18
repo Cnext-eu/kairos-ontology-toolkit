@@ -184,6 +184,9 @@ Rules:
 - Decision text is descriptive metadata, never executable configuration.
 - `replaces_sources` is an asserted governance boundary, not mechanically verified SQL
   lineage. Each entry contains only an absolute `table_iri`.
+- Generated dbt-contract vocabularies are projection inputs, not independent source
+  systems. Do not run source affinity analysis or create claims for their virtual tables;
+  the contract target and governed source-replacement evidence provide their authority.
 - Use `replaces_sources` only when the source-table claim targets the same class as the
   contract. Joined inputs representing other entities are dependencies, not replacements.
 

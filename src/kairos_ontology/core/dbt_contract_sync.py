@@ -15,6 +15,7 @@ from rdflib.namespace import RDF, RDFS, XSD
 
 from ._provenance import prepend_provenance
 from .dbt_contracts import DbtContractModel, discover_dbt_contracts
+from .source_catalog import SourceCatalogError, build_source_catalog
 
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 KAIROS_DBT = Namespace("https://kairos.cnext.eu/dbt-contract#")
@@ -131,37 +132,26 @@ def _load_bronze_table_index(
     bronze_sources_dir: Path,
     generated_sources_dir: Path,
 ) -> dict[str, Path]:
-    """Index canonical non-generated Bronze table IRIs and reject duplicate authority."""
+    """Index canonical non-generated Bronze table IRIs."""
 
     if not bronze_sources_dir.is_dir():
         raise DbtContractSyncError(f"Bronze sources directory does not exist: {bronze_sources_dir}")
 
-    generated_sources_dir = generated_sources_dir.resolve()
-    tables: dict[str, Path] = {}
-    for vocab_file in sorted(bronze_sources_dir.rglob("*.vocabulary.ttl")):
-        resolved_file = vocab_file.resolve()
-        if resolved_file.is_relative_to(generated_sources_dir):
-            continue
-        graph = Graph()
-        try:
-            graph.parse(vocab_file, format="turtle")
-        except Exception as exc:
-            raise DbtContractSyncError(
-                f"Could not parse Bronze vocabulary {vocab_file}: {exc}"
-            ) from exc
-
-        for table in graph.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
-            if str(graph.value(table, KAIROS_DBT.sourceKind) or "") == "dbt-contract":
-                continue
-            table_iri = str(table)
-            previous = tables.get(table_iri)
-            if previous is not None and previous != resolved_file:
-                raise DbtContractSyncError(
-                    f"Bronze SourceTable IRI {table_iri!r} is defined in both "
-                    f"{previous} and {resolved_file}"
-                )
-            tables[table_iri] = resolved_file
-    return tables
+    try:
+        catalog = build_source_catalog(
+            bronze_sources_dir,
+            generated_sources_dirs=(generated_sources_dir,),
+        )
+        catalog.require_consistent()
+    except SourceCatalogError as exc:
+        raise DbtContractSyncError(str(exc)) from exc
+    generated_root = generated_sources_dir.resolve()
+    return {
+        table.table_iri: table.paths[0]
+        for table in catalog.tables.values()
+        if not table.generated
+        and not any(path.is_relative_to(generated_root) for path in table.paths)
+    }
 
 
 def _validate_source_replacements(

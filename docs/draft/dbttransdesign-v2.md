@@ -323,8 +323,9 @@ models:
 `meta.kairos.replaces_sources` is an optional governance assertion that the contracted
 model replaces the listed canonical Bronze tables for `target_class`. It is not verified
 SQL lineage. Each entry contains exactly one absolute HTTP(S) `table_iri`; synchronization
-fails when the IRI is unknown, generated, duplicated, or defined by conflicting source
-vocabularies.
+fails when the IRI is unknown, generated, or defined by conflicting source vocabularies.
+Equivalent monolithic and split RDF views of the same table are reconciled by canonical
+IRI and table-subgraph equality; divergent views remain blocking.
 
 Replacement coverage is deliberately stricter than ordinary table coverage. It requires:
 

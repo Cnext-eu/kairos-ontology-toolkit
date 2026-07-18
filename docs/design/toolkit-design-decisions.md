@@ -5627,6 +5627,19 @@ prevents metadata alone from laundering an unrelated joined table into coverage.
   precedence.
 - SQL-internal lineage remains deferred; the replacement assertion is reviewable but not
   a mechanical proof of which rows or columns the SQL consumes.
+- Source discovery reconciles equivalent monolithic/split RDF views by canonical table
+  IRI and exact table/column subgraph equality. Divergent definitions and cross-system
+  duplicate authority remain blocking.
+- Generated dbt-contract tables are excluded from LLM affinity analysis and active
+  affinity obligations. Their contract target and governed replacement evidence already
+  form the authority chain; legacy generated affinity reports are archived.
+- Split vocabulary files share their top-level source-system identity. Legacy
+  filename-derived affinity reports are excluded from gates and archived when source
+  analysis is refreshed, preventing stale duplicate obligations.
+- Affinity schema v2 remains unchanged. Removing generated virtual systems resolves the
+  observed filename/folder mismatch without forcing claim-registry hash churn for
+  ordinary sources. Canonical table IRI remains mandatory at the contract boundary; an
+  IRI-first affinity schema is deferred until a real-source identity case requires it.
 
 ---
 

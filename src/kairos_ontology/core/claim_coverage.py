@@ -309,6 +309,7 @@ def check_claims_coverage(
     domains_filter: list[str] | None = None,
     check_mdm_anchor: bool = True,
     check_ownership: bool = True,
+    excluded_affinity_systems: set[str] | None = None,
 ) -> ClaimCheckReport:
     """Verify every affinity domain has a valid, complete, fresh Claim Registry.
 
@@ -349,7 +350,10 @@ def check_claims_coverage(
         (warning).
     """
     report = ClaimCheckReport()
-    domain_tables = load_affinity_domain_tables(analysis_dir)
+    domain_tables = load_affinity_domain_tables(
+        analysis_dir,
+        excluded_systems=excluded_affinity_systems,
+    )
     uri_index = _build_uri_owner_index(data_domains)
 
     lower_filter = [d.lower() for d in domains_filter] if domains_filter else None

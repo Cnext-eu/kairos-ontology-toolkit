@@ -162,6 +162,88 @@ def test_governed_replacement_covers_wrong_grain_source(tmp_path: Path) -> None:
     assert evidence.contract_model == "int_party_conformed"
 
 
+def test_generated_virtual_affinity_is_not_a_source_coverage_obligation(
+    tmp_path: Path,
+) -> None:
+    paths = _hub(tmp_path)
+    (paths["analysis"] / "int_party_conformed-affinity.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "system": "int_party_conformed",
+                "tables": [{"table": "int_party_conformed", "domain": "party"}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = _check(paths)
+
+    assert not report.is_blocking
+    assert report.domain_counts["party"] == (1, 1)
+
+
+def test_equivalent_monolithic_and_split_source_views_preserve_coverage(
+    tmp_path: Path,
+) -> None:
+    paths = _hub(tmp_path)
+    source = paths["sources"] / "adminpulse" / "adminpulse.vocabulary.ttl"
+    split = paths["sources"] / "adminpulse" / "tables" / "party.vocabulary.ttl"
+    split.parent.mkdir()
+    split.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    report = _check(paths)
+
+    assert not report.is_blocking
+    assert report.replacement_counts["party"] == 1
+
+
+def test_divergent_split_source_view_blocks_contract_preflight(tmp_path: Path) -> None:
+    paths = _hub(tmp_path)
+    split = paths["sources"] / "adminpulse" / "tables"
+    split.mkdir()
+    graph = Graph()
+    table = URIRef(SOURCE_TABLE)
+    graph.add((table, RDF.type, KAIROS_BRONZE.SourceTable))
+    graph.add((table, KAIROS_BRONZE.tableName, Literal("different_name")))
+    _write_graph(split / "party.vocabulary.ttl", graph)
+
+    report = _check(paths)
+
+    assert report.is_blocking
+    assert any(
+        "conflicting definitions" in diagnostic
+        for diagnostic in report.diagnostics["party"]
+    )
+
+
+def test_divergent_source_views_block_direct_coverage_without_contract(
+    tmp_path: Path,
+) -> None:
+    paths = _hub(tmp_path)
+    paths["properties"].unlink()
+    (paths["transforms"] / "models" / "intermediate" / "int_party_conformed.sql").unlink()
+    mapping = Graph()
+    mapping.add((URIRef(SOURCE_TABLE), SKOS.exactMatch, URIRef(TARGET_CLASS)))
+    _write_graph(paths["mappings"] / "custom-transformations" / "party.ttl", mapping)
+    split = paths["sources"] / "adminpulse" / "tables"
+    split.mkdir()
+    graph = Graph()
+    table = URIRef(SOURCE_TABLE)
+    graph.add((table, RDF.type, KAIROS_BRONZE.SourceTable))
+    graph.add((table, KAIROS_BRONZE.tableName, Literal("different_name")))
+    _write_graph(split / "party.vocabulary.ttl", graph)
+
+    report = _check(paths)
+
+    assert report.is_blocking
+    assert any(
+        "source catalog preflight failed" in diagnostic
+        for diagnostic in report.diagnostics["party"]
+    )
+
+
 def test_weak_virtual_mapping_does_not_authorize_replacement(tmp_path: Path) -> None:
     paths = _hub(tmp_path)
     mapping = Graph()

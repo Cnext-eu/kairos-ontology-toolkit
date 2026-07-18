@@ -661,6 +661,79 @@ class TestSlice4CLI:
         ])
         assert result.exit_code == 0, result.output
 
+    def test_relative_overrides_resolve_from_detected_hub_root(
+        self, tmp_path, monkeypatch
+    ):
+        repo = tmp_path / "repo"
+        hub = repo / "ontology-hub"
+        analysis = hub / "integration" / "sources" / "_analysis"
+        claims = hub / "model" / "claims"
+        mappings = hub / "model" / "mappings"
+        for path in (analysis, claims, mappings):
+            path.mkdir(parents=True)
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        monkeypatch.chdir(repo)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-claims",
+                "--analysis-dir",
+                "integration/sources/_analysis",
+                "--claims-dir",
+                "model/claims",
+                "--sources",
+                "integration/sources",
+                "--mappings",
+                "model/mappings",
+                "--warn-only",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert f"Sources:  {hub / 'integration' / 'sources'}" in result.output
+
+    def test_cli_ignores_generated_contract_affinity_obligations(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        sources = tmp_path / "sources"
+        generated = sources / "custom-transformations"
+        generated.mkdir(parents=True)
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        _write_affinity(analysis, "int_party", [("int_party", "party")])
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")]),
+            registry_path(claims, "party"),
+        )
+        (generated / "int_party.vocabulary.ttl").write_text(
+            """\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix kairos-dbt: <https://kairos.cnext.eu/dbt-contract#> .
+@prefix custom: <https://example.com/source/custom#> .
+custom:party a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "int_party" ;
+    kairos-dbt:sourceKind "dbt-contract" .
+""",
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-claims",
+                "--analysis-dir",
+                str(analysis),
+                "--claims-dir",
+                str(claims),
+                "--sources",
+                str(sources),
+                "--no-source-coverage",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "party: valid, complete, and up to date" in result.output
+
     def test_passes_when_complete(self, tmp_path):
         analysis = tmp_path / "_analysis"
         claims = tmp_path / "claims"

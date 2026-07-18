@@ -440,6 +440,17 @@ Before running, present the detected source systems and ask only whether any
 should be excluded because they are incomplete, out of scope, or should wait for
 documentation cleanup.
 
+Managed dbt-contract vocabularies under
+`integration/sources/custom-transformations/` are not source-analysis inputs.
+`analyse-sources` excludes tables marked `kairos-dbt:sourceKind "dbt-contract"`
+because their contract `target_class` and governed source-replacement evidence are
+authoritative. If an older toolkit analysed those virtual tables, the command
+archives their active affinity reports under
+`_analysis/archive/generated-dbt-contracts/`; do not create claims from them.
+When a source uses split vocabulary files, analysis consolidates them under the
+top-level source-system directory name and archives older per-file reports under
+`_analysis/archive/superseded-source-layouts/`.
+
 Also check sample-data readiness. `analyse-sources` uses
 `kairos-bronze:sampleValues` as high-value semantic evidence; when fewer than
 half of a source system's analysed tables have sample values, the CLI emits a

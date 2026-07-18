@@ -154,8 +154,55 @@ def test_sync_rejects_duplicate_source_table_authority(tmp_path: Path) -> None:
     graph.add((URIRef(source_iri), RDF.type, KAIROS_BRONZE.SourceTable))
     graph.serialize(duplicate / "duplicate.vocabulary.ttl", format="turtle")
 
-    with pytest.raises(DbtContractSyncError, match="defined in both"):
+    with pytest.raises(DbtContractSyncError, match="conflicting definitions"):
         sync_dbt_contracts(hub)
+
+
+def test_sync_accepts_equivalent_monolithic_and_split_views(tmp_path: Path) -> None:
+    hub, properties = _make_hub(tmp_path)
+    source_iri = "https://example.com/source/erp#orders_raw"
+    _declare_replacement(hub, properties, source_iri)
+    source = hub / "integration" / "sources" / "erp" / "erp.vocabulary.ttl"
+    split = hub / "integration" / "sources" / "erp" / "tables" / "orders.vocabulary.ttl"
+    split.parent.mkdir()
+    split.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    report = sync_dbt_contracts(hub)
+
+    assert report.written_count == 1
+
+
+def test_sync_rejects_divergent_split_view(tmp_path: Path) -> None:
+    hub, properties = _make_hub(tmp_path)
+    source_iri = "https://example.com/source/erp#orders_raw"
+    _declare_replacement(hub, properties, source_iri)
+    split = hub / "integration" / "sources" / "erp" / "tables"
+    split.mkdir()
+    graph = Graph()
+    table = URIRef(source_iri)
+    column = URIRef(f"{source_iri}/unexpected")
+    graph.add((table, RDF.type, KAIROS_BRONZE.SourceTable))
+    graph.add((table, KAIROS_BRONZE.tableName, Literal("orders_raw")))
+    graph.add((column, RDF.type, KAIROS_BRONZE.SourceColumn))
+    graph.add((column, KAIROS_BRONZE.sourceTable, table))
+    graph.serialize(split / "orders.vocabulary.ttl", format="turtle")
+
+    with pytest.raises(DbtContractSyncError, match="conflicting definitions"):
+        sync_dbt_contracts(hub)
+
+
+def test_sync_self_heals_malformed_generated_vocabulary(tmp_path: Path) -> None:
+    hub, properties = _make_hub(tmp_path)
+    source_iri = "https://example.com/source/erp#orders_raw"
+    _declare_replacement(hub, properties, source_iri)
+    first = sync_dbt_contracts(hub)
+    generated = first.items[0].output_path
+    generated.write_text("not valid turtle [", encoding="utf-8")
+
+    repaired = sync_dbt_contracts(hub)
+
+    assert repaired.items[0].action == "updated"
+    Graph().parse(generated, format="turtle")
 
 
 def test_check_reports_missing_and_stale_without_writing(tmp_path: Path) -> None:

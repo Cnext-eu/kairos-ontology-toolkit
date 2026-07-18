@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with opaque source-aware tokens before writing. The skill-gated `source-privacy`
   check/fix command remediates existing YAML and vocabulary artifacts without
   printing raw values.
+- **Canonical Bronze source discovery** (DD-093): source analysis, coverage, and
+  dbt-contract validation now share source identity rules. Generated contract
+  vocabularies no longer create redundant affinity obligations, legacy reports are
+  archived, split-source reports are consolidated, equivalent monolithic/split
+  vocabularies are reconciled, and divergent definitions remain blocking.
 - **Design-time MDM layer** (MDM-DD-001..003, mdmhubdesignv2.md ADR-1): a new,
   additive Master Data Management design layer expressed in
   `model/extensions/{domain}-mdm-ext.ttl` overlays, driven by the managed

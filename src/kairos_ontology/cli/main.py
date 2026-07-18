@@ -3148,7 +3148,7 @@ def decide_claims_cmd(claims_dir, domains, status_filter, disposition_filter, ty
 @cli.command(name='check-claims')
 @click.option('--claims-dir', type=click.Path(), default=None,
               help='Path to model/claims/ directory (default: auto-detect).')
-@click.option('--analysis-dir', type=click.Path(exists=True), default=None,
+@click.option('--analysis-dir', type=click.Path(), default=None,
               help='Path to _analysis/ directory with affinity reports '
                    '(default: auto-detect).')
 @click.option('--sources', type=click.Path(), default=None,
@@ -3212,9 +3212,21 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
+    command_root = hub_root or cwd
+
+    def resolve_override(value):
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        cwd_candidate = cwd / path
+        return cwd_candidate if cwd_candidate.exists() else command_root / path
 
     if analysis_dir:
-        analysis_path: Path | None = Path(analysis_dir)
+        analysis_path: Path | None = resolve_override(analysis_dir)
+        if not analysis_path.is_dir():
+            raise click.ClickException(
+                f"Analysis directory does not exist: {analysis_path}"
+            )
     else:
         analysis_path = _autodetect_analysis_dir(cwd, hub_root)
 
@@ -3239,17 +3251,21 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             click.echo(f"   • {legacy_alignment_error(path)}", err=True)
         raise SystemExit(1)
 
-    claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
+    claims_path = (
+        resolve_override(claims_dir)
+        if claims_dir
+        else _resolve_claims_dir(cwd, hub_root)
+    )
 
     if sources:
-        sources_path = Path(sources)
+        sources_path = resolve_override(sources)
     elif hub_root:
         sources_path = hub_root / "integration" / "sources"
     else:
         sources_path = cwd / "integration" / "sources"
 
     if mappings:
-        mappings_path = Path(mappings)
+        mappings_path = resolve_override(mappings)
     else:
         mappings_path = _resolve_model_path(
             cwd, hub_root, subdir="mappings", claims_path=claims_path
@@ -3275,6 +3291,10 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         if loaded:
             data_domains = dict(loaded)
 
+    from ..core.source_catalog import build_source_catalog
+
+    source_catalog = build_source_catalog(sources_path)
+    excluded_affinity_systems = source_catalog.excluded_affinity_systems()
     report = check_claims_coverage(
         claims_dir=claims_path,
         analysis_dir=analysis_path,
@@ -3282,6 +3302,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         domains_filter=filter_list,
         check_mdm_anchor=not no_mdm_anchor,
         check_ownership=not no_ownership,
+        excluded_affinity_systems=excluded_affinity_systems,
     )
 
     click.echo("🔎 Checking Claim Registry coverage")
@@ -3494,7 +3515,8 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             click.echo(
                 f"\n❌ Source-coverage check failed: {src_report.total_uncovered} "
                 "affinity table(s) are uncovered or have conflicting source authority. "
-                "Complete mappings and governed replacement evidence before running silver.",
+                "Complete mappings and governed source-replacement evidence before "
+                "running silver.",
                 err=True,
             )
 

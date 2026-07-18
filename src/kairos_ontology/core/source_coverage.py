@@ -14,10 +14,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from rdflib import RDF, Graph, Namespace, URIRef
+from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import SKOS
 
 from .alignment_coverage import load_affinity_domain_tables
+from .source_catalog import build_source_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -92,13 +93,6 @@ def collect_mapped_subjects(mappings_dir: Path) -> set[str]:
     return {record.source_uri for record in collect_mapping_records(mappings_dir)}
 
 
-def _system_key(sources_dir: Path, vocab_file: Path) -> str:
-    relative = vocab_file.relative_to(sources_dir)
-    if len(relative.parts) > 1:
-        return relative.parts[0]
-    return vocab_file.stem.replace(".vocabulary", "")
-
-
 def collect_source_table_records(
     sources_dir: Path,
 ) -> dict[tuple[str, str], SourceTableRecord]:
@@ -108,26 +102,11 @@ def collect_source_table_records(
     if not sources_dir or not sources_dir.is_dir():
         return result
 
-    for vocab_file in sorted(sources_dir.rglob("*.vocabulary.ttl")):
-        system = _system_key(sources_dir, vocab_file)
-        graph = Graph()
-        try:
-            graph.parse(vocab_file, format="turtle")
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Could not parse vocabulary %s: %s", vocab_file.name, exc)
-            continue
-
-        for table_uri in graph.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
-            table_name = str(
-                graph.value(table_uri, KAIROS_BRONZE.tableName)
-                or str(table_uri).split("#")[-1].split("/")[-1]
-            )
-            record = result.setdefault((system, table_name), SourceTableRecord())
-            record.table_uris.add(str(table_uri))
-            record.all_uris.add(str(table_uri))
-            columns = set(graph.subjects(KAIROS_BRONZE.belongsToTable, table_uri))
-            columns.update(graph.subjects(KAIROS_BRONZE.sourceTable, table_uri))
-            record.all_uris.update(str(column) for column in columns)
+    catalog = build_source_catalog(sources_dir)
+    for table in catalog.tables.values():
+        record = result.setdefault((table.system, table.table_name), SourceTableRecord())
+        record.table_uris.add(table.table_iri)
+        record.all_uris.update(table.all_uris)
     return result
 
 
@@ -321,7 +300,11 @@ def check_source_coverage(
     """Verify direct mappings or the complete governed replacement invariant."""
 
     report = SourceCoverageReport()
-    domain_tables = load_affinity_domain_tables(analysis_dir)
+    source_catalog = build_source_catalog(sources_dir)
+    domain_tables = load_affinity_domain_tables(
+        analysis_dir,
+        excluded_systems=source_catalog.excluded_affinity_systems(),
+    )
     mappings = collect_mapping_records(mappings_dir)
     mapped_subjects = {record.source_uri for record in mappings}
     exact_targets: dict[str, set[str]] = {}
@@ -353,7 +336,11 @@ def check_source_coverage(
     silver_refs, extension_errors = (
         _load_silver_source_refs(extensions_dir) if replacement_active else ({}, [])
     )
-    global_errors = [*contract_errors, *extension_errors]
+    catalog_errors = [
+        f"source catalog preflight failed: {error}"
+        for error in source_catalog.conflicts
+    ]
+    global_errors = [*catalog_errors, *contract_errors, *extension_errors]
 
     for domain in sorted(domain_tables):
         if not in_scope(domain):
