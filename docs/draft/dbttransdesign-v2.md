@@ -1,8 +1,11 @@
 # Contracted dbt Transformation Extensibility — Revised Design
 
-**Status:** Revised draft  
-**Scope:** Kairos ontology-to-dbt projection  
-**Targets:** Microsoft Fabric and Azure Databricks  
+**Status:** Revised draft
+
+**Scope:** Kairos ontology-to-dbt projection
+
+**Targets:** Microsoft Fabric and Azure Databricks
+
 **Supersedes:** `docs/draft/dbttransdesign.md` when approved
 
 ## 1. Decision summary
