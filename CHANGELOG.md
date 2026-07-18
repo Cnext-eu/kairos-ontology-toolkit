@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Contracted advanced dbt transformations** (DD-092): package handwritten,
+  contract-first intermediate models for joins, windows, aggregation, fallback logic,
+  JSON expansion, and grain changes while retaining generated ontology-aligned Silver
+  wrappers. Adds managed virtual-source vocabulary synchronization, Fabric/Databricks
+  platform selection, offline dbt graph validation, and the interactive
+  **kairos-develop-dbt-transformation** skill.
 - **Design-time MDM layer** (MDM-DD-001..003, mdmhubdesignv2.md ADR-1): a new,
   additive Master Data Management design layer expressed in
   `model/extensions/{domain}-mdm-ext.ttl` overlays, driven by the managed

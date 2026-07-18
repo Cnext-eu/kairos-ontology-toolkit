@@ -455,6 +455,14 @@ is green**, generate the artifacts by invoking the **kairos-execute-project** sk
 with target `silver` (for DDL + ERD) or `dbt` (for dbt models — requires SKOS
 mappings).
 
+For a contracted custom intermediate, first hand off to
+**kairos-develop-dbt-transformation**. After `sync-dbt-contracts` and virtual-source
+mapping, this skill remains authoritative for semantic natural-key properties, SK/IRI,
+SCD/FK policy, and `kairos-ext:silverSourceRef`. The dbt contract owns physical output
+columns/types and key columns; custom SQL owns relational logic. Confirm
+`silverSourceRef` names the contracted model, then project separately for each required
+adapter with `project --target dbt --platform <fabric|databricks>`.
+
 > **Design/Execute separation (DD-033):** This skill handles annotation *design*.
 > The **kairos-execute-project** skill handles *generation*. If you need to
 > iterate on outputs, edit the extension file here, then invoke projection again.
@@ -898,6 +906,9 @@ is driven by:
 Before running the dbt projection, ensure these artifacts exist in the hub:
 
 - **Source vocabulary** in `integration/sources/{system-name}/{system-name}.vocabulary.ttl`
+- **Optional custom source vocabulary** in
+  `integration/sources/custom-transformations/{model}.vocabulary.ttl`, generated from
+  `integration/transforms/dbt/models/**/*.yml` by `sync-dbt-contracts`
 - **Silver schema** — domain ontologies with `kairos-ext:` annotations (Part A above)
 - **SKOS mappings** in `model/mappings/{system}-to-{domain}.ttl`
 
@@ -918,7 +929,7 @@ Bronze (source systems)          Silver (domain model)
 
 ```bash
 # Generate dbt project for all domains
-python -m kairos_ontology project --target dbt
+python -m kairos_ontology project --target dbt --platform <fabric|databricks>
 
 # Generate for a specific ontology
 python -m kairos_ontology project --ontology ontology-hub/model/ontologies/client.ttl --target dbt

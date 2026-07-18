@@ -178,6 +178,12 @@ Use this table to pick the correct skill for a user's intent:
 > to **kairos-design-source** (offer **kairos-design-discovery**) first; when
 > sources already exist, run the modeling skill's mandatory **source-completeness
 > check** (every time, including the first pass) before proposing classes.
+>
+> **Advanced dbt branch:** When a mapped Silver entity needs joins, windows,
+> aggregations, fallback rules, JSON expansion, or a grain change that cannot be
+> expressed safely as normal column mappings, insert
+> **kairos-develop-dbt-transformation** between domain design and the final
+> virtual-source mapping/Silver review. Simple mappings remain on the canonical path.
 
 | User intent | Correct skill |
 |---|---|
@@ -188,6 +194,7 @@ Use this table to pick the correct skill for a user's intent:
 | "Set up folder structure / configure hub" | **kairos-setup-config** |
 | "How does Kairos work? / What is this?" | **kairos-help** |
 | "Run projections / generate dbt / silver / gold" | **kairos-execute-project** |
+| "Develop advanced dbt transformation / custom intermediate model / complex Bronze-to-Silver SQL" | **kairos-develop-dbt-transformation** |
 | "Validate my ontology" | **kairos-execute-validate** |
 | "Create source/bronze vocabulary" | **kairos-design-source** |
 | "Design silver schema / FK annotations" | **kairos-design-silver** |
@@ -220,6 +227,8 @@ Running CLI directly can produce incomplete or incorrect output without warning.
 - ❌ `python -m kairos_ontology project --target mdm-profile` → use **kairos-execute-project** skill (author policy with **kairos-design-mdm**)
 - ❌ `python -m kairos_ontology mdm-validate` → use **kairos-design-mdm** skill
 - ❌ `python -m kairos_ontology validate` → use **kairos-execute-validate** skill
+- ❌ `python -m kairos_ontology sync-dbt-contracts` → use **kairos-develop-dbt-transformation** skill
+- ❌ `python -m kairos_ontology validate-dbt` → use **kairos-execute-validate** skill
 - ❌ `python -m kairos_ontology new-repo` → use **kairos-setup-init** skill
 - ❌ Directly editing `.ttl` files without invoking the modeling/mapping skill
 
@@ -228,7 +237,8 @@ commands have no corresponding skill and may be run directly via CLI.
 
 **CLI soft skill-gate:** Skill-managed commands (`validate`, `project`, `init`,
 `new-repo`, `migrate`, `update`, `update-refmodels`, `import-source`,
-`import-flatfile`, `generate-staging`, `analyse-sources`, `mdm-validate`,
+`import-flatfile`, `generate-staging`, `analyse-sources`, `sync-dbt-contracts`,
+`validate-dbt`, `mdm-validate`,
 `init-dataplatform`)
 emit a loud stderr warning when run directly, redirecting to the owning skill,
 then still run (soft gate — see DD entry in the design-decisions log). When a
@@ -254,12 +264,14 @@ task.
 | **kairos-design-gold** | Gold measure definitions and star-schema design need stakeholder sign-off |
 | **kairos-design-mdm** | MDM policy (match keys, survivorship, auto-action bounds, reference-data licensing) is governance-owned and reviewed before the profile is trusted |
 | **kairos-design-source** | Source vocabulary descriptions need verification against source docs |
+| **kairos-develop-dbt-transformation** | Grain, identity, fallback rules, contract decisions, mappings, and Silver policy require evidence and approval |
 
 **Default:** when these skills are invoked, use **interactive mode** — present
 proposals, wait for user confirmation, and proceed step-by-step.
 
 **Opt-in design fleet mode:** only when the user explicitly asks for fleet,
-autopilot, or AI-approved design decisions, the same seven design skills may run in
+autopilot, or AI-approved design decisions, the design skills and
+`kairos-develop-dbt-transformation` may run in
 autopilot/autopilot-fleet mode for testing and acceleration. In fleet mode:
 
 - Announce that design fleet mode is active and AI will make checkpoint decisions.

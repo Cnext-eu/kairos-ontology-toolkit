@@ -12,6 +12,9 @@ from textwrap import dedent
 import pytest
 from rdflib import Graph
 
+from kairos_ontology.core.dbt_contract_sync import build_dbt_contract_graph
+from kairos_ontology.core.dbt_contracts import DbtContractColumn, DbtContractModel
+
 TEMPLATE_DIR = (
     Path(__file__).parent.parent
     / "src"
@@ -182,6 +185,124 @@ class TestSilverSourceRef:
         sql = _find_model_sql(artifacts, "order")
         assert "select * from {{ ref('stg_erp_orders_payload') }}" in sql
 
+    def test_contracted_ref_uses_exclusive_virtual_source(self, test_hub):
+        contract = _contract(test_hub)
+        custom_sources = test_hub / "integration" / "sources" / "custom-transformations"
+        custom_sources.mkdir()
+        build_dbt_contract_graph(contract).serialize(
+            custom_sources / "int_orders.vocabulary.ttl",
+            format="turtle",
+        )
+        mapping = test_hub / "model" / "mappings" / "custom.ttl"
+        mapping.write_text(
+            dedent(
+                """\
+                @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+                @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+
+                <https://example.com/custom/orders>
+                    skos:exactMatch <http://example.org/test#Order> ;
+                    kairos-map:mappingType "direct" .
+                <https://example.com/custom/orders/order_id>
+                    skos:exactMatch <http://example.org/test#orderId> ;
+                    kairos-map:transform "source.order_id" .
+                <https://example.com/custom/orders/amount>
+                    skos:exactMatch <http://example.org/test#amount> ;
+                    kairos-map:transform "source.amount" .
+                """
+            ),
+            encoding="utf-8",
+        )
+        ext_path = test_hub / "model" / "extensions" / "test-silver-ext.ttl"
+        ext_path.write_text(_silver_ext_ttl("int_orders"), encoding="utf-8")
+        graph = Graph().parse(test_hub / "model" / "ontologies" / "test.ttl")
+
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
+            generate_dbt_artifacts,
+        )
+
+        artifacts = generate_dbt_artifacts(
+            classes=[
+                {
+                    "uri": NS + "Order",
+                    "name": "Order",
+                    "label": "Order",
+                    "comment": "An order",
+                }
+            ],
+            graph=graph,
+            template_dir=TEMPLATE_DIR,
+            namespace=NS,
+            ontology_name="test",
+            sources_dir=test_hub / "integration" / "sources",
+            mappings_dir=test_hub / "model" / "mappings",
+            silver_ext_path=ext_path,
+            contract_registry={contract.name: contract},
+        )
+
+        sql = _find_model_sql(artifacts, "order")
+        assert "ref('int_orders')" in sql
+        assert "tblOrders" not in sql
+        source_yamls = [
+            content
+            for path, content in artifacts.items()
+            if path.endswith("__sources.yml")
+        ]
+        assert source_yamls
+        assert all("int_orders" not in content for content in source_yamls)
+
+    def test_contracted_ref_requires_semantic_key_alignment(self, test_hub):
+        contract = _contract(test_hub, natural_key=("amount",))
+        custom_sources = test_hub / "integration" / "sources" / "custom-transformations"
+        custom_sources.mkdir()
+        build_dbt_contract_graph(contract).serialize(
+            custom_sources / "int_orders.vocabulary.ttl",
+            format="turtle",
+        )
+        (test_hub / "model" / "mappings" / "custom.ttl").write_text(
+            dedent(
+                """\
+                @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+                @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+                <https://example.com/custom/orders>
+                    skos:exactMatch <http://example.org/test#Order> ;
+                    kairos-map:mappingType "direct" .
+                <https://example.com/custom/orders/order_id>
+                    skos:exactMatch <http://example.org/test#orderId> .
+                <https://example.com/custom/orders/amount>
+                    skos:exactMatch <http://example.org/test#amount> .
+                """
+            ),
+            encoding="utf-8",
+        )
+        ext_path = test_hub / "model" / "extensions" / "test-silver-ext.ttl"
+        ext_path.write_text(_silver_ext_ttl("int_orders"), encoding="utf-8")
+        graph = Graph().parse(test_hub / "model" / "ontologies" / "test.ttl")
+
+        from kairos_ontology.core.projections.medallion_dbt_projector import (
+            generate_dbt_artifacts,
+        )
+
+        with pytest.raises(ValueError, match="does not align"):
+            generate_dbt_artifacts(
+                classes=[
+                    {
+                        "uri": NS + "Order",
+                        "name": "Order",
+                        "label": "Order",
+                        "comment": "An order",
+                    }
+                ],
+                graph=graph,
+                template_dir=TEMPLATE_DIR,
+                namespace=NS,
+                ontology_name="test",
+                sources_dir=test_hub / "integration" / "sources",
+                mappings_dir=test_hub / "model" / "mappings",
+                silver_ext_path=ext_path,
+                contract_registry={contract.name: contract},
+            )
+
 
 def _find_model_sql(artifacts: dict[str, str], model_name: str) -> str:
     """Find a silver model SQL by partial name match."""
@@ -190,4 +311,33 @@ def _find_model_sql(artifacts: dict[str, str], model_name: str) -> str:
             return content
     raise KeyError(
         f"No silver model matching '{model_name}' found in: {list(artifacts.keys())}"
+    )
+
+
+def _contract(
+    test_hub: Path,
+    *,
+    natural_key: tuple[str, ...] = ("order_id",),
+) -> DbtContractModel:
+    sql_path = test_hub / "integration" / "transforms" / "dbt" / "models" / "int_orders.sql"
+    sql_path.parent.mkdir(parents=True, exist_ok=True)
+    sql_path.write_text("select 1\n", encoding="utf-8")
+    return DbtContractModel(
+        name="int_orders",
+        description="Conformed orders",
+        materialization="table",
+        target_class=NS + "Order",
+        virtual_source_iri="https://example.com/custom/orders",
+        grain="one row per order",
+        supported_adapters=("fabric", "databricks"),
+        natural_key=natural_key,
+        required_packages=(),
+        required_macros=(),
+        columns=(
+            DbtContractColumn("order_id", "string"),
+            DbtContractColumn("amount", "decimal(18,2)"),
+        ),
+        decisions=(),
+        properties_path=sql_path.with_suffix(".yml"),
+        sql_path=sql_path,
     )

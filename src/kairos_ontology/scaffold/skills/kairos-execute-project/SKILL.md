@@ -173,6 +173,12 @@ You:
 ## When to use each target
 
 - **dbt**: When the ontology drives a data warehouse using dbt Core. Generates a complete dbt project with silver entity models (from source systems via SKOS mappings), schema YAML with SHACL-derived tests, and project config. Requires source vocabulary files (`*.vocabulary.ttl`) in `integration/sources/{system-name}/` for source system descriptions and `model/mappings/{system}-to-{domain}.ttl` for SKOS column mappings to domain ontology properties. The dbt projector scans `integration/sources/` recursively for `*.ttl` files with the `kairos-bronze:` namespace. See the **kairos-design-silver** skill.
+- **dbt with advanced transformations**: Handwritten, contracted intermediate models live
+  under `integration/transforms/dbt/`; their generated Bronze-compatible vocabularies live
+  under `integration/sources/custom-transformations/`. Before projection, invoke
+  **kairos-develop-dbt-transformation** and require `sync-dbt-contracts --check` to pass.
+  Map the generated virtual source with **kairos-design-mapping** and route Silver with
+  `silverSourceRef`; never hand-edit the generated vocabulary or projected dbt output.
 - **neo4j**: When building a knowledge graph. Generates `CREATE CONSTRAINT` statements and relationship patterns.
 - **azure-search**: When building a search index. Maps ontology properties to Azure Search field types with filters and facets.
 - **a2ui**: When generating UI forms. Creates JSON schemas that describe the data structure for automatic UI rendering.
@@ -191,6 +197,10 @@ python -m kairos_ontology project --target prompt
 
 # Generate silver layer (requires *-silver-ext.ttl in model/extensions/)
 python -m kairos_ontology project --target silver
+
+# Generate the dbt package for one adapter (Fabric is the default)
+python -m kairos_ontology project --target dbt --platform fabric
+python -m kairos_ontology project --target dbt --platform databricks
 
 # Generate one domain only
 python -m kairos_ontology project --ontology model/ontologies/party.ttl --target silver
@@ -255,32 +265,24 @@ python -m kairos_ontology project --target powerbi
 When the requested target is `dbt` or `all`, validate the generated dbt package
 before reporting success.
 
-1. Generate the dbt output:
+1. Generate the dbt output for the selected adapter:
    ```bash
-   python -m kairos_ontology project --target dbt
+   python -m kairos_ontology project --target dbt --platform <fabric|databricks>
    ```
-2. Install the hub-side validation extra if needed:
+2. Install the matching hub-side validation extra if needed:
    ```bash
-   uv sync --extra dbt-validate
+   uv sync --extra dbt-validate-<fabric|databricks>
    ```
-3. From `ontology-hub/output/medallion/dbt/`, install dbt package dependencies and
-   run an offline parse:
+3. Invoke **kairos-execute-validate** and run the skill-managed validator:
    ```bash
-   uv run --extra dbt-validate dbt deps
-   uv run --extra dbt-validate dbt parse
+   kairos-ontology validate-dbt --platform <fabric|databricks>
    ```
 
-If `dbt parse` fails because no profile is available, create a temporary
-parse-only profile outside source control (for example under
-`ontology-hub/output/medallion/dbt/.kairos-dbt-profiles/`) using the generated
-`profile:` value from `dbt_project.yml`, then rerun with
-`--profiles-dir .kairos-dbt-profiles`. Do not commit profiles or credentials.
-
-Run `dbt compile` only when a usable profile is configured. If parse/compile
-reports model, YAML, macro, or SQL-generation errors, fix the projector or source
-mapping issue, regenerate the dbt projection, and rerun validation. If compile
-fails because credentials, driver, warehouse, or network access are missing,
-report that as an environment/profile issue rather than a generated-model defect.
+`validate-dbt` runs dependencies, parse, manifest graph checks, and compile with a
+temporary credential-free profile unless `--profiles-dir` is supplied. Treat contract,
+YAML, macro, dependency, or graph failures as defects. Report credential, driver,
+network, or warehouse-introspection failures as environment-blocked; never commit a
+profile or credentials.
 
 ### Offline silver sample audit after dbt projection
 
@@ -321,6 +323,8 @@ pre-handoff QA.
 - Handles split patterns (one source → multiple entity subtypes)
 - Handles merge patterns (multiple sources → one entity)
 - Cross-domain FK joins via surrogate keys
+- Contracted intermediate models copied from `integration/transforms/dbt/` when their
+  synchronized virtual-source mappings and Silver routing are valid
 
 **Power BI target** — analytical layer:
 - Star-schema DDL (dimension + fact + bridge tables)
@@ -433,5 +437,6 @@ You can also check `summary.warnings` or inspect `projections` entries with
 | Design silver layer (DDL, SCD, FK annotations) | **kairos-design-silver** |
 | Design gold layer (Power BI star schema, measures) | **kairos-design-gold** |
 | Map source columns to domain properties | **kairos-design-mapping** |
+| Develop contracted custom dbt intermediates | **kairos-develop-dbt-transformation** |
 | Validate ontology syntax + SHACL | **kairos-execute-validate** |
 | Consume dbt package in data platform repo | **kairos-package-dataplatform** |

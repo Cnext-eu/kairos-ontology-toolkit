@@ -30,7 +30,7 @@ import re
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Mapping, Optional
 
 from rdflib import Graph, Namespace, URIRef, XSD, RDFS, SKOS
 from rdflib.namespace import OWL, RDF
@@ -38,6 +38,9 @@ from jinja2 import Environment, FileSystemLoader
 
 from .uri_utils import camel_to_snake, extract_local_name
 from .shared import KAIROS_EXT, merge_ext_graph, str_val, bool_val
+
+if TYPE_CHECKING:
+    from ..dbt_contracts import DbtContractModel
 
 logger = logging.getLogger(__name__)
 
@@ -547,7 +550,6 @@ def _parse_skos_mappings(mappings_dir: Path) -> tuple[dict, dict[str, str]]:
     ns_bindings: dict[str, str] = {}
     if not mappings_dir or not mappings_dir.is_dir():
         return result, ns_bindings
-
     # Pre-parse to resolve per-target annotations for split patterns
     split_annotations = _parse_split_annotations(mappings_dir)
 
@@ -621,6 +623,95 @@ def _parse_skos_mappings(mappings_dir: Path) -> tuple[dict, dict[str, str]]:
             ns_bindings[prefix] = str(ns_uri)
 
     return result, ns_bindings
+
+
+def _validate_contract_boundaries(
+    contracts: Mapping[str, "DbtContractModel"],
+    classes: list[dict],
+    graph: Graph,
+    systems: list[dict],
+    mappings: dict,
+    platform: str,
+) -> None:
+    """Validate custom-model virtual sources before generating Silver wrappers."""
+
+    if not contracts:
+        return
+    class_uris = {item["uri"] for item in classes}
+    tables = [table for system in systems for table in system["tables"]]
+    table_by_uri: dict[str, list[dict]] = {}
+    for table in tables:
+        table_by_uri.setdefault(table["uri"], []).append(table)
+
+    target_contracts: dict[str, str] = {}
+    for contract in contracts.values():
+        previous = target_contracts.setdefault(contract.target_class, contract.name)
+        if previous != contract.name:
+            raise ValueError(
+                f"Contracted dbt models {previous!r} and {contract.name!r} both target "
+                f"{contract.target_class!r}"
+            )
+        if platform not in contract.supported_adapters:
+            raise ValueError(
+                f"Contracted dbt model {contract.name!r} does not support platform {platform!r}"
+            )
+        if contract.target_class not in class_uris:
+            continue
+        source_ref = str_val(graph, URIRef(contract.target_class), KAIROS_EXT.silverSourceRef)
+        if source_ref != contract.name:
+            raise ValueError(
+                f"Class {contract.target_class!r} must declare "
+                f"kairos-ext:silverSourceRef {contract.name!r}"
+            )
+
+        matching_tables = table_by_uri.get(contract.virtual_source_iri, [])
+        if len(matching_tables) != 1:
+            raise ValueError(
+                f"Contracted dbt model {contract.name!r} must resolve to exactly one "
+                f"managed virtual source table {contract.virtual_source_iri!r}"
+            )
+        table = matching_tables[0]
+        actual_columns = {column["name"] for column in table["columns"]}
+        contract_columns = {column.name for column in contract.columns}
+        if actual_columns != contract_columns:
+            raise ValueError(
+                f"Managed virtual source for {contract.name!r} is stale: "
+                f"expected columns {sorted(contract_columns)}, got {sorted(actual_columns)}"
+            )
+        target_maps = [
+            item
+            for item in mappings["table_maps"].get(contract.virtual_source_iri, [])
+            if item.get("target_uri") == contract.target_class
+        ]
+        if len(target_maps) != 1:
+            raise ValueError(
+                f"Contracted dbt model {contract.name!r} requires exactly one virtual-source "
+                f"table mapping to {contract.target_class!r}"
+            )
+
+        column_uri_by_name = {column["name"]: column["uri"] for column in table["columns"]}
+        physical_key_targets: set[str] = set()
+        for column_name in contract.natural_key:
+            column_uri = column_uri_by_name[column_name]
+            targets = {
+                item["target_uri"]
+                for item in mappings["column_maps"].get(column_uri, [])
+                if item.get("target_uri")
+            }
+            if len(targets) != 1:
+                raise ValueError(
+                    f"Contracted natural-key column {column_name!r} on {contract.name!r} "
+                    "must map to exactly one ontology property"
+                )
+            physical_key_targets.update(targets)
+        semantic_key_targets = set(_get_nk_property_uris(graph, contract.target_class))
+        if not semantic_key_targets or physical_key_targets != semantic_key_targets:
+            raise ValueError(
+                f"Physical natural key for {contract.name!r} does not align with the "
+                f"Silver semantic natural key: physical maps to "
+                f"{sorted(physical_key_targets)}, semantic key is "
+                f"{sorted(semantic_key_targets)}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -805,6 +896,7 @@ def _extract_property_shape_tests(
 def _gen_sources(
     systems: list[dict], env: Environment, mappings: dict,
     logical_sources_only: bool = False,
+    excluded_table_uris: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
     """Generate a single minimal ``_sources.yml`` under ``models/silver/``.
 
@@ -827,6 +919,8 @@ def _gen_sources(
         source_name = _camel_to_snake(sys["system_label"]).replace(" ", "_")
         tables_data = []
         for tbl in sys["tables"]:
+            if tbl["uri"] in excluded_table_uris:
+                continue
             if mapped_table_uris and tbl["uri"] not in mapped_table_uris:
                 continue
             tables_data.append({
@@ -993,6 +1087,7 @@ def _gen_silver_models(
     ontology_name: str,
     platform: str = DEFAULT_PLATFORM,
     mapping_ns: dict[str, str] | None = None,
+    contract_registry: Mapping[str, "DbtContractModel"] | None = None,
 ) -> tuple[dict[str, str], list[str], list[dict]]:
     """Generate silver entity models that read directly from bronze sources.
 
@@ -1013,6 +1108,14 @@ def _gen_silver_models(
     template = env.get_template("silver_model.sql.jinja2")
 
     schema_name = f"silver_{ontology_name}"
+    contracts = contract_registry or {}
+    active_contracts: dict[str, DbtContractModel] = {}
+    virtual_table_uris = {contract.virtual_source_iri for contract in contracts.values()}
+    for cls in classes:
+        source_ref = str_val(graph, URIRef(cls["uri"]), KAIROS_EXT.silverSourceRef)
+        contract = contracts.get(source_ref) if source_ref else None
+        if contract is not None:
+            active_contracts[cls["uri"]] = contract
 
     # Build reverse map: silver class URI → [(source_name, raw_table_name, table_uri)]
     SUPPORTED_MAPPING_TYPES = {"direct", "split", "merge"}
@@ -1025,6 +1128,16 @@ def _gen_silver_models(
             for tbl_map in mappings["table_maps"].get(tbl["uri"], []):
                 target = tbl_map.get("target_uri")
                 if not target:
+                    continue
+                active_contract = active_contracts.get(target)
+                if tbl["uri"] in virtual_table_uris:
+                    if (
+                        active_contract is None
+                        or tbl["uri"] != active_contract.virtual_source_iri
+                    ):
+                        continue
+                elif active_contract is not None:
+                    # A contracted class consumes only its managed virtual source.
                     continue
                 mtype = tbl_map.get("mapping_type", "direct")
                 if mtype not in SUPPORTED_MAPPING_TYPES:
@@ -1176,6 +1289,11 @@ def _gen_silver_models(
         # Check for missing naturalKey — critical for SK and IRI generation
         natural_key_cols = _get_natural_key(graph, cls_uri)
         if not natural_key_cols:
+            if cls_uri in active_contracts:
+                raise ValueError(
+                    f"Contracted transformation {active_contracts[cls_uri].name!r} "
+                    f"targets class {local!r}, which has no kairos-ext:naturalKey"
+                )
             fk_parents = _fk_child_parents(graph, cls_uri)
             if fk_parents:
                 msg = (
@@ -1484,6 +1602,11 @@ def _gen_silver_models(
         fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
             graph, fk_extraction_cls_uri, mappings, source_refs, systems=systems,
         )
+        if cls_uri in active_contracts and fk_warnings:
+            raise ValueError(
+                f"Contracted transformation {active_contracts[cls_uri].name!r} "
+                f"has an unresolved Silver foreign-key shape: {'; '.join(fk_warnings)}"
+            )
         warnings.extend(fk_warnings)
 
         # Build source CTEs that reference bronze tables directly
@@ -2748,6 +2871,7 @@ def _gen_schema_yaml(
     systems: list[dict] | None = None,
     mappings: dict | None = None,
     generated_class_names: set[str] | None = None,
+    platform: str = DEFAULT_PLATFORM,
 ) -> dict[str, str]:
     """Generate ``_models.yml`` with column descriptions, tests, and lineage."""
     artifacts: dict[str, str] = {}
@@ -2834,7 +2958,7 @@ def _gen_schema_yaml(
             cols.append({
                 "name": disc_col,
                 "description": "Type discriminator for S3-folded subtypes",
-                "meta": {"data_type": "VARCHAR(255)"},
+                "meta": {"data_type": _xsd_to_target(XSD.string, platform)},
                 "tests": [],
             })
             seen_schema_cols.add(disc_col)
@@ -2862,7 +2986,11 @@ def _gen_schema_yaml(
                     label_hint = match_labels.get(match_type, match_type)
                     desc = f"{desc} ({match_type} — {label_hint})"
                 range_uri = graph.value(prop, RDFS.range)
-                data_type = _xsd_to_target(range_uri) if range_uri else "VARCHAR(255)"
+                data_type = (
+                    _xsd_to_target(range_uri, platform)
+                    if range_uri
+                    else _xsd_to_target(XSD.string, platform)
+                )
 
                 # Start with SHACL-derived tests
                 tests = list(shacl_tests.get(col_name, []))
@@ -3519,6 +3647,7 @@ def generate_dbt_artifacts(
     ref_model_defaults: list = None,
     peer_ext_paths: list = None,
     logical_sources_only: bool = False,
+    contract_registry: Mapping[str, "DbtContractModel"] | None = None,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -3544,6 +3673,7 @@ def generate_dbt_artifacts(
         peer_ext_paths: Optional list of paths to other domain ``*-silver-ext.ttl``
             files.  Used for cross-domain naturalKey resolution when FK targets
             are declared in a different domain's extension.
+        contract_registry: Validated custom dbt contracts keyed by model name.
 
     Returns:
         Dictionary of ``{file_path: content}`` for all generated artifacts.
@@ -3568,13 +3698,33 @@ def generate_dbt_artifacts(
 
     # Parse SKOS mappings
     mappings, mapping_ns = _parse_skos_mappings(mappings_dir)
+    contracts = contract_registry or {}
+    _validate_contract_boundaries(
+        contracts,
+        classes,
+        graph,
+        systems,
+        mappings,
+        target_platform,
+    )
+    virtual_table_uris = frozenset(
+        contract.virtual_source_iri for contract in contracts.values()
+    )
 
     if not systems:
         logger.info("No source systems found — generating silver models only")
 
     # 1. Sources YAML (minimal — under models/silver/)
     if systems:
-        artifacts.update(_gen_sources(systems, env, mappings, logical_sources_only))
+        artifacts.update(
+            _gen_sources(
+                systems,
+                env,
+                mappings,
+                logical_sources_only,
+                virtual_table_uris,
+            )
+        )
         logger.info("Generated %d source definition(s)", len(systems))
 
     # 2. Silver entity models (read directly from bronze via source())
@@ -3582,6 +3732,7 @@ def generate_dbt_artifacts(
         classes, graph, namespace, systems, mappings, env, meta, onto_name,
         platform=target_platform,
         mapping_ns=mapping_ns,
+        contract_registry=contracts,
     )
     artifacts.update(silver)
     logger.info("Generated %d silver model(s)", len(silver))
@@ -3610,6 +3761,7 @@ def generate_dbt_artifacts(
         classes, graph, namespace, shapes_dir, env, onto_name, meta,
         systems=systems, mappings=mappings,
         generated_class_names=generated_class_names,
+        platform=target_platform,
     )
     artifacts.update(schema)
 
@@ -3675,7 +3827,7 @@ def generate_dbt_artifacts(
         logger.info("Generated %d platform macro(s)", len(macros))
 
     # 9. Post-generation validation
-    _validate_dbt_artifacts(artifacts)
+    _validate_dbt_artifacts(artifacts, known_models=set(contracts))
 
     return artifacts
 
@@ -3685,7 +3837,11 @@ def generate_dbt_artifacts(
 # ---------------------------------------------------------------------------
 
 
-def _validate_dbt_artifacts(artifacts: dict[str, str]) -> None:
+def _validate_dbt_artifacts(
+    artifacts: dict[str, str],
+    *,
+    known_models: set[str] | None = None,
+) -> None:
     """Run lightweight validation checks on generated dbt artifacts.
 
     Emits warnings via logger — does NOT raise. Checks:
@@ -3693,7 +3849,7 @@ def _validate_dbt_artifacts(artifacts: dict[str, str]) -> None:
     2. Ref consistency: every ref('x') points to an artifact that exists
     3. Self-join detection: no model refs itself
     """
-    model_names = _extract_model_names(artifacts)
+    model_names = _extract_model_names(artifacts) | (known_models or set())
     # Cross-domain FK joins generate ref() to models in other domains.
     # Collect these as known external refs to avoid false-positive warnings.
     external_refs = _collect_join_ref_targets(artifacts)

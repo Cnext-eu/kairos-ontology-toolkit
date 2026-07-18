@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from ..core.validator import run_validation, run_gdpr_validation
-from ..core.projector import run_projections
+from ..core.projector import ProjectionRunError, run_projections
 from ..core.catalog_test import test_catalog_resolution
 from .. import __version__ as _toolkit_version
 from ..core._provenance import provenance_comment
@@ -91,6 +91,8 @@ _SKILL_COVERED_COMMANDS = {
     "init-dataplatform": "kairos-setup-dataplatform",
     "suggest-shapes": "kairos-execute-validate",
     "mdm-validate": "kairos-design-mdm",
+    "sync-dbt-contracts": "kairos-develop-dbt-transformation",
+    "validate-dbt": "kairos-execute-validate",
 }
 # Env vars that signal the command was launched from within a skill context.
 _SKILL_CONTEXT_ENV_VARS = ("KAIROS_SKILL_CONTEXT", "KAIROS_VIA_SKILL")
@@ -570,6 +572,103 @@ def lifecycle():
     print()
 
 
+@cli.command(name="sync-dbt-contracts")
+@click.option(
+    "--transforms",
+    type=click.Path(path_type=Path),
+    help="Custom dbt transforms directory (default: integration/transforms/dbt).",
+)
+@click.option(
+    "--sources",
+    type=click.Path(path_type=Path),
+    help="Generated vocabulary directory (default: integration/sources/custom-transformations).",
+)
+@click.option("--check", is_flag=True, help="Report drift without writing files.")
+def sync_dbt_contracts_cmd(transforms, sources, check):
+    """Synchronize custom dbt contracts to Bronze-compatible RDF vocabularies."""
+    from ..core.dbt_contract_sync import sync_dbt_contracts
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd) or cwd
+
+    def resolve_override(value):
+        if value is None:
+            return None
+        path = Path(value)
+        return path if path.is_absolute() else hub_root / path
+
+    try:
+        report = sync_dbt_contracts(
+            hub_root,
+            transforms_dir=resolve_override(transforms),
+            sources_dir=resolve_override(sources),
+            check=check,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not report.items:
+        click.echo("No custom dbt contracts found; nothing to synchronize.")
+        return
+    for item in report.items:
+        click.echo(f"{item.action}: {item.model} -> {item.output_path}")
+    if check and report.has_drift:
+        raise click.exceptions.Exit(1)
+    click.echo(
+        f"dbt contract sync complete: {report.written_count} written, "
+        f"{report.unchanged_count} unchanged."
+    )
+
+
+@cli.command(name="validate-dbt")
+@click.option(
+    "--platform",
+    type=click.Choice(["fabric", "databricks"]),
+    required=True,
+    help="Adapter used to parse and compile the generated project.",
+)
+@click.option(
+    "--project-dir",
+    type=click.Path(path_type=Path),
+    help="dbt project directory (default: output/medallion/dbt).",
+)
+@click.option(
+    "--profiles-dir",
+    type=click.Path(path_type=Path),
+    help="Optional directory containing a non-committed profiles.yml.",
+)
+def validate_dbt_cmd(platform, project_dir, profiles_dir):
+    """Run offline dependency, parse, graph, and compile validation for dbt."""
+    from ..core.dbt_validation import DbtValidationError, validate_dbt_project
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False) or cwd
+
+    def resolve(value, default):
+        path = Path(value) if value is not None else default
+        return path if path.is_absolute() else hub_root / path
+
+    project = resolve(project_dir, hub_root / "output" / "medallion" / "dbt")
+    profiles = resolve(profiles_dir, None) if profiles_dir is not None else None
+    try:
+        result = validate_dbt_project(
+            project,
+            platform,
+            profiles_dir=profiles,
+        )
+    except DbtValidationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"✓ dbt deps and parse passed for {platform}")
+    click.echo(f"✓ manifest graph validated: {result.manifest_path}")
+    if result.compile_status == "passed":
+        click.echo("✓ dbt compile passed")
+    else:
+        click.echo(f"⚠ dbt compile environment-blocked: {result.compile_message}")
+
+
 # Catalog filename used by hubs and the shared reference-models repo.
 _CATALOG_FILENAME = "catalog-v001.xml"
 
@@ -725,14 +824,23 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
               help='Output directory for projections (default: <hub>/output).')
 @click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report', 'ddd', 'mdm-profile']),
               default='all', help='Projection target')
+@click.option(
+    '--platform',
+    type=click.Choice(['fabric', 'databricks']),
+    default='fabric',
+    show_default=True,
+    help='SQL platform for dbt projection.',
+)
 @click.option('--namespace', type=str, default=None,
               help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
-def project(ontologies, ontology, catalog, output, target, namespace):
+def project(ontologies, ontology, catalog, output, target, platform, namespace):
     """Generate projections from ontologies."""
     from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
+    if platform != 'fabric' and target not in {'dbt', 'all'}:
+        raise click.UsageError("--platform applies only to --target dbt or --target all")
 
     if ontology is not None and ontologies is not None:
         raise click.UsageError("Use either --ontology for one file or --ontologies for a directory, not both.")
@@ -764,13 +872,17 @@ def project(ontologies, ontology, catalog, output, target, namespace):
     else:
         output_path = cwd / "ontology-hub" / "output"
 
-    run_projections(
-        ontologies_path=ontologies_path,
-        catalog_path=catalog_path,
-        output_path=output_path,
-        target=target,
-        namespace=namespace
-    )
+    try:
+        run_projections(
+            ontologies_path=ontologies_path,
+            catalog_path=catalog_path,
+            output_path=output_path,
+            target=target,
+            namespace=namespace,
+            platform=platform,
+        )
+    except ProjectionRunError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @cli.command(name='mdm-validate')
@@ -902,7 +1014,12 @@ def init(domain, company_domain, force):
         hub / "businessdiscovery",
         hub / "businessdiscovery" / "_extractions",
         hub / "integration" / "sources",
+        hub / "integration" / "sources" / "custom-transformations",
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate",
+        hub / "integration" / "transforms" / "dbt" / "macros",
+        hub / "integration" / "transforms" / "dbt" / "tests",
         hub / "integration" / "discovery",
+        hub / "model" / "mappings" / "custom-transformations",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
@@ -918,6 +1035,7 @@ def init(domain, company_domain, force):
         hub / ".kairos-state" / "phases" / "source",
         hub / ".kairos-state" / "phases" / "domain",
         hub / ".kairos-state" / "phases" / "mapping",
+        hub / ".kairos-state" / "phases" / "dbt-transformation",
         hub / ".kairos-state" / "phases" / "silver",
         hub / ".kairos-state" / "phases" / "gold",
     ]:
@@ -957,6 +1075,7 @@ def init(domain, company_domain, force):
         ".kairos-state/phases/source",
         ".kairos-state/phases/domain",
         ".kairos-state/phases/mapping",
+        ".kairos-state/phases/dbt-transformation",
         ".kairos-state/phases/silver",
         ".kairos-state/phases/gold",
     ]:
@@ -969,9 +1088,13 @@ def init(domain, company_domain, force):
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
+        "model/mappings/custom-transformations": "model/mappings/custom-transformations",
         "businessdiscovery": "businessdiscovery",
         "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/sources": "integration/sources",
+        "integration/sources/custom-transformations":
+            "integration/sources/custom-transformations",
+        "integration/transforms/dbt": "integration/transforms/dbt",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
         readme_src = _SCAFFOLD_DIR / "ontology-hub" / scaffold_subdir / "README.md"
@@ -4664,7 +4787,12 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "businessdiscovery",
         hub / "businessdiscovery" / "_extractions",
         hub / "integration" / "sources",
+        hub / "integration" / "sources" / "custom-transformations",
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate",
+        hub / "integration" / "transforms" / "dbt" / "macros",
+        hub / "integration" / "transforms" / "dbt" / "tests",
         hub / "integration" / "discovery",
+        hub / "model" / "mappings" / "custom-transformations",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
@@ -4680,6 +4808,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / ".kairos-state" / "phases" / "source",
         hub / ".kairos-state" / "phases" / "domain",
         hub / ".kairos-state" / "phases" / "mapping",
+        hub / ".kairos-state" / "phases" / "dbt-transformation",
         hub / ".kairos-state" / "phases" / "silver",
         hub / ".kairos-state" / "phases" / "gold",
     ]:
@@ -4719,6 +4848,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         ".kairos-state/phases/source",
         ".kairos-state/phases/domain",
         ".kairos-state/phases/mapping",
+        ".kairos-state/phases/dbt-transformation",
         ".kairos-state/phases/silver",
         ".kairos-state/phases/gold",
     ]:
@@ -4731,9 +4861,13 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
+        "model/mappings/custom-transformations": "model/mappings/custom-transformations",
         "businessdiscovery": "businessdiscovery",
         "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/sources": "integration/sources",
+        "integration/sources/custom-transformations":
+            "integration/sources/custom-transformations",
+        "integration/transforms/dbt": "integration/transforms/dbt",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
         src = _SCAFFOLD_DIR / "ontology-hub" / scaffold_subdir / "README.md"

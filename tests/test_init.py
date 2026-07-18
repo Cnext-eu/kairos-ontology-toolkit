@@ -26,8 +26,15 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/model/shapes").is_dir()
             assert Path("ontology-hub/model/extensions").is_dir()
             assert Path("ontology-hub/integration/sources").is_dir()
+            assert Path(
+                "ontology-hub/integration/sources/custom-transformations/README.md"
+            ).is_file()
+            assert Path("ontology-hub/integration/transforms/dbt/README.md").is_file()
             assert Path("ontology-hub/integration/discovery").is_dir()
             assert Path("ontology-hub/model/mappings").is_dir()
+            assert Path(
+                "ontology-hub/model/mappings/custom-transformations/README.md"
+            ).is_file()
             assert Path("ontology-hub/output/medallion/dbt").is_dir()
             assert Path("ontology-hub/output/medallion/powerbi").is_dir()
             assert Path("ontology-hub/output/medallion/dbt").is_dir()
@@ -45,6 +52,7 @@ def test_init_creates_hub_structure(tmp_path):
                 ".kairos-state/phases/source",
                 ".kairos-state/phases/domain",
                 ".kairos-state/phases/mapping",
+                ".kairos-state/phases/dbt-transformation",
                 ".kairos-state/phases/silver",
                 ".kairos-state/phases/gold",
             ]:
@@ -68,6 +76,9 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path(".github/skills/kairos-design-discovery/SKILL.md").is_file()
             assert Path(".github/skills/kairos-execute-validate/SKILL.md").is_file()
             assert Path(".github/skills/kairos-execute-project/SKILL.md").is_file()
+            assert Path(
+                ".github/skills/kairos-develop-dbt-transformation/SKILL.md"
+            ).is_file()
 
             # Check copilot instructions
             assert Path(".github/copilot-instructions.md").is_file()
@@ -76,6 +87,8 @@ def test_init_creates_hub_structure(tmp_path):
             pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
             assert "flatfile = [" in pyproject
             assert "kairos-ontology-toolkit[flatfile]" in pyproject
+            assert "dbt-validate-fabric = [" in pyproject
+            assert "dbt-validate-databricks = [" in pyproject
 
             # No submodule calls (reference models are fetched separately)
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
@@ -195,6 +208,30 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / "ontology-hub" / "model" / "mappings" / "README.md").is_file()
     assert (repo / "ontology-hub" / "output" / "medallion" / "dbt").is_dir()
     assert (repo / "ontology-hub" / "integration" / "discovery").is_dir()
+    assert (
+        repo
+        / "ontology-hub"
+        / "integration"
+        / "transforms"
+        / "dbt"
+        / "README.md"
+    ).is_file()
+    assert (
+        repo
+        / "ontology-hub"
+        / "integration"
+        / "sources"
+        / "custom-transformations"
+        / "README.md"
+    ).is_file()
+    assert (
+        repo
+        / "ontology-hub"
+        / "model"
+        / "mappings"
+        / "custom-transformations"
+        / "README.md"
+    ).is_file()
     assert (repo / "ontology-hub" / ".sessions-projection").is_dir()
     assert (repo / "ontology-hub" / ".sessions-design-import").is_dir()
     assert not (repo / "ontology-hub" / ".sessions-design").exists()
@@ -205,6 +242,7 @@ def test_new_repo_creates_full_structure(tmp_path):
         ".kairos-state/phases/source",
         ".kairos-state/phases/domain",
         ".kairos-state/phases/mapping",
+        ".kairos-state/phases/dbt-transformation",
         ".kairos-state/phases/silver",
         ".kairos-state/phases/gold",
     ]:
@@ -225,6 +263,13 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / ".github" / "copilot-instructions.md").is_file()
     assert (repo / ".github" / "skills" / "kairos-setup-config" / "SKILL.md").is_file()
     assert (repo / ".github" / "skills" / "kairos-design-discovery" / "SKILL.md").is_file()
+    assert (
+        repo
+        / ".github"
+        / "skills"
+        / "kairos-develop-dbt-transformation"
+        / "SKILL.md"
+    ).is_file()
 
     # Repo-level files
     assert (repo / "pyproject.toml").is_file()
@@ -238,6 +283,7 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert "dbt-validate" in pyproject
     assert '"dbt-core>=1.9,<1.10"' in pyproject
     assert '"dbt-fabric>=1.9,<1.10"' in pyproject
+    assert '"dbt-databricks>=1.9,<1.10"' in pyproject
     assert "flatfile = [" in pyproject
     assert "kairos-ontology-toolkit[flatfile]" in pyproject
 

@@ -90,6 +90,8 @@ discovery → source → domain → mapping → silver → gold → validate →
 | 5 | **Design — source** | `kairos-design-source` | Bronze vocabulary (`*.vocabulary.ttl`) | Needed for `dbt` |
 | 6 | **Design — domain** | `kairos-design-domain` | OWL classes + properties (`*.ttl`) | ✅ |
 | 7 | **Design — mapping** | `kairos-design-mapping` | SKOS source→domain mappings (uses the glossary) | Needed for `dbt` |
+| 7b | **Develop — advanced dbt** (optional) | `kairos-develop-dbt-transformation` | Contracted intermediate SQL/YAML/tests + generated virtual source | Only for complex relational logic |
+| 7c | **Design — virtual mapping** (conditional) | `kairos-design-mapping` | Generated virtual-source→domain mappings | Required after 7b |
 | 8 | **Design — silver** | `kairos-design-silver` | `*-silver-ext.ttl` annotations | Needed for `silver`/`dbt` |
 | 9 | **Design — gold** | `kairos-design-gold` | `*-gold-ext.ttl` annotations | Needed for `powerbi` |
 | 9b | **Design — MDM** (optional) | `kairos-design-mdm` | `*-mdm-ext.ttl` policy | Needed for `mdm-profile` |
@@ -146,12 +148,13 @@ ontology-hub/
 │   ├── glossary/                   # Business glossary (SKOS overlay of alt-names)
 │   │   └── {company}-glossary.ttl  # From kairos-design-discovery; used by mapping
 │   └── mappings/                   # Source-to-domain mappings (SKOS + kairos-map:)
+│       ├── custom-transformations/ # Generated-source mappings
 │       └── sales-erp-mapping.ttl
 ├── integration/                    # Source system documentation
-│   └── sources/                    # API specs, SQL DDL, sample data
-│       └── erp/
-│           ├── README.md
-│           └── schema.sql
+│   ├── sources/                    # API specs, Bronze vocabularies
+│   │   ├── custom-transformations/ # Generated contract vocabularies
+│   │   └── erp/
+│   └── transforms/dbt/             # Authored contracted dbt models/macros/tests
 ├── output/                         # Generated artifacts (DO NOT EDIT)
 │   ├── medallion/                  # Medallion architecture outputs
 │   │   ├── dbt/                    # dbt Core project (silver + gold)
@@ -188,6 +191,10 @@ ontology-reference-models/          # Imported industry reference models
 - **`model/`** is the source of truth. All changes start here.
 - **`output/`** is generated. Never edit files here — regenerate with `kairos-ontology project`.
 - **`integration/`** holds source system reference docs used by the bronze vocabulary skill.
+- **Advanced dbt authority:** custom SQL owns relational logic; contract YAML owns physical
+  outputs; ontology/glossary own meaning; SKOS owns source-to-domain semantics; Silver
+  extensions own semantic keys/SK/FK/SCD and `silverSourceRef`. Generated virtual
+  vocabularies and `output/` are never hand-edited.
 - **`_master.ttl`** must import every domain ontology.
 
 ## 4  Available Projections
@@ -196,7 +203,7 @@ The toolkit supports the following projection targets:
 
 | Target | Command flag | What it generates | When to use |
 |---|---|---|---|
-| `dbt` | `--target dbt` | dbt Core project (silver → gold SQL models, schema YAML, docs) | Data warehouse / lakehouse pipeline |
+| `dbt` | `--target dbt --platform fabric\|databricks` | Adapter-specific dbt Core project, including validated contracted intermediates | Data warehouse / lakehouse pipeline |
 | `silver` | `--target silver` | Spark SQL DDL, Mermaid ERD, ALTER TABLE FK scripts for MS Fabric Warehouse | Silver-layer physical schema |
 | `powerbi` | `--target powerbi` | Power BI TMDL semantic model (tables, measures, relationships, RLS, perspectives) | BI semantic layer |
 | `neo4j` | `--target neo4j` | Cypher constraints, indexes, and import scripts | Graph database |
@@ -247,8 +254,16 @@ The toolkit supports the following projection targets:
 # Validate syntax + SHACL shapes
 kairos-ontology validate [--ontologies PATH] [--shapes PATH]
 
-# Generate projections
-kairos-ontology project [--ontologies PATH] [--shapes PATH] [--target TARGET]
+# Generate projections (`--platform` applies to dbt/all; default fabric)
+kairos-ontology project [--ontologies PATH] [--target TARGET] \
+  [--platform fabric|databricks]
+
+# Synchronize custom dbt contracts to managed virtual-source RDF
+kairos-ontology sync-dbt-contracts [--check] [--transforms PATH] [--sources PATH]
+
+# Validate generated dbt dependencies, parse, manifest graph, and compile
+kairos-ontology validate-dbt --platform fabric|databricks \
+  [--project-dir PATH] [--profiles-dir PATH]
 
 # Initialise a new hub from scaffold
 kairos-ontology init [--name NAME]
@@ -358,6 +373,15 @@ Default paths:
 1. Create `model/extensions/{domain}-silver-ext.ttl` or `{domain}-gold-ext.ttl`
 2. Use the appropriate namespace (`kairos-ext:`) to annotate classes/properties
 3. Regenerate: `kairos-ontology project --target dbt` (or `powerbi`)
+
+### Adding an advanced dbt transformation
+
+1. Invoke **kairos-develop-dbt-transformation** for grain, contract, SQL, and tests.
+2. Run `sync-dbt-contracts`; map the generated virtual source with
+   **kairos-design-mapping** and set Silver routing with **kairos-design-silver**.
+3. Project and validate each required adapter:
+   `project --target dbt --platform <fabric|databricks>`, then
+   `validate-dbt --platform <fabric|databricks>`.
 
 ## 8  Ontology Modelling Best Practices
 

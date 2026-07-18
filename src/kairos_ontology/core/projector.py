@@ -84,6 +84,10 @@ _NON_DOMAIN_PREFIXES = ("_",)
 _logger = logging.getLogger(__name__)
 
 
+class ProjectionRunError(RuntimeError):
+    """Raised after reporting one or more fatal projection-target failures."""
+
+
 # ---------------------------------------------------------------------------
 # Logging handler to capture projector warnings
 # ---------------------------------------------------------------------------
@@ -474,7 +478,6 @@ def project_graph(
         toolkit_version=toolkit_version,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
-
     targets = targets or VALID_TARGETS
     report.targets_requested = list(targets)
     template_base = Path(__file__).parent.parent / "templates"
@@ -637,7 +640,32 @@ def _write_artifacts(artifacts: dict[str, str], target_output: Path) -> int:
     return len(artifacts)
 
 
-def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path, target: str, namespace: str = None):
+def _merge_identical_artifacts(
+    destination: dict[str, str],
+    incoming: dict[str, str],
+    *,
+    context: str,
+) -> None:
+    """Merge artifacts, allowing repeated shared files only when bytes are identical."""
+
+    collisions = sorted(
+        path
+        for path in set(destination) & set(incoming)
+        if destination[path] != incoming[path]
+    )
+    if collisions:
+        raise RuntimeError(f"{context}: {collisions}")
+    destination.update(incoming)
+
+
+def run_projections(
+    ontologies_path: Path,
+    catalog_path: Path,
+    output_path: Path,
+    target: str,
+    namespace: str = None,
+    platform: str = "fabric",
+):
     """Run projection generation.
     
     Args:
@@ -647,6 +675,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         target: Projection target (dbt, neo4j, etc.) or 'all'
         namespace: Base namespace to project (e.g., 'http://example.org/ont/'). 
                    If None, auto-detects from ontology.
+        platform: dbt SQL adapter platform (``fabric`` or ``databricks``).
     """
     from kairos_ontology import __version__ as toolkit_version
 
@@ -654,6 +683,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         toolkit_version=toolkit_version,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
+    fatal_target_errors: list[str] = []
 
     print("🚀 Kairos Ontology Projections")
     print("=" * 50)
@@ -797,6 +827,34 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
         target_output.mkdir(parents=True, exist_ok=True)
         
         total_files = 0
+        target_failed = False
+        pending_dbt_artifacts: dict[str, str] = {}
+        contract_registry: dict = {}
+        transforms_dir = hub_root / "integration" / "transforms" / "dbt" if hub_root else None
+        if target_name == "dbt" and transforms_dir and transforms_dir.is_dir():
+            from .dbt_contract_sync import sync_dbt_contracts
+            from .dbt_contracts import discover_dbt_contracts
+
+            try:
+                freshness = sync_dbt_contracts(hub_root, check=True)
+                if freshness.has_drift:
+                    stale = ", ".join(
+                        f"{item.model} ({item.state})"
+                        for item in freshness.items
+                        if item.has_drift
+                    )
+                    raise RuntimeError(
+                        "Custom dbt contract vocabularies are not synchronized: "
+                        f"{stale}. Run `kairos-ontology sync-dbt-contracts` first."
+                    )
+                contracts = discover_dbt_contracts(transforms_dir, hub_root)
+                contract_registry = {contract.name: contract for contract in contracts}
+            except Exception as exc:
+                message = f"dbt preflight failed: {exc}"
+                fatal_target_errors.append(message)
+                report.record_post_step("dbt_preflight", status="error", reason=str(exc))
+                print(f"  ✗ {message}\n")
+                continue
         # Track which domains produce artifacts for dbt project config
         dbt_domain_names: list[str] = []
         dbt_gold_domains: list[str] = []
@@ -909,7 +967,9 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                         mappings_dir=mappings_dir,
                         hub_domain_namespaces=hub_domain_namespaces,
                         ref_model_defaults=ref_defaults,
-                        peer_ext_paths=peer_exts)
+                        peer_ext_paths=peer_exts,
+                        target_platform=platform,
+                        contract_registry=contract_registry)
                 finally:
                     proj_logger.removeHandler(warn_handler)
                     if warn_handler.records:
@@ -921,7 +981,14 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                     if target_name == "dbt" and "__coverage_data__" in artifacts:
                         dbt_coverage_data[onto_name] = artifacts.pop("__coverage_data__")
 
-                    total_files += _write_artifacts(artifacts, target_output)
+                    if target_name == "dbt":
+                        _merge_identical_artifacts(
+                            pending_dbt_artifacts,
+                            artifacts,
+                            context="Generated dbt artifact collisions",
+                        )
+                    else:
+                        total_files += _write_artifacts(artifacts, target_output)
                     print(f"  [{onto_name}] ✓ Generated {len(artifacts)} file(s)")
                     report.record_projection(
                         target_name, onto_name,
@@ -945,6 +1012,7 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                                   "No classes found in namespace — skipped",
                                   domain=onto_name, target=target_name)
             except Exception as e:
+                target_failed = True
                 print(f"  [{onto_name}] ✗ Failed: {e}")
                 _tb.print_exc()
                 report.record_projection(
@@ -955,22 +1023,61 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 )
 
         # After all domains: generate dbt project config (once, with all domains)
-        if target_name == "dbt" and dbt_domain_names:
-            from .projections.medallion_dbt_projector import generate_dbt_project_config
-            dbt_template_dir = Path(__file__).parent.parent / "templates" / "dbt"
-            hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "hub"
-            project_config = generate_dbt_project_config(
-                systems=[],
-                ontology_names=dbt_domain_names,
-                template_dir=dbt_template_dir,
-                project_name=f"{hub_name}_project",
-                gold_domain_names=dbt_gold_domains,
-            )
-            total_files += _write_artifacts(project_config, target_output)
-            _logger.info("Generated project config for %d domain(s)", len(dbt_domain_names))
+        if target_name == "dbt" and dbt_domain_names and not target_failed:
+            try:
+                from .projections.medallion_dbt_projector import generate_dbt_project_config
+                dbt_template_dir = Path(__file__).parent.parent / "templates" / "dbt"
+                hub_name = (
+                    ontologies_path.parent.parent.name if ontologies_path.parent else "hub"
+                )
+                project_config = generate_dbt_project_config(
+                    systems=[],
+                    ontology_names=dbt_domain_names,
+                    template_dir=dbt_template_dir,
+                    project_name=f"{hub_name}_project",
+                    gold_domain_names=dbt_gold_domains,
+                    platform=platform,
+                )
+                for path in project_config:
+                    pending_dbt_artifacts.pop(path, None)
+                pending_dbt_artifacts.update(project_config)
+
+                if contract_registry and transforms_dir is not None:
+                    from .dbt_bundle import assemble_dbt_bundle
+
+                    bundle = assemble_dbt_bundle(
+                        transforms_dir,
+                        tuple(contract_registry.values()),
+                        generated_artifacts=tuple(pending_dbt_artifacts),
+                    )
+                    bundle_collisions = sorted(
+                        set(pending_dbt_artifacts) & set(bundle.artifacts)
+                    )
+                    if bundle_collisions:
+                        raise RuntimeError(
+                            "Custom/generated dbt artifact collisions: "
+                            f"{bundle_collisions}"
+                        )
+                    pending_dbt_artifacts.update(bundle.artifacts)
+
+                total_files += _write_artifacts(pending_dbt_artifacts, target_output)
+                _logger.info(
+                    "Generated project config for %d domain(s)", len(dbt_domain_names)
+                )
+            except Exception as exc:
+                target_failed = True
+                message = f"dbt assembly failed; no dbt artifacts were written: {exc}"
+                fatal_target_errors.append(message)
+                report.record_post_step("dbt_assembly", status="error", reason=str(exc))
+                print(f"  ✗ {message}\n")
+        elif target_name == "dbt" and target_failed:
+            message = "dbt projection failed; no dbt artifacts were written"
+            fatal_target_errors.append(message)
+            report.record_post_step("dbt_assembly", status="error", reason=message)
+            print(f"  ✗ {message}\n")
 
         # After all domains: merge per-domain coverage data into a single report
-        if target_name == "dbt" and dbt_coverage_data:
+        if target_name == "dbt" and dbt_coverage_data and not target_failed:
             import json as _json
             from datetime import datetime as _dt, timezone as _tz
             merged_coverage = {
@@ -1191,6 +1298,9 @@ def run_projections(ontologies_path: Path, catalog_path: Path, output_path: Path
                 )
                 if dbt_path:
                     print(f"   📝 dbt session log: {dbt_path.name}")
+
+    if fatal_target_errors:
+        raise ProjectionRunError("; ".join(fatal_target_errors))
 
 
 def _build_coverage_summary(domain_data: dict[str, dict]) -> dict:
@@ -1636,7 +1746,9 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
                     mappings_dir: Optional[Path] = None,
                     hub_domain_namespaces: Optional[set] = None,
                     ref_model_defaults: Optional[list] = None,
-                    peer_ext_paths: Optional[list] = None) -> dict:
+                    peer_ext_paths: Optional[list] = None,
+                    target_platform: str = "fabric",
+                    contract_registry: Optional[dict] = None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
@@ -1656,6 +1768,8 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             whitelisting — distinguishes peer hub imports from reference model imports)
         ref_model_defaults: Optional list of Paths to reference model default
             extension files (DD-023). Loaded as fallback beneath domain extension.
+        target_platform: dbt SQL adapter platform.
+        contract_registry: Validated custom dbt contracts keyed by model name.
     """
 
     # DDD documentation overlay (DD-091) — handled before class collection so
@@ -1760,6 +1874,8 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             silver_ext_path=projection_ext_path,
             ref_model_defaults=ref_model_defaults,
             peer_ext_paths=peer_ext_paths,
+            target_platform=target_platform,
+            contract_registry=contract_registry,
         )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts
