@@ -143,6 +143,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-093](#dd-093-governed-contracted-source-replacement-in-source-coverage) | Governed contracted-source replacement in source coverage | Accepted | 2026-07-18 |
 | [DD-094](#dd-094-claim-registry-is-the-single-materialization-authority) | Claim Registry is the single materialization authority | Accepted | 2026-07-25 |
 | [DD-095](#dd-095-derive-claims-deterministic-multi-source-evidence-aggregation) | derive-claims deterministic multi-source evidence aggregation | Accepted | 2026-07-25 |
+| [DD-096](#dd-096-target-first-derived-aspirational-silver-stub--bind-loop) | Target-first derived-aspirational Silver stub → bind loop | Accepted | 2026-07-28 |
 
 ---
 
@@ -5763,6 +5764,102 @@ the banner where it actually matters (the paid AI commands).
   `evidence_sources`.
 - A future opt-in `--llm-reconcile` (LLM tie-breaking / rationale synthesis, with a
   cost banner) is explicitly deferred.
+
+---
+
+## DD-096: Target-first derived-aspirational Silver stub → bind loop
+
+**Status:** Accepted
+
+**Date:** 2026-07-28
+
+**Affects:** `src/kairos_ontology/core/binding_analysis.py`,
+`src/kairos_ontology/core/projections/medallion_dbt_projector.py`
+(`_gen_silver_models`, `_stub_columns`, `_gen_schema_yaml`, `generate_dbt_artifacts`),
+`src/kairos_ontology/core/projector.py` (`run_projections`, `_run_projection`),
+`src/kairos_ontology/cli/main.py` (`project --emit-aspirational-stubs`),
+`src/kairos_ontology/templates/dbt/silver_stub_model.sql.jinja2`,
+`src/kairos_ontology/core/determinism.py`, design source `docs/draft/silverfirstdesign.md`
+
+**Implementation:** Flag-gated stub emission on top of the canonical
+`BindingAnalysis` service (B0) and the Claim Registry (DD-094). Determinism context
+(A) is a prerequisite so re-projection stays byte-identical.
+
+### Context
+
+The silver dbt projector historically **skips** any class with no bronze mapping
+("no broken placeholders"). That means an *approved but unmapped* claim has no Silver
+**target** until a mapping exists, so downstream models cannot be built target-first.
+The Silver-First design (`docs/draft/silverfirstdesign.md`) asks for an approved,
+unbound claim to project a **stub** — a stable Silver target that transparently
+"binds" once a mapping arrives, all via re-projection with no hand-editing. Two
+critiques had to be resolved first: (1) `aspirational` must not become a persisted
+field that forks the claim state machine, and (2) empty stubs must not create
+false-green CI (vacuous 0-row tests passing).
+
+Five blocking inputs (DEC-1…DEC-5) were resolved before implementation.
+
+### Decision
+
+Add an **opt-in, flag-gated** target-first stub → bind loop:
+
+- **Derived, not persisted.** `aspirational` is computed at projection time by the
+  canonical `BindingAnalysis` (B0): a class is aspirational iff it is a
+  materialization-eligible approved claim (**DEC-5**: `disposition ∈ {claim,
+  specialize}` ∧ `type ∈ {class, reference_data}` ∧ `status == approved`) **and** its
+  physical Silver model is unbound (no source, not a folded discriminator subtype). No
+  new field is added to `Claim`/`SilverImpact`; the status/disposition state machine is
+  untouched.
+- **Opt-in flag.** `generate_dbt_artifacts(emit_aspirational_stubs=…,
+  eligible_class_uris=…)`, threaded through `run_projections`/`_run_projection` and the
+  CLI `project --emit-aspirational-stubs` (dbt/all only), with env fallback
+  `KAIROS_EMIT_ASPIRATIONAL_STUBS`. **Feature-off is byte-identical to today.**
+- **Typed zero-row stub (DEC-3/DEC-4).** `silver_stub_model.sql.jinja2` emits a
+  `materialized='view'` model tagged `kairos_aspirational_stub` with
+  `meta.is_aspirational=true`, selecting `cast(null as <type>) as <col>` for the
+  surrogate-key + IRI structural columns and every (inherited) datatype-property
+  column, guarded by `where 1 = 0`. Columns are **typed where typable** via
+  `kairos-ext:silverDataType` → `rdfs:range` (`_xsd_to_target`) → the projector's
+  established string fallback `VARCHAR(255)` (the value of `_xsd_to_target(None)`;
+  this supersedes the earlier `varchar(4000)` draft to stay consistent with the
+  projector default). Binding is a plain re-projection; incremental/SCD models use
+  `on_schema_change='sync_all_columns'` and the first bound run is a full refresh
+  (safe/cheap — the stub had zero rows).
+- **Schema YAML marker.** The stub's `_models.yml` entry carries a read-only, derived
+  `meta.is_aspirational`.
+- **Release-eligibility, not existence, is the gate (DEC-1/DEC-2).** All approved,
+  materialization-eligible, *unbound* claims are release-blocking under the strict
+  gate; no required/optional field is added (per-claim waiver deferred). Gold/Power BI
+  is still generated over a stub dependency (star schema stays stable) but any model in
+  a stub's dependency closure is **non-release-eligible**; the strict gate blocks
+  release while a release-blocking stub exists.
+- **Determinism prerequisite (A).** Generated artifacts embed an injected
+  `generated_at` + `toolkit_version` context (env-overridable via
+  `KAIROS_GENERATED_AT`/`SOURCE_DATE_EPOCH`) and sort all RDFLib iteration, so
+  re-projection is byte-identical across processes and hash seeds.
+
+### Rationale
+
+Deriving `aspirational` keeps a single source of truth (the Claim Registry + mappings)
+and avoids a parallel persisted state that could drift from governance. The opt-in
+flag guarantees zero behaviour change for existing hubs (byte-identical output),
+letting the loop roll out incrementally. Typed zero-row stubs give downstream models a
+stable contract while `where 1 = 0` prevents vacuous green tests from masking an
+unbound target. Gating on release-*eligibility* rather than artifact existence keeps
+output byte-stable and avoids cascading suppression of gold. Centralizing bound/stub/
+folded/skipped classification in one `BindingAnalysis` service means the projector,
+coverage, release gate, and status scan never diverge on "is this bound?".
+
+### Consequences
+
+- Hubs can build Silver/Gold **target-first** against approved claims before mappings
+  exist; adding a SKOS mapping transparently binds the stub on the next projection.
+- Feature-off output (and absence of the new metadata) is unchanged — a hard
+  backward-compat constraint enforced by tests.
+- Coverage/status must distinguish stub vs bound (a stub is not "done"); the release
+  gate blocks while release-blocking stubs remain.
+- Deferred (out of scope): per-claim release waivers, conformance warn→driver
+  promotion, `contract.enforced` promotion, and the drift report.
 
 ---
 
