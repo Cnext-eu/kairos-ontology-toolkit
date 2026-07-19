@@ -20,9 +20,9 @@ separate `kairos-mdm-runtime` repository and are out of scope here.
 See `docs/mdm/mdm-design-decisions.md` (MDM-DD log), `docs/mdm/user-stories.md`
 (epics), and the [full MDM architecture spec](https://github.com/Cnext-eu/kairos-ontology-toolkit/blob/main/docs/mdm/mdmhubdesignv2.md).
 
-## Design fleet mode
+## Design fleet mode (DD-088)
 
-Default is **interactive**: present each MDM policy proposal (mastered concepts,
+Default is interactive: present each MDM policy proposal (mastered concepts,
 match keys, survivorship, thresholds, workflow bounds, DQ rules) and wait for
 stakeholder confirmation. Data governance owns this policy — it is reviewed before
 the profile is trusted. If the user explicitly requests design fleet mode, make
@@ -31,6 +31,9 @@ checkpoint decisions with AI judgment for testing speed, but mark them
 source/mapping evidence. Always stop for low-confidence match keys, auto-merge
 bounds, PII exposure, licensing of reference data, or destructive survivorship
 choices.
+
+Any fleet override applies only to this skill invocation. It expires when the
+skill ends or pauses and is never inherited by another skill or a later resume.
 
 ## Lifecycle state (DD-080)
 

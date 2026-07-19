@@ -58,7 +58,11 @@ def compute_affinity_hash(pairs: Iterable[tuple[str, str]]) -> str:
     return h.hexdigest()
 
 
-def load_affinity_domain_tables(analysis_dir: Path) -> dict[str, set[tuple[str, str]]]:
+def load_affinity_domain_tables(
+    analysis_dir: Path,
+    *,
+    excluded_systems: set[str] | None = None,
+) -> dict[str, set[tuple[str, str]]]:
     """Map each domain to the set of ``(system, table)`` pairs assigned to it.
 
     Reads every ``*-affinity.yaml`` (schema_version 2) in *analysis_dir*.  Tables
@@ -81,6 +85,13 @@ def load_affinity_domain_tables(analysis_dir: Path) -> dict[str, set[tuple[str, 
             continue
 
         system = data.get("system", affinity_file.stem.replace("-affinity", ""))
+        if system in (excluded_systems or set()):
+            logger.info(
+                "Skipping generated affinity report %s for system %s",
+                affinity_file.name,
+                system,
+            )
+            continue
         for tbl in data.get("tables", []):
             if not isinstance(tbl, dict):
                 continue

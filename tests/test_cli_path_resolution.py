@@ -200,3 +200,47 @@ def test_project_ontology_and_ontologies_are_mutually_exclusive(tmp_path, monkey
 
     assert result.exit_code != 0
     assert "Use either --ontology" in result.output
+
+
+def test_project_threads_databricks_platform(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    calls = _patch_projections(monkeypatch)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli,
+        ["project", "--target", "dbt", "--platform", "databricks"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["projection"]["platform"] == "databricks"
+
+
+def test_project_rejects_platform_for_non_dbt_target(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli,
+        ["project", "--target", "neo4j", "--platform", "databricks"],
+    )
+
+    assert result.exit_code == 2
+    assert "--platform applies only" in result.output
+
+
+def test_project_surfaces_reported_projection_failure(tmp_path, monkeypatch):
+    from kairos_ontology.core.projector import ProjectionRunError
+
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    def fail(**kwargs):
+        raise ProjectionRunError("dbt assembly failed")
+
+    monkeypatch.setattr(cli_main, "run_projections", fail)
+    result = CliRunner().invoke(cli, ["project", "--target", "dbt"])
+
+    assert result.exit_code == 1
+    assert "dbt assembly failed" in result.output
+    assert "Traceback" not in result.output

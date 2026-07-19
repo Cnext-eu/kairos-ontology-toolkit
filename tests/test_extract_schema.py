@@ -6,6 +6,7 @@ import pytest
 
 from kairos_ontology.core.extract_schema import (
     ColumnInfo,
+    JsonKeyInfo,
     TableInfo,
     classify_json_column,
     extract_json_structure,
@@ -341,6 +342,93 @@ class TestSamplesYamlOutput:
         )
 
         assert not (result_dir / "tblEmpty.samples.yaml").exists()
+
+    def test_redacts_pii_and_records_source_datatype(self, tmp_path):
+        tables = [
+            TableInfo(
+                name="contacts",
+                schema="dbo",
+                row_count=1,
+                columns=[
+                    ColumnInfo(
+                        name="email",
+                        data_type="nvarchar(255)",
+                        ordinal_position=1,
+                    ),
+                    ColumnInfo(
+                        name="status",
+                        data_type="nvarchar(20)",
+                        ordinal_position=2,
+                    ),
+                ],
+                sample_rows=[
+                    {"email": "person@example.com", "status": "active"}
+                ],
+            ),
+        ]
+
+        result_dir = write_extraction_output(
+            output_dir=tmp_path,
+            system_name="crm",
+            platform="fabric-warehouse",
+            database="warehouse",
+            schema="dbo",
+            tables=tables,
+        )
+
+        import yaml
+        raw = (result_dir / "contacts.samples.yaml").read_text(encoding="utf-8")
+        samples = yaml.safe_load(raw)
+        assert "person@example.com" not in raw
+        assert samples["rows"][0]["email"] == (
+            "<redacted kind=email source=contacts.email datatype=nvarchar(255)>"
+        )
+        assert samples["rows"][0]["status"] == "active"
+        assert samples["sample_privacy"]["policy"] == "redact-detected-pii"
+
+    def test_redacts_json_structure_sample(self, tmp_path):
+        tables = [
+            TableInfo(
+                name="events",
+                schema="dbo",
+                row_count=1,
+                columns=[
+                    ColumnInfo(
+                        name="payload",
+                        data_type="json",
+                        ordinal_position=1,
+                        json_detected=True,
+                        json_classification="flat",
+                        json_structure=[
+                            JsonKeyInfo(
+                                key="owner_email",
+                                type="string",
+                                sample="person@example.com",
+                            )
+                        ],
+                    )
+                ],
+                sample_rows=[],
+            ),
+        ]
+
+        result_dir = write_extraction_output(
+            output_dir=tmp_path,
+            system_name="events",
+            platform="databricks",
+            database="lakehouse",
+            schema="bronze",
+            tables=tables,
+        )
+
+        import yaml
+        table_data = yaml.safe_load(
+            (result_dir / "events.yaml").read_text(encoding="utf-8")
+        )
+        sample = table_data["columns"][0]["json_structure"][0]["sample"]
+        assert sample == (
+            "<redacted kind=email source=events.payload.owner_email datatype=string>"
+        )
 
     def test_row_context_preserved_across_columns(self, tmp_path):
         """Verify that row[0] values for all columns belong to the same source row."""

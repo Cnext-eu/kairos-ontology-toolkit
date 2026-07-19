@@ -55,6 +55,8 @@ mapping best practices.
 
 4. For **Quick** mode: report Level 1 + 2 results and stop.
    For **Detailed** mode: continue through all 4 levels below.
+5. If `integration/transforms/dbt/` contains contracted custom models, also run the
+   advanced dbt checks below after projection; ontology validation does not compile dbt.
 
 ---
 
@@ -409,6 +411,28 @@ that was run in the "Before you start" step.
 | GDPR/PII warnings | If the CLI reports unprotected PII properties (names, emails, addresses, phone numbers), list them with count | 💡 Flag properties that should have `gdprSatelliteOf` protection or `olsRestricted` annotation |
 | Projection warnings | If the CLI emits projection warnings (missing NK, unsupported FK, etc.), include them in the report | 🐛 Projection warnings indicate generation issues |
 
+### Advanced dbt contract and project validation
+
+For hubs with `integration/transforms/dbt/`:
+
+1. Invoke **kairos-develop-dbt-transformation** for contract/SQL/test remediation; this
+   validation skill must not rewrite authoritative custom dbt files.
+2. Check synchronization without writing:
+   `kairos-ontology sync-dbt-contracts --check`. Drift is blocking; regenerate through
+   the development skill, never edit
+   `integration/sources/custom-transformations/*.vocabulary.ttl`.
+3. After `project --target dbt --platform <fabric|databricks>`, run:
+
+   ```bash
+   kairos-ontology validate-dbt --platform <fabric|databricks>
+   ```
+
+   This validates approved dependencies, parse, manifest resources/dependencies,
+   implementing models, declared verifying tests, and compile. Use `--project-dir` or
+   `--profiles-dir` only when the hub layout or environment requires it.
+4. Report contract/parse/graph failures as blocking defects. Report missing credentials,
+   drivers, network, or warehouse introspection as environment-blocked, not passed.
+
 ### Hub documentation completeness
 
 | Check | What to verify | Severity |
@@ -509,5 +533,6 @@ After displaying the validation report in chat, **always** save it as a Markdown
 | Design silver layer (DDL, SCD, FK annotations) | **kairos-design-silver** |
 | Run projections (generate artifacts after validation) | **kairos-execute-project** |
 | Map source columns to domain properties | **kairos-design-mapping** |
+| Develop or fix contracted custom dbt SQL/contracts/tests | **kairos-develop-dbt-transformation** |
 | Design/validate MDM policy (`*-mdm-ext.ttl`, `mdm-validate`) | **kairos-design-mdm** |
 | Check hub status and completeness | **kairos-diagnose-status** |

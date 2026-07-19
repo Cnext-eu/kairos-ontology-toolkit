@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Contracted advanced dbt transformations** (DD-092): package handwritten,
+  contract-first intermediate models for joins, windows, aggregation, fallback logic,
+  JSON expansion, and grain changes while retaining generated ontology-aligned Silver
+  wrappers. Adds managed virtual-source vocabulary synchronization, Fabric/Databricks
+  platform selection, offline dbt graph validation, and the interactive
+  **kairos-develop-dbt-transformation** skill.
+- **Governed source replacement coverage** (DD-093, #215): contracted dbt models can
+  declare canonical Bronze `replaces_sources` without unsafe direct SKOS mappings.
+  Coverage requires an approved matching claim, synchronized replacement RDF,
+  table-level `skos:exactMatch`, matching `silverSourceRef`, and no competing source
+  authority; generated dbt sources retain declared contract inputs.
+- **Privacy-safe source sample persistence** (DD-075): source import, schema
+  extraction, and Bronze vocabulary generation now replace supported detected PII
+  with opaque source-aware tokens before writing. The skill-gated `source-privacy`
+  check/fix command remediates existing YAML and vocabulary artifacts without
+  printing raw values.
+- **Canonical Bronze source discovery** (DD-093): source analysis, coverage, and
+  dbt-contract validation now share source identity rules. Generated contract
+  vocabularies no longer create redundant affinity obligations, legacy reports are
+  archived, split-source reports are consolidated, equivalent monolithic/split
+  vocabularies are reconciled, and divergent definitions remain blocking.
 - **Design-time MDM layer** (MDM-DD-001..003, mdmhubdesignv2.md ADR-1): a new,
   additive Master Data Management design layer expressed in
   `model/extensions/{domain}-mdm-ext.ttl` overlays, driven by the managed
@@ -109,9 +130,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `analyse-sources` now reports advisory sample-data coverage in affinity YAML and
   warns non-blockingly when fewer than half of a source system's analysed tables
   have sample values, because schema-only analysis can be semantically ambiguous.
-- Design skills now support explicit opt-in **design fleet mode** for test runs,
-  where AI can make checkpoint decisions while preserving evidence, validation,
-  and traceable AI-approved decision logs.
+- Design skills now support a skill- and invocation-scoped **design fleet mode**
+  override for test runs. Fleet consent never propagates across lifecycle phases;
+  AI decisions preserve evidence, validation, and traceable AI-approved logs.
+- Source design now asks for the LLM provider and authentication mode at every
+  invocation, including Azure AI or Microsoft Foundry through
+  `DefaultAzureCredential`; a complete `.env` configuration is the recommended
+  default and is confirmed before the first LLM call.
 - Added `audit-silver-samples`, an offline advisory QA command that checks
   generated dbt silver mappings against source sample values without a warehouse
   connection.

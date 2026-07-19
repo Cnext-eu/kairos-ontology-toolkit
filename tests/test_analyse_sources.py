@@ -1622,3 +1622,116 @@ class TestDomainsOutputFilter:
         )
         tables = {t["table"]: t["domain"] for t in affinity["tables"]}
         assert tables == {"tblClient": "party", "tblContract": "commercial"}
+
+    def test_generated_contract_sources_are_excluded_and_legacy_report_archived(
+        self, tmp_path, monkeypatch
+    ):
+        ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
+        generated = sources_dir / "custom-transformations"
+        generated.mkdir()
+        (generated / "int_party.vocabulary.ttl").write_text(
+            """\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix kairos-dbt: <https://kairos.cnext.eu/dbt-contract#> .
+@prefix custom: <https://example.com/source/custom#> .
+
+custom:party a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "int_party" ;
+    kairos-dbt:sourceKind "dbt-contract" .
+
+custom:party_id a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable custom:party ;
+    kairos-bronze:columnName "party_id" .
+""",
+            encoding="utf-8",
+        )
+        out_dir.mkdir()
+        legacy = out_dir / "int_party-affinity.yaml"
+        legacy.write_text(
+            "schema_version: 2\nsystem: int_party\ntables:\n"
+            "  - table: int_party\n    domain: party\n",
+            encoding="utf-8",
+        )
+        calls: list[int] = []
+        monkeypatch.setattr(
+            "kairos_ontology.core.analyse_sources._get_openai_client",
+            lambda: self._routing_client(calls),
+        )
+
+        run_analyse_sources(
+            sources_dir=sources_dir,
+            ref_models_dir=ref_dir,
+            output_dir=out_dir,
+            accelerator="logistics",
+            shallow=True,
+            max_workers=1,
+            cost_warning=False,
+        )
+
+        assert len(calls) == 2
+        assert not legacy.exists()
+        assert (
+            out_dir
+            / "archive"
+            / "generated-dbt-contracts"
+            / "int_party-affinity.yaml"
+        ).is_file()
+
+    def test_split_vocabularies_share_the_directory_system_identity(
+        self, tmp_path, monkeypatch
+    ):
+        import yaml as _yaml
+
+        ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
+        split = sources_dir / "testapp" / "tables"
+        split.mkdir()
+        (split / "extra.vocabulary.ttl").write_text(
+            """\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix testapp: <https://kairos.cnext.eu/source/testapp#> .
+testapp:tblExtra a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "tblExtra" .
+testapp:tblExtra_Code a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "Code" ;
+    kairos-bronze:sourceTable testapp:tblExtra .
+""",
+            encoding="utf-8",
+        )
+        out_dir.mkdir()
+        (out_dir / "extra-affinity.yaml").write_text(
+            "schema_version: 2\nsystem: extra\ntables:\n"
+            "  - table: tblExtra\n    domain: party\n",
+            encoding="utf-8",
+        )
+        calls: list[int] = []
+        monkeypatch.setattr(
+            "kairos_ontology.core.analyse_sources._get_openai_client",
+            lambda: self._routing_client(calls),
+        )
+
+        run_analyse_sources(
+            sources_dir=sources_dir,
+            ref_models_dir=ref_dir,
+            output_dir=out_dir,
+            accelerator="logistics",
+            shallow=True,
+            max_workers=1,
+            cost_warning=False,
+        )
+
+        assert len(calls) == 3
+        reports = sorted(out_dir.glob("*-affinity.yaml"))
+        assert [path.name for path in reports] == ["testapp-affinity.yaml"]
+        affinity = _yaml.safe_load(reports[0].read_text(encoding="utf-8"))
+        assert affinity["system"] == "testapp"
+        assert {table["table"] for table in affinity["tables"]} == {
+            "tblClient",
+            "tblContract",
+            "tblExtra",
+        }
+        assert (
+            out_dir
+            / "archive"
+            / "superseded-source-layouts"
+            / "extra-affinity.yaml"
+        ).is_file()

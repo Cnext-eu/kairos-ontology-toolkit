@@ -2,6 +2,8 @@
 # Copyright 2026 Cnext.eu
 """Tests for the import-source module (YAML parsing, TTL generation, merge)."""
 
+import copy
+
 import pytest
 from rdflib import Graph, Namespace
 from rdflib.namespace import RDF, RDFS, OWL
@@ -241,6 +243,29 @@ class TestGenerateVocabularyTtl:
         columns = list(g.subjects(RDF.type, KAIROS_BRONZE.SourceColumn))
         assert len(columns) == 7  # 4 + 3
 
+    def test_redacts_samples_and_enum_values_before_turtle(self):
+        data = copy.deepcopy(VALID_YAML_DATA)
+        email = data["tables"][0]["columns"][2]
+        email["samples"] = ["person@example.com"]
+        email["suggested_enum"] = True
+        email["enum_values"] = ["person@example.com"]
+
+        ttl = generate_vocabulary_ttl(data)
+
+        assert "person@example.com" not in ttl
+        graph = Graph()
+        graph.parse(data=ttl, format="turtle")
+        ns = Namespace("https://kairos.cnext.eu/source/testapp#")
+        expected = "<redacted kind=email source=tblClient.Email datatype=string>"
+        assert (
+            str(graph.value(ns["tblClient_Email"], KAIROS_BRONZE.sampleValues))
+            == expected
+        )
+        assert (
+            str(graph.value(ns["tblClient_Email"], KAIROS_BRONZE.enumValues))
+            == expected
+        )
+
     def test_primary_key_columns(self):
         ttl = generate_vocabulary_ttl(VALID_YAML_DATA)
         g = Graph()
@@ -359,6 +384,31 @@ class TestMergeWithExisting:
         db = str(g.value(ns["testapp"], KAIROS_BRONZE.database))
         assert db == "bronze_db"
 
+    def test_cleans_stale_raw_and_adds_sanitized_current_samples(
+        self, existing_vocab_file
+    ):
+        with existing_vocab_file.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\ntestapp:tblClient_OldColumn "
+                'kairos-bronze:sampleValues "old.person@example.com" .\n'
+            )
+        data = copy.deepcopy(VALID_YAML_DATA)
+        data["tables"][0]["columns"][2]["samples"] = ["new.person@example.com"]
+
+        ttl, _ = merge_with_existing(data, existing_vocab_file)
+
+        assert "old.person@example.com" not in ttl
+        assert "new.person@example.com" not in ttl
+        graph = Graph()
+        graph.parse(data=ttl, format="turtle")
+        ns = Namespace("https://kairos.cnext.eu/source/testapp#")
+        assert str(
+            graph.value(ns["tblClient_OldColumn"], KAIROS_BRONZE.sampleValues)
+        ) == "<redacted kind=email source=tblClient.OldColumn datatype=string>"
+        assert str(
+            graph.value(ns["tblClient_Email"], KAIROS_BRONZE.sampleValues)
+        ) == "<redacted kind=email source=tblClient.Email datatype=string>"
+
 
 # --------------------------------------------------------------------------- #
 # Orchestration Tests
@@ -409,6 +459,24 @@ class TestRunImportSource:
             valid_yaml_file, system_name="custom", output_dir=output_dir
         )
         assert result_path.name == "custom.vocabulary.ttl"
+
+    def test_builds_all_turtle_before_publishing(
+        self, valid_yaml_file, tmp_path, monkeypatch
+    ):
+        output_dir = tmp_path / "output"
+
+        def fail_per_table(_data):
+            raise RuntimeError("candidate generation failed")
+
+        monkeypatch.setattr(
+            "kairos_ontology.core.import_source.generate_vocabulary_per_table",
+            fail_per_table,
+        )
+
+        with pytest.raises(RuntimeError, match="candidate generation failed"):
+            run_import_source(valid_yaml_file, output_dir=output_dir)
+
+        assert not (output_dir / "testapp.vocabulary.ttl").exists()
 
 
 # --------------------------------------------------------------------------- #

@@ -13,12 +13,16 @@ description: >
 ## Design fleet mode (DD-088)
 
 Default is interactive: ask the user to confirm company facts, inferred business
-terms, and glossary entries. If the user explicitly requests design fleet mode,
-make those checkpoint decisions with AI judgment for testing speed, but mark them
-as **AI-approved** rather than user-confirmed. Record rationale, confidence, and
-source evidence in `phases/discovery.md`; stop for low-confidence company facts,
-conflicting evidence, proprietary/PII risk, or terms that could materially affect
-later domain/mapping design.
+terms, and glossary entries. At the start of each invocation, this skill offers a
+skill-scoped fleet override after explaining its implications. If the user selects
+fleet mode, make high-confidence checkpoint decisions with AI judgment, but mark
+them as **AI-approved** rather than user-confirmed. Record rationale, confidence,
+and source evidence in `phases/discovery.md`; stop for low-confidence company
+facts, conflicting evidence, proprietary/PII risk, or terms that could materially
+affect later domain/mapping design.
+
+Any fleet override applies only to this skill invocation. It expires when the
+skill ends or pauses and is never inherited by another skill or a later resume.
 
 ## Lifecycle state (DD-080)
 
@@ -71,20 +75,24 @@ This skill produces two things:
 > **You MUST create a `ontology-hub/.kairos-state/phases/discovery.md`
 > file BEFORE writing any glossary TTL.**
 
-### Gate 2: No unconfirmed facts
+### Gate 2: No falsely confirmed facts
 
 > **You MUST NOT record a company fact (what they do, business model, offering) as
 > confirmed until the user has approved it.**
 
 Information gathered from public web research is **inferred** until the user
 confirms it. Mark such items `[INFERRED — public web]` and present them for review.
-Never present inferred claims as established fact.
+In an authorized fleet invocation, high-confidence facts may instead be recorded
+as **AI-approved**, with rationale, confidence, and evidence. Never label an
+AI-approved or inferred claim as user-confirmed or present it as an established
+stakeholder fact.
 
-### Gate 3: No glossary term without confirmation
+### Gate 3: No glossary term without approval
 
 > **You MUST NOT write a `skos:Concept` (or any `skos:altLabel`) to the glossary
-> until the user has explicitly confirmed the term and its link to a domain
-> class/property.**
+> until the term and its domain link are user-confirmed in interactive mode or
+> explicitly AI-approved with rationale, confidence, and evidence in an authorized
+> fleet invocation.**
 
 ### Gate 4: Never modify the domain ontology
 
@@ -95,10 +103,12 @@ Link a glossary concept to the domain by **IRI reference only** (`rdfs:seeAlso` 
 `skos:relatedMatch`). If the user wants to change the domain model itself, hand off
 to the **kairos-design-domain** skill.
 
-### Gate 5: This is an interactive skill (no autopilot)
+### Gate 5: No autopilot without a current skill override
 
-Present proposals, wait for the user, and proceed step by step. Never batch-confirm
-company facts or glossary terms.
+Interactive mode is the default: present proposals, wait for the user, and proceed
+step by step. Fleet behavior is allowed only after the user grants the override
+for this invocation in Phase 0. Never reuse an override from stored state or a
+previous conversation.
 
 ---
 
@@ -129,6 +139,24 @@ company facts or glossary terms.
    > "I found a business-discovery session from `{date}`. **Continue**, **start
    > fresh**, or **review** it first?"
 3. If none exists, create one immediately (Gate 1), even if sparse.
+4. **Choose the mode for this invocation.** After the continue/start-fresh/review
+   decision, explain the implications and ask with the interactive question tool:
+
+   > **Interactive:** You approve company facts, glossary links, and conformance
+   > decisions step by step.
+   >
+   > **Design fleet:** AI may approve high-confidence decisions and records each as
+   > AI-approved with rationale, confidence, and evidence. The same phases and gates
+   > still apply. Discovery stops for ambiguity, conflicting evidence, sensitive
+   > data, or materially consequential choices.
+
+   Offer exactly:
+   - **Interactive (Recommended)**
+   - **Design fleet**
+
+   Record the selected mode in `phases/discovery.md`. This is an invocation record,
+   not reusable consent: ask again after any pause/resume and never pass the mode to
+   another skill. If fleet is selected, announce that it is active before Phase 1a.
 
 > **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
 > start a new session instead of resuming, first move any existing
@@ -268,10 +296,13 @@ company facts or glossary terms.
    - Offerings / products / services — **all** lines, not only the first domain's
    - Key operational processes and the entities involved
    - Sector specifics (e.g. freight forwarder vs carrier vs 3PL)
-5. Present a **Company Context Proposal** and ask the user to confirm/correct each
-   point. Tag every web-sourced claim `[INFERRED — public web]` (Gate 2).
-6. Save confirmed context to the session file — **including** terms and areas that
-   are out of scope for the current domain but will matter for later ones.
+5. Present a **Company Context Proposal**. In interactive mode, ask the user to
+   confirm/correct each point. In fleet mode, AI-approve only high-confidence
+   points and stop on the Gate 2 conditions. Tag every unresolved web-sourced claim
+   `[INFERRED — public web]`.
+6. Save user-confirmed or explicitly AI-approved context to the session file —
+   **including** terms and areas that are out of scope for the current domain but
+   will matter for later ones.
 
 ### Phase 2 — Terminology capture (the glossary)
 
@@ -285,8 +316,10 @@ company facts or glossary terms.
 | `House Bill`, `HBL` | Transport Document | `…#TransportDocument` | Broader than strict industry meaning |
 | `Leg` | Shipment Movement | `…#ShipmentMovement` | One origin→destination segment |
 
-3. Wait for user confirmation on **each** entry (Gate 3). **Resolve the linked IRI
-   against the full domain breadth**, in this order:
+3. In interactive mode, wait for user confirmation on **each** entry. In fleet
+   mode, approve only high-confidence entries and record the required decision
+   evidence; stop on Gate 3 uncertainty. **Resolve the linked IRI against the full
+   domain breadth**, in this order:
    1. **Hub class/property** — read `model/ontologies/`. If a matching hub IRI
       exists, link to it (highest priority — it's already claimed by this hub).
    2. **Reference-model class/property** — otherwise look it up in the materialized
@@ -360,10 +393,11 @@ glossary:TransportDocument a skos:Concept ;
 > stem). The toolkit loads, validates, derives topology, and persists; this skill
 > drives the interview.
 
-> **Mode (DD-088).** Interactive by default — present each concept's proposed outcome
-> and **wait for user confirmation**. In **design fleet mode** only, the AI may
-> pre-fill per-concept outcome *proposals* from the glossary + business model, but
-> they remain AI-inferred (logged with rationale/confidence) until confirmed.
+> **Mode (DD-088).** Interactive by default — present each concept's proposed
+> outcome and **wait for user confirmation**. In an authorized design-fleet
+> invocation, the AI may approve high-confidence outcomes from the glossary and
+> business model, recording each as AI-approved with rationale, confidence, and
+> evidence. Ambiguous outcomes remain inferred and require user input.
 
 > **Single archetype per session.** Pick exactly one archetype. A company spanning two
 > archetypes runs a second discovery session (contract composability rule).
@@ -509,6 +543,7 @@ Save to `ontology-hub/.kairos-state/phases/discovery.md`:
 **Started:** {datetime}
 **Last updated:** {datetime}
 **Status:** IN_PROGRESS | PAUSED | COMPLETED
+**Invocation mode:** INTERACTIVE | DESIGN_FLEET
 
 ## Company Context
 

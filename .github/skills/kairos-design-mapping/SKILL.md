@@ -20,6 +20,9 @@ evidence references in `phases/mapping/<source>-to-<domain>.md`; stop for
 low-confidence mappings, lossy transforms, PII/proprietary risk, or unmapped
 business-critical columns.
 
+Any fleet override applies only to this skill invocation. It expires when the
+skill ends or pauses and is never inherited by another skill or a later resume.
+
 ## Offline sample audit feedback (DD-089)
 
 After dbt/silver projection, `kairos-ontology audit-silver-samples` can review
@@ -111,6 +114,14 @@ The user can override any auto-approved mapping.
 ### Phase 0 — Discover & Scope
 
 1. List source systems in `integration/sources/` that have a `*.vocabulary.ttl`
+   - Include generated virtual sources under
+     `integration/sources/custom-transformations/`.
+   - Never edit those generated vocabularies. If missing or stale, hand off to
+     **kairos-develop-dbt-transformation** to run `sync-dbt-contracts`.
+   - When a contract declares `meta.kairos.replaces_sources`, map its virtual table to
+     `target_class` with table-level `skos:exactMatch`. Do not add a direct mapping from
+     the replaced Bronze table to the same domain merely to satisfy source coverage; that
+     creates a blocking source-authority conflict.
 2. Ask user which source system to map
 3. Ask user which domain(s) to target (list available from `model/ontologies/`)
 4. Create phase log: `ontology-hub/.kairos-state/phases/mapping/{source}-to-{domain}.md`
@@ -158,6 +169,13 @@ The user can override any auto-approved mapping.
 > several subclasses. These are candidates only; all carry
 > `requires_human_confirmation: true` and MUST be confirmed before you encode any
 > split/dedup/multi-target mapping.
+
+> **Advanced transformation boundary:** ordinary row/column alignment and supported
+> `kairos-map:transform` expressions belong here. If correct grain requires joins,
+> windows, ranking, aggregation, fallback across relations, JSON expansion, or
+> survivorship, stop and hand off to **kairos-develop-dbt-transformation**. Return here
+> after synchronization to map the generated virtual table and columns; SKOS remains
+> the authority for virtual-source-to-domain meaning.
 
 ### Phase 2 — Column-to-Property Mapping (per confirmed table)
 
@@ -460,6 +478,7 @@ bronze:{transformedColumn}
 | `kairos-design-discovery` | **Upstream** — creates the business glossary of alternative names (consumed in Phase 0/2) |
 | `kairos-design-source` | **Upstream** — creates bronze vocabulary (input to this skill) |
 | `kairos-design-domain` | **Upstream** — creates domain ontology (target for mappings) |
+| `kairos-develop-dbt-transformation` | **Optional upstream/handoff** — owns complex dbt SQL and contract; generates the virtual source mapped here |
 | **`kairos-design-mapping`** (this) | Creates SKOS mapping files interactively |
 | `kairos-execute-report` | **Downstream** — generates HTML coverage reports from mappings |
 | `kairos-design-silver` | **Downstream** — uses mappings for extension annotations |
@@ -471,7 +490,8 @@ bronze:{transformedColumn}
 0. kairos-design-discovery → company context + business glossary (businessdiscovery/)
 1. kairos-design-source   → bronze vocabulary (.vocabulary.ttl)
 2. kairos-design-domain   → domain ontology (.ttl)
-3. kairos-design-mapping  → SKOS mapping files (model/mappings/)
+2b. kairos-develop-dbt-transformation → optional contracted intermediate + virtual source
+3. kairos-design-mapping  → SKOS mapping files (including virtual-source mappings)
 4. kairos-design-silver   → silver extension annotations
 5. kairos-design-gold     → gold extension annotations (for Power BI)
 6. kairos-execute-project → dbt/silver/powerbi output

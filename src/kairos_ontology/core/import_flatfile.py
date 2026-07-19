@@ -13,6 +13,7 @@ Pipeline: CSV/XLSX/Parquet → _manifest.yaml + {table}.yaml + {table}.samples.y
 from __future__ import annotations
 
 import csv
+import copy
 import logging
 import re
 import sys
@@ -21,6 +22,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from ._samples import (
+    SAMPLE_PRIVACY_POLICY,
+    SAMPLE_PRIVACY_VERSION,
+    assert_no_unredacted_sample_pii,
+    redact_sample_rows,
+)
 
 # Increase CSV field size limit to handle large fields (e.g., Oracle exports).
 # On Windows 64-bit, sys.maxsize exceeds C long max, so cap at 2^31 - 1.
@@ -456,6 +464,21 @@ def write_source_dir(
     Returns:
         Path to the output directory.
     """
+    # Sanitize and validate every sample before publishing any artifact.
+    safe_tables = copy.deepcopy(tables)
+    for table in safe_tables:
+        column_types = {
+            str(col.get("name", "")): str(col.get("data_type", "unknown"))
+            for col in table.get("columns", [])
+        }
+        safe_rows, _ = redact_sample_rows(
+            table.get("sample_rows", []),
+            table=str(table["name"]),
+            column_types=column_types,
+        )
+        assert_no_unredacted_sample_pii(safe_rows, table=str(table["name"]))
+        table["sample_rows"] = safe_rows
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Write manifest
@@ -465,13 +488,17 @@ def write_source_dir(
         "platform": platform,
         "extracted_at": datetime.now(timezone.utc).isoformat(),
         "connection": {},
-        "tables": [t["name"] for t in tables],
+        "tables": [t["name"] for t in safe_tables],
+        "sample_privacy": {
+            "policy": SAMPLE_PRIVACY_POLICY,
+            "version": SAMPLE_PRIVACY_VERSION,
+        },
     }
     with open(output_dir / "_manifest.yaml", "w", encoding="utf-8") as f:
         yaml.dump(manifest, f, default_flow_style=False, sort_keys=False)
 
     # Write per-table YAML + samples
-    for table in tables:
+    for table in safe_tables:
         tbl_name = table["name"]
 
         # Schema metadata (without sample_rows — those go in .samples.yaml)
@@ -493,10 +520,15 @@ def write_source_dir(
                 "extracted_at": manifest["extracted_at"],
                 "table": tbl_name,
                 "schema": "",
+                "sample_privacy": manifest["sample_privacy"],
                 "rows": sample_rows,
             }
             with open(output_dir / f"{tbl_name}.samples.yaml", "w", encoding="utf-8") as f:
                 yaml.dump(samples_data, f, default_flow_style=False, sort_keys=False)
+        else:
+            stale_samples = output_dir / f"{tbl_name}.samples.yaml"
+            if stale_samples.exists():
+                stale_samples.unlink()
 
     logger.info("Written %d table(s) to %s", len(tables), output_dir)
     return output_dir

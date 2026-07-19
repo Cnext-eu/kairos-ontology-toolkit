@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import SidecarCache, compute_entry_hash, open_cache
+from .source_catalog import build_source_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -1059,6 +1061,8 @@ def analyse_source_system(
     report=None,
     max_workers: int = DEFAULT_MAX_WORKERS,
     cache: SidecarCache | None = None,
+    system_name: str | None = None,
+    tables: dict[str, list[dict[str, Any]]] | None = None,
 ) -> SourceAnalysis:
     """Analyse one source system against candidate domains, table by table.
 
@@ -1084,16 +1088,16 @@ def analyse_source_system(
     if report is None:
         report = _noop_report
 
-    sys_name = source_vocab_path.stem.replace(".vocabulary", "")
-    tables = parse_source_vocabulary(source_vocab_path)
-    if not tables:
+    sys_name = system_name or source_vocab_path.stem.replace(".vocabulary", "")
+    source_tables = tables if tables is not None else parse_source_vocabulary(source_vocab_path)
+    if not source_tables:
         logger.warning("No tables found in %s", source_vocab_path)
         return SourceAnalysis(
             system=sys_name,
             analysed_at=datetime.now(timezone.utc).isoformat(),
             model_used=model,
         )
-    sample_evidence = analyse_sample_evidence(tables)
+    sample_evidence = analyse_sample_evidence(source_tables)
     if sample_evidence.warning:
         missing = ", ".join(sample_evidence.missing_sample_tables[:8])
         if len(sample_evidence.missing_sample_tables) > 8:
@@ -1114,7 +1118,7 @@ def analyse_source_system(
     # Stable signature of the candidate domain set for cache-key invalidation.
     candidate_signature = compute_entry_hash(sorted(c["id"] for c in candidates))
 
-    table_items = [(name, cols) for name, cols in tables.items() if cols]
+    table_items = [(name, cols) for name, cols in source_tables.items() if cols]
 
     def _classify(item: tuple[str, list[dict[str, Any]]]) -> dict[str, Any]:
         tbl_name, columns = item
@@ -1365,10 +1369,36 @@ def run_analyse_sources(
     if report is None:
         report = _noop_report
 
-    # Find all source vocabulary files
-    vocab_files = sorted(sources_dir.glob("*/*.vocabulary.ttl"))
-    if not vocab_files:
-        raise ValueError(f"No source vocabulary files found in {sources_dir}")
+    catalog = build_source_catalog(sources_dir)
+    catalog.require_consistent()
+    source_systems = catalog.analysis_tables()
+    obsolete_reports = (
+        (
+            catalog.generated_report_stems(),
+            "generated-dbt-contracts",
+            "contract metadata is authoritative",
+        ),
+        (
+            catalog.superseded_report_stems(),
+            "superseded-source-layouts",
+            "directory-level source identity is authoritative",
+        ),
+    )
+    for stems, archive_name, reason in obsolete_reports:
+        for stem in sorted(stems):
+            legacy_report = output_dir / f"{stem}-affinity.yaml"
+            if not legacy_report.is_file():
+                continue
+            archive_dir = output_dir / "archive" / archive_name
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            archived = archive_dir / legacy_report.name
+            archived.unlink(missing_ok=True)
+            shutil.move(str(legacy_report), archived)
+            report(f"  ↪ Archived {legacy_report.name}; {reason}.")
+    if not source_systems:
+        raise ValueError(
+            f"No non-generated source vocabulary tables found in {sources_dir}"
+        )
 
     # ----- Strategy selection -------------------------------------------------
     strategy: str
@@ -1466,7 +1496,7 @@ def run_analyse_sources(
         _materialize_context(ref_domains, ref_models_dir, materialize_dir, strategy)
 
     report(
-        f"▶ Phase 3/3 — Analysing {len(vocab_files)} source system(s) "
+        f"▶ Phase 3/3 — Analysing {len(source_systems)} source system(s) "
         f"against {len(ref_domains)} domain(s)"
     )
 
@@ -1477,7 +1507,7 @@ def run_analyse_sources(
 
     if cost_warning:
         from ._cost import print_cost_warning
-        total_tables = sum(len(parse_source_vocabulary(v)) for v in vocab_files)
+        total_tables = sum(len(tables) for tables in source_systems.values())
         print_cost_warning(
             command="analyse-sources",
             table_count=total_tables,
@@ -1486,14 +1516,22 @@ def run_analyse_sources(
             force=force,
         )
 
-    for vocab_path in vocab_files:
-        sys_name = vocab_path.stem.replace(".vocabulary", "")
-        table_count = len(parse_source_vocabulary(vocab_path))
+    for sys_name, tables in sorted(source_systems.items()):
+        source_paths = sorted(
+            {
+                path
+                for table in catalog.tables.values()
+                if table.system == sys_name and not table.generated
+                for path in table.paths
+            }
+        )
+        vocab_path = source_paths[0]
+        table_count = len(tables)
         worker_count = min(max_workers, table_count) if table_count else 0
         report(f"  • {sys_name} … {table_count} table(s), up to {worker_count} concurrent LLM call(s)")
         analysis = analyse_source_system(
             vocab_path, ref_domains, model=model, threshold=threshold, report=report,
-            max_workers=max_workers, cache=cache,
+            max_workers=max_workers, cache=cache, system_name=sys_name, tables=tables,
         )
         classified_count = len(analysis.table_assignments)
         # Apply the --domains OUTPUT filter (primary-domain match) after the

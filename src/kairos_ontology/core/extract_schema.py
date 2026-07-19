@@ -23,6 +23,13 @@ from typing import Any
 
 import yaml
 
+from ._samples import (
+    SAMPLE_PRIVACY_POLICY,
+    SAMPLE_PRIVACY_VERSION,
+    assert_no_unredacted_sample_pii,
+    redact_sample_rows,
+    redact_sample_value,
+)
 
 def _az_cmd() -> str:
     """Return the correct az CLI executable name for the platform.
@@ -793,10 +800,7 @@ def write_extraction_output(
     Returns:
         Path to the output directory.
     """
-    system_dir = output_dir / system_name
-    system_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write manifest
+    # Prepare and validate all output before publishing any artifact.
     manifest = ExtractionManifest(
         system=system_name,
         platform=platform,
@@ -817,29 +821,52 @@ def write_extraction_output(
             "schema": manifest.schema,
         },
         "tables": manifest.tables,
+        "sample_privacy": {
+            "policy": SAMPLE_PRIVACY_POLICY,
+            "version": SAMPLE_PRIVACY_VERSION,
+        },
     }
+    prepared_tables: list[tuple[TableInfo, dict, list[dict[str, Any]]]] = []
+    for table in tables:
+        column_types = {col.name: col.data_type for col in table.columns}
+        safe_rows, _ = redact_sample_rows(
+            table.sample_rows,
+            table=table.name,
+            column_types=column_types,
+        )
+        assert_no_unredacted_sample_pii(safe_rows, table=table.name)
+        prepared_tables.append((table, _table_to_yaml_dict(table), safe_rows))
+
+    system_dir = output_dir / system_name
+    system_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write manifest
     manifest_path = system_dir / "_manifest.yaml"
     with open(manifest_path, "w", encoding="utf-8") as f:
         yaml.dump(manifest_data, f, default_flow_style=False, sort_keys=False)
 
     # Write per-table YAML
-    for table in tables:
-        table_data = _table_to_yaml_dict(table)
+    for table, table_data, safe_rows in prepared_tables:
         table_path = system_dir / f"{table.name}.yaml"
         with open(table_path, "w", encoding="utf-8") as f:
             yaml.dump(table_data, f, default_flow_style=False, sort_keys=False)
 
-        # Write per-table samples YAML (raw rows preserving row context)
-        if table.sample_rows:
+        # Write per-table samples YAML with row context and opaque PII tokens.
+        if safe_rows:
             samples_data = {
                 "extracted_at": manifest.extracted_at,
                 "table": table.name,
                 "schema": table.schema,
-                "rows": table.sample_rows,
+                "sample_privacy": manifest_data["sample_privacy"],
+                "rows": safe_rows,
             }
             samples_path = system_dir / f"{table.name}.samples.yaml"
             with open(samples_path, "w", encoding="utf-8") as f:
                 yaml.dump(samples_data, f, default_flow_style=False, sort_keys=False)
+        else:
+            stale_samples = system_dir / f"{table.name}.samples.yaml"
+            if stale_samples.exists():
+                stale_samples.unlink()
 
     return system_dir
 
@@ -861,10 +888,23 @@ def _table_to_yaml_dict(table: TableInfo) -> dict:
             col_dict["json_detected"] = True
             col_dict["json_classification"] = col.json_classification
             if col.json_structure:
-                col_dict["json_structure"] = [
-                    {"key": js.key, "type": js.type, **({"sample": js.sample} if js.sample is not None else {})}
-                    for js in col.json_structure
-                ]
+                structures = []
+                for js in col.json_structure:
+                    structure = {"key": js.key, "type": js.type}
+                    if js.sample is not None:
+                        safe_sample, _ = redact_sample_value(
+                            js.sample,
+                            table=table.name,
+                            column=f"{col.name}.{js.key}",
+                            data_type=js.type,
+                        )
+                        assert_no_unredacted_sample_pii(
+                            [{f"{col.name}.{js.key}": safe_sample}],
+                            table=table.name,
+                        )
+                        structure["sample"] = safe_sample
+                    structures.append(structure)
+                col_dict["json_structure"] = structures
         columns_data.append(col_dict)
 
     return {

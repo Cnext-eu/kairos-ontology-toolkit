@@ -174,6 +174,62 @@ class TestWriteSourceDir:
         assert samples["table"] == "orders"
         assert len(samples["rows"]) == 2
 
+    def test_redacts_detected_pii_before_writing(self, tmp_path):
+        tables = [{
+            "name": "contacts",
+            "row_count": 1,
+            "columns": [
+                {
+                    "name": "email",
+                    "data_type": "varchar(255)",
+                    "ordinal_position": 1,
+                    "nullable": False,
+                },
+                {
+                    "name": "status",
+                    "data_type": "varchar(20)",
+                    "ordinal_position": 2,
+                    "nullable": False,
+                },
+            ],
+            "sample_rows": [
+                {"email": "person@example.com", "status": "active"}
+            ],
+        }]
+
+        output = write_source_dir(tables, "crm", tmp_path / "crm")
+
+        import yaml
+        raw = (output / "contacts.samples.yaml").read_text(encoding="utf-8")
+        samples = yaml.safe_load(raw)
+        assert "person@example.com" not in raw
+        assert samples["rows"][0]["email"] == (
+            "<redacted kind=email source=contacts.email datatype=varchar(255)>"
+        )
+        assert samples["rows"][0]["status"] == "active"
+        assert samples["sample_privacy"]["policy"] == "redact-detected-pii"
+
+        manifest = yaml.safe_load(
+            (output / "_manifest.yaml").read_text(encoding="utf-8")
+        )
+        assert manifest["sample_privacy"]["version"] == "1"
+
+    def test_removes_stale_samples_when_rerun_has_no_rows(self, tmp_path):
+        output_dir = tmp_path / "erp"
+        output_dir.mkdir()
+        stale = output_dir / "empty.samples.yaml"
+        stale.write_text("rows:\n  - email: person@example.com\n", encoding="utf-8")
+        tables = [{
+            "name": "empty",
+            "row_count": 0,
+            "columns": [{"name": "email", "data_type": "varchar(255)"}],
+            "sample_rows": [],
+        }]
+
+        write_source_dir(tables, "erp", output_dir)
+
+        assert not stale.exists()
+
 
 # --------------------------------------------------------------------------- #
 # Orchestration Tests

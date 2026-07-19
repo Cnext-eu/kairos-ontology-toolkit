@@ -45,11 +45,17 @@ structure and adds domains inside an existing repo.
 │   │   │   └── README.md
 │   │   ├── extensions/                  # *-silver-ext.ttl projection annotations
 │   │   └── mappings/                    # Source-to-domain SKOS + kairos-map: mappings
+│   │       ├── custom-transformations/  # Virtual-source-to-domain mappings
 │   │       └── README.md
 │   ├── integration/                     # Source system integration
-│   │   └── sources/                     # Source system reference docs + bronze vocab
-│   │       ├── README.md
-│   │       └── source-system-template/  # Template for new source systems
+│   │   ├── sources/                     # Source system reference docs + bronze vocab
+│   │   │   ├── custom-transformations/  # Generated contract vocabularies
+│   │   │   ├── README.md
+│   │   │   └── source-system-template/
+│   │   └── transforms/dbt/              # Authoritative custom dbt bundle
+│   │       ├── models/intermediate/
+│   │       ├── macros/
+│   │       └── tests/
 │   └── output/                          # All projection outputs (committed)
 │       ├── medallion/
 │       │   ├── silver/                  # Silver DDL/ERD
@@ -107,6 +113,9 @@ The filename becomes the domain identifier:
 - [ ] (Optional) Generate silver layer: add `*-silver-ext.ttl` in `ontology-hub/model/extensions/`, then `python -m kairos_ontology project --target silver`
 - [ ] (Optional) Add source system docs in `ontology-hub/integration/sources/` and generate bronze vocab with **kairos-design-source** skill
 - [ ] (Optional) Create source-to-domain mappings in `ontology-hub/model/mappings/` (SKOS + `kairos-map:`) — invoke **kairos-design-mapping** skill, then **kairos-execute-project** for dbt models
+- [ ] (Optional) For joins/windows/aggregations or grain-changing logic, invoke
+  **kairos-develop-dbt-transformation**; do not manually create or edit its generated
+  `integration/sources/custom-transformations/*.vocabulary.ttl`
 - [ ] Optionally add SHACL shapes in `ontology-hub/model/shapes/`
 - [ ] Commit, push, and open PR to merge into main
 

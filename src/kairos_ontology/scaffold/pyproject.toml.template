@@ -15,6 +15,14 @@ dbt-validate = [
     "dbt-core>=1.9,<1.10",
     "dbt-fabric>=1.9,<1.10",
 ]
+dbt-validate-fabric = [
+    "dbt-core>=1.9,<1.10",
+    "dbt-fabric>=1.9,<1.10",
+]
+dbt-validate-databricks = [
+    "dbt-core>=1.9,<1.10",
+    "dbt-databricks>=1.9,<1.10",
+]
 flatfile = [
     "kairos-ontology-toolkit[flatfile] @ https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/{toolkit_ref}/kairos_ontology_toolkit-{toolkit_version}-py3-none-any.whl",
 ]

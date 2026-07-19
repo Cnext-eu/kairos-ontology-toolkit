@@ -22,6 +22,9 @@ model evidence in `phases/domain/<domain>.md`; stop for low-confidence naming,
 missing Gate 6/source evidence, unresolved reference-model gaps, proprietary/PII
 risk, or ontology changes that would be hard to reverse.
 
+Any fleet override applies only to this skill invocation. It expires when the
+skill ends or pauses and is never inherited by another skill or a later resume.
+
 ## Lifecycle state (DD-080)
 
 > The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of

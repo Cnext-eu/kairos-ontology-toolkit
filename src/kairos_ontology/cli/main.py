@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from ..core.validator import run_validation, run_gdpr_validation
-from ..core.projector import run_projections
+from ..core.projector import ProjectionRunError, run_projections
 from ..core.catalog_test import test_catalog_resolution
 from .. import __version__ as _toolkit_version
 from ..core._provenance import provenance_comment
@@ -82,6 +82,7 @@ _SKILL_COVERED_COMMANDS = {
     "update-refmodels": "kairos-toolkit-ops",
     "import-source": "kairos-design-source",
     "import-flatfile": "kairos-design-source",
+    "source-privacy": "kairos-design-source",
     "generate-staging": "kairos-design-source",
     "analyse-sources": "kairos-design-source",
     "derive-claims": "kairos-design-source",
@@ -91,6 +92,8 @@ _SKILL_COVERED_COMMANDS = {
     "init-dataplatform": "kairos-setup-dataplatform",
     "suggest-shapes": "kairos-execute-validate",
     "mdm-validate": "kairos-design-mdm",
+    "sync-dbt-contracts": "kairos-develop-dbt-transformation",
+    "validate-dbt": "kairos-execute-validate",
 }
 # Env vars that signal the command was launched from within a skill context.
 _SKILL_CONTEXT_ENV_VARS = ("KAIROS_SKILL_CONTEXT", "KAIROS_VIA_SKILL")
@@ -570,6 +573,110 @@ def lifecycle():
     print()
 
 
+@cli.command(name="sync-dbt-contracts")
+@click.option(
+    "--transforms",
+    type=click.Path(path_type=Path),
+    help="Custom dbt transforms directory (default: integration/transforms/dbt).",
+)
+@click.option(
+    "--sources",
+    type=click.Path(path_type=Path),
+    help="Generated vocabulary directory (default: integration/sources/custom-transformations).",
+)
+@click.option(
+    "--bronze-sources",
+    type=click.Path(path_type=Path),
+    help="Bronze input vocabulary root used to validate replacements "
+    "(default: integration/sources).",
+)
+@click.option("--check", is_flag=True, help="Report drift without writing files.")
+def sync_dbt_contracts_cmd(transforms, sources, bronze_sources, check):
+    """Synchronize custom dbt contracts to Bronze-compatible RDF vocabularies."""
+    from ..core.dbt_contract_sync import sync_dbt_contracts
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd) or cwd
+
+    def resolve_override(value):
+        if value is None:
+            return None
+        path = Path(value)
+        return path if path.is_absolute() else hub_root / path
+
+    try:
+        report = sync_dbt_contracts(
+            hub_root,
+            transforms_dir=resolve_override(transforms),
+            sources_dir=resolve_override(sources),
+            bronze_sources_dir=resolve_override(bronze_sources),
+            check=check,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not report.items:
+        click.echo("No custom dbt contracts found; nothing to synchronize.")
+        return
+    for item in report.items:
+        click.echo(f"{item.action}: {item.model} -> {item.output_path}")
+    if check and report.has_drift:
+        raise click.exceptions.Exit(1)
+    click.echo(
+        f"dbt contract sync complete: {report.written_count} written, "
+        f"{report.unchanged_count} unchanged."
+    )
+
+
+@cli.command(name="validate-dbt")
+@click.option(
+    "--platform",
+    type=click.Choice(["fabric", "databricks"]),
+    required=True,
+    help="Adapter used to parse and compile the generated project.",
+)
+@click.option(
+    "--project-dir",
+    type=click.Path(path_type=Path),
+    help="dbt project directory (default: output/medallion/dbt).",
+)
+@click.option(
+    "--profiles-dir",
+    type=click.Path(path_type=Path),
+    help="Optional directory containing a non-committed profiles.yml.",
+)
+def validate_dbt_cmd(platform, project_dir, profiles_dir):
+    """Run offline dependency, parse, graph, and compile validation for dbt."""
+    from ..core.dbt_validation import DbtValidationError, validate_dbt_project
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False) or cwd
+
+    def resolve(value, default):
+        path = Path(value) if value is not None else default
+        return path if path.is_absolute() else hub_root / path
+
+    project = resolve(project_dir, hub_root / "output" / "medallion" / "dbt")
+    profiles = resolve(profiles_dir, None) if profiles_dir is not None else None
+    try:
+        result = validate_dbt_project(
+            project,
+            platform,
+            profiles_dir=profiles,
+        )
+    except DbtValidationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"✓ dbt deps and parse passed for {platform}")
+    click.echo(f"✓ manifest graph validated: {result.manifest_path}")
+    if result.compile_status == "passed":
+        click.echo("✓ dbt compile passed")
+    else:
+        click.echo(f"⚠ dbt compile environment-blocked: {result.compile_message}")
+
+
 # Catalog filename used by hubs and the shared reference-models repo.
 _CATALOG_FILENAME = "catalog-v001.xml"
 
@@ -725,14 +832,23 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
               help='Output directory for projections (default: <hub>/output).')
 @click.option('--target', type=click.Choice(['all', 'dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report', 'ddd', 'mdm-profile']),
               default='all', help='Projection target')
+@click.option(
+    '--platform',
+    type=click.Choice(['fabric', 'databricks']),
+    default='fabric',
+    show_default=True,
+    help='SQL platform for dbt projection.',
+)
 @click.option('--namespace', type=str, default=None,
               help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
-def project(ontologies, ontology, catalog, output, target, namespace):
+def project(ontologies, ontology, catalog, output, target, platform, namespace):
     """Generate projections from ontologies."""
     from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
+    if platform != 'fabric' and target not in {'dbt', 'all'}:
+        raise click.UsageError("--platform applies only to --target dbt or --target all")
 
     if ontology is not None and ontologies is not None:
         raise click.UsageError("Use either --ontology for one file or --ontologies for a directory, not both.")
@@ -764,13 +880,17 @@ def project(ontologies, ontology, catalog, output, target, namespace):
     else:
         output_path = cwd / "ontology-hub" / "output"
 
-    run_projections(
-        ontologies_path=ontologies_path,
-        catalog_path=catalog_path,
-        output_path=output_path,
-        target=target,
-        namespace=namespace
-    )
+    try:
+        run_projections(
+            ontologies_path=ontologies_path,
+            catalog_path=catalog_path,
+            output_path=output_path,
+            target=target,
+            namespace=namespace,
+            platform=platform,
+        )
+    except ProjectionRunError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @cli.command(name='mdm-validate')
@@ -902,7 +1022,12 @@ def init(domain, company_domain, force):
         hub / "businessdiscovery",
         hub / "businessdiscovery" / "_extractions",
         hub / "integration" / "sources",
+        hub / "integration" / "sources" / "custom-transformations",
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate",
+        hub / "integration" / "transforms" / "dbt" / "macros",
+        hub / "integration" / "transforms" / "dbt" / "tests",
         hub / "integration" / "discovery",
+        hub / "model" / "mappings" / "custom-transformations",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
@@ -918,6 +1043,7 @@ def init(domain, company_domain, force):
         hub / ".kairos-state" / "phases" / "source",
         hub / ".kairos-state" / "phases" / "domain",
         hub / ".kairos-state" / "phases" / "mapping",
+        hub / ".kairos-state" / "phases" / "dbt-transformation",
         hub / ".kairos-state" / "phases" / "silver",
         hub / ".kairos-state" / "phases" / "gold",
     ]:
@@ -957,6 +1083,7 @@ def init(domain, company_domain, force):
         ".kairos-state/phases/source",
         ".kairos-state/phases/domain",
         ".kairos-state/phases/mapping",
+        ".kairos-state/phases/dbt-transformation",
         ".kairos-state/phases/silver",
         ".kairos-state/phases/gold",
     ]:
@@ -969,9 +1096,13 @@ def init(domain, company_domain, force):
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
+        "model/mappings/custom-transformations": "model/mappings/custom-transformations",
         "businessdiscovery": "businessdiscovery",
         "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/sources": "integration/sources",
+        "integration/sources/custom-transformations":
+            "integration/sources/custom-transformations",
+        "integration/transforms/dbt": "integration/transforms/dbt",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
         readme_src = _SCAFFOLD_DIR / "ontology-hub" / scaffold_subdir / "README.md"
@@ -1394,20 +1525,50 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
                 n_files = len(list(vocab_dir.glob("*.vocabulary.ttl")))
                 click.echo(f"   📂 Also written {n_files} per-table files to: {vocab_dir}")
 
-        # Copy .samples.yaml files from source directory to output directory
+        # Persist privacy-safe row-context files from directory inputs.
         if source_path.is_dir() and result_path:
-            import shutil as _shutil
+            import yaml as _yaml
+
+            from ..core.source_privacy import sanitize_samples_document
+
             dest_dir = result_path.parent if not split_tables else result_path.parent
             samples_copied = 0
             for samples_file in source_path.glob("*.samples.yaml"):
                 dest_file = dest_dir / samples_file.name
-                if samples_file.resolve() == dest_file.resolve():
-                    continue
-                _shutil.copy2(samples_file, dest_file)
+                document = _yaml.safe_load(samples_file.read_text(encoding="utf-8"))
+                table = (
+                    str(document.get("table"))
+                    if isinstance(document, dict) and document.get("table")
+                    else samples_file.name.removesuffix(".samples.yaml")
+                )
+                table_file = source_path / f"{table}.yaml"
+                table_data = (
+                    _yaml.safe_load(table_file.read_text(encoding="utf-8"))
+                    if table_file.is_file()
+                    else {}
+                ) or {}
+                column_types = {
+                    str(column.get("name", "")): str(column.get("data_type", "unknown"))
+                    for column in table_data.get("columns", [])
+                }
+                safe_document, _ = sanitize_samples_document(
+                    document,
+                    table=table,
+                    column_types=column_types,
+                )
+                dest_file.write_text(
+                    _yaml.safe_dump(
+                        safe_document,
+                        allow_unicode=True,
+                        sort_keys=False,
+                    ),
+                    encoding="utf-8",
+                )
                 samples_copied += 1
             if samples_copied:
                 click.echo(
-                    f"   📋 Copied {samples_copied} .samples.yaml file(s) for row-level context"
+                    f"   📋 Persisted {samples_copied} privacy-safe "
+                    ".samples.yaml file(s) for row-level context"
                 )
 
     # Clean up temp file if we created one
@@ -1415,21 +1576,121 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
         tmp_cleanup.unlink()
 
 
-@cli.command(name='import-flatfile')
-@click.option('--from', 'from_path', type=click.Path(exists=True), required=True,
-              help='Path to CSV file, Excel file, Parquet file, or directory of flat files.')
-@click.option('--system', 'system_name', default=None,
-              help='System name (default: derived from filename/directory).')
-@click.option('--output', '-o', type=click.Path(), default=None,
-              help='Output directory (default: integration/sources/{system}/).')
-@click.option('--sample-size', type=int, default=5,
-              help='Number of sample rows to store per table (default: 5).')
-@click.option('--max-rows', type=int, default=1000,
-              help='Maximum rows to read for type inference (default: 1000).')
-@click.option('--exclude-columns', default=None,
-              help='Comma-separated list of column names to exclude from output.')
-@click.option('--keep-technical', is_flag=True, default=False,
-              help='Keep auto-detected technical/metadata columns (volume, subfolder, etc.).')
+@cli.command(name="source-privacy")
+@click.option(
+    "--sources",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Source directory to inspect (default: integration/sources).",
+)
+@click.option(
+    "--fix",
+    is_flag=True,
+    help="Rewrite affected source YAML and vocabulary TTL with opaque redaction tokens.",
+)
+def source_privacy_cmd(sources, fix):
+    """Check or sanitize persisted source sample artifacts without exposing values."""
+    from collections import Counter
+
+    from ..core.hub_utils import find_hub_root
+    from ..core.source_privacy import run_source_privacy
+
+    if sources:
+        source_dir = Path(sources)
+    else:
+        hub_root = find_hub_root(Path.cwd(), require_model=False)
+        if hub_root is None:
+            click.echo(
+                "❌ Could not locate ontology-hub; pass --sources explicitly.",
+                err=True,
+            )
+            raise SystemExit(2)
+        source_dir = hub_root / "integration" / "sources"
+
+    try:
+        report = run_source_privacy(source_dir, fix=fix)
+    except (ValueError, OSError) as exc:
+        click.echo(f"❌ Source privacy check failed: {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    click.echo(f"🔒 Source privacy: scanned {report.files_scanned} artifact(s)")
+    summary = Counter(
+        (
+            str(path.relative_to(source_dir)),
+            finding.table,
+            finding.column,
+            finding.kind,
+        )
+        for path, finding in report.findings
+    )
+    for (path, table, column, kind), count in sorted(summary.items()):
+        click.echo(f"   ⚠ {path}: {table}.{column} [{kind}] × {count}")
+
+    if fix:
+        click.echo(f"   ✓ Rewritten {len(report.changed_files)} affected artifact(s)")
+        remaining = run_source_privacy(source_dir)
+        if remaining.findings:
+            click.echo(
+                f"❌ {len(remaining.findings)} unresolved privacy finding(s) remain.",
+                err=True,
+            )
+            raise SystemExit(1)
+        click.echo("✅ Source sample artifacts are privacy-safe for supported patterns.")
+        return
+
+    if report.findings:
+        click.echo(
+            f"❌ {len(report.findings)} privacy finding(s); rerun with --fix.",
+            err=True,
+        )
+        raise SystemExit(1)
+    click.echo("✅ Source sample artifacts are privacy-safe for supported patterns.")
+
+
+@cli.command(name="import-flatfile")
+@click.option(
+    "--from",
+    "from_path",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to CSV file, Excel file, Parquet file, or directory of flat files.",
+)
+@click.option(
+    "--system",
+    "system_name",
+    default=None,
+    help="System name (default: derived from filename/directory).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: integration/sources/{system}/).",
+)
+@click.option(
+    "--sample-size",
+    type=int,
+    default=5,
+    help="Number of sample rows to store per table (default: 5).",
+)
+@click.option(
+    "--max-rows",
+    type=int,
+    default=1000,
+    help="Maximum rows to read for type inference (default: 1000).",
+)
+@click.option(
+    "--exclude-columns",
+    default=None,
+    help="Comma-separated list of column names to exclude from output.",
+)
+@click.option(
+    "--keep-technical",
+    is_flag=True,
+    default=False,
+    help="Keep auto-detected technical/metadata columns (volume, subfolder, etc.).",
+)
 def import_flatfile(
     from_path, system_name, output, sample_size, max_rows, exclude_columns, keep_technical,
 ):
@@ -2887,7 +3148,7 @@ def decide_claims_cmd(claims_dir, domains, status_filter, disposition_filter, ty
 @cli.command(name='check-claims')
 @click.option('--claims-dir', type=click.Path(), default=None,
               help='Path to model/claims/ directory (default: auto-detect).')
-@click.option('--analysis-dir', type=click.Path(exists=True), default=None,
+@click.option('--analysis-dir', type=click.Path(), default=None,
               help='Path to _analysis/ directory with affinity reports '
                    '(default: auto-detect).')
 @click.option('--sources', type=click.Path(), default=None,
@@ -2951,9 +3212,21 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
+    command_root = hub_root or cwd
+
+    def resolve_override(value):
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        cwd_candidate = cwd / path
+        return cwd_candidate if cwd_candidate.exists() else command_root / path
 
     if analysis_dir:
-        analysis_path: Path | None = Path(analysis_dir)
+        analysis_path: Path | None = resolve_override(analysis_dir)
+        if not analysis_path.is_dir():
+            raise click.ClickException(
+                f"Analysis directory does not exist: {analysis_path}"
+            )
     else:
         analysis_path = _autodetect_analysis_dir(cwd, hub_root)
 
@@ -2978,17 +3251,21 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             click.echo(f"   • {legacy_alignment_error(path)}", err=True)
         raise SystemExit(1)
 
-    claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
+    claims_path = (
+        resolve_override(claims_dir)
+        if claims_dir
+        else _resolve_claims_dir(cwd, hub_root)
+    )
 
     if sources:
-        sources_path = Path(sources)
+        sources_path = resolve_override(sources)
     elif hub_root:
         sources_path = hub_root / "integration" / "sources"
     else:
         sources_path = cwd / "integration" / "sources"
 
     if mappings:
-        mappings_path = Path(mappings)
+        mappings_path = resolve_override(mappings)
     else:
         mappings_path = _resolve_model_path(
             cwd, hub_root, subdir="mappings", claims_path=claims_path
@@ -3014,6 +3291,10 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         if loaded:
             data_domains = dict(loaded)
 
+    from ..core.source_catalog import build_source_catalog
+
+    source_catalog = build_source_catalog(sources_path)
+    excluded_affinity_systems = source_catalog.excluded_affinity_systems()
     report = check_claims_coverage(
         claims_dir=claims_path,
         analysis_dir=analysis_path,
@@ -3021,6 +3302,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         domains_filter=filter_list,
         check_mdm_anchor=not no_mdm_anchor,
         check_ownership=not no_ownership,
+        excluded_affinity_systems=excluded_affinity_systems,
     )
 
     click.echo("🔎 Checking Claim Registry coverage")
@@ -3194,6 +3476,10 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             sources_dir=sources_path,
             mappings_dir=mappings_path,
             domains_filter=filter_list,
+            claims_dir=claims_path,
+            extensions_dir=extensions_path,
+            hub_root=hub_root or cwd,
+            transforms_dir=(hub_root or cwd) / "integration" / "transforms" / "dbt",
         )
         click.echo("\n🔎 Checking source-to-domain mapping coverage")
         click.echo(f"   Sources:  {sources_path}")
@@ -3202,8 +3488,18 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             covered, total = src_report.domain_counts[domain]
             gaps = src_report.uncovered.get(domain, [])
             if not gaps:
-                click.echo(f"   ✓ {domain}: {covered}/{total} tables mapped "
-                           f"({src_report.coverage_pct(domain):.0f}%)")
+                replacements = src_report.replacement_counts.get(domain, 0)
+                if replacements:
+                    direct = src_report.direct_counts.get(domain, 0)
+                    click.echo(
+                        f"   ✓ {domain}: {covered}/{total} tables mapped "
+                        f"({direct} direct, {replacements} governed replacement)"
+                    )
+                else:
+                    click.echo(
+                        f"   ✓ {domain}: {covered}/{total} tables mapped "
+                        f"({src_report.coverage_pct(domain):.0f}%)"
+                    )
             else:
                 click.echo(f"   ❌ {domain}: {covered}/{total} tables mapped "
                            f"({src_report.coverage_pct(domain):.0f}%) — "
@@ -3212,12 +3508,15 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
                     click.echo(f"        • {tbl}", err=True)
                 if len(gaps) > 10:
                     click.echo(f"        … and {len(gaps) - 10} more", err=True)
+            for diagnostic in src_report.diagnostics.get(domain, []):
+                click.echo(f"        ⛔ {diagnostic}", err=True)
         source_blocking = src_report.is_blocking
         if source_blocking and not warn_only:
             click.echo(
                 f"\n❌ Source-coverage check failed: {src_report.total_uncovered} "
-                "affinity table(s) are not mapped to any domain entity. Complete "
-                "the mappings (kairos-design-mapping) before running silver.",
+                "affinity table(s) are uncovered or have conflicting source authority. "
+                "Complete mappings and governed source-replacement evidence before "
+                "running silver.",
                 err=True,
             )
 
@@ -4664,7 +4963,12 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "businessdiscovery",
         hub / "businessdiscovery" / "_extractions",
         hub / "integration" / "sources",
+        hub / "integration" / "sources" / "custom-transformations",
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate",
+        hub / "integration" / "transforms" / "dbt" / "macros",
+        hub / "integration" / "transforms" / "dbt" / "tests",
         hub / "integration" / "discovery",
+        hub / "model" / "mappings" / "custom-transformations",
         hub / "output" / "medallion" / "powerbi",
         hub / "output" / "medallion" / "dbt",
         hub / "output" / "neo4j",
@@ -4680,6 +4984,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / ".kairos-state" / "phases" / "source",
         hub / ".kairos-state" / "phases" / "domain",
         hub / ".kairos-state" / "phases" / "mapping",
+        hub / ".kairos-state" / "phases" / "dbt-transformation",
         hub / ".kairos-state" / "phases" / "silver",
         hub / ".kairos-state" / "phases" / "gold",
     ]:
@@ -4719,6 +5024,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         ".kairos-state/phases/source",
         ".kairos-state/phases/domain",
         ".kairos-state/phases/mapping",
+        ".kairos-state/phases/dbt-transformation",
         ".kairos-state/phases/silver",
         ".kairos-state/phases/gold",
     ]:
@@ -4731,9 +5037,13 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
+        "model/mappings/custom-transformations": "model/mappings/custom-transformations",
         "businessdiscovery": "businessdiscovery",
         "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/sources": "integration/sources",
+        "integration/sources/custom-transformations":
+            "integration/sources/custom-transformations",
+        "integration/transforms/dbt": "integration/transforms/dbt",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
         src = _SCAFFOLD_DIR / "ontology-hub" / scaffold_subdir / "README.md"
