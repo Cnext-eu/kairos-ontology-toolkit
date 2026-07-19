@@ -141,3 +141,51 @@ def test_build_discriminator_subclass_folds():
     )
     # Unbound discriminator subtype folds into parent rather than stubbing.
     assert analysis.state(sub) == ba.FOLDED
+
+
+def test_build_folding_beats_stub_even_when_eligible():
+    # An eligible discriminator subtype with stubs enabled still FOLDS (no stub):
+    # folding precedence must win so we don't emit a duplicate physical model.
+    g = Graph()
+    parent = _class(g, "Client")
+    sub = _class(g, "CorporateClient")
+    g.add((URIRef(sub), RDFS.subClassOf, URIRef(parent)))
+    g.add((URIRef(parent), KAIROS_EXT.inheritanceStrategy, Literal("discriminator")))
+    classes = _cls_dicts("Client", "CorporateClient")
+    mappings = {"table_maps": {}, "column_maps": {}}
+    analysis = ba.build(
+        classes=classes, graph=g, systems=[], mappings=mappings,
+        eligible_class_uris={sub, parent}, stubs_enabled=True,
+    )
+    assert analysis.state(sub) == ba.FOLDED
+    assert not analysis.is_aspirational(sub)
+    # The unbound parent (not a subtype) is a genuine stub.
+    assert analysis.state(parent) == ba.STUB
+
+
+def test_build_mapped_child_under_discriminator_parent_folds_source_to_parent():
+    # A discriminator subtype's source is routed (folded) into the projected parent:
+    # the child has no own physical model (FOLDED); the parent becomes BOUND.
+    g = Graph()
+    parent = _class(g, "Client")
+    sub = _class(g, "CorporateClient")
+    g.add((URIRef(sub), RDFS.subClassOf, URIRef(parent)))
+    g.add((URIRef(parent), KAIROS_EXT.inheritanceStrategy, Literal("discriminator")))
+    classes = _cls_dicts("Client", "CorporateClient")
+    tbl_uri = "https://acme.example/bronze/adminpulse#tblCorp"
+    systems = [{
+        "system_label": "AdminPulse",
+        "tables": [{"uri": tbl_uri, "name": "tbl_corp", "columns": []}],
+    }]
+    mappings = {
+        "table_maps": {tbl_uri: [{"target_uri": sub, "mapping_type": "direct"}]},
+        "column_maps": {},
+    }
+    analysis = ba.build(
+        classes=classes, graph=g, systems=systems, mappings=mappings,
+        eligible_class_uris={sub}, stubs_enabled=True,
+    )
+    assert analysis.state(sub) == ba.FOLDED
+    assert analysis.state(parent) == ba.BOUND
+
+
