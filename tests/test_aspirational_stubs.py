@@ -149,6 +149,26 @@ def test_feature_on_schema_yaml_marks_aspirational(graph, classes, template_dir)
     assert "is_aspirational" in yml
 
 
+def test_coverage_data_is_stub_agnostic(graph, classes, template_dir):
+    """D2: emitting a stub must not change coverage numbers.
+
+    Coverage is computed from classes + mappings (not from generated artifacts), so
+    an unbound eligible class reports zero-populated whether or not a stub is emitted.
+    The ``__coverage_data__`` payload must be identical with the flag on vs off.
+    """
+    off = generate_dbt_artifacts(
+        classes=classes, graph=graph, template_dir=template_dir,
+        namespace=NS, ontology_name="client",
+        eligible_class_uris={f"{NS}Client"},
+    )
+    on = generate_dbt_artifacts(
+        classes=classes, graph=graph, template_dir=template_dir,
+        namespace=NS, ontology_name="client",
+        emit_aspirational_stubs=True, eligible_class_uris={f"{NS}Client"},
+    )
+    assert off.get("__coverage_data__") == on.get("__coverage_data__")
+
+
 def test_feature_on_ineligible_class_not_stubbed(graph, classes, template_dir):
     """Flag on but class not eligible → still skipped (no stub)."""
     artifacts = generate_dbt_artifacts(

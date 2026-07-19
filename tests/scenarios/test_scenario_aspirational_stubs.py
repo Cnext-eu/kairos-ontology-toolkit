@@ -135,3 +135,14 @@ def test_binding_wins_mapped_classes_never_stub():
     for name, content in on.items():
         if name in off:  # previously-bound model
             assert "kairos_aspirational_stub" not in content
+
+
+def test_coverage_data_stub_agnostic_with_real_sources():
+    """D2: with real acme-hub sources, the coverage payload is identical on/off.
+
+    Coverage is derived from classes + mappings, so emitting a stub for the unmapped
+    Prospect class must not change any coverage number.
+    """
+    off = _project(_client_with_prospect())
+    on = _project(_client_with_prospect(), emit_stubs=True, eligible={PROSPECT})
+    assert off.get("__coverage_data__") == on.get("__coverage_data__")
