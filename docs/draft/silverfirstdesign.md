@@ -1,6 +1,10 @@
 # Silver-First Mapping — Simplified Design
 
-**Status:** Draft plan (rev 5 — aspirational as *derived* state, authorities canonicalized)
+**Status:** Partially implemented (rev 5) — buildable subset shipped: Step 0
+determinism, canonical `BindingAnalysis`, derived-`aspirational`, opt-in
+`--emit-aspirational-stubs` stub emission, and DD-094/095/096. Out of scope
+(deferred): conformance warn→driver promotion (§11.1), `contract.enforced`
+promotion (§11.3), drift report (§8/§11.6), per-claim release waivers. See DD-096.
 **Date:** 2026-07-19
 **Scope:** Reducing Bronze-to-Silver effort while keeping projection deterministic
 **Baseline:** Kairos Ontology Toolkit v4.4.0

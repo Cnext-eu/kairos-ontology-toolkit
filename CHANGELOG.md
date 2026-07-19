@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Target-first aspirational Silver stub → bind loop** (DD-096): opt-in
+  `project --emit-aspirational-stubs` flag (also `KAIROS_EMIT_ASPIRATIONAL_STUBS`)
+  emits typed, zero-row Silver stub models (`where 1 = 0`, `cast(null as <type>)`,
+  tagged `kairos_aspirational_stub`, `meta.is_aspirational`) for approved,
+  materialization-eligible claims that have no bronze mapping yet — so downstream
+  Silver/Gold can be built target-first. Adding a source mapping transparently
+  **binds** the stub on the next projection. `aspirational` is **derived** at
+  projection time from the Claim Registry + mappings (never persisted). Feature-off
+  output is byte-identical to prior releases. Backed by a new canonical
+  `BindingAnalysis` service.
+- **Deterministic projection output**: generated artifacts embed an injected
+  `generated_at` + `toolkit_version` context (env-overridable via
+  `KAIROS_GENERATED_AT` / `SOURCE_DATE_EPOCH`) and all RDFLib iteration is sorted, so
+  re-projection is byte-identical across processes and Python hash seeds.
+
 ## [4.4.0] — 2026-07-19
 
 ### Added
