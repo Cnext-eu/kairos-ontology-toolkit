@@ -822,6 +822,20 @@ def test_init_includes_workflow(tmp_path):
             assert "kairos-ontology update --check" in content
 
 
+def test_init_release_workflow_has_strict_gate(tmp_path):
+    """init should scaffold the release workflow with the --strict release gate (DD-096)."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert result.exit_code == 0
+            wf = Path(".github/workflows/release-projections.yml")
+            assert wf.is_file()
+            content = wf.read_text(encoding="utf-8")
+            assert "--strict" in content
+
+
 # ---------------------------------------------------------------------------
 # Reference models submodule
 # ---------------------------------------------------------------------------

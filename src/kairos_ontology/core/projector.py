@@ -667,6 +667,7 @@ def run_projections(
     namespace: str = None,
     platform: str = "fabric",
     emit_aspirational_stubs: bool = False,
+    strict: bool = False,
 ):
     """Run projection generation.
     
@@ -682,6 +683,10 @@ def run_projections(
             zero-row Silver stubs for approved, materialization-eligible claims that
             have no bronze mapping yet (target-first stub → bind loop, DD-096).
             Defaults to False; also honoured via ``KAIROS_EMIT_ASPIRATIONAL_STUBS``.
+        strict: Release gate (DD-096 / DEC-1). When True, the run fails after
+            projection if any approved, materialization-eligible claim has no bronze
+            mapping (an *unbound target*), so an incomplete hub cannot be released
+            with vacuous zero-row stubs. Independent of ``emit_aspirational_stubs``.
     """
     import os
 
@@ -691,11 +696,16 @@ def run_projections(
         emit_aspirational_stubs = os.environ.get(
             "KAIROS_EMIT_ASPIRATIONAL_STUBS", ""
         ).strip().lower() in {"1", "true", "yes", "on"}
+    if not strict:
+        strict = os.environ.get(
+            "KAIROS_PROJECT_STRICT", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
 
     report = ProjectionReport(
         toolkit_version=toolkit_version,
         generated_at=generated_at_iso(),
     )
+    unbound_eligible_by_domain: dict[str, list[str]] = {}
     fatal_target_errors: list[str] = []
 
     print("🚀 Kairos Ontology Projections")
@@ -970,11 +980,14 @@ def run_projections(
                         if p != ext_path
                     ] if all_silver_ext_paths else None
 
-                    # Target-first stub → bind loop (DD-096): when enabled, compute
-                    # the materialization-eligible claim set so the dbt projector can
-                    # emit typed zero-row Silver stubs for approved-but-unbound claims.
+                    # Target-first stub → bind loop (DD-096): compute the
+                    # materialization-eligible claim set so the dbt projector can
+                    # (a) emit typed zero-row Silver stubs when enabled, and
+                    # (b) report approved-but-unbound claims for the `--strict`
+                    # release gate. Computed whenever stubs are enabled OR strict.
                     eligible_class_uris: set[str] | None = None
-                    if emit_aspirational_stubs and target_name == "dbt" and claims_dir:
+                    if (emit_aspirational_stubs or strict) and \
+                            target_name == "dbt" and claims_dir:
                         claims_file = claims_dir / f"{onto_name}-claims.yaml"
                         if claims_file.exists():
                             from .binding_analysis import (
@@ -1011,6 +1024,11 @@ def run_projections(
                     # Extract coverage data before writing (not a real file artifact)
                     if target_name == "dbt" and "__coverage_data__" in artifacts:
                         dbt_coverage_data[onto_name] = artifacts.pop("__coverage_data__")
+                    # Release gate (DD-096 / DEC-1): collect unbound approved claims.
+                    if target_name == "dbt" and "__unbound_eligible__" in artifacts:
+                        unbound_eligible_by_domain[onto_name] = artifacts.pop(
+                            "__unbound_eligible__"
+                        )
 
                     if target_name == "dbt":
                         _merge_identical_artifacts(
@@ -1331,6 +1349,22 @@ def run_projections(
 
     if fatal_target_errors:
         raise ProjectionRunError("; ".join(fatal_target_errors))
+
+    # Release gate (DD-096 / DEC-1): under --strict, block release when any approved,
+    # materialization-eligible claim has no bronze mapping. Such unbound targets would
+    # otherwise pass CI as vacuous zero-row stubs. All approved eligible claims block
+    # (DEC-1 option a); waivers are a future per-claim extension.
+    if strict and unbound_eligible_by_domain:
+        lines = []
+        for domain_name in sorted(unbound_eligible_by_domain):
+            names = ", ".join(unbound_eligible_by_domain[domain_name])
+            lines.append(f"{domain_name}: {names}")
+        detail = "; ".join(lines)
+        raise ProjectionRunError(
+            "Release gate (--strict): approved, materialization-eligible claim(s) "
+            "have no bronze mapping and are not release-eligible. Bind them via "
+            f"kairos-design-mapping. Unbound targets — {detail}"
+        )
 
 
 def _build_coverage_summary(domain_data: dict[str, dict]) -> dict:

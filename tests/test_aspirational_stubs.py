@@ -93,8 +93,17 @@ def test_feature_off_produces_no_stub(graph, classes, template_dir):
     assert not _silver_sql(artifacts)
 
 
+def _file_artifacts(artifacts: dict) -> dict:
+    """Drop internal ``__...__`` analysis keys that never reach disk."""
+    return {k: v for k, v in artifacts.items() if not k.startswith("__")}
+
+
 def test_feature_off_byte_identical_ignores_eligibility(graph, classes, template_dir):
-    """With stubs disabled, passing eligible_class_uris changes nothing."""
+    """With stubs disabled, passing eligible_class_uris changes no on-disk file.
+
+    ``__unbound_eligible__`` is an internal (release-gate) key stripped by the
+    orchestrator before writing, so the file artifacts must be byte-identical.
+    """
     baseline = generate_dbt_artifacts(
         classes=classes, graph=graph, template_dir=template_dir,
         namespace=NS, ontology_name="client",
@@ -104,7 +113,7 @@ def test_feature_off_byte_identical_ignores_eligibility(graph, classes, template
         namespace=NS, ontology_name="client",
         eligible_class_uris={f"{NS}Client"},
     )
-    assert baseline == with_eligible
+    assert _file_artifacts(baseline) == _file_artifacts(with_eligible)
 
 
 def test_feature_on_emits_typed_zero_row_stub(graph, classes, template_dir):
@@ -147,6 +156,35 @@ def test_feature_on_schema_yaml_marks_aspirational(graph, classes, template_dir)
     assert models_yml
     yml = artifacts[models_yml[0]]
     assert "is_aspirational" in yml
+
+
+def test_unbound_eligible_surfaced_regardless_of_stub_flag(graph, classes, template_dir):
+    """D3: an eligible unbound class is reported in ``__unbound_eligible__``.
+
+    The release gate must see approved-but-unbound targets whether or not stub
+    emission is enabled, so the set is surfaced in both modes.
+    """
+    off = generate_dbt_artifacts(
+        classes=classes, graph=graph, template_dir=template_dir,
+        namespace=NS, ontology_name="client",
+        eligible_class_uris={f"{NS}Client"},
+    )
+    on = generate_dbt_artifacts(
+        classes=classes, graph=graph, template_dir=template_dir,
+        namespace=NS, ontology_name="client",
+        emit_aspirational_stubs=True, eligible_class_uris={f"{NS}Client"},
+    )
+    assert off.get("__unbound_eligible__") == ["Client"]
+    assert on.get("__unbound_eligible__") == ["Client"]
+
+
+def test_unbound_eligible_absent_when_no_eligible_set(graph, classes, template_dir):
+    """No eligible set → no unbound-eligible report (nothing for the gate to block)."""
+    artifacts = generate_dbt_artifacts(
+        classes=classes, graph=graph, template_dir=template_dir,
+        namespace=NS, ontology_name="client",
+    )
+    assert "__unbound_eligible__" not in artifacts
 
 
 def test_coverage_data_is_stub_agnostic(graph, classes, template_dir):

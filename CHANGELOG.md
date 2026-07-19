@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projection time from the Claim Registry + mappings (never persisted). Feature-off
   output is byte-identical to prior releases. Backed by a new canonical
   `BindingAnalysis` service.
+- **Release gate for unbound approved claims** (DD-096 / DEC-1): `project --strict`
+  (env fallback `KAIROS_PROJECT_STRICT`, dbt/all only) fails when any approved,
+  materialization-eligible claim has no bronze mapping (an *unbound target*), so an
+  incomplete hub cannot be released with vacuous zero-row stubs. Wired into the
+  scaffold `release-projections.yml` workflow. Independent of stub emission —
+  release-eligibility, not artifact existence, is the gate.
 - **Deterministic projection output**: generated artifacts embed an injected
   `generated_at` + `toolkit_version` context (env-overridable via
   `KAIROS_GENERATED_AT` / `SOURCE_DATE_EPOCH`) and all RDFLib iteration is sorted, so

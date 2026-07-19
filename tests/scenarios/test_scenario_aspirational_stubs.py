@@ -88,11 +88,16 @@ def _silver_models(artifacts: dict) -> dict[str, str]:
     }
 
 
+def _file_artifacts(artifacts: dict) -> dict:
+    """Drop internal ``__...__`` analysis keys (coverage, release-gate) not written."""
+    return {k: v for k, v in artifacts.items() if not k.startswith("__")}
+
+
 def test_feature_off_ignores_eligibility():
-    """Flag off: passing eligible_class_uris must not change output at all."""
+    """Flag off: passing eligible_class_uris must not change any on-disk file."""
     baseline = _project(_client_with_prospect())
     with_eligible = _project(_client_with_prospect(), emit_stubs=False, eligible={PROSPECT})
-    assert baseline == with_eligible
+    assert _file_artifacts(baseline) == _file_artifacts(with_eligible)
     # And no stub was produced for the unmapped class.
     assert "models/silver/client/prospect.sql" not in baseline
 

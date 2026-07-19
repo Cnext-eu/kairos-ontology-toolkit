@@ -1403,6 +1403,11 @@ def _gen_silver_models(
                 "column_names": [],
                 "fk_join_count": 0,
                 "skipped": True,
+                # Release gate (DD-096 / DEC-1): an approved, materialization-eligible
+                # claim with no bronze mapping is an *unbound target*. Record it here
+                # regardless of whether a stub was emitted, so `project --strict` can
+                # block release on unbound approved claims.
+                "unbound_eligible": cls_uri in (eligible_class_uris or set()),
                 "skip_reason": "No bronze mapping found",
             })
             continue
@@ -3897,6 +3902,15 @@ def generate_dbt_artifacts(
     aspirational_class_names = {
         m["class_name"] for m in silver_entity_meta if m.get("aspirational")
     }
+    # Release gate (DD-096 / DEC-1): every approved, materialization-eligible claim
+    # with no bronze mapping — whether emitted as a stub or skipped — is an unbound
+    # target. Surface the set so the orchestrator can enforce `project --strict`.
+    unbound_eligible_names = sorted(
+        m["class_name"] for m in silver_entity_meta
+        if m.get("aspirational") or m.get("unbound_eligible")
+    )
+    if unbound_eligible_names:
+        artifacts["__unbound_eligible__"] = unbound_eligible_names
 
     # 3. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(

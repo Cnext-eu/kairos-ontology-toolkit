@@ -5829,10 +5829,16 @@ Add an **opt-in, flag-gated** target-first stub → bind loop:
   `meta.is_aspirational`.
 - **Release-eligibility, not existence, is the gate (DEC-1/DEC-2).** All approved,
   materialization-eligible, *unbound* claims are release-blocking under the strict
-  gate; no required/optional field is added (per-claim waiver deferred). Gold/Power BI
-  is still generated over a stub dependency (star schema stays stable) but any model in
-  a stub's dependency closure is **non-release-eligible**; the strict gate blocks
-  release while a release-blocking stub exists.
+  gate; no required/optional field is added (per-claim waiver deferred). Implemented as
+  `project --strict` (env fallback `KAIROS_PROJECT_STRICT`, dbt/all only): the dbt
+  projector surfaces the unbound-eligible set via an internal `__unbound_eligible__`
+  artifact key (computed from the same `class_to_sources`/eligibility as stub emission,
+  independent of whether stubs are emitted), and `run_projections` raises
+  `ProjectionRunError` when any remain. The scaffold `release-projections.yml` runs the
+  projection step with `--strict` so an incomplete hub cannot ship. Gold/Power BI is
+  still generated over a stub dependency (star schema stays stable) but any model in a
+  stub's dependency closure is **non-release-eligible**; the strict gate blocks release
+  while a release-blocking stub exists.
 - **Determinism prerequisite (A).** Generated artifacts embed an injected
   `generated_at` + `toolkit_version` context (env-overridable via
   `KAIROS_GENERATED_AT`/`SOURCE_DATE_EPOCH`) and sort all RDFLib iteration, so
