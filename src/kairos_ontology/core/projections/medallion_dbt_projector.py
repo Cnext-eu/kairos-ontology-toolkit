@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, Optional
@@ -1079,38 +1080,32 @@ def _merge_columns_by_target_name(*column_groups: list[dict]) -> list[dict]:
     return merged
 
 
-def _gen_silver_models(
+@dataclass
+class SourceBindings:
+    """Canonical source-binding facts for a domain's Silver models (B0)."""
+
+    active_contracts: dict
+    virtual_table_uris: set
+    class_to_sources: dict
+    folded_source_targets: dict
+    warnings: list
+
+
+def compute_source_bindings(
     classes: list[dict],
     graph: Graph,
-    namespace: str,
     systems: list[dict],
     mappings: dict,
-    env: Environment,
-    meta: dict,
-    ontology_name: str,
-    platform: str = DEFAULT_PLATFORM,
-    mapping_ns: dict[str, str] | None = None,
-    contract_registry: Mapping[str, "DbtContractModel"] | None = None,
-) -> tuple[dict[str, str], list[str], list[dict]]:
-    """Generate silver entity models that read directly from bronze sources.
+    contract_registry: "Mapping[str, DbtContractModel] | None" = None,
+) -> "SourceBindings":
+    """Compute per-class bronze source bindings (single source of truth).
 
-    Enforces layer contracts:
-    - Silver models consume bronze tables via source() — no staging layer
-    - Every source() must point to a declared bronze source table
-    - Unmapped classes are skipped with a warning (no broken placeholders)
-    - Silver absorbs rename, cast, and transform logic (previously in staging)
-
-    Returns:
-        Tuple of (artifacts dict, warnings list, entity_metadata list).
-        Each entity_metadata entry: {class_name, model_file, scd_type,
-        source_count, column_count, fk_join_count, skipped, skip_reason}.
+    Extracted from ``_gen_silver_models`` so the projector and the standalone
+    :mod:`kairos_ontology.core.binding_analysis` classifier share the exact same
+    ``class_to_sources`` (discriminator folding + contracted virtual sources
+    resolved) rather than reimplementing divergent "is bound" logic.
     """
-    artifacts: dict[str, str] = {}
     warnings: list[str] = []
-    entity_metadata: list[dict] = []
-    template = env.get_template("silver_model.sql.jinja2")
-
-    schema_name = f"silver_{ontology_name}"
     contracts = contract_registry or {}
     active_contracts: dict[str, DbtContractModel] = {}
     virtual_table_uris = {contract.virtual_source_iri for contract in contracts.values()}
@@ -1228,7 +1223,58 @@ def _gen_silver_models(
             )
             logger.warning(msg)
             warnings.append(msg)
+    return SourceBindings(
+        active_contracts=active_contracts,
+        virtual_table_uris=virtual_table_uris,
+        class_to_sources=class_to_sources,
+        folded_source_targets=folded_source_targets,
+        warnings=warnings,
+    )
 
+
+def _gen_silver_models(
+    classes: list[dict],
+    graph: Graph,
+    namespace: str,
+    systems: list[dict],
+    mappings: dict,
+    env: Environment,
+    meta: dict,
+    ontology_name: str,
+    platform: str = DEFAULT_PLATFORM,
+    mapping_ns: dict[str, str] | None = None,
+    contract_registry: Mapping[str, "DbtContractModel"] | None = None,
+) -> tuple[dict[str, str], list[str], list[dict]]:
+    """Generate silver entity models that read directly from bronze sources.
+
+    Enforces layer contracts:
+    - Silver models consume bronze tables via source() — no staging layer
+    - Every source() must point to a declared bronze source table
+    - Unmapped classes are skipped with a warning (no broken placeholders)
+    - Silver absorbs rename, cast, and transform logic (previously in staging)
+
+    Returns:
+        Tuple of (artifacts dict, warnings list, entity_metadata list).
+        Each entity_metadata entry: {class_name, model_file, scd_type,
+        source_count, column_count, fk_join_count, skipped, skip_reason}.
+    """
+    artifacts: dict[str, str] = {}
+    warnings: list[str] = []
+    entity_metadata: list[dict] = []
+    template = env.get_template("silver_model.sql.jinja2")
+
+    schema_name = f"silver_{ontology_name}"
+    bindings = compute_source_bindings(
+        classes=classes,
+        graph=graph,
+        systems=systems,
+        mappings=mappings,
+        contract_registry=contract_registry,
+    )
+    active_contracts = bindings.active_contracts
+    class_to_sources = bindings.class_to_sources
+    folded_source_targets = bindings.folded_source_targets
+    warnings.extend(bindings.warnings)
     for cls in classes:
         cls_uri = cls["uri"]
         local = cls["name"]
