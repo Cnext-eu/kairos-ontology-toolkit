@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   incomplete hub cannot be released with vacuous zero-row stubs. Wired into the
   scaffold `release-projections.yml` workflow. Independent of stub emission —
   release-eligibility, not artifact existence, is the gate.
+- **Status-scan awareness of stubs** (DD-096 D4): `kairos-ontology status` distinguishes
+  stub vs bound by running the canonical `BindingAnalysis` over the hub's authorities
+  (Claim Registry + graph + sources + mappings), not generated `meta.is_aspirational`. A
+  silver domain with an approved-but-unbound claim now reports `in-progress`
+  ("aspirational stub(s) pending binding") instead of `done`, keeping `kairos-flow` and
+  `kairos-diagnose-status` correct.
 - **Obsolete dbt output reconciliation** (DD-096 C3): the dbt projector records a
   `.kairos-projection-manifest.json` and deletes previously generated files it no
   longer produces (e.g. a stale aspirational stub after the feature is disabled or its

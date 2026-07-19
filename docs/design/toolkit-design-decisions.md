@@ -5846,6 +5846,16 @@ Add an **opt-in, flag-gated** target-first stub → bind loop:
   still generated over a stub dependency (star schema stays stable) but any model in a
   stub's dependency closure is **non-release-eligible**; the strict gate blocks release
   while a release-blocking stub exists.
+- **Status-scan awareness (D4).** The deterministic `kairos-ontology status` scan
+  distinguishes stub vs bound by running the canonical `BindingAnalysis` over the
+  hub's *authorities* — the Claim Registry (materialization-eligibility), the domain
+  graph, source vocabulary, and SKOS mappings — **not** by reading generated
+  `meta.is_aspirational` (absent when the flag is off or the output is stale). A silver
+  domain with an approved-but-unbound eligible claim is reported `in-progress`
+  ("N aspirational stub(s) pending binding: …") instead of `done`, so `kairos-flow`
+  reconciliation and `kairos-diagnose-status` stay correct. The scan degrades to
+  today's file-presence result (`done`) when a domain has no claims registry or on any
+  load error, preserving the scanner's robust, LLM-free determinism.
 - **Determinism prerequisite (A).** Generated artifacts embed an injected
   `generated_at` + `toolkit_version` context (env-overridable via
   `KAIROS_GENERATED_AT`/`SOURCE_DATE_EPOCH`) and sort all RDFLib iteration, so
