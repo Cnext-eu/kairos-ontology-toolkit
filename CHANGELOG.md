@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0] — 2026-07-19
+
 ### Added
 - **Contracted advanced dbt transformations** (DD-092): package handwritten,
   contract-first intermediate models for joins, windows, aggregation, fallback logic,
