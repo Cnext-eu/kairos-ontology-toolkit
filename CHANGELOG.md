@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Target-first aspirational Silver stub → bind loop** (DD-096): opt-in
+  `project --emit-aspirational-stubs` flag (also `KAIROS_EMIT_ASPIRATIONAL_STUBS`)
+  emits typed, zero-row Silver stub models (`where 1 = 0`, `cast(null as <type>)`,
+  tagged `kairos_aspirational_stub`, `meta.is_aspirational`) for approved,
+  materialization-eligible claims that have no bronze mapping yet — so downstream
+  Silver/Gold can be built target-first. Adding a source mapping transparently
+  **binds** the stub on the next projection. `aspirational` is **derived** at
+  projection time from the Claim Registry + mappings (never persisted). Feature-off
+  output is byte-identical to prior releases. Backed by a new canonical
+  `BindingAnalysis` service.
+- **Release gate for unbound approved claims** (DD-096 / DEC-1): `project --strict`
+  (env fallback `KAIROS_PROJECT_STRICT`, dbt/all only) fails when any approved,
+  materialization-eligible claim has no bronze mapping (an *unbound target*), so an
+  incomplete hub cannot be released with vacuous zero-row stubs. Wired into the
+  scaffold `release-projections.yml` workflow. Independent of stub emission —
+  release-eligibility, not artifact existence, is the gate.
+- **Status-scan awareness of stubs** (DD-096 D4): `kairos-ontology status` distinguishes
+  stub vs bound by running the canonical `BindingAnalysis` over the hub's authorities
+  (Claim Registry + graph + sources + mappings), not generated `meta.is_aspirational`. A
+  silver domain with an approved-but-unbound claim now reports `in-progress`
+  ("aspirational stub(s) pending binding") instead of `done`, keeping `kairos-flow` and
+  `kairos-diagnose-status` correct.
+- **Obsolete dbt output reconciliation** (DD-096 C3): the dbt projector records a
+  `.kairos-projection-manifest.json` and deletes previously generated files it no
+  longer produces (e.g. a stale aspirational stub after the feature is disabled or its
+  claim is deferred), pruning emptied directories. Only toolkit-recorded files are
+  removed — hand-authored files are never touched.
+- **Deterministic projection output**: generated artifacts embed an injected
+  `generated_at` + `toolkit_version` context (env-overridable via
+  `KAIROS_GENERATED_AT` / `SOURCE_DATE_EPOCH`) and all RDFLib iteration is sorted, so
+  re-projection is byte-identical across processes and Python hash seeds.
+
 ## [4.4.0] — 2026-07-19
 
 ### Added

@@ -215,6 +215,13 @@ The toolkit supports the following projection targets:
 | `mdm-profile` | `--target mdm-profile` | Immutable, content-addressed MDM policy profile (JSON + review MD) from `*-mdm-ext.ttl` → `output/mdm/` | Master Data Management (opt-in; consumed by `kairos-mdm-runtime`) |
 | `all` | `--target all` | All of the above | Full regeneration |
 
+> **Target-first aspirational Silver stubs (DD-096):** the dbt target supports an
+> opt-in `--emit-aspirational-stubs` flag (also `KAIROS_EMIT_ASPIRATIONAL_STUBS`).
+> When enabled, an *approved but not-yet-mapped* claim projects a typed, zero-row
+> **stub** Silver model so downstream Silver/Gold can be built target-first; adding a
+> source mapping later transparently **binds** the stub on the next projection. Off by
+> default (output byte-identical). See the **kairos-execute-project** skill.
+
 > **Optional DDD overlay (DD-091):** DDD design intent — bounded contexts,
 > context maps, aggregate roots, value objects — lives in optional
 > `model/extensions/{domain}-ddd-ext.ttl` overlays using the `kairos-ddd`

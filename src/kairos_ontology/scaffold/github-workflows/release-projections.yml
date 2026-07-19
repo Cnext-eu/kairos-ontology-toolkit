@@ -27,12 +27,12 @@ jobs:
       - name: Install toolkit
         run: uv sync
 
-      - name: Run projections (all targets)
+      - name: Run projections (all targets, strict release gate)
         run: |
           kairos-ontology project \
             --ontologies ontology-hub/model/ontologies \
-            --shapes ontology-hub/model/shapes \
-            --target all
+            --target all \
+            --strict
 
       - name: Validate ontologies
         run: |

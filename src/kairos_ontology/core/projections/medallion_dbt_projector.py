@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, Optional
 
@@ -37,6 +37,7 @@ from rdflib.namespace import OWL, RDF
 from jinja2 import Environment, FileSystemLoader
 
 from .uri_utils import camel_to_snake, extract_local_name
+from ..determinism import resolve_generated_at
 from .shared import KAIROS_EXT, merge_ext_graph, str_val, bool_val
 
 if TYPE_CHECKING:
@@ -569,7 +570,7 @@ def _parse_skos_mappings(mappings_dir: Path) -> tuple[dict, dict[str, str]]:
         (SKOS.relatedMatch, "relatedMatch"),
     ]
 
-    for subj in set(g.subjects()):
+    for subj in sorted(set(g.subjects()), key=str):
         for skos_prop, match_name in match_props:
             for obj in g.objects(subj, skos_prop):
                 subj_str = str(subj)
@@ -1078,38 +1079,32 @@ def _merge_columns_by_target_name(*column_groups: list[dict]) -> list[dict]:
     return merged
 
 
-def _gen_silver_models(
+@dataclass
+class SourceBindings:
+    """Canonical source-binding facts for a domain's Silver models (B0)."""
+
+    active_contracts: dict
+    virtual_table_uris: set
+    class_to_sources: dict
+    folded_source_targets: dict
+    warnings: list
+
+
+def compute_source_bindings(
     classes: list[dict],
     graph: Graph,
-    namespace: str,
     systems: list[dict],
     mappings: dict,
-    env: Environment,
-    meta: dict,
-    ontology_name: str,
-    platform: str = DEFAULT_PLATFORM,
-    mapping_ns: dict[str, str] | None = None,
-    contract_registry: Mapping[str, "DbtContractModel"] | None = None,
-) -> tuple[dict[str, str], list[str], list[dict]]:
-    """Generate silver entity models that read directly from bronze sources.
+    contract_registry: "Mapping[str, DbtContractModel] | None" = None,
+) -> "SourceBindings":
+    """Compute per-class bronze source bindings (single source of truth).
 
-    Enforces layer contracts:
-    - Silver models consume bronze tables via source() — no staging layer
-    - Every source() must point to a declared bronze source table
-    - Unmapped classes are skipped with a warning (no broken placeholders)
-    - Silver absorbs rename, cast, and transform logic (previously in staging)
-
-    Returns:
-        Tuple of (artifacts dict, warnings list, entity_metadata list).
-        Each entity_metadata entry: {class_name, model_file, scd_type,
-        source_count, column_count, fk_join_count, skipped, skip_reason}.
+    Extracted from ``_gen_silver_models`` so the projector and the standalone
+    :mod:`kairos_ontology.core.binding_analysis` classifier share the exact same
+    ``class_to_sources`` (discriminator folding + contracted virtual sources
+    resolved) rather than reimplementing divergent "is bound" logic.
     """
-    artifacts: dict[str, str] = {}
     warnings: list[str] = []
-    entity_metadata: list[dict] = []
-    template = env.get_template("silver_model.sql.jinja2")
-
-    schema_name = f"silver_{ontology_name}"
     contracts = contract_registry or {}
     active_contracts: dict[str, DbtContractModel] = {}
     virtual_table_uris = {contract.virtual_source_iri for contract in contracts.values()}
@@ -1227,7 +1222,95 @@ def _gen_silver_models(
             )
             logger.warning(msg)
             warnings.append(msg)
+    return SourceBindings(
+        active_contracts=active_contracts,
+        virtual_table_uris=virtual_table_uris,
+        class_to_sources=class_to_sources,
+        folded_source_targets=folded_source_targets,
+        warnings=warnings,
+    )
 
+
+def _stub_columns(
+    graph: Graph, cls_uri: str, model_name: str, platform: str = DEFAULT_PLATFORM
+) -> list[dict]:
+    """Build the typed column list for an aspirational Silver stub (DEC-4).
+
+    Mirrors the schema-yaml column derivation: surrogate-key + IRI structural
+    columns followed by the class's datatype-property columns (including inherited
+    ones), typed via ``kairos-ext:silverDataType`` → ``rdfs:range`` → the platform
+    string fallback (``VARCHAR(255)``). Columns are typed where typable so the stub
+    dbt-compiles on Fabric; the value is always ``cast(null as <type>)``.
+    """
+    cols: list[dict] = [
+        {"name": f"{model_name}_sk", "data_type": _xsd_to_target(XSD.string, platform)},
+        {"name": f"{model_name}_iri", "data_type": _xsd_to_target(XSD.string, platform)},
+    ]
+    domain_classes = _get_class_and_parents(graph, cls_uri)
+    seen: set[str] = {c["name"] for c in cols}
+    for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
+        domain = graph.value(prop, RDFS.domain)
+        if not (domain and str(domain) in domain_classes):
+            continue
+        col_name = _resolve_column_name(graph, str(prop))
+        if col_name in seen:
+            continue
+        seen.add(col_name)
+        silver_dt = graph.value(URIRef(str(prop)), KAIROS_EXT.silverDataType)
+        if silver_dt:
+            data_type = str(silver_dt)
+        else:
+            range_uri = graph.value(prop, RDFS.range)
+            data_type = _xsd_to_target(range_uri, platform)
+        cols.append({"name": col_name, "data_type": data_type})
+    return cols
+
+
+def _gen_silver_models(
+    classes: list[dict],
+    graph: Graph,
+    namespace: str,
+    systems: list[dict],
+    mappings: dict,
+    env: Environment,
+    meta: dict,
+    ontology_name: str,
+    platform: str = DEFAULT_PLATFORM,
+    mapping_ns: dict[str, str] | None = None,
+    contract_registry: Mapping[str, "DbtContractModel"] | None = None,
+    emit_aspirational_stubs: bool = False,
+    eligible_class_uris: set[str] | None = None,
+) -> tuple[dict[str, str], list[str], list[dict]]:
+    """Generate silver entity models that read directly from bronze sources.
+
+    Enforces layer contracts:
+    - Silver models consume bronze tables via source() — no staging layer
+    - Every source() must point to a declared bronze source table
+    - Unmapped classes are skipped with a warning (no broken placeholders)
+    - Silver absorbs rename, cast, and transform logic (previously in staging)
+
+    Returns:
+        Tuple of (artifacts dict, warnings list, entity_metadata list).
+        Each entity_metadata entry: {class_name, model_file, scd_type,
+        source_count, column_count, fk_join_count, skipped, skip_reason}.
+    """
+    artifacts: dict[str, str] = {}
+    warnings: list[str] = []
+    entity_metadata: list[dict] = []
+    template = env.get_template("silver_model.sql.jinja2")
+
+    schema_name = f"silver_{ontology_name}"
+    bindings = compute_source_bindings(
+        classes=classes,
+        graph=graph,
+        systems=systems,
+        mappings=mappings,
+        contract_registry=contract_registry,
+    )
+    active_contracts = bindings.active_contracts
+    class_to_sources = bindings.class_to_sources
+    folded_source_targets = bindings.folded_source_targets
+    warnings.extend(bindings.warnings)
     for cls in classes:
         cls_uri = cls["uri"]
         local = cls["name"]
@@ -1268,6 +1351,41 @@ def _gen_silver_models(
                 })
                 continue
 
+            if emit_aspirational_stubs and cls_uri in (eligible_class_uris or set()):
+                # Target-first stub → bind loop: this class is an approved,
+                # materialization-eligible claim with no bronze mapping yet. Emit a
+                # typed, zero-row placeholder so downstream models have a stable
+                # Silver contract. `aspirational` is DERIVED here, not persisted.
+                stub_cols = _stub_columns(graph, cls_uri, model_name, platform)
+                stub_content = env.get_template("silver_stub_model.sql.jinja2").render(
+                    model_name=model_name,
+                    domain_name=ontology_name,
+                    schema_name=schema_name,
+                    columns=stub_cols,
+                    ontology_metadata=meta,
+                )
+                stub_path = f"models/silver/{ontology_name}/{model_name}.sql"
+                artifacts[stub_path] = stub_content
+                logger.info(
+                    "Class '%s' is an approved claim with no bronze mapping — "
+                    "emitting aspirational Silver stub (bind via kairos-design-mapping).",
+                    local,
+                )
+                entity_metadata.append({
+                    "class_name": local,
+                    "class_uri": cls_uri,
+                    "model_file": stub_path,
+                    "scd_type": None,
+                    "source_count": 0,
+                    "column_count": len(stub_cols),
+                    "column_names": [c["name"] for c in stub_cols],
+                    "fk_join_count": 0,
+                    "skipped": False,
+                    "aspirational": True,
+                    "skip_reason": None,
+                })
+                continue
+
             msg = (
                 f"No bronze mapping for class '{local}' — skipping silver model. "
                 f"Resolve via: kairos-design-mapping"
@@ -1284,6 +1402,11 @@ def _gen_silver_models(
                 "column_names": [],
                 "fk_join_count": 0,
                 "skipped": True,
+                # Release gate (DD-096 / DEC-1): an approved, materialization-eligible
+                # claim with no bronze mapping is an *unbound target*. Record it here
+                # regardless of whether a stub was emitted, so `project --strict` can
+                # block release on unbound approved claims.
+                "unbound_eligible": cls_uri in (eligible_class_uris or set()),
                 "skip_reason": "No bronze mapping found",
             })
             continue
@@ -1779,7 +1902,7 @@ def _build_column_type_map(
     """
     type_map: dict[str, str] = {}
     domain_classes = _get_class_and_parents(graph, class_uri)
-    for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
         domain = graph.value(prop, RDFS.domain)
         if domain and str(domain) in domain_classes:
             col_name = _resolve_column_name(graph, str(prop))
@@ -1970,7 +2093,7 @@ def _resolve_mapped_columns(
 
     # Datatype properties (including inherited from parent classes)
     seen_col_names: set[str] = set()
-    for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
         domain = graph.value(prop, RDFS.domain)
         if domain and str(domain) in domain_classes:
             col_name = _resolve_column_name(graph, str(prop))
@@ -2241,7 +2364,7 @@ def _infer_fk_targets(
     domain_classes = _get_class_and_parents(graph, class_uri)
     targets: list[dict] = []
 
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
         domain = graph.value(prop, RDFS.domain)
         if domain is None or str(domain) not in domain_classes:
             continue
@@ -2302,7 +2425,7 @@ def _infer_fk_on_targets(
     """
     targets: list[dict] = []
 
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
         fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
         if fk_on is None or str(fk_on) != class_uri:
             continue
@@ -2745,7 +2868,7 @@ def _fk_child_parents(graph: Graph, class_uri: str) -> list[str]:
     """
     parents: list[str] = []
     target = URIRef(class_uri)
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
         fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
         if fk_on is None or fk_on != target:
             continue
@@ -2874,6 +2997,7 @@ def _gen_schema_yaml(
     mappings: dict | None = None,
     generated_class_names: set[str] | None = None,
     platform: str = DEFAULT_PLATFORM,
+    aspirational_class_names: set[str] | None = None,
 ) -> dict[str, str]:
     """Generate ``_models.yml`` with column descriptions, tests, and lineage."""
     artifacts: dict[str, str] = {}
@@ -2964,7 +3088,7 @@ def _gen_schema_yaml(
                 "tests": [],
             })
             seen_schema_cols.add(disc_col)
-        for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+        for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
             domain = graph.value(prop, RDFS.domain)
             if domain and str(domain) in domain_classes:
                 prop_name = extract_local_name(str(prop))
@@ -3029,7 +3153,7 @@ def _gen_schema_yaml(
                 })
 
         # Object property FK columns (including inherited from parent classes)
-        for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+        for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
             domain = graph.value(prop, RDFS.domain)
             if domain and str(domain) in domain_classes:
                 # Skip junction-table properties
@@ -3067,14 +3191,19 @@ def _gen_schema_yaml(
                     "tests": [],
                 })
 
+        model_meta = {
+            "ontology_class": cls["name"],
+            "ontology_iri": meta.get("iri", ""),
+            "ontology_version": meta.get("version", ""),
+        }
+        if aspirational_class_names and cls["name"] in aspirational_class_names:
+            # Read-only, derived marker: this Silver model is an aspirational stub
+            # (approved claim, not yet bound to a bronze source).
+            model_meta["is_aspirational"] = "true"
         models_data.append({
             "name": model_name,
             "description": cls["comment"],
-            "meta": {
-                "ontology_class": cls["name"],
-                "ontology_iri": meta.get("iri", ""),
-                "ontology_version": meta.get("version", ""),
-            },
+            "meta": model_meta,
             "columns": cols,
         })
 
@@ -3650,6 +3779,8 @@ def generate_dbt_artifacts(
     peer_ext_paths: list = None,
     logical_sources_only: bool = False,
     contract_registry: Mapping[str, "DbtContractModel"] | None = None,
+    emit_aspirational_stubs: bool = False,
+    eligible_class_uris: set[str] | None = None,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -3743,6 +3874,8 @@ def generate_dbt_artifacts(
         platform=target_platform,
         mapping_ns=mapping_ns,
         contract_registry=contracts,
+        emit_aspirational_stubs=emit_aspirational_stubs,
+        eligible_class_uris=eligible_class_uris,
     )
     artifacts.update(silver)
     logger.info("Generated %d silver model(s)", len(silver))
@@ -3765,6 +3898,18 @@ def generate_dbt_artifacts(
         generated_class_names = {
             m["class_name"] for m in silver_entity_meta if not m.get("skipped")
         }
+    aspirational_class_names = {
+        m["class_name"] for m in silver_entity_meta if m.get("aspirational")
+    }
+    # Release gate (DD-096 / DEC-1): every approved, materialization-eligible claim
+    # with no bronze mapping — whether emitted as a stub or skipped — is an unbound
+    # target. Surface the set so the orchestrator can enforce `project --strict`.
+    unbound_eligible_names = sorted(
+        m["class_name"] for m in silver_entity_meta
+        if m.get("aspirational") or m.get("unbound_eligible")
+    )
+    if unbound_eligible_names:
+        artifacts["__unbound_eligible__"] = unbound_eligible_names
 
     # 3. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(
@@ -3772,6 +3917,7 @@ def generate_dbt_artifacts(
         systems=systems, mappings=mappings,
         generated_class_names=generated_class_names,
         platform=target_platform,
+        aspirational_class_names=aspirational_class_names,
     )
     artifacts.update(schema)
 
@@ -4034,7 +4180,7 @@ def generate_coverage_data(
         null_columns = []
         missing_required = []
 
-        for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+        for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
             domain = graph.value(prop, RDFS.domain)
             if domain and str(domain) in domain_classes:
                 total += 1
@@ -4133,7 +4279,7 @@ def write_dbt_session_log(
 
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    now = datetime.now()
+    now = resolve_generated_at()
     date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"dbt-{domain}-{date_str}.md"
     path = sessions_dir / filename

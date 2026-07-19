@@ -63,6 +63,17 @@ process — never guess mappings without evidence and user confirmation.
 
 ---
 
+## Binding clears aspirational stubs (DD-096)
+
+When the target-first stub → bind loop is enabled (`project --emit-aspirational-stubs`,
+DD-096), an approved-but-unmapped claim projects a **zero-row aspirational Silver stub**
+so downstream models have a stable target. **Adding a source mapping here is exactly
+what binds that stub**: on the next projection the stub is transparently replaced by the
+real, populated Silver model (stub → bound transition). No hand-editing of generated SQL
+is ever required. So a mapping you confirm in this skill may flip a class from
+*aspirational/unbound* to *bound* (and release-eligible). See the
+**kairos-execute-project** skill for stub semantics.
+
 ## Hard Gates (BLOCKING — must not be bypassed)
 
 ### Gate 1: Session file prerequisite

@@ -202,6 +202,38 @@ def test_project_ontology_and_ontologies_are_mutually_exclusive(tmp_path, monkey
     assert "Use either --ontology" in result.output
 
 
+def test_project_strict_threads_gate_flag(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    calls = _patch_projections(monkeypatch)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["project", "--target", "dbt", "--strict"])
+
+    assert result.exit_code == 0, result.output
+    assert calls["projection"]["strict"] is True
+
+
+def test_project_strict_defaults_false(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    calls = _patch_projections(monkeypatch)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["project", "--target", "dbt"])
+
+    assert result.exit_code == 0, result.output
+    assert calls["projection"]["strict"] is False
+
+
+def test_project_rejects_strict_for_non_dbt_target(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["project", "--target", "neo4j", "--strict"])
+
+    assert result.exit_code == 2
+    assert "--strict applies only" in result.output
+
+
 def test_project_threads_databricks_platform(tmp_path, monkeypatch):
     hub = _make_hub(tmp_path)
     calls = _patch_projections(monkeypatch)

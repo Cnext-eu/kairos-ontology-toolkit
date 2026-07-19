@@ -174,7 +174,7 @@ def _parse_mappings(mappings_dir: Path) -> dict:
         except (SyntaxError, ValueError) as exc:
             logger.warning("Could not parse mapping file %s: %s", ttl.name, exc)
 
-    for subj in set(g.subjects()):
+    for subj in sorted(set(g.subjects()), key=str):
         for skos_prop, match_name in MATCH_TYPES:
             for obj in g.objects(subj, skos_prop):
                 subj_str = str(subj)

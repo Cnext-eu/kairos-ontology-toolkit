@@ -249,6 +249,103 @@ def _scan_source(hub_root: Path) -> PhaseStatus:
                        detail=f"{len(instances)} source system(s)")
 
 
+def _domain_aspirational_stubs(hub_root: Path, domain: str) -> list[str]:
+    """Return local names of *aspirational* (unbound, eligible) classes for *domain*.
+
+    D4 (DD-096): distinguish stub-vs-bound in the deterministic scan by running the
+    canonical :func:`binding_analysis.build` over the hub's **authorities** — the
+    Claim Registry (eligibility) plus the domain graph, source vocabulary, and SKOS
+    mappings (binding) — *not* by reading generated ``meta.is_aspirational`` (absent
+    when the projector's stub flag is off or the output is stale).
+
+    Returns an empty list when the domain has no claims registry (no eligibility
+    authority) or on any load error — the scan stays robust and deterministic.
+    """
+    try:
+        from rdflib import Graph, OWL, RDF, URIRef
+
+        from .binding_analysis import STUB, build, materialization_eligible_class_uris
+        from .claim_registry import load_registry
+        from .projections.medallion_dbt_projector import (
+            _parse_bronze,
+            _parse_skos_mappings,
+        )
+        from .projections.uri_utils import extract_local_name
+
+        claims_file = hub_root / "model" / "claims" / f"{domain}-claims.yaml"
+        onto_file = hub_root / "model" / "ontologies" / f"{domain}.ttl"
+        if not claims_file.exists() or not onto_file.exists():
+            return []
+
+        eligible = materialization_eligible_class_uris(load_registry(claims_file))
+        if not eligible:
+            return []
+
+        graph = Graph()
+        graph.parse(onto_file, format="turtle")
+        silver_ext = hub_root / "model" / "extensions" / f"{domain}-silver-ext.ttl"
+        if silver_ext.exists():
+            graph.parse(silver_ext, format="turtle")
+
+        # Detect the domain base to select local classes (bare IRI + #// variants).
+        base = None
+        for subj in graph.subjects(RDF.type, OWL.Ontology):
+            if isinstance(subj, URIRef) and not str(subj).endswith("-silver-ext"):
+                base = str(subj).rstrip("#/")
+                break
+        classes: list[dict] = []
+        for cls in graph.subjects(RDF.type, OWL.Class):
+            if not isinstance(cls, URIRef):
+                continue
+            uri = str(cls)
+            if base is not None and not (
+                uri.startswith(base + "#") or uri.startswith(base + "/")
+            ):
+                continue
+            classes.append({"uri": uri, "name": extract_local_name(uri)})
+        if not classes:
+            return []
+
+        sources_dir = hub_root / "integration" / "sources"
+        mappings_dir = hub_root / "model" / "mappings"
+        systems = _parse_bronze(sources_dir) if sources_dir.is_dir() else []
+        mappings, _ = (
+            _parse_skos_mappings(mappings_dir) if mappings_dir.is_dir() else ({}, {})
+        )
+
+        analysis = build(
+            classes=classes,
+            graph=graph,
+            systems=systems,
+            mappings=mappings,
+            eligible_class_uris=eligible,
+            stubs_enabled=True,
+        )
+        by_uri = {c["uri"]: c["name"] for c in classes}
+        return sorted(by_uri[u] for u in analysis.class_uris_in_state(STUB))
+    except Exception:  # noqa: BLE001 — scan must never fail on bad/partial input
+        return []
+
+
+def _scan_silver(hub_root: Path, extensions_dir: Path) -> PhaseStatus:
+    """Silver phase: like the simple TTL scan, but a domain with approved-but-unbound
+    claims is *in-progress* (aspirational stubs pending binding), not ``done`` (D4)."""
+    phase = "silver"
+    base = _scan_simple_ttl_phase(
+        hub_root, phase, extensions_dir, suffix="-silver-ext.ttl"
+    )
+    for inst in base.instances:
+        stubs = _domain_aspirational_stubs(hub_root, inst.name)
+        if stubs:
+            inst.state = STATE_IN_PROGRESS
+            names = ", ".join(stubs)
+            inst.detail = (
+                f"{len(stubs)} aspirational stub(s) pending binding: {names}"
+            )
+    base.state = _aggregate(base.instances)
+    return base
+
+
 def _scan_simple_ttl_phase(
     hub_root: Path, phase: str, directory: Path, *, suffix: str | None = None
 ) -> PhaseStatus:
@@ -337,8 +434,7 @@ def scan_hub_status(hub_root: Path, *, toolkit_version: str = "") -> HubStatus:
         _scan_simple_ttl_phase(hub_root, "domain", model / "ontologies"),
         _scan_simple_ttl_phase(hub_root, "mapping", model / "mappings"),
         _scan_claims(hub_root),
-        _scan_simple_ttl_phase(hub_root, "silver", model / "extensions",
-                               suffix="-silver-ext.ttl"),
+        _scan_silver(hub_root, model / "extensions"),
         _scan_simple_ttl_phase(hub_root, "gold", model / "extensions",
                                suffix="-gold-ext.ttl"),
         _scan_validate(hub_root),

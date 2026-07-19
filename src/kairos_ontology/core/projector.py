@@ -6,13 +6,14 @@ import json
 import logging
 import traceback as _tb
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from collections.abc import Iterable
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 from .projections.uri_utils import extract_local_name
 from .projections.shared import OntologyClassInfo
+from .determinism import resolve_generated_at, generated_at_iso, generated_at_slug
 
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report", "ddd"]
 
@@ -290,7 +291,7 @@ class ProjectionReport:
             return None
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        date_str = resolve_generated_at().strftime("%Y-%m-%d_%H-%M-%S")
         targets_slug = "+".join(sorted(self.targets_requested)) if self.targets_requested else "all"
         filename = f"projection-{domain}-{targets_slug}-{date_str}.md"
         path = sessions_dir / filename
@@ -476,7 +477,7 @@ def project_graph(
 
     report = ProjectionReport(
         toolkit_version=toolkit_version,
-        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        generated_at=generated_at_iso(),
     )
     targets = targets or VALID_TARGETS
     report.targets_requested = list(targets)
@@ -640,6 +641,62 @@ def _write_artifacts(artifacts: dict[str, str], target_output: Path) -> int:
     return len(artifacts)
 
 
+#: Manifest of toolkit-generated files, written at a target output root so a later
+#: projection can delete artifacts it no longer produces (DD-096 C3). Deleting only
+#: files this manifest recorded guarantees hand-authored files are never touched.
+_PROJECTION_MANIFEST_NAME = ".kairos-projection-manifest.json"
+
+
+def _reconcile_managed_output(target_output: Path, current_paths: Iterable[str]) -> int:
+    """Delete previously generated files no longer produced, then record the new set.
+
+    Reads the prior manifest at ``target_output/{_PROJECTION_MANIFEST_NAME}``, removes
+    any file it listed that is absent from *current_paths* (pruning newly empty
+    directories), and writes the updated manifest. This makes re-projection converge
+    on the current output — e.g. an aspirational Silver stub is removed when the
+    feature is turned off or its claim is deferred (DD-096 C3). Only files the toolkit
+    itself recorded are ever deleted; user-authored files are never in the manifest.
+
+    Returns the number of stale files removed.
+    """
+    manifest_path = target_output / _PROJECTION_MANIFEST_NAME
+    current = sorted(str(p) for p in current_paths)
+
+    prior: list[str] = []
+    if manifest_path.exists():
+        try:
+            loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                loaded = loaded.get("files", [])
+            if isinstance(loaded, list):
+                prior = [str(p) for p in loaded]
+        except (ValueError, OSError):
+            prior = []
+
+    removed = 0
+    stale = sorted(set(prior) - set(current))
+    for rel in stale:
+        stale_file = target_output / rel
+        try:
+            if stale_file.is_file():
+                stale_file.unlink()
+                removed += 1
+                # Prune now-empty parent directories, but never the output root.
+                parent = stale_file.parent
+                while parent != target_output and parent.is_dir() and not any(parent.iterdir()):
+                    parent.rmdir()
+                    parent = parent.parent
+        except OSError:
+            pass
+
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps({"files": current}, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return removed
+
+
 def _merge_identical_artifacts(
     destination: dict[str, str],
     incoming: dict[str, str],
@@ -665,6 +722,8 @@ def run_projections(
     target: str,
     namespace: str = None,
     platform: str = "fabric",
+    emit_aspirational_stubs: bool = False,
+    strict: bool = False,
 ):
     """Run projection generation.
     
@@ -676,13 +735,33 @@ def run_projections(
         namespace: Base namespace to project (e.g., 'http://example.org/ont/'). 
                    If None, auto-detects from ontology.
         platform: dbt SQL adapter platform (``fabric`` or ``databricks``).
+        emit_aspirational_stubs: When True, the dbt/silver projector emits typed
+            zero-row Silver stubs for approved, materialization-eligible claims that
+            have no bronze mapping yet (target-first stub → bind loop, DD-096).
+            Defaults to False; also honoured via ``KAIROS_EMIT_ASPIRATIONAL_STUBS``.
+        strict: Release gate (DD-096 / DEC-1). When True, the run fails after
+            projection if any approved, materialization-eligible claim has no bronze
+            mapping (an *unbound target*), so an incomplete hub cannot be released
+            with vacuous zero-row stubs. Independent of ``emit_aspirational_stubs``.
     """
+    import os
+
     from kairos_ontology import __version__ as toolkit_version
+
+    if not emit_aspirational_stubs:
+        emit_aspirational_stubs = os.environ.get(
+            "KAIROS_EMIT_ASPIRATIONAL_STUBS", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+    if not strict:
+        strict = os.environ.get(
+            "KAIROS_PROJECT_STRICT", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
 
     report = ProjectionReport(
         toolkit_version=toolkit_version,
-        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        generated_at=generated_at_iso(),
     )
+    unbound_eligible_by_domain: dict[str, list[str]] = {}
     fatal_target_errors: list[str] = []
 
     print("🚀 Kairos Ontology Projections")
@@ -957,6 +1036,25 @@ def run_projections(
                         if p != ext_path
                     ] if all_silver_ext_paths else None
 
+                    # Target-first stub → bind loop (DD-096): compute the
+                    # materialization-eligible claim set so the dbt projector can
+                    # (a) emit typed zero-row Silver stubs when enabled, and
+                    # (b) report approved-but-unbound claims for the `--strict`
+                    # release gate. Computed whenever stubs are enabled OR strict.
+                    eligible_class_uris: set[str] | None = None
+                    if (emit_aspirational_stubs or strict) and \
+                            target_name == "dbt" and claims_dir:
+                        claims_file = claims_dir / f"{onto_name}-claims.yaml"
+                        if claims_file.exists():
+                            from .binding_analysis import (
+                                materialization_eligible_class_uris,
+                            )
+                            from .claim_registry import load_registry
+
+                            eligible_class_uris = materialization_eligible_class_uris(
+                                load_registry(claims_file)
+                            )
+
                     artifacts = _run_projection(
                         target_name, onto_graph, target_output, template_base,
                         onto_namespace, shapes_dir, onto_name,
@@ -969,7 +1067,9 @@ def run_projections(
                         ref_model_defaults=ref_defaults,
                         peer_ext_paths=peer_exts,
                         target_platform=platform,
-                        contract_registry=contract_registry)
+                        contract_registry=contract_registry,
+                        emit_aspirational_stubs=emit_aspirational_stubs,
+                        eligible_class_uris=eligible_class_uris)
                 finally:
                     proj_logger.removeHandler(warn_handler)
                     if warn_handler.records:
@@ -980,6 +1080,11 @@ def run_projections(
                     # Extract coverage data before writing (not a real file artifact)
                     if target_name == "dbt" and "__coverage_data__" in artifacts:
                         dbt_coverage_data[onto_name] = artifacts.pop("__coverage_data__")
+                    # Release gate (DD-096 / DEC-1): collect unbound approved claims.
+                    if target_name == "dbt" and "__unbound_eligible__" in artifacts:
+                        unbound_eligible_by_domain[onto_name] = artifacts.pop(
+                            "__unbound_eligible__"
+                        )
 
                     if target_name == "dbt":
                         _merge_identical_artifacts(
@@ -1061,6 +1166,14 @@ def run_projections(
                     pending_dbt_artifacts.update(bundle.artifacts)
 
                 total_files += _write_artifacts(pending_dbt_artifacts, target_output)
+                # DD-096 C3: remove dbt artifacts this run no longer produces (e.g. a
+                # stale aspirational stub after the feature is disabled or its claim is
+                # deferred), so re-projection converges on the current output.
+                removed = _reconcile_managed_output(
+                    target_output, pending_dbt_artifacts.keys()
+                )
+                if removed:
+                    _logger.info("Removed %d obsolete dbt artifact(s)", removed)
                 _logger.info(
                     "Generated project config for %d domain(s)", len(dbt_domain_names)
                 )
@@ -1079,13 +1192,12 @@ def run_projections(
         # After all domains: merge per-domain coverage data into a single report
         if target_name == "dbt" and dbt_coverage_data and not target_failed:
             import json as _json
-            from datetime import datetime as _dt, timezone as _tz
             merged_coverage = {
                 "domains": dbt_coverage_data,
                 "summary": _build_coverage_summary(dbt_coverage_data),
             }
             coverage_content = _json.dumps(merged_coverage, indent=2, ensure_ascii=False)
-            ts = _dt.now(_tz.utc).strftime("%Y-%m-%d-%H%M%S")
+            ts = generated_at_slug()
             reports_dir = output_path / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
             coverage_artifacts = {f"coverage-silver-{ts}.json": coverage_content}
@@ -1170,8 +1282,7 @@ def run_projections(
     # ── Post-domain targets (span all ontology domains) ──────────────────
     if "report" in targets_to_run:
         print("📦 Generating report projection...")
-        from datetime import datetime as _rdt, timezone as _rtz
-        _report_ts = _rdt.now(_rtz.utc).strftime("%Y-%m-%d-%H%M%S")
+        _report_ts = generated_at_slug()
         report_output = output_path / "reports" / "details"
         report_output.mkdir(parents=True, exist_ok=True)
 
@@ -1302,6 +1413,22 @@ def run_projections(
     if fatal_target_errors:
         raise ProjectionRunError("; ".join(fatal_target_errors))
 
+    # Release gate (DD-096 / DEC-1): under --strict, block release when any approved,
+    # materialization-eligible claim has no bronze mapping. Such unbound targets would
+    # otherwise pass CI as vacuous zero-row stubs. All approved eligible claims block
+    # (DEC-1 option a); waivers are a future per-claim extension.
+    if strict and unbound_eligible_by_domain:
+        lines = []
+        for domain_name in sorted(unbound_eligible_by_domain):
+            names = ", ".join(unbound_eligible_by_domain[domain_name])
+            lines.append(f"{domain_name}: {names}")
+        detail = "; ".join(lines)
+        raise ProjectionRunError(
+            "Release gate (--strict): approved, materialization-eligible claim(s) "
+            "have no bronze mapping and are not release-eligible. Bind them via "
+            f"kairos-design-mapping. Unbound targets — {detail}"
+        )
+
 
 def _build_coverage_summary(domain_data: dict[str, dict]) -> dict:
     """Aggregate per-domain coverage stats into an overall summary."""
@@ -1328,13 +1455,12 @@ def _build_coverage_summary(domain_data: dict[str, dict]) -> dict:
 
 def _render_silver_coverage_md(merged: dict) -> str:
     """Render merged silver coverage data as human-readable Markdown."""
-    from datetime import datetime, timezone
     summary = merged.get("summary", {})
     domains = merged.get("domains", {})
     lines = [
         "# Silver Layer Coverage Report",
         "",
-        f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}  ",
+        f"**Generated:** {resolve_generated_at().strftime('%Y-%m-%d %H:%M:%S UTC')}  ",
         f"**Domains:** {summary.get('domains_count', 0)}  ",
         f"**Overall populated:** {summary.get('populated_pct', 0)}%"
         f" ({summary.get('populated_from_source', 0)}"
@@ -1408,7 +1534,7 @@ def extract_ontology_metadata(graph: Graph, namespace: str) -> dict:
         "label": label,
         "namespace": namespace,
         "toolkit_version": toolkit_version,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": generated_at_iso(),
     }
 
 
@@ -1748,7 +1874,9 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
                     ref_model_defaults: Optional[list] = None,
                     peer_ext_paths: Optional[list] = None,
                     target_platform: str = "fabric",
-                    contract_registry: Optional[dict] = None) -> dict:
+                    contract_registry: Optional[dict] = None,
+                    emit_aspirational_stubs: bool = False,
+                    eligible_class_uris: Optional[set] = None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
@@ -1876,6 +2004,8 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             peer_ext_paths=peer_ext_paths,
             target_platform=target_platform,
             contract_registry=contract_registry,
+            emit_aspirational_stubs=emit_aspirational_stubs,
+            eligible_class_uris=eligible_class_uris,
         )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts

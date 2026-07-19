@@ -73,6 +73,26 @@ This skill covers annotation design and output interpretation:
 
 ---
 
+## Target-first aspirational stubs (DD-096)
+
+Silver design is normally **binding-first**: a class gets a real Silver model once a
+bronze source is mapped to it. The **target-first stub → bind loop** (opt-in, DD-096)
+lets an *approved but not-yet-mapped* claim project a **stub** Silver target first, so
+downstream Silver/Gold can be designed against a stable contract before mappings exist.
+
+- **Derived, not annotated.** `aspirational` is **not** a silver-ext annotation you
+  author — it is derived at projection time (approved, materialization-eligible claim
+  ∧ unbound physical model). Do not add a field for it.
+- **Typability caveat.** Stub columns are typed where typable
+  (`kairos-ext:silverDataType` → `rdfs:range` → `VARCHAR(255)` fallback). Declaring
+  `silverDataType` on properties makes stub columns precise before binding.
+- **Clearing it.** A stub is cleared by **binding a mapping** (kairos-design-mapping),
+  not by editing silver-ext. Re-projection replaces the stub with the real model.
+- **OKF capture.** Record any target-first stub decisions in
+  `phases/silver/<domain>.md`.
+
+See the **kairos-execute-project** skill for the `--emit-aspirational-stubs` flag.
+
 ## Part A — Silver Schema Design
 
 The silver schema projection is governed by two rule sets:

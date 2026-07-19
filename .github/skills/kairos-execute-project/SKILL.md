@@ -208,6 +208,42 @@ python -m kairos_ontology project --ontology model/ontologies/party.ttl --target
 # Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver, powerbi, report, mdm-profile
 ```
 
+## Target-first aspirational Silver stubs (DD-096)
+
+By default the dbt projector **skips** any approved class that has no bronze mapping
+yet (no broken placeholders). The **target-first stub → bind loop** lets an approved,
+materialization-eligible claim project a **stub** Silver model so downstream models
+have a stable target *before* mappings exist — then it transparently **binds** once a
+mapping arrives, via plain re-projection (no hand-editing).
+
+```bash
+# Emit aspirational Silver stubs for approved-but-unbound claims (dbt / all only)
+python -m kairos_ontology project --target dbt --emit-aspirational-stubs
+```
+
+- **Off by default.** Feature-off output is byte-identical to today. The flag is also
+  honoured via the `KAIROS_EMIT_ASPIRATIONAL_STUBS` env var.
+- **What stubs.** Only approved claims with disposition `claim`/`specialize` and type
+  `class`/`reference_data` whose physical Silver model is unbound (no source, not a
+  folded discriminator subtype). `aspirational` is **derived** at projection time from
+  the Claim Registry + mappings — it is never a persisted field.
+- **What a stub looks like.** A `materialized='view'` model tagged
+  `kairos_aspirational_stub` with `meta.is_aspirational=true`, selecting typed
+  `cast(null as <type>) as <col>` columns guarded by `where 1 = 0` (zero rows, so
+  tests can't false-green). Types come from `kairos-ext:silverDataType` →
+  `rdfs:range` → the `VARCHAR(255)` fallback.
+- **Binding.** Add a SKOS source mapping (via **kairos-design-mapping**) and re-project;
+  the stub is transparently replaced by the real, populated model. Incremental/SCD
+  models use `on_schema_change='sync_all_columns'` and the first bound run is a full
+  refresh (safe — the stub had zero rows).
+- **Release gating.** A stub is **not** release-eligible merely by existing. Under the
+  strict release gate, all approved, materialization-eligible, *unbound* claims block
+  release until bound. Gold/Power BI is still generated over a stub dependency but is
+  marked non-release-eligible while a release-blocking stub is in its closure.
+- **OKF capture.** Record stub-emission runs and any release-gate blockers in
+  `phases/project.md` as *State update proposals* (aspirational stubs pending binding).
+
+
 ## Medallion pipeline
 
 The **medallion targets** (`silver`, `dbt`, `powerbi`) together produce a complete

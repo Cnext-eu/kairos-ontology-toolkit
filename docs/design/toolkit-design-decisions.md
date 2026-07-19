@@ -141,6 +141,9 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-091](#dd-091-optional-ddd-governance-overlay-architecture-documentation-only) | Optional DDD governance overlay (architecture documentation only) | Accepted | 2026-06-22 |
 | [DD-092](#dd-092-contracted-custom-dbt-transformation-boundary) | Contracted custom dbt transformation boundary | Accepted | 2026-07-18 |
 | [DD-093](#dd-093-governed-contracted-source-replacement-in-source-coverage) | Governed contracted-source replacement in source coverage | Accepted | 2026-07-18 |
+| [DD-094](#dd-094-claim-registry-is-the-single-materialization-authority) | Claim Registry is the single materialization authority | Accepted | 2026-07-25 |
+| [DD-095](#dd-095-derive-claims-deterministic-multi-source-evidence-aggregation) | derive-claims deterministic multi-source evidence aggregation | Accepted | 2026-07-25 |
+| [DD-096](#dd-096-target-first-derived-aspirational-silver-stub--bind-loop) | Target-first derived-aspirational Silver stub → bind loop | Accepted | 2026-07-28 |
 
 ---
 
@@ -5640,6 +5643,246 @@ prevents metadata alone from laundering an unrelated joined table into coverage.
   observed filename/folder mismatch without forcing claim-registry hash churn for
   ordinary sources. Canonical table IRI remains mandatory at the contract boundary; an
   IRI-first affinity schema is deferred until a real-source identity case requires it.
+
+---
+
+## DD-094: Claim Registry is the single materialization authority
+
+**Status:** Accepted
+
+**Date:** 2026-07-25
+
+**Affects:** `model/claims/{domain}-claims.yaml`, `{domain}-alignment.yaml`
+(retired), `src/kairos_ontology/core/claim_registry.py`,
+`src/kairos_ontology/core/claim_coverage.py`,
+`src/kairos_ontology/core/propose_alignment.py`, silver/dbt projectors,
+`check-claims` / `check-source-coverage`, evidence-led design skills
+
+**Implementation:** Claim Registry schema v1 → migration → projector authority.
+Canonicalized from the archived evidence-led decision log
+(`docs/archive/evidence-led-modeling/decision-log.md` §DD-EL-1); see also
+`docs/archive/evidence-led-modeling/0b-claim-registry-schema-v1.md`.
+
+### Context
+
+The evidence-led, accelerator-first methodology needs a single governed artifact
+recording *which concepts are approved to materialize*, with evidence, ownership,
+dispositions, and silver-contract impact. The legacy `{domain}-alignment.yaml`
+carried proposal data but was an AI-output artifact with no approval lifecycle.
+Keeping both an alignment file and a registry would create a dual source of truth.
+
+### Decision
+
+Introduce a per-domain **Claim Registry** at `model/claims/{domain}-claims.yaml`
+(schema v1) as the single hand-governed source of truth for materialization.
+**Retire** `{domain}-alignment.yaml` via a one-way deterministic migration; once a
+domain has a claims file, a leftover alignment file is a hard error (no dual path).
+Each claim carries an explicit `status` lifecycle (`proposed → approved → …`) and a
+`disposition` vocabulary (`claim` / `specialize` / `passthrough` / `skip` / `gap`).
+Approved `claim`/`specialize` claims — and only those — authorize silver/dbt
+materialization; the projector consumes the registry rather than namespace
+selection alone. The retired coverage gates unify into a single **`check-claims`**
+command (backend `claim_coverage.py`).
+
+### Rationale
+
+One governed file with a reviewable, GitHub-PR-based lifecycle gives auditable
+governance. Reusing the alignment backend primitives (coverage, freshness, anchor
+state, triage heuristics) preserves every prior guarantee while eliminating the
+double-path logic. Golden, parity, and negative-migration tests enforce fidelity.
+
+### Consequences
+
+- The registry is the authority for what materializes; probabilistic evidence never
+  auto-approves a claim.
+- `propose-alignment` output becomes migration input, not a parallel artifact.
+- Custom-column triage maps: `model`→`specialize`/`claim`,
+  `silver-passthrough`→`passthrough`, `skip`→`skip`.
+- Claim ids are stable and never reused; deletions become `deprecated`.
+- `check-claims` blocks on missing/invalid/incomplete/stale/duplicate-approved and
+  (unless `--no-source-coverage`) unmapped tables; `--strict` also blocks undecided
+  (`proposed`) claims; leftover `*-alignment.yaml` is always a hard error.
+
+---
+
+## DD-095: derive-claims deterministic multi-source evidence aggregation
+
+**Status:** Accepted
+
+**Date:** 2026-07-25
+
+**Affects:** `model/claims/{domain}-claims.yaml`,
+`src/kairos_ontology/core/derive_claims.py`, `derive-claims` CLI command,
+`claim_registry.merge_preserving_decisions`, `_concurrency.py` / `_cache.py`,
+evidence-led design skills (`kairos-design-source`, `kairos-execute-project`)
+
+**Implementation:** Deterministic evidence aggregator on top of DD-094.
+Canonicalized from the archived evidence-led decision log
+(`docs/archive/evidence-led-modeling/decision-log.md` §DD-EL-5); see also
+`docs/archive/evidence-led-modeling/slice-3-derive-claims.md`.
+
+### Context
+
+With the Claim Registry (DD-094) as the governance authority, authoring candidate
+claims is still largely manual: the evidence needed to propose them is scattered
+across already-produced artifacts (`analyse-sources` affinity, `propose-alignment`
+column→property output, `import-tmdl` concept-mapping dispositions, SKOS mapping
+TTL, and sample-derived signals). The semantically hard LLM interpretation already
+happened upstream; what is missing is a single deterministic step that joins those
+evidence streams into a richer candidate set for human curation.
+
+### Decision
+
+Add a **`derive-claims`** CLI command: a **deterministic, AI-free** aggregator that
+merges/enriches the Claim Registry with additional deterministic evidence streams
+and attaches **multiple `evidence_sources` per claim**. It joins five streams on
+`(system, table[, column])` and ref_class/ref_property names: (1) the existing
+claims registry, (2) `analyse-sources` affinity, (3) `import-tmdl` concept-mapping,
+(4) SKOS mappings, and (5) sample-derived enum/FK signals. **C4 guard — all
+derived/new claims are `status: proposed`, never auto-`approved`.** Human decisions
+survive re-runs via `merge_preserving_decisions()`; conflicting evidence is
+surfaced (low-confidence proposed claims / rationale notes), never silently
+resolved. It reuses `_concurrency.map_concurrent` (`--max-workers`) and the
+`_cache` sidecar (`--force`), and is skill-managed (soft skill-gate;
+`KAIROS_SKILL_CONTEXT=1` silences the warning).
+
+### Rationale
+
+The hard interpretation already happened upstream, so this step is pure
+deterministic plumbing: a reproducible join with no model variance and no token
+spend. Keeping it AI-free makes re-runs free, fast, and diffable, and preserves the
+strong (anchored) vs weak (affinity-only) evidence distinction. No cost banner is
+printed because nothing is billed — printing one here would train users to ignore
+the banner where it actually matters (the paid AI commands).
+
+### Consequences
+
+- One command turns already-produced customer assets into a richer candidate claim
+  set, reducing hand-authoring before human curation/approval.
+- No claim is ever auto-approved; the `check-claims` approval gate is unchanged.
+- Evidence granularity is preserved: each claim may carry multiple
+  `evidence_sources`.
+- A future opt-in `--llm-reconcile` (LLM tie-breaking / rationale synthesis, with a
+  cost banner) is explicitly deferred.
+
+---
+
+## DD-096: Target-first derived-aspirational Silver stub → bind loop
+
+**Status:** Accepted
+
+**Date:** 2026-07-28
+
+**Affects:** `src/kairos_ontology/core/binding_analysis.py`,
+`src/kairos_ontology/core/projections/medallion_dbt_projector.py`
+(`_gen_silver_models`, `_stub_columns`, `_gen_schema_yaml`, `generate_dbt_artifacts`),
+`src/kairos_ontology/core/projector.py` (`run_projections`, `_run_projection`),
+`src/kairos_ontology/cli/main.py` (`project --emit-aspirational-stubs`),
+`src/kairos_ontology/templates/dbt/silver_stub_model.sql.jinja2`,
+`src/kairos_ontology/core/determinism.py`, design source `docs/draft/silverfirstdesign.md`
+
+**Implementation:** Flag-gated stub emission on top of the canonical
+`BindingAnalysis` service (B0) and the Claim Registry (DD-094). Determinism context
+(A) is a prerequisite so re-projection stays byte-identical.
+
+### Context
+
+The silver dbt projector historically **skips** any class with no bronze mapping
+("no broken placeholders"). That means an *approved but unmapped* claim has no Silver
+**target** until a mapping exists, so downstream models cannot be built target-first.
+The Silver-First design (`docs/draft/silverfirstdesign.md`) asks for an approved,
+unbound claim to project a **stub** — a stable Silver target that transparently
+"binds" once a mapping arrives, all via re-projection with no hand-editing. Two
+critiques had to be resolved first: (1) `aspirational` must not become a persisted
+field that forks the claim state machine, and (2) empty stubs must not create
+false-green CI (vacuous 0-row tests passing).
+
+Five blocking inputs (DEC-1…DEC-5) were resolved before implementation.
+
+### Decision
+
+Add an **opt-in, flag-gated** target-first stub → bind loop:
+
+- **Derived, not persisted.** `aspirational` is computed at projection time by the
+  canonical `BindingAnalysis` (B0): a class is aspirational iff it is a
+  materialization-eligible approved claim (**DEC-5**: `disposition ∈ {claim,
+  specialize}` ∧ `type ∈ {class, reference_data}` ∧ `status == approved`) **and** its
+  physical Silver model is unbound (no source, not a folded discriminator subtype). No
+  new field is added to `Claim`/`SilverImpact`; the status/disposition state machine is
+  untouched.
+- **Opt-in flag.** `generate_dbt_artifacts(emit_aspirational_stubs=…,
+  eligible_class_uris=…)`, threaded through `run_projections`/`_run_projection` and the
+  CLI `project --emit-aspirational-stubs` (dbt/all only), with env fallback
+  `KAIROS_EMIT_ASPIRATIONAL_STUBS`. **Feature-off is byte-identical to today.**
+- **Typed zero-row stub (DEC-3/DEC-4).** `silver_stub_model.sql.jinja2` emits a
+  `materialized='view'` model tagged `kairos_aspirational_stub` with
+  `meta.is_aspirational=true`, selecting `cast(null as <type>) as <col>` for the
+  surrogate-key + IRI structural columns and every (inherited) datatype-property
+  column, guarded by `where 1 = 0`. Columns are **typed where typable** via
+  `kairos-ext:silverDataType` → `rdfs:range` (`_xsd_to_target`) → the projector's
+  established string fallback `VARCHAR(255)` (the value of `_xsd_to_target(None)`;
+  this supersedes the earlier `varchar(4000)` draft to stay consistent with the
+  projector default). Binding is a plain re-projection; incremental/SCD models use
+  `on_schema_change='sync_all_columns'` and the first bound run is a full refresh
+  (safe/cheap — the stub had zero rows).
+- **Schema YAML marker.** The stub's `_models.yml` entry carries a read-only, derived
+  `meta.is_aspirational`.
+- **Obsolete-output reconciliation (C3).** The dbt projector writes a
+  `.kairos-projection-manifest.json` at the output root recording the files it
+  generated; the next run deletes any manifest-recorded file it no longer produces
+  (pruning emptied directories). This converges re-projection on the current output —
+  a stale stub is removed when the feature is disabled or its claim is deferred —
+  while only ever deleting toolkit-recorded files, so hand-authored files are never
+  touched.
+- **Release-eligibility, not existence, is the gate (DEC-1/DEC-2).** All approved,
+  materialization-eligible, *unbound* claims are release-blocking under the strict
+  gate; no required/optional field is added (per-claim waiver deferred). Implemented as
+  `project --strict` (env fallback `KAIROS_PROJECT_STRICT`, dbt/all only): the dbt
+  projector surfaces the unbound-eligible set via an internal `__unbound_eligible__`
+  artifact key (computed from the same `class_to_sources`/eligibility as stub emission,
+  independent of whether stubs are emitted), and `run_projections` raises
+  `ProjectionRunError` when any remain. The scaffold `release-projections.yml` runs the
+  projection step with `--strict` so an incomplete hub cannot ship. Gold/Power BI is
+  still generated over a stub dependency (star schema stays stable) but any model in a
+  stub's dependency closure is **non-release-eligible**; the strict gate blocks release
+  while a release-blocking stub exists.
+- **Status-scan awareness (D4).** The deterministic `kairos-ontology status` scan
+  distinguishes stub vs bound by running the canonical `BindingAnalysis` over the
+  hub's *authorities* — the Claim Registry (materialization-eligibility), the domain
+  graph, source vocabulary, and SKOS mappings — **not** by reading generated
+  `meta.is_aspirational` (absent when the flag is off or the output is stale). A silver
+  domain with an approved-but-unbound eligible claim is reported `in-progress`
+  ("N aspirational stub(s) pending binding: …") instead of `done`, so `kairos-flow`
+  reconciliation and `kairos-diagnose-status` stay correct. The scan degrades to
+  today's file-presence result (`done`) when a domain has no claims registry or on any
+  load error, preserving the scanner's robust, LLM-free determinism.
+- **Determinism prerequisite (A).** Generated artifacts embed an injected
+  `generated_at` + `toolkit_version` context (env-overridable via
+  `KAIROS_GENERATED_AT`/`SOURCE_DATE_EPOCH`) and sort all RDFLib iteration, so
+  re-projection is byte-identical across processes and hash seeds.
+
+### Rationale
+
+Deriving `aspirational` keeps a single source of truth (the Claim Registry + mappings)
+and avoids a parallel persisted state that could drift from governance. The opt-in
+flag guarantees zero behaviour change for existing hubs (byte-identical output),
+letting the loop roll out incrementally. Typed zero-row stubs give downstream models a
+stable contract while `where 1 = 0` prevents vacuous green tests from masking an
+unbound target. Gating on release-*eligibility* rather than artifact existence keeps
+output byte-stable and avoids cascading suppression of gold. Centralizing bound/stub/
+folded/skipped classification in one `BindingAnalysis` service means the projector,
+coverage, release gate, and status scan never diverge on "is this bound?".
+
+### Consequences
+
+- Hubs can build Silver/Gold **target-first** against approved claims before mappings
+  exist; adding a SKOS mapping transparently binds the stub on the next projection.
+- Feature-off output (and absence of the new metadata) is unchanged — a hard
+  backward-compat constraint enforced by tests.
+- Coverage/status must distinguish stub vs bound (a stub is not "done"); the release
+  gate blocks while release-blocking stubs remain.
+- Deferred (out of scope): per-claim release waivers, conformance warn→driver
+  promotion, `contract.enforced` promotion, and the drift report.
 
 ---
 
