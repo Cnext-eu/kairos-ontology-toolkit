@@ -666,6 +666,7 @@ def run_projections(
     target: str,
     namespace: str = None,
     platform: str = "fabric",
+    emit_aspirational_stubs: bool = False,
 ):
     """Run projection generation.
     
@@ -677,8 +678,19 @@ def run_projections(
         namespace: Base namespace to project (e.g., 'http://example.org/ont/'). 
                    If None, auto-detects from ontology.
         platform: dbt SQL adapter platform (``fabric`` or ``databricks``).
+        emit_aspirational_stubs: When True, the dbt/silver projector emits typed
+            zero-row Silver stubs for approved, materialization-eligible claims that
+            have no bronze mapping yet (target-first stub → bind loop, DD-096).
+            Defaults to False; also honoured via ``KAIROS_EMIT_ASPIRATIONAL_STUBS``.
     """
+    import os
+
     from kairos_ontology import __version__ as toolkit_version
+
+    if not emit_aspirational_stubs:
+        emit_aspirational_stubs = os.environ.get(
+            "KAIROS_EMIT_ASPIRATIONAL_STUBS", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
 
     report = ProjectionReport(
         toolkit_version=toolkit_version,
@@ -958,6 +970,22 @@ def run_projections(
                         if p != ext_path
                     ] if all_silver_ext_paths else None
 
+                    # Target-first stub → bind loop (DD-096): when enabled, compute
+                    # the materialization-eligible claim set so the dbt projector can
+                    # emit typed zero-row Silver stubs for approved-but-unbound claims.
+                    eligible_class_uris: set[str] | None = None
+                    if emit_aspirational_stubs and target_name == "dbt" and claims_dir:
+                        claims_file = claims_dir / f"{onto_name}-claims.yaml"
+                        if claims_file.exists():
+                            from .binding_analysis import (
+                                materialization_eligible_class_uris,
+                            )
+                            from .claim_registry import load_registry
+
+                            eligible_class_uris = materialization_eligible_class_uris(
+                                load_registry(claims_file)
+                            )
+
                     artifacts = _run_projection(
                         target_name, onto_graph, target_output, template_base,
                         onto_namespace, shapes_dir, onto_name,
@@ -970,7 +998,9 @@ def run_projections(
                         ref_model_defaults=ref_defaults,
                         peer_ext_paths=peer_exts,
                         target_platform=platform,
-                        contract_registry=contract_registry)
+                        contract_registry=contract_registry,
+                        emit_aspirational_stubs=emit_aspirational_stubs,
+                        eligible_class_uris=eligible_class_uris)
                 finally:
                     proj_logger.removeHandler(warn_handler)
                     if warn_handler.records:
@@ -1748,7 +1778,9 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
                     ref_model_defaults: Optional[list] = None,
                     peer_ext_paths: Optional[list] = None,
                     target_platform: str = "fabric",
-                    contract_registry: Optional[dict] = None) -> dict:
+                    contract_registry: Optional[dict] = None,
+                    emit_aspirational_stubs: bool = False,
+                    eligible_class_uris: Optional[set] = None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
@@ -1876,6 +1908,8 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             peer_ext_paths=peer_ext_paths,
             target_platform=target_platform,
             contract_registry=contract_registry,
+            emit_aspirational_stubs=emit_aspirational_stubs,
+            eligible_class_uris=eligible_class_uris,
         )
     elif target == 'neo4j':
         from .projections.neo4j_projector import generate_neo4j_artifacts

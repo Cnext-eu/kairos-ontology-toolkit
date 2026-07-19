@@ -841,7 +841,16 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
 )
 @click.option('--namespace', type=str, default=None,
               help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
-def project(ontologies, ontology, catalog, output, target, platform, namespace):
+@click.option(
+    '--emit-aspirational-stubs',
+    is_flag=True,
+    default=False,
+    help='Emit typed zero-row Silver stubs for approved, materialization-eligible '
+         'claims that have no bronze mapping yet (target-first stub → bind loop, DD-096). '
+         'Off by default; also honoured via KAIROS_EMIT_ASPIRATIONAL_STUBS.',
+)
+def project(ontologies, ontology, catalog, output, target, platform, namespace,
+            emit_aspirational_stubs):
     """Generate projections from ontologies."""
     from ..core.hub_utils import find_hub_root
 
@@ -849,6 +858,10 @@ def project(ontologies, ontology, catalog, output, target, platform, namespace):
     hub_root = find_hub_root(cwd, require_model=False)
     if platform != 'fabric' and target not in {'dbt', 'all'}:
         raise click.UsageError("--platform applies only to --target dbt or --target all")
+    if emit_aspirational_stubs and target not in {'dbt', 'all'}:
+        raise click.UsageError(
+            "--emit-aspirational-stubs applies only to --target dbt or --target all"
+        )
 
     if ontology is not None and ontologies is not None:
         raise click.UsageError("Use either --ontology for one file or --ontologies for a directory, not both.")
@@ -888,6 +901,7 @@ def project(ontologies, ontology, catalog, output, target, platform, namespace):
             target=target,
             namespace=namespace,
             platform=platform,
+            emit_aspirational_stubs=emit_aspirational_stubs,
         )
     except ProjectionRunError as exc:
         raise click.ClickException(str(exc)) from exc
