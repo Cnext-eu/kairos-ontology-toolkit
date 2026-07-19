@@ -194,6 +194,7 @@ xrefs:
 | Multiple open logs for one instance | Newest by `last_updated` is active; archive the rest to `_archive/`. |
 | Scan older than artifact mtime (stale) | Re-run `kairos-ontology status` before presenting. |
 | Continuation has `blocked`/`open-questions` but scan says `done` | Respect the block — surface it; objective completeness does not clear intent. |
+| Silver `done` but eligible claims are unbound **aspirational stubs** (DD-096) | Silver is **not** fully done — the stub is a target, not a bound model. Fold "aspirational stubs pending binding" into `status.md` regions 2–3 (open questions / next actions) and route to `kairos-design-mapping` to bind. Classify via `BindingAnalysis` over authorities, not generated `meta.is_aspirational`. |
 
 ---
 

@@ -368,6 +368,21 @@ Produce a structured Markdown report:
 > version is **v{installed_version}**. {If different: "Output may be stale — consider
 > re-running projections." If same: "Versions match — output is current."}
 
+### Aspirational stub vs bound (DD-096)
+
+When distinguishing whether a Silver entity is a real (bound) model or an
+**aspirational stub** (approved claim, no bronze mapping yet), classify over the
+**authorities** (Claim Registry + mappings + sources via `BindingAnalysis`), **not** by
+reading generated `meta.is_aspirational` — that marker is absent when
+`--emit-aspirational-stubs` is off or when output is stale. Report each eligible entity
+as **bound** / **stub (aspirational, pending binding)** / **release-eligible**. A stub
+is *not* release-eligible merely by existing; surface stubs as open items to bind
+(→ kairos-design-mapping), not as `done`.
+
+| Domain | Entity | State | Blocks release? |
+|--------|--------|-------|-----------------|
+| {name} | {Class} | bound / stub / skipped | yes (unbound stub) / no |
+
 ## 5. Reference Model Strategy
 
 | Domain | Strategy | Reference Model(s) | Detail |
