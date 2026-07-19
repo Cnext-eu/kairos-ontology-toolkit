@@ -1,7 +1,7 @@
 # Custom dbt Transformation Extensibility
 
-**Status:** Draft design proposal  
-**Scope:** Kairos ontology-to-dbt projection  
+**Status:** Draft design proposal
+**Scope:** Kairos ontology-to-dbt projection
 **Example:** Bronze-to-Silver Shipment conformance
 
 ## 1. Decision summary
