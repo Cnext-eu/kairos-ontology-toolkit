@@ -1232,6 +1232,41 @@ def compute_source_bindings(
     )
 
 
+def _stub_columns(
+    graph: Graph, cls_uri: str, model_name: str, platform: str = DEFAULT_PLATFORM
+) -> list[dict]:
+    """Build the typed column list for an aspirational Silver stub (DEC-4).
+
+    Mirrors the schema-yaml column derivation: surrogate-key + IRI structural
+    columns followed by the class's datatype-property columns (including inherited
+    ones), typed via ``kairos-ext:silverDataType`` → ``rdfs:range`` → the platform
+    string fallback (``VARCHAR(255)``). Columns are typed where typable so the stub
+    dbt-compiles on Fabric; the value is always ``cast(null as <type>)``.
+    """
+    cols: list[dict] = [
+        {"name": f"{model_name}_sk", "data_type": _xsd_to_target(XSD.string, platform)},
+        {"name": f"{model_name}_iri", "data_type": _xsd_to_target(XSD.string, platform)},
+    ]
+    domain_classes = _get_class_and_parents(graph, cls_uri)
+    seen: set[str] = {c["name"] for c in cols}
+    for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
+        domain = graph.value(prop, RDFS.domain)
+        if not (domain and str(domain) in domain_classes):
+            continue
+        col_name = _resolve_column_name(graph, str(prop))
+        if col_name in seen:
+            continue
+        seen.add(col_name)
+        silver_dt = graph.value(URIRef(str(prop)), KAIROS_EXT.silverDataType)
+        if silver_dt:
+            data_type = str(silver_dt)
+        else:
+            range_uri = graph.value(prop, RDFS.range)
+            data_type = _xsd_to_target(range_uri, platform)
+        cols.append({"name": col_name, "data_type": data_type})
+    return cols
+
+
 def _gen_silver_models(
     classes: list[dict],
     graph: Graph,
@@ -1244,6 +1279,8 @@ def _gen_silver_models(
     platform: str = DEFAULT_PLATFORM,
     mapping_ns: dict[str, str] | None = None,
     contract_registry: Mapping[str, "DbtContractModel"] | None = None,
+    emit_aspirational_stubs: bool = False,
+    eligible_class_uris: set[str] | None = None,
 ) -> tuple[dict[str, str], list[str], list[dict]]:
     """Generate silver entity models that read directly from bronze sources.
 
@@ -1312,6 +1349,41 @@ def _gen_silver_models(
                     "fk_join_count": 0,
                     "skipped": True,
                     "skip_reason": f"S3 discriminator subclass of {parent_name}",
+                })
+                continue
+
+            if emit_aspirational_stubs and cls_uri in (eligible_class_uris or set()):
+                # Target-first stub → bind loop: this class is an approved,
+                # materialization-eligible claim with no bronze mapping yet. Emit a
+                # typed, zero-row placeholder so downstream models have a stable
+                # Silver contract. `aspirational` is DERIVED here, not persisted.
+                stub_cols = _stub_columns(graph, cls_uri, model_name, platform)
+                stub_content = env.get_template("silver_stub_model.sql.jinja2").render(
+                    model_name=model_name,
+                    domain_name=ontology_name,
+                    schema_name=schema_name,
+                    columns=stub_cols,
+                    ontology_metadata=meta,
+                )
+                stub_path = f"models/silver/{ontology_name}/{model_name}.sql"
+                artifacts[stub_path] = stub_content
+                logger.info(
+                    "Class '%s' is an approved claim with no bronze mapping — "
+                    "emitting aspirational Silver stub (bind via kairos-design-mapping).",
+                    local,
+                )
+                entity_metadata.append({
+                    "class_name": local,
+                    "class_uri": cls_uri,
+                    "model_file": stub_path,
+                    "scd_type": None,
+                    "source_count": 0,
+                    "column_count": len(stub_cols),
+                    "column_names": [c["name"] for c in stub_cols],
+                    "fk_join_count": 0,
+                    "skipped": False,
+                    "aspirational": True,
+                    "skip_reason": None,
                 })
                 continue
 
@@ -2921,6 +2993,7 @@ def _gen_schema_yaml(
     mappings: dict | None = None,
     generated_class_names: set[str] | None = None,
     platform: str = DEFAULT_PLATFORM,
+    aspirational_class_names: set[str] | None = None,
 ) -> dict[str, str]:
     """Generate ``_models.yml`` with column descriptions, tests, and lineage."""
     artifacts: dict[str, str] = {}
@@ -3114,14 +3187,19 @@ def _gen_schema_yaml(
                     "tests": [],
                 })
 
+        model_meta = {
+            "ontology_class": cls["name"],
+            "ontology_iri": meta.get("iri", ""),
+            "ontology_version": meta.get("version", ""),
+        }
+        if aspirational_class_names and cls["name"] in aspirational_class_names:
+            # Read-only, derived marker: this Silver model is an aspirational stub
+            # (approved claim, not yet bound to a bronze source).
+            model_meta["is_aspirational"] = "true"
         models_data.append({
             "name": model_name,
             "description": cls["comment"],
-            "meta": {
-                "ontology_class": cls["name"],
-                "ontology_iri": meta.get("iri", ""),
-                "ontology_version": meta.get("version", ""),
-            },
+            "meta": model_meta,
             "columns": cols,
         })
 
@@ -3697,6 +3775,8 @@ def generate_dbt_artifacts(
     peer_ext_paths: list = None,
     logical_sources_only: bool = False,
     contract_registry: Mapping[str, "DbtContractModel"] | None = None,
+    emit_aspirational_stubs: bool = False,
+    eligible_class_uris: set[str] | None = None,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
 
@@ -3790,6 +3870,8 @@ def generate_dbt_artifacts(
         platform=target_platform,
         mapping_ns=mapping_ns,
         contract_registry=contracts,
+        emit_aspirational_stubs=emit_aspirational_stubs,
+        eligible_class_uris=eligible_class_uris,
     )
     artifacts.update(silver)
     logger.info("Generated %d silver model(s)", len(silver))
@@ -3812,6 +3894,9 @@ def generate_dbt_artifacts(
         generated_class_names = {
             m["class_name"] for m in silver_entity_meta if not m.get("skipped")
         }
+    aspirational_class_names = {
+        m["class_name"] for m in silver_entity_meta if m.get("aspirational")
+    }
 
     # 3. Schema YAML with SHACL tests
     schema = _gen_schema_yaml(
@@ -3819,6 +3904,7 @@ def generate_dbt_artifacts(
         systems=systems, mappings=mappings,
         generated_class_names=generated_class_names,
         platform=target_platform,
+        aspirational_class_names=aspirational_class_names,
     )
     artifacts.update(schema)
 
