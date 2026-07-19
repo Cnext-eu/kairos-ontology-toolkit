@@ -141,6 +141,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-091](#dd-091-optional-ddd-governance-overlay-architecture-documentation-only) | Optional DDD governance overlay (architecture documentation only) | Accepted | 2026-06-22 |
 | [DD-092](#dd-092-contracted-custom-dbt-transformation-boundary) | Contracted custom dbt transformation boundary | Accepted | 2026-07-18 |
 | [DD-093](#dd-093-governed-contracted-source-replacement-in-source-coverage) | Governed contracted-source replacement in source coverage | Accepted | 2026-07-18 |
+| [DD-094](#dd-094-claim-registry-is-the-single-materialization-authority) | Claim Registry is the single materialization authority | Accepted | 2026-07-25 |
+| [DD-095](#dd-095-derive-claims-deterministic-multi-source-evidence-aggregation) | derive-claims deterministic multi-source evidence aggregation | Accepted | 2026-07-25 |
 
 ---
 
@@ -5640,6 +5642,127 @@ prevents metadata alone from laundering an unrelated joined table into coverage.
   observed filename/folder mismatch without forcing claim-registry hash churn for
   ordinary sources. Canonical table IRI remains mandatory at the contract boundary; an
   IRI-first affinity schema is deferred until a real-source identity case requires it.
+
+---
+
+## DD-094: Claim Registry is the single materialization authority
+
+**Status:** Accepted
+
+**Date:** 2026-07-25
+
+**Affects:** `model/claims/{domain}-claims.yaml`, `{domain}-alignment.yaml`
+(retired), `src/kairos_ontology/core/claim_registry.py`,
+`src/kairos_ontology/core/claim_coverage.py`,
+`src/kairos_ontology/core/propose_alignment.py`, silver/dbt projectors,
+`check-claims` / `check-source-coverage`, evidence-led design skills
+
+**Implementation:** Claim Registry schema v1 → migration → projector authority.
+Canonicalized from the archived evidence-led decision log
+(`docs/archive/evidence-led-modeling/decision-log.md` §DD-EL-1); see also
+`docs/archive/evidence-led-modeling/0b-claim-registry-schema-v1.md`.
+
+### Context
+
+The evidence-led, accelerator-first methodology needs a single governed artifact
+recording *which concepts are approved to materialize*, with evidence, ownership,
+dispositions, and silver-contract impact. The legacy `{domain}-alignment.yaml`
+carried proposal data but was an AI-output artifact with no approval lifecycle.
+Keeping both an alignment file and a registry would create a dual source of truth.
+
+### Decision
+
+Introduce a per-domain **Claim Registry** at `model/claims/{domain}-claims.yaml`
+(schema v1) as the single hand-governed source of truth for materialization.
+**Retire** `{domain}-alignment.yaml` via a one-way deterministic migration; once a
+domain has a claims file, a leftover alignment file is a hard error (no dual path).
+Each claim carries an explicit `status` lifecycle (`proposed → approved → …`) and a
+`disposition` vocabulary (`claim` / `specialize` / `passthrough` / `skip` / `gap`).
+Approved `claim`/`specialize` claims — and only those — authorize silver/dbt
+materialization; the projector consumes the registry rather than namespace
+selection alone. The retired coverage gates unify into a single **`check-claims`**
+command (backend `claim_coverage.py`).
+
+### Rationale
+
+One governed file with a reviewable, GitHub-PR-based lifecycle gives auditable
+governance. Reusing the alignment backend primitives (coverage, freshness, anchor
+state, triage heuristics) preserves every prior guarantee while eliminating the
+double-path logic. Golden, parity, and negative-migration tests enforce fidelity.
+
+### Consequences
+
+- The registry is the authority for what materializes; probabilistic evidence never
+  auto-approves a claim.
+- `propose-alignment` output becomes migration input, not a parallel artifact.
+- Custom-column triage maps: `model`→`specialize`/`claim`,
+  `silver-passthrough`→`passthrough`, `skip`→`skip`.
+- Claim ids are stable and never reused; deletions become `deprecated`.
+- `check-claims` blocks on missing/invalid/incomplete/stale/duplicate-approved and
+  (unless `--no-source-coverage`) unmapped tables; `--strict` also blocks undecided
+  (`proposed`) claims; leftover `*-alignment.yaml` is always a hard error.
+
+---
+
+## DD-095: derive-claims deterministic multi-source evidence aggregation
+
+**Status:** Accepted
+
+**Date:** 2026-07-25
+
+**Affects:** `model/claims/{domain}-claims.yaml`,
+`src/kairos_ontology/core/derive_claims.py`, `derive-claims` CLI command,
+`claim_registry.merge_preserving_decisions`, `_concurrency.py` / `_cache.py`,
+evidence-led design skills (`kairos-design-source`, `kairos-execute-project`)
+
+**Implementation:** Deterministic evidence aggregator on top of DD-094.
+Canonicalized from the archived evidence-led decision log
+(`docs/archive/evidence-led-modeling/decision-log.md` §DD-EL-5); see also
+`docs/archive/evidence-led-modeling/slice-3-derive-claims.md`.
+
+### Context
+
+With the Claim Registry (DD-094) as the governance authority, authoring candidate
+claims is still largely manual: the evidence needed to propose them is scattered
+across already-produced artifacts (`analyse-sources` affinity, `propose-alignment`
+column→property output, `import-tmdl` concept-mapping dispositions, SKOS mapping
+TTL, and sample-derived signals). The semantically hard LLM interpretation already
+happened upstream; what is missing is a single deterministic step that joins those
+evidence streams into a richer candidate set for human curation.
+
+### Decision
+
+Add a **`derive-claims`** CLI command: a **deterministic, AI-free** aggregator that
+merges/enriches the Claim Registry with additional deterministic evidence streams
+and attaches **multiple `evidence_sources` per claim**. It joins five streams on
+`(system, table[, column])` and ref_class/ref_property names: (1) the existing
+claims registry, (2) `analyse-sources` affinity, (3) `import-tmdl` concept-mapping,
+(4) SKOS mappings, and (5) sample-derived enum/FK signals. **C4 guard — all
+derived/new claims are `status: proposed`, never auto-`approved`.** Human decisions
+survive re-runs via `merge_preserving_decisions()`; conflicting evidence is
+surfaced (low-confidence proposed claims / rationale notes), never silently
+resolved. It reuses `_concurrency.map_concurrent` (`--max-workers`) and the
+`_cache` sidecar (`--force`), and is skill-managed (soft skill-gate;
+`KAIROS_SKILL_CONTEXT=1` silences the warning).
+
+### Rationale
+
+The hard interpretation already happened upstream, so this step is pure
+deterministic plumbing: a reproducible join with no model variance and no token
+spend. Keeping it AI-free makes re-runs free, fast, and diffable, and preserves the
+strong (anchored) vs weak (affinity-only) evidence distinction. No cost banner is
+printed because nothing is billed — printing one here would train users to ignore
+the banner where it actually matters (the paid AI commands).
+
+### Consequences
+
+- One command turns already-produced customer assets into a richer candidate claim
+  set, reducing hand-authoring before human curation/approval.
+- No claim is ever auto-approved; the `check-claims` approval gate is unchanged.
+- Evidence granularity is preserved: each claim may carry multiple
+  `evidence_sources`.
+- A future opt-in `--llm-reconcile` (LLM tie-breaking / rationale synthesis, with a
+  cost banner) is explicitly deferred.
 
 ---
 

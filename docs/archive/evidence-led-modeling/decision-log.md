@@ -9,6 +9,10 @@ these into `docs/design/toolkit-design-decisions.md` (and its Index) at merge.
 
 ## DD-EL-1: Claim Registry replaces alignment YAML as the governance source of truth
 
+> **Canonicalized as [DD-094](../../design/toolkit-design-decisions.md#dd-094-claim-registry-is-the-single-materialization-authority)**
+> in `docs/design/toolkit-design-decisions.md`. This archived entry is retained for
+> historical context; the canonical DD register is authoritative.
+
 **Status:** Accepted
 **Date:** 2026-06-15
 **Affects:** `model/claims/{domain}-claims.yaml` (new), `{domain}-alignment.yaml`
@@ -242,6 +246,10 @@ A1 (claims drive imports) while retaining DD-021 as a claim-driven gate.
 ---
 
 ## DD-EL-5: Slice 3 — derive-claims deterministic multi-source evidence aggregation
+
+> **Canonicalized as [DD-095](../../design/toolkit-design-decisions.md#dd-095-derive-claims-deterministic-multi-source-evidence-aggregation)**
+> in `docs/design/toolkit-design-decisions.md`. This archived entry is retained for
+> historical context; the canonical DD register is authoritative.
 
 **Status:** Accepted
 **Date:** 2026-06-15
