@@ -15,7 +15,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 from kairos_ontology.core import determinism
 

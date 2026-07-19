@@ -9,7 +9,6 @@ for use in AI agent prompts. Supports multiple output templates.
 """
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 from rdflib import Graph, Namespace

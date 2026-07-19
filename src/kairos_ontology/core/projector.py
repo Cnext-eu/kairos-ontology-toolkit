@@ -6,7 +6,6 @@ import json
 import logging
 import traceback as _tb
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from collections.abc import Iterable
@@ -1193,7 +1192,6 @@ def run_projections(
         # After all domains: merge per-domain coverage data into a single report
         if target_name == "dbt" and dbt_coverage_data and not target_failed:
             import json as _json
-            from datetime import datetime as _dt, timezone as _tz
             merged_coverage = {
                 "domains": dbt_coverage_data,
                 "summary": _build_coverage_summary(dbt_coverage_data),
@@ -1457,7 +1455,6 @@ def _build_coverage_summary(domain_data: dict[str, dict]) -> dict:
 
 def _render_silver_coverage_md(merged: dict) -> str:
     """Render merged silver coverage data as human-readable Markdown."""
-    from datetime import datetime, timezone
     summary = merged.get("summary", {})
     domains = merged.get("domains", {})
     lines = [
