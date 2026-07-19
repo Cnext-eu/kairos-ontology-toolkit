@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from collections.abc import Iterable
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 from .projections.uri_utils import extract_local_name
@@ -641,6 +642,62 @@ def _write_artifacts(artifacts: dict[str, str], target_output: Path) -> int:
     return len(artifacts)
 
 
+#: Manifest of toolkit-generated files, written at a target output root so a later
+#: projection can delete artifacts it no longer produces (DD-096 C3). Deleting only
+#: files this manifest recorded guarantees hand-authored files are never touched.
+_PROJECTION_MANIFEST_NAME = ".kairos-projection-manifest.json"
+
+
+def _reconcile_managed_output(target_output: Path, current_paths: Iterable[str]) -> int:
+    """Delete previously generated files no longer produced, then record the new set.
+
+    Reads the prior manifest at ``target_output/{_PROJECTION_MANIFEST_NAME}``, removes
+    any file it listed that is absent from *current_paths* (pruning newly empty
+    directories), and writes the updated manifest. This makes re-projection converge
+    on the current output — e.g. an aspirational Silver stub is removed when the
+    feature is turned off or its claim is deferred (DD-096 C3). Only files the toolkit
+    itself recorded are ever deleted; user-authored files are never in the manifest.
+
+    Returns the number of stale files removed.
+    """
+    manifest_path = target_output / _PROJECTION_MANIFEST_NAME
+    current = sorted(str(p) for p in current_paths)
+
+    prior: list[str] = []
+    if manifest_path.exists():
+        try:
+            loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                loaded = loaded.get("files", [])
+            if isinstance(loaded, list):
+                prior = [str(p) for p in loaded]
+        except (ValueError, OSError):
+            prior = []
+
+    removed = 0
+    stale = sorted(set(prior) - set(current))
+    for rel in stale:
+        stale_file = target_output / rel
+        try:
+            if stale_file.is_file():
+                stale_file.unlink()
+                removed += 1
+                # Prune now-empty parent directories, but never the output root.
+                parent = stale_file.parent
+                while parent != target_output and parent.is_dir() and not any(parent.iterdir()):
+                    parent.rmdir()
+                    parent = parent.parent
+        except OSError:
+            pass
+
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps({"files": current}, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return removed
+
+
 def _merge_identical_artifacts(
     destination: dict[str, str],
     incoming: dict[str, str],
@@ -1110,6 +1167,14 @@ def run_projections(
                     pending_dbt_artifacts.update(bundle.artifacts)
 
                 total_files += _write_artifacts(pending_dbt_artifacts, target_output)
+                # DD-096 C3: remove dbt artifacts this run no longer produces (e.g. a
+                # stale aspirational stub after the feature is disabled or its claim is
+                # deferred), so re-projection converges on the current output.
+                removed = _reconcile_managed_output(
+                    target_output, pending_dbt_artifacts.keys()
+                )
+                if removed:
+                    _logger.info("Removed %d obsolete dbt artifact(s)", removed)
                 _logger.info(
                     "Generated project config for %d domain(s)", len(dbt_domain_names)
                 )

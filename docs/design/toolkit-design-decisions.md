@@ -5827,6 +5827,13 @@ Add an **opt-in, flag-gated** target-first stub → bind loop:
   (safe/cheap — the stub had zero rows).
 - **Schema YAML marker.** The stub's `_models.yml` entry carries a read-only, derived
   `meta.is_aspirational`.
+- **Obsolete-output reconciliation (C3).** The dbt projector writes a
+  `.kairos-projection-manifest.json` at the output root recording the files it
+  generated; the next run deletes any manifest-recorded file it no longer produces
+  (pruning emptied directories). This converges re-projection on the current output —
+  a stale stub is removed when the feature is disabled or its claim is deferred —
+  while only ever deleting toolkit-recorded files, so hand-authored files are never
+  touched.
 - **Release-eligibility, not existence, is the gate (DEC-1/DEC-2).** All approved,
   materialization-eligible, *unbound* claims are release-blocking under the strict
   gate; no required/optional field is added (per-claim waiver deferred). Implemented as

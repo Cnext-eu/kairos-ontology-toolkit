@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   incomplete hub cannot be released with vacuous zero-row stubs. Wired into the
   scaffold `release-projections.yml` workflow. Independent of stub emission —
   release-eligibility, not artifact existence, is the gate.
+- **Obsolete dbt output reconciliation** (DD-096 C3): the dbt projector records a
+  `.kairos-projection-manifest.json` and deletes previously generated files it no
+  longer produces (e.g. a stale aspirational stub after the feature is disabled or its
+  claim is deferred), pruning emptied directories. Only toolkit-recorded files are
+  removed — hand-authored files are never touched.
 - **Deterministic projection output**: generated artifacts embed an injected
   `generated_at` + `toolkit_version` context (env-overridable via
   `KAIROS_GENERATED_AT` / `SOURCE_DATE_EPOCH`) and all RDFLib iteration is sorted, so
