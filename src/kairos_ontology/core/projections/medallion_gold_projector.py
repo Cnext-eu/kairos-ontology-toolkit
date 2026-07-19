@@ -245,7 +245,7 @@ def _classify_tables(
 
     # Count outgoing FK-style object properties per class
     outgoing_fks: dict[str, int] = {c["uri"]: 0 for c in domain_classes}
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
         domain = graph.value(prop, RDFS.domain)
         if domain is None or str(domain) not in class_uris:
             continue
@@ -301,7 +301,7 @@ def _collect_hierarchies(
     Returns: {hierarchy_name: [(level, col_name, prop_uri_str), ...]} sorted by level.
     """
     hierarchies: dict[str, list[tuple[int, str, str]]] = {}
-    for prop in graph.subjects(RDFS.domain, cls_uri):
+    for prop in sorted(graph.subjects(RDFS.domain, cls_uri), key=str):
         h_name = _str_val(graph, prop, KAIROS_EXT.hierarchyName)
         if not h_name:
             continue
@@ -988,7 +988,7 @@ def _add_gold_data_properties(
     """Add OWL DatatypeProperty columns to the gold table."""
     existing = {c.name for c in tbl.columns}
 
-    for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
         domain = graph.value(prop, RDFS.domain)
         if domain != cls_uri:
             continue
@@ -1087,7 +1087,7 @@ def _add_gold_fk_columns(
     """Add FK columns from object properties to the gold table."""
     existing = {c.name for c in tbl.columns}
 
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
         domain = graph.value(prop, RDFS.domain)
         if domain != cls_uri:
             continue
@@ -1179,7 +1179,7 @@ def _build_gold_bridge_tables(
     bridges: list[GoldTableDef] = []
     seen: set[str] = set()
 
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
         jct_name = _str_val(graph, prop, KAIROS_EXT.junctionTableName)
         if not jct_name or jct_name in seen:
             continue

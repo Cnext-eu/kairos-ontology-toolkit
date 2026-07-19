@@ -30,6 +30,7 @@ from rdflib import Graph, URIRef
 from rdflib.namespace import RDF, RDFS
 
 from kairos_ontology.mdm import vocabulary as V
+from kairos_ontology.core.determinism import resolve_generated_at
 from kairos_ontology.mdm.model import (
     DataQualityRule,
     MasteredConcept,
@@ -122,7 +123,7 @@ def extract_profile(
         ontology_iri=meta.get("namespace", namespace) or namespace,
         ontology_version=str(meta.get("version", "")),
         toolkit_version=_toolkit_version(),
-        generated_at=datetime.now(timezone.utc).isoformat(),
+        generated_at=resolve_generated_at().isoformat(),
     )
 
     # -- Mastered concepts -------------------------------------------------

@@ -16,6 +16,7 @@ from datetime import datetime
 from rdflib import Graph, Namespace
 from jinja2 import Environment, FileSystemLoader
 from .uri_utils import extract_local_name
+from ..determinism import resolve_generated_at as _resolve_generated_at
 
 
 class Neo4jProjector:
@@ -116,7 +117,7 @@ class Neo4jProjector:
         
         return template.render(
             ontology_uri=str(self.ontology_path.absolute()),
-            timestamp=datetime.now().isoformat(),
+            timestamp=_resolve_generated_at().isoformat(),
             classes=classes,
             relationships=relationships
         )
@@ -223,7 +224,7 @@ def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str,
         Dictionary of {file_path: content}
     """
     from jinja2 import Environment, FileSystemLoader
-    from datetime import datetime
+    from ..determinism import resolve_generated_at
     
     env = Environment(loader=FileSystemLoader(template_dir))
     template = env.get_template('schema.cypher.jinja2')
@@ -236,7 +237,7 @@ def generate_neo4j_artifacts(classes: list, graph, template_dir, namespace: str,
     
     content = template.render(
         ontology_uri=meta.get('iri', 'ontology'),
-        timestamp=meta.get('generated_at', datetime.now().isoformat()),
+        timestamp=meta.get('generated_at', resolve_generated_at().isoformat()),
         classes=classes,
         relationships=[],
         ontology_metadata=meta,

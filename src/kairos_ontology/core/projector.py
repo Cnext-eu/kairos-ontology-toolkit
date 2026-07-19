@@ -13,6 +13,7 @@ from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 from .projections.uri_utils import extract_local_name
 from .projections.shared import OntologyClassInfo
+from .determinism import resolve_generated_at, generated_at_iso, generated_at_slug
 
 VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report", "ddd"]
 
@@ -290,7 +291,7 @@ class ProjectionReport:
             return None
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        date_str = resolve_generated_at().strftime("%Y-%m-%d_%H-%M-%S")
         targets_slug = "+".join(sorted(self.targets_requested)) if self.targets_requested else "all"
         filename = f"projection-{domain}-{targets_slug}-{date_str}.md"
         path = sessions_dir / filename
@@ -476,7 +477,7 @@ def project_graph(
 
     report = ProjectionReport(
         toolkit_version=toolkit_version,
-        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        generated_at=generated_at_iso(),
     )
     targets = targets or VALID_TARGETS
     report.targets_requested = list(targets)
@@ -681,7 +682,7 @@ def run_projections(
 
     report = ProjectionReport(
         toolkit_version=toolkit_version,
-        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        generated_at=generated_at_iso(),
     )
     fatal_target_errors: list[str] = []
 
@@ -1085,7 +1086,7 @@ def run_projections(
                 "summary": _build_coverage_summary(dbt_coverage_data),
             }
             coverage_content = _json.dumps(merged_coverage, indent=2, ensure_ascii=False)
-            ts = _dt.now(_tz.utc).strftime("%Y-%m-%d-%H%M%S")
+            ts = generated_at_slug()
             reports_dir = output_path / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
             coverage_artifacts = {f"coverage-silver-{ts}.json": coverage_content}
@@ -1170,8 +1171,7 @@ def run_projections(
     # ── Post-domain targets (span all ontology domains) ──────────────────
     if "report" in targets_to_run:
         print("📦 Generating report projection...")
-        from datetime import datetime as _rdt, timezone as _rtz
-        _report_ts = _rdt.now(_rtz.utc).strftime("%Y-%m-%d-%H%M%S")
+        _report_ts = generated_at_slug()
         report_output = output_path / "reports" / "details"
         report_output.mkdir(parents=True, exist_ok=True)
 
@@ -1334,7 +1334,7 @@ def _render_silver_coverage_md(merged: dict) -> str:
     lines = [
         "# Silver Layer Coverage Report",
         "",
-        f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}  ",
+        f"**Generated:** {resolve_generated_at().strftime('%Y-%m-%d %H:%M:%S UTC')}  ",
         f"**Domains:** {summary.get('domains_count', 0)}  ",
         f"**Overall populated:** {summary.get('populated_pct', 0)}%"
         f" ({summary.get('populated_from_source', 0)}"
@@ -1408,7 +1408,7 @@ def extract_ontology_metadata(graph: Graph, namespace: str) -> dict:
         "label": label,
         "namespace": namespace,
         "toolkit_version": toolkit_version,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": generated_at_iso(),
     }
 
 

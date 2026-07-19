@@ -37,6 +37,7 @@ from rdflib.namespace import OWL, RDF
 from jinja2 import Environment, FileSystemLoader
 
 from .uri_utils import camel_to_snake, extract_local_name
+from ..determinism import resolve_generated_at
 from .shared import KAIROS_EXT, merge_ext_graph, str_val, bool_val
 
 if TYPE_CHECKING:
@@ -569,7 +570,7 @@ def _parse_skos_mappings(mappings_dir: Path) -> tuple[dict, dict[str, str]]:
         (SKOS.relatedMatch, "relatedMatch"),
     ]
 
-    for subj in set(g.subjects()):
+    for subj in sorted(set(g.subjects()), key=str):
         for skos_prop, match_name in match_props:
             for obj in g.objects(subj, skos_prop):
                 subj_str = str(subj)
@@ -1779,7 +1780,7 @@ def _build_column_type_map(
     """
     type_map: dict[str, str] = {}
     domain_classes = _get_class_and_parents(graph, class_uri)
-    for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
         domain = graph.value(prop, RDFS.domain)
         if domain and str(domain) in domain_classes:
             col_name = _resolve_column_name(graph, str(prop))
@@ -1970,7 +1971,7 @@ def _resolve_mapped_columns(
 
     # Datatype properties (including inherited from parent classes)
     seen_col_names: set[str] = set()
-    for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
         domain = graph.value(prop, RDFS.domain)
         if domain and str(domain) in domain_classes:
             col_name = _resolve_column_name(graph, str(prop))
@@ -2241,7 +2242,7 @@ def _infer_fk_targets(
     domain_classes = _get_class_and_parents(graph, class_uri)
     targets: list[dict] = []
 
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
         domain = graph.value(prop, RDFS.domain)
         if domain is None or str(domain) not in domain_classes:
             continue
@@ -2302,7 +2303,7 @@ def _infer_fk_on_targets(
     """
     targets: list[dict] = []
 
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
         fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
         if fk_on is None or str(fk_on) != class_uri:
             continue
@@ -2745,7 +2746,7 @@ def _fk_child_parents(graph: Graph, class_uri: str) -> list[str]:
     """
     parents: list[str] = []
     target = URIRef(class_uri)
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
         fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
         if fk_on is None or fk_on != target:
             continue
@@ -2964,7 +2965,7 @@ def _gen_schema_yaml(
                 "tests": [],
             })
             seen_schema_cols.add(disc_col)
-        for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+        for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
             domain = graph.value(prop, RDFS.domain)
             if domain and str(domain) in domain_classes:
                 prop_name = extract_local_name(str(prop))
@@ -3029,7 +3030,7 @@ def _gen_schema_yaml(
                 })
 
         # Object property FK columns (including inherited from parent classes)
-        for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
+        for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
             domain = graph.value(prop, RDFS.domain)
             if domain and str(domain) in domain_classes:
                 # Skip junction-table properties
@@ -4034,7 +4035,7 @@ def generate_coverage_data(
         null_columns = []
         missing_required = []
 
-        for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+        for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
             domain = graph.value(prop, RDFS.domain)
             if domain and str(domain) in domain_classes:
                 total += 1
@@ -4133,7 +4134,7 @@ def write_dbt_session_log(
 
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    now = datetime.now()
+    now = resolve_generated_at()
     date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"dbt-{domain}-{date_str}.md"
     path = sessions_dir / filename

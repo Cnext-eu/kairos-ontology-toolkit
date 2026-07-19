@@ -16,6 +16,7 @@ from rdflib import Graph, Namespace
 from jinja2 import Environment, FileSystemLoader
 from .skos_utils import SKOSParser
 from .uri_utils import extract_local_name
+from ..determinism import resolve_generated_at as _resolve_generated_at
 
 
 class PromptProjector:
@@ -177,7 +178,7 @@ class PromptProjector:
         return template.render(
             ontology_name=ontology_name,
             version=version,
-            timestamp=datetime.now().isoformat(),
+            timestamp=_resolve_generated_at().isoformat(),
             description=description,
             concepts=concepts,
             relationships=relationships
@@ -265,8 +266,8 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
     Returns:
         Dictionary of {file_path: content}
     """
-    from datetime import datetime
     from .uri_utils import extract_local_name
+    from ..determinism import resolve_generated_at
     
     # Extract datatype properties for each class
     def get_properties(class_uri: str) -> list:
@@ -417,7 +418,7 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
             "iri": meta.get("iri", ""),
             "version": meta.get("version") or "1.0.0",
             "toolkit_version": meta.get("toolkit_version", ""),
-            "generated": meta.get("generated_at") or datetime.now().isoformat(),
+            "generated": meta.get("generated_at") or resolve_generated_at().isoformat(),
         },
         "entities": [
             {
