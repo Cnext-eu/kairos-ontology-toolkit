@@ -35,6 +35,24 @@ def _make_hub_pyproject(tmp_path: Path, version: str = "v3.8.0") -> Path:
     return pyproject
 
 
+def _make_hub_pyproject_with_extras(tmp_path: Path, version: str = "v3.8.0") -> Path:
+    """Create a pyproject.toml with a primary pin AND a [flatfile] extras pin."""
+    pyproject = tmp_path / "pyproject.toml"
+    whl = (
+        "https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/"
+        f"{version}/kairos_ontology_toolkit-0.0.0-py3-none-any.whl"
+    )
+    pyproject.write_text(
+        '[project]\nname = "test-hub"\n\ndependencies = [\n'
+        f'  "kairos-ontology-toolkit @ {whl}",\n]\n\n'
+        "[project.optional-dependencies]\n"
+        f'flatfile = [\n  "kairos-ontology-toolkit[flatfile] @ {whl}",\n]\n\n'
+        '[tool.kairos]\nchannel = "preview"\n',
+        encoding="utf-8",
+    )
+    return pyproject
+
+
 class TestUpdateUpgradeWindows:
     """Tests for the Windows-specific uv sync skip during --upgrade."""
 
@@ -342,3 +360,57 @@ class TestUpdateHubRootResolution:
 
         assert result.exit_code == 0
         assert (tmp_path / "pyproject.toml").is_file()
+
+
+class TestUpdateUpgradeExtrasPins:
+    """The pin-rewriter must also rewrite [project.optional-dependencies] pins.
+
+    Regression: `--upgrade` only rewrote the primary pin, leaving extras pins
+    like ``kairos-ontology-toolkit[flatfile] @ ...`` on the old version, which
+    made `uv lock` fail with conflicting URLs for the same package.
+    """
+
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_extras_pin_is_rewritten_and_marker_preserved(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        """Both the primary and the [flatfile] extras pin get the new version,
+        and the ``[flatfile]`` extras marker is preserved."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject_with_extras(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+                text = Path("pyproject.toml").read_text(encoding="utf-8")
+
+        assert result.exit_code == 0
+        # New version present on both pins; old version fully gone.
+        assert "0.0.0-py3-none-any.whl" not in text
+        assert text.count("3.9.0rc2-py3-none-any.whl") == 2
+        assert text.count("/download/v3.9.0-rc.2/") == 2
+        # The extras marker survived the rewrite.
+        assert "kairos-ontology-toolkit[flatfile] @ " in text
+
+    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_plain_only_pin_still_rewritten(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        """A plain (no-extras) pin is still rewritten (no false negatives)."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+                text = Path("pyproject.toml").read_text(encoding="utf-8")
+
+        assert result.exit_code == 0
+        assert "3.9.0rc2-py3-none-any.whl" in text
+        assert "0.0.0-py3-none-any.whl" not in text

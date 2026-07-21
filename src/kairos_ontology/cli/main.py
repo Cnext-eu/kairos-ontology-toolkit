@@ -4599,16 +4599,17 @@ def update(check, upgrade):
                 raise SystemExit(1)
         if pyproject.is_file():
             content = pyproject.read_text(encoding="utf-8")
-            new_dep = (
-                f"kairos-ontology-toolkit @ {_whl_url(ref)}"
-            )
-            # Match both old git+https format and new .whl URL format
+            whl_url = _whl_url(ref)
+            # Match both old git+https format and new .whl URL format, and
+            # preserve any extras marker (e.g. kairos-ontology-toolkit[flatfile])
+            # so optional-dependencies pins are rewritten too — otherwise they
+            # stay on the old version and `uv lock` fails with conflicting URLs.
             new_content = re.sub(
-                r'kairos-ontology-toolkit\s*@\s*(?:'
+                r'kairos-ontology-toolkit(\[[^\]]*\])?\s*@\s*(?:'
                 r'git\+https://github\.com/Cnext-eu/kairos-ontology-toolkit\.git@[^\s"]*'
                 r'|https://github\.com/Cnext-eu/kairos-ontology-toolkit/releases/download/[^\s"]*'
                 r')',
-                new_dep,
+                lambda m: f"kairos-ontology-toolkit{m.group(1) or ''} @ {whl_url}",
                 content,
             )
             if new_content != content:

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.0rc4] — 2026-07-21
+
+### Fixed
+- **`update --upgrade` now rewrites optional-extras toolkit pins.** The
+  pin-rewriter previously only matched the primary
+  `kairos-ontology-toolkit @ …` dependency, leaving
+  `[project.optional-dependencies]` pins such as
+  `kairos-ontology-toolkit[flatfile] @ …` on the old version. With the primary
+  pin advanced and extras pins stale, `uv lock` failed with conflicting URLs for
+  the same package. The rewriter now preserves any `[extra]` marker and updates
+  every occurrence. The scaffold `pyproject.toml.template` also gains `azure`,
+  `foundry`, and `parquet` extras pins alongside `flatfile`.
+
 ## [4.5.0rc3] — 2026-07-21
 
 ### Fixed

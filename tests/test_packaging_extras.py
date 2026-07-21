@@ -18,6 +18,10 @@ import tomllib
 from pathlib import Path
 
 PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
+SCAFFOLD_TEMPLATE = (
+    Path(__file__).resolve().parent.parent
+    / "src" / "kairos_ontology" / "scaffold" / "pyproject.toml.template"
+)
 
 USER_FACING_EXTRAS = ["azure", "foundry", "flatfile", "parquet"]
 
@@ -54,3 +58,19 @@ def test_dev_group_is_not_an_optional_dependency():
     data = _load_pyproject()
     optional = data["project"].get("optional-dependencies", {})
     assert "dev" not in optional
+
+
+def test_scaffold_template_declares_user_facing_extras():
+    """The scaffold pyproject template must pin every user-facing extra so hubs
+    scaffolded/upgraded via the toolkit exercise the extras pin-rewriter."""
+    with SCAFFOLD_TEMPLATE.open("rb") as fh:
+        data = tomllib.load(fh)
+    optional = data["project"].get("optional-dependencies", {})
+    for extra in USER_FACING_EXTRAS:
+        assert extra in optional, (
+            f"scaffold pyproject.toml.template is missing the '{extra}' extra pin"
+        )
+        pins = optional[extra]
+        assert any(
+            f"kairos-ontology-toolkit[{extra}]" in pin for pin in pins
+        ), f"scaffold '{extra}' extra must pin kairos-ontology-toolkit[{extra}]"
