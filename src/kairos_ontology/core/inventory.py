@@ -288,3 +288,114 @@ def check_inventories(
                 report.orphan.append(inv_file.name)
 
     return report
+
+
+@dataclass
+class DomainScope:
+    """Domain-scoped inventory readiness (toolkit-optimizations F5).
+
+    Built by :func:`scope_inventory_report` from a repository-wide
+    :class:`InventoryCheckReport` plus a domain→inventory-key mapping. Lets skill
+    workflows report whether the *active* domain is ready separately from unrelated
+    repository-wide failures.
+
+    ``keys`` is the set of inventory keys (e.g. ``bsp-party``) owned by the selected
+    domain(s). The status lists are the intersection of that set with the
+    repository-wide report. ``unresolved`` holds domain import URIs the catalog
+    could not resolve to a source TTL (surfaced so a scope gap is never silent).
+    """
+
+    domains: list[str] = field(default_factory=list)
+    keys: set[str] = field(default_factory=set)
+    missing: list[str] = field(default_factory=list)
+    stale: list[str] = field(default_factory=list)
+    unverifiable: list[str] = field(default_factory=list)
+    ok: list[str] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
+
+    @property
+    def is_blocking(self) -> bool:
+        """True when an in-scope inventory is missing or stale."""
+        return bool(self.missing or self.stale)
+
+
+def resolve_domain_inventory_keys(
+    domains: list[str],
+    *,
+    ref_models_dir: Path | None,
+    catalog_path: Path | None,
+    accelerator: str | None = None,
+) -> tuple[dict[str, set[str]], dict[str, list[str]]]:
+    """Map each selected data-domain to its reference-model inventory keys (F5).
+
+    Resolves each domain's import URIs (from the accelerator ``data-domains.yaml``)
+    through the catalog to concrete source TTL paths, then derives the inventory key
+    via :func:`inventory_filename` (matching the keys produced by
+    :func:`check_inventories`). This is the deterministic domain→inventory mapping
+    the repository-wide check lacks.
+
+    Returns ``(keys_by_domain, unresolved_by_domain)`` where the first maps each
+    (case-insensitive substring-matched) domain id to its set of inventory keys, and
+    the second maps it to the list of import URIs that could not be resolved.
+    """
+    from .analyse_sources import load_data_domains
+    from .catalog_utils import CatalogResolver
+
+    keys_by_domain: dict[str, set[str]] = {}
+    unresolved_by_domain: dict[str, list[str]] = {}
+    if not ref_models_dir or not ref_models_dir.is_dir():
+        return keys_by_domain, unresolved_by_domain
+
+    data_domains = load_data_domains(ref_models_dir, accelerator=accelerator)
+    if not data_domains:
+        return keys_by_domain, unresolved_by_domain
+
+    resolver = CatalogResolver(catalog_path) if catalog_path else None
+    lower_filter = [d.lower() for d in domains]
+
+    for domain_id, meta in data_domains.items():
+        if lower_filter and not any(f in domain_id.lower() for f in lower_filter):
+            continue
+        keys: set[str] = set()
+        unresolved: list[str] = []
+        for uri in meta.get("uris", []) or []:
+            ttl = resolver.resolve(uri) if resolver else None
+            if ttl is None:
+                unresolved.append(uri)
+                continue
+            keys.add(
+                inventory_filename(Path(ttl), ref_models_dir=ref_models_dir)[
+                    : -len("-inventory.yaml")
+                ]
+            )
+        keys_by_domain[domain_id] = keys
+        if unresolved:
+            unresolved_by_domain[domain_id] = unresolved
+
+    return keys_by_domain, unresolved_by_domain
+
+
+def scope_inventory_report(
+    report: InventoryCheckReport,
+    keys_by_domain: dict[str, set[str]],
+    unresolved_by_domain: dict[str, list[str]] | None = None,
+) -> DomainScope:
+    """Intersect a repository-wide report with the selected domains' inventory keys.
+
+    The repository-wide *report* is unchanged (still surfaces global failures); this
+    projects it onto the active domains so a skill workflow can decide readiness
+    without being blocked by unrelated missing/stale inventories (F5).
+    """
+    scope = DomainScope(domains=sorted(keys_by_domain))
+    for keys in keys_by_domain.values():
+        scope.keys |= keys
+    scope.missing = sorted(k for k in report.missing if k in scope.keys)
+    scope.stale = sorted(k for k in report.stale if k in scope.keys)
+    scope.unverifiable = sorted(k for k in report.unverifiable if k in scope.keys)
+    scope.ok = sorted(k for k in report.ok if k in scope.keys)
+    if unresolved_by_domain:
+        merged: list[str] = []
+        for uris in unresolved_by_domain.values():
+            merged.extend(uris)
+        scope.unresolved = sorted(set(merged))
+    return scope

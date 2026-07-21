@@ -82,6 +82,107 @@ def _approved_class_claim(cid: str, class_uri: str) -> Claim:
     )
 
 
+def _write_affinity_with_cols(
+    analysis_dir: Path, system: str, tables: list[tuple[str, str, int]]
+) -> None:
+    """Write a schema_version 2 affinity report carrying per-table total_columns.
+
+    tables = [(table, domain, total_columns), ...].
+    """
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    data = {
+        "system": system,
+        "schema_version": 2,
+        "tables": [
+            {"table": t, "domain": d, "total_columns": n} for t, d, n in tables
+        ],
+    }
+    with open(analysis_dir / f"{system}-affinity.yaml", "w", encoding="utf-8") as f:
+        yaml.dump(data, f, sort_keys=False)
+
+
+class TestColumnOmissionGate:
+    """F6 (toolkit-optimizations) — column-omission (truncation integrity) gate."""
+
+    def _registry_with_cols(self, domain, system, table, covered_total):
+        cov = CoverageTable(table=table, total_columns=covered_total,
+                            mapped_columns=covered_total, custom_columns=0)
+        return ClaimRegistry(
+            domain=domain,
+            generated_at="2026-06-15T00:00:00Z",
+            algorithm_version=ALIGNMENT_ALGORITHM_VERSION,
+            freshness=Freshness(
+                affinity_sha256=compute_affinity_hash([(system, table)])),
+            coverage=[CoverageSystem(system=system, tables=[cov])],
+            claims=[],
+        )
+
+    def test_shortfall_blocks(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity_with_cols(analysis, "adminpulse", [("tblA", "party", 120)])
+        # registry only covers 80 of 120 source columns (prompt truncation).
+        write_registry(self._registry_with_cols("party", "adminpulse", "tblA", 80),
+                       registry_path(claims, "party"))
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.is_blocking
+        assert "party" in report.column_omissions
+        assert "80 of 120" in report.column_omissions["party"][0]
+        assert "party" not in report.ok
+
+    def test_full_coverage_passes(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity_with_cols(analysis, "adminpulse", [("tblA", "party", 120)])
+        write_registry(self._registry_with_cols("party", "adminpulse", "tblA", 120),
+                       registry_path(claims, "party"))
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert not report.column_omissions
+        assert report.ok == ["party"]
+
+    def test_no_affinity_count_is_backward_compatible(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        # legacy affinity without total_columns → gate never fires.
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        write_registry(self._registry_with_cols("party", "adminpulse", "tblA", 5),
+                       registry_path(claims, "party"))
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert not report.column_omissions
+        assert report.ok == ["party"]
+
+
+class TestGrainConflictGate:
+    """F2/F7 (toolkit-optimizations) — persisted grain-conflict records block."""
+
+    def test_grain_conflict_blocks(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        reg = _registry("party", [("adminpulse", "tblA")])
+        reg.grain_conflicts = [{
+            "type": "grain_conflict",
+            "ref_class": "Party",
+            "candidate_entities": ["Company", "Person"],
+            "source_tables": ["adminpulse.tblA", "adminpulse.tblB"],
+            "requires_human_confirmation": True,
+        }]
+        write_registry(reg, registry_path(claims, "party"))
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.is_blocking
+        assert "party" in report.grain_conflicts
+        assert "Party: Company, Person" in report.grain_conflicts["party"]
+
+    def test_no_conflict_does_not_block(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        write_registry(_registry("party", [("adminpulse", "tblA")]),
+                       registry_path(claims, "party"))
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert not report.grain_conflicts
+
+
 class TestCheckClaimsCoverage:
 
     def test_ok_when_valid_complete_fresh(self, tmp_path):
