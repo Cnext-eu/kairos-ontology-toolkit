@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.0rc3] — 2026-07-21
+
+### Fixed
+- **Alignment & projection correctness hardening** (DD-098,
+  `docs/draft/toolkitoptimizations.md`; F1 fixes #219). Seven independent
+  correctness/governance gaps in the source→domain alignment and medallion
+  projection pipeline, each keeping default output byte-identical when no new
+  condition fires:
+  - **F1 naming parity (#219):** the dbt silver projector no longer hardcodes
+    `silver_{domain}` / `camel_to_snake(local)`. A shared physical-naming helper
+    (`silver_schema_name` / `silver_table_name` / `silver_naming_convention` in
+    `projections/shared.py`) is now consumed by both the silver DDL and dbt
+    projectors, so `silverSchema` / `silverTableName` / `isReferenceData` /
+    `namingConvention` produce identical schema, table, and SK-key names across
+    targets; the gold `ref()` registry uses the generated model name.
+  - **F4:** URI backfill threads an optional inventory index into
+    `write_claims_output` so proposed claims carry resolved `class_uri` /
+    `property_uri`.
+  - **F5:** `check-inventory` gains `--domains` / `--explain-scope` with a
+    catalog-resolved domain→inventory map (repo-wide check stays the default).
+  - **F6:** truncation integrity — a deterministic source column count + sha256
+    is persisted per `(system,table)`, every source column is reconciled into a
+    passthrough candidate, and a blocking `column_omissions` signal is added.
+  - **F2/F7:** grain-conflict detection — `likely_entity` provenance is carried
+    on `TableAlignment` and a blocking `grain_conflicts` record is emitted when
+    distinct candidate entities collapse onto one `ref_class`.
+  - **F3:** object-property target resolver — a scalar column attached to an
+    object property whose governed target does not resolve is downgraded to a
+    passthrough custom claim plus an `object_property_relationship_candidate`.
+
 ## [4.5.0rc2] — 2026-07-21
 
 ### Fixed
