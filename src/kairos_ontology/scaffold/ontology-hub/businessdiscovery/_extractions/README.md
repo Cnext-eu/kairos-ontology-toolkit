@@ -29,7 +29,11 @@ businessdiscovery/_extractions/{slug}.extraction.yaml
 
 `{slug}` is the slugified source filename **including its extension** (so
 `Abbreviations.pdf` → `abbreviations-pdf.extraction.yaml`, avoiding collisions
-between same-stem documents).
+between same-stem documents). Documents are discovered **recursively**, so a source
+in a subfolder gets a **collision-safe path-derived** filename
+(`{path-slug}-{hash}.extraction.yaml`) and its `source_path` records the
+source-relative location (`.import/businessdiscovery/<nested/path>`). The status
+check matches records by that `source_path`, so existing files are never renamed.
 
 ```yaml
 version: "1.0"

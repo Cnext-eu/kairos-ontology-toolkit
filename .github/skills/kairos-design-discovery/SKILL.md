@@ -219,16 +219,26 @@ previous conversation.
 
 1. **Scan the artifacts incrementally.** Run the deterministic status helper to see
    which documents in `.import/businessdiscovery/` are new, changed, or already
-   processed (DD-060):
+   processed (DD-060). Documents are discovered **recursively**, so artifacts
+   organised into subfolders are tracked too, and each is reported by its
+   source-relative path (e.g. `workbooks/rates.xlsx`):
    ```bash
    kairos-ontology discovery-status
    ```
    - **New** (unprocessed) and **changed** documents → process them this run.
    - **Up to date** documents → **skip** re-reading; their extraction file already
      captures what was pulled. (On a full re-review the user can ask you to reprocess.)
+   - **Conflict / orphan** warnings flag extraction records with duplicate or missing
+     source documents — investigate rather than blindly reprocessing.
 2. **Process each new/changed document** and write **one extraction file per document**
-   to `ontology-hub/businessdiscovery/_extractions/{slug}.extraction.yaml`
-   (`{slug}` = slugified source filename incl. extension, e.g. `abbreviations-pdf`).
+   to `ontology-hub/businessdiscovery/_extractions/`. For a **top-level** document the
+   filename is `{slug}.extraction.yaml` (`{slug}` = slugified source filename incl.
+   extension, e.g. `abbreviations-pdf`). For a **nested** document the toolkit uses a
+   collision-safe, path-derived filename (`{path-slug}-{hash}.extraction.yaml`); do not
+   hand-craft it — always store the correct **source-relative** `source_path`
+   (`.import/businessdiscovery/<nested/path>`), which is what the status check matches on.
+   Never rename or regenerate an existing valid extraction just because its source moved
+   from top level into a subfolder.
    Inspect **all evidence in the artifact**, not only selectable text:
    - standalone images (`.png`, `.jpg`, screenshots);
    - scanned PDFs and OCR-visible text;

@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - SCD2 parent lookups no longer fan out across historical rows, and generated lineage
   columns no longer duplicate names supplied by a custom audit envelope.
+- **Nested business-discovery imports (DD-060 amendment):** `discovery-status` now
+  scans `.import/businessdiscovery/` **recursively** and matches extractions by
+  normalized `source_path` provenance, so valid records for documents in subfolders
+  are no longer misreported as orphaned. New nested records get collision-safe,
+  path-derived extraction filenames; existing records are preserved and never
+  renamed. Duplicate provenance is surfaced as a new `conflict` warning.
 
 ## [4.7.0rc1] — 2026-07-22
 

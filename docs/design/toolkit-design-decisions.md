@@ -3489,6 +3489,33 @@ provenance committed alongside the deliverable it explains.
 - The extraction schema is intentionally generic — company-terminology extraction is the
   worked example, not a hard requirement.
 
+### Amendment (2026-07-22): recursive discovery + provenance-based matching
+
+The original implementation scanned only the **top level** of
+`.import/businessdiscovery/` (`iter_discovery_documents` used `Path.iterdir()`) and matched
+each document to its extraction purely by a **basename-derived filename**. Documents placed
+in subfolders were therefore invisible, and any extraction already written for a nested
+source was reported as an **orphan** even though its `source_path`, `source_sha256`, and
+schema were valid.
+
+`discovery-status` now:
+
+- discovers documents **recursively**, skipping READMEs and dotfiles at every depth and any
+  file under a dot-prefixed directory, ordered by normalized source-relative POSIX path;
+- treats a document's **normalized source-relative path** as its canonical identity and
+  matches extractions primarily by normalized `source_path` provenance (tolerating the
+  documented relative form, absolute paths, and Windows separators), falling back to the
+  legacy basename filename and then the path-derived nested filename — so **existing records
+  are preserved and never renamed**;
+- assigns **collision-safe** filenames to *new* nested records
+  (`{path-slug}-{sha1(rel)[:8]}.extraction.yaml`) so identical filenames in different folders
+  and slug-colliding paths stay distinct while extraction files remain flat; and
+- adds a **conflict** classification when more than one extraction claims the same source
+  path.
+
+`source_path` (not `source_file`) is authoritative for nested identity, and new records
+should store the repository-relative form `.import/businessdiscovery/<nested/path>`.
+
 ---
 
 ## DD-061: Deterministic Source-Coverage Gates (check-alignment + check-source-coverage)
