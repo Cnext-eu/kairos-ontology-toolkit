@@ -75,8 +75,7 @@ XSD_TO_SQL: dict[str, str] = {
 
 # Default audit envelope columns (R9)
 _DEFAULT_AUDIT = (
-    "_created_at TIMESTAMP, _updated_at TIMESTAMP, "
-    "_source_system STRING, _load_date DATE, _batch_id STRING"
+    "_created_at TIMESTAMP, _updated_at TIMESTAMP, _load_date DATE, _batch_id STRING"
 )
 
 
@@ -648,15 +647,28 @@ def generate_silver_artifacts(
 
         # 6. SCD Type 2 columns (R5)
         if scd == "2":
-            tbl.columns.append(ColumnDef("valid_from", "DATE", nullable=False))
-            tbl.columns.append(ColumnDef("valid_to", "DATE", nullable=True,
+            tbl.columns.append(ColumnDef("valid_from", "TIMESTAMP", nullable=False))
+            tbl.columns.append(ColumnDef("valid_to", "TIMESTAMP", nullable=True,
                                          comment="NULL = current record"))
             tbl.columns.append(ColumnDef("is_current", "BOOLEAN", nullable=False,
                                          comment="DEFAULT 1"))
 
-        # 7. Audit envelope (R9) — skip for reference tables
+        # 7. Immutable source identity and load context apply to every final row,
+        # including reference data and hubs with a custom audit envelope.
+        tbl.columns.extend(
+            [
+                ColumnDef("_source_system", "STRING", nullable=False),
+                ColumnDef("_source_record_id", "STRING", nullable=False),
+                ColumnDef("_loaded_at", "TIMESTAMP", nullable=False),
+            ]
+        )
+
+        # 8. Audit envelope (R9) — skip for reference tables
         if not is_ref:
-            tbl.columns.extend(audit_cols)
+            existing_names = {column.name for column in tbl.columns}
+            tbl.columns.extend(
+                column for column in audit_cols if column.name not in existing_names
+            )
             # S5: _row_hash for incremental MERGE (always added, not customizable)
             tbl.columns.append(ColumnDef("_row_hash", "BINARY", nullable=True,
                                          comment="S5: SHA-256 hash for incremental MERGE"))
@@ -923,8 +935,17 @@ def _inline_small_ref_tables(
     The reference table is then removed from the output.
     """
     # Identify small ref tables (count business columns = non-PK, non-audit, non-SCD)
-    audit_prefixes = ("_created_at", "_updated_at", "_source_system", "_load_date",
-                      "_batch_id", "_row_hash", "_deleted_at")
+    audit_prefixes = (
+        "_created_at",
+        "_updated_at",
+        "_source_system",
+        "_source_record_id",
+        "_loaded_at",
+        "_load_date",
+        "_batch_id",
+        "_row_hash",
+        "_deleted_at",
+    )
     scd_names = ("valid_from", "valid_to", "is_current")
 
     small_refs: dict[str, list[ColumnDef]] = {}  # full_name → business columns
@@ -1358,8 +1379,8 @@ def _build_junction_tables(
         )
         # SCD 2
         jct.columns.extend([
-            ColumnDef("valid_from", "DATE", nullable=False),
-            ColumnDef("valid_to", "DATE", nullable=True, comment="NULL = current"),
+            ColumnDef("valid_from", "TIMESTAMP", nullable=False),
+            ColumnDef("valid_to", "TIMESTAMP", nullable=True, comment="NULL = current"),
             ColumnDef("is_current", "BOOLEAN", nullable=False, comment="DEFAULT 1"),
         ])
         # Audit

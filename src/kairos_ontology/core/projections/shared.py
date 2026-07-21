@@ -137,7 +137,10 @@ class ForeignKeyDescriptor:
     def physical_column_name(self, target_key_stem: str, *, layer: str) -> str:
         """Resolve the FK's physical source-column name for a projection layer."""
         override = self.gold_column_name if layer == "gold" else self.silver_column_name
-        return override or f"{target_key_stem}_sk"
+        return portable_sql_identifier(
+            override or f"{target_key_stem}_sk",
+            annotation=f"{layer} foreign-key column",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,7 +366,11 @@ def silver_schema_name(graph: "Graph", onto_uri: "URIRef", ontology_name: str) -
     Honours ``kairos-ext:silverSchema`` on the ``owl:Ontology`` node, falling
     back to ``silver_{ontology_name}``.
     """
-    return str_val(graph, onto_uri, KAIROS_EXT.silverSchema, f"silver_{ontology_name}")
+    override = str_val(graph, onto_uri, KAIROS_EXT.silverSchema)
+    if override:
+        return portable_sql_identifier(override, annotation="kairos-ext:silverSchema")
+    derived = re.sub(r"[^A-Za-z0-9_]", "_", f"silver_{ontology_name}")
+    return portable_sql_identifier(derived, annotation="derived Silver schema")
 
 
 def silver_table_name(
@@ -378,7 +385,9 @@ def silver_table_name(
     """
     override = str_val(graph, cls_uri, KAIROS_EXT.silverTableName)
     if override:
-        return override
+        return portable_sql_identifier(
+            override, annotation="kairos-ext:silverTableName",
+        )
     if naming_convention == "camel-to-snake":
         name = camel_to_snake(local)
     else:
@@ -386,7 +395,18 @@ def silver_table_name(
     is_ref = bool_val(graph, cls_uri, KAIROS_EXT.isReferenceData, False)
     if is_ref and not name.startswith("ref_"):
         name = f"ref_{name}"
-    return name
+    derived = re.sub(r"[^A-Za-z0-9_]", "_", name)
+    return portable_sql_identifier(derived, annotation="derived Silver table")
+
+
+def portable_sql_identifier(value: str, *, annotation: str) -> str:
+    """Validate an unquoted identifier shared by Fabric and Databricks."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise ValueError(
+            f"{annotation} value {value!r} is not a portable SQL identifier; "
+            "use letters, digits, and underscores, starting with a letter or underscore."
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------

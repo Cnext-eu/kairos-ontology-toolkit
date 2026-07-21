@@ -11,6 +11,7 @@ import logging
 from contextlib import contextmanager
 
 import pytest
+import yaml
 from .conftest import (
     EXTENSIONS_DIR, MAPPINGS_DIR, SHAPES_DIR, SOURCES_DIR, TEMPLATE_DIR,
     _load_ontology,
@@ -539,6 +540,40 @@ class TestSCDTypeAwareSilverModels:
             f"SCD2 model should reference is_current column:\n{sql}"
         )
 
+    def test_final_silver_rows_retain_source_lineage(self, client_dbt_artifacts):
+        """Every bound Silver row exposes source identity and load context."""
+        key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
+        sql = client_dbt_artifacts[key]
+        assert "_source_system" in sql
+        assert "_source_record_id" in sql
+        assert "_loaded_at" in sql
+        mapped = sql.split("mapped as (", 1)[1].split("source_data as (", 1)[0]
+        source_data = sql.split("source_data as (", 1)[1]
+        assert (
+            "{{ dbt_utils.generate_surrogate_key([\"'tblClientPII'\", "
+            "'tbl_client_pii.ClientID']) }} as _source_record_id"
+        ) in mapped
+        assert "tbl_client_pii.ClientID" not in source_data
+
+    def test_schema_enforces_current_natural_key_grain(self, client_dbt_artifacts):
+        key = _find_artifact(client_dbt_artifacts, "_client__models.yml")
+        schema = yaml.safe_load(client_dbt_artifacts[key])
+        model = next(item for item in schema["models"] if item["name"] == "client_pii")
+        grain_test = model["data_tests"][0]["dbt_utils.unique_combination_of_columns"]
+        assert grain_test["combination_of_columns"] == [
+            "_source_system",
+            "client_id",
+        ]
+        assert grain_test["config"]["where"] == "is_current = 1"
+        source_identity_test = model["data_tests"][1][
+            "dbt_utils.unique_combination_of_columns"
+        ]
+        assert source_identity_test["combination_of_columns"] == [
+            "_source_system",
+            "_source_record_id",
+        ]
+        assert source_identity_test["config"]["where"] == "is_current = 1"
+
     def test_scd1_model_has_incremental(self, client_dbt_artifacts):
         """ClientType (scdType=1, reference) should still get incremental."""
         key = _find_artifact(client_dbt_artifacts, "client_type.sql")
@@ -623,9 +658,9 @@ class TestSCDTemplateSyntheticData:
         assert "revenue" in sql
 
         # Verify temporal columns in source_data
-        assert "kairos_current_date()" in sql
-        assert "CAST(NULL AS DATE) as valid_to" in sql
-        assert "1 as is_current" in sql
+        assert "kairos_current_timestamp()" in sql
+        assert "LEAD(valid_from) over" in sql
+        assert "is null then 1" in sql
 
         # Verify change detection CTEs
         assert "existing as" in sql
@@ -634,7 +669,7 @@ class TestSCDTemplateSyntheticData:
         assert "closed as" in sql
 
         # Verify closed CTE sets correct values
-        assert "kairos_current_date()" in sql
+        assert "kairos_current_timestamp()" in sql
         assert "0 as is_current" in sql
 
         # Verify final SELECT from changed/source_data
@@ -1138,6 +1173,16 @@ class TestSourceSystemDiscriminator:
         assert "_source_system" in sql, (
             "Union model should include _source_system column"
         )
+        assert "_source_record_id" in sql
+        assert "_loaded_at" in sql
+
+    def test_union_model_sequences_sub_day_scd2_versions(self, client_dbt_artifacts):
+        key = _find_artifact(client_dbt_artifacts, "/client.sql")
+        sql = client_dbt_artifacts[key]
+        assert "LAG(_row_hash) over" in sql
+        assert "LEAD(valid_from) over" in sql
+        assert "first_changed as" in sql
+        assert "inner join first_changed c" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -1212,7 +1257,7 @@ class TestSCD2HistoryPreservation:
         if "closed as" not in sql.lower():
             pytest.skip("Client model is not SCD2 incremental")
         closed_idx = sql.lower().index("closed as")
-        closed_section = sql[closed_idx:closed_idx + 500]
+        closed_section = sql[closed_idx:]
         assert "{{ this }}" in closed_section, (
             "SCD2 closed CTE should read from {{ this }} to get existing values"
         )
@@ -1616,9 +1661,21 @@ class TestMultiSourceFKPerSource:
         assert "left join {{ ref('client') }}" in sql, (
             f"Per-source view should resolve FK via a left join to client:\n{sql}"
         )
+        assert "client_ref.is_current = 1" in sql, (
+            f"SCD2 parent lookup must not fan out over historical rows:\n{sql}"
+        )
         assert "client_sk" in sql, (
             f"Per-source view should emit client_sk:\n{sql}"
         )
+
+    def test_fk_schema_documents_temporal_contract(self, invoice_dbt_artifacts):
+        key = _find_artifact(invoice_dbt_artifacts, "_invoice__models.yml")
+        schema = yaml.safe_load(invoice_dbt_artifacts[key])
+        invoice = next(model for model in schema["models"] if model["name"] == "invoice")
+        client_fk = next(column for column in invoice["columns"] if column["name"] == "client_sk")
+        assert client_fk["meta"]["temporal_mode"] == "current"
+        assert client_fk["meta"]["fk_change_detection"] == "true"
+        assert any("relationships" in test for test in client_fk["tests"])
 
 
 class TestMergeExplicitFKNoLeak:
@@ -1955,6 +2012,7 @@ class TestCrossTableWarnings:
 
         ns = "http://example.com/acme#"
         ex = Namespace(ns)
+        kairos_ext = Namespace("https://kairos.cnext.eu/ext#")
         xsd_str = URIRef("http://www.w3.org/2001/XMLSchema#string")
 
         g = Graph()
@@ -1963,6 +2021,11 @@ class TestCrossTableWarnings:
         g.add((ex.Child, RDF.type, OWL.Class))
         g.add((ex.Child, RDFS.label, Literal("Child")))
         g.add((ex.Child, RDFS.subClassOf, ex.Parent))
+        g.add((ex.Child, kairos_ext.naturalKey, Literal("childId")))
+        g.add((ex.childId, RDF.type, OWL.DatatypeProperty))
+        g.add((ex.childId, RDFS.domain, ex.Child))
+        g.add((ex.childId, RDFS.range, xsd_str))
+        g.add((ex.childId, RDFS.label, Literal("childId")))
         # Inherited property declared on the parent.
         g.add((ex.parentAttr, RDF.type, OWL.DatatypeProperty))
         g.add((ex.parentAttr, RDFS.domain, ex.Parent))
@@ -2009,6 +2072,11 @@ class TestCrossTableWarnings:
                 "filter_condition": None, "dedup_key": None, "dedup_order": None,
             }]},
             "column_maps": {
+                child_tbl + "#child_id": [{
+                    "target_uri": str(ex.childId), "match_type": "exactMatch",
+                    "transform": None, "source_columns": None,
+                    "default_value": None,
+                }],
                 child_tbl + "#child_attr": [{
                     "target_uri": str(ex.childAttr), "match_type": "exactMatch",
                     "transform": None, "source_columns": None,

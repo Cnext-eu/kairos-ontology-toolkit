@@ -23,8 +23,15 @@ from rdflib.namespace import OWL, RDF, XSD
 from rdflib.plugins.parsers.notation3 import BadSyntax
 
 from .binding_analysis import approved_imported_class_uris
-from .claim_registry import load_registry
+from .claim_registry import ClaimRegistry, load_registry
 from .projections.shared import KAIROS_EXT
+from .reference_modules import (
+    ModuleDiagnostic,
+    ReferenceModuleContext,
+    build_managed_import_plan,
+    build_reference_module_context,
+    validate_external_term_imports,
+)
 
 
 def _truthy(value: object) -> bool:
@@ -114,6 +121,8 @@ class DomainProjectionSync:
     extra_imports: list[str] = field(default_factory=list)
     missing_includes: list[str] = field(default_factory=list)
     extra_includes: list[str] = field(default_factory=list)
+    import_diagnostics: list[ModuleDiagnostic] = field(default_factory=list)
+    activation_inventory: dict = field(default_factory=dict)
     has_bulk_include_imports: bool = False
     error: str | None = None
 
@@ -125,6 +134,7 @@ class DomainProjectionSync:
             and not self.extra_imports
             and not self.missing_includes
             and not self.extra_includes
+            and not any(item.level == "error" for item in self.import_diagnostics)
             and not self.has_bulk_include_imports
         )
 
@@ -149,6 +159,7 @@ def evaluate_domain_projection_sync(
     ontology_file: Path,
     extension_file: Path,
     hub_domain_bases: set[str],
+    module_context: ReferenceModuleContext | None = None,
 ) -> DomainProjectionSync:
     status = DomainProjectionSync(
         domain=domain,
@@ -157,7 +168,8 @@ def evaluate_domain_projection_sync(
         extension_file=extension_file,
     )
 
-    if not claims_file.exists():
+    activation = module_context.config.activation(domain) if module_context else None
+    if not claims_file.exists() and activation is None:
         status.error = f"missing claims file: {claims_file}"
         return status
     if not ontology_file.exists():
@@ -168,7 +180,11 @@ def evaluate_domain_projection_sync(
         return status
 
     try:
-        registry = load_registry(claims_file)
+        registry = (
+            load_registry(claims_file)
+            if claims_file.exists()
+            else ClaimRegistry(domain=domain)
+        )
         ontology_graph = Graph()
         ontology_graph.parse(ontology_file, format="turtle")
         ext_graph = Graph()
@@ -182,13 +198,47 @@ def evaluate_domain_projection_sync(
         status.error = f"no owl:Ontology found in {ontology_file.name}"
         return status
     ontology_iri = str(ontology_subj)
+    actual_includes = {
+        str(subj)
+        for subj in ext_graph.subjects(KAIROS_EXT.silverInclude, None)
+        if not _is_local_class_uri(str(subj), ontology_iri)
+        and _truthy(ext_graph.value(subj, KAIROS_EXT.silverInclude))
+    }
 
-    expected_includes = _approved_imported_class_uris(registry, ontology_iri)
-    expected_imports = _expected_external_imports(expected_includes)
+    plan = build_managed_import_plan(
+        registry,
+        domain=domain,
+        context=module_context,
+        projected_uris=actual_includes,
+        local_ontology_iri=ontology_iri,
+    )
+    status.import_diagnostics = list(plan.diagnostics)
+    status.activation_inventory = plan.activation_inventory
+    configuration_errors = [
+        item for item in plan.diagnostics if item.level == "error"
+    ]
+    if configuration_errors:
+        status.error = "; ".join(item.message for item in configuration_errors)
+        return status
+    expected_includes = {
+        uri
+        for uri in plan.selected_class_uris
+        if not _is_local_class_uri(uri, ontology_iri)
+    }
+    expected_imports = set(plan.expected_imports)
+    managed_profile_imports = {
+        module.ontology_iri
+        for module in module_context.modules
+    } if module_context else set()
 
     def _is_managed_import(triple) -> bool:
         _s, predicate, obj = triple
-        return predicate == OWL.imports and str(obj).rstrip("#/") not in hub_domain_bases
+        iri = str(obj).rstrip("#")
+        return (
+            predicate == OWL.imports
+            and iri.rstrip("/") not in hub_domain_bases
+            and iri in expected_imports | managed_profile_imports
+        )
 
     def _is_managed_include(triple) -> bool:
         subject, predicate, _obj = triple
@@ -205,32 +255,44 @@ def evaluate_domain_projection_sync(
         status.error = str(exc)
         return status
 
+    authored_text, _has_block = _split_managed_block(
+        _read_turtle_text(ontology_file),
+        path=ontology_file,
+    )
+    authored_graph = Graph()
+    authored_graph.parse(data=authored_text, format="turtle")
+    authored_imports = {
+        str(obj).rstrip("#")
+        for obj in authored_graph.objects(ontology_subj, OWL.imports)
+    }
     actual_imports: set[str] = set()
     for obj in ontology_graph.objects(ontology_subj, OWL.imports):
-        iri = str(obj).rstrip("#/")
+        iri = str(obj).rstrip("#")
         # Intra-hub shared bases (e.g. _foundation/_master) are neither required
         # nor "extra" — skip them so they aren't flagged/stripped (issue #190). But
         # if a base is *also* a claim-driven expected import, it must still count as
         # a satisfied import rather than being silently dropped.
-        if iri in hub_domain_bases and iri not in expected_imports:
+        if iri.rstrip("/") in hub_domain_bases and iri not in expected_imports:
             continue
         actual_imports.add(iri)
-
-    actual_includes: set[str] = set()
-    for subj in ext_graph.subjects(KAIROS_EXT.silverInclude, None):
-        subj_iri = str(subj)
-        if _is_local_class_uri(subj_iri, ontology_iri):
-            continue
-        if _truthy(ext_graph.value(subj, KAIROS_EXT.silverInclude)):
-            actual_includes.add(subj_iri)
+    managed_imports = actual_imports - authored_imports
 
     bulk_subj = URIRef(ontology_iri.rstrip("#/"))
     status.has_bulk_include_imports = _truthy(ext_graph.value(bulk_subj, KAIROS_EXT.silverIncludeImports))
 
     status.missing_imports = sorted(expected_imports - actual_imports)
-    status.extra_imports = sorted(actual_imports - expected_imports)
+    status.extra_imports = sorted(managed_imports - expected_imports)
     status.missing_includes = sorted(expected_includes - actual_includes)
     status.extra_includes = sorted(actual_includes - expected_includes)
+    status.import_diagnostics.extend(validate_external_term_imports(ontology_graph, plan))
+    status.import_diagnostics = sorted(
+        status.import_diagnostics,
+        key=lambda item: (
+            item.code,
+            item.term_uri or "",
+            item.expected_ontology_iri or "",
+        ),
+    )
     return status
 
 
@@ -240,10 +302,12 @@ def evaluate_projection_sync(
     ontologies_dir: Path,
     extensions_dir: Path,
     domains_filter: list[str] | None = None,
+    ref_models_dir: Path | None = None,
+    catalog_path: Path | None = None,
+    accelerator: str | None = None,
+    module_context: ReferenceModuleContext | None = None,
 ) -> ProjectionSyncReport:
     report = ProjectionSyncReport()
-    if not claims_dir.is_dir():
-        return report
 
     lowers = [d.lower() for d in domains_filter] if domains_filter else None
 
@@ -253,11 +317,30 @@ def evaluate_projection_sync(
         return any(token in name.lower() for token in lowers)
 
     hub_domain_bases = _collect_hub_domain_bases(ontologies_dir)
+    if module_context is None:
+        module_context = build_reference_module_context(
+            ref_models_dir,
+            catalog_path=catalog_path,
+            accelerator=accelerator,
+        )
 
-    for claims_file in sorted(claims_dir.glob("*-claims.yaml")):
-        domain = claims_file.name.replace("-claims.yaml", "")
+    domains = {
+        path.name.replace("-claims.yaml", "")
+        for path in claims_dir.glob("*-claims.yaml")
+    } if claims_dir.is_dir() else set()
+    if module_context:
+        domains.update(item.domain for item in module_context.config.domains)
+    for path in ontologies_dir.glob("*.ttl"):
+        if _MANAGED_BEGIN in path.read_text(encoding="utf-8"):
+            domains.add(path.stem)
+    for path in extensions_dir.glob("*-silver-ext.ttl"):
+        if _MANAGED_BEGIN in path.read_text(encoding="utf-8"):
+            domains.add(path.name.removesuffix("-silver-ext.ttl"))
+
+    for domain in sorted(domains):
         if not _in_scope(domain):
             continue
+        claims_file = claims_dir / f"{domain}-claims.yaml"
         ontology_file = ontologies_dir / f"{domain}.ttl"
         extension_file = extensions_dir / f"{domain}-silver-ext.ttl"
         report.domains.append(
@@ -267,6 +350,7 @@ def evaluate_projection_sync(
                 ontology_file=ontology_file,
                 extension_file=extension_file,
                 hub_domain_bases=hub_domain_bases,
+                module_context=module_context,
             )
         )
     return report
@@ -377,10 +461,7 @@ def _compose_managed_file(authored_text: str, managed_lines: list[str]) -> str:
         return block
 
     separator = "" if authored_text.endswith(("\n", "\r")) else newline
-    prefix = authored_text + separator
-    if not prefix.endswith(newline * 2):
-        prefix += newline
-    return prefix + block
+    return authored_text + separator + block
 
 
 def _inspect_managed_surface(path: Path, is_managed_authored) -> ManagedSurfaceInspection:
@@ -721,12 +802,18 @@ def plan_legacy_projection_sync_migration(
 
 def _rewrite_domain_projection_surfaces(
     *,
+    domain: str,
     claims_file: Path,
     ontology_file: Path,
     extension_file: Path,
     hub_domain_bases: set[str],
+    module_context: ReferenceModuleContext | None = None,
 ) -> None:
-    registry = load_registry(claims_file)
+    registry = (
+        load_registry(claims_file)
+        if claims_file.exists()
+        else ClaimRegistry(domain=domain)
+    )
     ontology_graph = Graph()
     ontology_graph.parse(ontology_file, format="turtle")
 
@@ -734,18 +821,48 @@ def _rewrite_domain_projection_surfaces(
     if ontology_subj is None:
         raise ValueError(f"{ontology_file}: no owl:Ontology declaration found")
     ontology_iri = str(ontology_subj)
-    expected_includes = _approved_imported_class_uris(registry, ontology_iri)
-    expected_imports = _expected_external_imports(expected_includes)
+    plan = build_managed_import_plan(
+        registry,
+        domain=domain,
+        context=module_context,
+        local_ontology_iri=ontology_iri,
+    )
+    expected_includes = {
+        uri
+        for uri in plan.selected_class_uris
+        if not _is_local_class_uri(uri, ontology_iri)
+    }
+    expected_imports = set(plan.expected_imports)
+    managed_profile_imports = {
+        module.ontology_iri
+        for module in module_context.modules
+    } if module_context else set()
 
     # Ontology owl:imports (A1): managed = external (non-hub-base) imports driven by
     # approved imported claims. Intra-hub bases (_foundation/_master) stay authored.
+    authored_text, _has_block = _split_managed_block(
+        _read_turtle_text(ontology_file),
+        path=ontology_file,
+    )
+    authored_graph = Graph()
+    authored_graph.parse(data=authored_text, format="turtle")
+    authored_imports = {
+        str(value).rstrip("#")
+        for value in authored_graph.objects(ontology_subj, OWL.imports)
+    }
     import_triples: list[tuple[URIRef, URIRef, object]] = [
-        (ontology_subj, OWL.imports, URIRef(iri)) for iri in sorted(expected_imports)
+        (ontology_subj, OWL.imports, URIRef(iri))
+        for iri in sorted(expected_imports - authored_imports)
     ]
 
     def _is_managed_import(triple) -> bool:
         _s, p, o = triple
-        return p == OWL.imports and str(o).rstrip("#/") not in hub_domain_bases
+        iri = str(o).rstrip("#")
+        return (
+            p == OWL.imports
+            and iri.rstrip("/") not in hub_domain_bases
+            and iri in expected_imports | managed_profile_imports
+        )
 
     _sync_managed_surface(
         ontology_file,
@@ -849,6 +966,7 @@ def scaffold_missing_surfaces(
     ontologies_dir: Path,
     extensions_dir: Path,
     domains_filter: list[str] | None = None,
+    module_context: ReferenceModuleContext | None = None,
 ) -> list[Path]:
     """Create skeleton ``{domain}.ttl`` / ``{domain}-silver-ext.ttl`` files when absent.
 
@@ -858,8 +976,6 @@ def scaffold_missing_surfaces(
     Returns the list of files created.
     """
     created: list[Path] = []
-    if not claims_dir.is_dir():
-        return created
 
     lowers = [d.lower() for d in domains_filter] if domains_filter else None
 
@@ -868,8 +984,14 @@ def scaffold_missing_surfaces(
             return True
         return any(token in name.lower() for token in lowers)
 
-    for claims_file in sorted(claims_dir.glob("*-claims.yaml")):
-        domain = claims_file.name.replace("-claims.yaml", "")
+    domains = {
+        path.name.replace("-claims.yaml", "")
+        for path in claims_dir.glob("*-claims.yaml")
+    } if claims_dir.is_dir() else set()
+    if module_context:
+        domains.update(item.domain for item in module_context.config.domains)
+
+    for domain in sorted(domains):
         if not _in_scope(domain):
             continue
         ontology_file = ontologies_dir / f"{domain}.ttl"
@@ -896,33 +1018,48 @@ def apply_projection_sync(
     extensions_dir: Path,
     domains_filter: list[str] | None = None,
     scaffold_missing: bool = True,
+    ref_models_dir: Path | None = None,
+    catalog_path: Path | None = None,
+    accelerator: str | None = None,
+    module_context: ReferenceModuleContext | None = None,
 ) -> ProjectionSyncReport:
+    if module_context is None:
+        module_context = build_reference_module_context(
+            ref_models_dir,
+            catalog_path=catalog_path,
+            accelerator=accelerator,
+        )
     if scaffold_missing:
         scaffold_missing_surfaces(
             claims_dir=claims_dir,
             ontologies_dir=ontologies_dir,
             extensions_dir=extensions_dir,
             domains_filter=domains_filter,
+            module_context=module_context,
         )
     report = evaluate_projection_sync(
         claims_dir=claims_dir,
         ontologies_dir=ontologies_dir,
         extensions_dir=extensions_dir,
         domains_filter=domains_filter,
+        module_context=module_context,
     )
     hub_domain_bases = _collect_hub_domain_bases(ontologies_dir)
     for status in report.out_of_sync:
         if status.error is not None:
             continue
         _rewrite_domain_projection_surfaces(
+            domain=status.domain,
             claims_file=status.claims_file,
             ontology_file=status.ontology_file,
             extension_file=status.extension_file,
             hub_domain_bases=hub_domain_bases,
+            module_context=module_context,
         )
     return evaluate_projection_sync(
         claims_dir=claims_dir,
         ontologies_dir=ontologies_dir,
         extensions_dir=extensions_dir,
         domains_filter=domains_filter,
+        module_context=module_context,
     )

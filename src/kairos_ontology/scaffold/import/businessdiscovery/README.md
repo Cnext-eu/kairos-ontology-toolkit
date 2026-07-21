@@ -39,9 +39,10 @@ screenshots, diagrams, and scanned text — so you always know **what was extrac
 from which document**.
 
 Run `kairos-ontology discovery-status` to see which documents are **new**,
-**changed**, or already **up to date**. When you add more files later, only the
-new or changed ones need reprocessing (the discovery skill uses this signal to stay
-incremental).
+**changed**, or already **up to date**. Documents in **subfolders are scanned
+recursively** and reported by their path (e.g. `workbooks/rates.xlsx`). When you add
+more files later, only the new or changed ones need reprocessing (the discovery skill
+uses this signal to stay incremental).
 
 
 ## ⚠️ Sensitive content

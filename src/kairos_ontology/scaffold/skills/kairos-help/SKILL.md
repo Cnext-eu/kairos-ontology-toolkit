@@ -260,6 +260,14 @@ kairos-ontology explain-term https://example.org/ont/client#Client \
 > ontology to explicitly claim imported classes for projection.  See the
 > silver and gold medallion skills for details.
 >
+> **Managed reference modules (DD-104):** Accelerator `data-domains.yaml` may define
+> version-pinned module profiles with roots, descendant policy, an explicit projection
+> allow-list, accepted transitive dependencies, and a local-extension boundary.
+> `claims-to-silver-ext --accelerator <pack>` resolves document IRIs, synchronizes the
+> managed import/include block, and emits `output/reference-modules/*-activation.json`.
+> Validation and projection use the same import plan and fail closed unless degraded
+> mode is explicitly selected.
+>
 > **Simplified FK annotations (DD-022):** Use `kairos-ext:silverForeignKey true`
 > on an object property to generate a FK column without OWL cardinality
 > restrictions.  Use `kairos-ext:silverForeignKeyOn <Class>` to control which

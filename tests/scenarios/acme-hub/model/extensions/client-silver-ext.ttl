@@ -117,7 +117,7 @@ acme:identifierScheme
     kairos-ext:nullable "false" .
 
 acme:identifierValidFrom
-    kairos-ext:silverColumnName "valid_from" ;
+    kairos-ext:silverColumnName "identifier_valid_from" ;
     kairos-ext:silverDataType "DATE" .
 
 acme:isIdentifiedBy

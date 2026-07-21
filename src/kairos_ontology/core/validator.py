@@ -12,6 +12,13 @@ import json
 # Canonical PII keyword list lives in ._samples (single source of truth, also
 # used by the sample-exposure masking policy); re-exported for compatibility.
 from ._samples import PII_KEYWORDS
+from .claim_registry import ClaimRegistry, load_registry
+from .reference_modules import (
+    ModuleDiagnostic,
+    ReferenceModuleContext,
+    build_managed_import_plan,
+    build_reference_module_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -231,9 +238,44 @@ def run_gdpr_validation(ontologies_path: Path, catalog_path: Optional[Path] = No
     return total_warnings
 
 
+def validate_managed_imports(
+    ontology_file: Path,
+    claims_file: Path | None,
+    *,
+    domain: str | None = None,
+    module_context: ReferenceModuleContext | None = None,
+) -> list[ModuleDiagnostic]:
+    """Validate claim/profile-required imports with structured ownership details."""
+    graph = Graph()
+    graph.parse(
+        ontology_file,
+        format="turtle" if ontology_file.suffix == ".ttl" else "xml",
+    )
+    resolved_domain = domain or (
+        claims_file.name.removesuffix("-claims.yaml")
+        if claims_file is not None
+        else ontology_file.stem
+    )
+    registry = (
+        load_registry(claims_file)
+        if claims_file is not None and claims_file.is_file()
+        else ClaimRegistry(domain=resolved_domain)
+    )
+    plan = build_managed_import_plan(
+        registry,
+        domain=resolved_domain,
+        context=module_context,
+        ontology_graph=graph,
+    )
+    return list(plan.diagnostics)
+
+
 def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
                    do_syntax: bool, do_shacl: bool, do_consistency: bool,
-                   report_path: Optional[Path] = None, degraded: bool = False):
+                   report_path: Optional[Path] = None, degraded: bool = False,
+                   claims_dir: Optional[Path] = None,
+                   ref_models_dir: Optional[Path] = None,
+                   accelerator: Optional[str] = None):
     """Run validation pipeline.
 
     Args:
@@ -257,6 +299,7 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
     
     results = {
         "syntax": {"passed": 0, "failed": 0, "errors": []},
+        "imports": {"passed": 0, "failed": 0, "errors": [], "warnings": []},
         "shacl": {"passed": 0, "failed": 0, "errors": []},
         "consistency": {"passed": 0, "failed": 0, "errors": []}
     }
@@ -267,6 +310,76 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
     ontology_files = [f for f in ontology_files if _is_domain_ontology(f)]
     
     print(f"\nFound {len(ontology_files)} ontology files\n")
+
+    # Semantic import preflight is separate from syntax parsing. It catches
+    # externally used governed terms whose required owl:imports edge is absent;
+    # the canonical loader cannot discover an import edge that was never authored.
+    if do_shacl or do_consistency:
+        resolved_claims_dir = claims_dir or ontologies_path.parent / "claims"
+        module_context = build_reference_module_context(
+            ref_models_dir,
+            catalog_path=catalog_path,
+            accelerator=accelerator,
+        )
+        print("🔗 Managed Import Completeness")
+        print("-" * 50)
+        for ontology_file in ontology_files:
+            claims_file = resolved_claims_dir / f"{ontology_file.stem}-claims.yaml"
+            activation = (
+                module_context.config.activation(ontology_file.stem)
+                if module_context
+                else None
+            )
+            if not claims_file.is_file() and activation is None:
+                continue
+            try:
+                diagnostics = validate_managed_imports(
+                    ontology_file,
+                    claims_file if claims_file.is_file() else None,
+                    domain=ontology_file.stem,
+                    module_context=module_context,
+                )
+            except Exception as exc:  # noqa: BLE001
+                results["imports"]["failed"] += 1
+                results["imports"]["errors"].append(
+                    {"file": str(ontology_file), "error": str(exc)}
+                )
+                print(f"  ✗ {ontology_file.name}: {exc}")
+                continue
+
+            errors = [item for item in diagnostics if item.level == "error"]
+            warnings = [item for item in diagnostics if item.level != "error"]
+            hard_errors = [
+                item for item in errors if item.code != "missing_managed_import"
+            ]
+            degradable_errors = [
+                item for item in errors if item.code == "missing_managed_import"
+            ]
+            results["imports"]["warnings"].extend(
+                {"file": str(ontology_file), **item.to_dict()} for item in warnings
+            )
+            if hard_errors or (degradable_errors and not degraded):
+                results["imports"]["failed"] += 1
+                results["imports"]["errors"].extend(
+                    {"file": str(ontology_file), **item.to_dict()} for item in errors
+                )
+                print(f"  ✗ {ontology_file.name}: {len(errors)} missing/invalid import(s)")
+                for item in errors:
+                    print(f"    {item.message}")
+            else:
+                results["imports"]["passed"] += 1
+                if degradable_errors:
+                    results["imports"]["warnings"].extend(
+                        {"file": str(ontology_file), **item.to_dict()}
+                        for item in degradable_errors
+                    )
+                    print(
+                        f"  ⚠ {ontology_file.name}: degraded mode accepted "
+                        f"{len(degradable_errors)} import error(s)"
+                    )
+                else:
+                    print(f"  ✓ {ontology_file.name}")
+        print()
     
     # Level 1: Syntax Validation
     if do_syntax:
@@ -361,7 +474,12 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
         print(f"📄 Results saved to {report_path}")
     
     # Exit code
-    total_failed = results["syntax"]["failed"] + results["shacl"]["failed"] + results["consistency"]["failed"]
+    total_failed = (
+        results["syntax"]["failed"]
+        + results["imports"]["failed"]
+        + results["shacl"]["failed"]
+        + results["consistency"]["failed"]
+    )
     if total_failed > 0:
         print(f"\n❌ Validation failed with {total_failed} errors")
         exit(1)

@@ -121,6 +121,24 @@ def test_validate_explicit_paths_win(tmp_path, monkeypatch):
     assert calls["validation"]["ontologies_path"] == other
 
 
+def test_validate_explicit_ref_models_resolves_its_catalog(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    calls = _patch_validation(monkeypatch)
+    ref_models = tmp_path / "custom-reference-models"
+    ref_models.mkdir()
+    catalog = ref_models / "catalog-v001.xml"
+    catalog.write_text("<catalog/>", encoding="utf-8")
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli,
+        ["validate", "--syntax", "--ref-models", str(ref_models)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["validation"]["catalog_path"] == catalog
+
+
 # --------------------------------------------------------------------------- #
 # project
 # --------------------------------------------------------------------------- #
@@ -154,6 +172,24 @@ def test_project_catalog_autodetect_from_inside_hub(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])
     assert result.exit_code == 0, result.output
     assert calls["projection"]["catalog_path"] == hub / "catalog-v001.xml"
+
+
+def test_project_explicit_ref_models_resolves_its_catalog(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path, with_catalog=True)
+    calls = _patch_projections(monkeypatch)
+    ref_models = tmp_path / "custom-reference-models"
+    ref_models.mkdir()
+    catalog = ref_models / "catalog-v001.xml"
+    catalog.write_text("<catalog/>", encoding="utf-8")
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli,
+        ["project", "--target", "neo4j", "--ref-models", str(ref_models)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["projection"]["catalog_path"] == catalog
 
 
 def test_project_explicit_output_wins(tmp_path, monkeypatch):

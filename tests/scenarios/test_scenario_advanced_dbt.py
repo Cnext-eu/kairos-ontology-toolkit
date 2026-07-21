@@ -290,3 +290,48 @@ def test_advanced_transformation_projects_complete_package(
     assert "route-fallback" in (
         project / "models" / "intermediate" / "int_shipment_conformed.yml"
     ).read_text(encoding="utf-8")
+
+
+def test_fabric_and_databricks_share_the_same_semantic_contract(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    contracts: dict[str, list[dict]] = {}
+
+    for platform in ("fabric", "databricks"):
+        output = tmp_path / f"conformance-{platform}"
+        run_projections(
+            ontologies_path=hub / "model" / "ontologies",
+            catalog_path=hub / "missing-catalog.xml",
+            output_path=output,
+            target="dbt",
+            platform=platform,
+        )
+        schema_path = (
+            output
+            / "medallion"
+            / "dbt"
+            / "models"
+            / "silver"
+            / "shipment"
+            / "_shipment__models.yml"
+        )
+        schema = yaml.safe_load(schema_path.read_text(encoding="utf-8"))
+        contracts[platform] = [
+            {
+                "name": model["name"],
+                "columns": [
+                    {
+                        "name": column["name"],
+                        "tests": column.get("tests", []),
+                        "meta": {
+                            key: value
+                            for key, value in column.get("meta", {}).items()
+                            if key != "data_type"
+                        },
+                    }
+                    for column in model["columns"]
+                ],
+            }
+            for model in schema["models"]
+        ]
+
+    assert contracts["fabric"] == contracts["databricks"]

@@ -8,6 +8,9 @@
 {%- if ontology_metadata and ontology_metadata.toolkit_version %}
 -- Toolkit version: {{ ontology_metadata.toolkit_version }}
 {%- endif %}
+{%- if ontology_metadata and ontology_metadata.silver_default_packages %}
+-- Silver defaults: {{ ontology_metadata.silver_default_packages | join(", ") }}
+{%- endif %}
 --
 -- Reads from a single bronze source and normalises columns to match the
 -- target silver entity schema.  The parent union model ({{ parent_model }})
@@ -18,15 +21,19 @@
     schema='{{ schema_name }}'
 ) {{"}}"}}
 
-select
-    '{{ source_name }}' as _source_system,
+with mapped as (
+
+    select
+{%- if not source_record_id_generated_after_mapping %}
+    {{ source_record_id_expression }} as _source_record_id,
+{%- endif %}
 {%- for col in columns %}
-    {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
+        {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
 {%- endfor %}
 {%- if ref_model %}
-from {{"{{"}} ref('{{ ref_model }}') {{"}}"}} as {{ source_alias }}
+    from {{"{{"}} ref('{{ ref_model }}') {{"}}"}} as {{ source_alias }}
 {%- else %}
-from {{"{{"}} source('{{ source_name }}', '{{ raw_table_name }}') {{"}}"}} as {{ source_alias }}
+    from {{"{{"}} source('{{ source_name }}', '{{ raw_table_name }}') {{"}}"}} as {{ source_alias }}
 {%- endif %}
 {%- for join in joins %}
     {{ join.type }} join {{ join.ref }} as {{ join.alias }}
@@ -35,3 +42,17 @@ from {{"{{"}} source('{{ source_name }}', '{{ raw_table_name }}') {{"}}"}} as {{
 {%- if filter_condition %}
 where {{ filter_condition }}
 {%- endif %}
+
+)
+
+select
+    '{{ source_name }}' as _source_system,
+{%- if source_record_id_generated_after_mapping %}
+    {{ source_record_id_expression }} as _source_record_id,
+{%- else %}
+    _source_record_id,
+{%- endif %}
+{%- for col in columns %}
+    {{ col.target_name }}{% if not loop.last %},{% endif %}{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
+{%- endfor %}
+from mapped

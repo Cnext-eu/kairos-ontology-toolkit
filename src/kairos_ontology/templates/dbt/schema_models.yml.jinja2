@@ -10,6 +10,27 @@ models:
       {{ key }}: "{{ value }}"
 {%- endfor %}
 {%- endif %}
+{%- if model.grain_columns and model.grain_columns | length > 1 %}
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+{%- for grain_column in model.grain_columns %}
+            - {{ grain_column }}
+{%- endfor %}
+{%- if model.grain_where %}
+          config:
+            where: {{ model.grain_where }}
+{%- endif %}
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+{%- for identity_column in model.source_identity_columns %}
+            - {{ identity_column }}
+{%- endfor %}
+{%- if model.grain_where %}
+          config:
+            where: {{ model.grain_where }}
+{%- endif %}
+{%- endif %}
     columns:
 {%- for column in model.columns %}
       - name: {{ column.name }}

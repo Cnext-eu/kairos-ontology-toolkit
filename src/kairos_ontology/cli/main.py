@@ -695,15 +695,17 @@ def _resolve_catalog(
     explicit: str | None,
     hub_root: Path | None = None,
     cwd: Path | None = None,
+    ref_models_dir: Path | None = None,
 ) -> Path | None:
     """Return the catalog path to use.
 
     If *explicit* is given (user passed ``--catalog``), use it directly.
     Otherwise search, in order:
 
-    1. ``hub_root/catalog-v001.xml`` (the hub-local catalog),
-    2. the reference-models catalog (``_resolve_ref_models_dir``),
-    3. the legacy cwd-relative ``_CATALOG_CANDIDATES`` (repo-root invocation).
+    1. an explicitly resolved reference-models directory,
+    2. ``hub_root/catalog-v001.xml`` (the hub-local catalog),
+    3. the auto-detected reference-models catalog,
+    4. the legacy cwd-relative ``_CATALOG_CANDIDATES`` (repo-root invocation).
 
     Resolving from *hub_root* makes catalog auto-detection work whether the command
     is run from the repo root or from inside ``ontology-hub/`` (DD-064).  Returns
@@ -716,11 +718,13 @@ def _resolve_catalog(
         cwd = Path.cwd()
 
     candidates: list[Path] = []
-    if hub_root is not None:
-        candidates.append(hub_root / _CATALOG_FILENAME)
-    ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
     if ref_models_dir is not None:
         candidates.append(ref_models_dir / _CATALOG_FILENAME)
+    if hub_root is not None:
+        candidates.append(hub_root / _CATALOG_FILENAME)
+    detected_ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
+    if detected_ref_models_dir is not None:
+        candidates.append(detected_ref_models_dir / _CATALOG_FILENAME)
     candidates.extend(_CATALOG_CANDIDATES)
 
     for candidate in candidates:
@@ -740,6 +744,10 @@ def _resolve_catalog(
               help='Path to catalog file for resolving imports '
                    '(default: <hub>/catalog-v001.xml or '
                    'ontology-reference-models/catalog-v001.xml)')
+@click.option('--ref-models', type=click.Path(), default=None,
+              help='Reference-model repository containing accelerator module profiles.')
+@click.option('--accelerator', default=None,
+              help='Accelerator pack used for managed-import completeness checks.')
 @click.option('--all', 'validate_all', is_flag=True,
               help='Validate all: syntax + SHACL + consistency')
 @click.option('--syntax', is_flag=True, help='Validate syntax only')
@@ -759,6 +767,8 @@ def validate(
     ontologies,
     shapes,
     catalog,
+    ref_models,
+    accelerator,
     validate_all,
     syntax,
     shacl,
@@ -795,7 +805,12 @@ def validate(
     else:
         shapes_path = cwd / "ontology-hub" / "model" / "shapes"
 
-    catalog_path = _resolve_catalog(catalog, hub_root, cwd)
+    ref_models_path = (
+        Path(ref_models)
+        if ref_models
+        else _resolve_ref_models_dir(cwd, hub_root)
+    )
+    catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
 
     # Report destination: always the hub's output/ dir, never the process CWD
     # (mirrors the `project` command's output_path resolution below).
@@ -839,6 +854,9 @@ def validate(
         do_consistency=validate_all or consistency,
         report_path=report_path,
         degraded=degraded,
+        claims_dir=ontologies_path.parent / "claims",
+        ref_models_dir=ref_models_path,
+        accelerator=accelerator,
     )
 
     # run_validation() exits non-zero on its own failures; if it fell through
@@ -857,6 +875,10 @@ def validate(
               help='Path to catalog file for resolving imports '
                    '(default: <hub>/catalog-v001.xml or '
                    'ontology-reference-models/catalog-v001.xml)')
+@click.option('--ref-models', type=click.Path(), default=None,
+              help='Reference-model repository containing accelerator module profiles.')
+@click.option('--accelerator', default=None,
+              help='Accelerator pack used for managed-import projection preflight.')
 @click.option('--output', type=click.Path(), default=None,
               help='Output directory for projections (default: <hub>/output).')
 @click.option(
@@ -898,8 +920,20 @@ def validate(
     help='Explicitly allow projection from an incomplete import closure; reports '
          'are marked import_complete=false.',
 )
-def project(ontologies, ontology, catalog, output, target, platform, namespace,
-            emit_aspirational_stubs, strict, degraded):
+def project(
+    ontologies,
+    ontology,
+    catalog,
+    ref_models,
+    accelerator,
+    output,
+    target,
+    platform,
+    namespace,
+    emit_aspirational_stubs,
+    strict,
+    degraded,
+):
     """Generate projections from ontologies."""
     from ..core.hub_utils import find_hub_root
 
@@ -937,7 +971,12 @@ def project(ontologies, ontology, catalog, output, target, platform, namespace,
         )
         raise SystemExit(1)
 
-    catalog_path = _resolve_catalog(catalog, hub_root, cwd)
+    ref_models_path = (
+        Path(ref_models)
+        if ref_models
+        else _resolve_ref_models_dir(cwd, hub_root)
+    )
+    catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
 
     if output is not None:
         output_path = Path(output)
@@ -957,6 +996,8 @@ def project(ontologies, ontology, catalog, output, target, platform, namespace,
             emit_aspirational_stubs=emit_aspirational_stubs,
             strict=strict,
             degraded=degraded,
+            ref_models_dir=ref_models_path,
+            accelerator=accelerator,
         )
     except ProjectionRunError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -4244,14 +4285,32 @@ def check_release_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
               help='Path to model/ontologies/ directory (default: auto-detect).')
 @click.option('--extensions', type=click.Path(), default=None,
               help='Path to model/extensions/ directory (default: auto-detect).')
+@click.option('--ref-models', type=click.Path(), default=None,
+              help='Reference-model repository containing accelerator module profiles.')
+@click.option('--catalog', type=click.Path(exists=True), default=None,
+              help='Catalog used to resolve and verify reference-module profiles.')
+@click.option('--accelerator', default=None,
+              help='Accelerator pack whose data-domains/module profiles are activated.')
+@click.option('--activation-inventory-dir', type=click.Path(), default=None,
+              help='Output directory for deterministic module activation inventories.')
 @click.option('--domains', 'domains_filter', default=None,
               help='Comma-separated domain names to include (case-insensitive substring match).')
 @click.option('--check-only', is_flag=True, default=False,
               help='Report drift only (exit 1 when out of sync, no writes).')
 @click.option('--no-scaffold', is_flag=True, default=False,
               help='Do not bootstrap missing {domain}.ttl / *-silver-ext.ttl skeletons.')
-def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter, check_only,
-                             no_scaffold):
+def claims_to_silver_ext_cmd(
+    claims_dir,
+    ontologies,
+    extensions,
+    ref_models,
+    catalog,
+    accelerator,
+    activation_inventory_dir,
+    domains_filter,
+    check_only,
+    no_scaffold,
+):
     """Generate projection-facing imports/includes from approved claims (Slice 2).
 
     A1 authority: approved imported class claims deterministically drive:
@@ -4283,6 +4342,19 @@ def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter,
         if extensions
         else _resolve_model_path(cwd, hub_root, subdir="extensions", claims_path=claims_path)
     )
+    ref_models_path = (
+        Path(ref_models)
+        if ref_models
+        else _resolve_ref_models_dir(cwd, hub_root)
+    )
+    catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
+    from ..core.reference_modules import build_reference_module_context
+
+    module_context = build_reference_module_context(
+        ref_models_path,
+        catalog_path=catalog_path,
+        accelerator=accelerator,
+    )
 
     filter_list = None
     if domains_filter:
@@ -4299,6 +4371,10 @@ def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter,
             ontologies_dir=ontologies_path,
             extensions_dir=extensions_path,
             domains_filter=filter_list,
+            ref_models_dir=ref_models_path,
+            catalog_path=catalog_path,
+            accelerator=accelerator,
+            module_context=module_context,
         )
     else:
         if not no_scaffold:
@@ -4307,6 +4383,7 @@ def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter,
                 ontologies_dir=ontologies_path,
                 extensions_dir=extensions_path,
                 domains_filter=filter_list,
+                module_context=module_context,
             )
             for path in created:
                 click.echo(f"   🆕 scaffolded skeleton: {path.name}")
@@ -4316,6 +4393,10 @@ def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter,
             extensions_dir=extensions_path,
             domains_filter=filter_list,
             scaffold_missing=False,
+            ref_models_dir=ref_models_path,
+            catalog_path=catalog_path,
+            accelerator=accelerator,
+            module_context=module_context,
         )
 
     if not report.domains:
@@ -4329,6 +4410,11 @@ def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter,
         click.echo(f"   ❌ {domain_sync.domain}: drift remains", err=True)
         if domain_sync.error:
             click.echo(f"      - {domain_sync.error}", err=True)
+        for diagnostic in domain_sync.import_diagnostics[:10]:
+            click.echo(
+                f"      - {diagnostic.code}: {diagnostic.message}",
+                err=diagnostic.level == "error",
+            )
         for iri in domain_sync.missing_imports[:10]:
             click.echo(f"      - missing owl:imports: {iri}", err=True)
         for iri in domain_sync.extra_imports[:10]:
@@ -4342,6 +4428,25 @@ def claims_to_silver_ext_cmd(claims_dir, ontologies, extensions, domains_filter,
 
     if report.is_blocking:
         raise SystemExit(1)
+    if not check_only:
+        inventory_root = (
+            Path(activation_inventory_dir)
+            if activation_inventory_dir
+            else (hub_root or cwd) / "output" / "reference-modules"
+        )
+        from ..core.reference_modules import dump_activation_inventory
+
+        for domain_sync in report.domains:
+            inventory = domain_sync.activation_inventory
+            if not inventory.get("modules"):
+                continue
+            inventory_root.mkdir(parents=True, exist_ok=True)
+            inventory_path = inventory_root / f"{domain_sync.domain}-activation.json"
+            inventory_path.write_text(
+                dump_activation_inventory(inventory),
+                encoding="utf-8",
+            )
+            click.echo(f"   ✓ activation inventory: {inventory_path}")
     click.echo("✅ Claim-driven projection surfaces are in sync.")
 
 
@@ -4667,6 +4772,8 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
         click.echo(f"   ♻ {name}: CHANGED since last extraction")
     for name in report.unverifiable:
         click.echo(f"   ⚠ {name}: cannot verify freshness (no stored hash — reprocess)")
+    for name in report.conflict:
+        click.echo(f"   ⚠ {name}: conflicting provenance (claimed by >1 extraction)")
     for name in report.orphan:
         click.echo(f"   ⚠ {name}: orphan extraction (no matching source document)")
 

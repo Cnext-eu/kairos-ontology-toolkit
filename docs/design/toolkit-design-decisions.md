@@ -151,6 +151,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-101](#dd-101-consolidated-deterministic-lifecycle-gate-check-release) | Consolidated deterministic lifecycle gate (`check-release`) | Accepted | 2026-07-21 |
 | [DD-102](#dd-102-dbt-projector-decomposed-into-five-deterministic-phases) | dbt projector decomposed into five deterministic phases | Accepted | 2026-07-21 |
 | [DD-103](#dd-103-canonical-ontology-closure-and-versioned-semantic-index) | Canonical ontology closure and versioned semantic index | Accepted | 2026-07-21 |
+| [DD-104](#dd-104-reference-module-activation-managed-imports-and-portable-silver-contracts) | Reference-module activation, managed imports, and portable Silver contracts | Accepted | 2026-07-22 |
 
 ---
 
@@ -3488,6 +3489,33 @@ provenance committed alongside the deliverable it explains.
 - The extraction schema is intentionally generic — company-terminology extraction is the
   worked example, not a hard requirement.
 
+### Amendment (2026-07-22): recursive discovery + provenance-based matching
+
+The original implementation scanned only the **top level** of
+`.import/businessdiscovery/` (`iter_discovery_documents` used `Path.iterdir()`) and matched
+each document to its extraction purely by a **basename-derived filename**. Documents placed
+in subfolders were therefore invisible, and any extraction already written for a nested
+source was reported as an **orphan** even though its `source_path`, `source_sha256`, and
+schema were valid.
+
+`discovery-status` now:
+
+- discovers documents **recursively**, skipping READMEs and dotfiles at every depth and any
+  file under a dot-prefixed directory, ordered by normalized source-relative POSIX path;
+- treats a document's **normalized source-relative path** as its canonical identity and
+  matches extractions primarily by normalized `source_path` provenance (tolerating the
+  documented relative form, absolute paths, and Windows separators), falling back to the
+  legacy basename filename and then the path-derived nested filename — so **existing records
+  are preserved and never renamed**;
+- assigns **collision-safe** filenames to *new* nested records
+  (`{path-slug}-{sha1(rel)[:8]}.extraction.yaml`) so identical filenames in different folders
+  and slug-colliding paths stay distinct while extraction files remain flat; and
+- adds a **conflict** classification when more than one extraction claims the same source
+  path.
+
+`source_path` (not `source_file`) is authoritative for nested identity, and new records
+should store the repository-relative form `.import/businessdiscovery/<nested/path>`.
+
 ---
 
 ## DD-061: Deterministic Source-Coverage Gates (check-alignment + check-source-coverage)
@@ -6544,6 +6572,92 @@ without breaking existing hubs.
 - Catalog/import cycles terminate deterministically and remain visible in diagnostics.
 - Structured CLI inspection and prompt slices replace raw Turtle interpretation for
   semantic decisions.
+
+---
+
+## DD-104: Reference-module activation, managed imports, and portable Silver contracts
+
+**Status:** Accepted
+**Date:** 2026-07-22
+**Affects:** claim projection sync, accelerator data-domain parsing, ontology validation,
+projection preflight, module activation inventories, and Silver/dbt contract generation
+**Implementation:** `core/reference_modules.py`, `core/claim_projection_sync.py`,
+`core/validator.py`, `core/projector.py`, `core/projections/medallion_dbt_projector.py`,
+`core/projections/medallion_silver_projector.py`, and dbt templates
+
+### Context
+
+Claim-driven import synchronization inferred ontology IRIs by trimming class URIs and
+ignored imported property/relationship claims and configured accelerator modules.
+`data-domains.yaml` retained only parallel URI/label lists, so it could not enforce module
+versions, roots, projection selection, or accepted transitive dependencies. The canonical
+loader detects unresolved declared imports, but cannot diagnose a required import edge
+that was never written.
+
+### Decision
+
+Reference modules use typed, version-pinned profiles. A profile declares the catalog and
+ontology document IRIs, term namespaces, reviewed roots, descendant policy, exclusions,
+an explicit projection allow-list, default-annotation sources, accepted transitive
+dependencies, and the local-extension boundary. Legacy `imports[].uri/module` entries
+remain readable through a compatibility profile.
+
+One deterministic import plan unions approved imported class, property, and relationship
+claims external to the domain namespace with data-domain module activation. Catalog
+resolution and the ontology's declared
+`owl:Ontology` identify document IRIs; term namespaces ending in `#` are never emitted as
+managed imports. Claims remain the governed materialization authority, while module
+profiles may provide an explicit source-neutral default allow-list.
+
+Managed synchronization owns only its final generated block and preserves authored Turtle
+outside it. Validation and projection preflight report the external term, owning ontology
+IRI, managed source, and claim where available. Missing required imports fail semantic
+operations unless degraded mode is explicitly selected.
+
+Activation inventories serialize closure/module hashes and available, selected, excluded,
+inherited, and projected term states in URI order. They contain references and provenance,
+not copied ontology definitions.
+
+Accelerator defaults define semantic contracts, not source-specific SQL. Every bound Silver
+model must have a complete natural key on every source branch. SCD2 validity uses timestamp
+precision and sequences multiple source versions into contiguous validity windows; parent FK
+resolution declares `current` or `as-of` semantics, and relationship changes participate in
+child change detection unless explicitly disabled.
+Current joins filter the parent to its current version; as-of joins require an explicitly
+mapped parent effective-time column.
+
+Every normal final Silver row carries `_source_system`, `_source_record_id`, and
+`_loaded_at`. Source record identity uses the declared Bronze primary key and falls back to
+the generated surrogate key only when the source vocabulary declares no primary key.
+Generated contracts expose grain, lineage, SCD, relationship, accelerator/default-package,
+toolkit-version, and hub-override provenance. Fabric and Databricks may render different SQL
+and physical types, but must expose the same semantic columns, keys, relationships, and
+tests.
+
+### Rationale
+
+Typed profiles remove namespace heuristics, make activation reproducible, and keep broad
+semantic imports independent from narrow physical projection. A shared plan prevents the
+domain-design workflow, CLI sync, validator, and projector from implementing divergent
+import rules.
+
+### Consequences
+
+- New profiles require an exact version pin; legacy profiles remain unpinned for backward
+  compatibility.
+- Ambiguous ownership, profile term drift, ontology-IRI mismatch, and version mismatch are
+  blocking structured diagnostics.
+- Imported definitions remain in their source modules. Self-contained deployment bundles,
+  if ever required, must be separate derived output.
+- Activation inventory output is deterministic and omits timestamps.
+- Bound models without complete natural-key mappings are rejected instead of
+  producing invalid incremental rows.
+- Multi-source models implement their declared SCD lifecycle and preserve source identity
+  before unioning conformed rows.
+- Portable identifier validation may reject previously accepted warehouse-specific schema,
+  table, column, or FK names.
+- As-of FK resolution is unavailable without an explicit effective-time mapping; the
+  projector fails rather than silently substituting load-time semantics.
 
 ---
 

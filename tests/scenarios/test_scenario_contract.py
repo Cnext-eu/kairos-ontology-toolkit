@@ -25,7 +25,7 @@ KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
 
 # System-generated columns that don't come from SKOS mappings
 SYSTEM_COLUMNS = {
-    "_sk", "_iri", "_type", "_source_system",
+    "_sk", "_iri", "_type", "_source_system", "_source_record_id", "_loaded_at",
     "_row_hash", "valid_from", "valid_to", "is_current",
 }
 
@@ -160,11 +160,24 @@ def _get_sql_columns(sql: str) -> set[str]:
     # or quote, or at line-level indentation). Use the pattern:
     # "as col_name" followed by comma, whitespace, comment, or end-of-line.
     pattern = r"^\s+.*?\bas\s+([a-z_][a-z0-9_]*)\s*[,\n]"
-    matches = re.findall(pattern, sql.lower(), re.MULTILINE)
+    # Only inspect SELECT-list lines; FROM/JOIN aliases are not output columns.
+    select_lines = []
+    in_select = False
+    for line in sql.lower().splitlines():
+        if re.match(r"^\s*select\b", line):
+            in_select = True
+            continue
+        if in_select and re.match(r"^\s*from\b", line):
+            in_select = False
+            continue
+        if in_select:
+            select_lines.append(line)
+    select_sql = "\n".join(select_lines)
+    matches = re.findall(pattern, select_sql, re.MULTILINE)
 
-    # Also catch last column in select (no trailing comma)
+    # Also catch last column in a SELECT list (no trailing comma).
     pattern2 = r"^\s+.*?\bas\s+([a-z_][a-z0-9_]*)\s*(?:--|$)"
-    matches2 = re.findall(pattern2, sql.lower(), re.MULTILINE)
+    matches2 = re.findall(pattern2, select_sql, re.MULTILINE)
 
     # Filter out SQL type keywords that get false-matched
     sql_types = {

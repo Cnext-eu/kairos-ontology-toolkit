@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc2] — 2026-07-22
+
+### Added
+- **Typed reference-module activation and managed imports (DD-104):** version-pinned
+  module profiles now drive deterministic ontology-document imports and activation
+  inventories without copying imported definitions into authored domain ontologies.
+- **Portable Silver lineage and temporal contracts:** generated dbt models now retain
+  Bronze-primary-key source identity and load context, support explicit current/as-of
+  SCD2 FK resolution and relationship change detection, and emit contract metadata and
+  generic tests consistently for Fabric and Databricks.
+
+### Changed
+- Bound incremental Silver models now reject missing or partially mapped natural
+  keys, use timestamp-precision SCD2 windows, and enforce portable physical identifiers.
+- Multi-source Silver models now implement the declared SCD1/SCD2 lifecycle instead of
+  advertising history semantics over a plain table.
+
+### Fixed
+- SCD2 parent lookups no longer fan out across historical rows, and generated lineage
+  columns no longer duplicate names supplied by a custom audit envelope.
+- **Nested business-discovery imports (DD-060 amendment):** `discovery-status` now
+  scans `.import/businessdiscovery/` **recursively** and matches extractions by
+  normalized `source_path` provenance, so valid records for documents in subfolders
+  are no longer misreported as orphaned. New nested records get collision-safe,
+  path-derived extraction filenames; existing records are preserved and never
+  renamed. Duplicate provenance is surfaced as a new `conflict` warning.
+
 ## [4.7.0rc1] — 2026-07-22
 
 ### Added

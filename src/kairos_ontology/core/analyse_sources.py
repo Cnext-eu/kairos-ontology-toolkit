@@ -617,7 +617,7 @@ def load_data_domains(ref_models_dir: Path, accelerator: str | None = None) -> d
     else:
         glob_pattern = "accelerator-packs/*/client-hub-blueprint/data-domains.yaml"
 
-    for dd_path in ref_models_dir.glob(glob_pattern):
+    for dd_path in sorted(ref_models_dir.glob(glob_pattern)):
         try:
             with open(dd_path, encoding="utf-8") as f:
                 dd = yaml.safe_load(f)
@@ -633,6 +633,14 @@ def load_data_domains(ref_models_dir: Path, accelerator: str | None = None) -> d
                         "group": group_id,
                         "uris": [imp["uri"] for imp in imports if imp.get("uri")],
                         "modules": [imp["module"] for imp in imports if imp.get("module")],
+                        "imports": [
+                            {
+                                key: imp[key]
+                                for key in ("uri", "module", "profile", "module_id")
+                                if imp.get(key)
+                            }
+                            for imp in imports
+                        ],
                     }
             logger.info("Loaded %d data domains from %s", len(result), dd_path)
             return result
@@ -659,7 +667,7 @@ def load_accelerator_uri_modules(
     else:
         glob_pattern = "accelerator-packs/*/client-hub-blueprint/data-domains.yaml"
 
-    for dd_path in ref_models_dir.glob(glob_pattern):
+    for dd_path in sorted(ref_models_dir.glob(glob_pattern)):
         try:
             with open(dd_path, encoding="utf-8") as f:
                 dd = yaml.safe_load(f)

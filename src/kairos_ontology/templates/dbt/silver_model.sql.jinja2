@@ -13,6 +13,12 @@
 {%- if ontology_metadata and ontology_metadata.toolkit_version %}
 -- Toolkit version: {{ ontology_metadata.toolkit_version }}
 {%- endif %}
+{%- if ontology_metadata and ontology_metadata.silver_default_packages %}
+-- Silver defaults: {{ ontology_metadata.silver_default_packages | join(", ") }}
+{%- endif %}
+{%- if ontology_metadata and ontology_metadata.silver_overrides %}
+-- Hub overrides: {{ ontology_metadata.silver_overrides | join(", ") }}
+{%- endif %}
 --
 -- Maps bronze source tables to the silver domain entity.
 -- Column definitions align with the silver projector DDL output.
@@ -59,7 +65,7 @@
 {%- if scd_type == "2" %}
 {%- set mapped_cols = [] %}
 {%- for col in columns %}
-{%- if col.target_name != model_name + "_sk" and col.target_name != model_name + "_iri" %}
+{%- if col.target_name != model_name + "_sk" and col.target_name != model_name + "_iri" and not col.generated_after_mapping | default(false) %}
 {%- set _ = mapped_cols.append(col) %}
 {%- endif %}
 {%- endfor %}
@@ -86,7 +92,7 @@ source_data as (
 
     select
 {%- for col in columns %}
-{%- if col.target_name == model_name + "_sk" or col.target_name == model_name + "_iri" %}
+{%- if col.target_name == model_name + "_sk" or col.target_name == model_name + "_iri" or col.generated_after_mapping | default(false) %}
         {{ col.expression }} as {{ col.target_name }},
 {%- else %}
         {{ col.target_name }},
@@ -95,10 +101,44 @@ source_data as (
 {%- if hash_columns %}
         {{"{{"}} kairos_row_hash([{% for hc in hash_columns %}'{{ hc }}'{% if not loop.last %}, {% endif %}{% endfor %}]) {{"}}"}} as _row_hash,
 {%- endif %}
-        {{"{{"}} kairos_current_date() {{"}}"}} as valid_from,
-        CAST(NULL AS DATE) as valid_to,
-        1 as is_current
+        {{ valid_from_expression | default("{{ kairos_current_timestamp() }}", true) }} as valid_from
     from mapped
+
+),
+
+source_ranked as (
+
+    select
+        *,
+        LAG(_row_hash) over (
+            partition by {{ model_name }}_sk order by valid_from
+        ) as _previous_source_hash
+    from source_data
+
+),
+
+source_changes as (
+
+    select *
+    from source_ranked
+    where _previous_source_hash is null or _previous_source_hash != _row_hash
+
+),
+
+source_versions as (
+
+    select
+        *,
+        LEAD(valid_from) over (
+            partition by {{ model_name }}_sk order by valid_from
+        ) as valid_to,
+        case
+            when LEAD(valid_from) over (
+                partition by {{ model_name }}_sk order by valid_from
+            ) is null then 1
+            else 0
+        end as is_current
+    from source_changes
 
 )
 
@@ -116,10 +156,19 @@ existing as (
 changed as (
 
     select s.*
-    from source_data s
+    from source_versions s
     left join existing e on s.{{ model_name }}_sk = e.{{ model_name }}_sk
-    where e.{{ model_name }}_sk is null
+    where s._previous_source_hash is not null
+       or e.{{ model_name }}_sk is null
        or e._row_hash != s._row_hash
+
+),
+
+first_changed as (
+
+    select {{ model_name }}_sk, min(valid_from) as valid_from
+    from changed
+    group by {{ model_name }}_sk
 
 ),
 
@@ -134,10 +183,10 @@ closed as (
 {%- endfor %}
         t._row_hash,
         t.valid_from,
-        {{"{{"}} kairos_current_date() {{"}}"}} as valid_to,
+        c.valid_from as valid_to,
         0 as is_current
     from {{"{{"}} this {{"}}"}} t
-    inner join changed c on t.{{ model_name }}_sk = c.{{ model_name }}_sk
+    inner join first_changed c on t.{{ model_name }}_sk = c.{{ model_name }}_sk
     where t.is_current = 1
 
 )
@@ -154,7 +203,7 @@ select
     valid_from,
     valid_to,
     is_current
-from {{"{%"}} if is_incremental() {{"%}"}}changed{{"{%"}} else {{"%}"}}source_data{{"{%"}} endif {{"%}"}}
+from {{"{%"}} if is_incremental() {{"%}"}}changed{{"{%"}} else {{"%}"}}source_versions{{"{%"}} endif {{"%}"}}
 
 {{"{%"}} if is_incremental() {{"%}"}}
 union all

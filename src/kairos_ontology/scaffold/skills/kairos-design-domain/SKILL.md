@@ -2321,6 +2321,14 @@ kairos-ontology check-claims --domains <target-domain> --strict
 > (run with `--inventory-dir` if discovery fails; `--no-resolve-uris` opts out).
 > Anything left null was ambiguous or unresolved — fill it before approving.
 
+> **Use the shared managed-import planner.** When an accelerator is active, run
+> `kairos-ontology claims-to-silver-ext --accelerator <pack>` after claim decisions.
+> The command unions approved imported class/property/relationship claims with the
+> accelerator's typed `data-domains.yaml` module profiles, resolves ontology document
+> IRIs through the catalog, enforces version pins, and emits a deterministic activation
+> inventory. Do not hand-add profile-controlled imports: this command is the same
+> authority used by validation and projection preflight.
+>
 > **Fresh domains bootstrap themselves.** `claims-to-silver-ext` scaffolds a minimal
 > valid ontology + `{domain}-silver-ext.ttl` skeleton (with a provenance header and
 > inferred hub base / foundation import) when those files don't yet exist, then
