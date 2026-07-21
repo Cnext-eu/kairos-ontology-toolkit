@@ -3,7 +3,7 @@
 """Catalog resolution testing module."""
 
 from pathlib import Path
-from .catalog_utils import load_graph_with_catalog
+from .ontology_loader import load_ontology
 
 
 def test_catalog_resolution(catalog_path: Path, ontology_path: Path = None):
@@ -16,11 +16,11 @@ def test_catalog_resolution(catalog_path: Path, ontology_path: Path = None):
     if ontology_path:
         print(f"Testing with: {ontology_path}")
         try:
-            result = load_graph_with_catalog(ontology_path, catalog_path)
+            result = load_ontology(ontology_path, catalog_path=catalog_path)
             print(f"  ✓ Loaded {len(result.graph)} triples")
             if result.diagnostics:
                 for diag in result.diagnostics:
-                    print(f"  ⚠️  [{diag['level']}] {diag['message']}")
+                    print(f"  ⚠️  [{diag.level}] {diag.message}")
             else:
                 print("  ✓ All imports resolved successfully")
         except Exception as e:

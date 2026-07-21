@@ -11,7 +11,7 @@ Generates:
 
 from pathlib import Path
 from typing import Dict, List
-from rdflib import Graph, Namespace, XSD
+from rdflib import Namespace, XSD
 from jinja2 import Environment, FileSystemLoader
 from .skos_utils import SKOSParser
 from .uri_utils import extract_local_name
@@ -40,8 +40,12 @@ class AzureSearchProjector:
         self.template_dir = template_dir
         
         # Load ontology
-        self.graph = Graph()
-        self.graph.parse(ontology_path, format='turtle')
+        from ..ontology_loader import SemanticProfile, load_ontology
+
+        self.graph = load_ontology(
+            ontology_path,
+            profile=SemanticProfile.KAIROS_DESIGN,
+        ).graph
         
         # Setup Jinja2
         self.jinja_env = Environment(loader=FileSystemLoader(template_dir))

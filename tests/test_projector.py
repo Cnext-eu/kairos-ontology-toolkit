@@ -64,7 +64,7 @@ class TestExtractOntologyMetadata:
         assert meta["version"] == ""
 
 
-from kairos_ontology.core.projector import run_projections
+from kairos_ontology.core.projector import ProjectionRunError, run_projections
 
 
 class TestProjector:
@@ -146,12 +146,13 @@ class TestProjector:
         
         output_dir = temp_dir / "output"
         
-        run_projections(
-            ontologies_path=ontologies_dir,
-            catalog_path=None,
-            output_path=output_dir,
-            target='dbt'
-        )
+        with pytest.raises(ProjectionRunError, match="ontology load failed"):
+            run_projections(
+                ontologies_path=ontologies_dir,
+                catalog_path=None,
+                output_path=output_dir,
+                target='dbt'
+            )
         
         captured = capsys.readouterr()
         assert "Could not parse" in captured.out or "⚠️" in captured.out
@@ -435,7 +436,8 @@ class TestProjector:
             catalog_path=None,
             output_path=output_dir,
             target='dbt',
-            namespace=None  # Auto-detect should pick custom namespace
+            namespace=None,  # Auto-detect should pick custom namespace
+            degraded=True,
         )
         
         # Check that custom classes were projected, not FIBO
@@ -480,7 +482,8 @@ class TestProjector:
             catalog_path=None,
             output_path=output_dir,
             target='dbt',
-            namespace=None
+            namespace=None,
+            degraded=True,
         )
         
         # Should generate files for the custom namespace

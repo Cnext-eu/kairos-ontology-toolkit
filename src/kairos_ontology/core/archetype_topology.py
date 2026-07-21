@@ -88,6 +88,7 @@ def build_concept_graph(refmodels_root: Path, archetype: Archetype) -> tuple[Gra
     (the conformance flow continues with whatever resolved — contract row 10).
     """
     from .catalog_utils import CatalogResolver  # local import keeps module import cheap
+    from .ontology_loader import SemanticProfile, load_ontology
 
     root = normalize_refmodels_root(refmodels_root)
     catalog_path = root / _CATALOG_FILENAME
@@ -110,7 +111,14 @@ def build_concept_graph(refmodels_root: Path, archetype: Archetype) -> tuple[Gra
             )
             continue
         try:
-            graph.parse(str(local), format="turtle")
+            result = load_ontology(
+                local,
+                catalog_path=catalog_path,
+                profile=SemanticProfile.KAIROS_DESIGN,
+                degraded=True,
+            )
+            graph += result.graph
+            diagnostics.extend(item.to_dict() for item in result.diagnostics)
             loaded.append(module.iri)
         except Exception as exc:  # noqa: BLE001 - one bad module must not abort the rest
             diagnostics.append(

@@ -305,7 +305,7 @@ def extract_ref_model_inventory(
     cross-module mode), each class is additionally tagged with ``module``,
     ``source_uri``, ``ref_class_id`` and ``belongs_to_domains``, and dedup is keyed
     on ``ref_class_id`` (so a same-named class in a different module is preserved).
-    Without it, behaviour is unchanged: name-based dedup and no module tags.
+    Full URI is always the identity key; local names remain display data.
 
     Returns list of class dicts with:
     {name, uri, label, comment, properties: [{name, uri, label, range, range_label,
@@ -345,20 +345,23 @@ def extract_ref_model_inventory(
         module_info = (module_map or {}).get(uri, {})
         module = module_info.get("module", "")
 
-        ref = parse_reference_model(Path(path), include_specializations=True)
+        ref = parse_reference_model(
+            Path(path),
+            include_specializations=True,
+            catalog_path=catalog_path,
+        )
         for cls in ref.get("classes", []):
             cls_name = cls.get("name", "")
-            # Cross-module mode dedups on (uri, name) so a same-named class in a
-            # different module is kept; home-only mode keeps historical name dedup.
-            dedup_key = f"{uri}#{cls_name}" if module_map is not None else cls_name
+            dedup_key = str(cls.get("uri") or f"{uri}#{cls_name}")
             if dedup_key in seen_classes:
                 continue
             seen_classes.add(dedup_key)
 
             # Enrich properties with full metadata from the parsed graph
             props = []
-            for p in cls.get("properties", []):
+            for p in cls.get("properties", []) + cls.get("inherited_properties", []):
                 props.append({
+                    "uri": p.get("uri", ""),
                     "name": p.get("name", ""),
                     "label": p.get("label", ""),
                     "range": p.get("range", ""),
@@ -366,10 +369,17 @@ def extract_ref_model_inventory(
                 })
 
             cls_dict: dict[str, Any] = {
+                "uri": cls.get("uri", ""),
                 "name": cls_name,
                 "label": cls.get("label", cls_name),
                 "comment": cls.get("comment", ""),
                 "properties": props,
+                "_semantic": {
+                    "semantic_profile": ref.get("semantic_profile", "kairos-design"),
+                    "closure_hash": ref.get("closure_hash", ""),
+                    "import_complete": ref.get("import_complete", True),
+                    "source_identity": uri,
+                },
             }
             if "specializations" in cls:
                 cls_dict["specializations"] = cls["specializations"]
@@ -401,11 +411,21 @@ def _load_inventory_classes(inventory_dir: Path) -> list[dict[str, Any]]:
             logger.warning("Failed to load inventory %s: %s", yaml_file, e)
             continue
         for cls in inv.get("classes", []):
-            cls_name = cls.get("name", "")
-            if cls_name in seen:
+            cls_uri = str(cls.get("uri") or "")
+            dedup_key = cls_uri or f"{yaml_file.name}:{cls.get('name', '')}"
+            if dedup_key in seen:
                 continue
-            seen.add(cls_name)
-            all_classes.append(cls)
+            seen.add(dedup_key)
+            enriched = dict(cls)
+            enriched["_semantic"] = {
+                "semantic_profile": inv.get("semantic_profile", "unknown"),
+                "closure_hash": inv.get("closure_hash", ""),
+                "import_complete": inv.get("import_complete", False),
+                "source_identity": (
+                    cls.get("provenance", {}).get("source_identity", "")
+                ),
+            }
+            all_classes.append(enriched)
 
     return all_classes
 
@@ -781,6 +801,32 @@ def build_alignment_prompt(
     source_cols = _format_source_columns(columns)
 
     class_names = ", ".join(c["name"] for c in table_classes)
+    semantic_records = [c.get("_semantic", {}) for c in ref_classes]
+    profiles = sorted(
+        {str(item.get("semantic_profile")) for item in semantic_records if item}
+    )
+    closure_hashes = sorted(
+        {str(item.get("closure_hash")) for item in semantic_records if item.get("closure_hash")}
+    )
+    modules = sorted(
+        {
+            str(item.get("source_identity"))
+            for item in semantic_records
+            if item.get("source_identity")
+        }
+    )
+    semantic_disclosure = (
+        "SEMANTIC CONTEXT:\n"
+        f"- profiles: {', '.join(profiles) or 'unknown'}\n"
+        f"- closure hashes: {', '.join(closure_hashes) or 'unknown'}\n"
+        f"- import complete: "
+        f"{all(bool(item.get('import_complete')) for item in semantic_records)}\n"
+        f"- total classes: {len(ref_classes)}\n"
+        f"- included classes: {len(ref_classes)}\n"
+        "- selection rule: deterministic candidate score then full URI\n"
+        f"- included modules: {', '.join(modules) or 'unknown'}\n"
+        "- omitted modules: none in this prompt slice\n"
+    )
 
     cross_module_note = ""
     ref_module_field = ""
@@ -805,6 +851,7 @@ def build_alignment_prompt(
 {step1}
 STEP 2: For each source column, find the best matching reference model property.
 {entity_hint}{cross_module_note}
+{semantic_disclosure}
 SOURCE TABLE: {table_name}
 COLUMNS:
 {source_cols}

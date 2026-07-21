@@ -9,7 +9,6 @@ from rdflib import Graph, Namespace
 from rdflib.namespace import OWL, RDF, RDFS
 from pyshacl import validate as shacl_validate
 import json
-from .catalog_utils import load_graph_with_catalog
 # Canonical PII keyword list lives in ._samples (single source of truth, also
 # used by the sample-exposure masking policy); re-exported for compatibility.
 from ._samples import PII_KEYWORDS
@@ -234,7 +233,7 @@ def run_gdpr_validation(ontologies_path: Path, catalog_path: Optional[Path] = No
 
 def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
                    do_syntax: bool, do_shacl: bool, do_consistency: bool,
-                   report_path: Optional[Path] = None):
+                   report_path: Optional[Path] = None, degraded: bool = False):
     """Run validation pipeline.
 
     Args:
@@ -298,9 +297,15 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
         
         for ontology_file in ontology_files:
             try:
-                data_graph = load_graph_with_catalog(ontology_file, catalog_path).graph if catalog_path else Graph()
-                if not catalog_path:
-                    data_graph.parse(ontology_file, format='turtle' if ontology_file.suffix == '.ttl' else 'xml')
+                from .ontology_loader import SemanticProfile, load_ontology
+
+                loaded = load_ontology(
+                    ontology_file,
+                    catalog_path=catalog_path,
+                    profile=SemanticProfile.RDFS,
+                    degraded=degraded,
+                )
+                data_graph = loaded.graph
                 
                 conforms, report_graph, report_text = shacl_validate(
                     data_graph,
@@ -311,6 +316,13 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
                 
                 if conforms:
                     results["shacl"]["passed"] += 1
+                    results["shacl"].setdefault("semantic_context", {})[
+                        str(ontology_file)
+                    ] = {
+                        "profile": loaded.profile.value,
+                        "closure_hash": loaded.closure_hash,
+                        "import_complete": loaded.complete,
+                    }
                     print(f"  ✓ {ontology_file.name}")
                 else:
                     results["shacl"]["failed"] += 1

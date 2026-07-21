@@ -984,27 +984,23 @@ and **read those TTLs** to extract the reference model vocabulary into your cont
 > just `party-inventory.yaml`) and merge them, or you will miss reuse candidates
 > such as `bsp:TradeParty` and the maritime/transport role classes.
 
-1. **Resolve URIs via the catalog chain:**
+1. **Resolve URIs through the canonical closure loader:**
    ```bash
-   # The hub catalog chains to the reference-models catalog
-   cat ontology-hub/catalog-v001.xml
-   # → find <nextCatalog catalog="../ontology-reference-models/catalog-v001.xml"/>
-   cat ontology-reference-models/catalog-v001.xml
-   # → find <rewriteURI uriStartString="https://www.kairosflow.ai/ont/bsp/commercial"
-   #          rewritePrefix="derived-ontologies/BSP/current/commercial/commercial.ttl"/>
+   kairos-ontology resolve-ontology <ontology-or-import-IRI> \
+     --catalog ontology-hub/catalog-v001.xml --json-output
    ```
+   Use the returned import manifest, completeness flag, semantic profile, and closure
+   hash as the authority. Do not infer catalog chaining from XML text.
 
-2. **Read the resolved module TTL(s):**
-   For each `domain_uris` entry from the affinity report, find the corresponding
-   local TTL file via the catalog mapping, then read it:
+2. **Read the structured semantic inventory:**
+   For each relevant domain ontology, request the complete Kairos-design profile:
    ```bash
-   # Example: domain_uris contains https://www.kairosflow.ai/ont/bsp/commercial#
-   # Catalog resolves to: ontology-reference-models/derived-ontologies/BSP/current/commercial/commercial.ttl
-   cat ontology-reference-models/derived-ontologies/BSP/current/commercial/commercial.ttl
+   kairos-ontology show-class-inventory --domain {DOMAIN} \
+     --profile kairos-design
    ```
 
 3. **Extract the reference model vocabulary:**
-   From the TTL, build a **Reference Model Class Inventory** listing all
+   From the structured output, build a **Reference Model Class Inventory** listing all
    `owl:Class` subjects with their `rdfs:label`, `rdfs:comment`, and declared
    properties (`rdfs:domain` pointing to the class). **Include each class's
    specialization subclasses and their subclass-specific properties** (from the
@@ -1036,11 +1032,7 @@ is matched against what the reference model already provides.
 For each relevant source system, extract the complete column list:
 
 ```bash
-# List all tables in a source system
-grep "a kairos-bronze:SourceTable" integration/sources/{system}/*.ttl
-
-# Extract all column names for relevant tables
-grep "kairos-bronze:columnName" integration/sources/{system}/*.ttl
+kairos-ontology show-source-schema --system {system}
 ```
 
 For bronze vocabulary files, extract:

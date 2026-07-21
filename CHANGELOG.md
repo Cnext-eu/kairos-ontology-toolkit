@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc1] — 2026-07-22
+
+### Added
+- **Canonical ontology closure loading (DD-103):** recursive catalog-aware
+  `owl:imports` traversal now provides deterministic manifests, diagnostics,
+  cross-machine-stable closure hashes, cycle handling, and explicit strict or
+  degraded semantics.
+- **Versioned semantic index:** asserted, RDFS, Kairos design, and OWL RL profiles
+  expose class/property hierarchies, restrictions, equivalence, inverses,
+  individuals, and module provenance without consumer-specific reparsing.
+- **Structured semantic inspection:** new `resolve-ontology`,
+  `show-class-inventory`, `show-source-schema`, and `explain-term` CLI commands
+  provide authoritative machine-readable context for users and managed skills.
+
+### Changed
+- Semantic consumers now share the canonical closure and semantic index across
+  validation, inventory, analysis, alignment, projection, and prompt generation.
+- Inventory schema 2.0 records semantic profile, closure freshness, import
+  completeness, and direct versus inherited properties.
+- Required imports fail closed by default; callers that intentionally accept
+  partial semantics must explicitly enable degraded mode.
+
+### Fixed
+- Transitive dependency changes now invalidate generated inventories.
+- Projection failures propagate when every ontology fails closure loading instead
+  of returning a successful process status.
+
 ## [4.6.0] — 2026-07-21
 
 ### Added

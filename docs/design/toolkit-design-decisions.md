@@ -150,6 +150,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-100](#dd-100-explicit-one-shot-migration-for-retired-inventory--projection-layouts) | Explicit one-shot migration for retired inventory & projection layouts | Accepted | 2026-07-21 |
 | [DD-101](#dd-101-consolidated-deterministic-lifecycle-gate-check-release) | Consolidated deterministic lifecycle gate (`check-release`) | Accepted | 2026-07-21 |
 | [DD-102](#dd-102-dbt-projector-decomposed-into-five-deterministic-phases) | dbt projector decomposed into five deterministic phases | Accepted | 2026-07-21 |
+| [DD-103](#dd-103-canonical-ontology-closure-and-versioned-semantic-index) | Canonical ontology closure and versioned semantic index | Accepted | 2026-07-21 |
 
 ---
 
@@ -6471,6 +6472,78 @@ that emission no longer depends on policy.
   deterministic ordering, phase-boundary/input constraints); output parity is
   covered by the scenario/golden/determinism suites, including the complete
   Silver-first lifecycle in `tests/scenarios/test_scenario_silver_first_e2e.py`.
+
+---
+
+## DD-103: Canonical ontology closure and versioned semantic index
+
+**Status:** Accepted
+**Date:** 2026-07-21
+**Affects:** ontology loading, catalogs, inventories, validation, projection, alignment,
+reporting, status, prompt context, and managed design skills
+**Implementation:** `core/ontology_loader.py`, `core/semantic_index.py`, compatibility
+facades in `core/catalog_utils.py`, and consumer-specific adapters
+
+### Context
+
+Semantic consumers currently parse different ontology subsets: one file, root plus direct
+imports, caller-merged graphs, or materialized single-file inventories. This makes
+validation, design, alignment, projection, and LLM context disagree about term identity,
+inheritance, provenance, and import completeness. Missing imports are warnings, so a
+plausible artifact can be produced from partial knowledge.
+
+### Decision
+
+`load_ontology()` is the single public semantic-loading API. It resolves the complete
+catalog-backed `owl:imports` closure with deterministic worklists and cycle guards and
+returns a graph, import manifest, structured diagnostics, completeness flag, closure hash,
+and versioned semantic index.
+
+Every `owl:imports` edge is required by default. Callers may classify exact import URIs as
+optional through explicit loader policy. `file://` imports are unsupported required imports
+unless explicitly optional. Missing required imports fail closed; explicit degraded mode
+returns `complete=false` and must be disclosed by every resulting report or artifact.
+The legacy `load_graph_with_catalog()` facade temporarily opts into degraded mode to
+preserve warning-and-continue behavior while consumers migrate.
+
+Closure hashes sort manifest records and hash ontology version, source bytes, and stable
+source identity. Identity is the declared ontology IRI, otherwise the import URI, and for
+an IRI-less root only, a POSIX path relative to a declared identity root. Absolute paths,
+timestamps, and traversal order never enter the hash.
+
+Supported semantic profiles are explicit:
+
+- `asserted`: parsed triples from the complete import closure;
+- `rdfs`: transitive class/property hierarchy and supported domain/range consequences;
+- `kairos-design`: RDFS plus Kairos-used equivalence, inverse, individual, restriction,
+  intersection, and union constructs;
+- `owl-rl`: opt-in standards-based OWL RL materialization.
+
+Semantic-index and inventory schemas are independently versioned. Full URI is the sole
+identity key; local names are display data. Every derived fact records asserted/inferred
+and source/import provenance. Syntax-only validation remains a direct single-file parse.
+
+Imported semantic breadth never widens physical projection breadth. Claims and extension
+policy remain the reviewed materialization allow-list.
+
+### Rationale
+
+A complete, deterministic closure makes every consumer reason over the same evidence.
+Explicit profiles avoid claiming unrestricted OWL DL support. Fail-closed defaults prevent
+silent partial semantics, while the temporary lenient facade allows incremental migration
+without breaking existing hubs.
+
+### Consequences
+
+- Semantic consumers must declare a profile and may no longer parse domain/reference
+  ontologies independently.
+- Existing inventory schema 1.1 requires a one-time explicit regeneration before
+  closure-hash freshness is enforced.
+- SHACL and projection become stricter when migrated; missing-import diagnostics and
+  explicit degraded mode are part of that user-visible transition.
+- Catalog/import cycles terminate deterministically and remain visible in diagnostics.
+- Structured CLI inspection and prompt slices replace raw Turtle interpretation for
+  semantic decisions.
 
 ---
 

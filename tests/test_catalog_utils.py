@@ -270,6 +270,42 @@ class TestResolveImportPaths:
         result = resolve_import_paths(onto_file, catalog)
         assert len(result) == 0
 
+    def test_returns_only_direct_imports(self, temp_dir):
+        """Transitive imports do not widen direct reference-model defaults discovery."""
+        leaf_file = temp_dir / "leaf.ttl"
+        leaf_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/leaf> a owl:Ontology .\n",
+            encoding="utf-8",
+        )
+        mid_file = temp_dir / "mid.ttl"
+        mid_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/mid> a owl:Ontology ;\n"
+            "    owl:imports <https://example.com/leaf> .\n",
+            encoding="utf-8",
+        )
+        onto_file = temp_dir / "domain.ttl"
+        onto_file.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/domain> a owl:Ontology ;\n"
+            "    owl:imports <https://example.com/mid> .\n",
+            encoding="utf-8",
+        )
+        catalog = temp_dir / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <uri name="https://example.com/mid" uri="mid.ttl"/>\n'
+            '  <uri name="https://example.com/leaf" uri="leaf.ttl"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        result = resolve_import_paths(onto_file, catalog)
+
+        assert result == {"https://example.com/mid": mid_file.resolve()}
+
 
 class TestLoadGraphWithCatalogDiagnostics:
     """Tests for catalog load diagnostics capture (CatalogLoadResult)."""

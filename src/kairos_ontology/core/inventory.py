@@ -20,13 +20,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from rdflib import Graph
+from rdflib import Graph, OWL, RDF, RDFS
 
 from .analyse_sources import parse_reference_model
 
 logger = logging.getLogger(__name__)
 
-INVENTORY_VERSION = "1.1"
+INVENTORY_VERSION = "2.0"
 
 
 class InventoryMigrationRequiredError(ValueError):
@@ -225,6 +225,7 @@ def generate_inventory(
     graph: Graph | None = None,
     domain_name: str | None = None,
     include_specializations: bool = True,
+    catalog_path: Path | None = None,
 ) -> dict[str, Any]:
     """Generate a materialized inventory from an ontology or reference model.
 
@@ -240,23 +241,138 @@ def generate_inventory(
     Returns:
         Dict suitable for YAML serialization.
     """
-    parsed = parse_reference_model(
-        ttl_path,
-        graph=graph,
-        domain_name=domain_name,
-        include_specializations=include_specializations,
-    )
+    load_result = None
+    if ttl_path is not None:
+        from .ontology_loader import SemanticProfile, load_ontology
+
+        load_result = load_ontology(
+            ttl_path,
+            catalog_path=catalog_path,
+            profile=SemanticProfile.KAIROS_DESIGN,
+        )
+        parsed = _inventory_view_from_index(
+            load_result.semantic_index,
+            load_result.graph,
+            domain_name=domain_name or ttl_path.stem,
+            include_specializations=include_specializations,
+        )
+    else:
+        parsed = parse_reference_model(
+            graph=graph,
+            domain_name=domain_name,
+            include_specializations=include_specializations,
+        )
 
     inventory: dict[str, Any] = {
         "version": INVENTORY_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "generated_from": str(ttl_path) if ttl_path else "(graph)",
         "source_sha256": compute_source_hash(ttl_path) if ttl_path else None,
+        "closure_hash": load_result.closure_hash if load_result else None,
+        "semantic_profile": (
+            load_result.profile.value if load_result else "asserted"
+        ),
+        "semantic_index_version": (
+            load_result.semantic_index.version if load_result else None
+        ),
+        "import_complete": load_result.complete if load_result else True,
+        "imports": (
+            [
+                {
+                    "ontology_iri": entry.ontology_iri,
+                    "source_identity": entry.source_identity,
+                    "parent_import": entry.parent_import,
+                    "import_depth": entry.import_depth,
+                    "ontology_version": entry.ontology_version,
+                    "source_sha256": entry.source_sha256,
+                }
+                for entry in load_result.manifest
+            ]
+            if load_result
+            else []
+        ),
         "domain_name": parsed["domain_name"],
         "classes": parsed["classes"],
     }
 
     return inventory
+
+
+def _inventory_view_from_index(
+    index,
+    graph: Graph,
+    *,
+    domain_name: str,
+    include_specializations: bool,
+) -> dict[str, Any]:
+    """Render the compatibility inventory view from the semantic index."""
+    for ontology in graph.subjects(RDF.type, OWL.Ontology):
+        label = graph.value(ontology, RDFS.label)
+        if label:
+            domain_name = str(label)
+            break
+
+    property_by_uri = {item.uri: item for item in index.properties}
+
+    def render_property(link, *, inherited: bool) -> dict[str, Any]:
+        prop = property_by_uri[link.uri]
+        range_uri = prop.ranges[0].uri if prop.ranges else ""
+        return {
+            "uri": prop.uri,
+            "name": prop.name,
+            "label": prop.label,
+            "comment": prop.comment,
+            "range": range_uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1],
+            "range_uri": range_uri,
+            "type": prop.property_type,
+            "inherited": inherited,
+            "provenance": {
+                "source_identity": link.provenance.source_identity,
+                "import_depth": link.provenance.import_depth,
+                "asserted": link.provenance.asserted,
+            },
+        }
+
+    class_by_uri = {item.uri: item for item in index.classes}
+    classes: list[dict[str, Any]] = []
+    for cls in index.classes:
+        item: dict[str, Any] = {
+            "uri": cls.uri,
+            "name": cls.name,
+            "label": cls.label,
+            "comment": cls.comment,
+            "provenance": {
+                "source_identity": cls.provenance.source_identity,
+                "import_depth": cls.provenance.import_depth,
+                "asserted": cls.provenance.asserted,
+            },
+            "properties": [
+                render_property(link, inherited=False)
+                for link in cls.direct_properties
+            ]
+            + [
+                render_property(link, inherited=True)
+                for link in cls.inherited_properties
+            ],
+        }
+        if include_specializations:
+            specializations = []
+            for descendant in cls.descendants:
+                child = class_by_uri[descendant.uri]
+                specializations.append(
+                    {
+                        "class": child.name,
+                        "class_uri": child.uri,
+                        "distance": descendant.distance,
+                        "properties": [
+                            render_property(link, inherited=False)
+                            for link in child.direct_properties
+                        ],
+                    }
+                )
+            item["specializations"] = specializations
+        classes.append(item)
+    return {"domain_name": domain_name, "classes": classes}
 
 
 def write_inventory(inventory: dict[str, Any], output_path: Path) -> Path:
@@ -344,6 +460,7 @@ def check_inventories(
     ontology_dir: Path | None,
     ref_models_dir: Path | None,
     inventory_dir: Path,
+    catalog_path: Path | None = None,
 ) -> InventoryCheckReport:
     """Deterministically verify that ``referencemodels-unpacked/`` is present and fresh (DD-047).
 
@@ -397,12 +514,28 @@ def check_inventories(
             report.stale.append(key)
             continue
 
-        stored = inv.get("source_sha256")
+        if str(inv.get("version", "")) != INVENTORY_VERSION:
+            report.migration_required.append(
+                f"{yaml_path.name} uses inventory schema "
+                f"{inv.get('version', 'unknown')}; regenerate schema {INVENTORY_VERSION}."
+            )
+            continue
+
+        stored = inv.get("closure_hash")
         if not stored:
             report.unverifiable.append(key)
             continue
 
-        if stored != compute_source_hash(ttl_file):
+        try:
+            current = generate_inventory(
+                ttl_file,
+                include_specializations=include_specializations,
+                catalog_path=catalog_path,
+            ).get("closure_hash")
+        except Exception:
+            report.stale.append(key)
+            continue
+        if stored != current:
             report.stale.append(key)
         else:
             report.ok.append(key)

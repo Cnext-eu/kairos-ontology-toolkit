@@ -83,23 +83,36 @@ class CoverageReport:
 # ---------------------------------------------------------------------------
 
 
-def parse_domain_ontology(ttl_path: Path) -> dict[str, Any]:
+def parse_domain_ontology(
+    ttl_path: Path,
+    *,
+    catalog_path: Path | None = None,
+) -> dict[str, Any]:
     """Parse a domain ontology into classes and properties.
 
     Also extracts ``rdfs:seeAlso`` links (for "Inspired" strategy) and
     ``owl:imports`` IRIs (for "Enforced" strategy) to enable deterministic
     alignment against reference models.
     """
-    g = Graph()
-    g.parse(ttl_path, format="turtle")
+    from .ontology_loader import SemanticProfile, load_ontology
+
+    loaded = load_ontology(
+        ttl_path,
+        catalog_path=catalog_path,
+        profile=SemanticProfile.KAIROS_DESIGN,
+    )
+    g = loaded.graph
+    root_graph = loaded.sources[0].graph
 
     domain_name = ttl_path.stem
     imports: list[str] = []
-    for ont in g.subjects(RDF.type, OWL.Ontology):
-        label = g.value(ont, RDFS.label)
+    root_iri = ""
+    for ont in root_graph.subjects(RDF.type, OWL.Ontology):
+        root_iri = str(ont).rstrip("#/")
+        label = root_graph.value(ont, RDFS.label)
         if label:
             domain_name = str(label)
-        for imp in g.objects(ont, OWL.imports):
+        for imp in root_graph.objects(ont, OWL.imports):
             imports.append(str(imp))
         break
 
@@ -107,6 +120,11 @@ def parse_domain_ontology(ttl_path: Path) -> dict[str, Any]:
 
     for cls_uri in g.subjects(RDF.type, OWL.Class):
         if not isinstance(cls_uri, URIRef):
+            continue
+        if root_iri and not (
+            str(cls_uri).startswith(root_iri + "#")
+            or str(cls_uri).startswith(root_iri + "/")
+        ):
             continue
         cls_name = cls_uri.split("#")[-1].split("/")[-1]
         cls_label = str(g.value(cls_uri, RDFS.label) or cls_name)
@@ -142,6 +160,9 @@ def parse_domain_ontology(ttl_path: Path) -> dict[str, Any]:
         "file": ttl_path.name,
         "imports": imports,
         "classes": classes,
+        "semantic_profile": loaded.profile.value,
+        "closure_hash": loaded.closure_hash,
+        "import_complete": loaded.complete,
     }
 
 
@@ -359,6 +380,7 @@ def run_coverage_report(
     ref_models_dir: Path,
     sources_dir: Path | None = None,
     output_format: str = "both",
+    catalog_path: Path | None = None,
 ) -> CoverageReport:
     """Generate a coverage report for the ontology against reference models.
 
@@ -380,7 +402,9 @@ def run_coverage_report(
 
     # Resolve reference models (recursive discovery + merge)
     ref_domains = resolve_reference_models(
-        ref_models_dir, include_specializations=True,
+        ref_models_dir,
+        include_specializations=True,
+        catalog_path=catalog_path,
     )
 
     # Build lookup index for deterministic alignment
@@ -392,7 +416,7 @@ def run_coverage_report(
     )
 
     for ont_file in ontology_files:
-        ont_data = parse_domain_ontology(ont_file)
+        ont_data = parse_domain_ontology(ont_file, catalog_path=catalog_path)
         if not ont_data["classes"]:
             continue
 

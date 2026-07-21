@@ -748,7 +748,25 @@ def _resolve_catalog(
 @click.option('--gdpr', is_flag=True, help='Scan for PII properties without GDPR satellite protection')
 @click.option('--ddd', 'ddd', is_flag=True,
               help='Validate DDD design overlays (*-ddd-ext.ttl) via the dedicated DDD path')
-def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consistency, gdpr, ddd):
+@click.option(
+    '--degraded',
+    is_flag=True,
+    default=False,
+    help='Explicitly allow incomplete ontology imports for semantic validation; '
+         'results are marked import_complete=false.',
+)
+def validate(
+    ontologies,
+    shapes,
+    catalog,
+    validate_all,
+    syntax,
+    shacl,
+    consistency,
+    gdpr,
+    ddd,
+    degraded,
+):
     """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan, DDD overlays)."""
     from ..core.hub_utils import find_hub_root
 
@@ -820,6 +838,7 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
         do_shacl=validate_all or shacl,
         do_consistency=validate_all or consistency,
         report_path=report_path,
+        degraded=degraded,
     )
 
     # run_validation() exits non-zero on its own failures; if it fell through
@@ -872,8 +891,15 @@ def validate(ontologies, shapes, catalog, validate_all, syntax, shacl, consisten
          'incomplete hub cannot ship vacuous zero-row stubs. Also honoured via '
          'KAIROS_PROJECT_STRICT.',
 )
+@click.option(
+    '--degraded',
+    is_flag=True,
+    default=False,
+    help='Explicitly allow projection from an incomplete import closure; reports '
+         'are marked import_complete=false.',
+)
 def project(ontologies, ontology, catalog, output, target, platform, namespace,
-            emit_aspirational_stubs, strict):
+            emit_aspirational_stubs, strict, degraded):
     """Generate projections from ontologies."""
     from ..core.hub_utils import find_hub_root
 
@@ -930,6 +956,7 @@ def project(ontologies, ontology, catalog, output, target, platform, namespace,
             platform=platform,
             emit_aspirational_stubs=emit_aspirational_stubs,
             strict=strict,
+            degraded=degraded,
         )
     except ProjectionRunError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -949,11 +976,10 @@ def mdm_validate(ontologies, catalog):
     which wraps this with interactive authoring guidance.
     """
     from ..core.hub_utils import find_hub_root
-    from ..core.catalog_utils import load_graph_with_catalog
+    from ..core.ontology_loader import SemanticProfile, load_ontology
     from ..core.projections.shared import merge_ext_graph
     from ..mdm.vocabulary import discover_mdm_extension
     from ..mdm.validation import validate_mdm_extension
-    from rdflib import Graph
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
@@ -992,12 +1018,12 @@ def mdm_validate(ontologies, catalog):
         if ext_path is None:
             continue  # no MDM policy for this domain — nothing to validate
         checked += 1
-        if catalog_path is not None:
-            result = load_graph_with_catalog(onto_file, catalog_path)
-            base_graph = result.graph
-        else:
-            base_graph = Graph()
-            base_graph.parse(str(onto_file), format="turtle")
+        result = load_ontology(
+            onto_file,
+            catalog_path=catalog_path,
+            profile=SemanticProfile.KAIROS_DESIGN,
+        )
+        base_graph = result.graph
         merged = merge_ext_graph(base_graph, ext_path)
 
         report = validate_mdm_extension(merged)
@@ -1436,6 +1462,179 @@ def import_tmdl(source, output):
     else:
         click.echo("\n⚠️  No TMDL content found. Check input path.", err=True)
         raise SystemExit(1)
+
+
+def _resolve_semantic_input(
+    value: str,
+    catalog: str | None,
+) -> tuple[Path, Path | None]:
+    """Resolve a CLI ontology path or catalog-mapped ontology IRI."""
+    candidate = Path(value)
+    catalog_path = Path(catalog) if catalog else None
+    if candidate.is_file():
+        return candidate, catalog_path
+    if catalog_path is None:
+        raise click.ClickException(
+            f"{value!r} is not a file; --catalog is required to resolve an ontology IRI."
+        )
+    from ..core.catalog_utils import CatalogResolver
+
+    resolved = CatalogResolver(catalog_path).resolve(value)
+    if resolved is None or not resolved.is_file():
+        raise click.ClickException(f"No catalog mapping for ontology IRI: {value}")
+    return resolved, catalog_path
+
+
+@cli.command(name="resolve-ontology")
+@click.argument("ontology")
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--degraded", is_flag=True, default=False)
+@click.option("--json-output", "as_json", is_flag=True, default=False)
+def resolve_ontology_cmd(ontology, catalog, degraded, as_json):
+    """Resolve an ontology closure and show its deterministic manifest."""
+    from ..core.ontology_loader import load_ontology
+
+    path, catalog_path = _resolve_semantic_input(ontology, catalog)
+    loaded = load_ontology(path, catalog_path=catalog_path, degraded=degraded)
+    payload = {
+        "schema_version": 1,
+        "semantic_profile": loaded.profile.value,
+        "closure_hash": loaded.closure_hash,
+        "import_complete": loaded.complete,
+        "manifest": loaded.manifest_dicts(),
+        "diagnostics": [item.to_dict() for item in loaded.diagnostics],
+    }
+    if as_json:
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    click.echo(f"Closure: {loaded.closure_hash}")
+    click.echo(f"Profile: {loaded.profile.value}")
+    click.echo(f"Import complete: {loaded.complete}")
+    for entry in loaded.manifest:
+        click.echo(
+            f"  {'  ' * entry.import_depth}{entry.source_identity} "
+            f"[{entry.rdf_format}]"
+        )
+    for diagnostic in loaded.diagnostics:
+        click.echo(f"  {diagnostic.level.upper()}: {diagnostic.message}")
+
+
+@cli.command(name="show-class-inventory")
+@click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--domain", default=None, help="Hub domain name when --ontology is omitted.")
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option(
+    "--profile",
+    type=click.Choice(["asserted", "rdfs", "kairos-design", "owl-rl"]),
+    default="kairos-design",
+)
+@click.option("--max-classes", type=click.IntRange(min=1), default=None)
+def show_class_inventory_cmd(ontology, domain, catalog, profile, max_classes):
+    """Print a versioned semantic-index class slice as JSON."""
+    from ..core.hub_utils import find_hub_root
+    from ..core.ontology_loader import load_ontology
+
+    if ontology:
+        path = Path(ontology)
+    elif domain:
+        hub = find_hub_root(Path.cwd(), require_model=True)
+        if hub is None:
+            raise click.ClickException("Cannot locate a hub for --domain.")
+        path = hub / "model" / "ontologies" / f"{domain}.ttl"
+        if not path.is_file():
+            raise click.ClickException(f"Domain ontology not found: {path}")
+    else:
+        raise click.UsageError("Provide --ontology or --domain.")
+    loaded = load_ontology(
+        path,
+        catalog_path=Path(catalog) if catalog else None,
+        profile=profile,
+    )
+    click.echo(
+        json.dumps(
+            loaded.semantic_index.slice(max_classes=max_classes),
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+@cli.command(name="show-source-schema")
+@click.option("--system", required=True)
+@click.option("--sources", type=click.Path(exists=True, file_okay=False), default=None)
+def show_source_schema_cmd(system, sources):
+    """Print the parsed source vocabulary for one source system as JSON."""
+    from ..core.analyse_sources import parse_source_vocabulary
+    from ..core.hub_utils import find_hub_root
+
+    hub = find_hub_root(Path.cwd(), require_model=True)
+    source_root = (
+        Path(sources)
+        if sources
+        else hub / "integration" / "sources"
+        if hub
+        else Path("integration") / "sources"
+    )
+    system_dir = source_root / system
+    if not system_dir.is_dir():
+        raise click.ClickException(f"Source system directory not found: {system_dir}")
+    tables: dict = {}
+    files = []
+    for ttl in sorted(system_dir.glob("*.ttl")):
+        files.append(str(ttl))
+        for table, columns in parse_source_vocabulary(ttl).items():
+            tables.setdefault(table, []).extend(columns)
+    click.echo(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "system": system,
+                "source_files": files,
+                "table_count": len(tables),
+                "tables": tables,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+@cli.command(name="explain-term")
+@click.argument("iri")
+@click.option("--ontology", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option(
+    "--profile",
+    type=click.Choice(["asserted", "rdfs", "kairos-design", "owl-rl"]),
+    default="kairos-design",
+)
+def explain_term_cmd(iri, ontology, catalog, profile):
+    """Explain one full-URI term with semantic and import provenance."""
+    from dataclasses import asdict
+
+    from ..core.ontology_loader import load_ontology
+
+    loaded = load_ontology(
+        Path(ontology),
+        catalog_path=Path(catalog) if catalog else None,
+        profile=profile,
+    )
+    term = loaded.semantic_index.term(iri)
+    if term is None:
+        raise click.ClickException(f"Term is not present in the closure: {iri}")
+    click.echo(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "semantic_profile": loaded.profile.value,
+                "closure_hash": loaded.closure_hash,
+                "import_complete": loaded.complete,
+                "term": asdict(term),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 @cli.command(name='import-source')
@@ -2609,6 +2808,11 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
             ontology_dir=ont_path,
             ref_models_dir=ref_models_path,
             sources_dir=sources_path,
+            catalog_path=(
+                hub_root / "catalog-v001.xml"
+                if hub_root and (hub_root / "catalog-v001.xml").is_file()
+                else None
+            ),
         )
 
         output_files = []
@@ -2725,7 +2929,12 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
         ref_ttls = iter_reference_inventory_sources(ref_path)
         for ttl_file in ref_ttls:
             try:
-                inv = generate_inventory(ttl_file)
+                catalog_path = (
+                    hub_root / "catalog-v001.xml"
+                    if hub_root and (hub_root / "catalog-v001.xml").is_file()
+                    else None
+                )
+                inv = generate_inventory(ttl_file, catalog_path=catalog_path)
                 if not inv["classes"]:
                     continue
                 stem = ttl_file.stem
@@ -2759,7 +2968,16 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
         ont_ttls = sorted(ont_path.glob("**/*.ttl"))
         for ttl_file in ont_ttls:
             try:
-                inv = generate_inventory(ttl_file, include_specializations=False)
+                catalog_path = (
+                    hub_root / "catalog-v001.xml"
+                    if hub_root and (hub_root / "catalog-v001.xml").is_file()
+                    else None
+                )
+                inv = generate_inventory(
+                    ttl_file,
+                    include_specializations=False,
+                    catalog_path=catalog_path,
+                )
                 if not inv["classes"]:
                     continue
                 stem = ttl_file.stem
@@ -2859,7 +3077,14 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, domains_fil
         raise SystemExit(1)
 
     report = check_inventories(
-        ontology_dir=ont_path, ref_models_dir=ref_path, inventory_dir=inv_path,
+        ontology_dir=ont_path,
+        ref_models_dir=ref_path,
+        inventory_dir=inv_path,
+        catalog_path=(
+            hub_root / "catalog-v001.xml"
+            if hub_root and (hub_root / "catalog-v001.xml").is_file()
+            else None
+        ),
     )
 
     click.echo("🔎 Checking materialized inventories")

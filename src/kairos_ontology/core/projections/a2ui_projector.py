@@ -38,8 +38,12 @@ class A2UIProjector:
         self.shapes_dir = shapes_dir or (ontology_path.parent.parent / "shapes")
         
         # Load ontology
-        self.graph = Graph()
-        self.graph.parse(ontology_path, format='turtle')
+        from ..ontology_loader import SemanticProfile, load_ontology
+
+        self.graph = load_ontology(
+            ontology_path,
+            profile=SemanticProfile.KAIROS_DESIGN,
+        ).graph
         
         # Setup Jinja2
         self.jinja_env = Environment(loader=FileSystemLoader(template_dir))
