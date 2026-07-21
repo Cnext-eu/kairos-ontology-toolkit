@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.0rc2] — 2026-07-21
+
+### Fixed
+- **Multi-domain dbt projection collisions & peer-import drift** (DD-097, #220):
+  full-hub `project --target dbt` no longer aborts with a false artifact
+  collision on shared/package-level files (README, `dbt_project.yml`,
+  `models/gold/shared/dim_date.sql`, `_shared__gold_models.yml`, per-system
+  `_{sys}__sources.yml`). Shared gold artifacts are now domain-neutral
+  (materialized to a stable `gold_shared` schema), per-system `_sources.yml`
+  files are reconciled via a deterministic union, and package-level config is
+  merged last-wins. Domain-only projection (`--ontology <domain>.ttl`) now
+  collects hub domain namespaces from the full ontologies directory, so required
+  peer-domain `owl:imports` are no longer flagged as claim/projection drift.
+- **S3-folded subtype SHACL constraints lost on parent model**: when a subtype
+  using the discriminator inheritance strategy is S3-folded into its parent
+  silver model, its SHACL property constraints (e.g. `sh:pattern` →
+  `dbt_expectations.expect_column_values_to_match_regex`) now propagate onto the
+  parent model's folded columns instead of being dropped.
+
+### Changed
+- **dbt package source**: generated `packages.yml` and the approved-package list
+  now reference `metaplane/dbt_expectations` (the maintained namespace for
+  versions ≥0.10) instead of the deprecated `calogica/dbt_expectations`,
+  silencing dbt's hub-namespace deprecation warning. Version constraint and the
+  in-package `dbt_expectations.*` macro namespace are unchanged.
+
 ### Added
 - **Target-first aspirational Silver stub → bind loop** (DD-096): opt-in
   `project --emit-aspirational-stubs` flag (also `KAIROS_EMIT_ASPIRATIONAL_STUBS`)

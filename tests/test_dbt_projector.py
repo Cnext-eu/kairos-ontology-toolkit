@@ -497,6 +497,11 @@ class TestGenerateDbtArtifacts:
         # Should have packages.yml
         assert "packages.yml" in artifacts
 
+        # packages.yml must use the current metaplane namespace, not deprecated calogica
+        packages_yml = artifacts["packages.yml"]
+        assert "metaplane/dbt_expectations" in packages_yml
+        assert "calogica" not in packages_yml
+
     def test_silver_model_uses_source(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
     ):

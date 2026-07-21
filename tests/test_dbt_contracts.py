@@ -10,7 +10,17 @@ from pathlib import Path
 import pytest
 import yaml
 
-from kairos_ontology.core.dbt_contracts import DbtContractError, discover_dbt_contracts
+from kairos_ontology.core.dbt_contracts import (
+    APPROVED_DBT_PACKAGES,
+    DbtContractError,
+    discover_dbt_contracts,
+)
+
+
+def test_dbt_expectations_uses_metaplane_namespace() -> None:
+    """dbt_expectations must be sourced from the current metaplane hub namespace."""
+    assert "metaplane/dbt_expectations" in APPROVED_DBT_PACKAGES
+    assert "calogica/dbt_expectations" not in APPROVED_DBT_PACKAGES
 
 
 def _model() -> dict:

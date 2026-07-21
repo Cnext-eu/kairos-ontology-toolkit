@@ -809,17 +809,27 @@ class TestShaclToDbtTests:
                 model_tests[col["name"]] = col.get("tests", [])
             tests_lookup[model["name"]] = model_tests
 
+        def _col_has_regex(model_tests: dict, col: str) -> bool:
+            # Regex test may be a dict with nested structure.
+            return any(
+                "expect_column_values_to_match_regex" in str(t)
+                for t in model_tests.get(col, [])
+            )
+
         missing = []
         for cls, prop, pattern in expected_patterns:
             col_name = _to_snake_case(prop)
             model_name = _to_snake_case(cls)
-            model_tests = tests_lookup.get(model_name, {})
-            col_tests = model_tests.get(col_name, [])
-            # Look for regex test (can be dict with nested structure)
-            has_regex = any(
-                "expect_column_values_to_match_regex" in str(t)
-                for t in col_tests
-            )
+            # The class may be S3-folded into a discriminator parent, so its
+            # column (and the SHACL-derived regex test) lives on the parent
+            # model rather than on a model named after the subtype. Check the
+            # class's own model first, then fall back to any model carrying the
+            # column.
+            has_regex = _col_has_regex(tests_lookup.get(model_name, {}), col_name)
+            if not has_regex:
+                has_regex = any(
+                    _col_has_regex(mt, col_name) for mt in tests_lookup.values()
+                )
             if not has_regex:
                 missing.append(f"{cls}.{prop} pattern='{pattern}'")
 
@@ -827,6 +837,38 @@ class TestShaclToDbtTests:
             "SHACL sh:pattern not reflected as regex test in dbt:\n"
             + "\n".join(f"  - {m}" for m in missing)
         )
+
+    def test_folded_subtype_pattern_lands_on_parent_model(self, projected_hub):
+        """S3-folded subtype SHACL sh:pattern flows onto the parent silver model.
+
+        ``CorporateClient`` uses the discriminator inheritance strategy and is
+        S3-folded into the ``client`` parent model, so its ``vatNumber`` column
+        (and the SHACL regex constraint on it) must appear on the ``client``
+        model — there is no standalone ``corporate_client`` model. Regression
+        for the pattern-propagation gap fixed alongside issue #220.
+        """
+        models_yml = (
+            projected_hub / "output" / "medallion" / "dbt"
+            / "models" / "silver" / "client" / "_client__models.yml"
+        )
+        data = yaml.safe_load(models_yml.read_text(encoding="utf-8"))
+        model_names = {m["name"] for m in data.get("models", [])}
+
+        # The folded subtype must NOT produce its own silver model.
+        assert "corporate_client" not in model_names, (
+            "corporate_client should be S3-folded into the client model"
+        )
+
+        client_model = next(m for m in data["models"] if m["name"] == "client")
+        vat_col = next(
+            (c for c in client_model.get("columns", []) if c["name"] == "vat_number"),
+            None,
+        )
+        assert vat_col is not None, "vat_number column missing from folded client model"
+        assert any(
+            "expect_column_values_to_match_regex" in str(t)
+            for t in vat_col.get("tests", [])
+        ), "SHACL sh:pattern on CorporateClient.vatNumber not propagated to client model"
 
     def test_invoice_min_inclusive_from_shacl(self, projected_hub):
         """sh:minInclusive → dbt_expectations between test."""

@@ -36,7 +36,7 @@ APPROVED_DECISION_STATUSES = frozenset(
 APPROVED_DBT_PACKAGES: Mapping[str, tuple[str, str]] = MappingProxyType(
     {
         "dbt-labs/dbt_utils": (">=1.0.0", "<2.0.0"),
-        "calogica/dbt_expectations": (">=0.10.0", "<1.0.0"),
+        "metaplane/dbt_expectations": (">=0.10.0", "<1.0.0"),
     }
 )
 
