@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.0rc4] — 2026-07-21
+
 ### Fixed
 - **`update --upgrade` now rewrites optional-extras toolkit pins.** The
   pin-rewriter previously only matched the primary
