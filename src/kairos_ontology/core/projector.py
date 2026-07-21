@@ -5,78 +5,274 @@
 import json
 import logging
 import traceback as _tb
+from collections.abc import Iterable, Mapping
+from datetime import datetime
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-from collections.abc import Iterable
+from enum import StrEnum
+from pathlib import Path, PurePosixPath
+from types import MappingProxyType
+from typing import Any, Dict, List, Optional, Protocol
+
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
+
+from .determinism import generated_at_iso, resolve_generated_at
 from .projections.uri_utils import extract_local_name
 from .projections.shared import OntologyClassInfo
-from .determinism import resolve_generated_at, generated_at_iso, generated_at_slug
-
-VALID_TARGETS = ["dbt", "neo4j", "azure-search", "a2ui", "prompt", "silver", "gold", "report", "ddd"]
-
-# Public-to-internal target name mapping (user-facing aliases → dispatch names).
-_TARGET_ALIASES = {"gold": "powerbi"}
-
-# Targets that live under output/medallion/ (medallion architecture outputs).
-_MEDALLION_TARGETS = {"dbt", "silver", "powerbi"}
-
-# Targets that live under output/architecture/ (design documentation outputs).
-_ARCHITECTURE_TARGETS = {"ddd"}
-
-# ---------------------------------------------------------------------------
-# External projection targets (registry)
-#
-# Additive projection targets that live *outside* core (e.g. the design-time
-# ``kairos_ontology.mdm`` package) register themselves here at import time.  This
-# keeps the one-way boundary intact: ``core`` never imports ``mdm``; instead the
-# layer that depends on both (the CLI) imports ``mdm``, whose import triggers
-# registration.  See MDM-DD-002 and plan D3.
-# ---------------------------------------------------------------------------
 
 
-@dataclass
-class ExternalTarget:
-    """A projection target contributed by a package outside core.
+class OutputCategory(StrEnum):
+    """High-level placement of a projection target's generated artifacts."""
 
-    Attributes:
-        discover_ext: ``(onto_name, src_file, extensions_dir) -> Optional[Path]``
-            returning the domain's extension file (or ``None`` to skip the domain).
-        project: ``(graph, namespace, ontology_name, ext_path, ontology_metadata)
-            -> dict[str, str]`` returning ``{filename: content}`` artifacts.
-        output_subdir: sub-directory of ``output/`` the artifacts are written to.
-    """
+    STANDARD = "standard"
+    MEDALLION = "medallion"
+    ARCHITECTURE = "architecture"
+    REPORTS = "reports"
+    EXTERNAL = "external"
 
-    discover_ext: Any
-    project: Any
+
+class ExecutionPhase(StrEnum):
+    """When a target runs relative to the per-domain projection loop."""
+
+    PER_DOMAIN = "per-domain"
+    POST_DOMAIN = "post-domain"
+
+
+class ExtensionDiscovery(Protocol):
+    """Callable that locates an external target's extension for one domain."""
+
+    def __call__(
+        self,
+        ontology_name: str,
+        source_file: Path,
+        extensions_dir: Optional[Path],
+    ) -> Optional[Path]: ...
+
+
+class ExternalProjector(Protocol):
+    """Callable that projects one domain for a target contributed outside core."""
+
+    def __call__(
+        self,
+        *,
+        graph: Graph,
+        namespace: Optional[str],
+        ontology_name: str,
+        ext_path: Optional[Path],
+        ontology_metadata: Dict[str, Any],
+    ) -> Dict[str, str]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalDispatch:
+    """Extension discovery and projection callbacks for an external target."""
+
+    discover_ext: ExtensionDiscovery
+    project: ExternalProjector
+
+
+@dataclass(frozen=True, slots=True)
+class TargetSpec:
+    """The complete registration record for one canonical projection target."""
+
+    canonical_name: str
     output_subdir: str
+    output_category: OutputCategory
+    execution_phase: ExecutionPhase = ExecutionPhase.PER_DOMAIN
+    aliases: tuple[str, ...] = ()
+    compatibility_name: Optional[str] = None
+    include_in_all: bool = True
+    external_dispatch: Optional[ExternalDispatch] = None
+
+    @property
+    def accepted_names(self) -> tuple[str, ...]:
+        """Return the canonical name followed by its accepted aliases."""
+        return (self.canonical_name, *self.aliases)
+
+    @property
+    def valid_target_name(self) -> str:
+        """Name exposed through the historical :data:`VALID_TARGETS` API."""
+        return self.compatibility_name or self.canonical_name
+
+    def output_path(self, root: Path) -> Path:
+        """Resolve this target's registry-owned output location below *root*."""
+        return root.joinpath(*PurePosixPath(self.output_subdir).parts)
 
 
-_EXTERNAL_TARGETS: Dict[str, ExternalTarget] = {}
+_TARGET_REGISTRY: dict[str, TargetSpec] = {}
+TARGET_REGISTRY: Mapping[str, TargetSpec] = MappingProxyType(_TARGET_REGISTRY)
+
+# Compatibility list retained for callers that import or hold a reference to it.
+# Its contents are refreshed exclusively from TARGET_REGISTRY.
+VALID_TARGETS: list[str] = []
+
+
+def _validate_target_name(name: str, *, label: str) -> None:
+    if not name or name != name.strip():
+        raise ValueError(f"{label} must be a non-empty, trimmed string")
+    if name == "all":
+        raise ValueError(f"{label} 'all' is reserved")
+    if not all(char.isalnum() or char in {"-", "_"} for char in name):
+        raise ValueError(f"{label} '{name}' contains unsupported characters")
+
+
+def _validate_target_spec(spec: TargetSpec) -> None:
+    _validate_target_name(spec.canonical_name, label="Target name")
+    seen = {spec.canonical_name}
+    for alias in spec.aliases:
+        _validate_target_name(alias, label="Target alias")
+        if alias in seen:
+            raise ValueError(f"Target alias '{alias}' is duplicated")
+        seen.add(alias)
+
+    if spec.compatibility_name is not None and spec.compatibility_name not in seen:
+        raise ValueError(
+            "compatibility_name must be the canonical target name or one of its aliases"
+        )
+
+    subdir = spec.output_subdir.replace("\\", "/")
+    path = PurePosixPath(subdir)
+    if (
+        not subdir
+        or subdir != spec.output_subdir
+        or path.is_absolute()
+        or path == PurePosixPath(".")
+        or ".." in path.parts
+        or ":" in subdir
+    ):
+        raise ValueError(
+            f"Target '{spec.canonical_name}' output_subdir must be a relative POSIX path"
+        )
+
+    dispatch = spec.external_dispatch
+    if dispatch is not None:
+        if not callable(dispatch.discover_ext) or not callable(dispatch.project):
+            raise ValueError(
+                f"Target '{spec.canonical_name}' external dispatch callbacks must be callable"
+            )
+        if spec.execution_phase is ExecutionPhase.POST_DOMAIN:
+            raise ValueError("External post-domain targets are not supported")
+
+
+def _refresh_valid_targets() -> None:
+    VALID_TARGETS[:] = [spec.valid_target_name for spec in _TARGET_REGISTRY.values()]
+
+
+def _register_target_spec(spec: TargetSpec) -> TargetSpec:
+    _validate_target_spec(spec)
+    existing = _TARGET_REGISTRY.get(spec.canonical_name)
+    if existing == spec:
+        return existing
+    if existing is not None:
+        raise ValueError(
+            f"Target '{spec.canonical_name}' is already registered with different metadata"
+        )
+
+    requested_names = set(spec.accepted_names)
+    for registered in _TARGET_REGISTRY.values():
+        collisions = requested_names.intersection(registered.accepted_names)
+        if collisions:
+            collision = sorted(collisions)[0]
+            raise ValueError(
+                f"Target name or alias '{collision}' is already registered "
+                f"for '{registered.canonical_name}'"
+            )
+
+    _TARGET_REGISTRY[spec.canonical_name] = spec
+    _refresh_valid_targets()
+    return spec
+
+
+for _target_spec in (
+    TargetSpec("dbt", "medallion/dbt", OutputCategory.MEDALLION),
+    TargetSpec("neo4j", "neo4j", OutputCategory.STANDARD),
+    TargetSpec("azure-search", "azure-search", OutputCategory.STANDARD),
+    TargetSpec("a2ui", "a2ui", OutputCategory.STANDARD),
+    TargetSpec("prompt", "prompt", OutputCategory.STANDARD),
+    TargetSpec("silver", "medallion/dbt", OutputCategory.MEDALLION),
+    TargetSpec(
+        "powerbi",
+        "medallion/powerbi",
+        OutputCategory.MEDALLION,
+        aliases=("gold",),
+        compatibility_name="gold",
+    ),
+    TargetSpec(
+        "report",
+        "reports/details",
+        OutputCategory.REPORTS,
+        execution_phase=ExecutionPhase.POST_DOMAIN,
+    ),
+    TargetSpec("ddd", "architecture/ddd", OutputCategory.ARCHITECTURE),
+):
+    _register_target_spec(_target_spec)
+del _target_spec
+
+
+def get_target_spec(name: str) -> Optional[TargetSpec]:
+    """Resolve a canonical target name or alias to its registry specification."""
+    canonical = _TARGET_REGISTRY.get(name)
+    if canonical is not None:
+        return canonical
+    return next(
+        (spec for spec in _TARGET_REGISTRY.values() if name in spec.aliases),
+        None,
+    )
+
+
+def projection_target_choices() -> tuple[str, ...]:
+    """Return canonical target names in stable user-visible CLI order."""
+    return tuple(_TARGET_REGISTRY)
+
+
+def projection_targets_for_all() -> tuple[str, ...]:
+    """Return canonical built-in targets included by ``--target all`` in order."""
+    return tuple(
+        spec.canonical_name for spec in _TARGET_REGISTRY.values() if spec.include_in_all
+    )
 
 
 def register_target(
     name: str,
     *,
-    discover_ext: Any,
-    project: Any,
+    discover_ext: ExtensionDiscovery,
+    project: ExternalProjector,
     output_subdir: str,
+    aliases: Iterable[str] = (),
+    output_category: OutputCategory | str = OutputCategory.EXTERNAL,
+    execution_phase: ExecutionPhase | str = ExecutionPhase.PER_DOMAIN,
+    include_in_all: bool = False,
 ) -> None:
-    """Register an external projection target (idempotent).
+    """Register one external projection target and all of its metadata.
 
-    Also appends *name* to :data:`VALID_TARGETS` so target validation accepts it.
-    Intended to be called from the contributing package's import path.
+    Repeating an identical registration is a no-op. Reusing any canonical name or
+    alias with different metadata raises :class:`ValueError`. The default keeps
+    external targets opt-in rather than adding them to ``--target all``.
     """
-    _EXTERNAL_TARGETS[name] = ExternalTarget(
-        discover_ext=discover_ext, project=project, output_subdir=output_subdir
-    )
-    if name not in VALID_TARGETS:
-        VALID_TARGETS.append(name)
+    try:
+        category = OutputCategory(output_category)
+    except ValueError as exc:
+        raise ValueError(f"Unknown output category '{output_category}'") from exc
+    try:
+        phase = ExecutionPhase(execution_phase)
+    except ValueError as exc:
+        raise ValueError(f"Unknown execution phase '{execution_phase}'") from exc
 
-# Targets processed after the per-domain loop (they span all domains).
-_POST_DOMAIN_TARGETS = {"report"}
+    _register_target_spec(
+        TargetSpec(
+            canonical_name=name,
+            aliases=tuple(aliases),
+            compatibility_name=name,
+            output_subdir=output_subdir,
+            output_category=category,
+            execution_phase=phase,
+            include_in_all=include_in_all,
+            external_dispatch=ExternalDispatch(
+                discover_ext=discover_ext,
+                project=project,
+            ),
+        )
+    )
 
 # Filename patterns that are NOT domain ontologies and should be skipped.
 _NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")
@@ -283,7 +479,10 @@ class ProjectionReport:
     def write_domain_markdown(self, domain: str, sessions_dir: Path) -> Optional[Path]:
         """Write a per-domain projection report as Markdown.
 
-        Filename: ``projection-<domain>-<targets>-<YYYY-MM-DD_HH-MM-SS>.md``
+        Filename: ``projection-<domain>-<targets>.md`` — a stable path that a
+        re-projection overwrites in place instead of accumulating a fresh
+        timestamped file each run (the timestamp still appears in the
+        ``**Generated:**`` line inside the report body).
 
         Returns the path written, or None if the sessions_dir is unavailable.
         """
@@ -291,9 +490,8 @@ class ProjectionReport:
             return None
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
-        date_str = resolve_generated_at().strftime("%Y-%m-%d_%H-%M-%S")
         targets_slug = "+".join(sorted(self.targets_requested)) if self.targets_requested else "all"
-        filename = f"projection-{domain}-{targets_slug}-{date_str}.md"
+        filename = f"projection-{domain}-{targets_slug}.md"
         path = sessions_dir / filename
 
         lines: List[str] = []
@@ -475,15 +673,19 @@ def project_graph(
     """
     from kairos_ontology import __version__ as toolkit_version
 
+    # Resolve the generation timestamp once at the run boundary and thread the
+    # same datetime through the report stamp and every target's provenance, so a
+    # single run never mixes two clocks (each site used to resolve on its own).
+    generated_at = resolve_generated_at()
     report = ProjectionReport(
         toolkit_version=toolkit_version,
-        generated_at=generated_at_iso(),
+        generated_at=generated_at_iso(generated_at),
     )
     targets = targets or VALID_TARGETS
     report.targets_requested = list(targets)
     template_base = Path(__file__).parent.parent / "templates"
     ns = namespace or _auto_detect_namespace(graph)
-    meta = extract_ontology_metadata(graph, ns)
+    meta = extract_ontology_metadata(graph, ns, generated_at=generated_at)
 
     report.record_domain_load(
         ontology_name, file=f"{ontology_name}.ttl",
@@ -492,14 +694,13 @@ def project_graph(
 
     results: Dict[str, Dict[str, str]] = {}
     for target_name in targets:
-        if target_name not in VALID_TARGETS:
+        target_spec = get_target_spec(target_name)
+        if target_name not in VALID_TARGETS or target_spec is None:
             report.record("warning", f"Unknown target '{target_name}' — skipped")
             continue
-        # Normalize public alias to internal dispatch name
-        dispatch_name = _TARGET_ALIASES.get(target_name, target_name)
         try:
             artifacts = _run_projection(
-                dispatch_name, graph, Path("."), template_base, ns, shapes_dir,
+                target_spec.canonical_name, graph, Path("."), template_base, ns, shapes_dir,
                 ontology_name, ontology_metadata=meta,
             )
             if artifacts:
@@ -589,10 +790,14 @@ def _discover_extensions(
             candidates = list(src_file.parent.glob(f"{onto_name}-ddd-ext.ttl"))
             ext_path = candidates[0] if candidates else None
 
-    elif target_name in _EXTERNAL_TARGETS:
+    else:
+        target_spec = get_target_spec(target_name)
+        external_dispatch = target_spec.external_dispatch if target_spec else None
+        if external_dispatch is None:
+            return ext_path, gold_ext_path
         # Externally-registered target (e.g. mdm-profile) supplies its own
         # extension-discovery callable — core stays agnostic of the package.
-        ext_path = _EXTERNAL_TARGETS[target_name].discover_ext(
+        ext_path = external_dispatch.discover_ext(
             onto_name, src_file, extensions_dir
         )
 
@@ -697,22 +902,38 @@ def _reconcile_managed_output(target_output: Path, current_paths: Iterable[str])
     return removed
 
 
-def _merge_identical_artifacts(
-    destination: dict[str, str],
-    incoming: dict[str, str],
-    *,
-    context: str,
-) -> None:
-    """Merge artifacts, allowing repeated shared files only when bytes are identical."""
+#: Glob-safe shape of the ``YYYY-MM-DD-HHMMSS`` slug that older toolkit versions
+#: embedded in report filenames (now replaced by stable names). Used only to prune
+#: those legacy files; it matches the exact digit layout so hand-authored files are
+#: never touched.
+_LEGACY_REPORT_TS = (
+    "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]"
+)
 
-    collisions = sorted(
-        path
-        for path in set(destination) & set(incoming)
-        if destination[path] != incoming[path]
-    )
-    if collisions:
-        raise RuntimeError(f"{context}: {collisions}")
-    destination.update(incoming)
+
+def _prune_legacy_report_files(base_dir: Path, patterns: Iterable[str]) -> int:
+    """Delete report files that older toolkit versions named with a
+    ``-YYYY-MM-DD-HHMMSS`` timestamp before the extension.
+
+    Stable report filenames replace the previously accumulating timestamped
+    variants; pruning keeps re-projection convergent on hubs first generated by an
+    earlier toolkit. Only files matching the exact timestamp shape in *patterns*
+    are removed, so hand-authored files are never touched.
+
+    Returns the number of files removed.
+    """
+    if not base_dir.is_dir():
+        return 0
+    removed = 0
+    for pattern in patterns:
+        for stale in sorted(base_dir.glob(pattern)):
+            try:
+                if stale.is_file():
+                    stale.unlink()
+                    removed += 1
+            except OSError:
+                pass
+    return removed
 
 
 # Issue #220: package-level dbt artifacts are owned by the orchestrator (regenerated once
@@ -842,9 +1063,13 @@ def run_projections(
             "KAIROS_PROJECT_STRICT", ""
         ).strip().lower() in {"1", "true", "yes", "on"}
 
+    # Resolve the generation timestamp once for the whole run and thread the same
+    # datetime through report stamps, per-domain provenance metadata, and the
+    # coverage report so one run never mixes two clocks.
+    generated_at = resolve_generated_at()
     report = ProjectionReport(
         toolkit_version=toolkit_version,
-        generated_at=generated_at_iso(),
+        generated_at=generated_at_iso(generated_at),
     )
     unbound_eligible_by_domain: dict[str, list[str]] = {}
     fatal_target_errors: list[str] = []
@@ -975,9 +1200,13 @@ def run_projections(
         print(f"  Found SKOS mappings directory: {mappings_dir}\n")
 
     targets_to_run = (
-        ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt', 'silver', 'powerbi', 'report', 'ddd']
+        list(projection_targets_for_all())
         if target == 'all'
-        else [_TARGET_ALIASES.get(target, target)]
+        else [
+            target_spec.canonical_name
+            if (target_spec := get_target_spec(target)) is not None
+            else target
+        ]
     )
     report.targets_requested = list(targets_to_run)
 
@@ -988,22 +1217,19 @@ def run_projections(
 
 
     for target_name in targets_to_run:
+        target_spec = get_target_spec(target_name)
         # Report target is handled after the per-domain loop (spans all domains)
-        if target_name in _POST_DOMAIN_TARGETS:
+        if (
+            target_spec is not None
+            and target_spec.execution_phase is ExecutionPhase.POST_DOMAIN
+        ):
             continue
         print(f"📦 Generating {target_name} projection...")
-        # Medallion targets go under output/medallion/; others directly under output/
-        # Silver artifacts are consolidated into the dbt project tree
-        if target_name in _MEDALLION_TARGETS:
-            target_output = output_path / "medallion" / (
-                "dbt" if target_name == "silver" else target_name
-            )
-        elif target_name in _ARCHITECTURE_TARGETS:
-            target_output = output_path / "architecture" / target_name
-        elif target_name in _EXTERNAL_TARGETS:
-            target_output = output_path / _EXTERNAL_TARGETS[target_name].output_subdir
-        else:
-            target_output = output_path / target_name
+        target_output = (
+            target_spec.output_path(output_path)
+            if target_spec is not None
+            else output_path / target_name
+        )
         target_output.mkdir(parents=True, exist_ok=True)
         
         total_files = 0
@@ -1058,7 +1284,9 @@ def run_projections(
                 print(f"  [{onto_name}] Auto-detected namespace: {onto_namespace}")
 
             # Extract ontology provenance metadata
-            onto_meta = extract_ontology_metadata(onto_graph, onto_namespace)
+            onto_meta = extract_ontology_metadata(
+                onto_graph, onto_namespace, generated_at=generated_at
+            )
 
             # Populate namespace on the domain entry (first time we know it)
             if onto_name in report.domains and not report.domains[onto_name].get("namespace"):
@@ -1298,14 +1526,26 @@ def run_projections(
                 "summary": _build_coverage_summary(dbt_coverage_data),
             }
             coverage_content = _json.dumps(merged_coverage, indent=2, ensure_ascii=False)
-            ts = generated_at_slug()
             reports_dir = output_path / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
-            coverage_artifacts = {f"coverage-silver-{ts}.json": coverage_content}
+            # Stable filenames converge on re-projection instead of leaving a new
+            # timestamped pair behind each run; drop any timestamped coverage
+            # reports written by older toolkit versions first.
+            _prune_legacy_report_files(
+                reports_dir,
+                (
+                    f"coverage-silver-{_LEGACY_REPORT_TS}.json",
+                    f"coverage-silver-{_LEGACY_REPORT_TS}.md",
+                ),
+            )
+            coverage_artifacts = {"coverage-silver.json": coverage_content}
             # Generate human-readable Markdown rendering
-            md_content = _render_silver_coverage_md(merged_coverage)
-            coverage_artifacts[f"coverage-silver-{ts}.md"] = md_content
+            md_content = _render_silver_coverage_md(
+                merged_coverage, generated_at=generated_at
+            )
+            coverage_artifacts["coverage-silver.md"] = md_content
             total_files += _write_artifacts(coverage_artifacts, reports_dir)
+            _reconcile_managed_output(reports_dir, coverage_artifacts.keys())
             print(f"  ✓ Merged coverage report for {len(dbt_coverage_data)} domain(s)")
             report.record_post_step("coverage_report", status="ok")
 
@@ -1383,9 +1623,15 @@ def run_projections(
     # ── Post-domain targets (span all ontology domains) ──────────────────
     if "report" in targets_to_run:
         print("📦 Generating report projection...")
-        _report_ts = generated_at_slug()
-        report_output = output_path / "reports" / "details"
+        report_output = TARGET_REGISTRY["report"].output_path(output_path)
         report_output.mkdir(parents=True, exist_ok=True)
+        # Stable filenames overwrite in place; drop timestamped detail reports left
+        # by older toolkit versions so the folder converges on the current run.
+        _prune_legacy_report_files(
+            report_output,
+            (f"*-{_LEGACY_REPORT_TS}.html", f"*-{_LEGACY_REPORT_TS}.md"),
+        )
+        managed_detail_files: list[str] = []
 
         # Merge all domain ontology graphs for cross-domain property lookup
         merged_classes: dict = {}
@@ -1402,11 +1648,6 @@ def run_projections(
 
         from .projections.report_projector import generate_mapping_report
 
-        def _ts_fname(name: str) -> str:
-            """Inject timestamp before the file extension."""
-            stem, _, ext = name.rpartition(".")
-            return f"{stem}-{_report_ts}.{ext}" if stem else f"{name}-{_report_ts}"
-
         report_artifacts = generate_mapping_report(
             ontology_classes=merged_classes,
             sources_dir=sources_dir,
@@ -1415,11 +1656,11 @@ def run_projections(
         )
         report_count = 0
         for fname, html in report_artifacts.items():
-            ts_name = _ts_fname(fname)
-            out_file = report_output / ts_name
+            out_file = report_output / fname
             out_file.write_text(html, encoding="utf-8")
+            managed_detail_files.append(fname)
             report_count += 1
-            print(f"  ✓ {ts_name}")
+            print(f"  ✓ {fname}")
         print(f"  ✓ report projection completed: {report_count} total files\n")
         report.record_post_step("mapping_report", status="ok")
 
@@ -1432,11 +1673,11 @@ def run_projections(
                 template_dir=template_base,
             )
             for fname, content in overview_artifacts.items():
-                ts_name = _ts_fname(fname)
-                out_file = report_output / ts_name
+                out_file = report_output / fname
                 out_file.write_text(content, encoding="utf-8")
+                managed_detail_files.append(fname)
                 report_count += 1
-                print(f"  ✓ {ts_name}")
+                print(f"  ✓ {fname}")
 
         # Generate source landscape report
         from .projections.report_projector import generate_source_landscape_report
@@ -1448,11 +1689,11 @@ def run_projections(
                 template_dir=template_base,
             )
             for fname, content in landscape_artifacts.items():
-                ts_name = _ts_fname(fname)
-                out_file = report_output / ts_name
+                out_file = report_output / fname
                 out_file.write_text(content, encoding="utf-8")
+                managed_detail_files.append(fname)
                 report_count += 1
-                print(f"  ✓ {ts_name}")
+                print(f"  ✓ {fname}")
 
         # Generate mapping progress dashboard
         from .projections.report_projector import generate_mapping_progress_report
@@ -1464,11 +1705,15 @@ def run_projections(
                 template_dir=template_base,
             )
             for fname, content in progress_artifacts.items():
-                ts_name = _ts_fname(fname)
-                out_file = report_output / ts_name
+                out_file = report_output / fname
                 out_file.write_text(content, encoding="utf-8")
+                managed_detail_files.append(fname)
                 report_count += 1
-                print(f"  ✓ {ts_name}")
+                print(f"  ✓ {fname}")
+
+        # Record the managed detail-report set so a later run prunes report files
+        # it no longer produces (convergent output, DD-096 C3 style).
+        _reconcile_managed_output(report_output, managed_detail_files)
     
     print("✅ Projection generation completed!")
     print(f"   Generated artifacts for {len(ontology_graphs)} data domain(s)")
@@ -1554,14 +1799,15 @@ def _build_coverage_summary(domain_data: dict[str, dict]) -> dict:
     }
 
 
-def _render_silver_coverage_md(merged: dict) -> str:
+def _render_silver_coverage_md(merged: dict, *, generated_at: datetime | None = None) -> str:
     """Render merged silver coverage data as human-readable Markdown."""
     summary = merged.get("summary", {})
     domains = merged.get("domains", {})
+    stamp = resolve_generated_at() if generated_at is None else generated_at
     lines = [
         "# Silver Layer Coverage Report",
         "",
-        f"**Generated:** {resolve_generated_at().strftime('%Y-%m-%d %H:%M:%S UTC')}  ",
+        f"**Generated:** {stamp.strftime('%Y-%m-%d %H:%M:%S UTC')}  ",
         f"**Domains:** {summary.get('domains_count', 0)}  ",
         f"**Overall populated:** {summary.get('populated_pct', 0)}%"
         f" ({summary.get('populated_from_source', 0)}"
@@ -1603,12 +1849,20 @@ def _render_silver_coverage_md(merged: dict) -> str:
     return "\n".join(lines)
 
 
-def extract_ontology_metadata(graph: Graph, namespace: str) -> dict:
+def extract_ontology_metadata(
+    graph: Graph, namespace: str, *, generated_at: datetime | None = None
+) -> dict:
     """Extract provenance metadata from the owl:Ontology declaration.
 
     Returns a dict with keys: ``iri``, ``version``, ``label``, ``namespace``,
     ``toolkit_version``, and ``generated_at``.  Missing values default to
     sensible placeholders so callers can always rely on the keys being present.
+
+    Args:
+        generated_at: The run's pinned generation time.  When ``None`` (a direct
+            caller outside a projection run) it is resolved from the environment;
+            a projection run resolves it once and threads the same value here so
+            every target's ``-- Generated at:`` stamp matches the report.
     """
     from kairos_ontology import __version__ as toolkit_version
 
@@ -1635,7 +1889,7 @@ def extract_ontology_metadata(graph: Graph, namespace: str) -> dict:
         "label": label,
         "namespace": namespace,
         "toolkit_version": toolkit_version,
-        "generated_at": generated_at_iso(),
+        "generated_at": generated_at_iso(generated_at),
     }
 
 
@@ -2015,8 +2269,10 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
 
     # Externally-registered targets (e.g. mdm-profile) — dispatched via the
     # registry so core never imports the contributing package (MDM-DD-002).
-    if target in _EXTERNAL_TARGETS:
-        return _EXTERNAL_TARGETS[target].project(
+    target_spec = get_target_spec(target)
+    external_dispatch = target_spec.external_dispatch if target_spec else None
+    if external_dispatch is not None:
+        return external_dispatch.project(
             graph=graph,
             namespace=namespace,
             ontology_name=ontology_name or "domain",

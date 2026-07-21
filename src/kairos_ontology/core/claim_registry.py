@@ -5,15 +5,14 @@
 The Claim Registry (``model/claims/{domain}-claims.yaml``) is the single governed
 source of truth for *which concepts are approved to materialize* in a hub, with
 evidence, ownership, dispositions, and silver-contract impact. It replaces the
-former ``{domain}-alignment.yaml`` (see the evidence-led decision log
-``DD-EL-1``).
+former ``{domain}-alignment.yaml`` (DD-094).
 
 This module is deterministic and AI-free: it defines the dataclass model for
 schema v1, a tolerant YAML loader, a structural validator, and round-trip
 ``*_to_dict`` / ``*_from_dict`` helpers used by the one-way migration (golden
 tests rely on byte-stable output).
 
-Governance vocabulary (decision log ``DD-EL-1`` / schema doc §2):
+Governance vocabulary (DD-094 / schema doc §2):
 
 * ``status``      proposed | approved | rejected | deferred | deprecated
 * ``disposition`` claim | specialize | passthrough | skip | gap
@@ -25,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -327,7 +326,7 @@ class Claim:
 
 @dataclass
 class CoverageTable:
-    """Per-table coverage snapshot (parity with the alignment coverage gate)."""
+    """Per-table registry snapshot consumed by canonical completeness facts."""
 
     table: str
     total_columns: int = 0
@@ -670,6 +669,7 @@ def validation_errors(issues: Iterable[ValidationIssue]) -> list[ValidationIssue
 #: Fields curated by a human reviewer that must survive a re-run of the
 #: producing command (the claim-level analog of disposition preservation).
 HUMAN_CURATED_FIELDS = (
+    "type",
     "status",
     "disposition",
     "origin",
@@ -687,14 +687,29 @@ HUMAN_CURATED_FIELDS = (
 )
 
 
+def _merge_decided_claim(candidate: Claim, previous: Claim) -> Claim:
+    """Refresh generated values while preserving the declared governance policy."""
+    curated_values = {
+        field_name: getattr(previous, field_name) for field_name in HUMAN_CURATED_FIELDS
+    }
+    evidence_sources = (
+        list(candidate.evidence_sources)
+        if candidate.evidence_sources
+        else list(previous.evidence_sources)
+    )
+    return replace(candidate, **curated_values, evidence_sources=evidence_sources)
+
+
 def merge_preserving_decisions(
     new: ClaimRegistry, existing: ClaimRegistry
 ) -> ClaimRegistry:
     """Merge a freshly-generated registry over an existing one, never clobbering
-    a human decision (decision log ``DD-EL-1``; schema doc §2.4 id stability).
+    a human decision (DD-094; schema doc §2.4 id stability).
 
     Rules (keyed on stable claim ``id``):
 
+    * registries for different domains are rejected before any decisions can leak
+      across domain boundaries;
     * existing claim is still ``proposed`` → the new candidate replaces it
       (regeneration refreshes an undecided candidate);
     * existing claim is **decided** (``approved`` / ``rejected`` / ``deferred`` /
@@ -710,6 +725,12 @@ def merge_preserving_decisions(
 
     The result is sorted by ``id`` for byte-stable output.
     """
+    if new.domain != existing.domain:
+        raise ValueError(
+            "cannot merge claim registries for different domains: "
+            f"{new.domain!r} != {existing.domain!r}"
+        )
+
     existing_by_id = {c.id: c for c in existing.claims if c.id}
     new_ids = {c.id for c in new.claims if c.id}
     merged: list[Claim] = []
@@ -717,31 +738,7 @@ def merge_preserving_decisions(
     for cand in new.claims:
         prev = existing_by_id.get(cand.id)
         if prev is not None and prev.status != "proposed":
-            kept = Claim(
-                id=prev.id,
-                type=prev.type,
-                status=prev.status,
-                disposition=prev.disposition,
-                origin=prev.origin,
-                class_uri=prev.class_uri,
-                property_uri=prev.property_uri,
-                owner=prev.owner,
-                evidence_sources=(
-                    list(cand.evidence_sources)
-                    if cand.evidence_sources
-                    else list(prev.evidence_sources)
-                ),
-                silver_impact=prev.silver_impact,
-                reference_data=prev.reference_data,
-                mdm_anchor=prev.mdm_anchor,
-                deviation=prev.deviation,
-                ownership_override=prev.ownership_override,
-                passthrough_reviewed=prev.passthrough_reviewed,
-                rationale=prev.rationale,
-                proposed_confidence=cand.proposed_confidence,
-                superseded_by=prev.superseded_by,
-            )
-            merged.append(kept)
+            merged.append(_merge_decided_claim(cand, prev))
         else:
             merged.append(cand)
 

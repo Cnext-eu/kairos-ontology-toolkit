@@ -39,8 +39,9 @@ from jinja2 import Environment, FileSystemLoader
 from .uri_utils import camel_to_snake, extract_local_name
 from ..determinism import resolve_generated_at
 from .shared import (
+    ForeignKeyClassification,
     KAIROS_EXT,
-    merge_ext_graph,
+    classify_foreign_keys,
     str_val,
     bool_val,
     detect_ontology_uri,
@@ -50,6 +51,7 @@ from .shared import (
 )
 
 if TYPE_CHECKING:
+    from ..binding_analysis import BindingAnalysis
     from ..dbt_contracts import DbtContractModel
 
 logger = logging.getLogger(__name__)
@@ -865,7 +867,7 @@ def _extract_property_shape_tests(
         p = str(pattern).replace("'", "\\'")
         tests.append(
             f"dbt_expectations.expect_column_values_to_match_regex:\n"
-            f"            regex: '{p}'"
+            f"              regex: '{p}'"
         )
 
     in_list = sg.value(ps, SH["in"])
@@ -874,7 +876,7 @@ def _extract_property_shape_tests(
         if values:
             tests.append(
                 f"accepted_values:\n"
-                f"            values: [{', '.join(values)}]"
+                f"              values: [{', '.join(values)}]"
             )
 
     min_len = sg.value(ps, SH.minLength)
@@ -887,7 +889,7 @@ def _extract_property_shape_tests(
             parts.append(f"max_value: {int(max_len)}")
         tests.append(
             f"dbt_expectations.expect_column_value_lengths_to_be_between:\n"
-            f"            {'\n            '.join(parts)}"
+            f"              {'\n              '.join(parts)}"
         )
 
     min_inc = sg.value(ps, SH.minInclusive)
@@ -900,7 +902,7 @@ def _extract_property_shape_tests(
             parts.append(f"max_value: {max_inc}")
         tests.append(
             f"dbt_expectations.expect_column_values_to_be_between:\n"
-            f"            {'\n            '.join(parts)}"
+            f"              {'\n              '.join(parts)}"
         )
 
     if tests:
@@ -1297,6 +1299,9 @@ def _gen_silver_models(
     contract_registry: Mapping[str, "DbtContractModel"] | None = None,
     emit_aspirational_stubs: bool = False,
     eligible_class_uris: set[str] | None = None,
+    fk_classification: ForeignKeyClassification | None = None,
+    bindings: "SourceBindings | None" = None,
+    analysis: "BindingAnalysis | None" = None,
 ) -> tuple[dict[str, str], list[str], list[dict]]:
     """Generate silver entity models that read directly from bronze sources.
 
@@ -1305,6 +1310,11 @@ def _gen_silver_models(
     - Every source() must point to a declared bronze source table
     - Unmapped classes are skipped with a warning (no broken placeholders)
     - Silver absorbs rename, cast, and transform logic (previously in staging)
+
+    ``bindings`` and ``analysis`` let the bind/normalize phases pass the already
+    committed :class:`SourceBindings` / :class:`BindingAnalysis` so they are never
+    recomputed here (DD-102); when omitted (direct/legacy callers) they are computed
+    inline exactly as before.
 
     Returns:
         Tuple of (artifacts dict, warnings list, entity_metadata list).
@@ -1322,7 +1332,8 @@ def _gen_silver_models(
     naming_conv = silver_naming_convention(
         graph, detect_ontology_uri(graph, namespace),
     )
-    bindings = compute_source_bindings(
+    fk_contract = fk_classification or classify_foreign_keys(graph)
+    bindings = bindings if bindings is not None else compute_source_bindings(
         classes=classes,
         graph=graph,
         systems=systems,
@@ -1333,6 +1344,23 @@ def _gen_silver_models(
     class_to_sources = bindings.class_to_sources
     folded_source_targets = bindings.folded_source_targets
     warnings.extend(bindings.warnings)
+    # Canonical materialization analysis (DD-096): reuse the already-computed
+    # bindings so stub emission and the release gate consume the *same* bound/
+    # folded/stub/skipped classification as status and the strict gate — never a
+    # divergent inline reimplementation. `stubs_enabled` only gates byte emission;
+    # the aspirational/release facts are derived independently of it.
+    from .. import binding_analysis as _ba
+
+    analysis = analysis if analysis is not None else _ba.build(
+        classes=classes,
+        graph=graph,
+        systems=systems,
+        mappings=mappings,
+        contract_registry=contract_registry,
+        eligible_class_uris=eligible_class_uris,
+        stubs_enabled=emit_aspirational_stubs,
+        bindings=bindings,
+    )
     for cls in classes:
         cls_uri = cls["uri"]
         local = cls["name"]
@@ -1373,11 +1401,12 @@ def _gen_silver_models(
                 })
                 continue
 
-            if emit_aspirational_stubs and cls_uri in (eligible_class_uris or set()):
+            if analysis.should_emit_stub(cls_uri):
                 # Target-first stub → bind loop: this class is an approved,
                 # materialization-eligible claim with no bronze mapping yet. Emit a
                 # typed, zero-row placeholder so downstream models have a stable
-                # Silver contract. `aspirational` is DERIVED here, not persisted.
+                # Silver contract. `aspirational` is DERIVED (canonical
+                # BindingAnalysis), not persisted; emission is byte-gated on the flag.
                 stub_cols = _stub_columns(graph, cls_uri, model_name, platform)
                 stub_content = env.get_template("silver_stub_model.sql.jinja2").render(
                     model_name=model_name,
@@ -1425,10 +1454,11 @@ def _gen_silver_models(
                 "fk_join_count": 0,
                 "skipped": True,
                 # Release gate (DD-096 / DEC-1): an approved, materialization-eligible
-                # claim with no bronze mapping is an *unbound target*. Record it here
-                # regardless of whether a stub was emitted, so `project --strict` can
-                # block release on unbound approved claims.
-                "unbound_eligible": cls_uri in (eligible_class_uris or set()),
+                # claim with no bronze mapping is an *unbound target*. Recorded from
+                # the canonical analysis (release-blocking == aspirational) regardless
+                # of whether a stub was emitted, so `project --strict` can block
+                # release on unbound approved claims.
+                "unbound_eligible": analysis.is_release_blocking(cls_uri),
                 "skip_reason": "No bronze mapping found",
             })
             continue
@@ -1441,7 +1471,7 @@ def _gen_silver_models(
                     f"Contracted transformation {active_contracts[cls_uri].name!r} "
                     f"targets class {local!r}, which has no kairos-ext:naturalKey"
                 )
-            fk_parents = _fk_child_parents(graph, cls_uri)
+            fk_parents = _fk_child_parents(graph, cls_uri, fk_contract)
             if fk_parents:
                 msg = (
                     f"Class '{local}' has no kairos-ext:naturalKey and is an "
@@ -1530,6 +1560,8 @@ def _gen_silver_models(
                 fk_cols, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
                     graph, extraction_cls_uri, mappings, [source_ref],
                     systems=systems,
+                    fk_classification=fk_contract,
+                    naming_conv=naming_conv,
                 )
                 warnings.extend(fk_warnings)
 
@@ -1748,6 +1780,8 @@ def _gen_silver_models(
         fk_extraction_cls_uri = folded_subtype_uri or cls_uri
         fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
             graph, fk_extraction_cls_uri, mappings, source_refs, systems=systems,
+            fk_classification=fk_contract,
+            naming_conv=naming_conv,
         )
         if cls_uri in active_contracts and fk_warnings:
             raise ValueError(
@@ -2344,7 +2378,11 @@ def _extract_silver_columns(
     return columns
 
 
-def _resolve_discriminated_model(graph: Graph, class_uri) -> tuple[str, str]:
+def _resolve_discriminated_model(
+    graph: Graph,
+    class_uri,
+    naming_conv: str = "camel-to-snake",
+) -> tuple[str, str]:
     """Resolve a class to its effective model name, accounting for discriminator folding.
 
     If the class is a subclass of a parent with ``inheritanceStrategy "discriminator"``,
@@ -2353,29 +2391,31 @@ def _resolve_discriminated_model(graph: Graph, class_uri) -> tuple[str, str]:
 
     Returns (model_name, local_name) for the resolved target.
     """
-    cls_local = extract_local_name(str(class_uri))
-    cls_model = _camel_to_snake(cls_local)
+    effective_class = URIRef(str(class_uri))
 
     # Walk up the subClassOf chain looking for a discriminator parent
     for parent in graph.objects(URIRef(str(class_uri)), RDFS.subClassOf):
         strategy = graph.value(parent, KAIROS_EXT.inheritanceStrategy)
         if strategy and str(strategy) == "discriminator":
-            parent_local = extract_local_name(str(parent))
-            parent_model = _camel_to_snake(parent_local)
-            return parent_model, parent_local
+            effective_class = parent
+            break
 
-    return cls_model, cls_local
+    local = extract_local_name(str(effective_class))
+    return silver_table_name(graph, effective_class, local, naming_conv), local
 
 
 def _infer_fk_targets(
     graph: Graph,
     class_uri: str,
+    fk_classification: ForeignKeyClassification | None = None,
+    naming_conv: str = "camel-to-snake",
 ) -> list[dict]:
     """Identify qualifying FK object properties for a class.
 
     A property qualifies as a FK column when ANY of:
       - it has an explicit ``kairos-ext:silverColumnName`` annotation,
       - it is declared ``owl:FunctionalProperty``,
+      - its class has an OWL max-cardinality-one restriction,
       - it has ``kairos-ext:silverForeignKey true`` (DD-022).
 
     Properties with ``kairos-ext:silverForeignKeyOn`` that redirect the FK to
@@ -2385,44 +2425,32 @@ def _infer_fk_targets(
     fk_col_name.
     """
     domain_classes = _get_class_and_parents(graph, class_uri)
+    classification = fk_classification or classify_foreign_keys(graph)
     targets: list[dict] = []
 
-    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
-        domain = graph.value(prop, RDFS.domain)
-        if domain is None or str(domain) not in domain_classes:
+    for fk in classification.descriptors:
+        if fk.redirected or str(fk.domain_class) not in domain_classes:
             continue
 
         # Skip junction-table properties (many-to-many)
-        if graph.value(prop, KAIROS_EXT.junctionTableName):
+        if fk.junction_table_name:
             continue
 
-        # Skip if silverForeignKeyOn redirects this FK to another table (DD-022)
-        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
-        if fk_on is not None:
+        if not fk.is_silver_fk:
             continue
 
-        # Qualify: must be functional, have silverColumnName, or silverForeignKey
-        has_explicit_col = graph.value(prop, KAIROS_EXT.silverColumnName) is not None
-        is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
-        has_fk_annotation = bool_val(
-            graph, URIRef(str(prop)), KAIROS_EXT.silverForeignKey, False,
-        )
-        if not has_explicit_col and not is_functional and not has_fk_annotation:
-            continue
-
-        range_cls = graph.value(prop, RDFS.range)
-        if range_cls is None:
-            continue
+        range_cls = fk.target_class
 
         # Resolve through discriminator folding (e.g. LegalEntity → Party)
-        range_model, range_local = _resolve_discriminated_model(graph, range_cls)
+        range_model, range_local = _resolve_discriminated_model(
+            graph, range_cls, naming_conv,
+        )
 
         # Determine FK column name
-        col_override = graph.value(prop, KAIROS_EXT.silverColumnName)
-        fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
+        fk_col_name = fk.physical_column_name(range_model, layer="silver")
 
         targets.append({
-            "prop": prop,
+            "prop": fk.property_uri,
             "range_cls": range_cls,
             "range_local": range_local,
             "range_model": range_model,
@@ -2435,6 +2463,8 @@ def _infer_fk_targets(
 def _infer_fk_on_targets(
     graph: Graph,
     class_uri: str,
+    fk_classification: ForeignKeyClassification | None = None,
+    naming_conv: str = "camel-to-snake",
 ) -> list[dict]:
     """Identify FK properties redirected TO this class via ``silverForeignKeyOn``.
 
@@ -2442,35 +2472,34 @@ def _infer_fk_on_targets(
     should appear on that target class (not the domain class).  This function
     collects such properties where the target class matches *class_uri*.
 
-    The join target is the property's **domain** (the parent entity), not its
-    range (which equals this class).  E.g. hasAddress(domain=Party, range=Address)
-    with silverForeignKeyOn=Address → FK on Address joining to Party.
+    The canonical descriptor supplies the referenced endpoint after redirection.
+    E.g. hasAddress(domain=Party, range=Address) with
+    silverForeignKeyOn=Address → FK on Address joining to Party.
     """
+    classification = fk_classification or classify_foreign_keys(graph)
     targets: list[dict] = []
 
-    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
-        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
-        if fk_on is None or str(fk_on) != class_uri:
-            continue
-
-        # The domain of the property is the parent we're joining to
-        # (not range, which is the current class — would cause self-join)
-        parent_cls = graph.value(prop, RDFS.domain)
-        if parent_cls is None:
+    for fk in classification.descriptors:
+        if (
+            not fk.redirected
+            or fk.junction_table_name
+            or str(fk.source_class) != class_uri
+        ):
             continue
 
         # Skip if parent is same as current class (true self-referential)
-        if str(parent_cls) == class_uri:
+        if str(fk.target_class) == class_uri:
             continue
 
         # Resolve through discriminator folding
-        parent_model, parent_local = _resolve_discriminated_model(graph, parent_cls)
-
-        col_override = graph.value(prop, KAIROS_EXT.silverColumnName)
-        fk_col_name = str(col_override) if col_override else f"{parent_model}_sk"
+        parent_cls = fk.target_class
+        parent_model, parent_local = _resolve_discriminated_model(
+            graph, parent_cls, naming_conv,
+        )
+        fk_col_name = fk.physical_column_name(parent_model, layer="silver")
 
         targets.append({
-            "prop": prop,
+            "prop": fk.property_uri,
             "range_cls": parent_cls,
             "range_local": parent_local,
             "range_model": parent_model,
@@ -2712,12 +2741,13 @@ def _extract_fk_columns_and_joins(
     mappings: dict,
     source_refs: list[SourceRef],
     systems: list[dict] | None = None,
+    fk_classification: ForeignKeyClassification | None = None,
+    naming_conv: str = "camel-to-snake",
 ) -> tuple[list[dict], list[dict], list[str]]:
     """Extract FK columns and joins from object properties.
 
-    For each qualifying object property (functional, silverColumnName, or
-    silverForeignKey) on the class, generates a surrogate-key lookup join to
-    the referenced silver model.
+    For each relationship in the canonical FK contract that qualifies on the
+    class, generates a surrogate-key lookup join to the referenced silver model.
 
     Returns:
         (fk_columns, joins, warnings) where:
@@ -2748,9 +2778,14 @@ def _extract_fk_columns_and_joins(
                     }
 
     # Identify qualifying FK targets
-    fk_targets = _infer_fk_targets(graph, class_uri)
+    classification = fk_classification or classify_foreign_keys(graph)
+    fk_targets = _infer_fk_targets(
+        graph, class_uri, classification, naming_conv,
+    )
     # Also include FK columns redirected to this class via silverForeignKeyOn
-    fk_targets.extend(_infer_fk_on_targets(graph, class_uri))
+    fk_targets.extend(_infer_fk_on_targets(
+        graph, class_uri, classification, naming_conv,
+    ))
 
     # Detect FK properties that share the same auto-inference signature: their range
     # natural keys resolve to the *same* property URIs, so NK-based auto-inference would
@@ -2880,7 +2915,11 @@ def _build_enum_case(source_expr: str, enum_values: list[dict]) -> str:
     return "\n".join(parts)
 
 
-def _fk_child_parents(graph: Graph, class_uri: str) -> list[str]:
+def _fk_child_parents(
+    graph: Graph,
+    class_uri: str,
+    fk_classification: ForeignKeyClassification | None = None,
+) -> list[str]:
     """Local names of parent classes for which ``class_uri`` is an FK-child.
 
     A class is an FK-child (weak entity) when an object property declares
@@ -2890,18 +2929,17 @@ def _fk_child_parents(graph: Graph, class_uri: str) -> list[str]:
     rather than from a standalone natural key. Used only to enrich warnings.
     """
     parents: list[str] = []
-    target = URIRef(class_uri)
-    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
-        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
-        if fk_on is None or fk_on != target:
+    classification = fk_classification or classify_foreign_keys(graph)
+    for fk in classification.descriptors:
+        if (
+            not fk.reverse
+            or fk.junction_table_name
+            or str(fk.source_class) != class_uri
+        ):
             continue
-        domain = graph.value(prop, RDFS.domain)
-        rng = graph.value(prop, RDFS.range)
-        parent = domain if rng == target else rng
-        if parent is not None:
-            local = extract_local_name(str(parent))
-            if local not in parents:
-                parents.append(local)
+        local = extract_local_name(str(fk.target_class))
+        if local not in parents:
+            parents.append(local)
     return parents
 
 
@@ -3021,6 +3059,8 @@ def _gen_schema_yaml(
     generated_class_names: set[str] | None = None,
     platform: str = DEFAULT_PLATFORM,
     aspirational_class_names: set[str] | None = None,
+    fk_classification: ForeignKeyClassification | None = None,
+    naming_conv: str | None = None,
 ) -> dict[str, str]:
     """Generate ``_models.yml`` with column descriptions, tests, and lineage."""
     artifacts: dict[str, str] = {}
@@ -3048,6 +3088,10 @@ def _gen_schema_yaml(
 
     # Pre-load SHACL graph once for all classes (performance: avoids re-parsing per class)
     shacl_graph = _load_shacl_graph(shapes_dir) if shapes_dir else None
+    fk_contract = fk_classification or classify_foreign_keys(graph)
+    fk_naming_conv = naming_conv or silver_naming_convention(
+        graph, detect_ontology_uri(graph, namespace),
+    )
 
     models_data = []
     class_uris = {c["uri"] for c in classes}
@@ -3188,44 +3232,53 @@ def _gen_schema_yaml(
                     "tests": tests,
                 })
 
-        # Object property FK columns (including inherited from parent classes)
-        for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
-            domain = graph.value(prop, RDFS.domain)
-            if domain and str(domain) in domain_classes:
-                # Skip junction-table properties
-                if graph.value(prop, KAIROS_EXT.junctionTableName):
-                    continue
-                # Only functional / explicit column
-                has_explicit = graph.value(
-                    prop, KAIROS_EXT.silverColumnName
-                ) is not None
-                is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
-                if not has_explicit and not is_functional:
-                    continue
-                range_cls = graph.value(prop, RDFS.range)
-                if range_cls is None:
-                    continue
-                range_local = extract_local_name(str(range_cls))
-                range_model = _camel_to_snake(range_local)
-                col_override = graph.value(prop, KAIROS_EXT.silverColumnName)
-                fk_col_name = str(col_override) if col_override else f"{range_model}_sk"
-                prop_label = graph.value(prop, RDFS.label)
-                prop_comment = graph.value(prop, RDFS.comment)
-                fk_desc = (
-                    str(prop_comment) if prop_comment
-                    else (str(prop_label) if prop_label
-                          else f"FK to {range_local}")
-                )
-                cols.append({
-                    "name": fk_col_name,
-                    "description": fk_desc,
-                    "meta": {
-                        "is_fk": "true",
-                        "references": range_model,
-                        "domain_iri": str(prop),
-                    },
-                    "tests": [],
-                })
+        # Object property FK columns (including inherited and redirected relationships)
+        direct_fks = [
+            fk for fk in fk_contract.descriptors
+            if (
+                not fk.redirected
+                and str(fk.domain_class) in domain_classes
+                and fk.is_silver_fk
+            )
+        ]
+        redirected_fks = [
+            fk for fk in fk_contract.descriptors
+            if fk.redirected and str(fk.source_class) in domain_classes
+        ]
+        existing_fk_cols = {column["name"] for column in cols}
+        for fk in direct_fks + redirected_fks:
+            if fk.junction_table_name:
+                continue
+            prop = fk.property_uri
+            range_cls = fk.target_class
+            range_model, range_local = _resolve_discriminated_model(
+                graph, range_cls, fk_naming_conv,
+            )
+            fk_col_name = fk.physical_column_name(range_model, layer="silver")
+            if fk_col_name in existing_fk_cols:
+                prop_suffix = _camel_to_snake(extract_local_name(str(prop)))
+                fk_col_name = f"{prop_suffix}_sk"
+                if fk_col_name in existing_fk_cols:
+                    fk_col_name = f"{range_model}_{prop_suffix}_sk"
+            existing_fk_cols.add(fk_col_name)
+
+            prop_label = graph.value(prop, RDFS.label)
+            prop_comment = graph.value(prop, RDFS.comment)
+            fk_desc = (
+                str(prop_comment) if prop_comment
+                else (str(prop_label) if prop_label
+                      else f"FK to {range_local}")
+            )
+            cols.append({
+                "name": fk_col_name,
+                "description": fk_desc,
+                "meta": {
+                    "is_fk": "true",
+                    "references": range_model,
+                    "domain_iri": str(prop),
+                },
+                "tests": [],
+            })
 
         model_meta = {
             "ontology_class": cls["name"],
@@ -3853,181 +3906,59 @@ def generate_dbt_artifacts(
     Returns:
         Dictionary of ``{file_path: content}`` for all generated artifacts.
     """
-    artifacts: dict[str, str] = {}
-    meta = ontology_metadata or {}
-    onto_name = ontology_name or "domain"
-    env = Environment(loader=FileSystemLoader(str(template_dir)))
+    # Orchestrate the five deterministic phases over typed immutable intermediate
+    # models (DD-102). Each phase reads only committed facts from the previous one;
+    # the leaf shaping/rendering helpers below remain the implementation invoked by
+    # the phase functions (documented retained internal code — DD-102).
+    from .dbt import (
+        DbtInputs,
+        bind_sources,
+        normalize_contract,
+        plan_materialization,
+        render_project,
+        shape_project,
+    )
 
-    # Merge silver-ext triples into a working copy of the graph so naturalKey
-    # and other silver annotations are visible during dbt silver model generation.
-    # DD-023: Include ref-model defaults as fallback layer.
-    # Cross-domain NK: Include peer extension files for FK target resolution.
-    graph = merge_ext_graph(
-        graph, silver_ext_path,
-        fallback_paths=ref_model_defaults,
+    inputs = DbtInputs.from_call(
+        classes=classes,
+        graph=graph,
+        template_dir=template_dir,
+        namespace=namespace,
+        shapes_dir=shapes_dir,
+        ontology_name=ontology_name,
+        ontology_metadata=ontology_metadata,
+        bronze_dir=bronze_dir,
+        sources_dir=sources_dir,
+        mappings_dir=mappings_dir,
+        gold_ext_path=gold_ext_path,
+        target_platform=target_platform,
+        silver_ext_path=silver_ext_path,
+        ref_model_defaults=ref_model_defaults,
         peer_ext_paths=peer_ext_paths,
-    )
-
-    # Parse source vocabulary — prefer sources_dir, fall back to bronze_dir
-    systems = _parse_bronze(sources_dir or bronze_dir)
-
-    # Parse SKOS mappings
-    mappings, mapping_ns = _parse_skos_mappings(mappings_dir)
-    contracts = contract_registry or {}
-    _validate_contract_boundaries(
-        contracts,
-        classes,
-        graph,
-        systems,
-        mappings,
-        target_platform,
-    )
-    virtual_table_uris = frozenset(
-        contract.virtual_source_iri for contract in contracts.values()
-    )
-    class_uris = {item["uri"] for item in classes}
-    replacement_input_uris = frozenset(
-        replacement.table_iri
-        for contract in contracts.values()
-        if contract.target_class in class_uris
-        for replacement in contract.replaces_sources
-    )
-
-    if not systems:
-        logger.info("No source systems found — generating silver models only")
-
-    # 1. Sources YAML (minimal — under models/silver/)
-    if systems:
-        artifacts.update(
-            _gen_sources(
-                systems,
-                env,
-                mappings,
-                logical_sources_only,
-                virtual_table_uris,
-                replacement_input_uris,
-            )
-        )
-        logger.info("Generated %d source definition(s)", len(systems))
-
-    # 2. Silver entity models (read directly from bronze via source())
-    silver, silver_warnings, silver_entity_meta = _gen_silver_models(
-        classes, graph, namespace, systems, mappings, env, meta, onto_name,
-        platform=target_platform,
-        mapping_ns=mapping_ns,
-        contract_registry=contracts,
+        logical_sources_only=logical_sources_only,
+        contract_registry=contract_registry,
         emit_aspirational_stubs=emit_aspirational_stubs,
         eligible_class_uris=eligible_class_uris,
     )
-    artifacts.update(silver)
-    logger.info("Generated %d silver model(s)", len(silver))
-    if silver_warnings:
-        for w in silver_warnings:
-            logger.warning("%s", w)
-        logger.info(
-            "%d class(es) skipped — see projection-report.json for details",
-            len(silver_warnings),
-        )
 
-    # Cache entity metadata for session log (retrieved via get_last_entity_metadata)
-    _last_entity_metadata[onto_name] = silver_entity_meta
+    # Phase 1 — bind: commit source systems, mappings, contracts + SourceBindings.
+    bound = bind_sources(inputs)
+    if not bound.has_sources:
+        logger.info("No source systems found — generating silver models only")
 
-    # Determine which classes actually generated silver models (for schema filtering).
-    # Only filter when source systems are present — without sources, schema YAML is
-    # generated for all classes (useful for ontology-only projections without bronze).
-    generated_class_names: set[str] | None = None
-    if systems:
-        generated_class_names = {
-            m["class_name"] for m in silver_entity_meta if not m.get("skipped")
-        }
-    aspirational_class_names = {
-        m["class_name"] for m in silver_entity_meta if m.get("aspirational")
-    }
-    # Release gate (DD-096 / DEC-1): every approved, materialization-eligible claim
-    # with no bronze mapping — whether emitted as a stub or skipped — is an unbound
-    # target. Surface the set so the orchestrator can enforce `project --strict`.
-    unbound_eligible_names = sorted(
-        m["class_name"] for m in silver_entity_meta
-        if m.get("aspirational") or m.get("unbound_eligible")
-    )
-    if unbound_eligible_names:
-        artifacts["__unbound_eligible__"] = unbound_eligible_names
+    # Phase 2 — normalize: derive the FK + binding projection contract.
+    contract = normalize_contract(inputs, bound)
 
-    # 3. Schema YAML with SHACL tests
-    schema = _gen_schema_yaml(
-        classes, graph, namespace, shapes_dir, env, onto_name, meta,
-        systems=systems, mappings=mappings,
-        generated_class_names=generated_class_names,
-        platform=target_platform,
-        aspirational_class_names=aspirational_class_names,
-    )
-    artifacts.update(schema)
+    # Phase 3 — shape: build every model's shaped data + rendered artifact bytes.
+    shaped = shape_project(inputs, bound, contract)
+    # Cache entity metadata for session log (retrieved via get_last_entity_metadata).
+    _last_entity_metadata[inputs.onto_name] = shaped.silver_entity_meta
 
-    # 4. Project config (per-domain fallback — orchestrator generates definitive version)
-    has_gold = False
-    if systems:
-        # Build silver model registry for gold ref() resolution (DD-027)
-        silver_name_reg, silver_cols_reg = _build_silver_model_registry(
-            silver_entity_meta, classes, graph,
-        )
+    # Phase 4 — materialize: release metadata + per-domain project configuration.
+    plan = plan_materialization(inputs, bound, contract, shaped)
 
-        # 5. Gold entity models (thick gold — pre-materialized star schema)
-        gold = _gen_gold_models(
-            classes, graph, namespace, shapes_dir, onto_name, gold_ext_path, env, meta,
-            silver_name_registry=silver_name_reg,
-            silver_columns_registry=silver_cols_reg,
-        )
-        artifacts.update(gold)
-        has_gold = len(gold) > 0
-        if gold:
-            logger.info("Generated %d gold model(s)", len(gold))
-
-        # Extract generated gold model names for schema YAML filtering
-        gold_prefix = f"models/gold/{onto_name}/"
-        shared_prefix = "models/gold/shared/"
-        generated_gold_names = {
-            p.removeprefix(gold_prefix).removesuffix(".sql")
-            for p in gold if p.startswith(gold_prefix) and p.endswith(".sql")
-        } | {
-            p.removeprefix(shared_prefix).removesuffix(".sql")
-            for p in gold if p.startswith(shared_prefix) and p.endswith(".sql")
-        }
-
-        # 6. Gold schema YAML with tests
-        gold_schema = _gen_gold_schema_yaml(
-            classes, graph, namespace, shapes_dir, onto_name, gold_ext_path, env, meta,
-            generated_gold_names=generated_gold_names,
-        )
-        artifacts.update(gold_schema)
-
-        gold_domains = [{"name": onto_name}] if has_gold else []
-        project = _gen_project_config(
-            systems, [onto_name], env, f"{onto_name}_project",
-            gold_domains=gold_domains,
-            platform=target_platform,
-        )
-        artifacts.update(project)
-
-    # 7. Coverage report — data is collected here but the merged JSON file
-    #    is written by the projector orchestrator after all domains are done.
-    if systems:
-        coverage_data = generate_coverage_data(
-            classes, graph, namespace, systems, mappings, onto_name,
-        )
-        if coverage_data:
-            artifacts["__coverage_data__"] = coverage_data
-            logger.info("Collected coverage data (%d entities)", len(coverage_data))
-
-    # 8. Platform macros
-    macros = _gen_macros(template_dir)
-    artifacts.update(macros)
-    if macros:
-        logger.info("Generated %d platform macro(s)", len(macros))
-
-    # 9. Post-generation validation
-    _validate_dbt_artifacts(artifacts, known_models=set(contracts))
-
-    return artifacts
+    # Phase 5 — render: assemble + validate the final artifact map (no RDF reread).
+    return render_project(shaped, plan)
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,21 @@
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix bronze-ap: <https://acme.example/bronze/adminpulse#> .
+@prefix bronze-lp: <https://acme.example/bronze/logisticspro#> .
+@prefix acme: <https://acme.example/ontology/client#> .
+@prefix refp: <https://refmodel.example/ontology/party#> .
+
+bronze-ap:tblRelation skos:exactMatch acme:Client ;
+    kairos-map:mappingType "direct" .
+
+bronze-ap:tblRelation_ClientID skos:exactMatch acme:clientId ;
+    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+
+bronze-lp:tblShipmentParty skos:exactMatch refp:TradeParty ;
+    kairos-map:mappingType "direct" .
+
+bronze-lp:tblShipmentParty_PartyCode skos:exactMatch refp:partyCode ;
+    kairos-map:transform "source.PartyCode" .
+
+bronze-lp:tblShipmentParty_PartyName skos:exactMatch refp:partyName ;
+    kairos-map:transform "source.PartyName" .

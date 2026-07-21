@@ -9,8 +9,8 @@ sidecar under ``<analysis-dir>/.cache/<command>.json`` mapping a stable input
 hash → the previously computed result payload.
 
 The cache is intentionally **outside** the output YAML so the
-``schema_version: 2`` affinity / alignment contract (and the DD-061
-``affinity_sha256`` freshness field) is untouched. ``--force`` bypasses the
+``schema_version: 2`` affinity / alignment contract (now governed by DD-094,
+including the ``affinity_sha256`` freshness field) is untouched. ``--force`` bypasses the
 cache entirely.
 """
 

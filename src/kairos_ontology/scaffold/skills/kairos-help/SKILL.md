@@ -319,6 +319,13 @@ kairos-ontology propose-alignment [--domains "Domain1,Domain2"] [--ref-models PA
   [--retry-min-confidence 0.6] [--retry-min-mapped-ratio 0.4]
 kairos-ontology check-claims [--domains "Domain1,Domain2"] [--strict] [--warn-only]
 
+# Check overall lifecycle status (deterministic, AI-free — DD-080/DD-101)
+kairos-ontology status [--format text|json|markdown]
+
+# One composed release-readiness gate: claims + source-coverage + extension-sync +
+# release eligibility (DD-096) + committed validation/projection state (DD-101)
+kairos-ontology check-release [--domains "Domain1,Domain2"] [--format text|json] [--warn-only]
+
 # Generate coverage report (deterministic alignment, post-modeling)
 kairos-ontology coverage-report [--ontology PATH] [--ref-models PATH] [--format both]
 

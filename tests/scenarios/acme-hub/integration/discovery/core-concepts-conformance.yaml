@@ -30,11 +30,19 @@ core_concepts:
     label: Invoice
     tier: required
     outcome: conforms
+  - uri: https://kairos.cnext.eu/ref/invoice#InvoiceLine
+    label: Invoice Line
+    tier: recommended
+    outcome: partial
   - uri: https://kairos.cnext.eu/ref/payment#DirectDebitMandate
     label: Direct Debit Mandate
     tier: recommended
     outcome: deviates
     deviation_reason: ACME uses pre-authorised card tokens, not SEPA mandates.
+  - uri: https://kairos.cnext.eu/ref/payment#PaymentToken
+    label: Payment Token
+    tier: optional
+    outcome: conforms
   - uri: https://kairos.cnext.eu/ref/payment#CashDrawer
     label: Cash Drawer
     tier: optional
@@ -46,17 +54,20 @@ cardinality_answers:
   - property: https://kairos.cnext.eu/ref/invoice#hasLineItem
     answer: many
 scorecard:
-  total: 5
+  total: 7
   by_outcome:
-    conforms: 2
+    conforms: 3
     conforms-with-rename: 1
     deviates: 1
     not-applicable: 1
+    partial: 1
   by_tier:
     required:
       conforms: 2
       conforms-with-rename: 1
     recommended:
       deviates: 1
+      partial: 1
     optional:
+      conforms: 1
       not-applicable: 1

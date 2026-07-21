@@ -1,0 +1,90 @@
+schema_version: 1
+domain: client
+claims:
+- id: client-customer
+  type: class
+  class_uri: https://acme.example/ontology/client#Client
+  origin: authored
+  status: approved
+  disposition: claim
+  owner: acme-domain-steward
+  evidence_sources:
+  - type: conformance
+    model: acme-billing
+    note: '{"outcome":"conforms-with-rename","rename_to":"Client","tier":"required"}'
+  rationale: Human governance approved the discovery rename Customer to Client for Silver materialization.
+- id: client-directdebitmandate
+  type: class
+  class_uri: https://kairos.cnext.eu/ref/payment#DirectDebitMandate
+  origin: imported
+  status: proposed
+  disposition: gap
+  evidence_sources:
+  - type: conformance
+    model: acme-billing
+    note: '{"deviation_reason":"ACME uses pre-authorised card tokens, not SEPA mandates.","outcome":"deviates","tier":"recommended"}'
+  deviation:
+    reason: ACME uses pre-authorised card tokens, not SEPA mandates.
+  rationale: 'Core Concepts Conformance archetype ''acme-billing'' proposes ''Direct Debit Mandate'' (tier=recommended,
+    outcome=deviates). Deviation: ACME uses pre-authorised card tokens, not SEPA mandates. Human approval
+    is required before materialization.'
+- id: client-invoice
+  type: class
+  class_uri: https://kairos.cnext.eu/ref/invoice#Invoice
+  origin: imported
+  status: proposed
+  disposition: claim
+  evidence_sources:
+  - type: conformance
+    model: acme-billing
+    note: '{"outcome":"conforms","tier":"required"}'
+  rationale: Core Concepts Conformance archetype 'acme-billing' proposes 'Invoice' (tier=required, outcome=conforms).
+    Human approval is required before materialization.
+- id: client-invoiceline
+  type: class
+  class_uri: https://kairos.cnext.eu/ref/invoice#InvoiceLine
+  origin: imported
+  status: proposed
+  disposition: specialize
+  evidence_sources:
+  - type: conformance
+    model: acme-billing
+    note: '{"outcome":"partial","tier":"recommended"}'
+  rationale: Core Concepts Conformance archetype 'acme-billing' proposes 'Invoice Line' (tier=recommended,
+    outcome=partial). Human approval is required before materialization.
+- id: client-party
+  type: class
+  class_uri: https://kairos.cnext.eu/ref/party#Party
+  origin: imported
+  status: proposed
+  disposition: claim
+  evidence_sources:
+  - type: conformance
+    model: acme-billing
+    note: '{"outcome":"conforms","tier":"required"}'
+  rationale: Core Concepts Conformance archetype 'acme-billing' proposes 'Party' (tier=required, outcome=conforms).
+    Human approval is required before materialization.
+- id: client-paymenttoken
+  type: class
+  class_uri: https://kairos.cnext.eu/ref/payment#PaymentToken
+  origin: imported
+  status: proposed
+  disposition: claim
+  evidence_sources:
+  - type: conformance
+    model: acme-billing
+    note: '{"outcome":"conforms","tier":"optional"}'
+  rationale: Core Concepts Conformance archetype 'acme-billing' proposes 'Payment Token' (tier=optional,
+    outcome=conforms). Human approval is required before materialization.
+- id: client-tradeparty
+  type: class
+  class_uri: https://refmodel.example/ontology/party#TradeParty
+  origin: imported
+  status: approved
+  disposition: claim
+  owner: acme-domain-steward
+  evidence_sources:
+  - type: conformance
+    model: acme-billing
+    note: '{"outcome":"conforms","tier":"recommended"}'
+  rationale: Human governance approved the imported Trade Party reference concept for Silver materialization.

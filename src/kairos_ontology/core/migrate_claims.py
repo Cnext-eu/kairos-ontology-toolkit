@@ -2,7 +2,7 @@
 # Copyright 2026 Cnext.eu
 """One-way migration: ``{domain}-alignment.yaml`` → ``{domain}-claims.yaml``.
 
-Deterministic and AI-free (decision log ``DD-EL-1``, schema doc §3). Converts the
+Deterministic and AI-free (DD-094, schema doc §3). Converts the
 retired alignment output into a Claim Registry of ``proposed`` claims so no prior
 analysis is lost; a human then approves/curates. After migration the legacy
 alignment file is rejected (no dual path) — callers use
@@ -29,8 +29,12 @@ human approves the claim; coverage retains the ref-class name for context.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
+import tempfile
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -95,7 +99,7 @@ def build_uri_index(inventory_classes: list[dict[str, Any]]) -> UriIndex:
 
 def load_inventory_uri_index(inventory_dir: Path) -> UriIndex:
     """Load every ``*-inventory.yaml`` under *inventory_dir* into a :data:`UriIndex`."""
-    from .inventory import load_inventory
+    from .inventory import InventoryMigrationRequiredError, load_inventory
 
     classes: list[dict[str, Any]] = []
     if not inventory_dir.is_dir():
@@ -103,6 +107,10 @@ def load_inventory_uri_index(inventory_dir: Path) -> UriIndex:
     for yaml_file in sorted(inventory_dir.glob("*.yaml")):
         try:
             inv = load_inventory(yaml_file)
+        except InventoryMigrationRequiredError:
+            # A retired stem-named inventory must never be silently skipped: that
+            # would drop URI candidates and make a claims migration incomplete.
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to load inventory %s: %s", yaml_file, exc)
             continue
@@ -120,7 +128,7 @@ def legacy_alignment_error(path: Path) -> str:
     """Return the standard message for a retired alignment file."""
     domain = path.name.replace("-alignment.yaml", "")
     return (
-        f"{path.name} is retired (DD-EL-1). Run the one-shot migration to "
+        f"{path.name} is retired (DD-094). Run the one-shot migration to "
         f"model/claims/{domain}-claims.yaml:\n"
         f"    kairos-ontology migrate-claims --domain {domain}\n"
         f"The alignment YAML is no longer read."
@@ -343,3 +351,212 @@ def migrate_alignment_file(path: Path, *, inventory_dir: Path | None = None) -> 
         raise ValueError(f"{path}: alignment file is not a mapping")
     uri_index = load_inventory_uri_index(inventory_dir) if inventory_dir else None
     return alignment_to_registry(data, uri_index=uri_index)
+
+
+# ---------------------------------------------------------------------------
+# Explicit legacy format migration
+# ---------------------------------------------------------------------------
+
+
+class LegacyFormatMigrationError(ValueError):
+    """Raised when a legacy format cannot be migrated without losing information."""
+
+
+@dataclass
+class LegacyFormatMigrationPlan:
+    """Fully validated, no-write plan consumed by the existing ``migrate`` command."""
+
+    hub: Path
+    writes: dict[Path, bytes] = field(default_factory=dict)
+    removals: set[Path] = field(default_factory=set)
+    inventory_moves: list[tuple[Path, Path]] = field(default_factory=list)
+    projection_domains: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.writes or self.removals)
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.errors
+
+
+def legacy_format_backup_dir(hub: Path) -> Path:
+    """Return the durable backup location used by the one-shot format migration."""
+    return hub / ".kairos-migrations" / "legacy-format-backups"
+
+
+def _plan_inventory_format_migration(
+    plan: LegacyFormatMigrationPlan,
+    *,
+    ref_models_dir: Path | None,
+    inventory_dir: Path,
+) -> None:
+    """Move unambiguous old stem inventories to their canonical namespaced names."""
+    from .inventory import find_legacy_inventory_files, legacy_inventory_error
+
+    for finding in find_legacy_inventory_files(
+        ref_models_dir=ref_models_dir,
+        inventory_dir=inventory_dir,
+    ):
+        if finding.error:
+            plan.errors.append(legacy_inventory_error(finding))
+            continue
+        if len(finding.source_paths) != 1 or len(finding.canonical_filenames) != 1:
+            plan.errors.append(legacy_inventory_error(finding))
+            continue
+
+        destination = inventory_dir / finding.canonical_filenames[0]
+        source_bytes = finding.path.read_bytes()
+        if destination.exists():
+            if destination.read_bytes() != source_bytes:
+                plan.errors.append(
+                    f"{finding.path.name} and canonical {destination.name} both exist with "
+                    "different content; retain both, resolve the collision manually, then "
+                    "rerun `kairos-ontology migrate --hub <hub>`."
+                )
+                continue
+        else:
+            plan.writes[destination] = source_bytes
+
+        plan.removals.add(finding.path)
+        plan.inventory_moves.append((finding.path, destination))
+
+
+def plan_legacy_format_migration(
+    hub: Path,
+    *,
+    ref_models_dir: Path | None = None,
+    inventory_dir: Path | None = None,
+) -> LegacyFormatMigrationPlan:
+    """Plan all retired-format conversions without writing any files.
+
+    The plan is intentionally all-or-nothing.  A malformed or ambiguous inventory,
+    malformed managed block, or unsafe Turtle declaration prevents *every* legacy
+    conversion so a user never receives a partially migrated hub.
+    """
+    hub = Path(hub)
+    plan = LegacyFormatMigrationPlan(hub=hub)
+    inventories = inventory_dir or hub / "referencemodels-unpacked"
+    _plan_inventory_format_migration(
+        plan,
+        ref_models_dir=ref_models_dir,
+        inventory_dir=inventories,
+    )
+
+    from .claim_projection_sync import plan_legacy_projection_sync_migration
+
+    projection_plan = plan_legacy_projection_sync_migration(
+        claims_dir=hub / "model" / "claims",
+        ontologies_dir=hub / "model" / "ontologies",
+        extensions_dir=hub / "model" / "extensions",
+    )
+    plan.errors.extend(projection_plan.errors)
+    plan.projection_domains.extend(projection_plan.domains)
+    for path, text in projection_plan.writes.items():
+        content = text.encode("utf-8")
+        if not path.is_file() or path.read_bytes() != content:
+            plan.writes[path] = content
+
+    return plan
+
+
+def _backup_destination(hub: Path, backup_root: Path, path: Path) -> Path:
+    """Map a changed hub path into its durable, collision-safe backup location."""
+    try:
+        relative = path.resolve().relative_to(hub.resolve())
+    except ValueError as exc:
+        raise LegacyFormatMigrationError(
+            f"Cannot back up migration path outside the hub: {path}"
+        ) from exc
+    return backup_root / relative
+
+
+def _publish_legacy_format_plan(plan: LegacyFormatMigrationPlan) -> list[Path]:
+    """Atomically publish staged rewrites and restore originals on any failure."""
+    if not plan.is_valid:
+        raise LegacyFormatMigrationError("\n".join(plan.errors))
+    if not plan.has_changes:
+        return []
+
+    hub = plan.hub
+    backup_root = legacy_format_backup_dir(hub)
+    originals = sorted(
+        {
+            *plan.removals,
+            *(path for path in plan.writes if path.exists()),
+        },
+        key=str,
+    )
+    backups: dict[Path, Path] = {}
+    staged: dict[Path, Path] = {}
+    published: list[Path] = []
+    new_destinations = {path for path in plan.writes if not path.exists()}
+
+    try:
+        # Backups persist after a successful migration for a manual rollback.  Refuse
+        # to overwrite a previous backup with different bytes.
+        for original in originals:
+            backup = _backup_destination(hub, backup_root, original)
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            if backup.exists():
+                if backup.read_bytes() != original.read_bytes():
+                    raise LegacyFormatMigrationError(
+                        f"Existing migration backup differs from {original}: {backup}. "
+                        "Resolve it before rerunning the migration."
+                    )
+            else:
+                shutil.copy2(original, backup)
+            backups[original] = backup
+
+        for destination, content in plan.writes.items():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=destination.parent,
+                prefix=f".{destination.name}.legacy-migration-",
+                delete=False,
+            ) as handle:
+                handle.write(content)
+                staged[destination] = Path(handle.name)
+            if destination.exists():
+                shutil.copymode(destination, staged[destination])
+
+        for destination in sorted(staged, key=str):
+            os.replace(staged[destination], destination)
+            published.append(destination)
+            staged.pop(destination)
+        for path in sorted(plan.removals, key=str):
+            path.unlink()
+            published.append(path)
+    except Exception:
+        restore_errors: list[str] = []
+        for original, backup in backups.items():
+            try:
+                original.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup, original)
+            except OSError as exc:
+                restore_errors.append(f"{original}: {exc}")
+        for destination in new_destinations:
+            if destination.exists() and destination not in backups:
+                try:
+                    destination.unlink()
+                except OSError as exc:
+                    restore_errors.append(f"{destination}: {exc}")
+        if restore_errors:
+            raise RuntimeError(
+                "Legacy-format migration failed and rollback was incomplete: "
+                + "; ".join(restore_errors)
+            ) from None
+        raise
+    finally:
+        for temporary in staged.values():
+            temporary.unlink(missing_ok=True)
+
+    return published
+
+
+def apply_legacy_format_migration(plan: LegacyFormatMigrationPlan) -> list[Path]:
+    """Apply a validated legacy-format migration plan exactly once."""
+    return _publish_legacy_format_plan(plan)

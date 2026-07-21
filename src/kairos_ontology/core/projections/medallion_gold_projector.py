@@ -27,12 +27,14 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from rdflib import Graph, Namespace, URIRef, Literal, XSD
+from rdflib import Graph, Namespace, URIRef, XSD
 from rdflib.namespace import OWL, RDF, RDFS
 
 from .shared import (
+    ForeignKeyClassification,
     KAIROS_EXT,
     camel_to_snake,
+    classify_foreign_keys,
     local_name,
     str_val as _str_val,
     bool_val as _bool_val,
@@ -231,6 +233,7 @@ def _classify_tables(
     graph: Graph,
     domain_classes: list[dict],
     class_uris: set[str],
+    fk_classification: ForeignKeyClassification | None = None,
 ) -> dict[str, str]:
     """Classify OWL classes as 'fact', 'dimension', or 'bridge'.
 
@@ -245,20 +248,12 @@ def _classify_tables(
 
     # Count outgoing FK-style object properties per class
     outgoing_fks: dict[str, int] = {c["uri"]: 0 for c in domain_classes}
-    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
-        domain = graph.value(prop, RDFS.domain)
-        if domain is None or str(domain) not in class_uris:
+    fk_contract = fk_classification or classify_foreign_keys(graph)
+    for source_class in fk_contract.outgoing_relationship_sources:
+        source_uri = str(source_class)
+        if source_uri not in class_uris:
             continue
-        range_cls = graph.value(prop, RDFS.range)
-        if range_cls is None:
-            continue
-        # Junction tables don't count as FK
-        if graph.value(prop, KAIROS_EXT.junctionTableName):
-            continue
-        # Degenerate dimensions don't count
-        if _bool_val(graph, prop, KAIROS_EXT.degenerateDimension, False):
-            continue
-        outgoing_fks[str(domain)] = outgoing_fks.get(str(domain), 0) + 1
+        outgoing_fks[source_uri] = outgoing_fks.get(source_uri, 0) + 1
 
     for cls_info in domain_classes:
         cls_uri = URIRef(cls_info["uri"])
@@ -407,6 +402,7 @@ def _build_class_table(
     schema_name: str,
     shacl_graph: Optional[Graph],
     class_uris: set[str],
+    fk_classification: ForeignKeyClassification,
     naming_conv: str,
     gold_table_name_fn,
     base_table_name_fn,
@@ -453,7 +449,7 @@ def _build_class_table(
         gold_table_name_fn, base_table_name_fn)
 
     _add_gold_fk_columns(
-        merged, cls_uri, tbl, class_uris, classifications,
+        merged, fk_classification, cls_uri, tbl, class_uris, classifications,
         schema_name, gold_table_name_fn, base_table_name_fn, naming_conv)
 
     # Discriminator column: only for parents using discriminator strategy
@@ -557,6 +553,7 @@ def _merge_discriminator_subtypes(
     shacl_graph: Optional[Graph],
     naming_conv: str,
     class_uris: set[str],
+    fk_classification: ForeignKeyClassification,
     classifications: dict[str, str],
     schema_name: str,
     gold_table_name_fn,
@@ -577,7 +574,7 @@ def _merge_discriminator_subtypes(
                 merged, sub_uri, parent_tbl, shacl_graph, naming_conv,
                 comment_prefix=f"from {cls_info['name']}")
             _add_gold_fk_columns(
-                merged, sub_uri, parent_tbl, class_uris, classifications,
+                merged, fk_classification, sub_uri, parent_tbl, class_uris, classifications,
                 schema_name, gold_table_name_fn, base_table_name_fn, naming_conv,
                 comment_prefix=f"from {cls_info['name']}")
 
@@ -671,11 +668,15 @@ def build_gold_tables(
     if not domain_classes:
         return []
 
+    fk_classification = classify_foreign_keys(merged)
+
     # DD-021: Warn about claimed classes with unclaimed parents
     _warn_unclaimed_parents_gold(merged, domain_classes)
 
     # G1 — Classify tables
-    classifications = _classify_tables(merged, domain_classes, class_uris)
+    classifications = _classify_tables(
+        merged, domain_classes, class_uris, fk_classification,
+    )
 
     # Track subtype relationships for G5 inheritance handling
     subtype_parents, folded_subtypes = _resolve_subtype_relationships(
@@ -717,16 +718,18 @@ def build_gold_tables(
     for cls_info in domain_classes:
         tbl = _build_class_table(
             merged, cls_info, classifications, subtype_parents, disc_parents,
-            folded_subtypes, schema_name, shacl_graph, class_uris, naming_conv,
-            gold_table_name, base_table_name)
+            folded_subtypes, schema_name, shacl_graph, class_uris,
+            fk_classification, naming_conv, gold_table_name, base_table_name,
+        )
         if tbl is not None:
             tables[cls_info["uri"]] = tbl
 
     # G5 post-pass: merge subtype properties into parent (discriminator only)
     _merge_discriminator_subtypes(
         merged, folded_subtypes, disc_parents, tables, domain_classes,
-        shacl_graph, naming_conv, class_uris, classifications, schema_name,
-        gold_table_name, base_table_name)
+        shacl_graph, naming_conv, class_uris, fk_classification,
+        classifications, schema_name, gold_table_name, base_table_name,
+    )
 
     # Bridge tables from many-to-many (R13)
     bridge_tables = _build_gold_bridge_tables(
@@ -1079,7 +1082,8 @@ def _not_null_from_shacl(shacl_graph: Optional[Graph], prop_uri: URIRef,
 
 
 def _add_gold_fk_columns(
-    graph: Graph, cls_uri: URIRef, tbl: GoldTableDef,
+    graph: Graph, fk_classification: ForeignKeyClassification,
+    cls_uri: URIRef, tbl: GoldTableDef,
     class_uris: set[str], classifications: dict[str, str],
     schema_name: str, gold_table_name_fn, base_table_name_fn,
     naming_conv: str, comment_prefix: str = "",
@@ -1087,35 +1091,32 @@ def _add_gold_fk_columns(
     """Add FK columns from object properties to the gold table."""
     existing = {c.name for c in tbl.columns}
 
-    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
-        domain = graph.value(prop, RDFS.domain)
-        if domain != cls_uri:
-            continue
+    direct_fks = [
+        fk for fk in fk_classification.descriptors
+        if not fk.redirected and fk.domain_class == cls_uri
+    ]
+    redirected_fks = [
+        fk for fk in fk_classification.descriptors
+        if fk.redirected and fk.source_class == cls_uri
+    ]
+    for fk in direct_fks + redirected_fks:
+        prop = fk.property_uri
         # Skip junction table properties
-        if graph.value(prop, KAIROS_EXT.junctionTableName):
+        if fk.junction_table_name:
             continue
         # Check if degenerate dimension — skip FK, property was already added as column
-        if _bool_val(graph, prop, KAIROS_EXT.degenerateDimension, False):
+        if fk.degenerate_dimension:
             continue
-        # Determine if this is a FK-style property
-        has_explicit_col = bool(_str_val(graph, prop, KAIROS_EXT.goldColumnName))
-        is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
-        if not has_explicit_col and not is_functional \
-                and not _has_max_cardinality_1(graph, cls_uri, prop) \
-                and not tbl.explicit_fact:
+        if not fk.qualifies_gold(explicit_fact=tbl.explicit_fact):
             continue
 
-        range_cls = graph.value(prop, RDFS.range)
-        if range_cls is None:
-            continue
-
+        range_cls = fk.target_class
         range_uri_str = str(range_cls)
         range_local = _local_name(range_uri_str)
         range_base = base_table_name_fn(range_cls, range_local)
 
         # G8: INT FK (matching INT SK on target)
-        col_name = _str_val(graph, prop, KAIROS_EXT.goldColumnName) or \
-            f"{range_base}_sk"
+        col_name = fk.physical_column_name(range_base, layer="gold")
 
         # Disambiguate
         if col_name in existing:
@@ -1149,23 +1150,6 @@ def _add_gold_fk_columns(
             col_name, "INT", "Int64", nullable=nullable, comment=comment))
         tbl.fk_constraints.append(
             (col_name, ref_full, f"{range_base}_sk", prop_label))
-
-
-def _has_max_cardinality_1(graph: Graph, cls_uri: URIRef, prop: URIRef) -> bool:
-    """Return True if owl:maxQualifiedCardinality 1 or owl:maxCardinality 1."""
-    for restriction in graph.subjects(OWL.onProperty, prop):
-        if graph.value(restriction, OWL.maxQualifiedCardinality) == \
-                Literal(1, datatype=XSD.nonNegativeInteger):
-            for parent in graph.objects(cls_uri, RDFS.subClassOf):
-                if parent == restriction:
-                    return True
-    for restriction in graph.subjects(OWL.onProperty, prop):
-        if graph.value(restriction, OWL.maxCardinality) == \
-                Literal(1, datatype=XSD.nonNegativeInteger):
-            for parent in graph.objects(cls_uri, RDFS.subClassOf):
-                if parent == restriction:
-                    return True
-    return False
 
 
 def _build_gold_bridge_tables(

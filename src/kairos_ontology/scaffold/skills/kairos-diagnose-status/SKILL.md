@@ -368,16 +368,27 @@ Produce a structured Markdown report:
 > version is **v{installed_version}**. {If different: "Output may be stale — consider
 > re-running projections." If same: "Versions match — output is current."}
 
-### Aspirational stub vs bound (DD-096)
+### Aspirational stub vs bound (DD-096 / DD-101)
 
-When distinguishing whether a Silver entity is a real (bound) model or an
-**aspirational stub** (approved claim, no bronze mapping yet), classify over the
-**authorities** (Claim Registry + mappings + sources via `BindingAnalysis`), **not** by
-reading generated `meta.is_aspirational` — that marker is absent when
-`--emit-aspirational-stubs` is off or when output is stale. Report each eligible entity
-as **bound** / **stub (aspirational, pending binding)** / **release-eligible**. A stub
-is *not* release-eligible merely by existing; surface stubs as open items to bind
-(→ kairos-design-mapping), not as `done`.
+**Do not hand-classify this yourself.** `kairos-ontology status --format json`'s
+`silver` phase now carries this per domain as machine-readable `facts` (DD-101):
+`bound_classes`, `aspirational_classes`, and `release_eligible` — computed by the
+canonical `BindingAnalysis` over the **authorities** (Claim Registry + mappings +
+sources), never by reading generated `meta.is_aspirational` (absent when
+`--emit-aspirational-stubs` is off or when output is stale). For the full
+composed release picture (including claim/source-coverage/extension-sync/
+validation), run `kairos-ontology check-release --format json` and read its
+`release` section — same underlying facts, pre-aggregated with a single
+`is_blocking` verdict.
+
+Read `facts.aspirational_classes` / `facts.release_eligible` directly into the
+table below; a stub is *not* release-eligible merely by existing — surface stubs
+as open items to bind (→ kairos-design-mapping), not as `done`.
+
+```bash
+kairos-ontology status --format json          # silver phase -> instances[].facts
+kairos-ontology check-release --format json   # composed release/validation view
+```
 
 | Domain | Entity | State | Blocks release? |
 |--------|--------|-------|-----------------|
@@ -485,6 +496,12 @@ After presenting the status report, **always** ask the user:
 
 If the user accepts, invoke the `kairos-execute-validate` skill and instruct it to
 run in **Detailed** mode (all 4 levels).
+
+If the report shows the hub is otherwise complete (validate + project phases
+`done`) and the user asks about release readiness, run
+`kairos-ontology check-release --format json` (DD-101) and report its
+`is_blocking` verdict and per-section reasons verbatim rather than inferring
+readiness from the phase table yourself.
 
 ---
 

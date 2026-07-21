@@ -198,7 +198,7 @@ class TestInventoryCollisionRegression:
         assert check.exit_code == 0, check.output
         assert "STALE" not in check.output
 
-    def test_prune_removes_legacy_stem_inventory(self, tmp_path, monkeypatch):
+    def test_generate_rejects_legacy_stem_inventory_until_migrated(self, tmp_path, monkeypatch):
         ref_root = tmp_path / "ontology-reference-models"
         ttl = (
             ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
@@ -215,12 +215,19 @@ class TestInventoryCollisionRegression:
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
         gen = runner.invoke(cli, ["generate-inventory"])
-        assert gen.exit_code == 0, gen.output
+        assert gen.exit_code == 1, gen.output
+        assert "Legacy inventory format" in gen.output
+        assert "migrate --hub" in gen.output
 
-        assert (inv_dir / "bsp-party-inventory.yaml").exists()
-        assert not (inv_dir / "party-inventory.yaml").exists()
+        assert not (inv_dir / "bsp-party-inventory.yaml").exists()
+        assert (inv_dir / "party-inventory.yaml").exists()
 
-    def test_no_prune_keeps_legacy_file(self, tmp_path, monkeypatch):
+        check = runner.invoke(cli, ["check-inventory"])
+        assert check.exit_code == 1, check.output
+        assert "MIGRATION REQUIRED" in check.output
+        assert "migrate --hub" in check.output
+
+    def test_no_prune_does_not_bypass_legacy_inventory_migration(self, tmp_path, monkeypatch):
         ref_root = tmp_path / "ontology-reference-models"
         ttl = (
             ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
@@ -236,7 +243,7 @@ class TestInventoryCollisionRegression:
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
         gen = runner.invoke(cli, ["generate-inventory", "--no-prune"])
-        assert gen.exit_code == 0, gen.output
+        assert gen.exit_code == 1, gen.output
         assert (inv_dir / "party-inventory.yaml").exists()
 
     def test_generate_inventory_ignores_archived_reference_model_versions(
@@ -449,4 +456,3 @@ class TestCheckInventoryDomainScope:
         # Scoped to party: the missing inventory is in scope → blocks.
         party = runner.invoke(cli, ["check-inventory", "--domains", "party"])
         assert party.exit_code == 1, party.output
-

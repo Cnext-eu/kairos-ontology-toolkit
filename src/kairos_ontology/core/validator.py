@@ -233,8 +233,25 @@ def run_gdpr_validation(ontologies_path: Path, catalog_path: Optional[Path] = No
 
 
 def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
-                   do_syntax: bool, do_shacl: bool, do_consistency: bool):
-    """Run validation pipeline."""
+                   do_syntax: bool, do_shacl: bool, do_consistency: bool,
+                   report_path: Optional[Path] = None):
+    """Run validation pipeline.
+
+    Args:
+        ontologies_path: Directory to scan for domain ontology files.
+        shapes_path: Directory containing SHACL shape files (optional; skipped
+            if it does not exist).
+        catalog_path: Optional XML catalog used to resolve ``owl:imports``.
+        do_syntax: Run Level 1 syntax validation.
+        do_shacl: Run Level 2 SHACL validation.
+        do_consistency: Run Level 3 consistency validation.
+        report_path: Explicit path to write the JSON results report to. The
+            parent directory is created if missing. When omitted (the
+            default), no report file is written — this keeps the contract
+            explicit for direct library callers instead of silently guessing
+            a location relative to the process's current working directory.
+            CLI callers should always pass ``<hub>/output/validation-report.json``.
+    """
     
     print("🔍 Kairos Ontology Validation")
     print("=" * 50)
@@ -324,10 +341,12 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
         print("  (Custom SPARQL queries for consistency checks)")
         print("  Not implemented yet - future enhancement\n")
     
-    # Save results
-    results_file = Path("validation-report.json")
-    results_file.write_text(json.dumps(results, indent=2), encoding='utf-8')
-    print(f"📄 Results saved to {results_file}")
+    # Save results (explicit destination only — see report_path docstring above)
+    if report_path is not None:
+        report_path = Path(report_path)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(results, indent=2), encoding='utf-8')
+        print(f"📄 Results saved to {report_path}")
     
     # Exit code
     total_failed = results["syntax"]["failed"] + results["shacl"]["failed"] + results["consistency"]["failed"]

@@ -16,11 +16,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import OWL, RDF, XSD
 from rdflib.plugins.parsers.notation3 import BadSyntax
 
+from .binding_analysis import approved_imported_class_uris
 from .claim_registry import load_registry
 from .projections.shared import KAIROS_EXT
 
@@ -57,20 +59,18 @@ def _is_local_class_uri(class_uri: str, ontology_iri: str) -> bool:
 
 
 def _approved_imported_class_uris(registry, ontology_iri: str) -> set[str]:
-    uris: set[str] = set()
-    for claim in registry.claims:
-        if claim.status != "approved":
-            continue
-        if claim.origin != "imported":
-            continue
-        if claim.disposition not in {"claim", "specialize"}:
-            continue
-        if not claim.class_uri:
-            continue
-        if _is_local_class_uri(claim.class_uri, ontology_iri):
-            continue
-        uris.add(claim.class_uri)
-    return uris
+    """Return approved imported class URIs that are external to *ontology_iri*.
+
+    Delegates the claim filter (approved + imported origin + claim/specialize
+    disposition) to the canonical :func:`binding_analysis.approved_imported_class_uris`
+    so import sync and materialization never reimplement divergent filters. Only
+    the sync-specific "external to this domain" rule is applied here.
+    """
+    return {
+        uri
+        for uri in approved_imported_class_uris(registry)
+        if not _is_local_class_uri(uri, ontology_iri)
+    }
 
 
 def _expected_external_imports(approved_imported_class_uris: set[str]) -> set[str]:
@@ -186,6 +186,25 @@ def evaluate_domain_projection_sync(
     expected_includes = _approved_imported_class_uris(registry, ontology_iri)
     expected_imports = _expected_external_imports(expected_includes)
 
+    def _is_managed_import(triple) -> bool:
+        _s, predicate, obj = triple
+        return predicate == OWL.imports and str(obj).rstrip("#/") not in hub_domain_bases
+
+    def _is_managed_include(triple) -> bool:
+        subject, predicate, _obj = triple
+        if predicate == KAIROS_EXT.silverIncludeImports:
+            return True
+        if predicate == KAIROS_EXT.silverInclude:
+            return not _is_local_class_uri(str(subject), ontology_iri)
+        return False
+
+    try:
+        _require_current_managed_surface(ontology_file, _is_managed_import)
+        _require_current_managed_surface(extension_file, _is_managed_include)
+    except ProjectionMigrationRequiredError as exc:
+        status.error = str(exc)
+        return status
+
     actual_imports: set[str] = set()
     for obj in ontology_graph.objects(ontology_subj, OWL.imports):
         iri = str(obj).rstrip("#/")
@@ -263,30 +282,68 @@ _MANAGED_BEGIN = "# >>> kairos-managed (generated from the Claim Registry — do
 _MANAGED_END = "# <<< kairos-managed"
 
 
-def _strip_managed_block(text: str) -> str:
-    """Return *text* with the managed block (and its markers) removed."""
-    begin = text.find(_MANAGED_BEGIN)
-    if begin == -1:
-        return text
-    end = text.find(_MANAGED_END, begin)
-    if end == -1:
-        # Malformed/truncated block: drop everything from the begin marker on.
-        return text[:begin]
-    end_full = end + len(_MANAGED_END)
-    if end_full < len(text) and text[end_full] == "\n":
-        end_full += 1
-    return text[:begin] + text[end_full:]
+class ProjectionMigrationRequiredError(ValueError):
+    """Raised when a projection surface still uses the pre-managed-block layout."""
 
 
-def _leading_comment_lines(text: str) -> str:
-    """Capture the leading blank/comment lines (e.g. the provenance header)."""
-    out: list[str] = []
-    for line in text.splitlines():
-        if line.strip() == "" or line.lstrip().startswith("#"):
-            out.append(line)
-        else:
-            break
-    return "\n".join(out).strip("\n")
+@dataclass(frozen=True)
+class ManagedSurfaceInspection:
+    """Parsed layout facts for one projection-facing TTL surface."""
+
+    authored_text: str
+    has_block: bool
+    stray_managed_triples: tuple[tuple[object, object, object], ...]
+
+
+def projection_migration_error(path: Path, reason: str) -> str:
+    """Build the actionable diagnostic shared by readers and the CLI."""
+    return (
+        f"{path}: legacy claim projection sync layout ({reason}). Run "
+        "`kairos-ontology migrate --hub <hub>` to convert it to a managed block; "
+        "the Claim Registry remains authoritative."
+    )
+
+
+def _read_turtle_text(path: Path) -> str:
+    """Read UTF-8 Turtle without normalizing user-authored line endings."""
+    return path.read_bytes().decode("utf-8")
+
+
+def _line_ending(text: str) -> str:
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def _split_managed_block(text: str, *, path: Path | None = None) -> tuple[str, bool]:
+    """Return authored text and whether it contains one well-formed final block."""
+    label = str(path) if path is not None else "<projection surface>"
+    begins = [match.start() for match in re.finditer(re.escape(_MANAGED_BEGIN), text)]
+    ends = [match.start() for match in re.finditer(re.escape(_MANAGED_END), text)]
+    if not begins and not ends:
+        return text, False
+    if len(begins) != 1 or len(ends) != 1 or ends[0] < begins[0]:
+        raise ProjectionMigrationRequiredError(
+            projection_migration_error(path or Path(label), "malformed managed-block markers")
+        )
+
+    end_after = ends[0] + len(_MANAGED_END)
+    if text.startswith("\r\n", end_after):
+        end_after += 2
+    elif text.startswith("\n", end_after):
+        end_after += 1
+    if text[end_after:].strip():
+        raise ProjectionMigrationRequiredError(
+            projection_migration_error(
+                path or Path(label),
+                "content after the managed block cannot be preserved safely",
+            )
+        )
+    return text[:begins[0]], True
+
+
+def _strip_managed_block(text: str, *, path: Path | None = None) -> str:
+    """Return authored content after validating a canonical managed-block layout."""
+    authored, _ = _split_managed_block(text, path=path)
+    return authored
 
 
 def _turtle_statement(subject: URIRef, predicate: URIRef, obj: object) -> str:
@@ -303,13 +360,53 @@ def _turtle_statement(subject: URIRef, predicate: URIRef, obj: object) -> str:
 
 
 def _compose_managed_file(authored_text: str, managed_lines: list[str]) -> str:
-    """Stitch preserved *authored_text* with a freshly rendered managed block."""
-    authored = authored_text.strip("\n")
-    parts = [authored] if authored else []
-    if managed_lines:
-        block = _MANAGED_BEGIN + "\n" + "\n".join(managed_lines) + "\n" + _MANAGED_END
-        parts.append(block)
-    return ("\n\n".join(parts) + "\n") if parts else ""
+    """Append a deterministic block without reformatting authored Turtle."""
+    if not managed_lines:
+        return authored_text
+
+    newline = _line_ending(authored_text)
+    block = (
+        _MANAGED_BEGIN
+        + newline
+        + newline.join(managed_lines)
+        + newline
+        + _MANAGED_END
+        + newline
+    )
+    if not authored_text:
+        return block
+
+    separator = "" if authored_text.endswith(("\n", "\r")) else newline
+    prefix = authored_text + separator
+    if not prefix.endswith(newline * 2):
+        prefix += newline
+    return prefix + block
+
+
+def _inspect_managed_surface(path: Path, is_managed_authored) -> ManagedSurfaceInspection:
+    """Identify controlled triples that remain outside the managed block."""
+    text = _read_turtle_text(path)
+    authored_text, has_block = _split_managed_block(text, path=path)
+    graph = Graph()
+    graph.parse(data=authored_text, format="turtle")
+    stray = tuple(sorted((triple for triple in graph if is_managed_authored(triple)), key=str))
+    return ManagedSurfaceInspection(
+        authored_text=authored_text,
+        has_block=has_block,
+        stray_managed_triples=stray,
+    )
+
+
+def _require_current_managed_surface(path: Path, is_managed_authored) -> None:
+    """Reject a legacy inline managed surface instead of converting it at runtime."""
+    inspection = _inspect_managed_surface(path, is_managed_authored)
+    if inspection.stray_managed_triples:
+        raise ProjectionMigrationRequiredError(
+            projection_migration_error(
+                path,
+                "Claim Registry-controlled triples appear outside the managed block",
+            )
+        )
 
 
 def _sync_managed_surface(
@@ -318,31 +415,308 @@ def _sync_managed_surface(
     managed_triples: list[tuple[URIRef, URIRef, object]],
     is_managed_authored,
 ) -> None:
-    """Rewrite only the managed block of *path*, preserving authored content (#191).
+    """Rewrite only an already-canonical managed block of *path*.
 
-    Steady-state files (managed triples already confined to the block) keep their
-    authored region byte-for-byte. Legacy files written by the pre-#191 whole-graph
-    serializer may carry managed triples inline in the authored region; those are
-    stripped one time (such files have no authored comments to lose, having already
-    been re-serialized), preserving any leading provenance header.
+    Legacy inline controlled triples are deliberately rejected here.  They are
+    converted by the explicit ``migrate`` workflow, which stages backups before
+    writing, rather than being silently discarded during ordinary projection sync.
     """
-    text = path.read_text(encoding="utf-8")
-    authored_text = _strip_managed_block(text)
+    text = _read_turtle_text(path)
+    authored_text = _strip_managed_block(text, path=path)
 
     authored_graph = Graph()
     authored_graph.parse(data=authored_text, format="turtle")
-    stray = [t for t in authored_graph if is_managed_authored(t)]
-    if stray:
-        leading = _leading_comment_lines(authored_text)
-        for triple in stray:
-            authored_graph.remove(triple)
-        serialized = authored_graph.serialize(format="turtle")
-        authored_text = f"{leading}\n\n{serialized}" if leading else serialized
+    if any(is_managed_authored(triple) for triple in authored_graph):
+        raise ProjectionMigrationRequiredError(
+            projection_migration_error(
+                path,
+                "Claim Registry-controlled triples appear outside the managed block",
+            )
+        )
 
     managed_lines = sorted(
         _turtle_statement(s, p, o) for (s, p, o) in managed_triples
     )
-    path.write_text(_compose_managed_file(authored_text, managed_lines), encoding="utf-8")
+    path.write_bytes(_compose_managed_file(authored_text, managed_lines).encode("utf-8"))
+
+
+_PREFIX_DECLARATION = re.compile(
+    r"(?im)^\s*(?:@prefix|prefix)\s+([A-Za-z_][\w.-]*):\s*<([^>]+)>\s*\.?"
+)
+_TURTLE_TERM = r"(?:<[^>\r\n]+>|[A-Za-z_][\w.-]*:[^\s;,.]+)"
+
+
+@dataclass
+class ProjectionMigrationPlan:
+    """Candidate managed-block rewrites for legacy projection surfaces."""
+
+    writes: dict[Path, str] = field(default_factory=dict)
+    domains: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def _prefixes_in(text: str) -> dict[str, str]:
+    return {prefix: namespace for prefix, namespace in _PREFIX_DECLARATION.findall(text)}
+
+
+def _term_uri(token: str | None, prefixes: dict[str, str]) -> str | None:
+    """Resolve a simple IRI/prefixed Turtle term without changing source text."""
+    if not token:
+        return None
+    token = token.strip()
+    if token.startswith("<") and token.endswith(">"):
+        return token[1:-1]
+    if ":" not in token:
+        return None
+    prefix, local = token.split(":", 1)
+    namespace = prefixes.get(prefix)
+    return namespace + local if namespace is not None else None
+
+
+def _predicate_aliases(text: str, predicate_iris: set[str]) -> dict[str, str]:
+    """Return lexical predicate spellings declared by *text* for the given IRIs."""
+    aliases = {f"<{iri}>": iri for iri in predicate_iris}
+    for prefix, namespace in _prefixes_in(text).items():
+        for iri in predicate_iris:
+            if iri.startswith(namespace):
+                aliases[f"{prefix}:{iri[len(namespace):]}"] = iri
+    if str(OWL.imports) in predicate_iris:
+        aliases.setdefault("owl:imports", str(OWL.imports))
+    if str(KAIROS_EXT.silverInclude) in predicate_iris:
+        aliases.setdefault("kairos-ext:silverInclude", str(KAIROS_EXT.silverInclude))
+    if str(KAIROS_EXT.silverIncludeImports) in predicate_iris:
+        aliases.setdefault(
+            "kairos-ext:silverIncludeImports",
+            str(KAIROS_EXT.silverIncludeImports),
+        )
+    return aliases
+
+
+def _replace_preceding_semicolon(lines: list[str], index: int) -> None:
+    """Turn the previous property-list semicolon into a final period."""
+    for previous in range(index - 1, -1, -1):
+        body = lines[previous].rstrip("\r\n")
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        replaced, count = re.subn(r";([ \t]*)$", r".\1", body)
+        if count:
+            ending = lines[previous][len(body):]
+            lines[previous] = replaced + ending
+            return
+        break
+    raise ProjectionMigrationRequiredError(
+        "Cannot safely remove a legacy managed Turtle property-list item."
+    )
+
+
+def _remove_inline_managed_triples(
+    authored_text: str,
+    *,
+    predicate_iris: set[str],
+    is_controlled,
+) -> str:
+    """Remove only controlled Turtle lines, retaining every other authored byte.
+
+    This deliberately supports the conventional Turtle produced by prior syncs
+    (standalone triples and semicolon property lists).  If a more exotic legacy
+    declaration cannot be relocated without rewriting unrelated authored text, the
+    caller receives a migration error instead of a lossy best-effort conversion.
+    """
+    prefixes = _prefixes_in(authored_text)
+    aliases = _predicate_aliases(authored_text, predicate_iris)
+    predicate_pattern = "|".join(
+        re.escape(token) for token in sorted(aliases, key=lambda item: (-len(item), item))
+    )
+    line_pattern = re.compile(
+        rf"^(?P<indent>[ \t]*)(?:(?P<subject>{_TURTLE_TERM})[ \t]+)?"
+        rf"(?P<predicate>{predicate_pattern})[ \t]+(?P<object>.+?)(?P<delimiter>[;.])[ \t]*$"
+    )
+    lines = authored_text.splitlines(keepends=True)
+    remove: list[tuple[int, bool, str]] = []
+    current_subject: str | None = None
+
+    for index, line in enumerate(lines):
+        body = line.rstrip("\r\n")
+        if not body.strip() or body.lstrip().startswith("#") or body.lstrip().startswith("@"):
+            continue
+        match = line_pattern.match(body)
+        if match:
+            subject = _term_uri(match.group("subject"), prefixes) or current_subject
+            predicate_iri = aliases[match.group("predicate")]
+            object_uri = _term_uri(match.group("object").strip(), prefixes)
+            direct_subject = match.group("subject") is not None
+            if is_controlled(subject, predicate_iri, object_uri):
+                remove.append((index, direct_subject, match.group("delimiter")))
+
+        # A non-indented statement starts a new property-list subject.  Continuation
+        # predicates are deliberately not mistaken for a subject.
+        if not body[:1].isspace():
+            first_term = re.match(rf"^\s*(?P<term>{_TURTLE_TERM})[ \t]+", body)
+            if first_term and first_term.group("term") not in aliases:
+                current_subject = _term_uri(first_term.group("term"), prefixes)
+        if body.rstrip().endswith("."):
+            current_subject = None
+
+    for index, direct_subject, delimiter in remove:
+        if delimiter == "." and not direct_subject:
+            _replace_preceding_semicolon(lines, index)
+        lines[index] = ""
+    return "".join(lines)
+
+
+def _migrate_surface_text(
+    inspection: ManagedSurfaceInspection,
+    *,
+    path: Path,
+    predicate_iris: set[str],
+    is_controlled_lexical,
+    is_managed_authored,
+    managed_lines: list[str],
+) -> str:
+    """Relocate inline controlled triples into the deterministic managed block."""
+    authored = inspection.authored_text
+    if inspection.stray_managed_triples:
+        try:
+            authored = _remove_inline_managed_triples(
+                authored,
+                predicate_iris=predicate_iris,
+                is_controlled=is_controlled_lexical,
+            )
+            parsed = Graph()
+            parsed.parse(data=authored, format="turtle")
+        except ProjectionMigrationRequiredError as exc:
+            raise ProjectionMigrationRequiredError(
+                projection_migration_error(path, str(exc))
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise ProjectionMigrationRequiredError(
+                projection_migration_error(path, f"could not safely relocate legacy triples: {exc}")
+            ) from exc
+        if any(is_managed_authored(triple) for triple in parsed):
+            raise ProjectionMigrationRequiredError(
+                projection_migration_error(
+                    path,
+                    "a legacy managed Turtle declaration could not be relocated safely",
+                )
+            )
+    return _compose_managed_file(authored, sorted(managed_lines))
+
+
+def plan_legacy_projection_sync_migration(
+    *,
+    claims_dir: Path,
+    ontologies_dir: Path,
+    extensions_dir: Path,
+) -> ProjectionMigrationPlan:
+    """Plan explicit legacy whole-graph → managed-block conversion.
+
+    The function only plans strings and never writes.  ``migrate`` publishes these
+    candidates atomically with durable backups after all inventory and TTL inputs
+    have been validated.
+    """
+    plan = ProjectionMigrationPlan()
+    if not claims_dir.is_dir():
+        return plan
+
+    try:
+        hub_domain_bases = _collect_hub_domain_bases(ontologies_dir)
+    except Exception as exc:  # noqa: BLE001
+        plan.errors.append(str(exc))
+        return plan
+
+    for claims_file in sorted(claims_dir.glob("*-claims.yaml")):
+        domain = claims_file.name.replace("-claims.yaml", "")
+        ontology_file = ontologies_dir / f"{domain}.ttl"
+        extension_file = extensions_dir / f"{domain}-silver-ext.ttl"
+        if not ontology_file.is_file() or not extension_file.is_file():
+            continue
+        try:
+            registry = load_registry(claims_file)
+            ontology_graph = Graph()
+            ontology_graph.parse(ontology_file, format="turtle")
+            ontology_subject = _ontology_subject(ontology_graph)
+            if ontology_subject is None:
+                raise ValueError(f"{ontology_file}: no owl:Ontology declaration found")
+            ontology_iri = str(ontology_subject)
+            expected_includes = _approved_imported_class_uris(registry, ontology_iri)
+            expected_imports = _expected_external_imports(expected_includes)
+
+            def is_managed_import(triple) -> bool:
+                _subject, predicate, obj = triple
+                return predicate == OWL.imports and str(obj).rstrip("#/") not in hub_domain_bases
+
+            def is_managed_include(triple) -> bool:
+                subject, predicate, _obj = triple
+                if predicate == KAIROS_EXT.silverIncludeImports:
+                    return True
+                if predicate == KAIROS_EXT.silverInclude:
+                    return not _is_local_class_uri(str(subject), ontology_iri)
+                return False
+
+            ontology_inspection = _inspect_managed_surface(ontology_file, is_managed_import)
+            extension_inspection = _inspect_managed_surface(extension_file, is_managed_include)
+            if not (
+                ontology_inspection.stray_managed_triples
+                or extension_inspection.stray_managed_triples
+            ):
+                continue
+
+            def is_managed_import_lexical(
+                _subject: str | None, predicate: str, obj: str | None
+            ) -> bool:
+                return (
+                    predicate == str(OWL.imports)
+                    and obj is not None
+                    and obj.rstrip("#/") not in hub_domain_bases
+                )
+
+            def is_managed_include_lexical(
+                subject: str | None, predicate: str, _obj: str | None
+            ) -> bool:
+                if predicate == str(KAIROS_EXT.silverIncludeImports):
+                    return True
+                return (
+                    predicate == str(KAIROS_EXT.silverInclude)
+                    and subject is not None
+                    and not _is_local_class_uri(subject, ontology_iri)
+                )
+
+            import_lines = [
+                _turtle_statement(ontology_subject, OWL.imports, URIRef(iri))
+                for iri in sorted(expected_imports)
+            ]
+            include_lines = [
+                _turtle_statement(
+                    URIRef(class_uri),
+                    KAIROS_EXT.silverInclude,
+                    Literal(True, datatype=XSD.boolean),
+                )
+                for class_uri in sorted(expected_includes)
+            ]
+            plan.writes[ontology_file] = _migrate_surface_text(
+                ontology_inspection,
+                path=ontology_file,
+                predicate_iris={str(OWL.imports)},
+                is_controlled_lexical=is_managed_import_lexical,
+                is_managed_authored=is_managed_import,
+                managed_lines=import_lines,
+            )
+            plan.writes[extension_file] = _migrate_surface_text(
+                extension_inspection,
+                path=extension_file,
+                predicate_iris={
+                    str(KAIROS_EXT.silverInclude),
+                    str(KAIROS_EXT.silverIncludeImports),
+                },
+                is_controlled_lexical=is_managed_include_lexical,
+                is_managed_authored=is_managed_include,
+                managed_lines=include_lines,
+            )
+            plan.domains.append(domain)
+        except Exception as exc:  # noqa: BLE001
+            plan.errors.append(str(exc))
+
+    return plan
 
 
 def _rewrite_domain_projection_surfaces(

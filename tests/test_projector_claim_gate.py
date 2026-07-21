@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 
 import kairos_ontology.core.projector as projector
-from kairos_ontology.core.alignment_coverage import ALIGNMENT_ALGORITHM_VERSION, compute_affinity_hash
+from kairos_ontology.core.completeness_model import (
+    ALIGNMENT_ALGORITHM_VERSION,
+    compute_affinity_hash,
+)
 from kairos_ontology.core.claim_registry import (
     Claim,
     ClaimRegistry,
@@ -15,6 +18,7 @@ from kairos_ontology.core.claim_registry import (
     registry_path,
     write_registry,
 )
+from kairos_ontology.core.claim_projection_sync import apply_projection_sync
 from kairos_ontology.core.projector import run_projections
 
 
@@ -28,7 +32,6 @@ def _write_synced_claim_domain(hub: Path, domain: str) -> tuple[Path, Path]:
 
     class_name = f"{domain.title().replace('_', '')}Imported"
     class_uri = f"https://example.org/ref/{domain}#{class_name}"
-    ref_base = f"https://example.org/ref/{domain}"
     local_class = f"{domain.title().replace('_', '')}Local"
     (ontologies / f"{domain}.ttl").write_text(
         f"""@prefix owl: <http://www.w3.org/2002/07/owl#> .
@@ -36,8 +39,7 @@ def _write_synced_claim_domain(hub: Path, domain: str) -> tuple[Path, Path]:
 @prefix dom: <https://example.org/domain/{domain}#> .
 
 <https://example.org/domain/{domain}> a owl:Ontology ;
-    rdfs:label "{domain.title()}"@en ;
-    owl:imports <{ref_base}> .
+    rdfs:label "{domain.title()}"@en .
 
 dom:{local_class} a owl:Class ;
     rdfs:label "{local_class}"@en ;
@@ -46,8 +48,7 @@ dom:{local_class} a owl:Class ;
         encoding="utf-8",
     )
     (extensions / f"{domain}-silver-ext.ttl").write_text(
-        f"""@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-<{class_uri}> kairos-ext:silverInclude true .
+        """@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 """,
         encoding="utf-8",
     )
@@ -76,6 +77,13 @@ dom:{local_class} a owl:Class ;
         ],
     )
     write_registry(registry, registry_path(claims, domain))
+    sync_report = apply_projection_sync(
+        claims_dir=claims,
+        ontologies_dir=ontologies,
+        extensions_dir=extensions,
+        scaffold_missing=False,
+    )
+    assert not sync_report.is_blocking
     return extensions / f"{domain}-silver-ext.ttl", extensions / f"{domain}-gold-ext.ttl"
 
 

@@ -465,6 +465,20 @@ class TestGenerateDbtArtifacts:
         # SHACL not_null on client_name
         if "client_name" in cols and cols["client_name"].get("tests"):
             assert "not_null" in cols["client_name"]["tests"]
+            complex_tests = [
+                test for test in cols["client_name"]["tests"] if isinstance(test, dict)
+            ]
+            assert complex_tests
+            assert all(len(test) == 1 for test in complex_tests)
+            length_test = next(
+                test
+                for test in complex_tests
+                if "dbt_expectations.expect_column_value_lengths_to_be_between"
+                in test
+            )
+            assert length_test[
+                "dbt_expectations.expect_column_value_lengths_to_be_between"
+            ]["min_value"] == 2
 
     def test_with_bronze_and_mappings(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir

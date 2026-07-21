@@ -62,8 +62,17 @@ def test_design_domain_can_read_renames_and_exclusions():
     # deviates carries a captured reason for the modeling rationale.
     assert all(c.get("deviation_reason") for c in by_outcome["deviates"])
 
+    # The permanent fixture exercises every policy outcome.
+    assert set(by_outcome) == set(OUTCOME_CODES)
+
     # not-applicable concepts are excludable.
     assert by_outcome["not-applicable"]
+
+    # Optional concepts are retained in the artifact, including an applicable one.
+    assert any(
+        concept["tier"] == "optional" and concept["outcome"] != "not-applicable"
+        for concept in artifact["core_concepts"]
+    )
 
 
 def test_scenario_scorecard_matches_outcomes():

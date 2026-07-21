@@ -12,6 +12,7 @@ import pytest
 
 from kairos_ontology.core.dbt_validation import (
     DbtValidationError,
+    _offline_profile,
     validate_dbt_project,
     validate_manifest,
 )
@@ -79,6 +80,15 @@ def _manifest(
 
 def _result(returncode: int = 0, stdout: str = "", stderr: str = ""):
     return subprocess.CompletedProcess([], returncode, stdout, stderr)
+
+
+def test_fabric_offline_profile_fails_connection_fast() -> None:
+    output = _offline_profile("fabric")["outputs"]["offline"]
+
+    assert output["authentication"] == "ServicePrincipal"
+    assert output["retries"] == 0
+    assert output["login_timeout"] == 1
+    assert output["query_timeout"] == 1
 
 
 def test_validate_dbt_project_runs_required_sequence(tmp_path: Path) -> None:

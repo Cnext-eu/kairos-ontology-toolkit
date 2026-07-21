@@ -13,7 +13,7 @@ from rdflib import Graph, Literal, Namespace, RDF, RDFS, URIRef
 from rdflib.namespace import OWL
 
 from kairos_ontology.core import binding_analysis as ba
-from kairos_ontology.core.claim_registry import Claim, ClaimRegistry
+from kairos_ontology.core.claim_registry import Claim, ClaimRegistry, write_registry
 from kairos_ontology.core.projections.shared import KAIROS_EXT
 
 NS = Namespace("https://acme.example/client#")
@@ -33,22 +33,19 @@ def _cls_dicts(*locals_: str) -> list[dict]:
 def test_classify_binding_precedence():
     # Bound always wins, even if also a discriminator subtype.
     assert ba.classify_binding(
-        has_sources=True, discriminator_subclass=True, is_eligible=True, stubs_enabled=True
+        has_sources=True, discriminator_subclass=True, is_eligible=True
     ) == ba.BOUND
     # Unbound discriminator subtype folds.
     assert ba.classify_binding(
-        has_sources=False, discriminator_subclass=True, is_eligible=True, stubs_enabled=True
+        has_sources=False, discriminator_subclass=True, is_eligible=True
     ) == ba.FOLDED
-    # Unbound eligible claim stubs only when enabled.
+    # Unbound eligible claim is an aspirational STUB — independent of stub emission.
     assert ba.classify_binding(
-        has_sources=False, discriminator_subclass=False, is_eligible=True, stubs_enabled=True
+        has_sources=False, discriminator_subclass=False, is_eligible=True
     ) == ba.STUB
-    assert ba.classify_binding(
-        has_sources=False, discriminator_subclass=False, is_eligible=True, stubs_enabled=False
-    ) == ba.SKIPPED
     # Unbound, unclaimed.
     assert ba.classify_binding(
-        has_sources=False, discriminator_subclass=False, is_eligible=False, stubs_enabled=True
+        has_sources=False, discriminator_subclass=False, is_eligible=False
     ) == ba.SKIPPED
 
 
@@ -65,6 +62,9 @@ def test_materialization_eligible_class_uris():
             # Excluded: proposed (not approved)
             Claim(id="c4", type="class", status="proposed", disposition="claim",
                   class_uri=str(NS.Prospect)),
+            # Excluded: rejected (not approved)
+            Claim(id="c4b", type="class", status="rejected", disposition="claim",
+                  class_uri=str(NS.Rejected)),
             # Excluded: gap disposition (DEC-5)
             Claim(id="c5", type="class", status="approved", disposition="gap",
                   class_uri=str(NS.Missing)),
@@ -80,29 +80,114 @@ def test_materialization_eligible_class_uris():
     assert eligible == {str(NS.Client), str(NS.CorporateClient), str(NS.Country)}
 
 
-def test_build_stub_vs_skipped_no_sources():
+def test_approved_imported_class_uris():
+    reg = ClaimRegistry(
+        domain="client",
+        claims=[
+            # Included: approved + imported + claim/specialize.
+            Claim(id="i1", type="class", status="approved", disposition="claim",
+                  origin="imported", class_uri=str(NS.Party)),
+            Claim(id="i2", type="class", status="approved", disposition="specialize",
+                  origin="imported", class_uri=str(NS.Organisation)),
+            # Excluded: authored origin (local, not imported).
+            Claim(id="i3", type="class", status="approved", disposition="claim",
+                  origin="authored", class_uri=str(NS.Client)),
+            # Excluded: proposed / rejected status.
+            Claim(id="i4", type="class", status="proposed", disposition="claim",
+                  origin="imported", class_uri=str(NS.Prospect)),
+            Claim(id="i5", type="class", status="rejected", disposition="claim",
+                  origin="imported", class_uri=str(NS.Rejected)),
+            # Excluded: gap disposition.
+            Claim(id="i6", type="class", status="approved", disposition="gap",
+                  origin="imported", class_uri=str(NS.Missing)),
+        ],
+    )
+    assert ba.approved_imported_class_uris(reg) == {str(NS.Party), str(NS.Organisation)}
+
+
+def test_analyze_hub_includes_catalog_loaded_approved_import(tmp_path):
+    """Status/release analysis includes claimed classes loaded through the hub catalog."""
+    hub = tmp_path / "hub"
+    ontologies = hub / "model" / "ontologies"
+    ontologies.mkdir(parents=True)
+    (ontologies / "client.ttl").write_text(
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "<https://acme.example/client> a owl:Ontology ;\n"
+        "    owl:imports <https://ref.example/party> .\n",
+        encoding="utf-8",
+    )
+    (ontologies / "_party.ttl").write_text(
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+        "<https://ref.example/party> a owl:Ontology .\n"
+        "<https://ref.example/party#TradeParty> a owl:Class ;\n"
+        '    rdfs:label "Trade Party" .\n',
+        encoding="utf-8",
+    )
+    (hub / "catalog-v001.xml").write_text(
+        '<?xml version="1.0"?>\n'
+        '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+        '  <uri name="https://ref.example/party" '
+        'uri="model/ontologies/_party.ttl"/>\n'
+        "</catalog>\n",
+        encoding="utf-8",
+    )
+    write_registry(
+        ClaimRegistry(
+            domain="client",
+            claims=[
+                Claim(
+                    id="trade-party",
+                    type="class",
+                    status="approved",
+                    disposition="claim",
+                    origin="imported",
+                    class_uri="https://ref.example/party#TradeParty",
+                )
+            ],
+        ),
+        hub / "model" / "claims" / "client-claims.yaml",
+    )
+
+    snapshot = ba.analyze_domain_from_hub(hub, "client")
+
+    assert snapshot is not None
+    assert snapshot.aspirational_names() == ["TradeParty"]
+
+
+def test_build_aspirational_decoupled_from_stub_emission():
+    """STUB/aspirational/release facts are derived independently of ``stubs_enabled``.
+
+    Only *emission* (``should_emit_stub``) and *materialization* (``is_materialized``)
+    follow the flag; status/release can therefore reason with stubs off.
+    """
     g = Graph()
     _class(g, "Client")
     _class(g, "Prospect")
     classes = _cls_dicts("Client", "Prospect")
     mappings = {"table_maps": {}, "column_maps": {}}
 
-    # Client is an eligible claim → STUB when enabled; Prospect is not eligible → SKIPPED.
-    analysis = ba.build(
-        classes=classes, graph=g, systems=[], mappings=mappings,
-        eligible_class_uris={str(NS.Client)}, stubs_enabled=True,
-    )
-    assert analysis.state(str(NS.Client)) == ba.STUB
-    assert analysis.is_aspirational(str(NS.Client))
-    assert analysis.state(str(NS.Prospect)) == ba.SKIPPED
-
-    # Flag off → no stubs.
-    analysis_off = ba.build(
-        classes=classes, graph=g, systems=[], mappings=mappings,
-        eligible_class_uris={str(NS.Client)}, stubs_enabled=False,
-    )
-    assert analysis_off.state(str(NS.Client)) == ba.SKIPPED
-    assert not analysis_off.is_aspirational(str(NS.Client))
+    for stubs_enabled in (True, False):
+        analysis = ba.build(
+            classes=classes, graph=g, systems=[], mappings=mappings,
+            eligible_class_uris={str(NS.Client)}, stubs_enabled=stubs_enabled,
+        )
+        # Client is eligible + unbound -> aspirational STUB regardless of the flag.
+        assert analysis.state(str(NS.Client)) == ba.STUB
+        assert analysis.is_aspirational(str(NS.Client))
+        assert analysis.is_release_blocking(str(NS.Client))
+        assert analysis.aspirational_class_uris() == [str(NS.Client)]
+        assert analysis.release_blocking_class_uris() == [str(NS.Client)]
+        # Prospect is not eligible -> SKIPPED, never aspirational/release-blocking.
+        assert analysis.state(str(NS.Prospect)) == ba.SKIPPED
+        assert not analysis.is_aspirational(str(NS.Prospect))
+        assert not analysis.is_release_blocking(str(NS.Prospect))
+        # Emission + materialization are the only flag-sensitive facts.
+        assert analysis.should_emit_stub(str(NS.Client)) is stubs_enabled
+        assert analysis.is_materialized(str(NS.Client)) is stubs_enabled
+        assert analysis.materialized_class_uris() == (
+            [str(NS.Client)] if stubs_enabled else []
+        )
 
 
 def test_build_bound_beats_stub():
@@ -188,4 +273,49 @@ def test_build_mapped_child_under_discriminator_parent_folds_source_to_parent():
     assert analysis.state(sub) == ba.FOLDED
     assert analysis.state(parent) == ba.BOUND
 
+
+def test_build_reasons_and_order_are_deterministic():
+    """Each state carries a stable reason string and state lists are sorted."""
+    g = Graph()
+    parent = _class(g, "Client")
+    sub = _class(g, "CorporateClient")
+    g.add((URIRef(sub), RDFS.subClassOf, URIRef(parent)))
+    g.add((URIRef(parent), KAIROS_EXT.inheritanceStrategy, Literal("discriminator")))
+    bound = _class(g, "Account")
+    _class(g, "Prospect")
+    classes = _cls_dicts("Client", "CorporateClient", "Account", "Prospect")
+    tbl_uri = "https://acme.example/bronze/adminpulse#tblAccount"
+    systems = [{
+        "system_label": "AdminPulse",
+        "tables": [{"uri": tbl_uri, "name": "tbl_account", "columns": []}],
+    }]
+    mappings = {
+        "table_maps": {tbl_uri: [{"target_uri": bound, "mapping_type": "direct"}]},
+        "column_maps": {},
+    }
+    analysis = ba.build(
+        classes=classes, graph=g, systems=systems, mappings=mappings,
+        eligible_class_uris={str(NS.Client)},
+    )
+    # Deterministic per-state reason text.
+    assert analysis.reason(bound) == "bound to bronze source(s)"
+    assert analysis.reason(sub) == "S3 discriminator subclass of Client"
+    assert analysis.reason(str(NS.Client)) == (
+        "approved claim, no bronze mapping (aspirational)"
+    )
+    assert analysis.reason(str(NS.Prospect)) == (
+        "no bronze mapping and no approving claim"
+    )
+    # State lists are sorted (deterministic order across runs).
+    assert analysis.class_uris_in_state(ba.BOUND) == sorted(
+        analysis.class_uris_in_state(ba.BOUND)
+    )
+    assert analysis.aspirational_class_uris() == [str(NS.Client)]
+    # A repeated build produces identical states/reasons (byte-stable).
+    again = ba.build(
+        classes=classes, graph=g, systems=systems, mappings=mappings,
+        eligible_class_uris={str(NS.Client)},
+    )
+    assert analysis.states == again.states
+    assert analysis.reasons == again.reasons
 

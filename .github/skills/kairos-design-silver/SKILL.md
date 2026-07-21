@@ -451,7 +451,7 @@ ref:hasConsignmentItem
 
 ## Phase 4 — Generate output (handoff to projection skill)
 
-> **Pre-silver claims gate (MANDATORY — DD-EL-1).** Before generating the
+> **Pre-silver claims gate (MANDATORY — DD-094).** Before generating the
 > silver layer, verify that the ontology + mappings actually cover every source
 > table the affinity reports assign to the in-scope domains — so silver is built
 > against a **complete** ontology, not a partial one (`check-claims` includes the

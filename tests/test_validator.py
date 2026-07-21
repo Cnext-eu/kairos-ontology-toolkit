@@ -2,6 +2,8 @@
 # Copyright 2026 Cnext.eu
 """Tests for the validation module."""
 
+import json
+
 import pytest
 from kairos_ontology.core.validator import run_validation, validate_gdpr, run_gdpr_validation
 
@@ -76,6 +78,63 @@ class TestValidator:
         
         captured = capsys.readouterr()
         assert "Found 0 ontology files" in captured.out
+
+    def test_no_report_written_when_report_path_omitted(
+        self, temp_dir, sample_ontology, capsys, monkeypatch
+    ):
+        """Direct library callers that omit report_path get no report file —
+        an explicit, documented no-op rather than an ambiguous CWD guess."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(sample_ontology, encoding="utf-8")
+
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        cwd = temp_dir / "cwd"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+        )
+
+        captured = capsys.readouterr()
+        assert "Results saved to" not in captured.out
+        assert not (cwd / "validation-report.json").exists()
+
+    def test_report_written_to_explicit_path(self, temp_dir, sample_ontology, capsys):
+        """An explicit report_path is honored, including creating parents."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(sample_ontology, encoding="utf-8")
+
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        report_path = temp_dir / "output" / "validation-report.json"
+        assert not report_path.parent.exists()
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            report_path=report_path,
+        )
+
+        captured = capsys.readouterr()
+        assert f"Results saved to {report_path}" in captured.out
+        assert report_path.exists()
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        assert payload["syntax"]["passed"] == 1
 
 
 # -----------------------------------------------------------------------

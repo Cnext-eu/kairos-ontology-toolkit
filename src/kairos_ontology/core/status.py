@@ -23,6 +23,7 @@ to regenerate on demand.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,6 +31,14 @@ from pathlib import Path
 STATE_NOT_STARTED = "not-started"
 STATE_IN_PROGRESS = "in-progress"
 STATE_DONE = "done"
+
+# Schema version of the `to_dict()` machine-readable payload (DD-080/DD-100).
+# Bump only on a breaking change (removed/renamed key or changed meaning of an
+# existing key); additive new keys do not require a bump. v1 had no explicit
+# version and no per-instance `facts`. v2 adds `schema_version` plus per-instance
+# `facts` (e.g. claims proposed/approved counts, silver bound/aspirational
+# classes + release_eligible, validate data_valid) — every v1 key is unchanged.
+SCHEMA_VERSION = 2
 
 # Lifecycle phase order (methodology section 4 / kairos-help section 2).
 PHASE_ORDER = (
@@ -67,6 +76,9 @@ _PROJECT_OUTPUT_DIRS = (
     "report",
 )
 
+_IGNORED_SOURCE_DIRS = frozenset({"reference-data", "source-system-template"})
+_CUSTOM_TRANSFORMATIONS_DIR = "custom-transformations"
+
 
 @dataclass
 class InstanceStatus:
@@ -74,12 +86,20 @@ class InstanceStatus:
 
     An *instance* is a source system, a domain ontology, a mapping pair, etc.
     ``evidence`` lists hub-relative paths that justify the state.
+
+    ``facts`` is an additive, phase-specific bag of machine-readable objective
+    facts that do not themselves drive ``state`` (e.g. claim ``proposed``/
+    ``approved`` counts, Silver ``bound_classes``/``aspirational_classes``/
+    ``release_eligible``, validate ``data_valid``). Populated only where
+    objectively knowable from committed hub authorities; never persisted back
+    to disk — recomputed on every scan (DD-096/DD-100).
     """
 
     name: str
     state: str
     evidence: list[str] = field(default_factory=list)
     detail: str = ""
+    facts: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -87,6 +107,7 @@ class InstanceStatus:
             "state": self.state,
             "evidence": self.evidence,
             "detail": self.detail,
+            "facts": self.facts,
         }
 
 
@@ -138,6 +159,7 @@ class HubStatus:
 
     def to_dict(self) -> dict:
         return {
+            "schema_version": SCHEMA_VERSION,
             "hub_root": self.hub_root,
             "toolkit_version": self.toolkit_version,
             "next_phase": self.next_phase,
@@ -171,6 +193,16 @@ def _ttl_files(directory: Path) -> list[Path]:
         return []
     return sorted(
         p for p in directory.glob("*.ttl") if not p.name.startswith("_")
+    )
+
+
+def _has_real_artifact(directory: Path) -> bool:
+    """Return whether *directory* contains a generated artifact, not a placeholder."""
+    if not directory.is_dir():
+        return False
+    return any(
+        path.is_file() and not path.name.startswith(".") and not path.name.endswith(".template")
+        for path in sorted(directory.rglob("*"))
     )
 
 
@@ -229,9 +261,11 @@ def _scan_source(hub_root: Path) -> PhaseStatus:
     if sources_dir.is_dir():
         for system_dir in sorted(p for p in sources_dir.iterdir() if p.is_dir()):
             system = system_dir.name
-            if system.startswith("_"):
+            if system.startswith("_") or system in _IGNORED_SOURCE_DIRS:
                 continue
-            vocab = sorted(system_dir.glob("*.vocabulary.ttl"))
+            vocab = sorted(p for p in system_dir.glob("*.vocabulary.ttl") if p.is_file())
+            if system == _CUSTOM_TRANSFORMATIONS_DIR and not vocab:
+                continue
             affinity = _affinity_for(sources_dir, system_dir, system)
             evidence: list[str] = []
             if vocab:
@@ -258,89 +292,53 @@ def _domain_aspirational_stubs(hub_root: Path, domain: str) -> list[str]:
     mappings (binding) — *not* by reading generated ``meta.is_aspirational`` (absent
     when the projector's stub flag is off or the output is stale).
 
-    Returns an empty list when the domain has no claims registry (no eligibility
-    authority) or on any load error — the scan stays robust and deterministic.
+    Aspirational derivation is decoupled from projection stub emission, so the scan
+    reads :meth:`BindingAnalysis.aspirational_class_uris` directly without forcing
+    the projector's ``stubs_enabled`` flag on.
+
+    Thin, backward-compatible wrapper over the shared
+    :func:`binding_analysis.analyze_domain_from_hub` (also consumed by the
+    deterministic lifecycle gate, DD-100) so both derive identical facts from one
+    computation. Returns an empty list when the domain has no claims registry (no
+    eligibility authority) or on any load error — the scan stays robust and
+    deterministic.
     """
-    try:
-        from rdflib import Graph, OWL, RDF, URIRef
+    from .binding_analysis import analyze_domain_from_hub
 
-        from .binding_analysis import STUB, build, materialization_eligible_class_uris
-        from .claim_registry import load_registry
-        from .projections.medallion_dbt_projector import (
-            _parse_bronze,
-            _parse_skos_mappings,
-        )
-        from .projections.uri_utils import extract_local_name
-
-        claims_file = hub_root / "model" / "claims" / f"{domain}-claims.yaml"
-        onto_file = hub_root / "model" / "ontologies" / f"{domain}.ttl"
-        if not claims_file.exists() or not onto_file.exists():
-            return []
-
-        eligible = materialization_eligible_class_uris(load_registry(claims_file))
-        if not eligible:
-            return []
-
-        graph = Graph()
-        graph.parse(onto_file, format="turtle")
-        silver_ext = hub_root / "model" / "extensions" / f"{domain}-silver-ext.ttl"
-        if silver_ext.exists():
-            graph.parse(silver_ext, format="turtle")
-
-        # Detect the domain base to select local classes (bare IRI + #// variants).
-        base = None
-        for subj in graph.subjects(RDF.type, OWL.Ontology):
-            if isinstance(subj, URIRef) and not str(subj).endswith("-silver-ext"):
-                base = str(subj).rstrip("#/")
-                break
-        classes: list[dict] = []
-        for cls in graph.subjects(RDF.type, OWL.Class):
-            if not isinstance(cls, URIRef):
-                continue
-            uri = str(cls)
-            if base is not None and not (
-                uri.startswith(base + "#") or uri.startswith(base + "/")
-            ):
-                continue
-            classes.append({"uri": uri, "name": extract_local_name(uri)})
-        if not classes:
-            return []
-
-        sources_dir = hub_root / "integration" / "sources"
-        mappings_dir = hub_root / "model" / "mappings"
-        systems = _parse_bronze(sources_dir) if sources_dir.is_dir() else []
-        mappings, _ = (
-            _parse_skos_mappings(mappings_dir) if mappings_dir.is_dir() else ({}, {})
-        )
-
-        analysis = build(
-            classes=classes,
-            graph=graph,
-            systems=systems,
-            mappings=mappings,
-            eligible_class_uris=eligible,
-            stubs_enabled=True,
-        )
-        by_uri = {c["uri"]: c["name"] for c in classes}
-        return sorted(by_uri[u] for u in analysis.class_uris_in_state(STUB))
-    except Exception:  # noqa: BLE001 — scan must never fail on bad/partial input
+    snapshot = analyze_domain_from_hub(Path(hub_root), domain)
+    if snapshot is None:
         return []
+    return snapshot.aspirational_names()
 
 
 def _scan_silver(hub_root: Path, extensions_dir: Path) -> PhaseStatus:
     """Silver phase: like the simple TTL scan, but a domain with approved-but-unbound
-    claims is *in-progress* (aspirational stubs pending binding), not ``done`` (D4)."""
+    claims is *in-progress* (aspirational stubs pending binding), not ``done`` (D4).
+
+    Also surfaces machine-readable ``bound_classes``/``aspirational_classes``/
+    ``release_eligible`` facts per instance (DD-100), derived from the same
+    canonical :class:`binding_analysis.BindingAnalysis` snapshot — never a second,
+    divergent computation.
+    """
+    from .binding_analysis import analyze_domain_from_hub
+
     phase = "silver"
     base = _scan_simple_ttl_phase(
         hub_root, phase, extensions_dir, suffix="-silver-ext.ttl"
     )
     for inst in base.instances:
-        stubs = _domain_aspirational_stubs(hub_root, inst.name)
-        if stubs:
+        snapshot = analyze_domain_from_hub(Path(hub_root), inst.name)
+        if snapshot is None:
+            continue
+        aspirational = snapshot.aspirational_names()
+        inst.facts["bound_classes"] = snapshot.bound_names()
+        inst.facts["aspirational_classes"] = aspirational
+        inst.facts["release_eligible"] = not aspirational
+        if aspirational:
             inst.state = STATE_IN_PROGRESS
-            names = ", ".join(stubs)
+            names = ", ".join(aspirational)
             inst.detail = (
-                f"{len(stubs)} aspirational stub(s) pending binding: {names}"
+                f"{len(aspirational)} aspirational stub(s) pending binding: {names}"
             )
     base.state = _aggregate(base.instances)
     return base
@@ -366,6 +364,29 @@ def _scan_simple_ttl_phase(
                        detail=f"{len(instances)} file(s)")
 
 
+def _claim_status_facts(claims_file: Path) -> dict:
+    """Best-effort ``proposed``/``approved`` claim counts for one registry file.
+
+    Machine-readable surface of the Claim Registry's own ``status`` field (DD-100)
+    — a raw count, not a re-derivation of any governance rule (those stay owned by
+    ``claim_coverage.check_claims_coverage``). Only YAML registries are counted
+    (a bare ``.ttl`` claims file, if present, has no ``status`` to count). Never
+    raises — the scan must stay robust to a partial/invalid registry.
+    """
+    if claims_file.suffix != ".yaml":
+        return {}
+    try:
+        from .claim_registry import load_registry
+
+        registry = load_registry(claims_file)
+    except Exception:  # noqa: BLE001 — scan must never fail on bad/partial input
+        return {}
+    return {
+        "proposed": sum(1 for c in registry.claims if c.status == "proposed"),
+        "approved": sum(1 for c in registry.claims if c.status == "approved"),
+    }
+
+
 def _scan_claims(hub_root: Path) -> PhaseStatus:
     title = _PHASE_TITLES["claims"]
     claims_dir = hub_root / "model" / "claims"
@@ -373,10 +394,44 @@ def _scan_claims(hub_root: Path) -> PhaseStatus:
     if claims_dir.is_dir():
         for f in sorted([*claims_dir.glob("*.yaml"), *claims_dir.glob("*.ttl")]):
             instances.append(
-                InstanceStatus(f.stem, STATE_DONE, [_rel(f, hub_root)], "claim registry")
+                InstanceStatus(
+                    f.stem, STATE_DONE, [_rel(f, hub_root)], "claim registry",
+                    facts=_claim_status_facts(f),
+                )
             )
     return PhaseStatus("claims", title, _aggregate(instances), instances=instances,
                        detail=f"{len(instances)} claim file(s)")
+
+
+def _validation_data_valid(report_path: Path) -> bool | None:
+    """Read the persisted ``validation-report.json`` and return whether it passed.
+
+    Reuses ``validator.run_validation``'s own persisted result — no validation
+    logic is re-run or re-derived. Returns ``True``/``False`` when the report
+    contains recognizable ``{section: {"failed": int}}`` counts (as written by
+    ``run_validation``), or ``None`` when the report is absent, unparsable, or has
+    no recognizable structure — "data-valid" is then not objectively knowable from
+    it (DD-100). Never raises.
+    """
+    if not report_path.is_file():
+        return None
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    found = False
+    total_failed = 0
+    for section in ("syntax", "shacl", "consistency"):
+        data = payload.get(section)
+        if not isinstance(data, dict):
+            continue
+        failed = data.get("failed")
+        if isinstance(failed, int):
+            found = True
+            total_failed += failed
+    return (total_failed == 0) if found else None
 
 
 def _scan_validate(hub_root: Path) -> PhaseStatus:
@@ -388,12 +443,17 @@ def _scan_validate(hub_root: Path) -> PhaseStatus:
         output_dir / "validation-report.json",
         output_dir / "reports",
     ):
-        if candidate.exists():
+        if candidate.is_file() or _has_real_artifact(candidate):
             evidence.append(_rel(candidate, hub_root))
     state = STATE_DONE if evidence else STATE_NOT_STARTED
     detail = "validation report present" if evidence else "no validation report"
+    facts: dict = {}
+    if evidence:
+        data_valid = _validation_data_valid(output_dir / "validation-report.json")
+        if data_valid is not None:
+            facts["data_valid"] = data_valid
     return PhaseStatus("validate", title, state, detail=detail,
-                       instances=[InstanceStatus("hub", state, evidence, detail)]
+                       instances=[InstanceStatus("hub", state, evidence, detail, facts=facts)]
                        if evidence else [])
 
 
@@ -403,7 +463,7 @@ def _scan_project(hub_root: Path) -> PhaseStatus:
     instances: list[InstanceStatus] = []
     for sub in _PROJECT_OUTPUT_DIRS:
         target_dir = output_dir / Path(sub)
-        if target_dir.is_dir() and any(target_dir.iterdir()):
+        if _has_real_artifact(target_dir):
             instances.append(
                 InstanceStatus(sub, STATE_DONE, [_rel(target_dir, hub_root)], "generated")
             )

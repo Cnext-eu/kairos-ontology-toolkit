@@ -654,7 +654,7 @@ ls integration/sources/_analysis/
 > alignment skill; treat `propose-alignment` (and its `check-claims` gate) as
 > part of the `kairos-design-domain` workflow.
 
-**Step 0a.2 — Claims-coverage gate + batch evidence refresh (MANDATORY — DD-EL-1):**
+**Step 0a.2 — Claims-coverage gate + batch evidence refresh (MANDATORY — DD-094):**
 
 > **BLOCKING GATE (symmetric to the Step 0c.1b inventory gate).** Before building
 > the Source Evidence Table, verify that `propose-alignment` / Claim Registry
@@ -742,7 +742,7 @@ the Source Evidence Table:
   # Example: commercial-alignment.yaml
   schema_version: 2
   domain: commercial
-  source_sha256: <digest of the affinity (system, table) set>   # DD-061 freshness
+  source_sha256: <digest of the affinity (system, table) set>   # DD-094 freshness
   tables:
     - system: adminpulse
       table: tblContracts
@@ -768,7 +768,7 @@ the Source Evidence Table:
   - Focus manual review on `custom_columns` (no ref-model match) and low-confidence alignments
   - The `reference_rollup` shows coverage gaps per ref class
 
-> **Legacy alignment files (retired — DD-EL-1):** `{domain}-alignment.yaml` is
+> **Legacy alignment files (retired — DD-094):** `{domain}-alignment.yaml` is
 > retired in favour of the Claim Registry (`model/claims/{domain}-claims.yaml`). A
 > hub that still has alignment files must run a one-time
 > `kairos-ontology migrate-claims`; `check-claims` then rejects any remaining
@@ -1972,7 +1972,7 @@ Completion gate).
 > Selectors compose: `--status`, `--disposition`, `--type`, `--origin`, and
 > `--id` / `--column` globs. Invalid/terminal transitions are skipped and reported.
 
-> **Transition note (DD-EL-1):** the former alignment-YAML disposition workflow
+> **Transition note (DD-094):** the former alignment-YAML disposition workflow
 > (writing `disposition:` onto `custom_columns`, the `--accept-heuristics` /
 > `--check-anchors` flags) is retired. Disposition now lives on registry claims.
 > Curate claim `status`/`disposition` with `decide-claims` (or by hand) and gate
@@ -2304,7 +2304,7 @@ When finishing a domain model, remind the user that extension files will need:
 
 ## Completion: Final Configuration Report
 
-**MANDATORY pre-completion gate — Claim curation (DD-EL-1):**
+**MANDATORY pre-completion gate — Claim curation (DD-094):**
 
 Before generating the final report or marking the domain COMPLETED, run the
 deterministic strict gate and confirm it passes:

@@ -30,12 +30,14 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from rdflib import Graph, Namespace, URIRef, Literal, XSD
+from rdflib import Graph, Namespace, URIRef, XSD
 from rdflib.namespace import OWL, RDF, RDFS
 
 from .shared import (
+    ForeignKeyClassification,
     KAIROS_EXT,
     camel_to_snake,
+    classify_foreign_keys,
     local_name,
     str_val as _str_val,
     bool_val as _bool_val,
@@ -345,7 +347,9 @@ def _warn_silver_exclude_dependents(
     return warnings
 
 
-def _warn_incomplete_fk_annotations(graph: Graph) -> list[str]:
+def _warn_incomplete_fk_annotations(
+    fk_classification: ForeignKeyClassification,
+) -> list[str]:
     """Warn when silverForeignKey is set but rdfs:domain or rdfs:range is missing.
 
     Without ``rdfs:domain`` the projector cannot determine which table receives
@@ -355,42 +359,13 @@ def _warn_incomplete_fk_annotations(graph: Graph) -> list[str]:
 
     Returns a list of warning messages (also logged).
     """
-    warnings: list[str] = []
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
-        # Check silverForeignKey "true" (not silverForeignKeyOn — that has its own check)
-        has_fk = _bool_val(graph, prop, KAIROS_EXT.silverForeignKey, False)
-        if not has_fk:
-            continue
-        # Skip properties that use silverForeignKeyOn (validated separately)
-        if graph.value(prop, KAIROS_EXT.silverForeignKeyOn) is not None:
-            continue
-        prop_local = _local_name(str(prop))
-        domain_cls = graph.value(prop, RDFS.domain)
-        range_cls = graph.value(prop, RDFS.range)
-        if domain_cls is None and range_cls is None:
-            msg = (
-                f"silverForeignKey on {prop_local} will be skipped "
-                f"— missing rdfs:domain and rdfs:range. "
-                f"Resolve via: kairos-design-domain"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-        elif domain_cls is None:
-            msg = (
-                f"silverForeignKey on {prop_local} will be skipped "
-                f"— missing rdfs:domain. "
-                f"Resolve via: kairos-design-domain"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
-        elif range_cls is None:
-            msg = (
-                f"silverForeignKey on {prop_local} will be skipped "
-                f"— missing rdfs:range. "
-                f"Resolve via: kairos-design-domain"
-            )
-            logger.warning(msg)
-            warnings.append(msg)
+    warnings = [
+        diagnostic.message
+        for diagnostic in fk_classification.diagnostics
+        if diagnostic.kind == "incomplete_silver_foreign_key"
+    ]
+    for msg in warnings:
+        logger.warning(msg)
     return warnings
 
 class ColumnDef:
@@ -543,6 +518,9 @@ def generate_silver_artifacts(
     if excluded_uris:
         _warn_silver_exclude_dependents(merged, excluded_uris, class_uris)
 
+    # Normalize OWL + authored Silver FK annotations once for every downstream pass.
+    fk_classification = classify_foreign_keys(merged)
+
     # GDPR PII warning: scan for PII-like properties on unprotected classes
     _warn_unprotected_pii(merged, domain_classes, namespace)
 
@@ -550,7 +528,7 @@ def generate_silver_artifacts(
     _warn_unclaimed_parents(merged, domain_classes)
 
     # Warn about silverForeignKey annotations missing domain/range
-    _warn_incomplete_fk_annotations(merged)
+    _warn_incomplete_fk_annotations(fk_classification)
 
     # S3: Track subtypes to flatten into parent tables (discriminator strategy only)
     folded_subtypes: dict[str, list[str]] = {}  # parent_uri → [subtype URIs]
@@ -646,11 +624,12 @@ def generate_silver_artifacts(
 
         # 3. FK columns from max-cardinality-1 object properties (R12)
         # TPC subtypes inherit parent's FK columns via inherit_from
-        _add_object_property_fk_cols(merged, cls_uri, tbl, table_name_for, schema_name,
-                                     class_uris, naming_conv,
-                                     subtype_parents=subtype_parents,
-                                     inherit_ancestors=True,
-                                     inherit_from=tpc_parents if tpc_parents else None)
+        _add_object_property_fk_cols(
+            merged, fk_classification, cls_uri, tbl, table_name_for, schema_name,
+            class_uris, naming_conv, subtype_parents=subtype_parents,
+            inherit_ancestors=True,
+            inherit_from=tpc_parents if tpc_parents else None,
+        )
 
         # 4. Discriminator column (R6 + S3 — auto-add if class has subtypes)
         disc_col = _str_val(merged, cls_uri, KAIROS_EXT.discriminatorColumn)
@@ -715,7 +694,7 @@ def generate_silver_artifacts(
             )
             # Merge object property FK columns (incl. unclaimed-intermediate ancestors)
             _add_object_property_fk_cols(
-                merged, sub_uri, parent_tbl, table_name_for, schema_name,
+                merged, fk_classification, sub_uri, parent_tbl, table_name_for, schema_name,
                 class_uris, naming_conv,
                 subtype_parents=subtype_parents,
                 inherit_ancestors=True,
@@ -725,8 +704,10 @@ def generate_silver_artifacts(
     # ----------------------------------------------------------------
     # DD-022 post-pass: inject redirected FK columns (silverForeignKeyOn)
     # ----------------------------------------------------------------
-    _add_redirected_fk_cols(merged, tables, table_name_for, schema_name,
-                            class_uris, naming_conv, subtype_parents)
+    _add_redirected_fk_cols(
+        merged, fk_classification, tables, table_name_for, schema_name,
+        class_uris, naming_conv, subtype_parents,
+    )
 
     # ----------------------------------------------------------------
     # S4 post-pass: inline small reference tables into parent
@@ -1023,17 +1004,6 @@ def _parse_audit_envelope(audit_str: str) -> list[ColumnDef]:
     return cols
 
 
-def _has_own_properties(graph: Graph, cls_uri: URIRef) -> bool:
-    """Return True if the class has any DatatypeProperty or ObjectProperty
-    whose ``rdfs:domain`` points directly to it (R16 check)."""
-    for prop in graph.subjects(RDFS.domain, cls_uri):
-        if (prop, RDF.type, OWL.DatatypeProperty) in graph:
-            return True
-        if (prop, RDF.type, OWL.ObjectProperty) in graph:
-            return True
-    return False
-
-
 def _not_null_from_shacl(shacl_graph: Optional[Graph], prop_uri: URIRef,
                           cls_uri: URIRef) -> bool:
     """Return True if SHACL shape has sh:minCount 1 for this property on this class (R11)."""
@@ -1116,7 +1086,8 @@ def _add_data_properties(graph: Graph, cls_uri: URIRef, tbl: TableDef,
 
 
 def _add_object_property_fk_cols(
-    graph: Graph, cls_uri: URIRef, tbl: TableDef,
+    graph: Graph, fk_classification: ForeignKeyClassification,
+    cls_uri: URIRef, tbl: TableDef,
     table_name_for, schema_name: str, class_uris: set[str], naming_conv: str,
     subtype_parents: dict[str, str] | None = None,
     comment_prefix: str = "",
@@ -1158,29 +1129,16 @@ def _add_object_property_fk_cols(
     # Track existing column names to avoid duplicates (PK, IRI, discriminator, etc.)
     existing_cols = {col.name for col in tbl.columns}
 
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
-        domain = graph.value(prop, RDFS.domain)
-        if domain not in domains_to_match:
+    for fk in fk_classification.descriptors:
+        if fk.redirected or fk.domain_class not in domains_to_match:
             continue
         # Skip if this property has a junctionTableName (R13)
-        if graph.value(prop, KAIROS_EXT.junctionTableName):
+        if fk.junction_table_name:
             continue
-        # Skip if silverForeignKeyOn redirects this FK to another table (DD-022)
-        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
-        if fk_on is not None:
+        if not fk.is_silver_fk:
             continue
-        # Determine if this is a many-to-one FK column
-        has_explicit_col = bool(_str_val(graph, prop, KAIROS_EXT.silverColumnName))
-        is_functional = (prop, RDF.type, OWL.FunctionalProperty) in graph
-        has_fk_annotation = _bool_val(
-            graph, prop, KAIROS_EXT.silverForeignKey, False,
-        )
-        if not has_explicit_col and not is_functional and not has_fk_annotation \
-                and not _has_max_cardinality_1(graph, cls_uri, prop):
-            continue
-        range_cls = graph.value(prop, RDFS.range)
-        if range_cls is None:
-            continue
+        prop = fk.property_uri
+        range_cls = fk.target_class
 
         # Resolve target table — same domain or cross-domain
         is_cross_domain = str(range_cls) not in class_uris
@@ -1195,8 +1153,7 @@ def _add_object_property_fk_cols(
             range_tbl = table_name_for(effective_range_cls, range_local)
             ref_full = f"{schema_name}.{range_tbl}"
 
-        col_name_override = _str_val(graph, prop, KAIROS_EXT.silverColumnName)
-        col_name = col_name_override or f"{range_tbl}_sk"
+        col_name = fk.physical_column_name(range_tbl, layer="silver")
 
         # Disambiguate duplicate column names (e.g. two FKs → same target table)
         if col_name in existing_cols:
@@ -1212,14 +1169,13 @@ def _add_object_property_fk_cols(
         if comment_prefix:
             nullable = True
         else:
-            nullable_ann = graph.value(prop, KAIROS_EXT.nullable)
-            if nullable_ann is not None:
-                nullable = str(nullable_ann).lower() not in ("false", "0")
+            if fk.nullable is not None:
+                nullable = fk.nullable
             else:
                 nullable = True
 
         # Conditional nullable (R14)
-        cond_on = _str_val(graph, prop, KAIROS_EXT.conditionalOnType)
+        cond_on = fk.conditional_on_type
         prop_iri = _prefixed_iri(str(prop))
         cross_note = f"cross-domain FK → {ref_full}" if is_cross_domain else ""
         comment_parts = [p for p in [
@@ -1236,25 +1192,9 @@ def _add_object_property_fk_cols(
         )
 
 
-def _has_max_cardinality_1(graph: Graph, cls_uri: URIRef, prop: URIRef) -> bool:
-    """Return True if an owl:maxQualifiedCardinality 1 restriction exists (R12)."""
-    for restriction in graph.subjects(OWL.onProperty, prop):
-        if graph.value(restriction, OWL.maxQualifiedCardinality) == Literal(1, datatype=XSD.nonNegativeInteger):
-            # Check restriction applies to this class
-            for parent in graph.objects(cls_uri, RDFS.subClassOf):
-                if parent == restriction:
-                    return True
-    # Also accept maxCardinality 1
-    for restriction in graph.subjects(OWL.onProperty, prop):
-        if graph.value(restriction, OWL.maxCardinality) == Literal(1, datatype=XSD.nonNegativeInteger):
-            for parent in graph.objects(cls_uri, RDFS.subClassOf):
-                if parent == restriction:
-                    return True
-    return False
-
-
 def _add_redirected_fk_cols(
     graph: Graph,
+    fk_classification: ForeignKeyClassification,
     tables: dict[str, TableDef],
     table_name_for,
     schema_name: str,
@@ -1274,42 +1214,21 @@ def _add_redirected_fk_cols(
     Called after the main per-class pass and S3 subtype folding so that all
     target tables already exist.
     """
-    for prop in graph.subjects(RDF.type, OWL.ObjectProperty):
-        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
-        if fk_on is None:
+    for diagnostic in fk_classification.diagnostics:
+        if diagnostic.kind in {
+            "incomplete_silver_foreign_key_on",
+            "invalid_silver_foreign_key_on",
+        }:
+            logger.warning(diagnostic.message)
+
+    for fk in fk_classification.descriptors:
+        if not fk.redirected or fk.junction_table_name:
             continue
 
-        domain_cls = graph.value(prop, RDFS.domain)
-        range_cls = graph.value(prop, RDFS.range)
+        prop = fk.property_uri
         prop_local = _local_name(str(prop))
-
-        # Validate domain and range exist
-        if domain_cls is None or range_cls is None:
-            logger.warning(
-                "silverForeignKeyOn on %s skipped — missing rdfs:domain or rdfs:range.",
-                prop_local,
-            )
-            continue
-
-        # Validate silverForeignKeyOn is either domain or range
-        if fk_on != domain_cls and fk_on != range_cls:
-            logger.warning(
-                "silverForeignKeyOn on %s specifies %s which is neither domain (%s) "
-                "nor range (%s) — skipped.",
-                prop_local, _local_name(str(fk_on)),
-                _local_name(str(domain_cls)), _local_name(str(range_cls)),
-            )
-            continue
-
-        # Determine FK holder and referenced class
-        if fk_on == range_cls:
-            # Reverse: FK on range table pointing to domain table
-            fk_holder_uri = range_cls
-            referenced_uri = domain_cls
-        else:
-            # Normal: FK on domain table pointing to range table
-            fk_holder_uri = domain_cls
-            referenced_uri = range_cls
+        fk_holder_uri = fk.source_class
+        referenced_uri = fk.target_class
 
         # Find the holder table
         fk_holder_uri_str = str(fk_holder_uri)
@@ -1337,8 +1256,7 @@ def _add_redirected_fk_cols(
             ref_full = f"{ref_schema}.{ref_tbl}"
 
         # Column name: use silverColumnName override or default to {ref_tbl}_sk
-        col_name_override = _str_val(graph, prop, KAIROS_EXT.silverColumnName)
-        col_name = col_name_override or f"{ref_tbl}_sk"
+        col_name = fk.physical_column_name(ref_tbl, layer="silver")
 
         # Disambiguate if column already exists
         existing_cols = {col.name for col in holder_tbl.columns}
@@ -1349,14 +1267,13 @@ def _add_redirected_fk_cols(
                 col_name = f"{ref_tbl}_{prop_suffix}_sk"
 
         # Nullability
-        nullable_ann = graph.value(prop, KAIROS_EXT.nullable)
-        if nullable_ann is not None:
-            nullable = str(nullable_ann).lower() not in ("false", "0")
+        if fk.nullable is not None:
+            nullable = fk.nullable
         else:
             nullable = True
 
-        cond_on = _str_val(graph, prop, KAIROS_EXT.conditionalOnType)
-        direction = "reverse" if fk_on == range_cls else "normal"
+        cond_on = fk.conditional_on_type
+        direction = "reverse" if fk.reverse else "normal"
         comment_parts = [p for p in [
             f"DD-022 {direction} FK via silverForeignKeyOn",
             f"nullable: active when type IN ({cond_on})" if cond_on else "",

@@ -83,7 +83,13 @@ def _offline_profile(platform: str) -> dict[str, object]:
             "server": "offline.invalid",
             "database": "offline",
             "schema": "dbo",
-            "authentication": "CLI",
+            "authentication": "ServicePrincipal",
+            "tenant_id": "00000000-0000-0000-0000-000000000000",
+            "client_id": "00000000-0000-0000-0000-000000000000",
+            "client_secret": "offline",
+            "retries": 0,
+            "login_timeout": 1,
+            "query_timeout": 1,
             "threads": 1,
         }
     else:

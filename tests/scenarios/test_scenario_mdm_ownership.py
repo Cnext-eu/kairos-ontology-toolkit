@@ -36,7 +36,7 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
-from kairos_ontology.core.alignment_coverage import (
+from kairos_ontology.core.completeness_model import (
     ALIGNMENT_ALGORITHM_VERSION,
     compute_affinity_hash,
 )

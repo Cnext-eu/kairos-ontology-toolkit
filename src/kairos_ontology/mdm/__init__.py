@@ -54,6 +54,23 @@ __all__ = [
 ]
 
 
+def _project_mdm_profile(
+    *,
+    graph,
+    namespace,
+    ontology_name,
+    ext_path,
+    ontology_metadata,
+):
+    return generate_mdm_profile_artifacts(
+        graph=graph,
+        namespace=namespace,
+        ontology_name=ontology_name,
+        mdm_ext_path=ext_path,
+        ontology_metadata=ontology_metadata,
+    )
+
+
 def _register_projection_target() -> None:
     """Register the ``mdm-profile`` target with the core projector registry.
 
@@ -63,19 +80,10 @@ def _register_projection_target() -> None:
     """
     from kairos_ontology.core.projector import register_target
 
-    def _project(*, graph, namespace, ontology_name, ext_path, ontology_metadata):
-        return generate_mdm_profile_artifacts(
-            graph=graph,
-            namespace=namespace,
-            ontology_name=ontology_name,
-            mdm_ext_path=ext_path,
-            ontology_metadata=ontology_metadata,
-        )
-
     register_target(
         "mdm-profile",
         discover_ext=discover_mdm_extension,
-        project=_project,
+        project=_project_mdm_profile,
         output_subdir="mdm",
     )
 

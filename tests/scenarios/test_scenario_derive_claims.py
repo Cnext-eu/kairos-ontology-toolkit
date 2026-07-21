@@ -5,8 +5,9 @@
 These tests exercise the deterministic, AI-free ``derive-claims`` backend against
 the synthetic **acme-hub** fixture.  ``derive-claims`` enriches an existing Claim
 Registry by joining it with already-produced evidence streams (``analyse-sources``
-affinity + ``model/mappings/*.ttl`` SKOS links) and attaching **multiple**
-``evidence_sources`` per claim — every derived/new claim stays ``proposed``.
+affinity + ``model/mappings/*.ttl`` SKOS links + committed conformance outcomes)
+and attaching **multiple** ``evidence_sources`` per claim — every derived/new
+claim stays ``proposed``.
 
 The permanent acme-hub deliberately has **no** ``model/claims/`` directory so the
 projector's Slice 2 claim-authority gate never fires for the shared scenario
@@ -18,6 +19,7 @@ mappings, so pointing at the real directory is safe).
 
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from kairos_ontology.core.claim_registry import (
@@ -30,7 +32,12 @@ from kairos_ontology.core.claim_registry import (
     write_registry,
 )
 from kairos_ontology.cli.main import cli
+from kairos_ontology.core.conformance_artifact import (
+    ARTIFACT_RELPATH,
+    ConformanceArtifactError,
+)
 from kairos_ontology.core.derive_claims import (
+    CONFORMANCE_EVIDENCE_TYPE,
     class_claim_id,
     load_skos_links,
     property_claim_id,
@@ -39,6 +46,7 @@ from kairos_ontology.core.derive_claims import (
 
 ACME_HUB = Path(__file__).resolve().parent / "acme-hub"
 MAPPINGS_DIR = ACME_HUB / "model" / "mappings"
+CONFORMANCE_PATH = ACME_HUB / ARTIFACT_RELPATH
 
 
 def _seed_client_registry(*, class_status: str = "proposed", class_uri: str | None = None) -> ClaimRegistry:
@@ -161,6 +169,120 @@ def test_derive_enriches_with_multiple_evidence_sources(tmp_path):
 
     # C4 guard: every claim stays proposed (no silent auto-approval).
     assert all(c.status == "proposed" for c in registry.claims)
+    assert all(
+        CONFORMANCE_EVIDENCE_TYPE not in {
+            evidence.type for evidence in claim.evidence_sources
+        }
+        for claim in registry.claims
+    )
+    assert report.total_conformance_proposals == 0
+
+
+def test_conformance_fixture_proposes_all_applicable_outcomes(tmp_path):
+    """All tiers participate; the five outcomes map deterministically or skip."""
+    claims_dir = tmp_path / "model" / "claims"
+    write_registry(_seed_client_registry(), claims_dir / "client-claims.yaml")
+
+    report = run_derive_claims(
+        claims_dir,
+        conformance_path=CONFORMANCE_PATH,
+    )
+
+    registry = load_registry(claims_dir / "client-claims.yaml")
+    by_id = {claim.id: claim for claim in registry.claims}
+    expected_dispositions = {
+        "Party": "claim",
+        "Customer": "claim",
+        "Invoice": "claim",
+        "InvoiceLine": "specialize",
+        "DirectDebitMandate": "gap",
+        "PaymentToken": "claim",
+    }
+    for local_name, disposition in expected_dispositions.items():
+        claim = by_id[class_claim_id("client", local_name)]
+        assert claim.status == "proposed"
+        assert claim.disposition == disposition
+        assert CONFORMANCE_EVIDENCE_TYPE in {
+            evidence.type for evidence in claim.evidence_sources
+        }
+
+    assert class_claim_id("client", "CashDrawer") not in by_id
+    optional = by_id[class_claim_id("client", "PaymentToken")]
+    assert '"tier":"optional"' in (optional.evidence_sources[0].note or "")
+    renamed = by_id[class_claim_id("client", "Customer")]
+    assert '"rename_to":"Client"' in (renamed.evidence_sources[0].note or "")
+    deviates = by_id[class_claim_id("client", "DirectDebitMandate")]
+    assert deviates.deviation is not None
+    assert "pre-authorised card tokens" in (deviates.deviation.reason or "")
+
+    stats = report.domain_stats[0]
+    assert stats.conformance_concepts == 7
+    assert stats.conformance_proposals == 6
+    assert stats.conformance_not_applicable == 1
+
+
+def test_conformance_fixture_rerun_is_stable(tmp_path):
+    """The real committed artifact produces byte-identical cached reruns."""
+    claims_dir = tmp_path / "model" / "claims"
+    registry_path = claims_dir / "client-claims.yaml"
+    write_registry(_seed_client_registry(), registry_path)
+
+    run_derive_claims(claims_dir, conformance_path=CONFORMANCE_PATH)
+    first = registry_path.read_text(encoding="utf-8")
+    second_report = run_derive_claims(
+        claims_dir,
+        conformance_path=CONFORMANCE_PATH,
+    )
+
+    assert registry_path.read_text(encoding="utf-8") == first
+    assert second_report.written == []
+
+
+def test_conformance_fixture_preserves_prior_decision(tmp_path):
+    """A real-artifact proposal refreshes evidence without overriding curation."""
+    claims_dir = tmp_path / "model" / "claims"
+    registry = _seed_client_registry()
+    party_uri = "https://kairos.cnext.eu/ref/party#Party"
+    registry.claims.append(
+        Claim(
+            id=class_claim_id("client", "Party"),
+            type="class",
+            status="approved",
+            disposition="skip",
+            origin="imported",
+            class_uri=party_uri,
+            owner="domain-steward",
+            rationale="Reviewed as out of domain.",
+            evidence_sources=[EvidenceSource(type="review", note="human decision")],
+        )
+    )
+    write_registry(registry, claims_dir / "client-claims.yaml")
+
+    run_derive_claims(claims_dir, conformance_path=CONFORMANCE_PATH)
+
+    party = {
+        claim.id: claim
+        for claim in load_registry(claims_dir / "client-claims.yaml").claims
+    }[class_claim_id("client", "Party")]
+    assert party.status == "approved"
+    assert party.disposition == "skip"
+    assert party.owner == "domain-steward"
+    assert party.rationale == "Reviewed as out of domain."
+    assert CONFORMANCE_EVIDENCE_TYPE in {
+        evidence.type for evidence in party.evidence_sources
+    }
+
+
+def test_malformed_default_conformance_fails_explicitly(tmp_path):
+    """A present malformed artifact is never treated like an absent artifact."""
+    claims_dir = tmp_path / "model" / "claims"
+    write_registry(_seed_client_registry(), claims_dir / "client-claims.yaml")
+    malformed_path = tmp_path / ARTIFACT_RELPATH
+    malformed_path.parent.mkdir(parents=True)
+    malformed_path.write_text("core_concepts: [\n", encoding="utf-8")
+
+    with pytest.raises(ConformanceArtifactError, match="Could not parse"):
+        run_derive_claims(claims_dir)
 
 
 def test_derive_claims_cli_round_trip(tmp_path):

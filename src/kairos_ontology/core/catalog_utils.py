@@ -229,13 +229,19 @@ class CatalogResolver:
         return self.mappings.copy()
 
 
-def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> CatalogLoadResult:
+def load_graph_with_catalog(
+    ontology_path: Path,
+    catalog_path: Path,
+    *,
+    quiet: bool = False,
+) -> CatalogLoadResult:
     """
     Load an RDF graph and resolve owl:imports using XML catalog.
     
     Args:
         ontology_path: Path to main ontology file
         catalog_path: Path to catalog-v001.xml
+        quiet: Suppress human-readable import progress while retaining diagnostics.
         
     Returns:
         CatalogLoadResult with the loaded graph and any diagnostics collected
@@ -262,7 +268,8 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> CatalogL
         if import_str.startswith('file://'):
             msg = f"Skipping file:// import (use catalog instead): {import_str}"
             result.diagnostics.append({"level": "warning", "message": msg})
-            print(f"⚠️  {msg}")
+            if not quiet:
+                print(f"⚠️  {msg}")
             continue
         
         # Resolve via catalog
@@ -276,8 +283,11 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> CatalogL
             )
             _logger.warning(msg)
             result.diagnostics.append({"level": "warning", "message": msg})
-            print(f"  ⚠️  Hash mismatch for import: {import_str} "
-                  f"(resolved via '#' fallback — consider aligning catalog/imports)")
+            if not quiet:
+                print(
+                    f"  ⚠️  Hash mismatch for import: {import_str} "
+                    f"(resolved via '#' fallback — consider aligning catalog/imports)"
+                )
         if resolver._rewrite_fallback_used:
             msg = (
                 f"Resolved via rewriteURI extension fallback: "
@@ -285,25 +295,30 @@ def load_graph_with_catalog(ontology_path: Path, catalog_path: Path) -> CatalogL
             )
             _logger.info(msg)
             result.diagnostics.append({"level": "info", "message": msg})
-            print(f"  ℹ️  {msg}")
+            if not quiet:
+                print(f"  ℹ️  {msg}")
         
         if local_path and local_path.exists():
             try:
                 # Detect format from file extension
                 graph.parse(local_path, format=_get_rdf_format(local_path))
                 loaded_count += 1
-                print(f"✓ Loaded import: {import_str}")
-                print(f"  → {local_path}")
+                if not quiet:
+                    print(f"✓ Loaded import: {import_str}")
+                    print(f"  → {local_path}")
             except Exception as e:
                 msg = f"Error loading {local_path}: {e}"
                 result.diagnostics.append({"level": "error", "message": msg})
-                print(f"✗ {msg}")
+                if not quiet:
+                    print(f"✗ {msg}")
         else:
             msg = f"No catalog mapping for: {import_str}"
             result.diagnostics.append({"level": "warning", "message": msg})
-            print(f"⚠️  {msg}")
+            if not quiet:
+                print(f"⚠️  {msg}")
     
-    print(f"\n📦 Loaded {loaded_count}/{len(imports)} imports via catalog")
+    if not quiet:
+        print(f"\n📦 Loaded {loaded_count}/{len(imports)} imports via catalog")
     
     result.graph = graph
     return result

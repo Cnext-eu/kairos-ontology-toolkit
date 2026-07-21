@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from rdflib import Graph, Namespace, URIRef
-from rdflib.namespace import OWL, RDF
+from rdflib.namespace import OWL, RDF, RDFS
 
 # ---------------------------------------------------------------------------
 # Typed dataclasses for structured projection data
@@ -50,6 +50,250 @@ class OntologyMetadata:
     namespace: str = ""
     file_name: str = ""
     description: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Canonical foreign-key projection contract
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ForeignKeyDiagnostic:
+    """An invalid authored FK annotation discovered during normalization."""
+
+    kind: str
+    property_uri: URIRef
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class ForeignKeyDescriptor:
+    """Immutable normalized relationship consumed by all medallion projectors.
+
+    ``domain_class`` and ``range_class`` retain the authored OWL direction.
+    ``source_class`` is the class whose projected table owns the FK column and
+    ``target_class`` is the referenced class after applying ``silverForeignKeyOn``.
+    """
+
+    property_uri: URIRef
+    domain_class: URIRef
+    range_class: URIRef
+    source_class: URIRef
+    target_class: URIRef
+    is_functional: bool
+    max_cardinality_classes: frozenset[URIRef]
+    silver_foreign_key: bool
+    silver_column_name: Optional[str]
+    gold_column_name: Optional[str]
+    redirected: bool
+    reverse: bool
+    junction_table_name: Optional[str]
+    degenerate_dimension: bool
+    nullable: Optional[bool]
+    conditional_on_type: str
+
+    @property
+    def is_silver_fk(self) -> bool:
+        """Whether the relationship has any canonical Silver FK signal."""
+        return (
+            self.redirected
+            or self.silver_foreign_key
+            or self.silver_column_name is not None
+            or self.is_functional
+            or bool(self.max_cardinality_classes)
+        )
+
+    def qualifies_silver(self, class_uri: URIRef | str | None = None) -> bool:
+        """Return whether this relationship qualifies for Silver projection.
+
+        When *class_uri* is supplied, a cardinality-only relationship qualifies
+        only when the restriction applies to that class. Other signals are
+        property-level and therefore independent of the class argument.
+        """
+        property_signal = (
+            self.redirected
+            or self.silver_foreign_key
+            or self.silver_column_name is not None
+            or self.is_functional
+        )
+        if property_signal:
+            return True
+        if class_uri is None:
+            return bool(self.max_cardinality_classes)
+        return URIRef(str(class_uri)) in self.max_cardinality_classes
+
+    def qualifies_gold(
+        self,
+        *,
+        explicit_fact: bool = False,
+    ) -> bool:
+        """Return whether this relationship qualifies for Gold projection."""
+        return (
+            explicit_fact
+            or self.gold_column_name is not None
+            or self.is_silver_fk
+        )
+
+    def physical_column_name(self, target_key_stem: str, *, layer: str) -> str:
+        """Resolve the FK's physical source-column name for a projection layer."""
+        override = self.gold_column_name if layer == "gold" else self.silver_column_name
+        return override or f"{target_key_stem}_sk"
+
+
+@dataclass(frozen=True, slots=True)
+class ForeignKeyClassification:
+    """Immutable result of normalizing every object-property relationship."""
+
+    descriptors: tuple[ForeignKeyDescriptor, ...]
+    diagnostics: tuple[ForeignKeyDiagnostic, ...]
+    outgoing_relationship_sources: tuple[URIRef, ...]
+
+
+def _max_cardinality_classes(graph: Graph, prop: URIRef) -> frozenset[URIRef]:
+    """Classes with an OWL max-cardinality-one restriction on *prop*."""
+    classes: set[URIRef] = set()
+    for restriction in graph.subjects(OWL.onProperty, prop):
+        values = (
+            graph.value(restriction, OWL.maxQualifiedCardinality),
+            graph.value(restriction, OWL.maxCardinality),
+        )
+        if not any(value is not None and _is_cardinality_one(value) for value in values):
+            continue
+        classes.update(
+            owner
+            for owner in graph.subjects(RDFS.subClassOf, restriction)
+            if isinstance(owner, URIRef)
+        )
+    return frozenset(classes)
+
+
+def _is_cardinality_one(value: object) -> bool:
+    """Accept the RDF integer datatypes commonly used for cardinality literals."""
+    try:
+        return int(str(value)) == 1
+    except (TypeError, ValueError):
+        return False
+
+
+def _nullable_annotation(graph: Graph, prop: URIRef) -> Optional[bool]:
+    value = graph.value(prop, KAIROS_EXT.nullable)
+    if value is None:
+        return None
+    return str(value).lower() not in ("false", "0")
+
+
+def classify_foreign_keys(graph: Graph) -> ForeignKeyClassification:
+    """Normalize authored OWL and Silver FK signals into one projection contract.
+
+    Invalid ``silverForeignKey``/``silverForeignKeyOn`` annotations are retained
+    as deterministic diagnostics but never become descriptors.
+    """
+    descriptors: list[ForeignKeyDescriptor] = []
+    diagnostics: list[ForeignKeyDiagnostic] = []
+    outgoing_relationship_sources: list[URIRef] = []
+
+    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
+        domain = graph.value(prop, RDFS.domain)
+        range_class = graph.value(prop, RDFS.range)
+        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
+        silver_foreign_key = bool_val(
+            graph, prop, KAIROS_EXT.silverForeignKey, False,
+        )
+        prop_local = local_name(str(prop))
+        junction_table_name = (
+            str_val(graph, prop, KAIROS_EXT.junctionTableName) or None
+        )
+        degenerate_dimension = bool_val(
+            graph, prop, KAIROS_EXT.degenerateDimension, False,
+        )
+
+        if domain is None or range_class is None:
+            if fk_on is not None:
+                diagnostics.append(ForeignKeyDiagnostic(
+                    kind="incomplete_silver_foreign_key_on",
+                    property_uri=prop,
+                    message=(
+                        f"silverForeignKeyOn on {prop_local} skipped "
+                        "— missing rdfs:domain or rdfs:range."
+                    ),
+                ))
+            elif silver_foreign_key:
+                if domain is None and range_class is None:
+                    missing = "rdfs:domain and rdfs:range"
+                elif domain is None:
+                    missing = "rdfs:domain"
+                else:
+                    missing = "rdfs:range"
+                diagnostics.append(ForeignKeyDiagnostic(
+                    kind="incomplete_silver_foreign_key",
+                    property_uri=prop,
+                    message=(
+                        f"silverForeignKey on {prop_local} will be skipped "
+                        f"— missing {missing}. Resolve via: kairos-design-domain"
+                    ),
+                ))
+            continue
+
+        if not isinstance(domain, URIRef) or not isinstance(range_class, URIRef):
+            continue
+
+        redirected = fk_on is not None
+        reverse = False
+        source_class = domain
+        target_class = range_class
+        if redirected:
+            if fk_on != domain and fk_on != range_class:
+                if not junction_table_name and not degenerate_dimension:
+                    # Preserve the established Gold heuristic for an invalid
+                    # annotation while still excluding it from FK projection.
+                    outgoing_relationship_sources.append(domain)
+                diagnostics.append(ForeignKeyDiagnostic(
+                    kind="invalid_silver_foreign_key_on",
+                    property_uri=prop,
+                    message=(
+                        f"silverForeignKeyOn on {prop_local} specifies "
+                        f"{local_name(str(fk_on))} which is neither domain "
+                        f"({local_name(str(domain))}) nor range "
+                        f"({local_name(str(range_class))}) — skipped."
+                    ),
+                ))
+                continue
+            if fk_on == range_class:
+                source_class = range_class
+                target_class = domain
+                reverse = True
+
+        if not junction_table_name and not degenerate_dimension:
+            outgoing_relationship_sources.append(source_class)
+
+        silver_column_name = str_val(graph, prop, KAIROS_EXT.silverColumnName) or None
+        gold_column_name = str_val(graph, prop, KAIROS_EXT.goldColumnName) or None
+        descriptors.append(ForeignKeyDescriptor(
+            property_uri=prop,
+            domain_class=domain,
+            range_class=range_class,
+            source_class=source_class,
+            target_class=target_class,
+            is_functional=(prop, RDF.type, OWL.FunctionalProperty) in graph,
+            max_cardinality_classes=_max_cardinality_classes(graph, prop),
+            silver_foreign_key=silver_foreign_key,
+            silver_column_name=silver_column_name,
+            gold_column_name=gold_column_name,
+            redirected=redirected,
+            reverse=reverse,
+            junction_table_name=junction_table_name,
+            degenerate_dimension=degenerate_dimension,
+            nullable=_nullable_annotation(graph, prop),
+            conditional_on_type=str_val(
+                graph, prop, KAIROS_EXT.conditionalOnType,
+            ),
+        ))
+
+    return ForeignKeyClassification(
+        tuple(descriptors),
+        tuple(diagnostics),
+        tuple(outgoing_relationship_sources),
+    )
 
 
 # ---------------------------------------------------------------------------

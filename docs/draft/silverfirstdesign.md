@@ -1,263 +1,232 @@
-# Silver-First Mapping — Simplified Design
+# Silver-First Mapping — Shipped Reference Design
 
-**Status:** Partially implemented (rev 5) — buildable subset shipped: Step 0
-determinism, canonical `BindingAnalysis`, derived-`aspirational`, opt-in
-`--emit-aspirational-stubs` stub emission, and DD-094/095/096. Out of scope
-(deferred): conformance warn→driver promotion (§11.1), `contract.enforced`
-promotion (§11.3), drift report (§8/§11.6), per-claim release waivers. See DD-096.
-**Date:** 2026-07-19
-**Scope:** Reducing Bronze-to-Silver effort while keeping projection deterministic
-**Baseline:** Kairos Ontology Toolkit v4.4.0
+**Status:** Implemented and promoted from proposal to shipped reference design  
+**Originally drafted:** 2026-07-19  
+**Reconciled with implementation:** 2026-07-21  
+**Scope:** Deterministic target-first Silver design and release governance  
+**Canonical decisions:** DD-090, DD-094, DD-095, DD-096, DD-101, DD-102
 
-## 1. The idea in one sentence
+This file remains at its original path so existing links continue to work. It is
+no longer a roadmap: the behavior below is implemented. Section 11 lists the
+small set of genuinely deferred items.
 
-**Silver is a set of dbt models. The industry reference model + discovery
-conformance *auto-propose the claims* that the existing Silver projection already
-requires, so a hub can reach a target-first Silver stub early, expands it
-iteratively as more knowledge is encoded, and every regeneration stays a
-deterministic, ontology-grounded projection of that encoded knowledge.**
+## 1. Shipped lifecycle
 
-> Day-one caveat: the "auto-propose from conformance" step depends on promoting
-> conformance from warn-only (DD-090) to an auto-proposal driver — an **undecided
-> status change (§11.1)**. Until that lands, auto-proposal is opt-in/manual and the
-> "target-first on day one" framing is aspirational, not a shipped capability.
+Silver is a deterministic projection of encoded knowledge. Discovery conformance
+can propose target concepts before source mappings exist, but it cannot approve
+or materialize them.
 
-Key correction over earlier revisions: we do **not** introduce a second
-materialization authority. The **Claim Registry stays the single source of truth
-for what materializes (DD-EL-1)**. We change *how claims get populated* (auto,
-forward-derived) and add a **derived** `aspirational` view of a claim so a claim can
-project a **stub** before it is bound.
-
-> Authority note: **DD-EL-1** and **DD-EL-5** currently live only in the provisional
-> `docs/archive/evidence-led-modeling/decision-log.md` (whose own slice-0b note says
-> "assign final DD-NNN and merge"). They are **not yet promoted** into the canonical
-> `docs/design/toolkit-design-decisions.md` register. Promoting them to real DD-NNN
-> entries is a prerequisite (§11.0) before this design's single-authority invariant
-> can be considered settled.
-
-## 2. Direction of derivation (important)
-
-**Forward, not reverse.** We do not reverse-engineer claims from generated Silver.
-
-```
-industry model + conformance artifact ──► auto-propose ASPIRATIONAL claims
-                                              │  (existing propose-alignment /
-                                              │   derive-claims paths, DD-EL-5)
-                                              ▼
-                              existing claim-driven Silver projection
-                                              │
-                                              ▼
-                          contract-first dbt stub  ──(bind mappings)──►  bound model
+```text
+validated discovery conformance (DD-090)
+        │
+        ▼
+deterministic proposed claims (DD-095)
+        │
+        ▼
+explicit human / invocation-scoped fleet decision
+        │
+        ▼
+approved Claim Registry authority (DD-094)
+        │
+        ├── claims-to-silver-ext managed synchronization
+        │
+        ▼
+mapping-free aspirational dbt stub (opt-in, DD-096)
+        │
+        ├── status/check-release: not bound, not release-eligible (DD-101)
+        │
+        ▼
+committed SKOS source mapping
+        │
+        ▼
+same generated path becomes a bound model; strict release may pass
 ```
 
-The projection generator's contract is unchanged: it reads claims + ontology +
-silver-ext + mappings. We only (a) auto-fill the claims it consumes and (b) let an
-`aspirational` claim emit a stub instead of being skipped.
+Approval is deliberately outside `derive-claims`: a committed conformance
+outcome is evidence for a proposal, not a governance decision.
 
-## 3. The determinism invariant (corrected)
+## 2. Discovery conformance is a proposed-only driver
 
-> Silver is a **deterministic projection of encoded knowledge**. Given the same
-> inputs, regeneration is reproducible and every column has a declared provenance.
+DD-090 defines and validates
+`integration/discovery/core-concepts-conformance.yaml`. DD-095 consumes a valid
+artifact as one deterministic, AI-free evidence stream:
 
-Provenance of a Silver column is one of:
-- an ontology property / ObjectProperty (business meaning), **or**
-- a `kairos-ext:` silver annotation (physical mechanics), **or**
-- a **deterministic projector convention** (`{model}_sk`, `{model}_iri`, SCD/audit
-  columns) — these come from conventions/defaults, not annotations.
+| Conformance outcome | Proposed disposition |
+|---|---|
+| `conforms` | `claim` |
+| `conforms-with-rename` | `claim` plus rename evidence |
+| `partial` | `specialize` |
+| `deviates` | `gap` plus deviation evidence |
+| `not-applicable` | no proposal |
 
-Full input set of the projection (rev 3 under-stated this):
-ontology · silver-ext · SKOS mappings · SHACL shapes (tests) · source vocabularies
-(enum `accepted_values`) · conformance selection · claims · contracted dbt models
-(DD-092) · reference-model version/closure · target platform · projection config.
+All tiers participate, including `optional`. Every new or refreshed candidate
+remains `status: proposed`; human-curated decisions survive reruns. This is the
+precise meaning of conformance remaining non-authoritative/warn-only: it can
+deterministically create evidence-backed candidates, but it never silently
+changes a claim to `approved`.
 
-**Known non-determinism to fix first:** generated SQL currently embeds a fresh
-timestamp (`silver_model.sql.jinja2`). Byte-identical output requires making the
-timestamp an input (or removing it). "Deterministic" in this doc means
-*reproducible from encoded inputs*, not "identical regardless of tool version."
+## 3. One materialization authority
 
-**Generated dbt is not hand-edited** — with the standing exception of handwritten
-contracted transforms under `integration/transforms/dbt/` (DD-092). Knowledge is
-encoded upstream (§7) and re-projected.
+The Claim Registry at `model/claims/{domain}-claims.yaml` is the single
+governance authority (DD-094). The retired alignment YAML is not a parallel
+runtime input. A class-like claim is materialization-eligible only when:
+
+- `status == approved`;
+- `type` is `class` or `reference_data`;
+- `disposition` is `claim` or `specialize`; and
+- it has a governed class URI.
+
+`proposed`, `rejected`, `deferred`, and `deprecated` claims do not emit
+aspirational stubs. Proposal evidence also never counts as source mapping
+coverage; only committed SKOS mappings or complete governed replacement
+evidence can bind a model.
+
+For approved imported classes, `claims-to-silver-ext` deterministically owns the
+managed `owl:imports` and `kairos-ext:silverInclude` blocks. Authored Turtle
+outside those blocks is preserved. Retired inline managed layouts require the
+explicit migration from DD-100; ordinary synchronization does not migrate them.
+
+DD-094 supersedes DD-061's alignment-YAML authority. Its useful source coverage
+intent survives through the canonical completeness facts and the current
+`check-claims` / `check-source-coverage` views.
 
 ## 4. Target-first, bind-later
 
-A dbt model has two parts with different inputs:
+`aspirational` is derived, never persisted:
 
-| Part | What it is | Primary inputs |
-|---|---|---|
-| `_models.yml` + column list (**schema stub**) | table, columns, types, tests, FK, grain | ontology + silver-ext + SHACL + platform types |
-| `.sql` SELECT body (**transform**) | reads Bronze, casts, renames | mappings (+ contracted dbt) |
-
-1. **Target-first.** An **aspirational claim** (see §4a — *derived*, not persisted)
-   projects a **stub model** (`select cast(null as <type>) as <col> ... where false`)
-   plus its schema YAML — from ontology + silver-ext, **no mappings needed**. This is
-   the stable Silver *target*.
-2. **Bind later.** As mappings arrive, the projector fills the SELECT body; the claim
-   is no longer *derived* as aspirational once a mapping is bound.
-
-> Column typability caveat: not every column is typable pre-binding. SK/audit/SCD
-> convention columns and columns carrying an explicit `kairos-ext:silverDataType`
-> **are** typable from ontology + silver-ext. Columns whose physical type is
-> **source-derived** (resolved during mapping) are **not** typable until bound — the
-> stub emits them as untyped placeholders (or omits their `data_type`), so they are
-> *not* target-first. State this per-column rather than claiming a fully typed stub.
-
-> Note: today `_models.yml` is **not** an enforced dbt contract
-> (`contract.enforced` is not emitted; types live under `meta.data_type`).
-> Whether to promote it to an enforced contract is an open decision (§11), not an
-> existing capability.
-
-### 4a. `aspirational` is a *derived* state, not a persisted flag
-
-`aspirational` = a claim whose `status` is materialization-eligible (`approved`)
-**and** which has **no bound mapping yet**. "Is a mapping bound?" is already
-derivable from the mappings input, so we do **not** persist an `is_aspirational`
-boolean on the claim / `SilverImpact` — persisting it would duplicate derivable
-state and can drift (the anti-pattern §10 forbids). The existing `status`
-(proposed/approved/rejected/deferred/deprecated) and `disposition`
-(claim/specialize/passthrough/skip/gap) axes and their transition machine stay
-**unchanged**; the projector computes `aspirational` at projection time.
-
-## 5. The iterative enrichment loop
-
-Silver grows by **encoding more knowledge and re-projecting** — never by editing
-output:
-
-```
-  ┌─> encode into an authority (§7): a class, a property, a silver-ext annotation,
-  │     a conformance outcome, a mapping, a claim decision, a drift resolution
-  │
-  │    project ─► deterministic Silver dbt models (stubs + bound bodies)
-  │
-  │    inspect ─► target view / tests / drift report show what is still
-  │               aspirational, unbound, or deviating
-  │
-  └─── repeat
+```text
+approved + materialization-eligible + not folded + no source binding
+    = aspirational / release-blocking
 ```
 
-Iteration is **safe but not necessarily monotonic**: re-projection reflects the
-current encoded state, so a changed mapping / conformance outcome / claim
-disposition / reference-model version *can* reshape or remove output. Determinism
-prevents *unexplained* drift; it does not promise "nothing is ever removed."
+With `project --target dbt --emit-aspirational-stubs`, DD-096 emits a stable
+zero-row model at the normal Silver path:
 
-## 6. Selection & leanness (corrected)
+- `materialized='view'`;
+- tag `kairos_aspirational_stub`;
+- derived `meta.is_aspirational=true`;
+- structural and ontology-property columns, typed from Silver annotations,
+  XSD ranges, or the established fallback;
+- `where 1 = 0`.
 
-**Claims select; conformance proposes.** The discovery **conformance artifact**
-(DD-090) proposes candidates, but selection is not tier-only:
+The schema YAML is generated with the stub. Empty-model tests can therefore pass
+vacuously; artifact existence and schema parseability are not evidence that the
+model is bound or release-ready.
 
-- Use **both** archetype tier (`required`/`recommended`/`optional`) **and** the
-  per-concept **business outcome** (`conforms` / `partial` / `deviates` /
-  `not-applicable`). A `required` concept marked `not-applicable` for this client
-  is **not** emitted.
-- Conformance is **warn-only today (DD-090)**; driving auto-proposal from it is a
-  status change that must be decided explicitly (§11).
-- **Pruning stays claim-side:** rejecting/deferring an aspirational claim removes
-  the stub. "required-for-archetype ≠ required-for-this-client" — the claim
-  decision is where a hub keeps Silver lean (respecting the lean-model
-  convention).
+Stub emission is opt-in and byte-gated. The aspirational/release classification
+itself is independent of the flag, so `status`, `check-release`, and
+`project --strict` still identify an approved unbound target when no stub file is
+emitted.
 
-## 7. Where knowledge is encoded (the only authorities)
+## 5. Binding and output reconciliation
 
-Every iteration writes into one of these — never into generated output:
+A committed table-to-class SKOS mapping supplies the physical binding. On the
+next projection, the same model path is rendered as a source-backed model; it is
+not copied, patched, or hand-edited.
 
-| Knowledge | Encoded in | Authority |
-|---|---|---|
-| Classes, properties, relationships, keys | ontology | OWL |
-| Which concepts materialize (incl. `aspirational`) | Claim Registry | claims (DD-EL-1) |
-| Physical: SK, SCD, audit, FK, materialization | `{domain}-silver-ext.ttl` | `kairos-ext` |
-| Candidate selection evidence | conformance artifact | DD-090 (warn-only today) |
-| Bronze → Silver binding + transforms | SKOS mappings (`kairos-map:`) | mappings |
-| Complex joins/windows/grain | contracted dbt model | DD-092 |
-| Tests / constraints | SHACL shapes | shapes |
-| Deviations client-vs-industry (advisory) | `-drift.yaml` (§8) | warn-only |
+The dbt projection manifest records toolkit-owned files. Re-projection removes
+obsolete manifest-owned stubs when a claim becomes ineligible or stub emission
+is disabled, while preserving non-managed authored files. Generated output is
+never an authority.
 
-## 8. Drift report (optional early-warning)
+## 6. Four distinct completion facts
 
-A deterministic, warn-only `integration/discovery/{archetype}-drift.yaml` compares
-client evidence (affinity, samples, BI) against the industry model (archetype
-topology) and flags where the industry contract won't fit — attribute-surplus,
-cardinality-drift, granularity-drift, reference-data-drift, type-drift. It feeds
-extensions and claim proposals but sits **off the critical path**. Full spec in a
-companion note.
+DD-101 resolves the empty-stub false-green problem by keeping these facts
+separate:
 
-## 9. The real change set (not a "single change")
+| Fact | Meaning / authority |
+|---|---|
+| **schema-valid** | The ontology class and generated schema/model are structurally valid; dbt parse can succeed for an empty stub. |
+| **bound** | Canonical `BindingAnalysis` found a physical source binding. |
+| **data-valid** | Read from the persisted validation report; never inferred from a stub or a dbt schema test. |
+| **release-eligible** | No approved materialization-eligible class remains aspirational, and the composed blockers are clear. |
 
-Rev 3 called this one code change; the rubber-duck review showed it ripples.
-Honest scope:
+`status --format json` exposes per-domain
+`bound_classes`, `aspirational_classes`, and `release_eligible`, plus validation
+`data_valid` when objectively known. These are recomputed from committed
+authorities rather than read from generated `meta.is_aspirational`.
 
-1. **Derived `aspirational` computation** in the projector (§4a): a claim is
-   aspirational when `status` is materialization-eligible **and** no mapping is
-   bound. **No new persisted field** on the claim / `SilverImpact` model. Claims are
-   auto-proposed by conformance-driven proposal (`propose-alignment` / `derive-claims`).
-2. **Projector: emit a stub** for an aspirational claim instead of skipping
-   it — this deliberately relaxes the current "no broken placeholders" rule
-   (`medallion_dbt_projector.py`), **gated to aspirational claims + opt-in flag**.
-   Emit typed columns where typable, untyped placeholders where source-derived (§4).
-3. **`claim_projection_sync`** generates `silverInclude` for aspirational claims too,
-   so `check-claims` does **not** flag them as drift.
-4. **Folding review:** confirm `_nearest_claimed_ancestor` treats aspirational
-   entities correctly (they enter the projected class set, so they can change
-   inheritance/FK folding — DD-021). May need renaming to "materialized ancestor".
-5. **Coverage & release gate:** aspirational stubs are **excluded** from DD-061/DD-093
-   source coverage and are **not release-eligible** merely by existing. The gate owner
-   is the release/`--strict` path (§11.4) — it must fail release while any required
-   stub remains aspirational; "excluded from coverage" alone is not a gate.
-6. **Determinism fix:** timestamp made an input (§3).
-7. **Scenario tests:** `acme-hub` cases for stub emission, bind transition, and
-   drift-free `check-claims`.
+`check-release` is the read-only composition of existing claim, source coverage,
+extension sync, canonical binding, validation, and projection facts. Its blocker
+is the union of those evaluators; it does not invent or persist a new policy.
+`project --strict` remains the enforcement point for a projection/release run and
+fails while any approved eligible class is unbound.
 
-## 10. What we explicitly do NOT build
+## 7. Determinism and provenance
 
-- No second materialization authority — claims stay authoritative (DD-EL-1).
-- No new persisted claim state — `aspirational` is **derived** at projection time
-  (§4a), never stored on the claim / `SilverImpact` model.
-- No new "Silver target contract" artifact — it's `_models.yml` (+ possible
-  future `contract.enforced` promotion).
-- No new disposition ledger — reuse claim dispositions.
-- No new versioning scheme — reuse `SilverImpact.change_type` + ref-model version.
-- No hand-edited Silver (except DD-092 contracted transforms).
-- No mandatory hand-authored claims — they are auto-proposed, then decided.
+The projection input includes ontology, Silver extension, mappings, source
+vocabularies, SHACL, claims, conformance selection, contracted dbt models,
+reference-model closure, target platform, and projection configuration.
 
-## 11. Open decisions
+Generated timestamps are injected through the deterministic context
+(`KAIROS_GENERATED_AT` / `SOURCE_DATE_EPOCH`) rather than sampled per artifact.
+RDF iteration and output paths are stably ordered. Given identical encoded
+inputs, toolkit version, and deterministic context, re-projection produces the
+same managed path set and bytes. SQL/schema provenance records the ontology,
+ontology version, toolkit version, generated time, and source/domain IRIs where
+available.
 
-0. **Canonicalize the authorities.** Promote **DD-EL-1** (claim registry = single
-   materialization authority) and **DD-EL-5** (`derive-claims`) from the provisional
-   `docs/archive/evidence-led-modeling/decision-log.md` into real DD-NNN entries in
-   `docs/design/toolkit-design-decisions.md`. **Prerequisite** — the single-authority
-   invariant is un-anchored until this is done.
-1. Promote conformance from warn-only to an accepted auto-proposal driver — which
-   status/gate, and the tier×outcome selection matrix. (The §1 "target-first" value
-   proposition depends on this decision.)
-2. *(Resolved — see §4a.)* `aspirational` is a **derived** state, not a persisted
-   flag, so no `_models.yml`/tag/config representation is needed. A read-only
-   `meta.is_aspirational` **may** still be emitted for tooling visibility, but it is
-   computed, never authored.
-3. Does `_models.yml` become an enforced dbt contract (`contract.enforced` + typed
-   columns), and if so when relative to binding? Note the typability caveat (§4):
-   source-derived columns can't be typed pre-binding.
-4. **(Required, not merely open.)** Empty-stub test semantics: standard tests pass
-   vacuously on 0 rows, giving false-green CI. Define separate states — schema-valid
-   vs bound vs data-valid vs release-eligible — and make `--strict` **block release**
-   while any required stub is aspirational. This gate is part of the design (§9.5),
-   not deferrable.
-5. Rename `_nearest_claimed_ancestor` → "materialized ancestor" and confirm folding
-   under aspirational membership.
-6. Where the drift report plugs into the loop.
+The only supported handwritten SQL boundary is a contracted transformation
+under `integration/transforms/dbt/` (DD-092), which is itself a governed input.
 
-## 12. First concrete step
+## 8. Five-phase dbt implementation
 
-**Step 0 (ship alone first).** Fix the timestamp non-determinism (§3): make
-`generated_at` a projection input (or drop it from generated SQL) and assert
-byte-identical re-projection on `acme-hub`. This is independent, low-risk, and
-valuable on its own — land it before any stub/claim work.
+DD-102 makes the implementation boundary explicit:
 
-Then, behind an opt-in flag (feature-off output unchanged):
+```text
+bind → normalize → shape → materialize → render
+```
 
-1. Add conformance-driven auto-proposal (reuse `propose-alignment` / `derive-claims`)
-   and the **derived** aspirational computation (§4a) — no new persisted field.
-2. Add stub emission for aspirational claims + `claim_projection_sync` handling.
-3. Prove on `acme-hub`: select an archetype → auto-propose claims → project stubs
-   with zero mappings → `check-claims` clean → bind one entity → re-project → assert
-   reproducibility and per-column provenance.
-4. Defer the drift report and any `contract.enforced` promotion until the
-   stub→bind loop is validated. Canonicalize DD-EL-1/DD-EL-5 (§11.0) in parallel.
+- **bind** commits the ext-merged graph, sources, mappings, contracts, and
+  canonical `SourceBindings`;
+- **normalize** derives FK descriptors, physical naming, and the canonical
+  `BindingAnalysis` from those exact bindings;
+- **shape** creates source, Silver, schema, Gold, coverage, and macro artifacts;
+- **materialize** owns release metadata and project configuration;
+- **render** assembles and validates immutable shaped inputs without rereading
+  RDF or reclassifying policy.
+
+This phase split changes no public path contract. Compatibility facades remain
+in `medallion_dbt_projector.py`.
+
+## 9. Negative guarantees
+
+- Conformance and `derive-claims` never approve.
+- A proposed claim never gains aspirational materialization authority.
+- A zero-row stub never counts as bound, data-valid, or release-eligible.
+- `meta.is_aspirational` is output metadata, not an input.
+- Generated output is never hand-edited or reverse-engineered into claims.
+- Source coverage is not satisfied by proposal evidence.
+- `check-release` and `status` do not reimplement binding rules.
+- Core still does not import the MDM package.
+
+## 10. Authoritative scenario
+
+`tests/scenarios/test_scenario_silver_first_e2e.py` copies `acme-hub` and proves
+the complete sequence without mutating committed scenario authorities:
+
+1. conformance validation and deterministic proposed-only derivation;
+2. an explicit approved fixture as the human-governance transition;
+3. managed claim-to-extension synchronization;
+4. mapping-free typed stubs and blocked release;
+5. fixture-selected source mappings;
+6. same-path stub replacement by bound models;
+7. strict release eligibility;
+8. stable provenance, paths, bytes, and real dbt parse/compile tooling.
+
+## 11. Truly deferred
+
+The core stub-to-bind lifecycle is shipped. Only these extensions remain
+deferred:
+
+- optional promotion to dbt `contract.enforced` once pre-binding type guarantees
+  are sufficient;
+- the advisory client-vs-industry drift report;
+- per-claim release waivers (the current rule blocks every approved eligible
+  unbound class);
+- optional LLM evidence reconciliation/tie-breaking;
+- further extraction of the retained large leaf render helpers identified by
+  DD-102.
+
+None of these deferred items is required for the implemented conformance →
+proposal → approval → stub → binding → strict-release path.
