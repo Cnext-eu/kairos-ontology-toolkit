@@ -715,6 +715,91 @@ def _merge_identical_artifacts(
     destination.update(incoming)
 
 
+# Issue #220: package-level dbt artifacts are owned by the orchestrator (regenerated once
+# after the per-domain loop by ``generate_dbt_project_config``), not by any single domain.
+# Each domain's ``generate_dbt_artifacts`` emits its own per-domain "fallback" copy for
+# standalone callers, so the merge must not treat differing copies as collisions.
+_DBT_PACKAGE_LEVEL_ARTIFACTS = frozenset({"dbt_project.yml", "README.md", "packages.yml"})
+
+
+def _is_shared_sources_artifact(path: str) -> bool:
+    """A per-source-system ``_sources.yml`` shared by every domain using that system."""
+    return path.startswith("models/silver/") and path.endswith("__sources.yml")
+
+
+def _union_sources_yaml(existing: str, incoming: str) -> str:
+    """Deterministically union the ``tables`` of two rendered ``_sources.yml`` docs.
+
+    Two domains that map tables from the same source system each emit a
+    ``_{system}__sources.yml`` filtered to *their* mapped tables. The package-level
+    file must declare the union of those tables exactly once. The source header
+    (name/description/database/schema) is identical for a given system; only the
+    ``tables`` list differs, so the reconciliation is a stable-sorted union keyed by
+    table name.
+    """
+    import yaml
+
+    existing_doc = yaml.safe_load(existing) or {}
+    incoming_doc = yaml.safe_load(incoming) or {}
+    sources_by_name: dict[str, dict] = {}
+    order: list[str] = []
+    for doc in (existing_doc, incoming_doc):
+        for src in doc.get("sources", []) or []:
+            name = src.get("name")
+            if name not in sources_by_name:
+                header = {k: v for k, v in src.items() if k != "tables"}
+                header["_tables"] = {}
+                sources_by_name[name] = header
+                order.append(name)
+            tables = sources_by_name[name]["_tables"]
+            for tbl in src.get("tables", []) or []:
+                tables.setdefault(tbl.get("name"), tbl)
+    merged_sources: list[dict] = []
+    for name in order:
+        entry = sources_by_name[name]
+        table_map = entry.pop("_tables")
+        entry["tables"] = [table_map[t] for t in sorted(table_map)]
+        merged_sources.append(entry)
+    return yaml.safe_dump(
+        {"version": existing_doc.get("version", incoming_doc.get("version", 2)),
+         "sources": merged_sources},
+        sort_keys=False,
+        default_flow_style=False,
+    )
+
+
+def _merge_dbt_artifacts(
+    destination: dict[str, str],
+    incoming: dict[str, str],
+    *,
+    context: str,
+) -> None:
+    """Merge per-domain dbt artifacts, reconciling package-level and shared files.
+
+    Issue #220: the blunt identical-bytes merge rejected legitimate package-level and
+    shared artifacts as collisions on a multi-domain hub. This classifier:
+
+    * accepts package-level config (``dbt_project.yml``/``README.md``/``packages.yml``)
+      last-wins — the orchestrator regenerates the definitive version after the loop;
+    * unions shared per-source ``_sources.yml`` table lists deterministically;
+    * still raises on any genuine content collision for domain-owned artifacts.
+    """
+    collisions: list[str] = []
+    for path, content in incoming.items():
+        if path in _DBT_PACKAGE_LEVEL_ARTIFACTS:
+            destination[path] = content
+            continue
+        if path in destination and destination[path] != content:
+            if _is_shared_sources_artifact(path):
+                destination[path] = _union_sources_yaml(destination[path], content)
+                continue
+            collisions.append(path)
+            continue
+        destination[path] = content
+    if collisions:
+        raise RuntimeError(f"{context}: {sorted(collisions)}")
+
+
 def run_projections(
     ontologies_path: Path,
     catalog_path: Path,
@@ -851,6 +936,22 @@ def run_projections(
             hub_domain_namespaces.add(ns)
             # Also add without trailing separator for robust matching
             hub_domain_namespaces.add(ns.rstrip("#/"))
+    # Issue #220 (Fix B): the loaded graphs are only the *selected* domains — with
+    # `project --ontology consignment.ttl` just one domain loads, so peer-domain bases
+    # (booking/party/reference-data) would be missing here and their required local
+    # `owl:imports` would be mis-flagged as claim/projection drift by the authority gate.
+    # Collect every intra-hub `owl:Ontology` base from the full ontologies directory
+    # (independent of `--ontology` scoping) so peer imports are recognised as intra-hub.
+    from .claim_projection_sync import _collect_hub_domain_bases
+
+    try:
+        for base in _collect_hub_domain_bases(ontology_root):
+            hub_domain_namespaces.add(base)
+            hub_domain_namespaces.add(base + "#")
+            hub_domain_namespaces.add(base + "/")
+    except ValueError as exc:
+        # A malformed peer .ttl must not abort projection of the selected domain.
+        report.record("warning", f"Could not collect hub domain bases: {exc}")
     # Create output directories
     output_path.mkdir(parents=True, exist_ok=True)
     
@@ -1087,7 +1188,7 @@ def run_projections(
                         )
 
                     if target_name == "dbt":
-                        _merge_identical_artifacts(
+                        _merge_dbt_artifacts(
                             pending_dbt_artifacts,
                             artifacts,
                             context="Generated dbt artifact collisions",

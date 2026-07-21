@@ -209,6 +209,14 @@ _PLATFORM_TYPE_MAPS: dict[str, tuple[dict[str, str], dict[str, str]]] = {
 # Default platform — valid values: "fabric", "databricks"
 DEFAULT_PLATFORM = "fabric"
 
+# Issue #220: conformed/shared gold artifacts (e.g. dim_date) are emitted by every
+# domain that produces gold, but they are package-level, not domain-owned. They must be
+# rendered domain-neutrally so their bytes are identical across domains — otherwise the
+# full-hub merge rejects them as collisions. A single stable schema also correctly places
+# the conformed dimension outside any one domain's gold schema.
+_SHARED_GOLD_SCHEMA = "gold_shared"
+_SHARED_GOLD_DOMAIN = "shared"
+
 # SHACL namespace
 SH = Namespace("http://www.w3.org/ns/shacl#")
 
@@ -3060,6 +3068,19 @@ def _gen_schema_yaml(
             if c["uri"] != cls["uri"]
             and _resolve_projected_discriminator_parent(graph, c["uri"], class_uris) == cls["uri"]
         }
+        # S3 folding: subtypes folded into this parent contribute their datatype
+        # properties as columns on the parent model (via ``domain_classes`` below),
+        # so their SHACL constraints must also flow onto those columns. Merge in any
+        # folded-subtype column tests the parent shape didn't already define
+        # (parent constraints win on shared column names).
+        if shapes_dir and folded_subtype_uris:
+            for sub_uri in sorted(folded_subtype_uris):
+                sub_tests = _extract_shacl_tests(
+                    shapes_dir, sub_uri, shacl_graph=shacl_graph,
+                    ontology_graph=graph,
+                )
+                for sub_col_name, sub_col_tests in sub_tests.items():
+                    shacl_tests.setdefault(sub_col_name, sub_col_tests)
         # SK + IRI columns
         cols.append({
             "name": f"{model_name}_sk",
@@ -3507,8 +3528,8 @@ def _gen_gold_models(
                     })
             content = template.render(
                 model_name=tbl.name,
-                domain_name=ontology_name,
-                schema_name=schema_name,
+                domain_name=_SHARED_GOLD_DOMAIN,
+                schema_name=_SHARED_GOLD_SCHEMA,
                 table_type="dimension",
                 scd_type=tbl.scd_type,
                 is_gdpr=False,
@@ -3516,7 +3537,7 @@ def _gen_gold_models(
                 columns=columns,
                 joins=[],
                 where_clause="",
-                ontology_metadata=meta,
+                ontology_metadata={"toolkit_version": meta.get("toolkit_version", "")},
                 incremental_column="",
                 unique_key="",
             )
@@ -3741,7 +3762,13 @@ def _gen_gold_schema_yaml(
 
         # Conformed dimensions go to shared schema
         if tbl.name == "dim_date":
-            shared_models_data.append(model_entry)
+            # Issue #220: shared/conformed entries must be domain-neutral so the
+            # `_shared__gold_models.yml` bytes are identical across every domain that
+            # emits gold (otherwise the full-hub merge rejects it as a collision).
+            shared_entry = dict(model_entry)
+            shared_entry["ontology_iri"] = ""
+            shared_entry["ontology_version"] = ""
+            shared_models_data.append(shared_entry)
         else:
             models_data.append(model_entry)
 
