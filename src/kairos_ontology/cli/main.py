@@ -2334,6 +2334,16 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
     else:
         output_path = Path(output)
 
+    # Toolkit-optimizations F4: resolve the materialized reference-model inventory
+    # dir so newly proposed claims are written with resolved class_uri/property_uri
+    # (deterministic backfill via the same index migrate-claims uses). Missing dir
+    # is fine — URIs stay null (still valid while proposed).
+    if hub_root:
+        inventory_path: Path | None = hub_root / "referencemodels-unpacked"
+    else:
+        candidate_inv = cwd / "referencemodels-unpacked"
+        inventory_path = candidate_inv if candidate_inv.is_dir() else None
+
     # DD-070: resolve the reference-models dir + validate cross-module prerequisites.
     ref_models_dir = None
     if cross_module:
@@ -2399,6 +2409,7 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             cross_module=cross_module,
             accelerator=accelerator,
             ref_models_dir=ref_models_dir,
+            inventory_dir=inventory_path,
             custom_confidence_floor=custom_confidence_floor,
         )
         if not quiet:
@@ -2750,11 +2761,21 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
               help='Path to ontology-reference-models/ directory (default: auto-detect).')
 @click.option('--inventory-dir', type=click.Path(), default=None,
               help='Path to referencemodels-unpacked/ directory (default: auto-detect).')
+@click.option('--domains', 'domains_filter', default=None,
+              help='F5: comma-separated data-domains to scope readiness to '
+                   '(case-insensitive substring). Repository-wide check still runs and '
+                   'global failures are shown, but the exit code reflects only the '
+                   'selected domains'"'"' inventories.')
+@click.option('--explain-scope', is_flag=True, default=False,
+              help='F5: print the domain→inventory-file mapping so it is clear which '
+                   'inventories belong to the selected --domains (and which global '
+                   'failures are out of scope).')
 @click.option('--strict', is_flag=True, default=False,
               help='Also fail when an inventory cannot be verified (no stored hash).')
 @click.option('--warn-only', is_flag=True, default=False,
               help='Report problems but always exit 0 (never block).')
-def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, warn_only):
+def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, domains_filter,
+                        explain_scope, strict, warn_only):
     """Verify that materialized inventories exist and are up to date (DD-047).
 
     Deterministic pre-flight gate for ``design-domain``: confirms that every source
@@ -2764,12 +2785,24 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, war
     an out-of-date view of the reference model's specialization tree.
 
     \\b
+    F5 (toolkit-optimizations): ``--domains`` keeps the repository-wide check but
+    scopes the blocking decision to the selected data-domains, so an unrelated
+    missing/stale inventory no longer blocks the active domain (global failures are
+    still printed). ``--explain-scope`` prints which inventories belong to each
+    selected domain.
+
+    \\b
     Examples:
       kairos-ontology check-inventory
       kairos-ontology check-inventory --strict
       kairos-ontology check-inventory --warn-only
+      kairos-ontology check-inventory --domains booking --explain-scope
     """
-    from ..core.inventory import check_inventories
+    from ..core.inventory import (
+        check_inventories,
+        resolve_domain_inventory_keys,
+        scope_inventory_report,
+    )
     from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
@@ -2816,7 +2849,54 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, war
     for name in report.orphan:
         click.echo(f"   ⚠ {name}: orphan inventory (no matching source TTL)")
 
-    blocking = report.is_blocking or (strict and report.unverifiable)
+    # F5: scope the blocking decision to the selected domains when --domains is set.
+    filter_list = None
+    if domains_filter:
+        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
+
+    scope = None
+    if filter_list:
+        # Auto-detect the catalog so import URIs can be resolved to source TTLs.
+        catalog_path = None
+        if hub_root:
+            candidate_cat = hub_root / "catalog-v001.xml"
+            if candidate_cat.exists():
+                catalog_path = candidate_cat
+        keys_by_domain, unresolved_by_domain = resolve_domain_inventory_keys(
+            filter_list,
+            ref_models_dir=ref_path,
+            catalog_path=catalog_path,
+            accelerator=None,
+        )
+        scope = scope_inventory_report(report, keys_by_domain, unresolved_by_domain)
+
+        click.echo(f"\n🎯 Active-domain readiness: {', '.join(scope.domains) or '(none matched)'}")
+        if explain_scope:
+            for domain in scope.domains:
+                keys = sorted(keys_by_domain.get(domain, set()))
+                click.echo(f"   • {domain}: {', '.join(keys) if keys else '(no inventories)'}")
+            out_of_scope = sorted(
+                (set(report.missing) | set(report.stale)) - scope.keys
+            )
+            if out_of_scope:
+                click.echo(
+                    f"   ↪ out-of-scope global failures (not blocking here): "
+                    f"{', '.join(out_of_scope)}"
+                )
+        for stem in scope.missing:
+            click.echo(f"   ❌ {stem}: MISSING (in scope)", err=True)
+        for stem in scope.stale:
+            click.echo(f"   ❌ {stem}: STALE (in scope)", err=True)
+        for uri in scope.unresolved:
+            click.echo(f"   ⚠ unresolved import URI (no source TTL in catalog): {uri}")
+
+    # When --domains is given, the exit code follows the scoped readiness so an
+    # unrelated missing/stale inventory does not block the active domain (F5). The
+    # repository-wide failures above are still shown for visibility.
+    if scope is not None:
+        blocking = scope.is_blocking or (strict and scope.unverifiable)
+    else:
+        blocking = report.is_blocking or (strict and report.unverifiable)
 
     if blocking and not warn_only:
         click.echo(
@@ -2827,7 +2907,12 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, strict, war
         )
         raise SystemExit(1)
 
-    if report.is_blocking or report.has_warnings:
+    if scope is not None and not blocking and report.is_blocking:
+        click.echo(
+            "\n✅ Active-domain inventories are ready "
+            "(unrelated repository-wide failures shown above are out of scope)."
+        )
+    elif report.is_blocking or report.has_warnings:
         click.echo("\n⚠ Inventory check completed with warnings (not blocking).")
     else:
         click.echo("\n✅ Inventories are present and up to date.")
@@ -3433,6 +3518,48 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             "   → Move the claim to its owning domain, or add an "
             "ownership_override (owner + rationale) to document the exception.",
             err=True,
+        )
+
+    if report.grain_conflicts:
+        click.echo(
+            f"\n⛔ Grain conflicts ({len(report.grain_conflicts)} domain(s)):",
+            err=True,
+        )
+        for domain in sorted(report.grain_conflicts):
+            entries = report.grain_conflicts[domain]
+            click.echo(
+                f"   • {domain}: {len(entries)} reference class(es) fuse source "
+                "tables with different candidate business entities", err=True,
+            )
+            for entry in entries[:10]:
+                click.echo(f"        - {entry}", err=True)
+            if len(entries) > 10:
+                click.echo(f"        … and {len(entries) - 10} more", err=True)
+        click.echo(
+            "   → Tables with distinct grains collapsed onto one class "
+            "(merge-by-nearest-anchor). Confirm they share a grain or split the "
+            "model before approving the class claim.", err=True,
+        )
+
+    if report.column_omissions:
+        click.echo(
+            f"\n⛔ Column omissions ({len(report.column_omissions)} domain(s)):",
+            err=True,
+        )
+        for domain in sorted(report.column_omissions):
+            entries = report.column_omissions[domain]
+            click.echo(
+                f"   • {domain}: {len(entries)} table(s) reached the registry with "
+                "fewer columns than the source has", err=True,
+            )
+            for entry in entries[:10]:
+                click.echo(f"        - {entry}", err=True)
+            if len(entries) > 10:
+                click.echo(f"        … and {len(entries) - 10} more", err=True)
+        click.echo(
+            "   → Columns were dropped before the Claim Registry (e.g. prompt "
+            "truncation). Re-run propose-alignment so every source column is "
+            "reconciled into the registry.", err=True,
         )
 
     if report.anchor_missing:

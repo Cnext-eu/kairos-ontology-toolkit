@@ -42,6 +42,9 @@ from .shared import (
     detect_ontology_uri as _detect_ontology_uri,
     mmd_type as _mmd_type,
     merge_ext_graph,
+    silver_naming_convention,
+    silver_schema_name,
+    silver_table_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -507,26 +510,14 @@ def generate_silver_artifacts(
 
     # Read ontology-level annotations
     onto_uri = _detect_ontology_uri(merged, namespace)
-    schema_name = _str_val(merged, onto_uri, KAIROS_EXT.silverSchema,
-                           f"silver_{ontology_name}")
-    naming_conv = _str_val(merged, onto_uri, KAIROS_EXT.namingConvention, "camel-to-snake")
+    schema_name = silver_schema_name(merged, onto_uri, ontology_name)
+    naming_conv = silver_naming_convention(merged, onto_uri)
     include_iri = _bool_val(merged, onto_uri, KAIROS_EXT.includeNaturalKeyColumn, True)
     audit_str = _str_val(merged, onto_uri, KAIROS_EXT.auditEnvelope, _DEFAULT_AUDIT)
     audit_cols = _parse_audit_envelope(audit_str)
 
     def table_name_for(cls_uri: URIRef, local: str) -> str:
-        override = _str_val(merged, cls_uri, KAIROS_EXT.silverTableName)
-        if override:
-            return override
-        if naming_conv == "camel-to-snake":
-            name = _camel_to_snake(local)
-        else:
-            name = local.lower()
-        # Reference data → prefix with ref_
-        is_ref = _bool_val(merged, cls_uri, KAIROS_EXT.isReferenceData, False)
-        if is_ref and not name.startswith("ref_"):
-            name = f"ref_{name}"
-        return name
+        return silver_table_name(merged, cls_uri, local, naming_conv)
 
     # Build class map: uri → TableDef
     tables: dict[str, TableDef] = {}

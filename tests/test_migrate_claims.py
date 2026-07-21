@@ -340,3 +340,60 @@ class TestBackfillIntoClaims:
         reg = migrate_alignment_file(align, inventory_dir=inv_dir)
         cls = next(c for c in reg.claims if c.id == "party-tradeparty")
         assert cls.class_uri == "https://ex.org/ont/party#TradeParty"
+
+
+class TestGrainConflicts:
+    """F2/F7 — distinct-grain tables collapsing onto one ref_class are flagged."""
+
+    def _alignment(self, *entities: str) -> dict:
+        return {
+            "schema_version": 2,
+            "algorithm_version": 2,
+            "domain": "logistics",
+            "generated_at": "2026-06-15T10:00:00Z",
+            "tables": [
+                {
+                    "system": "tms",
+                    "table": f"tbl_{i}",
+                    "ref_class": "TransportOrder",
+                    "ref_class_confidence": 0.9,
+                    "likely_entity": ent,
+                    "columns": [
+                        {"column": "ref", "data_type": "str",
+                         "ref_class": "TransportOrder", "ref_property": "orderRef",
+                         "alignment": "exact", "confidence": 0.9, "rationale": ""},
+                    ],
+                    "custom_columns": [],
+                }
+                for i, ent in enumerate(entities)
+            ],
+        }
+
+    def test_distinct_entities_flag_conflict(self):
+        reg = alignment_to_registry(self._alignment("Booking", "TransportOrder"))
+        assert len(reg.grain_conflicts) == 1
+        gc = reg.grain_conflicts[0]
+        assert gc["ref_class"] == "TransportOrder"
+        assert gc["candidate_entities"] == ["Booking", "TransportOrder"]
+        assert gc["source_tables"] == ["tms.tbl_0", "tms.tbl_1"]
+        assert gc["requires_human_confirmation"] is True
+
+    def test_same_entity_no_conflict(self):
+        reg = alignment_to_registry(self._alignment("TransportOrder", "TransportOrder"))
+        assert reg.grain_conflicts == []
+
+    def test_missing_entity_no_conflict(self):
+        # No likely_entity on either table → backward compatible, no false positive.
+        reg = alignment_to_registry(self._alignment("", ""))
+        assert reg.grain_conflicts == []
+
+    def test_conflict_persists_through_serialization(self):
+        reg = alignment_to_registry(self._alignment("Booking", "TransportOrder"))
+        round_tripped = reg.__class__.from_dict(reg.to_dict())
+        assert round_tripped.grain_conflicts == reg.grain_conflicts
+
+    def test_sample_alignment_has_no_conflict(self):
+        # Two TradeParty tables with no likely_entity must not regress.
+        reg = alignment_to_registry(SAMPLE_ALIGNMENT)
+        assert reg.grain_conflicts == []
+

@@ -30,6 +30,7 @@ from pathlib import Path
 from .alignment_coverage import (
     ALIGNMENT_ALGORITHM_VERSION,
     compute_affinity_hash,
+    load_affinity_domain_table_columns,
     load_affinity_domain_tables,
 )
 from .claim_registry import (
@@ -42,6 +43,23 @@ from .claim_registry import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _registry_covered_columns(registry: ClaimRegistry) -> dict[tuple[str, str], int]:
+    """Return ``{(system, table): covered_column_count}`` from a registry's coverage.
+
+    F6 (toolkit-optimizations): the covered count is the registry's own
+    ``total_columns`` (mapped + custom) — i.e. how many source columns actually
+    reached the Claim Registry. ``check_claims_coverage`` compares this against the
+    trustworthy affinity ``total_columns`` to detect columns dropped before the
+    registry (e.g. by prompt truncation).
+    """
+    covered: dict[tuple[str, str], int] = {}
+    for syscov in registry.coverage:
+        for tbl in syscov.tables:
+            if syscov.system and tbl.table:
+                covered[(syscov.system, tbl.table)] = int(tbl.total_columns or 0)
+    return covered
 
 
 def _registry_covered_tables(registry: ClaimRegistry) -> set[tuple[str, str]]:
@@ -164,6 +182,19 @@ class ClaimCheckReport:
     #: passthrough-review — domain → high-use passthrough claim ids not yet
     #: marked ``passthrough_reviewed`` (warning).
     passthrough_review: dict[str, list[str]] = field(default_factory=dict)
+    #: F6 (toolkit-optimizations) — column-omission gate. domain → sorted
+    #: ``"system.table (registry N of M source columns)"`` strings where the
+    #: registry covers fewer columns than the affinity report recorded for the
+    #: source table (i.e. columns were dropped — e.g. by prompt truncation —
+    #: before reaching the registry). Blocking: a truncated registry must never
+    #: report complete.
+    column_omissions: dict[str, list[str]] = field(default_factory=dict)
+    #: F2/F7 (toolkit-optimizations) — grain-conflict gate. domain → sorted
+    #: ``"ref_class: entityA, entityB"`` strings where multiple source tables with
+    #: different candidate business entities collapsed onto one reference class
+    #: (merge-by-nearest-anchor). Blocking: a human must confirm the tables share a
+    #: grain or split the model before the collapsed class claim can stand.
+    grain_conflicts: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def is_blocking(self) -> bool:
@@ -177,6 +208,8 @@ class ClaimCheckReport:
             or self.anchor_pending
             or self.deviation_missing
             or self.ownership_conflicts
+            or self.column_omissions
+            or self.grain_conflicts
         )
 
     @property
@@ -354,6 +387,10 @@ def check_claims_coverage(
         analysis_dir,
         excluded_systems=excluded_affinity_systems,
     )
+    domain_table_cols = load_affinity_domain_table_columns(
+        analysis_dir,
+        excluded_systems=excluded_affinity_systems,
+    )
     uri_index = _build_uri_owner_index(data_domains)
 
     lower_filter = [d.lower() for d in domains_filter] if domains_filter else None
@@ -426,11 +463,42 @@ def check_claims_coverage(
             check_ownership=check_ownership,
         )
 
+        # F2/F7: surface persisted grain-conflict records (distinct-grain tables
+        # collapsed onto one reference class) as a blocking governance signal.
+        conflicts = [
+            f"{gc.get('ref_class', '')}: "
+            f"{', '.join(gc.get('candidate_entities', []))}"
+            for gc in registry.grain_conflicts
+            if isinstance(gc, dict) and gc.get("candidate_entities")
+        ]
+        if conflicts:
+            report.grain_conflicts[domain] = sorted(conflicts)
+
         covered = _registry_covered_tables(registry)
         gaps = expected - covered
         if gaps:
             report.incomplete.append(domain)
             report.uncovered_tables[domain] = sorted(f"{s}.{t}" for s, t in gaps)
+            continue
+
+        # F6: column-omission gate. Compare how many columns actually reached the
+        # registry against the trustworthy affinity source-column count. A shortfall
+        # means columns were dropped before the registry (e.g. prompt truncation),
+        # so the registry must not be trusted as complete.
+        expected_cols = domain_table_cols.get(domain, {})
+        covered_cols = _registry_covered_columns(registry)
+        omissions: list[str] = []
+        for key in sorted(covered):
+            affinity_total = expected_cols.get(key, 0)
+            reg_total = covered_cols.get(key, 0)
+            if affinity_total and reg_total < affinity_total:
+                system, table = key
+                omissions.append(
+                    f"{system}.{table} (registry {reg_total} of {affinity_total} "
+                    "source columns)"
+                )
+        if omissions:
+            report.column_omissions[domain] = omissions
             continue
 
         stored = registry.freshness.affinity_sha256

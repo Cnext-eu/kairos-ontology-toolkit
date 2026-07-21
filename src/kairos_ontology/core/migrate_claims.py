@@ -160,6 +160,10 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
     relationship_candidates: list[dict[str, Any]] = []
     # Dedup concept claims; preserve aggregated evidence.
     class_claims: dict[str, Claim] = {}            # key: ref_class
+    # F2/F7 (toolkit-optimizations): track which source tables (and their candidate
+    # business entities) collapse onto each ref_class, so a merge that fuses
+    # *different* grains onto one class can be flagged as a blocking grain conflict.
+    class_table_entities: dict[str, list[dict[str, str]]] = {}
     property_claims: dict[tuple[str, str], Claim] = {}  # key: (ref_class, ref_property)
     custom_claims: dict[tuple[str, str], Claim] = {}    # key: (system, table, column) flattened
 
@@ -183,10 +187,18 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
             anchor_state=anchor_state if anchor_state in (
                 "matched", "fallback", "rejected", "unmatched") else "matched",
             ref_class=ref_class or None,
+            source_column_count=int(table.get("source_column_count", 0) or 0),
+            source_column_sha256=table.get("source_column_sha256"),
         )
 
         # Class claim (one per distinct ref class).
         if ref_class:
+            likely_entity = str(table.get("likely_entity", "") or "")
+            class_table_entities.setdefault(ref_class, []).append({
+                "system": system,
+                "table": tname,
+                "likely_entity": likely_entity,
+            })
             claim = class_claims.get(ref_class)
             if claim is None:
                 claim = Claim(
@@ -277,6 +289,36 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
         str(c.get("role") or ""),
     ))
 
+    # F2/F7: detect grain conflicts — a single ref_class that multiple source
+    # tables with *different* candidate business entities (likely_entity) collapsed
+    # onto. This is the merge-by-nearest-anchor failure mode: distinct grains fused
+    # into one class. Deterministic; emitted only when 2+ distinct entities collide.
+    grain_conflicts: list[dict[str, Any]] = []
+    for ref_class in sorted(class_table_entities):
+        members = class_table_entities[ref_class]
+        distinct_entities = sorted(
+            {m["likely_entity"] for m in members if m["likely_entity"]}
+        )
+        if len(distinct_entities) > 1:
+            grain_conflicts.append({
+                "type": "grain_conflict",
+                "ref_class": ref_class,
+                "class_claim_id": f"{domain}-{_slug(ref_class)}",
+                "candidate_entities": distinct_entities,
+                "source_tables": sorted(
+                    f"{m['system']}.{m['table']}"
+                    for m in members
+                ),
+                "requires_human_confirmation": True,
+                "rationale": (
+                    f"{len(members)} source tables with {len(distinct_entities)} "
+                    f"different candidate business entities "
+                    f"({', '.join(distinct_entities)}) collapsed onto the single "
+                    f"reference class '{ref_class}'. Confirm they share a grain or "
+                    "split the model before approving the class claim."
+                ),
+            })
+
     return ClaimRegistry(
         domain=domain,
         generated_at=data.get("generated_at"),
@@ -285,6 +327,7 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
         coverage=coverage,
         claims=all_claims,
         relationship_candidates=relationship_candidates,
+        grain_conflicts=grain_conflicts,
     )
 
 

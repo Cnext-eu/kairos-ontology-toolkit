@@ -16,7 +16,10 @@ from kairos_ontology.core.propose_alignment import (
     TableAlignment,
     _build_class_meta_index,
     _build_custom_column,
+    _build_object_property_candidate,
+    _build_object_property_passthrough,
     _build_property_label_index,
+    _build_reconciled_passthrough,
     _build_reference_rollup,
     _downgrade_catch_all_suggestions,
     _read_claims_affinity_hash,
@@ -29,10 +32,12 @@ from kairos_ontology.core.propose_alignment import (
     _normalize_property_token,
     _parses_as,
     _resolve_column_module,
+    _resolve_object_property_target,
     _review_column_alignment,
     _select_property_pool,
     _select_ref_classes_for_table,
     _should_retry_with_full_inventory,
+    _source_column_digest,
     _transform_compat_note,
     align_table,
     alignment_to_dict,
@@ -593,6 +598,90 @@ class TestAlignmentToDict:
 
         assert _read_claims_affinity_hash(out_path) == "deadbeefcafe"
         assert _read_claims_params_hash(out_path) == "paramshash123"
+
+    def test_inventory_dir_backfills_claim_uris(self, tmp_path):
+        # Toolkit-optimizations F4: when propose-alignment writes claims and a
+        # materialized inventory is available, the class/property URIs are
+        # backfilled so check-claims --strict can approve without manual repair.
+        inv_dir = tmp_path / "referencemodels-unpacked"
+        inv_dir.mkdir()
+        (inv_dir / "commercial-inventory.yaml").write_text(
+            yaml.safe_dump({
+                "classes": [{
+                    "uri": "https://example.com/ont/commercial#SalesContract",
+                    "name": "SalesContract",
+                    "properties": [{"name": "contractIdentifier"}],
+                }],
+            }),
+            encoding="utf-8",
+        )
+        alignment = DomainAlignment(
+            domain="commercial",
+            domain_uris=["https://example.com/ont/commercial#"],
+            generated_at="2026-06-05T10:00:00Z",
+            model_used="gpt-5.4-mini",
+            tables=[
+                TableAlignment(
+                    system="admin",
+                    table="tblContracts",
+                    ref_class="SalesContract",
+                    ref_class_confidence=0.95,
+                    columns=[
+                        ColumnAlignment(
+                            column="ContractNo",
+                            data_type="nvarchar(50)",
+                            ref_class="SalesContract",
+                            ref_property="contractIdentifier",
+                            alignment="semantic",
+                            confidence=0.92,
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        out_path = write_claims_output(alignment, tmp_path, inventory_dir=inv_dir)
+        registry = load_registry(out_path)
+        cls = next(c for c in registry.claims if c.id == "commercial-salescontract")
+        assert cls.class_uri == "https://example.com/ont/commercial#SalesContract"
+        prop = next(
+            c for c in registry.claims
+            if c.id == "commercial-salescontract-contractidentifier"
+        )
+        assert prop.property_uri == (
+            "https://example.com/ont/commercial#contractIdentifier"
+        )
+
+    def test_without_inventory_dir_uris_stay_null(self, tmp_path):
+        # Default (no inventory_dir) preserves the pre-F4 behaviour: URIs null.
+        alignment = DomainAlignment(
+            domain="commercial",
+            domain_uris=["https://example.com/ont/commercial#"],
+            generated_at="2026-06-05T10:00:00Z",
+            model_used="gpt-5.4-mini",
+            tables=[
+                TableAlignment(
+                    system="admin",
+                    table="tblContracts",
+                    ref_class="SalesContract",
+                    ref_class_confidence=0.95,
+                    columns=[
+                        ColumnAlignment(
+                            column="ContractNo",
+                            data_type="nvarchar(50)",
+                            ref_class="SalesContract",
+                            ref_property="contractIdentifier",
+                            alignment="semantic",
+                            confidence=0.92,
+                        ),
+                    ],
+                ),
+            ],
+        )
+        out_path = write_claims_output(alignment, tmp_path)
+        registry = load_registry(out_path)
+        cls = next(c for c in registry.claims if c.id == "commercial-salescontract")
+        assert cls.class_uri is None
 
     def test_review_flags_emitted_only_when_set(self, tmp_path):
         """DD-069: review/review_reason emitted only when a column is flagged."""
@@ -1963,6 +2052,116 @@ class TestDowngradeCatchAllSuggestions:
             {"column": "c", "suggested_property": None},
         ]
         assert _downgrade_catch_all_suggestions(cols, min_columns=3) == 0
+
+
+class TestSourceColumnDigest:
+    """F6 — deterministic source column digest (truncation integrity)."""
+
+    def test_digest_is_deterministic_and_order_independent(self):
+        a = _source_column_digest([{"name": "b"}, {"name": "a"}, {"name": "c"}])
+        b = _source_column_digest([{"name": "a"}, {"name": "b"}, {"name": "c"}])
+        assert a == b
+        assert a[0] == 3
+        assert len(a[1]) == 64
+
+    def test_digest_changes_when_column_dropped(self):
+        full = _source_column_digest([{"name": "a"}, {"name": "b"}, {"name": "c"}])
+        dropped = _source_column_digest([{"name": "a"}, {"name": "b"}])
+        assert full != dropped
+
+    def test_empty_yields_zero(self):
+        assert _source_column_digest([]) == (0, "")
+        assert _source_column_digest([{"name": ""}]) == (0, "")
+
+
+class TestReconciledPassthrough:
+    """F6 — unaccounted source columns become explicit passthrough candidates."""
+
+    def test_marks_reconciled_omission(self):
+        cc = _build_reconciled_passthrough({"name": "extra_col", "data_type": "varchar"})
+        assert cc["column"] == "extra_col"
+        assert cc["reconciled_omission"] is True
+        assert cc["disposition"] is None
+        assert cc["data_type"] == "varchar"
+        assert cc["suggested_property"] is None
+
+    def test_missing_data_type_defaults_unknown(self):
+        cc = _build_reconciled_passthrough({"name": "x"})
+        assert cc["data_type"] == "unknown"
+        assert "recommended_disposition" in cc
+
+
+class TestObjectPropertyTarget:
+    """F3 — object-property target resolution (scalar location cluster fix)."""
+
+    def _range_idx(self, mapping):
+        # {(None, prop): range}
+        return {(None, p): r for p, r in mapping.items()}
+
+    def test_datatype_property_is_not_object(self):
+        idx = self._range_idx({"legalName": "string"})
+        assert _resolve_object_property_target("legalName", "Party", idx, {}) is None
+
+    def test_class_range_resolves_to_governed_target(self):
+        idx = self._range_idx({"hasLocation": "Location"})
+        classes = {"Location": "https://ex.org/ont/loc#Location"}
+        res = _resolve_object_property_target("hasLocation", "Shipment", idx, classes)
+        assert res is not None
+        assert res["target_resolved"] is True
+        assert res["target_class_uri"] == "https://ex.org/ont/loc#Location"
+        assert res["cardinality"] == "n:1"
+
+    def test_class_range_without_governed_target_is_unresolved(self):
+        idx = self._range_idx({"hasPlaceOfReceipt": "Location"})
+        res = _resolve_object_property_target(
+            "hasPlaceOfReceipt", "Shipment", idx, {})
+        assert res is not None
+        assert res["target_resolved"] is False
+        assert res["target_class_uri"] is None
+        assert res["target_name"] == "Location"
+
+    def test_name_hint_fires_without_range(self):
+        # No range metadata, but a known object-property name → unresolved target.
+        res = _resolve_object_property_target("hasPlaceOfDelivery", "Shipment", {}, {})
+        assert res is not None
+        assert res["target_resolved"] is False
+
+    def test_uri_range_reduced_to_localname(self):
+        idx = self._range_idx({"hasLocation": "https://ex.org/ont/loc#Location"})
+        classes = {"Location": "https://ex.org/ont/loc#Location"}
+        res = _resolve_object_property_target("hasLocation", "Shipment", idx, classes)
+        assert res["target_resolved"] is True
+
+    def test_unknown_scalar_property_no_fire(self):
+        assert _resolve_object_property_target("cityName", "Party", {}, {}) is None
+
+
+class TestObjectPropertyBuilders:
+    """F3 — passthrough + relationship-candidate builders."""
+
+    def test_passthrough_marks_object_property(self):
+        target = {"target_name": "Location", "target_class_uri": None,
+                  "target_resolved": False, "cardinality": "n:1"}
+        cc = _build_object_property_passthrough(
+            "place_of_receipt", "varchar", "hasPlaceOfReceipt", target)
+        assert cc["object_property_passthrough"] is True
+        assert cc["object_property"] == "hasPlaceOfReceipt"
+        assert cc["disposition"] is None
+        assert cc["suggested_property"] is None
+
+    def test_candidate_carries_target_and_cardinality(self):
+        target = {"target_name": "Location", "target_class_uri": None,
+                  "target_resolved": False, "cardinality": "n:1"}
+        cand = _build_object_property_candidate(
+            "tblShipment", "place_of_receipt", "hasPlaceOfReceipt", target)
+        assert cand["type"] == "object_property_relationship_candidate"
+        assert cand["suggested_relationship"] == "hasPlaceOfReceipt"
+        assert cand["target_concept"] == "Location"
+        assert cand["target_resolved"] is False
+        assert cand["cardinality"] == "n:1"
+        assert cand["source_columns"] == ["place_of_receipt"]
+        assert cand["requires_human_confirmation"] is True
+
 
 
 

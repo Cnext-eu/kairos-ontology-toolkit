@@ -335,6 +335,12 @@ class CoverageTable:
     custom_columns: int = 0
     anchor_state: str = "unmatched"
     ref_class: str | None = None
+    #: F6 (toolkit-optimizations) — the true source-vocabulary column count and a
+    #: deterministic digest of the sorted column names, persisted independently of
+    #: any prompt truncation so ``check-claims`` can detect columns dropped before
+    #: they reached the registry. ``0`` / ``None`` mean "not recorded" (pre-F6).
+    source_column_count: int = 0
+    source_column_sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -346,6 +352,11 @@ class CoverageTable:
         }
         if self.ref_class is not None:
             out["ref_class"] = self.ref_class
+        # F6: emit only when recorded so pre-F6 registries stay byte-identical.
+        if self.source_column_count:
+            out["source_column_count"] = self.source_column_count
+        if self.source_column_sha256:
+            out["source_column_sha256"] = self.source_column_sha256
         return out
 
     @classmethod
@@ -357,6 +368,8 @@ class CoverageTable:
             custom_columns=int(data.get("custom_columns", 0)),
             anchor_state=data.get("anchor_state", "unmatched"),
             ref_class=data.get("ref_class"),
+            source_column_count=int(data.get("source_column_count", 0)),
+            source_column_sha256=data.get("source_column_sha256"),
         )
 
 
@@ -418,6 +431,13 @@ class ClaimRegistry:
     #: surfaced to the modeling skill's Relationship & Satellite-Entity Review gate.
     #: Emitted only when a detector fires, so default output stays unchanged.
     relationship_candidates: list[dict[str, Any]] = field(default_factory=list)
+    #: F2/F7 (toolkit-optimizations) — grain-conflict records. Each entry flags a
+    #: single ``ref_class`` that multiple source tables with *different* candidate
+    #: business entities (``likely_entity``) collapsed into, i.e. a merge-by-nearest-
+    #: anchor that may fuse distinct grains. These are blocking governance signals
+    #: (surfaced by ``check-claims``): a human must confirm the tables really share a
+    #: grain or split the model. Emitted only when a conflict is detected.
+    grain_conflicts: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -435,6 +455,8 @@ class ClaimRegistry:
             out["coverage"] = {"systems": [s.to_dict() for s in self.coverage]}
         if self.relationship_candidates:
             out["relationship_candidates"] = self.relationship_candidates
+        if self.grain_conflicts:
+            out["grain_conflicts"] = self.grain_conflicts
         out["claims"] = [c.to_dict() for c in self.claims]
         return out
 
@@ -451,6 +473,7 @@ class ClaimRegistry:
             coverage=[CoverageSystem.from_dict(s) for s in systems],
             claims=[Claim.from_dict(c) for c in data.get("claims", [])],
             relationship_candidates=list(data.get("relationship_candidates") or []),
+            grain_conflicts=list(data.get("grain_conflicts") or []),
         )
 
 
@@ -738,4 +761,5 @@ def merge_preserving_decisions(
         coverage=new.coverage,
         claims=merged,
         relationship_candidates=new.relationship_candidates,
+        grain_conflicts=new.grain_conflicts,
     )

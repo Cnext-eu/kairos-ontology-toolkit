@@ -104,9 +104,52 @@ def load_affinity_domain_tables(
     return domain_tables
 
 
-# ---------------------------------------------------------------------------
-# Custom-column triage heuristics (reused by propose-alignment)
-# ---------------------------------------------------------------------------
+def load_affinity_domain_table_columns(
+    analysis_dir: Path,
+    *,
+    excluded_systems: set[str] | None = None,
+) -> dict[str, dict[tuple[str, str], int]]:
+    """Map each domain to ``{(system, table): total_columns}`` from affinity reports.
+
+    F6 (toolkit-optimizations): the affinity/analysis stage records the *true*
+    source-column count per table (``total_columns``). The Claim Registry, by
+    contrast, only counts the columns that survived alignment (prompt truncation
+    can drop some). ``check_claims_coverage`` compares the registry's covered
+    column count against this trustworthy per-table count to detect columns that
+    were silently dropped. Mirrors :func:`load_affinity_domain_tables`.
+    """
+    domain_table_cols: dict[str, dict[tuple[str, str], int]] = {}
+    if not analysis_dir.is_dir():
+        return domain_table_cols
+
+    for affinity_file in sorted(analysis_dir.glob("*-affinity.yaml")):
+        try:
+            with open(affinity_file, encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Could not read affinity file %s: %s", affinity_file, e)
+            continue
+
+        if not isinstance(data, dict) or data.get("schema_version") != 2:
+            continue
+
+        system = data.get("system", affinity_file.stem.replace("-affinity", ""))
+        if system in (excluded_systems or set()):
+            continue
+        for tbl in data.get("tables", []):
+            if not isinstance(tbl, dict):
+                continue
+            domain = tbl.get("domain", "")
+            table = tbl.get("table", "")
+            if not domain or not table:
+                continue
+            try:
+                total = int(tbl.get("total_columns", 0) or 0)
+            except (TypeError, ValueError):
+                total = 0
+            domain_table_cols.setdefault(domain, {})[(system, table)] = total
+
+    return domain_table_cols
 
 #: Lower-cased substrings that mark a custom column as *likely operational/audit*
 #: (ETL/technical) rather than a business attribute needing a modeling decision.

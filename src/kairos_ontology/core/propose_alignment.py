@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -145,6 +146,18 @@ class TableAlignment:
     #: (e.g. clustered address columns). Populated only when a detector fires, so
     #: default output stays unchanged.
     relationship_candidates: list[dict[str, Any]] = field(default_factory=list)
+    #: F6 (toolkit-optimizations) — the true source-vocabulary column count and a
+    #: deterministic digest of the sorted source column names, captured before any
+    #: prompt truncation. Persisted so ``check-claims`` can detect columns that were
+    #: dropped from the registry. ``0`` / ``""`` when not populated.
+    source_column_count: int = 0
+    source_column_sha256: str = ""
+    #: F2/F7 (toolkit-optimizations) — the candidate business entity the affinity/
+    #: analysis stage inferred for this source table (``likely_entity``). Carried
+    #: through so ``alignment_to_registry`` can detect when tables with *different*
+    #: candidate entities collapse onto one ``ref_class`` (a possible grain merge).
+    #: Empty when no candidate entity was inferred.
+    likely_entity: str = ""
 
 
 @dataclass
@@ -960,6 +973,110 @@ def _normalize_property_token(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
 
 
+def _source_column_digest(columns: list[dict[str, Any]]) -> tuple[int, str]:
+    """Return ``(count, sha256)`` for a table's full source column set (F6).
+
+    Deterministic and independent of prompt truncation: the digest is computed
+    over the sorted source column *names* so a later omission (or a source-vocab
+    drift) is detectable at ``check-claims`` time. Empty input yields ``(0, "")``.
+    """
+    names = sorted(str(c.get("name", "") or "") for c in columns)
+    if not any(names):
+        return 0, ""
+    h = hashlib.sha256()
+    h.update("\n".join(names).encode("utf-8"))
+    return len(columns), h.hexdigest()
+
+
+def _build_reconciled_passthrough(column: dict[str, Any]) -> dict[str, Any]:
+    """Build a passthrough custom column for a source column the LLM never returned.
+
+    F6 (toolkit-optimizations): prompt truncation (``MAX_COLUMNS_PER_PROMPT``) — or
+    a model that simply omits a column — can drop source columns before they reach
+    the Claim Registry, making a registry look complete when it is not. To keep the
+    governance gate honest, every unaccounted source column is materialized as a
+    deterministic passthrough candidate carrying an explicit
+    ``reconciled_omission`` marker, so it enters custom-column triage instead of
+    silently vanishing. ``disposition`` is left ``None`` for the Checkpoint-3b
+    triage; ``suggested_property`` is ``None`` (the column was never analysed).
+    """
+    name = str(column.get("name", "") or "")
+    return {
+        "column": name,
+        "data_type": str(column.get("data_type", "") or "unknown"),
+        "suggested_property": None,
+        "confidence": 0.0,
+        "rationale": (
+            "Source column not returned by the alignment model (beyond the prompt "
+            "column cap or omitted); reconciled as a passthrough candidate so it is "
+            "not silently dropped from the Claim Registry."
+        ),
+        "recommended_disposition": recommend_disposition(name),
+        "disposition": None,
+        "disposition_source": "",
+        "reconciled_omission": True,
+    }
+
+
+def _build_object_property_passthrough(
+    column: str,
+    data_type: str,
+    ref_property: str,
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a passthrough custom column for a downgraded object-property map (F3).
+
+    A scalar column that the model attached to an object property with no
+    resolvable governed target is retained here as passthrough *evidence* (never
+    lost) while its governed disposition moves to the relationship candidate — so
+    the column is counted exactly once.
+    """
+    return {
+        "column": column,
+        "data_type": data_type or "unknown",
+        "suggested_property": None,
+        "confidence": 0.0,
+        "rationale": (
+            f"Scalar column was mapped to object property '{ref_property}' whose "
+            "target entity does not resolve to a governed class; retained as "
+            "passthrough evidence while the relationship is modelled separately."
+        ),
+        "recommended_disposition": recommend_disposition(column),
+        "disposition": None,
+        "disposition_source": "",
+        "object_property_passthrough": True,
+        "object_property": ref_property,
+    }
+
+
+def _build_object_property_candidate(
+    table_name: str,
+    column: str,
+    ref_property: str,
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a relationship candidate for an unresolved object-property map (F3)."""
+    target_name = target.get("target_name") or ""
+    target_phrase = f" to a '{target_name}'" if target_name else ""
+    return {
+        "type": "object_property_relationship_candidate",
+        "source_table": table_name,
+        "source_columns": [column],
+        "suggested_relationship": ref_property,
+        "target_concept": target_name,
+        "target_class_uri": target.get("target_class_uri"),
+        "target_resolved": bool(target.get("target_resolved")),
+        "cardinality": target.get("cardinality", "n:1"),
+        "requires_human_confirmation": True,
+        "rationale": (
+            f"Scalar column '{column}' was aligned to object property "
+            f"'{ref_property}'{target_phrase}, but no governed target class "
+            "resolves. Model the relationship to a governed target node and keep "
+            "the scalar column as passthrough evidence."
+        ),
+    }
+
+
 def _build_custom_column(
     ca: dict[str, Any],
     col_data_type: str,
@@ -1339,6 +1456,73 @@ def _lookup_property_range(
     return idx.get((None, ref_property), "")
 
 
+def _build_class_uri_index(
+    ref_classes: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Index governed class ``name`` → ``uri`` (F3 object-property target resolver).
+
+    Used to decide whether an object property's target entity resolves to a
+    governed class in the hub's reference inventory. Classes without a ``uri`` are
+    skipped (the catalog-fallback extraction path omits per-class URIs).
+    """
+    idx: dict[str, str] = {}
+    for cls in ref_classes:
+        name = str(cls.get("name", "") or "")
+        uri = str(cls.get("uri", "") or "")
+        if name and uri:
+            idx.setdefault(name, uri)
+    return idx
+
+
+#: F3 (toolkit-optimizations) — property names known to be *object* properties
+#: (relationships to an entity/node) even when the local inventory carries no
+#: ``rdfs:range``. Kept conservative and lower-cased/compacted; covers the DCSA
+#: place/location relationships called out in the finding.
+_OBJECT_PROPERTY_NAME_HINTS = frozenset({
+    "haslocation", "hasplaceofreceipt", "hasplaceofdelivery",
+    "hasplaceofloading", "hasplaceofdischarge", "hasplaceofissue",
+    "hasplaceofissuance", "hasaddress", "hasorigin", "hasdestination",
+})
+
+
+def _resolve_object_property_target(
+    ref_property: str,
+    ref_class: str,
+    range_index: dict[tuple[str | None, str], str],
+    class_uri_by_name: dict[str, str],
+) -> dict[str, Any] | None:
+    """Classify a column→property map as an object property and resolve its target.
+
+    F3 (toolkit-optimizations): a scalar source column attached to an *object*
+    property (e.g. ``hasPlaceOfReceipt``, ``hasLocation``) makes the registry look
+    covered without a target node. This resolver detects object properties two
+    deterministic ways: a class-like ``rdfs:range`` (a PascalCase local name — XSD
+    literal ranges are lower-cased), or a curated object-property name hint when
+    range metadata is absent.
+
+    Returns ``None`` for scalar/datatype properties (no change). For an object
+    property returns ``{target_name, target_class_uri, target_resolved,
+    cardinality}`` where ``target_resolved`` is True only when the target class is
+    a governed class in the hub inventory.
+    """
+    rng = _lookup_property_range(range_index, ref_class, ref_property)
+    local = ""
+    if rng:
+        local = str(rng).split("#")[-1].split("/")[-1].strip()
+    is_class_like = bool(local) and local[:1].isupper()
+    is_hint = _compact_name(ref_property) in _OBJECT_PROPERTY_NAME_HINTS
+    if not (is_class_like or is_hint):
+        return None
+    target_name = local if is_class_like else ""
+    target_uri = class_uri_by_name.get(target_name) if target_name else None
+    return {
+        "target_name": target_name,
+        "target_class_uri": target_uri,
+        "target_resolved": bool(target_uri),
+        "cardinality": "n:1",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Plausibility / address review pass (DD-069, issues #167/#168)
 # ---------------------------------------------------------------------------
@@ -1643,6 +1827,7 @@ def _propose_alignments(
     cross_module: bool = False,
     accelerator: str | None = None,
     ref_models_dir: Path | None = None,
+    inventory_dir: Path | None = None,
     custom_confidence_floor: float = CUSTOM_CONFIDENCE_FLOOR,
     emit_claims: bool = True,
 ) -> tuple[list[Path], list[DomainAlignment]]:
@@ -1676,6 +1861,10 @@ def _propose_alignments(
             cross-module property pool (required when *cross_module* is True).
         ref_models_dir: Reference-models directory containing ``accelerator-packs/``
             (required when *cross_module* is True).
+        inventory_dir: Materialized reference-model inventory directory
+            (``referencemodels-unpacked/``). When present, newly written claims get
+            deterministic ``class_uri`` / ``property_uri`` backfilled from the
+            inventory (toolkit-optimizations F4). Default ``None`` leaves URIs null.
 
     Returns ``(written_paths, built_alignments)``. When *emit_claims* is False the
     pipeline only builds and returns the in-memory :class:`DomainAlignment` objects
@@ -1848,10 +2037,14 @@ def _propose_alignments(
             property_ref_classes = ref_classes
             class_meta = {}
 
-        # DD-045: property-range index for deterministic transform hints
-        range_index = (
-            _build_property_range_index(ref_classes) if include_mapping_hints else {}
-        )
+        # DD-045: property-range index for deterministic transform hints.
+        # F3 (toolkit-optimizations): also consumed by the object-property target
+        # resolver, so it is built unconditionally (cheap, deterministic).
+        range_index = _build_property_range_index(ref_classes)
+
+        # F3: governed class name → URI, so the object-property resolver can tell a
+        # resolvable target entity from an ungoverned/absent one.
+        class_uri_by_name = _build_class_uri_index(ref_classes)
 
         # DD-069: property-label index for the deterministic review pass (always
         # built — cheap, and the review flags are an always-on quality guard).
@@ -1904,7 +2097,9 @@ def _propose_alignments(
             table = tbl_info["table"]
             columns = get_columns(system, table)
             if not columns:
-                return {"system": system, "table": table, "columns": [], "result": None}
+                return {"system": system, "table": table, "columns": [],
+                        "result": None, "likely_entity": tbl_info.get(
+                            "likely_entity", "")}
 
             likely_entity = tbl_info.get("likely_entity", "")
             indicative_columns = tbl_info.get("indicative_columns", [])
@@ -1923,7 +2118,8 @@ def _propose_alignments(
             cached = cache.get(cache_key)
             if cached is not None:
                 return {"system": system, "table": table, "columns": columns,
-                        "result": cached, "cache_key": cache_key, "from_cache": True}
+                        "result": cached, "cache_key": cache_key, "from_cache": True,
+                        "likely_entity": likely_entity}
 
             shortlist_classes = _select_ref_classes_for_table(
                 table, columns, ref_classes,
@@ -1970,7 +2166,8 @@ def _propose_alignments(
                 result = {"ref_class": "", "ref_class_confidence": 0.0,
                           "column_alignments": []}
             return {"system": system, "table": table, "columns": columns,
-                    "result": result, "cache_key": cache_key, "from_cache": False}
+                    "result": result, "cache_key": cache_key, "from_cache": False,
+                    "likely_entity": likely_entity}
 
         processed = map_concurrent(_process_table, tables, max_workers=max_workers)
 
@@ -1995,6 +2192,10 @@ def _propose_alignments(
             col_alignments = []
             custom_cols = []
             address_hints: list[dict[str, Any]] = []
+            # F3 (toolkit-optimizations): object-property relationship candidates
+            # synthesized when a scalar column maps to an object property with no
+            # resolvable governed target entity. Merged into rel_candidates below.
+            objprop_candidates: list[dict[str, Any]] = []
             for ca in result.get("column_alignments", []):
                 col_data_type = next(
                     (c["data_type"] for c in columns if c["name"] == ca["column"]),
@@ -2099,7 +2300,42 @@ def _propose_alignments(
                             acc["source_columns"].append(
                                 f"{system}.{table}.{ca['column']}"
                             )
+                    # F3 (toolkit-optimizations): a scalar column mapped to an
+                    # object property whose target entity does NOT resolve to a
+                    # governed class must not count as a resolved scalar mapping
+                    # (the registry would look covered without a target node).
+                    # Downgrade it to a passthrough custom column and emit a
+                    # relationship candidate so the column keeps exactly one
+                    # governed disposition (no double count). When the target
+                    # resolves, the mapping is kept unchanged (byte-identical).
+                    obj_target = _resolve_object_property_target(
+                        ca["ref_property"], ref_class_name,
+                        range_index, class_uri_by_name,
+                    )
+                    if obj_target is not None and not obj_target["target_resolved"]:
+                        custom_cols.append(_build_object_property_passthrough(
+                            ca["column"], col_data_type, ca["ref_property"],
+                            obj_target,
+                        ))
+                        objprop_candidates.append(_build_object_property_candidate(
+                            table, ca["column"], ca["ref_property"], obj_target,
+                        ))
+                        continue
                     col_alignments.append(column_alignment)
+
+            # F6: reconcile every source column against what the model returned.
+            # Prompt truncation (MAX_COLUMNS_PER_PROMPT) or an omitting model can
+            # drop columns before they reach the registry; materialize any
+            # unaccounted column as a passthrough candidate so the governance gate
+            # never reports a truncated registry as complete.
+            accounted = {ca.column for ca in col_alignments}
+            accounted |= {str(cc.get("column", "") or "") for cc in custom_cols}
+            for col in columns:
+                cname = str(col.get("name", "") or "")
+                if cname and cname not in accounted:
+                    custom_cols.append(_build_reconciled_passthrough(col))
+                    accounted.add(cname)
+            src_count, src_hash = _source_column_digest(columns)
 
             ta = TableAlignment(
                 system=system,
@@ -2110,6 +2346,9 @@ def _propose_alignments(
                 custom_columns=custom_cols,
                 ref_class_status=result.get("ref_class_status", "matched"),
                 rejected_ref_class=result.get("rejected_ref_class"),
+                source_column_count=src_count,
+                source_column_sha256=src_hash,
+                likely_entity=str(entry.get("likely_entity", "") or ""),
             )
             if include_mapping_hints:
                 ta.structural_hints = _detect_structural_hints(
@@ -2118,6 +2357,8 @@ def _propose_alignments(
             # Issue #192 (Phase A1): deterministic, always-on, additive
             # relationship-candidate detection (no LLM, no cross-module widening).
             rel_candidates = _detect_address_relationship_candidates(table, columns)
+            # F3: append object-property relationship candidates (unresolved target).
+            rel_candidates = rel_candidates + objprop_candidates
             if rel_candidates:
                 ta.relationship_candidates = rel_candidates
             alignment.tables.append(ta)
@@ -2169,7 +2410,9 @@ def _propose_alignments(
         # Write output (Claim Registry — DD-EL-1)
         alignments.append(alignment)
         if emit_claims:
-            out_path = write_claims_output(alignment, output_dir)
+            out_path = write_claims_output(
+                alignment, output_dir, inventory_dir=inventory_dir
+            )
             output_files.append(out_path)
             report(f"     ✓ Written: {out_path.name}")
 
@@ -2383,6 +2626,16 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
             table_dict["ref_class_status"] = ta.ref_class_status
         if ta.rejected_ref_class:
             table_dict["rejected_ref_class"] = ta.rejected_ref_class
+        # F6: persist the true source column count/hash (only when captured) so the
+        # governance gate can detect columns dropped before the registry.
+        if ta.source_column_count:
+            table_dict["source_column_count"] = ta.source_column_count
+        if ta.source_column_sha256:
+            table_dict["source_column_sha256"] = ta.source_column_sha256
+        # F2/F7: persist the candidate business entity so the grain-conflict detector
+        # in alignment_to_registry can flag distinct-grain collapses onto one class.
+        if ta.likely_entity:
+            table_dict["likely_entity"] = ta.likely_entity
         for ca in ta.columns:
             col_dict: dict[str, Any] = {
                 "column": ca.column,
@@ -2435,7 +2688,12 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
     return data
 
 
-def write_claims_output(alignment: DomainAlignment, claims_dir: Path) -> Path:
+def write_claims_output(
+    alignment: DomainAlignment,
+    claims_dir: Path,
+    *,
+    inventory_dir: Path | None = None,
+) -> Path:
     """Write a domain alignment as a Claim Registry (``DD-EL-1``).
 
     The governance-facing output of ``propose-alignment``: candidate concepts are
@@ -2443,10 +2701,22 @@ def write_claims_output(alignment: DomainAlignment, claims_dir: Path) -> Path:
     file already exists, human decisions are preserved across the re-run via
     :func:`merge_preserving_decisions` (the claim-level analog of the alignment
     YAML's disposition preservation). Returns the written path.
-    """
-    from .migrate_claims import alignment_to_registry
 
-    registry = alignment_to_registry(alignment_to_dict(alignment))
+    When *inventory_dir* is supplied (toolkit-optimizations F4), the deterministic
+    reference-model URI index (the same one used by ``migrate-claims``) is loaded
+    and passed to :func:`alignment_to_registry` so newly proposed class/property
+    claims are emitted with resolved ``class_uri`` / ``property_uri`` instead of
+    nulls. This lets ``check-claims --strict`` approve anchored claims without a
+    manual URI repair. Ambiguous or unknown names still resolve to null.
+    """
+    from .migrate_claims import alignment_to_registry, load_inventory_uri_index
+
+    uri_index = (
+        load_inventory_uri_index(inventory_dir)
+        if inventory_dir and inventory_dir.is_dir()
+        else None
+    )
+    registry = alignment_to_registry(alignment_to_dict(alignment), uri_index=uri_index)
 
     target = registry_path(claims_dir, alignment.domain)
     if target.exists():

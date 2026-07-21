@@ -95,6 +95,57 @@ def local_name(uri: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Physical (silver) naming — single source of truth (issue #219, DD)
+# ---------------------------------------------------------------------------
+#
+# Both the silver DDL projector and the dbt projector must derive identical
+# physical schema/table/key names from the Silver extension graph. These helpers
+# are the shared implementation so the two targets can never drift.
+#
+# Defaults are chosen so that, absent any ``kairos-ext:`` annotation, output is
+# byte-identical to the previous hardcoded behaviour:
+#   schema → ``silver_{ontology_name}``  (silverSchema override)
+#   table  → ``camel_to_snake(local)``   (silverTableName / ref_ / namingConvention)
+
+
+def silver_naming_convention(graph: "Graph", onto_uri: "URIRef") -> str:
+    """Return the domain's silver naming convention (``camel-to-snake`` default)."""
+    return str_val(graph, onto_uri, KAIROS_EXT.namingConvention, "camel-to-snake")
+
+
+def silver_schema_name(graph: "Graph", onto_uri: "URIRef", ontology_name: str) -> str:
+    """Resolve the physical silver schema name for a domain.
+
+    Honours ``kairos-ext:silverSchema`` on the ``owl:Ontology`` node, falling
+    back to ``silver_{ontology_name}``.
+    """
+    return str_val(graph, onto_uri, KAIROS_EXT.silverSchema, f"silver_{ontology_name}")
+
+
+def silver_table_name(
+    graph: "Graph", cls_uri: "URIRef", local: str,
+    naming_convention: str = "camel-to-snake",
+) -> str:
+    """Resolve the physical silver table/model name for a class.
+
+    Precedence: ``kairos-ext:silverTableName`` override → naming-convention
+    transform of the local name → ``ref_`` prefix when the class is reference
+    data (``kairos-ext:isReferenceData``).
+    """
+    override = str_val(graph, cls_uri, KAIROS_EXT.silverTableName)
+    if override:
+        return override
+    if naming_convention == "camel-to-snake":
+        name = camel_to_snake(local)
+    else:
+        name = local.lower()
+    is_ref = bool_val(graph, cls_uri, KAIROS_EXT.isReferenceData, False)
+    if is_ref and not name.startswith("ref_"):
+        name = f"ref_{name}"
+    return name
+
+
+# ---------------------------------------------------------------------------
 # RDF graph value accessors
 # ---------------------------------------------------------------------------
 

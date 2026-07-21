@@ -38,7 +38,16 @@ from jinja2 import Environment, FileSystemLoader
 
 from .uri_utils import camel_to_snake, extract_local_name
 from ..determinism import resolve_generated_at
-from .shared import KAIROS_EXT, merge_ext_graph, str_val, bool_val
+from .shared import (
+    KAIROS_EXT,
+    merge_ext_graph,
+    str_val,
+    bool_val,
+    detect_ontology_uri,
+    silver_naming_convention,
+    silver_schema_name,
+    silver_table_name,
+)
 
 if TYPE_CHECKING:
     from ..dbt_contracts import DbtContractModel
@@ -1307,7 +1316,12 @@ def _gen_silver_models(
     entity_metadata: list[dict] = []
     template = env.get_template("silver_model.sql.jinja2")
 
-    schema_name = f"silver_{ontology_name}"
+    schema_name = silver_schema_name(
+        graph, detect_ontology_uri(graph, namespace), ontology_name,
+    )
+    naming_conv = silver_naming_convention(
+        graph, detect_ontology_uri(graph, namespace),
+    )
     bindings = compute_source_bindings(
         classes=classes,
         graph=graph,
@@ -1322,7 +1336,7 @@ def _gen_silver_models(
     for cls in classes:
         cls_uri = cls["uri"]
         local = cls["name"]
-        model_name = _camel_to_snake(local)
+        model_name = silver_table_name(graph, URIRef(cls_uri), local, naming_conv)
 
         source_refs = class_to_sources.get(cls_uri, [])
         if not source_refs:
@@ -1839,6 +1853,7 @@ def _gen_silver_models(
         entity_metadata.append({
             "class_name": local,
             "class_uri": cls_uri,
+            "model_name": model_name,
             "model_file": f"{model_name}.sql",
             "scd_type": scd_type,
             "source_count": len(source_refs),
@@ -3359,7 +3374,7 @@ def _build_silver_model_registry(
         cls_uri = meta.get("class_uri")
         if not cls_uri:
             continue
-        model_name = _camel_to_snake(meta["class_name"])
+        model_name = meta.get("model_name") or _camel_to_snake(meta["class_name"])
         name_registry[cls_uri] = model_name
         col_names = meta.get("column_names", [])
         columns_registry[model_name] = set(col_names)
