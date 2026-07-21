@@ -13,6 +13,9 @@
 {%- if ontology_metadata and ontology_metadata.toolkit_version %}
 -- Toolkit version: {{ ontology_metadata.toolkit_version }}
 {%- endif %}
+{%- if ontology_metadata and ontology_metadata.silver_default_packages %}
+-- Silver defaults: {{ ontology_metadata.silver_default_packages | join(", ") }}
+{%- endif %}
 --
 -- ASPIRATIONAL TARGET — this class is an APPROVED CLAIM with no bronze mapping
 -- yet. It projects a typed, ZERO-ROW placeholder so downstream models have a

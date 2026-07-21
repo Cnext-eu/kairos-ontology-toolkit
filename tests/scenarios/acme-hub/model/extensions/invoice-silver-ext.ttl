@@ -80,7 +80,9 @@ acme-inv:lineTotal
 
 acme-inv:issuedTo
     kairos-ext:silverColumnName "client_sk" ;
-    kairos-ext:silverForeignKey "true" .
+    kairos-ext:silverForeignKey "true" ;
+    kairos-ext:silverForeignKeyTemporalMode "current" ;
+    kairos-ext:silverForeignKeyChangeDetection "true" .
 
 acme-inv:belongsToInvoice
     kairos-ext:silverColumnName "invoice_sk" ;

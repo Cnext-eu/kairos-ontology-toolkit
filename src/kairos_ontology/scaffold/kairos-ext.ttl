@@ -58,7 +58,7 @@ kairos-ext:namingConvention a owl:AnnotationProperty ;
 
 kairos-ext:auditEnvelope a owl:AnnotationProperty ;
     rdfs:label "audit envelope"@en ;
-    rdfs:comment "Comma-separated 'name TYPE' audit columns appended to every non-reference table (R9)."@en ;
+    rdfs:comment "Comma-separated 'name TYPE' audit columns appended to every non-reference table (R9). Standard source lineage columns (_source_system, _source_record_id, _loaded_at) are generated independently for every final Silver row."@en ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
@@ -81,6 +81,12 @@ kairos-ext:silverSourceRef a owl:AnnotationProperty ;
 kairos-ext:scdType a owl:AnnotationProperty ;
     rdfs:label "SCD type"@en ;
     rdfs:comment "Slowly Changing Dimension type (R5, R8). Values: '1' (overwrite) or '2' (history). Default: '2'."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:scdValidFromColumn a owl:AnnotationProperty ;
+    rdfs:label "SCD valid-from column"@en ;
+    rdfs:comment "Mapped Silver timestamp column that supplies business-effective valid_from values for SCD2 history and as-of FK resolution. If absent, valid_from uses projection system time and the class cannot be an as-of FK target."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
@@ -361,3 +367,21 @@ kairos-ext:silverForeignKeyOn a owl:AnnotationProperty ;
     rdfs:comment "Overrides which class receives the FK column (DD-022). Must be either the domain or range of the annotated object property. When set to the range class, the FK column is placed on the range table pointing back to the domain table. Implies silverForeignKey true."@en ;
     rdfs:domain owl:ObjectProperty ;
     rdfs:range owl:Class .
+
+kairos-ext:silverForeignKeyTemporalMode a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key temporal mode"@en ;
+    rdfs:comment "Controls lookup of an SCD2 parent in dbt Silver. Values: 'current' (join only is_current = 1), 'as-of' (effective timestamp range join), or 'none' for a non-SCD target. Default for an SCD2 target: 'current'."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:string .
+
+kairos-ext:silverForeignKeyAsOfColumn a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key as-of column"@en ;
+    rdfs:comment "Physical source timestamp column used when silverForeignKeyTemporalMode is 'as-of'."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:string .
+
+kairos-ext:silverForeignKeyChangeDetection a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key change detection"@en ;
+    rdfs:comment "Whether a resolved FK surrogate-key change participates in the child SCD2 row hash. Default: true."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:boolean .

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from rdflib import Graph, URIRef
+from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDFS
 
 from kairos_ontology.core.projections.medallion_dbt_projector import (
@@ -19,6 +19,7 @@ from kairos_ontology.core.projections.medallion_dbt_projector import (
     _parse_skos_mappings,
     _extract_shacl_tests,
     _silver_model_name_for_class,
+    _source_record_id_expression,
     _source_type_to_databricks,
     _source_type_to_target,
     _xsd_to_target,
@@ -96,6 +97,7 @@ ONTOLOGY_TTL = textwrap.dedent("""\
     @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
     @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
     @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 
     <http://kairos.example/ontology> a owl:Ontology ;
         rdfs:label "Test Ontology" ;
@@ -103,7 +105,8 @@ ONTOLOGY_TTL = textwrap.dedent("""\
 
     ex:Client a owl:Class ;
         rdfs:label "Client" ;
-        rdfs:comment "A client entity" .
+        rdfs:comment "A client entity" ;
+        kairos-ext:naturalKey "clientId" .
 
     ex:clientId a owl:DatatypeProperty ;
         rdfs:label "client ID" ;
@@ -266,6 +269,40 @@ class TestBronzeParsing:
 
     def test_parse_bronze_none_dir(self):
         assert _parse_bronze(None) == []
+
+    def test_source_record_id_uses_declared_bronze_primary_key(self, bronze_dir):
+        systems = _parse_bronze(bronze_dir)
+        expression, generated_after_mapping = _source_record_id_expression(
+            systems,
+            ("adminpulse", "tbl_client", systems[0]["tables"][0]["uri"]),
+            "src",
+            "client_sk",
+        )
+        assert expression == (
+            "{{ dbt_utils.generate_surrogate_key([\"'tblClient'\", 'src.ClientID']) }}"
+        )
+        assert generated_after_mapping is False
+
+    def test_source_record_id_falls_back_when_bronze_has_no_primary_key(self):
+        systems = [
+            {
+                "tables": [
+                    {
+                        "uri": "https://example.org/bronze#rows",
+                        "pk_columns": [],
+                        "columns": [{"name": "value", "is_pk": False}],
+                    }
+                ]
+            }
+        ]
+        expression, generated_after_mapping = _source_record_id_expression(
+            systems,
+            ("source", "rows", "https://example.org/bronze#rows"),
+            "src",
+            "row_sk",
+        )
+        assert expression == "CONCAT('rows|', row_sk)"
+        assert generated_after_mapping is True
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +626,7 @@ GOLD_ONTOLOGY_TTL = textwrap.dedent("""\
     @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
     @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
     @prefix ex:   <http://kairos.example/ontology/> .
+    @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 
     <http://kairos.example/ontology> a owl:Ontology ;
         rdfs:label "Test Ontology" ;
@@ -596,15 +634,33 @@ GOLD_ONTOLOGY_TTL = textwrap.dedent("""\
 
     ex:Customer a owl:Class ;
         rdfs:label "Customer" ;
-        rdfs:comment "A customer entity" .
+        rdfs:comment "A customer entity" ;
+        kairos-ext:naturalKey "customerId" .
 
     ex:Product a owl:Class ;
         rdfs:label "Product" ;
-        rdfs:comment "A product entity" .
+        rdfs:comment "A product entity" ;
+        kairos-ext:naturalKey "productId" .
 
     ex:Order a owl:Class ;
         rdfs:label "Order" ;
-        rdfs:comment "An order entity" .
+        rdfs:comment "An order entity" ;
+        kairos-ext:naturalKey "orderId" .
+
+    ex:customerId a owl:DatatypeProperty ;
+        rdfs:label "customer ID" ;
+        rdfs:domain ex:Customer ;
+        rdfs:range xsd:string .
+
+    ex:productId a owl:DatatypeProperty ;
+        rdfs:label "product ID" ;
+        rdfs:domain ex:Product ;
+        rdfs:range xsd:string .
+
+    ex:orderId a owl:DatatypeProperty ;
+        rdfs:label "order ID" ;
+        rdfs:domain ex:Order ;
+        rdfs:range xsd:string .
 
     ex:customerName a owl:DatatypeProperty ;
         rdfs:label "customer name" ;
@@ -1113,6 +1169,117 @@ class TestCrossDomainFK:
         # Join should reference the target natural key (party_id from naturalKey)
         assert "party_ref" in content
         assert "party_id" in content
+        assert "party_ref.is_current = 1" in content
+
+    def test_fk_change_participates_in_scd2_hash_by_default(
+        self, cross_domain_classes, cross_domain_graph, template_dir,
+        cross_domain_bronze_dir, cross_domain_mappings_dir,
+    ):
+        artifacts = generate_dbt_artifacts(
+            classes=cross_domain_classes,
+            graph=cross_domain_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="client",
+            bronze_dir=cross_domain_bronze_dir,
+            mappings_dir=cross_domain_mappings_dir,
+        )
+        silver_key = next(
+            key for key in artifacts
+            if "client.sql" in key and "models/silver/" in key
+        )
+        assert "'party_sk'" in artifacts[silver_key]
+
+    def test_fk_can_use_as_of_parent_resolution(
+        self, cross_domain_classes, cross_domain_graph, template_dir,
+        cross_domain_bronze_dir, cross_domain_mappings_dir,
+    ):
+        prop = URIRef("http://kairos.example/ontology/representsParty")
+        ext = "https://kairos.cnext.eu/ext#"
+        cross_domain_graph.add(
+            (prop, URIRef(f"{ext}silverForeignKeyTemporalMode"), Literal("as-of"))
+        )
+        cross_domain_graph.add(
+            (prop, URIRef(f"{ext}silverForeignKeyAsOfColumn"), Literal("event_ts"))
+        )
+        cross_domain_graph.add(
+            (
+                URIRef("http://kairos.example/ontology/Party"),
+                URIRef(f"{ext}scdValidFromColumn"),
+                Literal("party_effective_at"),
+            )
+        )
+        artifacts = generate_dbt_artifacts(
+            classes=cross_domain_classes,
+            graph=cross_domain_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="client",
+            bronze_dir=cross_domain_bronze_dir,
+            mappings_dir=cross_domain_mappings_dir,
+        )
+        silver_key = next(
+            key for key in artifacts
+            if "client.sql" in key and "models/silver/" in key
+        )
+        sql = artifacts[silver_key]
+        assert "relation.event_ts >= party_ref.valid_from" in sql
+        assert "relation.event_ts < party_ref.valid_to" in sql
+
+    def test_fk_change_can_be_excluded_from_scd2_hash(
+        self, cross_domain_classes, cross_domain_graph, template_dir,
+        cross_domain_bronze_dir, cross_domain_mappings_dir,
+    ):
+        prop = URIRef("http://kairos.example/ontology/representsParty")
+        cross_domain_graph.add(
+            (
+                prop,
+                URIRef(
+                    "https://kairos.cnext.eu/ext#silverForeignKeyChangeDetection"
+                ),
+                Literal(False),
+            )
+        )
+        artifacts = generate_dbt_artifacts(
+            classes=cross_domain_classes,
+            graph=cross_domain_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="client",
+            bronze_dir=cross_domain_bronze_dir,
+            mappings_dir=cross_domain_mappings_dir,
+        )
+        silver_key = next(
+            key for key in artifacts
+            if "client.sql" in key and "models/silver/" in key
+        )
+        hash_line = next(
+            line for line in artifacts[silver_key].splitlines()
+            if "kairos_row_hash" in line
+        )
+        assert "'party_sk'" not in hash_line
+
+    def test_nonportable_schema_override_is_rejected(
+        self, cross_domain_classes, cross_domain_graph, template_dir,
+        cross_domain_bronze_dir, cross_domain_mappings_dir,
+    ):
+        cross_domain_graph.add(
+            (
+                URIRef("http://kairos.example/ontology"),
+                URIRef("https://kairos.cnext.eu/ext#silverSchema"),
+                Literal("silver-logistics"),
+            )
+        )
+        with pytest.raises(ValueError, match="portable SQL identifier"):
+            generate_dbt_artifacts(
+                classes=cross_domain_classes,
+                graph=cross_domain_graph,
+                template_dir=template_dir,
+                namespace="http://kairos.example/ontology/",
+                ontology_name="client",
+                bronze_dir=cross_domain_bronze_dir,
+                mappings_dir=cross_domain_mappings_dir,
+            )
 
     def test_fk_column_in_schema_yaml(
         self, cross_domain_classes, cross_domain_graph, template_dir,
@@ -2619,6 +2786,10 @@ class TestProjectedFoldedSubtypeMappings:
             'kairos-ext:inheritanceStrategy "discriminator" ;',
             'kairos-ext:inheritanceStrategy "class-per-table" ;',
         )
+        cpt_ontology += """
+            ex:ConfirmedBooking kairos-ext:naturalKey "carrier_booking_reference" .
+            ex:BookingRequest kairos-ext:naturalKey "carrier_booking_reference" .
+        """
         graph, bronze, mappings, classes = self._setup(
             tmp_path, ontology_ttl=cpt_ontology,
         )
@@ -3004,17 +3175,17 @@ class TestNaturalKeyWarning:
             )
         assert "no kairos-ext:naturalKey" not in caplog.text
 
-    def test_warning_when_natural_key_missing(
+    def test_bound_model_without_natural_key_is_rejected(
         self, template_dir, nk_sources_dir, nk_mappings_widget, caplog,
     ):
-        """Class WITHOUT naturalKey annotation should produce a warning."""
+        """Every bound model requires a usable incremental key."""
         g = Graph()
         g.parse(data=NK_ONTOLOGY_WITHOUT_KEY_TTL, format="turtle")
         classes = [{"uri": "http://kairos.example/ontology/Widget",
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.projections.medallion_dbt_projector"):
+        with pytest.raises(ValueError, match="NULL surrogate keys"):
             generate_dbt_artifacts(
                 classes=classes,
                 graph=g,
@@ -3024,20 +3195,16 @@ class TestNaturalKeyWarning:
                 sources_dir=nk_sources_dir,
                 mappings_dir=nk_mappings_widget,
             )
-        assert "no kairos-ext:naturalKey" in caplog.text
-        assert "Widget" in caplog.text
-
-    def test_warning_includes_remediation_guidance(
-        self, template_dir, nk_sources_dir, nk_mappings_widget, caplog,
+    def test_missing_natural_key_error_includes_remediation_guidance(
+        self, template_dir, nk_sources_dir, nk_mappings_widget,
     ):
-        """Warning message should include actionable remediation guidance."""
         g = Graph()
         g.parse(data=NK_ONTOLOGY_WITHOUT_KEY_TTL, format="turtle")
         classes = [{"uri": "http://kairos.example/ontology/Widget",
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.projections.medallion_dbt_projector"):
+        with pytest.raises(ValueError, match="kairos-design-silver"):
             generate_dbt_artifacts(
                 classes=classes,
                 graph=g,
@@ -3047,11 +3214,8 @@ class TestNaturalKeyWarning:
                 sources_dir=nk_sources_dir,
                 mappings_dir=nk_mappings_widget,
             )
-        # Warning should guide user to the correct design skill
-        assert "kairos-design-silver" in caplog.text
-
-    def test_warning_mentions_fk_child_context(
-        self, template_dir, nk_sources_dir, nk_mappings_widget, caplog,
+    def test_error_mentions_fk_child_context(
+        self, template_dir, nk_sources_dir, nk_mappings_widget,
     ):
         """An FK-child (silverForeignKeyOn target) without naturalKey should get
         a context-aware warning naming its parent and explaining the options."""
@@ -3061,7 +3225,7 @@ class TestNaturalKeyWarning:
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.projections.medallion_dbt_projector"):
+        with pytest.raises(ValueError, match="FK-child of Gadget.*weak entity"):
             generate_dbt_artifacts(
                 classes=classes,
                 graph=g,
@@ -3071,10 +3235,45 @@ class TestNaturalKeyWarning:
                 sources_dir=nk_sources_dir,
                 mappings_dir=nk_mappings_widget,
             )
-        assert "no kairos-ext:naturalKey" in caplog.text
-        assert "FK-child of Gadget" in caplog.text
-        assert "weak entity" in caplog.text
-        assert "kairos-design-silver" in caplog.text
+    def test_governed_target_first_model_rejects_null_incremental_key(
+        self, template_dir, nk_sources_dir, nk_mappings_widget,
+    ):
+        g = Graph()
+        g.parse(data=NK_ONTOLOGY_WITHOUT_KEY_TTL, format="turtle")
+        classes = [{"uri": "http://kairos.example/ontology/Widget",
+                    "name": "Widget", "label": "Widget",
+                    "comment": "A widget entity"}]
+
+        with pytest.raises(ValueError, match="NULL surrogate keys"):
+            generate_dbt_artifacts(
+                classes=classes,
+                graph=g,
+                template_dir=template_dir,
+                namespace="http://kairos.example/ontology/",
+                ontology_name="widget",
+                sources_dir=nk_sources_dir,
+                mappings_dir=nk_mappings_widget,
+                eligible_class_uris={"http://kairos.example/ontology/Widget"},
+            )
+
+    def test_scd2_sequences_multiple_source_versions_per_key(
+        self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir,
+    ):
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="client",
+            sources_dir=bronze_dir,
+            mappings_dir=mappings_dir,
+        )
+        sql = artifacts["models/silver/client/client.sql"]
+        assert "LAG(_row_hash) over" in sql
+        assert "LEAD(valid_from) over" in sql
+        assert "first_changed as" in sql
+        assert "group by client_sk" in sql
+        assert "inner join first_changed c" in sql
 
 
 # ---------------------------------------------------------------------------

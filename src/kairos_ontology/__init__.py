@@ -24,6 +24,16 @@ from kairos_ontology.core.semantic_index import (
     SemanticIndex,
     build_semantic_index,
 )
+from kairos_ontology.core.reference_modules import (
+    AcceleratorModuleConfig,
+    ManagedImportPlan,
+    ReferenceModuleContext,
+    ReferenceModuleProfile,
+    build_activation_inventory,
+    build_managed_import_plan,
+    build_reference_module_context,
+    load_accelerator_module_config,
+)
 from kairos_ontology.core.validator import run_validation, validate_content, validate_gdpr
 from kairos_ontology.core.projector import run_projections, project_graph
 from kairos_ontology.core.ontology_ops import (
@@ -55,6 +65,14 @@ __all__ = [
     "SEMANTIC_INDEX_VERSION",
     "SemanticIndex",
     "build_semantic_index",
+    "AcceleratorModuleConfig",
+    "ManagedImportPlan",
+    "ReferenceModuleContext",
+    "ReferenceModuleProfile",
+    "build_activation_inventory",
+    "build_managed_import_plan",
+    "build_reference_module_context",
+    "load_accelerator_module_config",
     "run_validation",
     "validate_content",
     "validate_gdpr",

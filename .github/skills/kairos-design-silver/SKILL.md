@@ -265,6 +265,7 @@ class in the domain MUST have at minimum:
 | Annotation | Required? | Default value |
 |------------|-----------|--------------|
 | `kairos-ext:scdType` | ✅ Always | `"2"` |
+| `kairos-ext:scdValidFromColumn` | When source-effective history or as-of FK lookup is required | Mapped Silver timestamp column |
 | `kairos-ext:isReferenceData` | ✅ Always | `"false"` |
 | `kairos-ext:inheritanceStrategy` | Only if has subclasses | `"class-per-table"` |
 | `kairos-ext:silverSourceRef` | If sourcing from bronze_expanded or a contracted model (DD-039/DD-093) | _(none — uses source())_ |
@@ -276,6 +277,9 @@ class in the domain MUST have at minimum:
 | `kairos-ext:silverExclude` | Only if a class must NOT get its own table | `"false"` |
 | `kairos-ext:silverForeignKey` | On ObjectProperty (imported props lacking cardinality) | `"false"` |
 | `kairos-ext:silverForeignKeyOn` | On ObjectProperty (reversal pattern) | _(none)_ |
+| `kairos-ext:silverForeignKeyTemporalMode` | On an FK to an SCD2 parent | `"current"` or `"as-of"` |
+| `kairos-ext:silverForeignKeyAsOfColumn` | When temporal mode is `"as-of"` | Physical source timestamp column |
+| `kairos-ext:silverForeignKeyChangeDetection` | On an FK in an SCD2 child | `"true"` unless relationship changes are explicitly non-historical |
 
 Run a structured semantic scan, then validate the authored extension:
 ```bash
@@ -449,6 +453,38 @@ ref:hasConsignmentItem
 - **`junctionTableName`** — mutually exclusive. Do not combine FK annotations
   with junction-table annotations on the same property.
 
+#### Temporal FK and child-history policy
+
+Every FK to an SCD2 parent must state which parent version is intended:
+
+```turtle
+# Current-state loading: exactly one current parent row can match.
+ref:issuedTo
+    kairos-ext:silverForeignKey "true"^^xsd:boolean ;
+    kairos-ext:silverForeignKeyTemporalMode "current" ;
+    kairos-ext:silverForeignKeyChangeDetection "true"^^xsd:boolean .
+
+# As-of loading: resolve the parent version effective at the source event time.
+ref:Party
+    kairos-ext:scdValidFromColumn "party_effective_at" .
+
+ref:occurredAt
+    kairos-ext:silverForeignKey "true"^^xsd:boolean ;
+    kairos-ext:silverForeignKeyTemporalMode "as-of" ;
+    kairos-ext:silverForeignKeyAsOfColumn "event_timestamp" ;
+    kairos-ext:silverForeignKeyChangeDetection "false"^^xsd:boolean .
+```
+
+- `current` adds `is_current = 1` to the parent lookup and prevents historical
+  parent rows from multiplying the child.
+- `as-of` joins the source timestamp to `[valid_from, valid_to)`.
+- The parent must declare `scdValidFromColumn`; otherwise its validity is system/load
+  time and an as-of relationship is rejected rather than producing a plausible wrong join.
+- `silverForeignKeyChangeDetection` controls whether the resolved FK surrogate key
+  participates in the child `_row_hash`. The default is `true`.
+- SCD2 dbt models use timestamp precision for `valid_from`/`valid_to`, so multiple
+  changes on the same day remain distinct.
+
 ---
 
 ## Phase 4 — Generate output (handoff to projection skill)
@@ -595,8 +631,8 @@ The master ERD is regenerated automatically on every run.
 | 3 | FK columns (one per max-cardinality-1 object property) |
 | 4 | Discriminator column (only for discriminator strategy) |
 | 5 | Business columns (from OWL data properties) |
-| 6 | `valid_from`, `valid_to`, `is_current` (SCD Type 2 only) |
-| 7 | Audit envelope: `_created_at`, `_updated_at`, `_source_system`, `_load_date`, `_batch_id` |
+| 6 | `valid_from`, `valid_to` (TIMESTAMP), `is_current` (SCD Type 2 only) |
+| 7 | Audit/lineage envelope: `_created_at`, `_updated_at`, `_source_system`, `_source_record_id`, `_loaded_at`, `_load_date`, `_batch_id` |
 | 8 | `_row_hash` BINARY — SHA-256 hash of business columns (S5) |
 | 9 | `_deleted_at` TIMESTAMP NULL — soft-delete tracking (S6) |
 

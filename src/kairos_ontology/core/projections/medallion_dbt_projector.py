@@ -46,6 +46,7 @@ from .shared import (
     bool_val,
     detect_ontology_uri,
     silver_naming_convention,
+    portable_sql_identifier,
     silver_schema_name,
     silver_table_name,
 )
@@ -57,6 +58,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SourceRef = tuple[str, str, str] | tuple[str, str, str, str]
+
+_RESERVED_SILVER_COLUMNS = frozenset(
+    {
+        "_source_system",
+        "_source_record_id",
+        "_loaded_at",
+        "_row_hash",
+        "valid_from",
+        "valid_to",
+        "is_current",
+    }
+)
 
 
 def _prefixed_iri(uri: str) -> str:
@@ -264,8 +277,30 @@ def _resolve_column_name(graph: Graph, prop_uri: str) -> str:
     """
     override = graph.value(URIRef(prop_uri), KAIROS_EXT.silverColumnName)
     if override:
-        return str(override)
-    return _camel_to_snake(extract_local_name(prop_uri))
+        return portable_sql_identifier(
+            str(override), annotation="kairos-ext:silverColumnName",
+        )
+    derived = re.sub(
+        r"[^A-Za-z0-9_]", "_", _camel_to_snake(extract_local_name(prop_uri))
+    )
+    return portable_sql_identifier(derived, annotation="derived Silver column")
+
+
+def _validate_business_column_names(columns: list[dict], model_name: str) -> None:
+    """Reject business columns that collide with generated structural columns."""
+    reserved = _RESERVED_SILVER_COLUMNS | {
+        f"{model_name}_sk",
+        f"{model_name}_iri",
+    }
+    collisions = sorted(
+        {column["target_name"] for column in columns} & reserved
+    )
+    if collisions:
+        raise ValueError(
+            f"Silver model {model_name!r} maps business columns to reserved "
+            f"structural names: {', '.join(collisions)}. Use "
+            "kairos-ext:silverColumnName to choose distinct portable names."
+        )
 
 
 def _source_type_to_databricks(src_type: str) -> str:
@@ -467,7 +502,6 @@ def _parse_split_annotations(mappings_dir: Path) -> dict[tuple[str, str], dict]:
     result: dict[tuple[str, str], dict] = {}
     if not mappings_dir or not mappings_dir.is_dir():
         return result
-
     skos_match_uris = {
         str(SKOS.exactMatch), str(SKOS.closeMatch), str(SKOS.narrowMatch),
         str(SKOS.broadMatch), str(SKOS.relatedMatch),
@@ -1264,6 +1298,9 @@ def _stub_columns(
     cols: list[dict] = [
         {"name": f"{model_name}_sk", "data_type": _xsd_to_target(XSD.string, platform)},
         {"name": f"{model_name}_iri", "data_type": _xsd_to_target(XSD.string, platform)},
+        {"name": "_source_system", "data_type": _xsd_to_target(XSD.string, platform)},
+        {"name": "_source_record_id", "data_type": _xsd_to_target(XSD.string, platform)},
+        {"name": "_loaded_at", "data_type": _xsd_to_target(XSD.dateTime, platform)},
     ]
     domain_classes = _get_class_and_parents(graph, cls_uri)
     seen: set[str] = {c["name"] for c in cols}
@@ -1282,6 +1319,19 @@ def _stub_columns(
             range_uri = graph.value(prop, RDFS.range)
             data_type = _xsd_to_target(range_uri, platform)
         cols.append({"name": col_name, "data_type": data_type})
+    is_ref = bool_val(graph, URIRef(cls_uri), KAIROS_EXT.isReferenceData, False)
+    scd_type = str_val(
+        graph, URIRef(cls_uri), KAIROS_EXT.scdType, "1" if is_ref else "2"
+    )
+    if scd_type == "2":
+        cols.extend(
+            [
+                {"name": "_row_hash", "data_type": _xsd_to_target(XSD.string, platform)},
+                {"name": "valid_from", "data_type": _xsd_to_target(XSD.dateTime, platform)},
+                {"name": "valid_to", "data_type": _xsd_to_target(XSD.dateTime, platform)},
+                {"name": "is_current", "data_type": _xsd_to_target(XSD.boolean, platform)},
+            ]
+        )
     return cols
 
 
@@ -1463,39 +1513,37 @@ def _gen_silver_models(
             })
             continue
 
-        # Check for missing naturalKey — critical for SK and IRI generation
+        # A bound model must never materialize with a NULL warehouse key. Aspirational
+        # models are handled above as zero-row views, so they remain safe without a key.
         natural_key_cols = _get_natural_key(graph, cls_uri)
         if not natural_key_cols:
-            if cls_uri in active_contracts:
-                raise ValueError(
-                    f"Contracted transformation {active_contracts[cls_uri].name!r} "
-                    f"targets class {local!r}, which has no kairos-ext:naturalKey"
-                )
             fk_parents = _fk_child_parents(graph, cls_uri, fk_contract)
-            if fk_parents:
-                msg = (
-                    f"Class '{local}' has no kairos-ext:naturalKey and is an "
-                    f"FK-child of {', '.join(fk_parents)} (via "
-                    f"kairos-ext:silverForeignKeyOn) — its surrogate key and IRI "
-                    f"will be NULL. If this is a weak entity, add a "
-                    f"kairos-ext:naturalKey for its composite business key (e.g. "
-                    f"a type/discriminator column distinguishing rows under the "
-                    f"same parent); if it has its own source identity, add that "
-                    f"key; if it is purely embedded, consider denormalising it "
-                    f"onto the parent table. Resolve via: kairos-design-silver"
-                )
-            else:
-                msg = (
-                    f"Class '{local}' has no kairos-ext:naturalKey — "
-                    f"SK and IRI columns will be NULL. "
-                    f"Resolve via: kairos-design-silver"
-                )
-            logger.warning(msg)
-            warnings.append(msg)
+            relationship = (
+                f" and is an FK-child of {', '.join(fk_parents)} (weak entity)"
+                if fk_parents
+                else ""
+            )
+            contract_name = (
+                f" contracted transformation {active_contracts[cls_uri].name!r}"
+                if cls_uri in active_contracts
+                else ""
+            )
+            raise ValueError(
+                f"Cannot materialize class {local!r}{contract_name}{relationship}: no "
+                "kairos-ext:naturalKey is defined, so the generated incremental model "
+                "would emit NULL surrogate keys. Add an immutable natural key via "
+                "kairos-design-silver or leave an approved claim unbound as an "
+                "aspirational stub."
+            )
 
         # DD-039: Check for silverSourceRef (bronze_expanded staging model override)
         silver_source_ref = str_val(
             graph, URIRef(cls_uri), KAIROS_EXT.silverSourceRef
+        )
+
+        is_ref = bool_val(graph, URIRef(cls_uri), KAIROS_EXT.isReferenceData, False)
+        scd_type = str_val(
+            graph, URIRef(cls_uri), KAIROS_EXT.scdType, "1" if is_ref else "2"
         )
 
         # ----- Multi-source: generate per-source views + union model -----
@@ -1579,6 +1627,13 @@ def _gen_silver_models(
 
                 per_source_data.append(src_columns)
                 per_source_fk.append(fk_cols)
+                fallback_source_id = _build_sk_expression(graph, cls_uri)
+                source_record_id, source_id_after_mapping = _source_record_id_expression(
+                    systems,
+                    source_ref,
+                    _camel_to_snake(raw_tbl),
+                    fallback_source_id,
+                )
                 per_source_meta.append({
                     "model_name": src_model_name,
                     "src": src,
@@ -1586,6 +1641,8 @@ def _gen_silver_models(
                     "source_alias": _camel_to_snake(raw_tbl),
                     "joins": fk_joins,
                     "filter": cte_filter,
+                    "source_record_id_expression": source_record_id,
+                    "source_record_id_generated_after_mapping": source_id_after_mapping,
                 })
 
             # Build canonical superset (data cols then FK cols) with NULL pads so
@@ -1593,9 +1650,10 @@ def _gen_silver_models(
             canonical_columns, padded_per_source = _build_merge_superset(
                 per_source_data, per_source_fk, type_map,
             )
+            _validate_business_column_names(canonical_columns, model_name)
 
-            # Natural-key coverage check: a source that does not map an NK column
-            # produces NULL/duplicate surrogate keys in the union — warn loudly.
+            # Natural-key coverage is a hard contract. A partial source branch would
+            # otherwise introduce NULL/duplicate keys into the conformed union.
             nk_cols = _get_natural_key(graph, cls_uri)
             for psm, data_cols in zip(per_source_meta, per_source_data):
                 provided = {c["target_name"] for c in data_cols}
@@ -1604,10 +1662,12 @@ def _gen_silver_models(
                     msg = (
                         f"Merge entity '{local}': source '{psm['src']}' "
                         f"({psm['raw_tbl']}) does not map natural-key column(s) "
-                        f"{', '.join(missing_nk)}; rows from this source will "
-                        f"produce NULL/duplicate surrogate keys in the union. "
+                        f"{', '.join(missing_nk)}; generating this branch would "
+                        f"produce NULL/duplicate surrogate keys. "
                         f"Resolve via: kairos-design-mapping"
                     )
+                    if eligible_class_uris is not None and cls_uri in eligible_class_uris:
+                        raise ValueError(msg)
                     logger.warning(msg)
                     warnings.append(msg)
 
@@ -1623,6 +1683,10 @@ def _gen_silver_models(
                     columns=padded,
                     joins=psm["joins"],
                     filter_condition=psm["filter"],
+                    source_record_id_expression=psm["source_record_id_expression"],
+                    source_record_id_generated_after_mapping=(
+                        psm["source_record_id_generated_after_mapping"]
+                    ),
                     parent_model=model_name,
                     ref_model=silver_source_ref or None,
                     ontology_metadata=meta,
@@ -1634,12 +1698,54 @@ def _gen_silver_models(
             # FK columns are already resolved upstream, so no union-level joins.
             sk_expr = _build_sk_expression(graph, cls_uri)
             iri_expr = _build_iri_expression(graph, cls_uri, namespace)
+            fk_change_detection = {
+                col["target_name"]: col.get("include_in_change_detection", True)
+                for cols in per_source_fk
+                for col in cols
+            }
+            hash_columns = [
+                col["target_name"]
+                for col in canonical_columns
+                if (
+                    not col["target_name"].endswith("_sk")
+                    or fk_change_detection.get(col["target_name"], False)
+                )
+                and not col["target_name"].endswith("_iri")
+            ]
+            materialization = "incremental" if scd_type in {"1", "2"} else "table"
+            unique_key = (
+                [f"{model_name}_sk", "valid_from"]
+                if scd_type == "2"
+                else f"{model_name}_sk"
+            )
+            scd_valid_from_column = (
+                str_val(graph, URIRef(cls_uri), KAIROS_EXT.scdValidFromColumn) or None
+            )
+            if scd_valid_from_column:
+                scd_valid_from_column = portable_sql_identifier(
+                    scd_valid_from_column,
+                    annotation="kairos-ext:scdValidFromColumn",
+                )
+                canonical_names = {
+                    column["target_name"] for column in canonical_columns
+                }
+                if scd_valid_from_column not in canonical_names:
+                    raise ValueError(
+                        f"Class {local!r} declares kairos-ext:scdValidFromColumn "
+                        f"{scd_valid_from_column!r}, but that column is not mapped."
+                    )
 
             content = union_template.render(
                 model_name=model_name,
                 domain_name=ontology_name,
                 schema_name=schema_name,
-                materialization="table",
+                materialization=materialization,
+                unique_key=unique_key,
+                scd_type=scd_type,
+                hash_columns=hash_columns,
+                valid_from_expression=(
+                    scd_valid_from_column or "{{ kairos_current_timestamp() }}"
+                ),
                 source_models=source_model_names,
                 columns=canonical_columns,
                 sk_expression=sk_expr,
@@ -1653,7 +1759,7 @@ def _gen_silver_models(
                 "class_name": local,
                 "class_uri": cls_uri,
                 "model_file": f"{model_name}.sql",
-                "scd_type": "2",
+                "scd_type": scd_type,
                 "source_count": len(source_refs),
                 "column_count": len(canonical_columns),
                 "column_names": [c["target_name"] for c in canonical_columns],
@@ -1664,11 +1770,7 @@ def _gen_silver_models(
             continue
 
         # ----- Single source: existing inline model -----
-        # Read SCD type annotation (default: "2" for regular entities, "1" for reference)
-        is_ref = bool_val(graph, URIRef(cls_uri), KAIROS_EXT.isReferenceData, False)
-        scd_type = str_val(
-            graph, URIRef(cls_uri), KAIROS_EXT.scdType, "1" if is_ref else "2"
-        )
+        # SCD policy was normalized above and is shared by all source-count paths.
 
         # Extract properties for column list with platform-aware types.
         # Scope to primary table columns so inherited properties from other
@@ -1683,6 +1785,7 @@ def _gen_silver_models(
             mapping_ns=mapping_ns,
             scd_type=scd_type,
         )
+        _validate_business_column_names(columns[2:], model_name)
         if folded_subtype_uri:
             subtype_columns = _extract_silver_columns(
                 graph, folded_subtype_uri, namespace, mappings, platform=platform,
@@ -1841,20 +1944,64 @@ def _gen_silver_models(
 
         columns.extend(fk_columns)
 
+        # Canonical row lineage survives the semantic projection boundary. Source
+        # record identity comes from the Bronze primary key when available; load
+        # context records when this projected version was created.
+        sk_expression = next(
+            col["expression"]
+            for col in columns
+            if col["target_name"] == f"{model_name}_sk"
+        )
+        source_system_literal = source_ctes[0]["source_name"].replace("'", "''")
+        source_record_id_expression, source_id_after_mapping = _source_record_id_expression(
+            systems,
+            source_ref,
+            source_ctes[0]["alias"],
+            sk_expression,
+        )
+        columns.extend(
+            [
+                {
+                    "expression": f"'{source_system_literal}'",
+                    "target_name": "_source_system",
+                },
+                {
+                    "expression": source_record_id_expression,
+                    "target_name": "_source_record_id",
+                    "generated_after_mapping": source_id_after_mapping,
+                },
+                {
+                    "expression": "{{ kairos_current_timestamp() }}",
+                    "target_name": "_loaded_at",
+                },
+            ]
+        )
+
         # Filter conditions are embedded in each CTE via cte.filter.
         # No top-level WHERE needed — all filtering happens at the CTE level.
         where_clause = ""
 
         # Compute hash columns for SCD2 change detection (_row_hash)
         # Exclude: SK, IRI, temporal columns, _row_hash itself, FK columns
-        _scd_temporal = {"valid_from", "valid_to", "is_current", "_row_hash"}
+        _scd_temporal = {
+            "valid_from",
+            "valid_to",
+            "is_current",
+            "_row_hash",
+            "_source_system",
+            "_source_record_id",
+            "_loaded_at",
+        }
         _fk_target_names = {j.get("fk_column", "") for j in fk_joins} if fk_joins else set()
         hash_columns = [
             col["target_name"] for col in columns
             if col["target_name"] not in _scd_temporal
-            and not col["target_name"].endswith("_sk")
+            and (
+                not col["target_name"].endswith("_sk")
+                or col["target_name"] in _fk_target_names
+                and col.get("include_in_change_detection", True)
+            )
             and not col["target_name"].endswith("_iri")
-            and col["target_name"] not in _fk_target_names
         ]
 
         # Determine materialization and unique_key based on SCD type
@@ -1868,6 +2015,21 @@ def _gen_silver_models(
             materialization = "table"
             unique_key = ""
 
+        scd_valid_from_column = (
+            str_val(graph, URIRef(cls_uri), KAIROS_EXT.scdValidFromColumn) or None
+        )
+        if scd_valid_from_column:
+            scd_valid_from_column = portable_sql_identifier(
+                scd_valid_from_column,
+                annotation="kairos-ext:scdValidFromColumn",
+            )
+            available_columns = {column["target_name"] for column in columns}
+            if scd_valid_from_column not in available_columns:
+                raise ValueError(
+                    f"Class {local!r} declares kairos-ext:scdValidFromColumn "
+                    f"{scd_valid_from_column!r}, but that column is not mapped."
+                )
+
         content = template.render(
             model_name=model_name,
             domain_name=ontology_name,
@@ -1875,6 +2037,9 @@ def _gen_silver_models(
             materialization=materialization,
             unique_key=unique_key,
             scd_type=scd_type,
+            valid_from_expression=(
+                scd_valid_from_column or "{{ kairos_current_timestamp() }}"
+            ),
             hash_columns=hash_columns,
             source_ctes=source_ctes,
             columns=columns,
@@ -1946,6 +2111,41 @@ def _get_table_column_names(systems: list[dict], table_uri: str) -> set[str]:
                     if col.get("name"):
                         result.add(col["name"])
     return result
+
+
+def _source_record_id_expression(
+    systems: list[dict],
+    source_ref: SourceRef,
+    source_alias: str,
+    fallback_expression: str,
+) -> tuple[str, bool]:
+    """Build immutable source-row identity from declared Bronze primary keys."""
+    _, raw_table, table_uri = _source_ref_parts(source_ref)
+    table_prefix = raw_table.replace("'", "''") + "|"
+    for system in systems:
+        for table in system["tables"]:
+            if table["uri"] != table_uri:
+                continue
+            table_prefix = str(table.get("name") or raw_table).replace("'", "''") + "|"
+            primary_keys = table.get("pk_columns") or [
+                column["name"]
+                for column in table["columns"]
+                if column.get("is_pk")
+            ]
+            if primary_keys:
+                components = [
+                    f"'{table_prefix[:-1]}'",
+                    *(
+                        f"{source_alias}.{_quote_identifier_if_reserved(column)}"
+                        for column in primary_keys
+                    ),
+                ]
+                arguments = ", ".join(repr(component) for component in components)
+                return (
+                    f"{{{{ dbt_utils.generate_surrogate_key([{arguments}]) }}}}",
+                    False,
+                )
+    return f"CONCAT('{table_prefix}', {fallback_expression})", True
 
 
 def _build_column_type_map(
@@ -2688,6 +2888,9 @@ def _build_fk_join_clause(
     fk_col_name: str,
     target_nk: list[str],
     join_alias: str,
+    temporal_mode: str,
+    as_of_column: str | None,
+    include_in_change_detection: bool,
 ) -> tuple[dict, dict, str | None]:
     """Build the join dict and FK column dict for one FK relationship.
 
@@ -2720,16 +2923,33 @@ def _build_fk_join_clause(
             f"only 1 source column — join may be incomplete."
         )
 
+    if temporal_mode == "current":
+        join_condition += f" AND {join_alias}.is_current = 1"
+    elif temporal_mode == "as-of":
+        if not as_of_column:
+            raise ValueError(
+                f"FK column '{fk_col_name}' uses as-of resolution but has no "
+                "kairos-ext:silverForeignKeyAsOfColumn annotation."
+            )
+        join_condition += (
+            f" AND {source_alias}.{as_of_column} >= {join_alias}.valid_from"
+            f" AND ({join_alias}.valid_to IS NULL OR "
+            f"{source_alias}.{as_of_column} < {join_alias}.valid_to)"
+        )
+
     join_dict = {
         "type": "left",
         "ref": f"{{{{ ref('{range_model}') }}}}",
         "alias": join_alias,
         "condition": join_condition,
+        "fk_column": fk_col_name,
+        "temporal_mode": temporal_mode,
     }
 
     fk_col_dict = {
         "expression": f"{join_alias}.{range_model}_sk",
         "target_name": fk_col_name,
+        "include_in_change_detection": include_in_change_detection,
     }
 
     return fk_col_dict, join_dict, warning
@@ -2833,6 +3053,7 @@ def _extract_fk_columns_and_joins(
             fk_columns.append({
                 "expression": "CAST(NULL AS {{ dbt.type_string() }})",
                 "target_name": fk_col_name,
+                "include_in_change_detection": False,
             })
             if status == "ambiguous_auto_inference":
                 msg = (
@@ -2865,6 +3086,7 @@ def _extract_fk_columns_and_joins(
             fk_columns.append({
                 "expression": "CAST(NULL AS {{ dbt.type_string() }})",
                 "target_name": fk_col_name,
+                "include_in_change_detection": False,
             })
             msg = (
                 f"FK column '{fk_col_name}' targets class '{range_local}' which "
@@ -2886,10 +3108,63 @@ def _extract_fk_columns_and_joins(
         existing_aliases.add(fk_col_name)
         existing_aliases.add(join_alias)
 
+        target_scd_type = str_val(
+            graph,
+            URIRef(str(range_cls)),
+            KAIROS_EXT.scdType,
+            "1" if bool_val(graph, URIRef(str(range_cls)), KAIROS_EXT.isReferenceData) else "2",
+        )
+        temporal_mode = str_val(
+            graph, URIRef(str(prop)), KAIROS_EXT.silverForeignKeyTemporalMode,
+            "current" if target_scd_type == "2" else "none",
+        )
+        if temporal_mode not in {"none", "current", "as-of"}:
+            raise ValueError(
+                f"FK property {prop} has unsupported "
+                f"kairos-ext:silverForeignKeyTemporalMode {temporal_mode!r}; "
+                "expected 'none', 'current', or 'as-of'."
+            )
+        if target_scd_type == "2" and temporal_mode == "none":
+            raise ValueError(
+                f"FK property {prop} targets SCD2 class {range_local!r} but disables "
+                "temporal resolution; use 'current' or 'as-of'."
+            )
+        if target_scd_type != "2" and temporal_mode != "none":
+            raise ValueError(
+                f"FK property {prop} targets non-SCD2 class {range_local!r}; "
+                "kairos-ext:silverForeignKeyTemporalMode must be 'none'."
+            )
+        if temporal_mode == "as-of":
+            target_valid_from = str_val(
+                graph, URIRef(str(range_cls)), KAIROS_EXT.scdValidFromColumn
+            )
+            if not target_valid_from:
+                raise ValueError(
+                    f"FK property {prop} uses as-of resolution, but target class "
+                    f"{range_local!r} has no kairos-ext:scdValidFromColumn. "
+                    "As-of joins require business-effective parent validity."
+                )
+        as_of_column = (
+            str_val(graph, URIRef(str(prop)), KAIROS_EXT.silverForeignKeyAsOfColumn)
+            or None
+        )
+        if as_of_column:
+            as_of_column = portable_sql_identifier(
+                as_of_column,
+                annotation="kairos-ext:silverForeignKeyAsOfColumn",
+            )
+        include_in_change_detection = bool_val(
+            graph,
+            URIRef(str(prop)),
+            KAIROS_EXT.silverForeignKeyChangeDetection,
+            True,
+        )
+
         # Build join clause
         fk_col_dict, join_dict, join_warning = _build_fk_join_clause(
             source_alias, source_col_name, source_columns,
             range_model, range_local, fk_col_name, target_nk, join_alias,
+            temporal_mode, as_of_column, include_in_change_detection,
         )
         fk_col_dict["comment"] = _prefixed_iri(str(prop))
 
@@ -3120,6 +3395,7 @@ def _gen_schema_yaml(
             if scd_type == "2"
             else "unique"
         )
+        natural_key_names = set(_get_natural_key(graph, cls["uri"]))
 
         cols = []
         folded_subtype_uris = {
@@ -3153,6 +3429,28 @@ def _gen_schema_yaml(
             "meta": {},
             "tests": ["not_null", unique_test],
         })
+        cols.extend(
+            [
+                {
+                    "name": "_source_system",
+                    "description": "Immutable source-system lineage",
+                    "meta": {"is_lineage": "true"},
+                    "tests": ["not_null"],
+                },
+                {
+                    "name": "_source_record_id",
+                    "description": "Immutable source record identity",
+                    "meta": {"is_lineage": "true"},
+                    "tests": ["not_null"],
+                },
+                {
+                    "name": "_loaded_at",
+                    "description": "Timestamp when this Silver version was projected",
+                    "meta": {"is_lineage": "true"},
+                    "tests": ["not_null"],
+                },
+            ]
+        )
 
         # Datatype properties (including inherited from parent classes)
         domain_classes = _get_class_and_parents(graph, cls["uri"]) | folded_subtype_uris
@@ -3200,6 +3498,8 @@ def _gen_schema_yaml(
 
                 # Start with SHACL-derived tests
                 tests = list(shacl_tests.get(col_name, []))
+                if col_name in natural_key_names and "not_null" not in tests:
+                    tests.append("not_null")
 
                 # Add not_null for required properties (from kairos-ext annotation)
                 pop_req = graph.value(URIRef(str(prop)), KAIROS_EXT.populationRequirement)
@@ -3269,6 +3569,34 @@ def _gen_schema_yaml(
                 else (str(prop_label) if prop_label
                       else f"FK to {range_local}")
             )
+            target_is_reference = bool_val(
+                graph, URIRef(str(range_cls)), KAIROS_EXT.isReferenceData, False
+            )
+            target_scd_type = str_val(
+                graph,
+                URIRef(str(range_cls)),
+                KAIROS_EXT.scdType,
+                "1" if target_is_reference else "2",
+            )
+            temporal_mode = str_val(
+                graph,
+                prop,
+                KAIROS_EXT.silverForeignKeyTemporalMode,
+                "current" if target_scd_type == "2" else "none",
+            )
+            change_detection = bool_val(
+                graph, prop, KAIROS_EXT.silverForeignKeyChangeDetection, True
+            )
+            fk_tests: list[dict | str] = [
+                {
+                    "relationships": {
+                        "to": f"ref('{range_model}')",
+                        "field": f"{range_model}_sk",
+                    }
+                }
+            ]
+            if fk.nullable is False:
+                fk_tests.insert(0, "not_null")
             cols.append({
                 "name": fk_col_name,
                 "description": fk_desc,
@@ -3276,14 +3604,61 @@ def _gen_schema_yaml(
                     "is_fk": "true",
                     "references": range_model,
                     "domain_iri": str(prop),
+                    "temporal_mode": temporal_mode,
+                    "fk_change_detection": str(change_detection).lower(),
                 },
-                "tests": [],
+                "tests": fk_tests,
             })
+
+        if scd_type == "2":
+            cols.extend(
+                [
+                    {
+                        "name": "_row_hash",
+                        "description": "Hash of history-participating attributes",
+                        "meta": {"is_scd": "true"},
+                        "tests": ["not_null"],
+                    },
+                    {
+                        "name": "valid_from",
+                        "description": "Inclusive business-version start timestamp",
+                        "meta": {
+                            "is_scd": "true",
+                            "data_type": _xsd_to_target(XSD.dateTime, platform),
+                        },
+                        "tests": ["not_null"],
+                    },
+                    {
+                        "name": "valid_to",
+                        "description": "Exclusive business-version end timestamp",
+                        "meta": {
+                            "is_scd": "true",
+                            "data_type": _xsd_to_target(XSD.dateTime, platform),
+                        },
+                        "tests": [],
+                    },
+                    {
+                        "name": "is_current",
+                        "description": "Whether this is the current business version",
+                        "meta": {
+                            "is_scd": "true",
+                            "data_type": _xsd_to_target(XSD.boolean, platform),
+                        },
+                        "tests": ["not_null", {"accepted_values": {"values": [0, 1]}}],
+                    },
+                ]
+            )
 
         model_meta = {
             "ontology_class": cls["name"],
             "ontology_iri": meta.get("iri", ""),
             "ontology_version": meta.get("version", ""),
+            "toolkit_version": meta.get("toolkit_version", ""),
+            "closure_hash": meta.get("closure_hash", ""),
+            "silver_default_packages": ", ".join(
+                meta.get("silver_default_packages", [])
+            ),
+            "silver_overrides": ", ".join(meta.get("silver_overrides", [])),
         }
         if aspirational_class_names and cls["name"] in aspirational_class_names:
             # Read-only, derived marker: this Silver model is an aspirational stub
@@ -3294,6 +3669,9 @@ def _gen_schema_yaml(
             "description": cls["comment"],
             "meta": model_meta,
             "columns": cols,
+            "grain_columns": ["_source_system", *_get_natural_key(graph, cls["uri"])],
+            "source_identity_columns": ["_source_system", "_source_record_id"],
+            "grain_where": "is_current = 1" if scd_type == "2" else "",
         })
 
     if models_data:

@@ -25,6 +25,8 @@ ALLOWED_DIRECT_PARSE_SITES = {
     "import_source.py": "authored source-vocabulary mutation",
     "ontology_loader.py": "canonical domain/reference ontology loader",
     "ontology_ops.py": "explicit single-file CRUD and syntax API",
+    "projector.py": "Silver extension overlays and reference defaults",
+    "reference_modules.py": "typed module-profile annotation overlays",
     "silver_sample_audit.py": "source vocabularies",
     "source_catalog.py": "source vocabularies",
     "source_privacy.py": "source-vocabulary privacy inspection",

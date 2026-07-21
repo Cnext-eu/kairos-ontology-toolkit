@@ -218,15 +218,48 @@ def test_generate_audit_columns_present():
     result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
     assert "_created_at" in ddl
+    assert "_source_system" in ddl
+    assert "_source_record_id" in ddl
+    assert "_loaded_at" in ddl
     assert "_load_date" in ddl
+
+
+def test_mandatory_lineage_columns_do_not_duplicate_custom_audit_columns():
+    ttl = f"""
+        @prefix ex: <{BASE}> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <{BASE.rstrip('#')}> a owl:Ontology ;
+            rdfs:label "Test"@en ;
+            owl:versionInfo "1.0" ;
+            kairos-ext:auditEnvelope
+                "_source_system STRING, _source_record_id STRING, _loaded_at TIMESTAMP" .
+
+        ex:Thing a owl:Class ;
+            rdfs:label "Thing"@en ;
+            rdfs:comment "A test entity."@en .
+    """
+    result = generate_silver_artifacts(
+        [{"uri": f"{BASE}Thing", "name": "Thing"}],
+        _make_graph(ttl),
+        BASE,
+        ontology_name="test",
+    )
+    ddl = next(value for key, value in result.items() if key.endswith("-ddl.sql"))
+    assert ddl.count("_source_system") == 1
+    assert ddl.count("_source_record_id") == 1
+    assert ddl.count("_loaded_at") == 1
 
 
 def test_generate_scd2_columns_present():
     g, classes = _simple_ontology()
     result = generate_silver_artifacts(classes, g, BASE, ontology_name="test")
     ddl = next(v for k, v in result.items() if k.endswith("-ddl.sql"))
-    assert "valid_from" in ddl
-    assert "valid_to" in ddl
+    compact_ddl = " ".join(ddl.split())
+    assert "valid_from TIMESTAMP" in compact_ddl
+    assert "valid_to TIMESTAMP" in compact_ddl
     assert "is_current" in ddl
 
 

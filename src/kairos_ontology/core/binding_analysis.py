@@ -115,6 +115,30 @@ def approved_imported_class_uris(registry: "ClaimRegistry") -> set[str]:
     return uris
 
 
+def approved_imported_term_refs(
+    registry: "ClaimRegistry",
+) -> tuple[tuple[str, str, str], ...]:
+    """Return approved imported term references that require ontology imports.
+
+    Unlike :func:`approved_imported_class_uris`, this includes properties and
+    relationships. Projection selection remains class-only; ontology import
+    completeness must cover every externally governed semantic term.
+    """
+    refs: list[tuple[str, str, str]] = []
+    for claim in registry.claims:
+        if claim.status != "approved":
+            continue
+        if claim.origin != IMPORTED_ORIGIN:
+            continue
+        if claim.disposition not in MATERIALIZATION_DISPOSITIONS:
+            continue
+        uri = claim.identifying_uri()
+        if not uri:
+            continue
+        refs.append((claim.id, uri, claim.type))
+    return tuple(sorted(refs))
+
+
 def is_discriminator_subclass(graph: Graph, class_uri: str) -> tuple[bool, str | None]:
     """Return ``(True, parent_local)`` if the class is S3-folded into a parent.
 

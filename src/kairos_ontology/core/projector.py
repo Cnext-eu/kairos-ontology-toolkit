@@ -1040,6 +1040,8 @@ def run_projections(
     emit_aspirational_stubs: bool = False,
     strict: bool = False,
     degraded: bool = False,
+    ref_models_dir: Path | None = None,
+    accelerator: str | None = None,
 ):
     """Run projection generation.
     
@@ -1212,6 +1214,26 @@ def run_projections(
     mappings_dir = hub_root / "model" / "mappings" if hub_root else None
     extensions_dir = hub_root / "model" / "extensions" if hub_root else None
     claims_dir = hub_root / "model" / "claims" if hub_root else None
+    if ref_models_dir is None and hub_root:
+        ref_models_dir = next(
+            (
+                candidate
+                for candidate in (
+                    hub_root / "ontology-reference-models",
+                    hub_root.parent / "ontology-reference-models",
+                    hub_root / "model" / "reference-models",
+                )
+                if candidate.is_dir()
+            ),
+            None,
+        )
+    from .reference_modules import build_reference_module_context
+
+    module_context = build_reference_module_context(
+        ref_models_dir,
+        catalog_path=catalog_path,
+        accelerator=accelerator,
+    )
     if sources_dir and sources_dir.exists():
         print(f"  Found source system references: {sources_dir}")
     if mappings_dir and mappings_dir.exists():
@@ -1337,7 +1359,12 @@ def run_projections(
                 # domain, projection surfaces must be claim-driven and in sync.
                 if target_name in ("silver", "dbt", "powerbi") and claims_dir:
                     claims_file = claims_dir / f"{onto_name}-claims.yaml"
-                    if claims_file.exists():
+                    activation = (
+                        module_context.config.activation(onto_name)
+                        if module_context
+                        else None
+                    )
+                    if claims_file.exists() or activation is not None:
                         from .claim_projection_sync import evaluate_domain_projection_sync
 
                         sync_status = evaluate_domain_projection_sync(
@@ -1348,37 +1375,105 @@ def run_projections(
                                 onto_name, onto_info, extensions_dir
                             ),
                             hub_domain_bases=hub_domain_namespaces,
+                            module_context=module_context,
                         )
                         if not sync_status.in_sync:
-                            details: list[str] = []
-                            if sync_status.error:
-                                details.append(sync_status.error)
-                            details.extend(f"missing owl:imports {x}" for x in sync_status.missing_imports[:5])
-                            details.extend(f"extra owl:imports {x}" for x in sync_status.extra_imports[:5])
-                            details.extend(
-                                f"missing silverInclude {x}" for x in sync_status.missing_includes[:5]
+                            import_only_degraded = (
+                                degraded
+                                and sync_status.error is None
+                                and not sync_status.extra_imports
+                                and not sync_status.missing_includes
+                                and not sync_status.extra_includes
+                                and not sync_status.has_bulk_include_imports
                             )
-                            details.extend(
-                                f"extra silverInclude {x}" for x in sync_status.extra_includes[:5]
-                            )
-                            if sync_status.has_bulk_include_imports:
-                                details.append("silverIncludeImports bulk flag present")
-                            raise RuntimeError(
-                                "Claim/projection drift for domain "
-                                f"'{onto_name}'. Run `kairos-ontology claims-to-silver-ext` first. "
-                                + ("; ".join(details) if details else "")
-                            )
+                            if import_only_degraded:
+                                for diagnostic in sync_status.import_diagnostics:
+                                    report.record(
+                                        "warning",
+                                        diagnostic.message,
+                                        domain=onto_name,
+                                        target=target_name,
+                                    )
+                                report.record(
+                                    "warning",
+                                    "Managed imports are incomplete; projection continued "
+                                    "under explicit degraded mode.",
+                                    domain=onto_name,
+                                    target=target_name,
+                                )
+                            else:
+                                details: list[str] = []
+                                if sync_status.error:
+                                    details.append(sync_status.error)
+                                details.extend(
+                                    f"missing owl:imports {x}"
+                                    for x in sync_status.missing_imports[:5]
+                                )
+                                details.extend(
+                                    f"extra owl:imports {x}"
+                                    for x in sync_status.extra_imports[:5]
+                                )
+                                details.extend(
+                                    f"missing silverInclude {x}"
+                                    for x in sync_status.missing_includes[:5]
+                                )
+                                details.extend(
+                                    f"extra silverInclude {x}"
+                                    for x in sync_status.extra_includes[:5]
+                                )
+                                if sync_status.has_bulk_include_imports:
+                                    details.append("silverIncludeImports bulk flag present")
+                                raise RuntimeError(
+                                    "Claim/projection drift for domain "
+                                    f"'{onto_name}'. Run `kairos-ontology "
+                                    "claims-to-silver-ext` first. "
+                                    + ("; ".join(details) if details else "")
+                                )
 
                 # DD-023: Discover reference model default extensions
                 ref_defaults = _discover_ref_model_defaults(
                     onto_info["file"], catalog_path,
                     target="gold" if target_name == "powerbi" else "silver",
                 )
+                if module_context and target_name in ("silver", "dbt", "powerbi"):
+                    from .reference_modules import active_default_annotation_paths
+
+                    ref_defaults = sorted(
+                        {
+                            *ref_defaults,
+                            *active_default_annotation_paths(module_context, onto_name),
+                        }
+                    )
                 if ref_defaults:
                     names = ", ".join(p.name for p in ref_defaults)
                     print(f"  [{onto_name}] Using ref-model defaults: {names}")
                     report.record("info", f"Using ref-model defaults: {names}",
                                   domain=onto_name, target=target_name)
+                    default_packages: list[str] = []
+                    fallback_graph = Graph()
+                    for default_path in ref_defaults:
+                        default_graph = Graph()
+                        default_graph.parse(str(default_path), format="turtle")
+                        fallback_graph += default_graph
+                        ontology_iri = next(
+                            default_graph.subjects(RDF.type, OWL.Ontology),
+                            URIRef(default_path.stem),
+                        )
+                        version = default_graph.value(ontology_iri, OWL.versionInfo)
+                        default_packages.append(
+                            f"{ontology_iri}@{version or 'unversioned'}"
+                        )
+                    onto_meta["silver_default_packages"] = sorted(default_packages)
+
+                    if ext_path and ext_path.exists():
+                        hub_ext_graph = Graph()
+                        hub_ext_graph.parse(str(ext_path), format="turtle")
+                        fallback_pairs = {(s, p) for s, p, _ in fallback_graph}
+                        onto_meta["silver_overrides"] = sorted(
+                            f"{s} {p}"
+                            for s, p, _ in hub_ext_graph
+                            if (s, p) in fallback_pairs
+                        )
 
                 # Capture projector-level logger warnings
                 warn_handler = _ProjectionWarningHandler()
@@ -1392,23 +1487,35 @@ def run_projections(
                     ] if all_silver_ext_paths else None
 
                     # Target-first stub → bind loop (DD-096): compute the
-                    # materialization-eligible claim set so the dbt projector can
-                    # (a) emit typed zero-row Silver stubs when enabled, and
-                    # (b) report approved-but-unbound claims for the `--strict`
-                    # release gate. Computed whenever stubs are enabled OR strict.
+                    # materialization-eligible governed set so the dbt projector can
+                    # reject invalid bound models in every mode, emit typed zero-row
+                    # stubs when enabled, and report unbound claims in strict mode.
                     eligible_class_uris: set[str] | None = None
-                    if (emit_aspirational_stubs or strict) and \
-                            target_name == "dbt" and claims_dir:
-                        claims_file = claims_dir / f"{onto_name}-claims.yaml"
-                        if claims_file.exists():
+                    if target_name == "dbt":
+                        governed_class_uris: set[str] = set()
+                        if claims_dir:
+                            claims_file = claims_dir / f"{onto_name}-claims.yaml"
+                        else:
+                            claims_file = None
+                        if claims_file and claims_file.exists():
                             from .binding_analysis import (
                                 materialization_eligible_class_uris,
                             )
                             from .claim_registry import load_registry
 
-                            eligible_class_uris = materialization_eligible_class_uris(
-                                load_registry(claims_file)
+                            governed_class_uris.update(
+                                materialization_eligible_class_uris(
+                                    load_registry(claims_file)
+                                )
                             )
+                        if module_context:
+                            from .reference_modules import active_projection_allowlist
+
+                            governed_class_uris.update(
+                                active_projection_allowlist(module_context, onto_name)
+                            )
+                        if governed_class_uris:
+                            eligible_class_uris = governed_class_uris
 
                     artifacts = _run_projection(
                         target_name, onto_graph, target_output, template_base,
