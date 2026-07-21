@@ -191,6 +191,7 @@ def test_powerbi_claim_gate_uses_silver_ext_but_projection_uses_gold_ext(tmp_pat
         output_path=output,
         target="powerbi",
         namespace=None,
+        degraded=True,
     )
 
     assert _projection_errors(output, target="powerbi", domain="party") == []
@@ -211,6 +212,7 @@ def test_powerbi_claim_gate_uses_each_domains_exact_silver_ext(tmp_path, monkeyp
         output_path=output,
         target="powerbi",
         namespace=None,
+        degraded=True,
     )
 
     assert _projection_errors(output, target="powerbi", domain="invoice") == []
@@ -233,6 +235,7 @@ def test_powerbi_claim_gate_does_not_borrow_peer_silver_ext(tmp_path, monkeypatc
         output_path=output,
         target="powerbi",
         namespace=None,
+        degraded=True,
     )
 
     errors = _projection_errors(output, target="powerbi", domain="party")

@@ -206,7 +206,8 @@ def analyse_sample_evidence(
 
 def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None = None,
                           domain_name: str | None = None,
-                          include_specializations: bool = False) -> dict[str, Any]:
+                          include_specializations: bool = False,
+                          catalog_path: Path | None = None) -> dict[str, Any]:
     """Parse a reference model TTL file (or pre-loaded graph) into a domain summary.
 
     Args:
@@ -221,8 +222,20 @@ def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None =
     if graph is not None:
         g = graph
     elif ttl_path is not None:
-        g = Graph()
-        g.parse(ttl_path, format="turtle")
+        from .ontology_loader import SemanticProfile, load_ontology
+
+        loaded = load_ontology(
+            ttl_path,
+            catalog_path=catalog_path,
+            profile=SemanticProfile.KAIROS_DESIGN,
+        )
+        return _reference_summary_from_index(
+            loaded.semantic_index,
+            loaded.graph,
+            domain_name=domain_name or ttl_path.stem,
+            file_name=ttl_path.name,
+            include_specializations=include_specializations,
+        )
     else:
         raise ValueError("Either ttl_path or graph must be provided")
 
@@ -274,6 +287,77 @@ def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None =
         "domain_name": resolved_name,
         "file": ttl_path.name if ttl_path else "(merged)",
         "classes": classes,
+    }
+
+
+def _reference_summary_from_index(
+    index,
+    graph: Graph,
+    *,
+    domain_name: str,
+    file_name: str,
+    include_specializations: bool,
+) -> dict[str, Any]:
+    """Render the established reference summary shape from the semantic index."""
+    for ontology in graph.subjects(RDF.type, OWL.Ontology):
+        label = graph.value(ontology, RDFS.label)
+        if label:
+            domain_name = str(label)
+            break
+    properties = {item.uri: item for item in index.properties}
+    classes = {item.uri: item for item in index.classes}
+
+    def render_property(link) -> dict[str, Any]:
+        prop = properties[link.uri]
+        range_uri = prop.ranges[0].uri if prop.ranges else ""
+        return {
+            "uri": prop.uri,
+            "name": prop.name,
+            "label": prop.label,
+            "comment": prop.comment,
+            "range": range_uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1],
+            "range_uri": range_uri,
+            "type": prop.property_type,
+            "inherited": not link.provenance.asserted,
+        }
+
+    rendered: list[dict[str, Any]] = []
+    for cls in index.classes:
+        item: dict[str, Any] = {
+            "uri": cls.uri,
+            "name": cls.name,
+            "label": cls.label,
+            "comment": cls.comment,
+            "properties": [
+                render_property(link)
+                for link in cls.direct_properties
+            ],
+            "inherited_properties": [
+                render_property(link)
+                for link in cls.inherited_properties
+            ],
+        }
+        if include_specializations:
+            item["specializations"] = [
+                {
+                    "class": classes[link.uri].name,
+                    "class_uri": link.uri,
+                    "distance": link.distance,
+                    "properties": [
+                        render_property(prop)
+                        for prop in classes[link.uri].direct_properties
+                    ],
+                }
+                for link in cls.descendants
+            ]
+        rendered.append(item)
+    return {
+        "domain_name": domain_name,
+        "file": file_name,
+        "classes": rendered,
+        "semantic_profile": index.profile.value,
+        "closure_hash": index.closure_hash,
+        "import_complete": index.import_complete,
     }
 
 
@@ -459,87 +543,54 @@ def resolve_reference_models(
         domain_key = _assign_domain_key(ttl_path, ref_models_dir, package_dirs)
         domain_groups.setdefault(domain_key, []).append(ttl_path)
 
-    # Merge each domain group into a single graph
+    # Load each grouped root through the canonical closure API and merge summaries
+    # by full URI. This also covers packages whose modules do not import each other.
     domains: list[dict[str, Any]] = []
 
     for domain_key, ttl_files in domain_groups.items():
         display_name = _domain_display_name(domain_key)
-
-        if len(ttl_files) == 1 and catalog_path and catalog_path.exists():
-            # Single file with catalog: resolve owl:imports
+        classes_by_uri: dict[str, dict[str, Any]] = {}
+        closure_hashes: set[str] = set()
+        complete = True
+        resolved_display_name = display_name
+        for ttl_file in ttl_files:
             try:
-                from kairos_ontology.core.catalog_utils import load_graph_with_catalog
-                catalog_result = load_graph_with_catalog(ttl_files[0], catalog_path)
                 result = parse_reference_model(
-                    graph=catalog_result.graph, domain_name=display_name,
+                    ttl_file,
+                    domain_name=display_name,
                     include_specializations=include_specializations,
+                    catalog_path=(
+                        catalog_path
+                        if catalog_path and catalog_path.exists()
+                        else None
+                    ),
                 )
-                result["ref_source"] = domain_key
-                result["file"] = str(ttl_files[0])
-                if result["classes"]:
-                    domains.append(result)
+                for cls in result["classes"]:
+                    classes_by_uri.setdefault(cls["uri"], cls)
+                resolved_display_name = result.get("domain_name") or resolved_display_name
+                if result.get("closure_hash"):
+                    closure_hashes.add(result["closure_hash"])
+                complete = complete and bool(result.get("import_complete", True))
             except Exception as e:
                 logger.warning(
-                    "Catalog resolution failed for %s, falling back: %s",
-                    ttl_files[0], e,
+                    "Canonical reference-model loading failed for %s: %s",
+                    ttl_file,
+                    e,
                 )
-                # Fall back to simple parse
-                try:
-                    result = parse_reference_model(
-                        ttl_files[0],
-                        include_specializations=include_specializations,
-                    )
-                    if result["classes"]:
-                        result["ref_source"] = domain_key
-                        domains.append(result)
-                except Exception as e2:
-                    logger.warning("Failed to parse %s: %s", ttl_files[0], e2)
-        elif len(ttl_files) == 1:
-            # Single file without catalog: parse directly
-            try:
-                result = parse_reference_model(
-                    ttl_files[0],
-                    include_specializations=include_specializations,
-                )
-                if result["classes"]:
-                    result["ref_source"] = domain_key
-                    domains.append(result)
-            except Exception as e:
-                logger.warning("Failed to parse %s: %s", ttl_files[0], e)
-        else:
-            # Multiple files: merge into single graph
-            merged = Graph()
-            for ttl in ttl_files:
-                try:
-                    merged.parse(ttl, format="turtle")
-                except Exception as e:
-                    logger.warning("Failed to parse %s: %s", ttl, e)
-
-            if catalog_path and catalog_path.exists():
-                # Also resolve owl:imports from merged graph
-                try:
-                    from kairos_ontology.core.catalog_utils import CatalogResolver
-                    resolver = CatalogResolver(catalog_path)
-                    for import_uri in list(merged.objects(predicate=OWL.imports)):
-                        import_str = str(import_uri)
-                        if import_str.startswith("file://"):
-                            continue
-                        resolved = resolver.resolve(import_str)
-                        if resolved and Path(resolved).exists():
-                            try:
-                                merged.parse(resolved, format="turtle")
-                            except Exception:
-                                pass
-                except Exception as e:
-                    logger.debug("Catalog import resolution skipped: %s", e)
-
-            result = parse_reference_model(
-                graph=merged, domain_name=display_name,
-                include_specializations=include_specializations,
+        if classes_by_uri:
+            domains.append(
+                {
+                    "domain_name": resolved_display_name,
+                    "file": ", ".join(str(path) for path in ttl_files),
+                    "classes": [
+                        classes_by_uri[uri] for uri in sorted(classes_by_uri)
+                    ],
+                    "ref_source": domain_key,
+                    "semantic_profile": "kairos-design",
+                    "closure_hashes": sorted(closure_hashes),
+                    "import_complete": complete,
+                }
             )
-            result["ref_source"] = domain_key
-            if result["classes"]:
-                domains.append(result)
 
     logger.info(
         "Resolved %d domain(s) from %d TTL file(s) in %s",

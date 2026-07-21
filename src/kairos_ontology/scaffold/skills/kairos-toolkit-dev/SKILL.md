@@ -94,6 +94,10 @@ tests/service/               # Service endpoint tests
 | `validate` | `--syntax`, `--shacl`, `--consistency`, `--catalog` | Validate ontologies |
 | `project` | `--target`, `--namespace`, `--catalog` | Generate projection artifacts |
 | `catalog-test` | `--catalog`, `--ontology` | Test import resolution |
+| `resolve-ontology` | `ONTOLOGY`, `--catalog`, `--json-output` | Inspect recursive closure + diagnostics |
+| `show-class-inventory` | `--domain`/`--ontology`, `--profile` | Inspect a bounded semantic-index view |
+| `show-source-schema` | `--system`, `--sources` | Inspect parsed source vocabulary |
+| `explain-term` | `IRI`, `--ontology`, `--profile` | Explain one term with provenance |
 | `update` | `--check` | Refresh managed files to current version |
 
 ### Adding or modifying a CLI command

@@ -368,6 +368,9 @@ class ProjectionReport:
         namespace: Optional[str] = None,
         status: str = "ok",
         error: Optional[str] = None,
+        semantic_profile: Optional[str] = None,
+        closure_hash: Optional[str] = None,
+        import_complete: Optional[bool] = None,
     ) -> None:
         """Record whether a domain ontology was loaded successfully."""
         entry: Dict[str, Any] = {
@@ -378,6 +381,12 @@ class ProjectionReport:
         }
         if error:
             entry["error"] = error
+        if semantic_profile:
+            entry["semantic_profile"] = semantic_profile
+        if closure_hash:
+            entry["closure_hash"] = closure_hash
+        if import_complete is not None:
+            entry["import_complete"] = import_complete
         self.domains[name] = entry
 
     def record_projection(
@@ -1030,6 +1039,7 @@ def run_projections(
     platform: str = "fabric",
     emit_aspirational_stubs: bool = False,
     strict: bool = False,
+    degraded: bool = False,
 ):
     """Run projection generation.
     
@@ -1102,29 +1112,31 @@ def run_projections(
     
     for onto_file in ontology_files:
         try:
-            file_graph = Graph()
-            if catalog_path and catalog_path.exists():
-                # Load with catalog support for imports
-                from .catalog_utils import load_graph_with_catalog
-                catalog_result = load_graph_with_catalog(onto_file, catalog_path)
-                file_graph = catalog_result.graph
-                # Record catalog diagnostics into the projection report
-                for diag in catalog_result.diagnostics:
+            from .ontology_loader import SemanticProfile, load_ontology
+
+            load_result = load_ontology(
+                onto_file,
+                catalog_path=(
+                    catalog_path if catalog_path and catalog_path.exists() else None
+                ),
+                profile=SemanticProfile.KAIROS_DESIGN,
+                degraded=degraded,
+            )
+            file_graph = load_result.graph
+            for diag in load_result.diagnostics:
                     report.record(
-                        diag["level"],
-                        diag["message"],
+                        diag.level,
+                        diag.message,
                         domain=onto_file.stem,
                         target="load",
                     )
-            else:
-                # Load without catalog
-                file_graph.parse(onto_file, format='turtle' if onto_file.suffix == '.ttl' else 'xml')
             
             # Store graph with its source file info
             ontology_graphs.append({
                 'file': onto_file,
                 'graph': file_graph,
-                'name': onto_file.stem
+                'name': onto_file.stem,
+                'load_result': load_result,
             })
             print(f"  ✓ Loaded {onto_file.name} ({len(file_graph)} triples)")
             report.record_domain_load(
@@ -1132,6 +1144,9 @@ def run_projections(
                 file=onto_file.name,
                 triples=len(file_graph),
                 status="ok",
+                semantic_profile=load_result.profile.value,
+                closure_hash=load_result.closure_hash,
+                import_complete=load_result.complete,
             )
         except Exception as e:
             print(f"  ⚠️  Could not parse {onto_file.name}: {e}")
@@ -1143,11 +1158,14 @@ def run_projections(
             )
             report.record("error", f"Could not parse {onto_file.name}: {e}",
                           domain=onto_file.stem)
+            fatal_target_errors.append(f"{onto_file.stem}: ontology load failed: {e}")
     
     if not ontology_graphs:
         print("  ⚠️  No ontologies loaded - check ontology files exist")
         report.record("error", "No ontologies loaded — check ontology files exist")
         report.write(output_path)
+        if fatal_target_errors:
+            raise ProjectionRunError("; ".join(fatal_target_errors))
         return
     
     print()
@@ -1276,6 +1294,7 @@ def run_projections(
         for onto_info in ontology_graphs:
             onto_graph = onto_info['graph']
             onto_name = onto_info['name']
+            load_result = onto_info['load_result']
             
             # Auto-detect namespace for this ontology if not provided
             onto_namespace = namespace
@@ -1286,6 +1305,13 @@ def run_projections(
             # Extract ontology provenance metadata
             onto_meta = extract_ontology_metadata(
                 onto_graph, onto_namespace, generated_at=generated_at
+            )
+            onto_meta.update(
+                {
+                    "semantic_profile": load_result.profile.value,
+                    "closure_hash": load_result.closure_hash,
+                    "import_complete": load_result.complete,
+                }
             )
 
             # Populate namespace on the domain entry (first time we know it)
@@ -1398,7 +1424,9 @@ def run_projections(
                         target_platform=platform,
                         contract_registry=contract_registry,
                         emit_aspirational_stubs=emit_aspirational_stubs,
-                        eligible_class_uris=eligible_class_uris)
+                        eligible_class_uris=eligible_class_uris,
+                        semantic_index=load_result.semantic_index,
+                    )
                 finally:
                     proj_logger.removeHandler(warn_handler)
                     if warn_handler.records:
@@ -2231,7 +2259,8 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
                     target_platform: str = "fabric",
                     contract_registry: Optional[dict] = None,
                     emit_aspirational_stubs: bool = False,
-                    eligible_class_uris: Optional[set] = None) -> dict:
+                    eligible_class_uris: Optional[set] = None,
+                    semantic_index=None) -> dict:
     """Run a specific projection type using simplified logic.
     
     Args:
@@ -2386,7 +2415,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         from .projections.prompt_projector import generate_prompt_artifacts
         return generate_prompt_artifacts(
             classes, graph, template_base / "prompt", namespace,
-            ontology_name, ontology_metadata=meta,
+            ontology_name, ontology_metadata=meta, semantic_index=semantic_index,
         )
     elif target == 'silver':
         from .projections.medallion_silver_projector import generate_silver_artifacts

@@ -277,12 +277,14 @@ class in the domain MUST have at minimum:
 | `kairos-ext:silverForeignKey` | On ObjectProperty (imported props lacking cardinality) | `"false"` |
 | `kairos-ext:silverForeignKeyOn` | On ObjectProperty (reversal pattern) | _(none)_ |
 
-Run a quick scan:
+Run a structured semantic scan, then validate the authored extension:
 ```bash
-# Count classes vs annotated classes — they should match
-grep -c "owl:Class" ontology-hub/model/ontologies/{DOMAIN}.ttl
-grep -c "kairos-ext:scdType" ontology-hub/model/extensions/{DOMAIN}-silver-ext.ttl
+kairos-ontology show-class-inventory --domain {DOMAIN} --profile kairos-design
+kairos-ontology validate --syntax
 ```
+Use the full-URI class list as the annotation checklist. Do not count Turtle text:
+imports, alternate serialization, and blank-node expressions make text counts
+semantically unreliable.
 
 ---
 

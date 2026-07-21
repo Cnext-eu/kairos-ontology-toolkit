@@ -215,6 +215,17 @@ The toolkit supports the following projection targets:
 | `mdm-profile` | `--target mdm-profile` | Immutable, content-addressed MDM policy profile (JSON + review MD) from `*-mdm-ext.ttl` → `output/mdm/` | Master Data Management (opt-in; consumed by `kairos-mdm-runtime`) |
 | `all` | `--target all` | All of the above | Full regeneration |
 
+Structured semantic inspection commands use the same recursive closure and semantic index
+as validation and projection:
+
+```bash
+kairos-ontology resolve-ontology model/ontologies/client.ttl --json-output
+kairos-ontology show-class-inventory --domain client --profile kairos-design
+kairos-ontology show-source-schema --system erp
+kairos-ontology explain-term https://example.org/ont/client#Client \
+  --ontology model/ontologies/client.ttl
+```
+
 > **Target-first aspirational Silver stubs (DD-096):** the dbt target supports an
 > opt-in `--emit-aspirational-stubs` flag (also `KAIROS_EMIT_ASPIRATIONAL_STUBS`).
 > When enabled, an *approved but not-yet-mapped* claim projects a typed, zero-row

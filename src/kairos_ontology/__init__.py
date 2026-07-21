@@ -2,13 +2,27 @@
 # Copyright 2026 Cnext.eu
 """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
 
-__version__ = "4.6.0"
+__version__ = "4.7.0rc1"
 
 from kairos_ontology.core.catalog_utils import (
     CatalogLoadResult,
     CatalogResolver,
     load_graph_with_catalog,
     resolve_import_paths,
+)
+from kairos_ontology.core.ontology_loader import (
+    ImportManifestEntry,
+    ImportRequirement,
+    OntologyDiagnostic,
+    OntologyLoadError,
+    OntologyLoadResult,
+    SemanticProfile,
+    load_ontology,
+)
+from kairos_ontology.core.semantic_index import (
+    SEMANTIC_INDEX_VERSION,
+    SemanticIndex,
+    build_semantic_index,
 )
 from kairos_ontology.core.validator import run_validation, validate_content, validate_gdpr
 from kairos_ontology.core.projector import run_projections, project_graph
@@ -31,6 +45,16 @@ __all__ = [
     "CatalogResolver",
     "load_graph_with_catalog",
     "resolve_import_paths",
+    "ImportManifestEntry",
+    "ImportRequirement",
+    "OntologyDiagnostic",
+    "OntologyLoadError",
+    "OntologyLoadResult",
+    "SemanticProfile",
+    "load_ontology",
+    "SEMANTIC_INDEX_VERSION",
+    "SemanticIndex",
+    "build_semantic_index",
     "run_validation",
     "validate_content",
     "validate_gdpr",

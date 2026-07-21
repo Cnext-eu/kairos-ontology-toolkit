@@ -386,17 +386,13 @@ def analyze_domain_from_hub(hub_root: Path, domain: str) -> DomainBindingSnapsho
         eligible = materialization_eligible_class_uris(load_registry(claims_file))
 
         catalog_file = hub_root / "catalog-v001.xml"
-        if catalog_file.is_file():
-            from .catalog_utils import load_graph_with_catalog
+        from .ontology_loader import SemanticProfile, load_ontology
 
-            graph = load_graph_with_catalog(
-                onto_file,
-                catalog_file,
-                quiet=True,
-            ).graph
-        else:
-            graph = Graph()
-            graph.parse(onto_file, format="turtle")
+        graph = load_ontology(
+            onto_file,
+            catalog_path=catalog_file if catalog_file.is_file() else None,
+            profile=SemanticProfile.KAIROS_DESIGN,
+        ).graph
         silver_ext = hub_root / "model" / "extensions" / f"{domain}-silver-ext.ttl"
         if silver_ext.exists():
             graph.parse(silver_ext, format="turtle")

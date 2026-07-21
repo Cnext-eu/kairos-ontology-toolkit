@@ -74,6 +74,60 @@ class TestComputeSourceHash:
         inv = generate_inventory(ttl)
         assert inv["source_sha256"] == compute_source_hash(ttl)
 
+    def test_transitive_dependency_change_invalidates_closure_inventory(self, tmp_path):
+        root = tmp_path / "root.ttl"
+        child = tmp_path / "child.ttl"
+        root.write_text(
+            """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<urn:root> a owl:Ontology ; owl:imports <urn:child> .
+<urn:Root> a owl:Class .
+""",
+            encoding="utf-8",
+        )
+        child.write_text(
+            """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<urn:child> a owl:Ontology .
+<urn:Child> a owl:Class .
+""",
+            encoding="utf-8",
+        )
+        catalog = tmp_path / "catalog-v001.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <uri name="urn:child" uri="child.ttl"/>\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+        inventory_dir = tmp_path / "inventory"
+        inventory_dir.mkdir()
+        write_inventory(
+            generate_inventory(root, catalog_path=catalog),
+            inventory_dir / "root-inventory.yaml",
+        )
+
+        fresh = check_inventories(
+            ontology_dir=tmp_path,
+            ref_models_dir=None,
+            inventory_dir=inventory_dir,
+            catalog_path=catalog,
+        )
+        assert fresh.ok == ["root"]
+
+        child.write_text(
+            child.read_text(encoding="utf-8") + "<urn:Changed> a owl:Class .\n",
+            encoding="utf-8",
+        )
+        stale = check_inventories(
+            ontology_dir=tmp_path,
+            ref_models_dir=None,
+            inventory_dir=inventory_dir,
+            catalog_path=catalog,
+        )
+        assert stale.stale == ["root"]
+
 
 class TestCheckInventories:
 
@@ -113,10 +167,10 @@ class TestCheckInventories:
     def test_unverifiable_when_no_stored_hash(self, tmp_path):
         ref_dir, inv_dir = _make_ref(tmp_path)
         _generate(ref_dir, inv_dir)
-        # Simulate a pre-DD-047 inventory by stripping the hash.
+        # Simulate an unverifiable schema-2 inventory by stripping the closure hash.
         path = inv_dir / "party-inventory.yaml"
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        data.pop("source_sha256", None)
+        data.pop("closure_hash", None)
         path.write_text(yaml.dump(data), encoding="utf-8")
         report = check_inventories(
             ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir
@@ -263,7 +317,7 @@ class TestCheckInventoryCLI:
         _generate(ref_dir, inv_dir)
         path = inv_dir / "party-inventory.yaml"
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        data.pop("source_sha256", None)
+        data.pop("closure_hash", None)
         path.write_text(yaml.dump(data), encoding="utf-8")
         result = CliRunner().invoke(cli, [
             "check-inventory",

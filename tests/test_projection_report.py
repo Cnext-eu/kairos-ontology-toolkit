@@ -6,9 +6,15 @@ import json
 
 from pathlib import Path
 
+import pytest
 from rdflib import Graph
 
-from kairos_ontology.core.projector import ProjectionReport, project_graph, run_projections
+from kairos_ontology.core.projector import (
+    ProjectionReport,
+    ProjectionRunError,
+    project_graph,
+    run_projections,
+)
 
 
 # Minimal valid ontology with one class.
@@ -214,12 +220,13 @@ class TestRunProjectionsReport:
         output_dir = tmp_path / "output"
         catalog = tmp_path / "catalog.xml"
 
-        run_projections(
-            ontologies_path=ont_dir,
-            output_path=output_dir,
-            catalog_path=catalog,
-            target="prompt",
-        )
+        with pytest.raises(ProjectionRunError, match="ontology load failed"):
+            run_projections(
+                ontologies_path=ont_dir,
+                output_path=output_dir,
+                catalog_path=catalog,
+                target="prompt",
+            )
 
         report_file = output_dir / "projection-report.json"
         assert report_file.exists(), "projection-report.json was not written"
@@ -319,6 +326,7 @@ class TestProjectionReportMarkdown:
             output_path=output_dir,
             catalog_path=catalog,
             target="prompt",
+            degraded=True,
         )
 
         md_files = list(sessions_dir.glob("projection-test-*.md"))
@@ -420,6 +428,27 @@ class TestCatalogWarningsInReport:
     rdfs:comment "A test widget."@en .
 """
 
+    def test_unresolved_import_fails_strict_projection(self, tmp_path):
+        """A fully failed ontology load must propagate as a projection failure."""
+        ont_dir = tmp_path / "model" / "ontologies"
+        ont_dir.mkdir(parents=True)
+        (ont_dir / "test.ttl").write_text(self._TTL_WITH_IMPORT, encoding="utf-8")
+        catalog = tmp_path / "catalog-v001.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '</catalog>\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ProjectionRunError, match="ontology load failed"):
+            run_projections(
+                ontologies_path=ont_dir,
+                output_path=tmp_path / "output",
+                catalog_path=catalog,
+                target="prompt",
+            )
+
     def test_unresolved_import_appears_in_report_events(self, tmp_path):
         """Unresolved owl:imports should produce a warning event in the report."""
         ont_dir = tmp_path / "model" / "ontologies"
@@ -442,6 +471,7 @@ class TestCatalogWarningsInReport:
             output_path=output_dir,
             catalog_path=catalog,
             target="prompt",
+            degraded=True,
         )
 
         report_file = output_dir / "projection-report.json"
@@ -483,6 +513,7 @@ class TestCatalogWarningsInReport:
             output_path=output_dir,
             catalog_path=catalog,
             target="prompt",
+            degraded=True,
         )
 
         md_files = list(sessions_dir.glob("projection-test-*.md"))

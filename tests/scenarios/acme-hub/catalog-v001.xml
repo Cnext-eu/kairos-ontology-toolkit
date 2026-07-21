@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="https://acme.example/ontology/client" uri="model/ontologies/client.ttl"/>
+  <uri name="https://acme.example/ontology/invoice" uri="model/ontologies/invoice.ttl"/>
+  <uri name="https://acme.example/ontology/logistics" uri="model/ontologies/logistics.ttl"/>
+  <uri name="https://refmodel.example/ontology/party" uri="model/ontologies/_refmodel-party.ttl"/>
+</catalog>

@@ -94,18 +94,11 @@ check which onboarding phases have been completed:
 # Count source systems
 ls integration/sources/ 2>/dev/null || echo "No sources directory"
 
-# Per-source vocabulary check
+# Per-source vocabulary check (repeat for each source directory)
 for d in integration/sources/*/; do
   name=$(basename "$d")
   [ "$name" = "_analysis" ] && continue
-  vocab=$(ls "$d"*.vocabulary.ttl 2>/dev/null | head -1)
-  if [ -n "$vocab" ]; then
-    tables=$(grep -c 'kairos-bronze:SourceTable' "$vocab" 2>/dev/null || echo 0)
-    cols=$(grep -c 'kairos-bronze:SourceColumn' "$vocab" 2>/dev/null || echo 0)
-    echo "$name: ✅ vocabulary ($tables tables, $cols columns)"
-  else
-    echo "$name: ❌ NO vocabulary.ttl"
-  fi
+  kairos-ontology show-source-schema --system "$name"
 done
 
 # Check analysis reports
@@ -114,8 +107,8 @@ ls integration/sources/_analysis/*-affinity.yaml 2>/dev/null || echo "No analysi
 # Check for TMDL files
 find integration/ -name "*.tmdl" -o -name "*.tmd" 2>/dev/null | head -5
 
-# Check catalog for reference models
-grep -i "kairos-ref\|reference" catalog-v001.xml 2>/dev/null
+# Resolve each domain through the complete catalog chain
+kairos-ontology resolve-ontology model/ontologies/{domain}.ttl --json-output
 ```
 
 ### 2. Domain Modeling
@@ -132,18 +125,12 @@ Check `model/ontologies/` for domain TTL files:
 
 **Commands to run:**
 ```bash
-# List ontology domains
-ls model/ontologies/*.ttl 2>/dev/null | grep -v _master
-
-# Quick class count per domain
-for f in model/ontologies/*.ttl; do
-  echo "$f: $(grep -c 'a owl:Class' $f) classes"
-done
+# Repeat for every domain reported by `kairos-ontology status`
+kairos-ontology show-class-inventory --domain {domain} --profile kairos-design
 ```
 
-**For accelerator analysis:** Read `catalog-v001.xml` to find the reference model
-path, then compare which domains the reference model offers vs which ones the hub
-has created local ontologies for.
+**For accelerator analysis:** Use `resolve-ontology` manifests and
+`show-class-inventory` output to compare imported reference modules with local domains.
 
 ### 3. Projection Configuration
 
@@ -248,20 +235,13 @@ Determine which reference model alignment strategy each domain uses (see DD-032)
 2. For Enforced domains, note which reference model(s) are imported.
 3. For Inspired domains, note which reference model(s) are referenced via `rdfs:seeAlso`.
 
-**Commands to run:**
+**Commands to run (repeat for each domain):**
 ```bash
-# Check for owl:imports per domain (external reference models)
-for f in model/ontologies/*.ttl; do
-  echo "=== $f ==="
-  grep "owl:imports" "$f" 2>/dev/null || echo "(none)"
-done
-
-# Check for rdfs:seeAlso back-references on classes
-for f in model/ontologies/*.ttl; do
-  echo "=== $f ==="
-  grep "rdfs:seeAlso" "$f" 2>/dev/null || echo "(none)"
-done
+kairos-ontology resolve-ontology model/ontologies/{domain}.ttl --json-output
+kairos-ontology show-class-inventory --domain {domain} --profile kairos-design
 ```
+Use manifest imports and indexed term provenance for the strategy classification.
+Do not infer semantic strategy from serialized Turtle text.
 
 ### 6. Coverage Summary
 

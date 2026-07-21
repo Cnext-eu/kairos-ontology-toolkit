@@ -76,12 +76,15 @@ def _load_domain_graph(
     graph = Graph()
     if domain_ontology_path is None or not domain_ontology_path.exists():
         return graph
-    if catalog_path and catalog_path.exists():
-        from .catalog_utils import load_graph_with_catalog
+    from .ontology_loader import SemanticProfile, load_ontology
 
-        return load_graph_with_catalog(domain_ontology_path, catalog_path).graph
-    graph.parse(domain_ontology_path, format="turtle")
-    return graph
+    return load_ontology(
+        domain_ontology_path,
+        catalog_path=(
+            catalog_path if catalog_path and catalog_path.exists() else None
+        ),
+        profile=SemanticProfile.KAIROS_DESIGN,
+    ).graph
 
 
 def build_merged_graph(

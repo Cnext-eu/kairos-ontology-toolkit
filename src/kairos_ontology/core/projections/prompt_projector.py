@@ -11,7 +11,7 @@ for use in AI agent prompts. Supports multiple output templates.
 import json
 from pathlib import Path
 from typing import Dict, List
-from rdflib import Graph, Namespace
+from rdflib import Namespace
 from jinja2 import Environment, FileSystemLoader
 from .skos_utils import SKOSParser
 from .uri_utils import extract_local_name
@@ -30,9 +30,14 @@ class PromptProjector:
         self.template_dir = template_dir
         self.templates_to_use = templates or ['compact']
         
-        # Load ontology
-        self.graph = Graph()
-        self.graph.parse(ontology_path, format='turtle')
+        from ..ontology_loader import SemanticProfile, load_ontology
+
+        loaded = load_ontology(
+            ontology_path,
+            profile=SemanticProfile.KAIROS_DESIGN,
+        )
+        self.graph = loaded.graph
+        self.semantic_index = loaded.semantic_index
         
         # Setup Jinja2
         self.jinja_env = Environment(loader=FileSystemLoader(template_dir))
@@ -252,7 +257,15 @@ if __name__ == "__main__":
     main()
 
 
-def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str, ontology_name: str = None, ontology_metadata: dict = None) -> dict:
+def generate_prompt_artifacts(
+    classes: list,
+    graph,
+    template_dir,
+    namespace: str,
+    ontology_name: str = None,
+    ontology_metadata: dict = None,
+    semantic_index=None,
+) -> dict:
     """Generate Prompt artifacts from pre-extracted classes and graph.
     
     Args:
@@ -315,6 +328,56 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
         
         return props
     
+    semantic_slice = None
+    indexed_classes = {}
+    if semantic_index is not None:
+        semantic_slice = semantic_index.slice(
+            class_uris=[item["uri"] for item in classes],
+            selection_rule="projected-class-uri-order",
+        )
+        indexed_classes = {item.uri: item for item in semantic_index.classes}
+        indexed_properties = {item.uri: item for item in semantic_index.properties}
+
+        def get_index_properties(class_uri: str) -> list:
+            record = indexed_classes[class_uri]
+            properties = []
+            for link in record.direct_properties + record.inherited_properties:
+                prop = indexed_properties[link.uri]
+                range_name = (
+                    extract_local_name(prop.ranges[0].uri)
+                    if prop.ranges
+                    else "string"
+                )
+                simple_type = {
+                    "string": "text",
+                    "integer": "number",
+                    "int": "number",
+                    "decimal": "decimal",
+                    "float": "decimal",
+                    "double": "decimal",
+                    "boolean": "boolean",
+                    "date": "date",
+                    "dateTime": "datetime",
+                    "time": "time",
+                }.get(range_name, range_name)
+                properties.append(
+                    {
+                        "name": prop.name,
+                        "uri": prop.uri,
+                        "type": simple_type,
+                        "description": prop.comment or prop.label,
+                        "inherited": not link.provenance.asserted,
+                        "provenance": {
+                            "source_identity": link.provenance.source_identity,
+                            "import_depth": link.provenance.import_depth,
+                            "asserted": link.provenance.asserted,
+                        },
+                    }
+                )
+            return properties
+
+        get_properties = get_index_properties
+
     # Build rich concept data
     concepts = []
     for cls in classes:
@@ -322,11 +385,19 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
         properties = get_properties(cls['uri'])
         
         concept = {
+            'uri': cls['uri'],
             'name': cls['name'],
             'label': cls.get('label', cls['name']),
             'description': cls.get('comment', ''),
             'properties': properties
         }
+        if semantic_index is not None:
+            provenance = indexed_classes[cls["uri"]].provenance
+            concept["provenance"] = {
+                "source_identity": provenance.source_identity,
+                "import_depth": provenance.import_depth,
+                "asserted": provenance.asserted,
+            }
         concepts.append(concept)
     
     # Extract relationships (object properties) filtered by namespace
@@ -348,8 +419,8 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
     for row in graph.query(query):
         prop_uri = str(row.property)
         
-        # Only include relationships in our namespace
-        if not prop_uri.startswith(namespace):
+        # Graph-only compatibility mode keeps the historical namespace filter.
+        if semantic_index is None and not prop_uri.startswith(namespace):
             continue
         
         prop_name = extract_local_name(prop_uri)
@@ -367,8 +438,24 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
     # Create optimized LLM-friendly structure
     
     # Compact format optimized for LLM token efficiency
+    meta = ontology_metadata or {}
+    semantic_context = (
+        semantic_slice["metadata"]
+        if semantic_slice is not None
+        else {
+            "semantic_profile": meta.get("semantic_profile", "asserted"),
+            "closure_hash": meta.get("closure_hash", ""),
+            "import_complete": meta.get("import_complete", True),
+            "total_class_count": len(classes),
+            "included_class_count": len(classes),
+            "selection_rule": "projected-class-uri-order",
+            "truncated": False,
+            "omitted_modules": [],
+        }
+    )
     llm_context = {
         "domain": "Business Domain Model",
+        "semantic_context": semantic_context,
         "entities": {}
     }
     
@@ -410,7 +497,6 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
     compact_content = json.dumps(llm_context, indent=2, ensure_ascii=False)
     
     # Generate detailed format (for reference/debugging)
-    meta = ontology_metadata or {}
     detailed_context = {
         "ontology": {
             "name": meta.get("label") or ontology_name or "Business Domain Ontology",
@@ -418,13 +504,16 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
             "version": meta.get("version") or "1.0.0",
             "toolkit_version": meta.get("toolkit_version", ""),
             "generated": meta.get("generated_at") or resolve_generated_at().isoformat(),
+            "semantic_context": semantic_context,
         },
         "entities": [
             {
                 "class": concept['name'],
+                "uri": concept['uri'],
                 "label": concept['label'],
                 "description": concept['description'],
-                "properties": concept['properties']
+                "properties": concept['properties'],
+                "provenance": concept.get("provenance", {}),
             }
             for concept in concepts
         ],
@@ -444,4 +533,3 @@ def generate_prompt_artifacts(classes: list, graph, template_dir, namespace: str
             'ontology-context.json': compact_content,
             'ontology-context-detailed.json': detailed_content
         }
-
