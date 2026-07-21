@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc2] — 2026-07-22
+
 ### Added
 - **Typed reference-module activation and managed imports (DD-104):** version-pinned
   module profiles now drive deterministic ontology-document imports and activation
