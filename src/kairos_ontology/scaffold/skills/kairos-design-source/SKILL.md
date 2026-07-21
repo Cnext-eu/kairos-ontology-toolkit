@@ -626,7 +626,7 @@ evidence you have already produced into `proposed` candidate claims in
 `model/claims/{domain}-claims.yaml`, so you curate rather than hand-author. The
 hard interpretation already happened upstream (`analyse-sources` affinity and
 `propose-alignment` column→property — the latter already writes the claims file);
-`derive-claims` is the deterministic merge/enrich layer. It joins **five evidence
+`derive-claims` is the deterministic merge/enrich layer. It joins **six evidence
 streams** deterministically on `(system, table[, column])` and ref_class/
 ref_property names:
 
@@ -641,6 +641,16 @@ ref_property names:
    `skos_mapping` evidence.
 5. **Sample-derived signals** — enum-candidate / FK-shape signals attached as
    `sample_signal` evidence.
+6. **Core Concepts Conformance outcomes** (`integration/discovery/core-concepts-conformance.yaml`,
+   produced by **kairos-design-discovery** Phase 2.5) — a committed, valid artifact
+   yields deterministic **proposed-only** class claims by the DD-090 outcome policy:
+   `conforms` → `claim`, `conforms-with-rename` → `claim` (carrying the alt-label),
+   `partial` → `specialize`, `deviates` → `gap`, `not-applicable` → **no proposal**.
+   Required, recommended, and optional tiers are all eligible. A **missing**
+   artifact is a compatible no-op; a **present but malformed / unknown /
+   contradictory** artifact is an explicit validation error, never silently
+   ignored. Each derived claim records tier, outcome, rename, and deviation
+   traceability as `conformance` evidence.
 
 Each claim can carry **multiple `evidence_sources`**, keeping strong (anchored
 alignment) vs weak (affinity-only) evidence distinguishable.
@@ -660,6 +670,36 @@ auto-resolve via the hub root.
 > evidence is surfaced, not silently resolved. There is **no cost banner** because
 > nothing is billed (no LLM calls). A future opt-in `--llm-reconcile` flag (LLM
 > tie-breaking / rationale synthesis, with a cost banner) is deferred.
+
+> **AI-free proposal ≠ approved design decision.** `derive-claims` (including its
+> conformance stream) performs **deterministic, AI-free proposal generation**. A
+> `proposed` claim is neither user-confirmed nor AI-approved — it is a candidate
+> awaiting a human decision. Only two things confer authority: a **human approval**
+> (interactive, the default) or, in an authorized skill-scoped design-fleet
+> invocation, an **AI-approved** decision recorded with rationale, confidence, and
+> evidence. Do not treat a derived proposal — however strong its evidence — as
+> either.
+
+#### Where this sits in the lifecycle (the data-engineer flow)
+
+`derive-claims` is one link in a fixed chain; keep the order and the authority
+boundaries intact:
+
+1. **Ingest** source schemas/samples (`import-source` / `import-flatfile`).
+2. **Analyse / conformance** — `analyse-sources` affinity (here) + the committed
+   Core Concepts Conformance artifact (from **kairos-design-discovery**).
+3. **Deterministically derive proposals** — `derive-claims` merges all six streams
+   into `status: proposed` claims. AI-free; authorizes nothing.
+4. **Batch human approval** — curate the proposals and approve them in one
+   reviewed pass, gated by `check-claims`. This is the *only* step that grants
+   approval; conformance and derivation never do.
+5. **Claims-to-Silver-ext sync** — the approved Claim Registry drives the
+   claim-driven Silver extension sync (**kairos-execute-project** Slice 2), keeping
+   `model/extensions/<domain>-silver-ext.ttl` consistent with approved claims.
+6. **Optional aspirational stub** — only for approved, materialization-eligible
+   claims that are still unbound, the explicit target-first stub → bind loop
+   (**kairos-execute-project** `--emit-aspirational-stubs`, DD-096). This is
+   opt-in and never implied by an approval; binding still needs a real mapping.
 
 → Curate the proposed claims, then approve them (gated by `check-claims`).
 

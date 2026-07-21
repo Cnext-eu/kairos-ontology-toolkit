@@ -62,8 +62,18 @@ that prerequisite files exist. Non-medallion targets (`prompt`, `neo4j`, `azure-
 | Target | Required files | Design skill |
 |--------|---------------|--------------|
 | **silver** | `model/extensions/<domain>-silver-ext.ttl` | `kairos-design-silver` |
-| **dbt** | Silver ext (above) + at least one `integration/sources/<system>/*.vocabulary.ttl` + at least one `model/mappings/<system>-to-<domain>.ttl` | Extensions: `kairos-design-silver`; Mappings: `kairos-design-mapping` |
+| **dbt** | Silver ext (above) + at least one `integration/sources/<system>/*.vocabulary.ttl` + at least one `model/mappings/<system>-to-<domain>.ttl`* | Extensions: `kairos-design-silver`; Mappings: `kairos-design-mapping` |
 | **powerbi** | `model/extensions/<domain>-gold-ext.ttl` | `kairos-design-gold` |
+
+\* **Exception — explicit `--emit-aspirational-stubs`.** When the user explicitly
+requests the target-first stub → bind loop (below), the mapping file is **not**
+a pre-flight requirement for the affected claims: the whole point of that flow is
+to project a typed Silver stub for an approved, materialization-eligible claim
+that has **no** bronze mapping yet. Do not block or redirect to
+`kairos-design-mapping` on that basis alone when `--emit-aspirational-stubs` (or
+`KAIROS_EMIT_ASPIRATIONAL_STUBS`) was explicitly requested. The mapping
+requirement still applies normally to any other claim in the run that is not
+covered by the stub flow, and to `dbt` runs that did not request stubs.
 
 ### Procedure
 
@@ -78,7 +88,7 @@ that prerequisite files exist. Non-medallion targets (`prompt`, `neo4j`, `azure-
 4. **If files are present:** proceed with projection normally.
 5. **For bare `project` (all targets):** run non-medallion targets immediately; apply the pre-flight check only for the medallion subset.
 
-### Source-coverage gate (silver / dbt — MANDATORY, DD-061)
+### Source-coverage gate (silver / dbt — MANDATORY, DD-094)
 
 When the hub has affinity reports (`integration/sources/_analysis/*-affinity.yaml`),
 **also** run the deterministic claims gate before projecting `silver` or
@@ -98,6 +108,25 @@ kairos-ontology check-claims
 
 `check-claims` is read-only and deterministic (no AI). Skip it only when
 no affinity reports exist yet (the hub hasn't run `analyse-sources`).
+
+**Exception — explicit `--emit-aspirational-stubs`.** When the user has explicitly
+requested the target-first stub → bind loop for this `dbt`/`all` run, run the gate
+as:
+
+```bash
+kairos-ontology check-claims --no-source-coverage
+```
+
+`--no-source-coverage` skips **only** the pre-silver mapping-coverage block (the
+unmapped-affinity-table check the stub flow exists to work around). It does
+**not** relax anything else: registry validity/freshness/duplicate-approved
+checks, the extension-sync gate, the MDM-anchor gate, and the ownership-boundary
+gate all still run and still block as normal (see below). This is narrower than
+`--warn-only`, which would also silence those other gates — never substitute
+`--warn-only` for this exception. Strict release blocking for unbound stubs is a
+separate mechanism (the `project --strict` release gate, DD-096) and is
+unaffected by `--no-source-coverage`; keep it enforced in release CI regardless
+of how stubs were emitted.
 
 #### Claim-driven extension sync (Slice 2)
 
@@ -223,23 +252,57 @@ python -m kairos_ontology project --target dbt --emit-aspirational-stubs
 
 - **Off by default.** Feature-off output is byte-identical to today. The flag is also
   honoured via the `KAIROS_EMIT_ASPIRATIONAL_STUBS` env var.
+- **Mapping not required.** This flow exists precisely for claims that have **no**
+  bronze mapping yet, so an existing `model/mappings/<system>-to-<domain>.ttl` is
+  **not** a precondition when the user explicitly requests
+  `--emit-aspirational-stubs` — see the check-matrix exception above and the
+  `check-claims --no-source-coverage` pre-flight below. Claim validity/freshness,
+  approval status, extension sync, MDM-anchor, and ownership gates still apply.
 - **What stubs.** Only approved claims with disposition `claim`/`specialize` and type
   `class`/`reference_data` whose physical Silver model is unbound (no source, not a
   folded discriminator subtype). `aspirational` is **derived** at projection time from
   the Claim Registry + mappings — it is never a persisted field.
 - **What a stub looks like.** A `materialized='view'` model tagged
   `kairos_aspirational_stub` with `meta.is_aspirational=true`, selecting typed
-  `cast(null as <type>) as <col>` columns guarded by `where 1 = 0` (zero rows, so
-  tests can't false-green). Types come from `kairos-ext:silverDataType` →
-  `rdfs:range` → the `VARCHAR(255)` fallback.
+  `cast(null as <type>) as <col>` columns guarded by `where 1 = 0` (zero rows).
+  Types come from `kairos-ext:silverDataType` → `rdfs:range` → the `VARCHAR(255)`
+  fallback.
+  > **Correction: the zero-row guard does not "prevent" vacuous tests.** Generic
+  > dbt tests (`unique`, `not_null`, `relationships`) are trivially true —
+  > vacuously green — on an empty result set; `where 1 = 0` is what *causes* that
+  > vacuous pass, not what prevents it. It exists so the stub can advertise a
+  > stable, correctly typed shape for downstream models to build on *without
+  > inventing or exposing fake data*. Whether that vacuous green is safe depends
+  > entirely on the release gate (below), not on the row count.
+- **Four distinct states — do not conflate them:**
+  - **schema-valid** — the model compiles and its columns/types match the
+    contract derived from the ontology (`silverDataType`/`rdfs:range`). True for
+    a stub the moment it is emitted.
+  - **bound** — a real bronze mapping exists and the model selects from actual
+    source data instead of the `cast(null as <type>) ... where 1 = 0` stub body.
+  - **data-valid** — the bound model's real rows pass the generated dbt tests
+    against non-empty data. Meaningless for a stub (there are no rows to
+    validate); do not read a stub's green test run as data-valid.
+  - **release-eligible** — bound, and cleared by the strict release gate. A
+    schema-valid, still-unbound stub is never release-eligible no matter how
+    many of its (vacuous) tests pass.
 - **Binding.** Add a SKOS source mapping (via **kairos-design-mapping**) and re-project;
   the stub is transparently replaced by the real, populated model. Incremental/SCD
   models use `on_schema_change='sync_all_columns'` and the first bound run is a full
   refresh (safe — the stub had zero rows).
-- **Release gating.** A stub is **not** release-eligible merely by existing. Under the
-  strict release gate, all approved, materialization-eligible, *unbound* claims block
-  release until bound. Gold/Power BI is still generated over a stub dependency but is
-  marked non-release-eligible while a release-blocking stub is in its closure.
+- **Release gating.** A stub is **not** release-eligible merely by existing or by
+  passing its (vacuous) generated tests. Under the strict release gate, all
+  approved, materialization-eligible, *unbound* claims block release until bound.
+  Gold/Power BI is still generated over a stub dependency but is marked
+  non-release-eligible while a release-blocking stub is in its closure. This
+  strict blocker is independent of `check-claims --no-source-coverage` above —
+  skipping the mapping-coverage *gate* to emit a stub never skips the release
+  *gate* that keeps it from shipping unbound. Before running `project --strict`
+  in CI, `kairos-ontology check-release` (DD-101) reports the same
+  release-eligible/aspirational facts (plus claim/source-coverage/extension-sync
+  and committed validation/projection state) **without generating any output** —
+  use it as the read-only preflight; it never replaces `project --strict`'s
+  actual enforcement.
 - **OKF capture.** Record stub-emission runs and any release-gate blockers in
   `phases/project.md` as *State update proposals* (aspirational stubs pending binding).
 

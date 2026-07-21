@@ -483,7 +483,35 @@ authoritative there, the prose lives here):
 > `integration/discovery/core-concepts-conformance.yaml` during reference-model
 > selection: it pre-seeds the imports from the persisted `ref_model_modules`,
 > pre-justifies known deviations/renames, and surfaces `not-applicable` exclusions.
-> Consumption is **warn-only** in v1 (missing or stale artifact warns, never blocks).
+> Consumption remains **warn-only** (missing or stale artifact warns, never blocks).
+
+#### Downstream: conformance feeds *proposed-only* claims (DD-090 → DD-095)
+
+A committed, valid conformance artifact is also a **deterministic evidence stream**
+for `derive-claims` (run later in **kairos-design-source**). This is the seam where
+the lifecycle turns curated conformance outcomes into candidate claims **without any
+AI and without any approval authority**:
+
+- **AI-free, deterministic derivation.** `derive-claims` maps each conformance
+  outcome to a candidate class claim by a fixed policy — `conforms` → `claim`,
+  `conforms-with-rename` → `claim` (carrying the alt-label), `partial` →
+  `specialize`, `deviates` → `gap`, `not-applicable` → **no proposal**. Required,
+  recommended, and optional tiers are **all** eligible; only `not-applicable` is
+  dropped. This mapping is machinery, not a design decision — it never runs an LLM.
+- **`status: proposed` only — never materialization.** Every derived claim starts
+  as `status: proposed`. Conformance authorizes **nothing** to be built: the Claim
+  Registry stays the single approval/materialization authority (DD-094), and
+  `check-claims` remains the only approval gate. A conformance outcome — even a
+  user-confirmed `conforms` — does **not** approve the derived claim.
+- **Two distinct decision layers — do not conflate.** The conformance *outcome
+  code* here is a **design decision** (user-confirmed by default, or **AI-approved**
+  with rationale/confidence/evidence in an authorized fleet invocation). The
+  downstream *derived claim* is **AI-free proposal generation** from that
+  outcome — it is neither user-confirmed nor AI-approved until a human curates and
+  approves it during the source/claims phase.
+
+So when you record outcomes here, you are seeding proposals a human still has to
+approve — you are not pre-approving anything for the physical model.
 
 ### Phase 3 — Persist & handoff
 
@@ -501,6 +529,11 @@ authoritative there, the prose lives here):
    > the domain with **kairos-design-domain** (it will read this context). The
    > **kairos-design-mapping** skill will use the glossary's alternative names to
    > match source columns to domain properties.
+   >
+   > The conformance outcomes you just recorded also become **proposed-only** class
+   > claims when **kairos-design-source** runs `derive-claims` (deterministic,
+   > AI-free) — a human still curates and approves them via `check-claims`. Nothing
+   > here authorizes materialization.
    >
    > 🔁 **Revisit discovery on each new domain.** When you start modeling the next
    > domain, rerun this skill in **continue** mode — it will keep prior glossary

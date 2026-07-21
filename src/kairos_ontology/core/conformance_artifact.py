@@ -5,7 +5,8 @@
 The conformance artifact (``ontology-hub/integration/discovery/core-concepts-conformance.yaml``)
 is the **machine** output of the Core Concepts Conformance phase of ``kairos-design-discovery``.
 ``kairos-design-domain`` reads it at reference-model selection to pre-seed imports and
-pre-justify known deviations (warn-only in v1).
+pre-justify known deviations. ``derive-claims`` may also consume a committed, validated
+artifact to create proposed-only candidates; it never grants approval authority.
 
 The artifact intentionally carries:
 
@@ -28,6 +29,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -115,9 +117,9 @@ def build_artifact(
 def validate_artifact(artifact: dict[str, Any], outcome_codes: list[str]) -> list[str]:
     """Return a list of validation error strings (empty when valid).
 
-    Validates structural shape, that every concept outcome is one of *outcome_codes*
-    (loaded from the contract — not hardcoded), and that ``conforms-with-rename`` carries
-    a ``rename_to`` and ``deviates`` carries a ``deviation_reason``.
+    Validates structural shape, concept URI/label/tier identity, that every outcome
+    is one of *outcome_codes* (loaded from the contract — not hardcoded), conditional
+    rename/deviation fields, duplicate concepts, and scorecard consistency.
     """
     errors: list[str] = []
     if not isinstance(artifact, dict):
@@ -130,7 +132,11 @@ def validate_artifact(artifact: dict[str, Any], outcome_codes: list[str]) -> lis
         )
 
     archetype = artifact.get("archetype")
-    if not isinstance(archetype, dict) or not archetype.get("id"):
+    if (
+        not isinstance(archetype, dict)
+        or not isinstance(archetype.get("id"), str)
+        or not archetype["id"].strip()
+    ):
         errors.append("Missing or malformed 'archetype' block (needs an 'id').")
 
     concepts = artifact.get("core_concepts")
@@ -139,24 +145,99 @@ def validate_artifact(artifact: dict[str, Any], outcome_codes: list[str]) -> lis
         return errors
 
     code_set = set(outcome_codes)
+    seen_uris: dict[str, int] = {}
     for i, c in enumerate(concepts):
         if not isinstance(c, dict):
             errors.append(f"core_concepts[{i}] is not a mapping.")
             continue
-        uri = c.get("uri", f"<index {i}>")
-        outcome = c.get("outcome")
-        if outcome not in code_set:
+        uri = c.get("uri")
+        display_uri = uri if isinstance(uri, str) and uri else f"<index {i}>"
+        if not isinstance(uri, str) or not uri.strip():
+            errors.append(f"core_concepts[{i}] is missing a non-empty string 'uri'.")
+        else:
+            parsed = urlsplit(uri)
+            local_name = parsed.fragment or parsed.path.rstrip("/").rsplit("/", 1)[-1]
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc or not local_name:
+                errors.append(
+                    f"core_concepts[{i}] ({uri}): 'uri' must be an HTTP(S) concept URI "
+                    "with a local name."
+                )
+            if uri in seen_uris:
+                errors.append(
+                    f"core_concepts[{i}] ({uri}): duplicate concept URI "
+                    f"(first declared at index {seen_uris[uri]})."
+                )
+            else:
+                seen_uris[uri] = i
+        label = c.get("label")
+        if not isinstance(label, str) or not label.strip():
             errors.append(
-                f"core_concepts[{i}] ({uri}): invalid outcome {outcome!r}; "
+                f"core_concepts[{i}] ({display_uri}): missing non-empty string 'label'."
+            )
+        outcome = c.get("outcome")
+        if not isinstance(outcome, str) or outcome not in code_set:
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): invalid outcome {outcome!r}; "
                 f"must be one of {sorted(code_set)}."
             )
-        if outcome == "conforms-with-rename" and not c.get("rename_to"):
-            errors.append(f"core_concepts[{i}] ({uri}): 'conforms-with-rename' requires 'rename_to'.")
-        if outcome == "deviates" and not c.get("deviation_reason"):
-            errors.append(f"core_concepts[{i}] ({uri}): 'deviates' requires 'deviation_reason'.")
+        rename_to = c.get("rename_to")
+        deviation_reason = c.get("deviation_reason")
+        if rename_to is not None and (
+            not isinstance(rename_to, str) or not rename_to.strip()
+        ):
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): 'rename_to' must be a "
+                "non-empty string when present."
+            )
+        if deviation_reason is not None and (
+            not isinstance(deviation_reason, str) or not deviation_reason.strip()
+        ):
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): 'deviation_reason' must be a "
+                "non-empty string when present."
+            )
+        if outcome == "conforms-with-rename" and (
+            not isinstance(rename_to, str) or not rename_to.strip()
+        ):
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): "
+                "'conforms-with-rename' requires 'rename_to'."
+            )
+        if outcome == "deviates" and (
+            not isinstance(deviation_reason, str) or not deviation_reason.strip()
+        ):
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): "
+                "'deviates' requires 'deviation_reason'."
+            )
+        if rename_to and deviation_reason:
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): 'rename_to' and "
+                "'deviation_reason' are contradictory on one outcome."
+            )
         tier = c.get("tier")
-        if tier is not None and tier not in VALID_TIERS:
-            errors.append(f"core_concepts[{i}] ({uri}): invalid tier {tier!r}.")
+        if tier not in VALID_TIERS:
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): invalid or missing tier {tier!r}; "
+                f"must be one of {list(VALID_TIERS)}."
+            )
+
+    scorecard_comparable = all(
+        isinstance(c, dict)
+        and isinstance(c.get("outcome"), str)
+        and isinstance(c.get("tier"), str)
+        for c in concepts
+    )
+    if scorecard_comparable:
+        scorecard = artifact.get("scorecard")
+        expected_scorecard = compute_scorecard(concepts)
+        if not isinstance(scorecard, dict):
+            errors.append("Missing or malformed 'scorecard' block.")
+        elif scorecard != expected_scorecard:
+            errors.append(
+                "'scorecard' contradicts 'core_concepts'; regenerate it from the "
+                "recorded outcomes."
+            )
     return errors
 
 
@@ -183,10 +264,30 @@ def read_artifact(path: Path) -> dict[str, Any]:
     path = Path(path)
     if not path.is_file():
         raise ConformanceArtifactError(f"Conformance artifact not found: {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise ConformanceArtifactError(
+            f"Could not parse conformance artifact {path}: {exc}"
+        ) from exc
     if not isinstance(data, dict):
         raise ConformanceArtifactError(f"Conformance artifact is not a mapping: {path}")
     return data
+
+
+def load_validated_artifact(
+    path: Path, outcome_codes: list[str]
+) -> dict[str, Any]:
+    """Read and validate *path*, raising one explicit error for all findings."""
+    artifact = read_artifact(path)
+    errors = validate_artifact(artifact, outcome_codes)
+    if errors:
+        details = "\n".join(f"- {error}" for error in errors)
+        raise ConformanceArtifactError(
+            f"Invalid conformance artifact {Path(path)} "
+            f"({len(errors)} error(s)):\n{details}"
+        )
+    return artifact
 
 
 def is_stale(artifact: dict[str, Any], archetype: Archetype) -> bool:

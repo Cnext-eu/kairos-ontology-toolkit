@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.6.0] — 2026-07-21
+
+### Added
+- **Deterministic Silver-first lifecycle:** confirmed conformance outcomes now
+  deterministically produce proposed-only claims, approved unbound claims can emit
+  target-first dbt stubs, and `check-release` composes claim, mapping, synchronization,
+  validation, projection, binding, and release-eligibility gates without duplicating
+  their rules.
+- **Canonical projection facts:** shared completeness, materialization, target, and
+  foreign-key models now provide one deterministic interpretation across status,
+  coverage, synchronization, Silver DDL, dbt, Gold/Power BI, and release gates.
+- **Five-phase dbt pipeline (DD-102):** dbt generation now orchestrates typed immutable
+  `bind → normalize → shape → materialize → render` phases while preserving existing
+  public facades and byte-identical artifacts.
+- **Authoritative Silver-first lifecycle scenario:** the copied `acme-hub`
+  integration now proves validated conformance → proposed-only claims → explicit
+  governance approval → managed extension sync → aspirational stubs → selected
+  source binding → strict release, including deterministic output and real dbt
+  parse/compile tooling.
+
+### Fixed
+- Fresh scaffold placeholders no longer falsely complete source or projection phases,
+  and validation reports are written where deterministic status expects them.
+- Projection timestamps are resolved once per run, malformed reproducibility inputs
+  fail explicitly, and generated reports use stable manifest-managed paths.
+- Claim regeneration now enforces preservation of every declared human-curated field.
+- Silver, dbt, and Gold projectors now share one FK classifier, including redirected
+  and inferred relationships.
+- Catalog-resolved approved imported classes now participate in the same
+  `BindingAnalysis` used by `status` and `check-release`.
+- SHACL-derived dbt generic-test arguments render as nested YAML instead of
+  sibling keys that dbt rejects during parse.
+
+### Changed
+- **Legacy inventory and Claim Registry projection layouts now require an explicit
+  migration.** Runtime inventory readers no longer self-heal or dual-read retired
+  stem-named reference inventories, and claim projection sync no longer converts
+  inline controlled triples during normal operation. Run
+  `kairos-ontology migrate --hub <hub>` first; `--check` / `--dry-run` preview every
+  change. The migration is idempotent, preserves non-managed authored Turtle, and
+  retains rollback copies in `.kairos-migrations/legacy-format-backups/`.
+- Runtime source/claim coverage now evaluates one canonical per-table completeness
+  snapshot; the retired alignment-coverage runtime and its parallel authority have
+  been removed.
+
+### Removed
+- Unused Silver/projector helpers and four obsolete dbt staging/date templates.
+
 ## [4.5.0rc4] — 2026-07-21
 
 ### Fixed
@@ -1209,7 +1257,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   false-positive warnings for `ref()` targets used in FK JOIN clauses (cross-domain
   references). Genuine typos still trigger warnings.
 
-## [3.6.1] — 2026-07-27
+## [3.6.1] — date not recorded
+
+> Date metadata reconciled on 2026-07-21. The previous future date was invalid,
+> and no reliable historical release date was available.
 
 ### Fixed
 - **Cross-table warnings filtered by domain** — the dbt projector's cross-table

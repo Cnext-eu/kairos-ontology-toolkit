@@ -108,7 +108,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-058](#dd-058-modeling-pre-flight-gates-on-source-analysis-unpack-reference-models-before-analyse-sources) | Modeling Pre-Flight Gates on Source Analysis; Unpack Reference Models Before `analyse-sources` | Accepted | 2026-06-13 |
 | [DD-059](#dd-059-modeling-pre-flight-adds-a-discovery-completeness-gate-independent-of-source-state) | Modeling Pre-Flight Adds a Discovery-Completeness Gate (Independent of Source State) | Accepted | 2026-06-13 |
 | [DD-060](#dd-060-per-document-extraction-tracking-for-business-discovery) | Per-Document Extraction Tracking for Business Discovery | Accepted | 2026-06-13 |
-| [DD-061](#dd-061-deterministic-source-coverage-gates-check-alignment--check-source-coverage) | Deterministic Source-Coverage Gates (check-alignment + check-source-coverage) | Accepted | 2026-06-13 |
+| [DD-061](#dd-061-deterministic-source-coverage-gates-check-alignment--check-source-coverage) | Deterministic Source-Coverage Gates (check-alignment + check-source-coverage) | Superseded by DD-094 | 2026-06-13 |
 | [DD-062](#dd-062-update-resolves-an-upward-walked-managed-root-no-silent-split-hub) | `update` Resolves an Upward-Walked Managed Root (No Silent Split-Hub) | Accepted | 2026-06-13 |
 | [DD-063](#dd-063-deterministic-skos-glossary-builder-build-glossary) | Deterministic SKOS Glossary Builder (`build-glossary`) | Accepted | 2026-06-13 |
 | [DD-064](#dd-064-validate--project-resolve-paths-from-the-hub-root-not-cwd) | `validate` / `project` Resolve Paths From the Hub Root (Not CWD) | Accepted | 2026-06-13 |
@@ -141,11 +141,15 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-091](#dd-091-optional-ddd-governance-overlay-architecture-documentation-only) | Optional DDD governance overlay (architecture documentation only) | Accepted | 2026-06-22 |
 | [DD-092](#dd-092-contracted-custom-dbt-transformation-boundary) | Contracted custom dbt transformation boundary | Accepted | 2026-07-18 |
 | [DD-093](#dd-093-governed-contracted-source-replacement-in-source-coverage) | Governed contracted-source replacement in source coverage | Accepted | 2026-07-18 |
-| [DD-094](#dd-094-claim-registry-is-the-single-materialization-authority) | Claim Registry is the single materialization authority | Accepted | 2026-07-25 |
-| [DD-095](#dd-095-derive-claims-deterministic-multi-source-evidence-aggregation) | derive-claims deterministic multi-source evidence aggregation | Accepted | 2026-07-25 |
-| [DD-096](#dd-096-target-first-derived-aspirational-silver-stub--bind-loop) | Target-first derived-aspirational Silver stub → bind loop | Accepted | 2026-07-28 |
+| [DD-094](#dd-094-claim-registry-is-the-single-materialization-authority) | Claim Registry is the single materialization authority | Accepted | 2026-07-21 |
+| [DD-095](#dd-095-derive-claims-deterministic-multi-source-evidence-aggregation) | derive-claims deterministic multi-source evidence aggregation | Accepted | 2026-07-21 |
+| [DD-096](#dd-096-target-first-derived-aspirational-silver-stub--bind-loop) | Target-first derived-aspirational Silver stub → bind loop | Accepted | 2026-07-21 |
 | [DD-097](#dd-097-multi-domain-dbt-projection--shared-artifact-reconciliation-and-peer-import-authority-issue-220) | Multi-domain dbt projection — shared-artifact reconciliation and peer-import authority (issue #220) | Accepted | 2026-07-21 |
-| [DD-098](#dd-098-alignment--projection-correctness-hardening-toolkit-optimizations-f1f7) | Alignment & projection correctness hardening (toolkit-optimizations F1–F7) | Accepted | 2026-07-22 |
+| [DD-098](#dd-098-alignment--projection-correctness-hardening-toolkit-optimizations-f1f7) | Alignment & projection correctness hardening (toolkit-optimizations F1–F7) | Accepted | 2026-07-21 |
+| [DD-099](#dd-099-single-typed-projection-target-registry) | Single typed projection target registry | Accepted | 2026-07-21 |
+| [DD-100](#dd-100-explicit-one-shot-migration-for-retired-inventory--projection-layouts) | Explicit one-shot migration for retired inventory & projection layouts | Accepted | 2026-07-21 |
+| [DD-101](#dd-101-consolidated-deterministic-lifecycle-gate-check-release) | Consolidated deterministic lifecycle gate (`check-release`) | Accepted | 2026-07-21 |
+| [DD-102](#dd-102-dbt-projector-decomposed-into-five-deterministic-phases) | dbt projector decomposed into five deterministic phases | Accepted | 2026-07-21 |
 
 ---
 
@@ -1071,8 +1075,9 @@ bsp-party:TradeParty kairos-ext:silverInclude true ;
 
 **Status:** Proposed  
 **Date:** 2026-05-01  
-**Affects:** `medallion_silver_projector.py`, `kairos-ext.ttl`  
-**Implementation:** `_add_object_property_fk_cols()`, `_add_redirected_fk_cols()`
+**Affects:** `projections/shared.py`, all three medallion projectors, `kairos-ext.ttl`  
+**Implementation:** `classify_foreign_keys()` / `ForeignKeyDescriptor` in
+`src/kairos_ontology/core/projections/shared.py`
 
 ### Context
 
@@ -1100,6 +1105,12 @@ Introduce two new `kairos-ext:` annotations for simplified FK declaration:
    range of the property. When set to the range class, the FK is placed on the
    range table pointing back to the domain table (reverse placement). Implies
    `silverForeignKey true`.
+
+The OWL direction, qualification signals, redirection, authored physical column
+names, nullability, and holder/target class endpoints are normalized once into
+an immutable internal FK descriptor. Silver DDL, dbt Silver, and Gold consume
+that descriptor rather than independently interpreting the annotations. Each
+layer still applies its existing physical key type and naming rules.
 
 Usage examples:
 
@@ -1137,8 +1148,8 @@ workflow where extension files already claim imported classes.
   parent→child relationships — the most common FK pattern in reference models.
 - **Validation warnings** are emitted for invalid `silverForeignKeyOn` targets
   (class not in domain/range) or missing domain/range declarations.
-- **No gold equivalent** — the gold projector uses different relationship
-  semantics (dimension keys). A `goldForeignKey` may be added later if needed.
+- **No separate gold annotation is required** — Gold consumes the same normalized
+  relationship while retaining Gold-specific dimension-key naming and types.
 
 ---
 
@@ -3480,7 +3491,7 @@ provenance committed alongside the deliverable it explains.
 
 ## DD-061: Deterministic Source-Coverage Gates (check-alignment + check-source-coverage)
 
-**Status:** Accepted  
+**Status:** Superseded by DD-094 on 2026-07-21  
 **Date:** 2026-06-13  
 **Affects:** `kairos-design-domain` skill (Step 0a.2), `kairos-design-silver` +
 `kairos-execute-project` skills, `propose-alignment` output (alignment YAML
@@ -3489,6 +3500,12 @@ provenance committed alongside the deliverable it explains.
 `src/kairos_ontology/source_coverage.py`, `check-alignment` +
 `check-source-coverage` commands in `src/kairos_ontology/cli/main.py`,
 `write_alignment_output` in `src/kairos_ontology/propose_alignment.py`
+
+> **Supersession note:** DD-094 retires alignment YAML and makes the Claim
+> Registry plus canonical completeness facts authoritative. The source-coverage
+> intent survives in the current `check-claims` / `check-source-coverage` views;
+> the alignment-YAML authority and `check-alignment` path described below are
+> historical.
 
 ### Context
 
@@ -4797,6 +4814,38 @@ mapping/silver/gold work. Clean-hub assumption: no `.sessions-design/` migration
 - Reconciliation rules are explicit (scan wins for facts; continuation wins for
   intent).
 
+### Addendum (2026-07-21): Machine-readable per-instance facts + schema versioning (DD-101)
+
+**Affects:** `src/kairos_ontology/core/status.py`, `src/kairos_ontology/core/binding_analysis.py`.
+
+`status.py`'s objective scan stayed limited to a `not-started|in-progress|done`
+triad; consumers that needed finer machine-readable state (claim `proposed`/
+`approved` counts, Silver `bound`/`aspirational` classes, validation pass/fail)
+had to re-derive it themselves (e.g. `kairos-diagnose-status`'s hand-rolled
+aspirational-vs-bound section). `InstanceStatus` gains an additive `facts: dict`
+bag, populated only where objectively knowable from committed authorities:
+
+- **claims** — `{"proposed": N, "approved": N}`, a raw count of the registry's own
+  `status` field (no governance rule re-derived; `check-claims` remains the
+  authority for bucket/blocking semantics).
+- **silver** — `{"bound_classes": [...], "aspirational_classes": [...],
+  "release_eligible": bool}`, from the same canonical
+  `binding_analysis.BindingAnalysis` snapshot the state/detail computation already
+  used (D4) — one computation, not two.
+- **validate** — `{"data_valid": bool}` when the persisted
+  `validation-report.json` has recognizable `{section: {"failed": int}}` counts;
+  omitted (not guessed) otherwise.
+
+The shared "load hub authorities and build a `BindingAnalysis`" logic previously
+inlined in `status._domain_aspirational_stubs` is now the canonical
+`binding_analysis.analyze_domain_from_hub(hub_root, domain)`, reused by both the
+scan and the new DD-101 lifecycle gate; `_domain_aspirational_stubs` is now a
+thin, behavior-preserving wrapper (same signature, same return value, still
+directly unit-tested). `HubStatus.to_dict()` gains `"schema_version": 2`
+(v1 had neither the version key nor `facts`); every v1 key is unchanged, so v1
+consumers keep working — only additive keys were introduced, hence no
+backward-compatibility break.
+
 ---
 
 ## DD-081: `analyse-sources --domains` is an output filter, not a candidate restriction
@@ -4874,7 +4923,7 @@ several workflow-friction gaps:
 
 Keep `*-claims.yaml` as the canonical, **git-tracked** source of truth — no
 database (in-memory or on-disk). The runtime already loads the full registry into
-memory; a DB would sacrifice git-diff governance (DD-EL-1) without solving the real
+memory; a DB would sacrifice git-diff governance (DD-094) without solving the real
 gap, which is a missing **query + bulk-update API**. Address each item:
 
 - **Intra-hub imports (item 1):** `_collect_hub_domain_bases` now treats any
@@ -4970,11 +5019,10 @@ verbatim:
   (non-local) `silverInclude` plus the forbidden `silverIncludeImports` bulk flag are
   managed; intra-hub `_foundation`/`_master` imports and local-class `silverInclude`
   stay authored.
-- **Steady state is byte-stable** outside the block (idempotent). **Legacy migration:**
-  a pre-#191 file with managed triples inline in the authored region has just those
-  triples stripped on the first sync (those files carry no authored comments to lose),
-  preserving any leading provenance header; thereafter the file has a managed block
-  and is preserved.
+- **Steady state is byte-stable** outside the block (idempotent). **Historical legacy
+  migration (superseded by DD-100):** the original implementation stripped inline
+  managed triples during first sync. Current releases require the explicit,
+  backed-up `migrate` conversion instead.
 
 ### Consequences
 
@@ -5343,12 +5391,14 @@ row counts, referential integrity, and production distributions.
 
 **Status:** Accepted
 **Date:** 2026-06-22
-**Affects:** `src/kairos_ontology/archetype_loader.py`,
-`src/kairos_ontology/archetype_topology.py`,
-`src/kairos_ontology/conformance_artifact.py`, `cli/main.py`
-(`discovery-conformance` group), scaffold dir lists, `kairos-design-discovery`
-and `kairos-design-domain` skills
+**Affects:** `src/kairos_ontology/core/archetype_loader.py`,
+`src/kairos_ontology/core/archetype_topology.py`,
+`src/kairos_ontology/core/conformance_artifact.py`,
+`src/kairos_ontology/core/derive_claims.py`, `src/kairos_ontology/cli/main.py`
+(`discovery-conformance` group and `derive-claims`), scaffold dir lists,
+`kairos-design-discovery` and `kairos-design-domain` skills
 **Implementation:** `kairos-ontology discovery-conformance {list-archetypes,load,validate}`
+and the proposed-only conformance stream in `kairos-ontology derive-claims`
 
 ### Context
 
@@ -5387,8 +5437,17 @@ Concepts Conformance**:
   conformance section for continuation context.
 - **Mode** (DD-088): interactive by default; AI pre-fill only in design fleet mode.
 - **Single archetype per session**; multi-archetype companies run a second session.
-- **`kairos-design-domain` consumption is warn-only in v1** (missing/stale artifact
+- **`kairos-design-domain` consumption remains warn-only** (missing/stale artifact
   warns, never blocks).
+- A committed, valid artifact may also drive **deterministic proposed-only class
+  claims** through `derive-claims`. The outcome policy is:
+  `conforms` → `claim`, `conforms-with-rename` → `claim`, `partial` →
+  `specialize`, `deviates` → `gap`, and `not-applicable` → no proposal. Required,
+  recommended, and optional tiers are all eligible.
+- Conformance remains **non-authoritative for approval**: generated claims always
+  start as `status: proposed`, never materialize by themselves, and prior human
+  decisions survive regeneration through `merge_preserving_decisions()`. The Claim
+  Registry remains the sole approval/materialization authority (DD-094).
 
 ### Rationale
 
@@ -5405,6 +5464,9 @@ root resolution avoids introducing a hub-config loader that does not exist today
   new scaffold dir `ontology-hub/integration/discovery/`.
 - Counts (concepts/modules) are read dynamically from the loaded archetype, never
   hardcoded.
+- Missing conformance remains a compatible no-op for claim derivation. A present
+  malformed, unknown, or contradictory artifact is an explicit validation error;
+  it is never silently ignored.
 - A **blocking** design-domain gate is deferred to a future DD.
 - CI/tests use a bundled minimal fixture refmodels root — no live checkout needed.
 
@@ -5652,11 +5714,13 @@ prevents metadata alone from laundering an unrelated joined table into coverage.
 
 **Status:** Accepted
 
-**Date:** 2026-07-25
+**Date:** 2026-07-21
 
 **Affects:** `model/claims/{domain}-claims.yaml`, `{domain}-alignment.yaml`
 (retired), `src/kairos_ontology/core/claim_registry.py`,
+`src/kairos_ontology/core/completeness_model.py`,
 `src/kairos_ontology/core/claim_coverage.py`,
+`src/kairos_ontology/core/source_coverage.py`,
 `src/kairos_ontology/core/propose_alignment.py`, silver/dbt projectors,
 `check-claims` / `check-source-coverage`, evidence-led design skills
 
@@ -5684,14 +5748,19 @@ Each claim carries an explicit `status` lifecycle (`proposed → approved → �
 Approved `claim`/`specialize` claims — and only those — authorize silver/dbt
 materialization; the projector consumes the registry rather than namespace
 selection alone. The retired coverage gates unify into a single **`check-claims`**
-command (backend `claim_coverage.py`).
+command. A canonical per-table completeness snapshot is computed once from committed
+affinity, registry, source, mapping, contract, and Silver-extension inputs; the
+claim and source gate reports are views over that snapshot.
+`migrate_claims.py` is the sole legacy alignment-YAML reader, used only by the
+one-shot migration; no runtime completeness evaluator reads alignment YAML.
 
 ### Rationale
 
 One governed file with a reviewable, GitHub-PR-based lifecycle gives auditable
-governance. Reusing the alignment backend primitives (coverage, freshness, anchor
-state, triage heuristics) preserves every prior guarantee while eliminating the
-double-path logic. Golden, parity, and negative-migration tests enforce fidelity.
+governance. A single deterministic completeness model preserves coverage,
+freshness, anchor/reference-class, and governed-replacement guarantees while
+eliminating duplicate table reconstruction. Golden, parity, and negative-migration
+tests enforce fidelity.
 
 ### Consequences
 
@@ -5704,6 +5773,9 @@ double-path logic. Golden, parity, and negative-migration tests enforce fidelity
 - `check-claims` blocks on missing/invalid/incomplete/stale/duplicate-approved and
   (unless `--no-source-coverage`) unmapped tables; `--strict` also blocks undecided
   (`proposed`) claims; leftover `*-alignment.yaml` is always a hard error.
+- Conformance-derived proposals remain Claim Registry evidence only: they cannot
+  satisfy direct mapping coverage without a committed SKOS mapping or complete
+  governed-replacement evidence.
 
 ---
 
@@ -5711,7 +5783,7 @@ double-path logic. Golden, parity, and negative-migration tests enforce fidelity
 
 **Status:** Accepted
 
-**Date:** 2026-07-25
+**Date:** 2026-07-21
 
 **Affects:** `model/claims/{domain}-claims.yaml`,
 `src/kairos_ontology/core/derive_claims.py`, `derive-claims` CLI command,
@@ -5729,24 +5801,26 @@ With the Claim Registry (DD-094) as the governance authority, authoring candidat
 claims is still largely manual: the evidence needed to propose them is scattered
 across already-produced artifacts (`analyse-sources` affinity, `propose-alignment`
 column→property output, `import-tmdl` concept-mapping dispositions, SKOS mapping
-TTL, and sample-derived signals). The semantically hard LLM interpretation already
-happened upstream; what is missing is a single deterministic step that joins those
-evidence streams into a richer candidate set for human curation.
+TTL, sample-derived signals, and committed Core Concepts Conformance outcomes).
+The semantically hard interpretation already happened upstream; what is missing is
+a single deterministic step that joins those evidence streams into a richer
+candidate set for human curation.
 
 ### Decision
 
 Add a **`derive-claims`** CLI command: a **deterministic, AI-free** aggregator that
 merges/enriches the Claim Registry with additional deterministic evidence streams
-and attaches **multiple `evidence_sources` per claim**. It joins five streams on
+and attaches **multiple `evidence_sources` per claim**. It joins six streams on
 `(system, table[, column])` and ref_class/ref_property names: (1) the existing
 claims registry, (2) `analyse-sources` affinity, (3) `import-tmdl` concept-mapping,
-(4) SKOS mappings, and (5) sample-derived enum/FK signals. **C4 guard — all
-derived/new claims are `status: proposed`, never auto-`approved`.** Human decisions
-survive re-runs via `merge_preserving_decisions()`; conflicting evidence is
-surfaced (low-confidence proposed claims / rationale notes), never silently
+(4) SKOS mappings, (5) sample-derived enum/FK signals, and (6) validated Core
+Concepts Conformance outcomes using DD-090's proposed-only policy. **C4 guard —
+all derived/new claims are `status: proposed`, never auto-`approved`.** Human
+decisions survive re-runs via `merge_preserving_decisions()`; conflicting evidence
+is surfaced (low-confidence proposed claims / rationale notes), never silently
 resolved. It reuses `_concurrency.map_concurrent` (`--max-workers`) and the
-`_cache` sidecar (`--force`), and is skill-managed (soft skill-gate;
-`KAIROS_SKILL_CONTEXT=1` silences the warning).
+`_cache` sidecar (`--force`, including conformance in the input digest), and is
+skill-managed (soft skill-gate; `KAIROS_SKILL_CONTEXT=1` silences the warning).
 
 ### Rationale
 
@@ -5764,6 +5838,9 @@ the banner where it actually matters (the paid AI commands).
 - No claim is ever auto-approved; the `check-claims` approval gate is unchanged.
 - Evidence granularity is preserved: each claim may carry multiple
   `evidence_sources`.
+- Conformance evidence records tier, outcome, rename, and deviation traceability;
+  optional-tier concepts are not filtered out, while `not-applicable` creates no
+  candidate.
 - A future opt-in `--llm-reconcile` (LLM tie-breaking / rationale synthesis, with a
   cost banner) is explicitly deferred.
 
@@ -5773,7 +5850,7 @@ the banner where it actually matters (the paid AI commands).
 
 **Status:** Accepted
 
-**Date:** 2026-07-28
+**Date:** 2026-07-21
 
 **Affects:** `src/kairos_ontology/core/binding_analysis.py`,
 `src/kairos_ontology/core/projections/medallion_dbt_projector.py`
@@ -5781,7 +5858,8 @@ the banner where it actually matters (the paid AI commands).
 `src/kairos_ontology/core/projector.py` (`run_projections`, `_run_projection`),
 `src/kairos_ontology/cli/main.py` (`project --emit-aspirational-stubs`),
 `src/kairos_ontology/templates/dbt/silver_stub_model.sql.jinja2`,
-`src/kairos_ontology/core/determinism.py`, design source `docs/draft/silverfirstdesign.md`
+`src/kairos_ontology/core/determinism.py`, shipped reference design
+`docs/draft/silverfirstdesign.md`
 
 **Implementation:** Flag-gated stub emission on top of the canonical
 `BindingAnalysis` service (B0) and the Claim Registry (DD-094). Determinism context
@@ -5883,8 +5961,82 @@ coverage, release gate, and status scan never diverge on "is this bound?".
   backward-compat constraint enforced by tests.
 - Coverage/status must distinguish stub vs bound (a stub is not "done"); the release
   gate blocks while release-blocking stubs remain.
-- Deferred (out of scope): per-claim release waivers, conformance warn→driver
-  promotion, `contract.enforced` promotion, and the drift report.
+- Deferred (out of scope): per-claim release waivers, `contract.enforced`
+  promotion, and the drift report. DD-095 has since shipped conformance as a
+  deterministic **proposed-only** evidence driver; it still cannot approve.
+- The authoritative complete lifecycle regression is
+  `tests/scenarios/test_scenario_silver_first_e2e.py`.
+
+### Addendum (2026-07-21): `BindingAnalysis` consolidated as the single result; aspirational decoupled from stub emission
+
+**Affects:** `src/kairos_ontology/core/binding_analysis.py`,
+`src/kairos_ontology/core/claim_projection_sync.py`,
+`src/kairos_ontology/core/status.py`,
+`src/kairos_ontology/core/projections/medallion_dbt_projector.py`.
+
+The original write-up derived `STUB` only when the projector's stub flag was on, so a
+consumer that needed the aspirational/release facts with stubs **off** (status, the
+`--strict` gate) had to force `stubs_enabled=True` — coupling two independent concerns
+and risking divergence. `BindingAnalysis` is now the **one canonical materialization
+result**, refined as follows (no behaviour change to feature-off output):
+
+- **Aspirational is derived independently of stub emission.** `classify_binding`
+  no longer takes `stubs_enabled`: an unbound, materialization-eligible, non-folded
+  class is :data:`STUB` (aspirational) regardless of the flag. Stub *byte emission*
+  is a separate gate — `BindingAnalysis.should_emit_stub()` = aspirational **and**
+  `stubs_enabled`. The projector still emits stubs only under
+  `--emit-aspirational-stubs`, so **feature-off output stays byte-identical**.
+- **One result, one set of helper APIs.** `BindingAnalysis` exposes
+  `is_aspirational`/`aspirational_class_uris` (status), `is_release_blocking`/
+  `release_blocking_class_uris` (strict gate), `should_emit_stub`/`is_materialized`/
+  `materialized_class_uris` (projection inclusion), plus `state`/`reason`. `build(...)`
+  accepts a pre-computed `SourceBindings` so the dbt projector classifies from the
+  **same** `compute_source_bindings` result it materializes from (no recompute, no
+  divergent inline logic). `status` no longer forces `stubs_enabled=True`; the dbt
+  projector's stub-emission and `__unbound_eligible__` release set are read from the
+  canonical analysis.
+- **Registry-fact filters are canonical too.** `materialization_eligible_class_uris`
+  (unchanged rules) and the new `approved_imported_class_uris` are the single claim
+  filters; `claim_projection_sync` consumes the latter (applying only its
+  external-to-domain rule) instead of reimplementing the approved/imported/disposition
+  test. The Claim Registry remains the sole eligibility authority (DD-094) — status,
+  disposition, and type rules are unchanged.
+- **Still derived, never persisted.** No field is added to `Claim`/`SilverImpact`;
+  `core` still never imports `mdm`. Parity is covered by
+  `tests/scenarios/test_scenario_binding_parity.py` plus the decoupling/reasons cases
+  in `tests/test_binding_analysis.py` and the sync-delegation case in
+  `tests/test_claim_projection_sync.py`.
+
+### Addendum (2026-07-21): §11 open decision #4 resolved — one composed release gate (DD-101)
+
+**Affects:** `src/kairos_ontology/core/lifecycle_gate.py`,
+`src/kairos_ontology/core/binding_analysis.py`, `src/kairos_ontology/core/status.py`,
+`src/kairos_ontology/cli/main.py` (`check-release`).
+
+`docs/draft/silverfirstdesign.md` §11 open decision #4 asked for separate,
+named states — *schema-valid vs bound vs data-valid vs release-eligible* — so a
+stub's vacuous-green-CI risk could be told apart from real completion, and for
+`--strict` to be "part of the design, not deferrable." `--strict` already blocked
+release inside `run_projections`; this addendum makes the four states themselves
+machine-readable **without duplicating that rule**:
+
+- **schema-valid** — a class exists in the domain ontology (trivially true for any
+  projected class; no new fact needed).
+- **bound** / **release-eligible** — `binding_analysis.BindingAnalysis.is_bound` /
+  `release_blocking_class_uris`, now reachable hub-side (no projection required)
+  via `analyze_domain_from_hub`, and surfaced per-domain by both the `status`
+  scan (`silver` phase facts) and the new `check-release` CLI / `lifecycle_gate`
+  module (DD-101).
+- **data-valid** — read (never re-derived) from the persisted
+  `validation-report.json` via `status`'s `validate` phase fact.
+
+`check-release` composes these with the existing claim/source-coverage/extension-
+sync evaluators into one pass/fail decision, so a CI pipeline has a single command
+to consult instead of separately running `check-claims`, `project --strict`, and
+inspecting `status` output by hand. `project --strict` remains the enforcement
+point for an actual projection run (unchanged); `check-release` is the read-only,
+side-effect-free preflight/report that can run *before* a projection is attempted
+or in `kairos-diagnose-status`/`kairos-flow` without generating artifacts.
 
 ---
 
@@ -5957,12 +6109,13 @@ already scanned the full directory, closing the divergence between the two code 
 ## DD-098: Alignment & projection correctness hardening (toolkit-optimizations F1–F7)
 
 **Status:** Accepted  
-**Date:** 2026-07-22  
+**Date:** 2026-07-21  
 **Affects:** `src/kairos_ontology/core/propose_alignment.py`,
 `src/kairos_ontology/core/migrate_claims.py`,
 `src/kairos_ontology/core/claim_registry.py`,
+`src/kairos_ontology/core/completeness_model.py`,
 `src/kairos_ontology/core/claim_coverage.py`,
-`src/kairos_ontology/core/alignment_coverage.py`,
+`src/kairos_ontology/core/source_coverage.py`,
 `src/kairos_ontology/core/inventory.py`,
 `src/kairos_ontology/cli/main.py`,
 `src/kairos_ontology/core/projections/shared.py`,
@@ -5994,7 +6147,8 @@ the registry-write and coverage-gate surfaces.
   alignment post-processing reconciles **every** source column and synthesizes
   passthrough candidates for any unaccounted one; `ClaimCheckReport` gains a
   **blocking** `column_omissions` signal (not overloaded on `anchor_state`) that
-  compares registry-covered columns against the affinity `total_columns`.
+  compares registry-covered columns against the affinity `total_columns` through
+  the canonical completeness facts.
 - **F2/F7 — grain conflict.** `likely_entity` (candidate-entity provenance) is now
   carried on `TableAlignment`, serialized in `alignment_to_dict`, and consumed in
   `alignment_to_registry` **before** class dedup. When ≥2 tables with *different*
@@ -6036,6 +6190,287 @@ are deterministic (no LLM). `core` still never imports `mdm`.
   `tests/scenarios/test_scenario_naming_parity.py`, plus unit tests in
   `tests/test_propose_alignment.py`, `tests/test_migrate_claims.py`,
   `tests/test_claim_coverage.py`, `tests/test_cli_inventory.py`.
+
+---
+
+## DD-099: Single typed projection target registry
+
+**Status:** Accepted  
+**Date:** 2026-07-21  
+**Affects:** `src/kairos_ontology/core/projector.py`,
+`src/kairos_ontology/cli/main.py`, `src/kairos_ontology/mdm/__init__.py`  
+**Implementation:** `TargetSpec` and `register_target()` in the core projector
+
+### Context
+
+Projection target metadata was repeated across `VALID_TARGETS`, an alias map,
+medallion/architecture/post-domain sets, the `all` expansion, CLI choices, and a
+separate external-target registry. Adding or renaming a target required coordinated
+edits and could silently diverge in validation, dispatch, placement, or help output.
+
+### Decision
+
+Use one ordered, typed `TargetSpec` registry as the source of truth for canonical
+names and aliases, exact output subdirectories and categories, execution phase,
+`--target all` participation, and optional external discovery/project callbacks.
+Derive the historical `VALID_TARGETS` list, canonical `all` expansion, alias
+resolution, output routing, post-domain classification, external dispatch, and CLI
+choices from that registry.
+
+External packages register all metadata in one idempotent `register_target()` call.
+Conflicting canonical names or aliases fail clearly. The CLI continues to import
+`kairos_ontology.mdm` to trigger `mdm-profile` registration; core never imports MDM,
+preserving the MDM-DD-002 one-way dependency.
+
+### Rationale
+
+One registration record makes target addition atomic and keeps user-visible order,
+dispatch, and placement mechanically consistent. A typed external-dispatch field
+retains extensibility without weakening the package boundary.
+
+### Consequences
+
+- Existing target order, output paths, `gold` → `powerbi`, CLI choices, and opt-in
+  `mdm-profile` behavior remain unchanged.
+- `VALID_TARGETS` remains available as a compatibility list but is refreshed only
+  from the registry.
+- External targets are excluded from `all` by default and can be registered
+  repeatedly only when every metadata field and callback is identical.
+
+---
+
+## DD-100: Explicit one-shot migration for retired inventory & projection layouts
+
+**Status:** Accepted  
+**Date:** 2026-07-21  
+**Affects:** `core/inventory.py`, `core/claim_projection_sync.py`,
+`core/migrate_claims.py`, `core/propose_alignment.py`, `cli/main.py`  
+**Implementation:** the existing `kairos-ontology migrate` command
+
+### Context
+
+DD-054 introduced namespaced reference-model inventory names, while DD-083 introduced
+Claim Registry-managed Turtle blocks. Their transitional runtime behavior still
+self-healed old stem-named inventory files and relocated inline controlled Turtle triples
+during ordinary reads/sync. That left two live formats, could silently discard ambiguous
+collision content, and made routine projection sync a destructive migration path.
+
+### Decision
+
+Retired formats are converted only through the existing `migrate` command. It has an
+idempotent `--check`/`--dry-run` plan, validates every input before publication, stages
+writes in-place, and retains originals in
+`.kairos-migrations/legacy-format-backups/` for rollback. Ambiguous stem collisions,
+conflicting canonical files, malformed YAML, malformed managed markers, or Turtle that
+cannot be surgically relocated abort the whole format migration without writing.
+
+Canonical inventory readers require model-namespaced reference inventories. Canonical
+projection sync requires Claim Registry-controlled imports/includes to be inside one final
+managed block; it never converts or drops inline triples. The Claim Registry remains the
+only authority for the generated block, while non-managed authored Turtle stays intact.
+This supersedes only DD-083's automatic first-sync legacy-conversion clause, not its
+managed-block ownership model.
+
+### Consequences
+
+- Existing hubs with retired state receive an actionable migration-required diagnostic
+  instead of a best-effort repair. Run `kairos-ontology migrate --hub <hub>` and commit
+  the reviewed result before normal inventory generation or claim projection sync.
+- Rollback is explicit: restore files from `.kairos-migrations/legacy-format-backups/`
+  and use the previous toolkit version if the retired runtime behavior is required.
+  Forward correction remains preferred; a second migration run is a no-op.
+- Backup creation and staged replacement ensure a failed multi-file conversion restores
+  original files rather than leaving a partially migrated hub.
+
+---
+
+## DD-101: Consolidated deterministic lifecycle gate (`check-release`)
+
+**Status:** Accepted
+**Date:** 2026-07-21
+**Affects:** `src/kairos_ontology/core/lifecycle_gate.py` (new),
+`src/kairos_ontology/core/binding_analysis.py`, `src/kairos_ontology/core/status.py`,
+`src/kairos_ontology/cli/main.py` (`check-release`), `.github/skills/kairos-flow/`,
+`.github/skills/kairos-diagnose-status/`, `.github/skills/kairos-execute-project/`,
+`.github/skills/kairos-help/`
+**Implementation:** `core/lifecycle_gate.py` (`evaluate_lifecycle_gate`,
+`LifecycleGateReport`), `check-release` CLI command
+
+### Context
+
+Release readiness was spread across independently-run checks: `check-claims`
+(claim validity/freshness, source completeness, extension sync), `project
+--strict` (aspirational release blockers, DD-096), and `kairos-ontology
+validate`/`project` (validation, projection artifacts) — each with its own exit
+code and text output, and no single machine-readable place to consult "may this
+hub ship?". `kairos-diagnose-status` re-derived the bound-vs-aspirational split
+by hand (SPARQL-ish TTL reasoning) instead of the canonical `BindingAnalysis`,
+risking drift from DD-096's D4 authority. DD-096 §11 open decision #4 explicitly
+asked for this consolidation ("make `--strict` block release... this gate is
+part of the design, not deferrable").
+
+### Decision
+
+Add one deterministic, read-only, side-effect-free entrypoint,
+`lifecycle_gate.evaluate_lifecycle_gate`, exposed as `kairos-ontology
+check-release`, that **composes** — never re-derives — the existing evaluators:
+
+- **claim validity/freshness** (+ MDM-anchor/deviation/ownership/passthrough
+  governance) — the literal `claim_coverage.check_claims_coverage` result.
+- **source completeness** — the literal `source_coverage.check_source_coverage`
+  result.
+- **extension sync** — the literal `claim_projection_sync.evaluate_projection_sync`
+  result (consumed via its public API only; the module itself is not modified).
+- **aspirational release blockers** (DD-096) — a new shared
+  `binding_analysis.analyze_domain_from_hub(hub_root, domain)`, which lifts the
+  "load claims + ontology + Silver-ext + sources + mappings, then run the
+  canonical `build()`" logic that was inlined in
+  `status._domain_aspirational_stubs` into one reusable, hub-relative entrypoint.
+  `status.py`'s D4 behavior is unchanged (`_domain_aspirational_stubs` is now a
+  thin wrapper); the gate calls the same function to additionally read
+  `bound_classes`/`reasons`, so status and the gate can never diverge on "is this
+  bound?".
+- **validation** and **projection** — read from `status.scan_hub_status`'s
+  `validate`/`project` phases (never re-run).
+
+`LifecycleGateReport.is_blocking` is a pure `OR` of each section's own blocking
+signal (`ClaimCheckReport.is_blocking`, `SourceCoverageReport.is_blocking`,
+`ProjectionSyncReport.is_blocking`, any domain's `release_eligible is False`,
+`validation.passed is False`) — no new blocking rule is invented. Every section's
+`to_dict()` projection keeps the original field names, so the reasons a caller
+sees are byte-identical to running `check-claims`/inspecting `status` directly.
+
+`core/status.py` gains additive, versioned (`schema_version: 2`) per-instance
+`facts` so it remains the sole machine truth for objective per-phase/instance
+state (see the DD-080 addendum); `lifecycle_gate.py` is the composition layer on
+top, not a second source of truth. No AI/LLM calls; no claim is auto-approved; no
+`aspirational`/`bound`/`release_eligible` flag is persisted — everything is
+recomputed on every call.
+
+### Rationale
+
+Reusing each evaluator's own return value keeps one implementation of every rule
+(claim governance stays in `claim_coverage.py`, mapping coverage in
+`source_coverage.py`, sync drift in `claim_projection_sync.py`, binding
+classification in `binding_analysis.py`) while still answering the
+cross-cutting "ship or not" question in one call. Reading validation/projection
+facts from the committed `status` scan rather than re-running either keeps the
+gate side-effect-free and fast enough to call from `kairos-flow`/
+`kairos-diagnose-status` on every resume. Composing via a pure `OR` means adding
+the gate can only ever surface a pre-existing blocking condition earlier — it
+cannot introduce a new way to block that a standalone `check-claims`/`project
+--strict`/`validate` run would not already have flagged.
+
+### Consequences
+
+- One new CLI command, `check-release` (`--format text|json`, `--warn-only`,
+  and the same scope/skip flags as `check-claims`), exempt from the skill-gate
+  like `check-claims`/`status` (deterministic, AI-free, read-only).
+- `kairos-flow`, `kairos-diagnose-status`, and `kairos-execute-project` are
+  updated to consume `status`/`check-release` output for proposed/approved/
+  aspirational/bound/release-eligible/validation facts instead of restating or
+  hand-deriving them.
+- `docs/draft/silverfirstdesign.md` is reconciled as the shipped reference
+  design. Its §11 now lists only genuinely deferred extensions.
+- Regression coverage: `tests/test_lifecycle_gate.py` (unit + CLI), the
+  `facts`-focused additions to `tests/test_status.py`, and the complete
+  `tests/scenarios/test_scenario_silver_first_e2e.py` lifecycle.
+
+---
+
+## DD-102: dbt projector decomposed into five deterministic phases
+
+**Status:** Accepted
+**Date:** 2026-07-21
+**Affects:** `src/kairos_ontology/core/projections/medallion_dbt_projector.py`,
+`src/kairos_ontology/core/projections/dbt/` (new subpackage)
+**Implementation:** `core/projections/dbt/{context,bind,normalize,shape,materialize,render}.py`;
+`generate_dbt_artifacts` rewritten as a thin orchestrator; phase-level tests in
+`tests/test_dbt_phases.py`
+
+### Context
+
+`medallion_dbt_projector.py` had grown to ~3.9k lines and its public entrypoint
+`generate_dbt_artifacts` was a monolithic *policy hub*: graph/extension merge, FK
+classification, source/mapping parsing, contracted virtual-source resolution,
+`SourceBindings`, the canonical `BindingAnalysis`, per-class column/FK shaping, SCD
+/ materialization selection, release-gate metadata, and final artifact assembly +
+validation were all interleaved in one flow (and, per class, inside
+`_gen_silver_models`). Policy was re-derived at several points and the render step
+still read the RDF graph, so there was no auditable boundary between "decide" and
+"emit". This blocked the shared-tree work (deterministic context, TargetSpec
+registry, canonical completeness/materialization, explicit legacy migrations,
+shared FK normalization) from landing on a clean seam.
+
+### Decision
+
+Turn `generate_dbt_artifacts` into an **orchestrator** over five explicit,
+ordered phases that exchange typed, **immutable** (`frozen=True`) intermediate
+models defined in `core/projections/dbt/context.py`:
+
+`bind → normalize → shape → materialize → render`
+
+- **bind** (`bind.py` → `BoundSources`) — takes the committed `DbtInputs`, commits
+  the ext-merged working graph (silver-ext / ref-model-default / peer triples are
+  merged here because source binding needs them), parses source `systems` + SKOS
+  `mappings`, resolves the active contracts + contracted virtual sources
+  (`virtual_table_uris` / `replacement_input_uris`), and computes the canonical
+  `SourceBindings`.
+- **normalize** (`normalize.py` → `ProjectionContract`) — derives the FK
+  descriptors (`classify_foreign_keys`) and the canonical `BindingAnalysis`
+  **grounded in** the bind phase's `SourceBindings` (never re-derived), plus the
+  Silver naming convention + ontology URI.
+- **shape** (`shape.py` → `ShapedProject`) — produces sources, Silver models
+  (+ warnings + entity metadata), schema YAML, the Silver registry, Gold star
+  schema + schema YAML, coverage data, and macros. FK/binding *policy* is read from
+  `ProjectionContract`/`SourceBindings` (threaded into `_gen_silver_models` via new
+  optional `bindings=` / `analysis=` args) rather than reclassified.
+- **materialize** (`materialize.py` → `MaterializationPlan`) — owns the
+  orchestration-level release metadata (`unbound_eligible_names` → the
+  `__unbound_eligible__` sentinel, DD-096 / DEC-1) and the per-domain project
+  configuration.
+- **render** (`render.py`) — assembles the final `{path: content}` map from the
+  committed `ShapedProject` + `MaterializationPlan` (strings/sets/dicts only) and
+  runs post-generation validation. Its signature is `(shaped, plan)` — it is
+  structurally incapable of rereading RDF/mappings or reclassifying policy.
+
+**Byte-parity is a hard constraint.** Public output and APIs are unchanged: all
+existing public functions and direct test imports (`generate_dbt_artifacts`,
+`generate_dbt_project_config`, `write_dbt_session_log`, `compute_source_bindings`,
+`SourceBindings`, `_parse_bronze`, `_parse_skos_mappings`, `_gen_silver_models`,
+`_extract_silver_columns`, `_validate_dbt_artifacts`, …) remain in
+`medallion_dbt_projector.py` as compatibility facades. Feature-off and stub-on
+outputs are byte-identical to the pre-refactor baseline (verified by hashing the
+full artifact maps of the acme-hub `client` (default + stub-off + stub-on),
+`invoice`, and `logistics` scenarios, plus the two-process determinism probe).
+
+### Rationale
+
+Extracting *phase boundaries* first (with the leaf helpers left in place and
+invoked by the phase functions via lazy imports) makes the decomposition provably
+byte-safe: the same helpers are called with the same arguments in the same order,
+so the emitted strings — and the deduplicated projection-report warnings — are
+unchanged. Threading the already-committed `SourceBindings`/`BindingAnalysis` into
+`_gen_silver_models` (additive, defaulted args) removes the double-derivation
+without altering behaviour. A frozen render input is the cheapest possible proof
+that emission no longer depends on policy.
+
+### Consequences
+
+- New internal subpackage `core/projections/dbt/`; no public API or artifact path
+  changed; no broad renames/deletions.
+- **Retained debt (deliberate, documented):** the heavy leaf helpers (notably
+  `_gen_silver_models`, `_gen_schema_yaml`, `_gen_gold_models`) still live in
+  `medallion_dbt_projector.py`, and per-model shape/materialize/render remains
+  interleaved inside `_gen_silver_models` (SQL/templates were **not** redesigned per
+  scope). The graph/extension *merge* is committed at the bind boundary (source
+  binding needs it) while the derived *contract* is owned by normalize. Further
+  lifting of template rendering out of the shaping helpers is future work on this
+  now-explicit seam.
+- Phase-level regression coverage in `tests/test_dbt_phases.py` (immutability,
+  deterministic ordering, phase-boundary/input constraints); output parity is
+  covered by the scenario/golden/determinism suites, including the complete
+  Silver-first lifecycle in `tests/scenarios/test_scenario_silver_first_e2e.py`.
 
 ---
 

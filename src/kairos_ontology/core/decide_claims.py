@@ -3,7 +3,7 @@
 """Deterministic claim curation — query + bulk status decisions.
 
 The Claim Registry (``model/claims/{domain}-claims.yaml``) is the single governed,
-git-tracked source of truth (DD-EL-1). It is intentionally **not** backed by a
+git-tracked source of truth (DD-094). It is intentionally **not** backed by a
 database: the runtime already loads the whole registry into memory, and a binary
 store would sacrifice the reviewable-diff governance model. The friction that
 motivated this module (issue #190 items 2 & 3) is the *missing query + bulk-update

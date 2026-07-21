@@ -1,0 +1,80 @@
+schema_version: 1
+generated_by: kairos-design-discovery
+generated_at: 2026-07-21T20:00:00Z
+archetype:
+  id: acme-billing
+  label: ACME Billing Provider
+  source: acme-billing.yaml
+  catalog_hash: sha256:acme-billing-catalog-0001
+  concept_set_hash: sha256:acme-billing-concepts-silver-first-0001
+refmodels_version: 1.11.0
+discovery_doc: accelerator-packs/financial-services/discovery/acme-billing.md
+ref_model_modules:
+  - iri: https://kairos.cnext.eu/ref/party#
+    tier: required
+  - iri: https://kairos.cnext.eu/ref/invoice#
+    tier: required
+  - iri: https://kairos.cnext.eu/ref/payment#
+    tier: recommended
+  - iri: https://refmodel.example/ontology/party#
+    tier: recommended
+core_concepts:
+  - uri: https://kairos.cnext.eu/ref/party#Party
+    label: Party
+    tier: required
+    outcome: conforms
+  - uri: https://kairos.cnext.eu/ref/party#Customer
+    label: Customer
+    tier: required
+    outcome: conforms-with-rename
+    rename_to: Client
+  - uri: https://kairos.cnext.eu/ref/invoice#Invoice
+    label: Invoice
+    tier: required
+    outcome: conforms
+  - uri: https://kairos.cnext.eu/ref/invoice#InvoiceLine
+    label: Invoice Line
+    tier: recommended
+    outcome: partial
+  - uri: https://kairos.cnext.eu/ref/payment#DirectDebitMandate
+    label: Direct Debit Mandate
+    tier: recommended
+    outcome: deviates
+    deviation_reason: ACME uses pre-authorised card tokens, not SEPA mandates.
+  - uri: https://refmodel.example/ontology/party#TradeParty
+    label: Trade Party
+    tier: recommended
+    outcome: conforms
+  - uri: https://kairos.cnext.eu/ref/payment#PaymentToken
+    label: Payment Token
+    tier: optional
+    outcome: conforms
+  - uri: https://kairos.cnext.eu/ref/payment#CashDrawer
+    label: Cash Drawer
+    tier: optional
+    outcome: not-applicable
+topology_confirmations:
+  - edge: Invoice issuedTo Party
+    confirmed: true
+cardinality_answers:
+  - property: https://kairos.cnext.eu/ref/invoice#hasLineItem
+    answer: many
+scorecard:
+  total: 8
+  by_outcome:
+    conforms: 4
+    conforms-with-rename: 1
+    deviates: 1
+    not-applicable: 1
+    partial: 1
+  by_tier:
+    required:
+      conforms: 2
+      conforms-with-rename: 1
+    recommended:
+      conforms: 1
+      deviates: 1
+      partial: 1
+    optional:
+      conforms: 1
+      not-applicable: 1

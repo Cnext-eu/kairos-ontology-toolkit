@@ -11,6 +11,7 @@ import yaml
 from rdflib import RDF, Graph, Literal, URIRef
 from rdflib.namespace import SKOS
 
+from kairos_ontology.core.completeness_model import compute_completeness_facts
 from kairos_ontology.core.claim_registry import (
     Claim,
     ClaimRegistry,
@@ -18,7 +19,11 @@ from kairos_ontology.core.claim_registry import (
     write_registry,
 )
 from kairos_ontology.core.dbt_contract_sync import KAIROS_BRONZE, sync_dbt_contracts
-from kairos_ontology.core.source_coverage import KAIROS_EXT, check_source_coverage
+from kairos_ontology.core.source_coverage import (
+    KAIROS_EXT,
+    check_source_coverage,
+    evaluate_source_coverage,
+)
 
 SOURCE_TABLE = "https://example.com/source/adminpulse#tblRawParty"
 VIRTUAL_TABLE = "https://example.com/source/custom#partyConformed"
@@ -160,6 +165,29 @@ def test_governed_replacement_covers_wrong_grain_source(tmp_path: Path) -> None:
     evidence = report.replacement_evidence["party"][0]
     assert evidence.source_table_iri == SOURCE_TABLE
     assert evidence.contract_model == "int_party_conformed"
+
+
+def test_canonical_fact_preserves_governed_replacement_parity(tmp_path: Path) -> None:
+    paths = _hub(tmp_path)
+
+    facts = compute_completeness_facts(
+        analysis_dir=paths["analysis"],
+        claims_dir=paths["claims"],
+        sources_dir=paths["sources"],
+        mappings_dir=paths["mappings"],
+        extensions_dir=paths["extensions"],
+        hub_root=paths["hub"],
+        transforms_dir=paths["transforms"],
+    )
+
+    fact = facts.tables[0]
+    assert fact.mapping.state == "governed_replacement"
+    assert fact.mapping.replacement.covered
+    assert fact.mapping.replacement.evidence[0].contract_model == "int_party_conformed"
+    report = evaluate_source_coverage(facts)
+    assert report.domain_counts["party"] == (1, 1)
+    assert report.replacement_counts["party"] == 1
+    assert not report.is_blocking
 
 
 def test_generated_virtual_affinity_is_not_a_source_coverage_obligation(
@@ -338,6 +366,37 @@ def test_claim_registry_declared_domain_must_match_checked_domain(
 
     assert report.is_blocking
     assert "declares domain 'commercial'" in report.diagnostics["party"][0]
+
+
+def test_mismatched_registry_does_not_override_direct_mapping(tmp_path: Path) -> None:
+    paths = _hub(tmp_path)
+    registry = ClaimRegistry(
+        domain="commercial",
+        claims=[
+            Claim(
+                id="party-party",
+                type="class",
+                status="approved",
+                class_uri=TARGET_CLASS,
+                evidence_sources=[
+                    EvidenceSource(
+                        type="source_table",
+                        system="adminpulse",
+                        table="tblRawParty",
+                    )
+                ],
+            )
+        ],
+    )
+    write_registry(registry, paths["claims"] / "party-claims.yaml")
+    mapping = Graph()
+    mapping.add((URIRef(SOURCE_TABLE), SKOS.exactMatch, URIRef(TARGET_CLASS)))
+    _write_graph(paths["mappings"] / "custom-transformations" / "party.ttl", mapping)
+
+    report = _check(paths)
+
+    assert not report.is_blocking
+    assert report.direct_counts["party"] == 1
 
 
 def test_silver_source_ref_must_select_contract(tmp_path: Path) -> None:

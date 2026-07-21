@@ -4,15 +4,13 @@
 
 Single governance gate that replaces both former alignment-era gates
 (``check-alignment`` + ``check-source-coverage``) now that the Claim Registry is
-the one source of truth (decision log ``DD-EL-1``). It is deterministic and
+the one source of truth (DD-094). It is deterministic and
 AI-free — every input is committed, structured YAML/TTL:
 
 * the Claim Registry (``model/claims/{domain}-claims.yaml``) — schema validity,
   per-table coverage snapshot, freshness digest, ownership, claim status;
-* the affinity reports (``_analysis/*-affinity.yaml``) — the ``(system, table)``
-  set each domain must cover, and the freshness baseline;
-* the source vocabularies + mapping files — pre-silver mapping coverage (reused
-  verbatim from :mod:`source_coverage`).
+* canonical completeness facts — the affinity assignment, registry table snapshot,
+  and freshness baseline computed once from committed structured inputs.
 
 The gate buckets each affinity domain with priority
 ``missing > invalid > incomplete > stale > unverifiable > ok`` (parity with the
@@ -23,54 +21,17 @@ retired alignment gate), and additionally surfaces cross-file duplicate
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .alignment_coverage import (
-    ALIGNMENT_ALGORITHM_VERSION,
-    compute_affinity_hash,
-    load_affinity_domain_table_columns,
-    load_affinity_domain_tables,
+from .completeness_model import (
+    CompletenessFacts,
+    DomainCompleteness,
+    compute_completeness_facts,
 )
 from .claim_registry import (
     Claim,
-    ClaimRegistry,
-    load_registry,
-    registry_path,
-    validate_registry,
-    validation_errors,
 )
-
-logger = logging.getLogger(__name__)
-
-
-def _registry_covered_columns(registry: ClaimRegistry) -> dict[tuple[str, str], int]:
-    """Return ``{(system, table): covered_column_count}`` from a registry's coverage.
-
-    F6 (toolkit-optimizations): the covered count is the registry's own
-    ``total_columns`` (mapped + custom) — i.e. how many source columns actually
-    reached the Claim Registry. ``check_claims_coverage`` compares this against the
-    trustworthy affinity ``total_columns`` to detect columns dropped before the
-    registry (e.g. by prompt truncation).
-    """
-    covered: dict[tuple[str, str], int] = {}
-    for syscov in registry.coverage:
-        for tbl in syscov.tables:
-            if syscov.system and tbl.table:
-                covered[(syscov.system, tbl.table)] = int(tbl.total_columns or 0)
-    return covered
-
-
-def _registry_covered_tables(registry: ClaimRegistry) -> set[tuple[str, str]]:
-    """Return the ``(system, table)`` set present in a registry's coverage."""
-    covered: set[tuple[str, str]] = set()
-    for syscov in registry.coverage:
-        for tbl in syscov.tables:
-            if syscov.system and tbl.table:
-                covered.add((syscov.system, tbl.table))
-    return covered
-
 
 #: Statuses that count an MDM anchor as *known / decided* (methodology §5.4 —
 #: anchors must be known, not necessarily fully implemented). A still-``proposed``
@@ -268,7 +229,7 @@ def _is_high_use_passthrough(claim: Claim) -> bool:
 
 def _run_governance_scans(
     domain: str,
-    registry: ClaimRegistry,
+    claims: tuple[Claim, ...],
     report: ClaimCheckReport,
     uri_index: dict[str, set[str]],
     *,
@@ -276,11 +237,11 @@ def _run_governance_scans(
     check_ownership: bool,
 ) -> None:
     """Apply the Slice 4 governance scans (MDM-anchor, deviation-log,
-    ownership-boundary, passthrough-review) to one loaded registry."""
+    ownership-boundary, passthrough-review) to one registry fact."""
     # MDM-anchor gate (§5.4): broad domain claims need known reference anchors.
-    if check_mdm_anchor and any(_is_broad_class_claim(c) for c in registry.claims):
+    if check_mdm_anchor and any(_is_broad_class_claim(c) for c in claims):
         anchors = [
-            c for c in registry.claims if c.mdm_anchor and c.type == "reference_data"
+            c for c in claims if c.mdm_anchor and c.type == "reference_data"
         ]
         if not anchors:
             report.anchor_missing.append(domain)
@@ -292,7 +253,7 @@ def _run_governance_scans(
     # deviation-log (§12 / §14): approved client-native (gap) claims need a record.
     deviation_missing = sorted(
         c.id
-        for c in registry.claims
+        for c in claims
         if c.status == "approved"
         and c.disposition == "gap"
         and (c.deviation is None or not c.deviation.owner or not c.deviation.reason)
@@ -302,7 +263,7 @@ def _run_governance_scans(
 
     # ownership-boundary (§14): approved claims must be owned by their data-domain.
     if check_ownership and uri_index:
-        for claim in registry.claims:
+        for claim in claims:
             if claim.status != "approved":
                 continue
             uri = claim.identifying_uri()
@@ -325,7 +286,7 @@ def _run_governance_scans(
     # passthrough-review (§11.2): high-use passthrough fields awaiting review.
     flagged = sorted(
         c.id
-        for c in registry.claims
+        for c in claims
         if c.disposition == "passthrough"
         and not c.passthrough_reviewed
         and _is_high_use_passthrough(c)
@@ -334,77 +295,28 @@ def _run_governance_scans(
         report.passthrough_review[domain] = flagged
 
 
-def check_claims_coverage(
+def evaluate_claims_coverage(
+    facts: CompletenessFacts,
     *,
-    claims_dir: Path,
-    analysis_dir: Path,
     data_domains: dict[str, object] | None = None,
     domains_filter: list[str] | None = None,
     check_mdm_anchor: bool = True,
     check_ownership: bool = True,
-    excluded_affinity_systems: set[str] | None = None,
 ) -> ClaimCheckReport:
-    """Verify every affinity domain has a valid, complete, fresh Claim Registry.
+    """Evaluate the Claim Registry gate over a canonical completeness snapshot."""
 
-    For each domain enumerated in the affinity reports:
-      - **missing**      — no ``{domain}-claims.yaml`` → blocking.
-      - **invalid**      — registry fails structural validation → blocking
-        (``invalid[domain]`` lists the error messages).
-      - **incomplete**   — registry coverage omits an affinity table → blocking
-        (``uncovered_tables`` lists the gaps).
-      - **stale**        — registry ``freshness.affinity_sha256`` differs from the
-        current affinity table set → blocking.
-      - **unverifiable** — registry is complete but has no freshness hash or was
-        produced by an older algorithm version → warn.
-      - **ok**           — valid, complete, and fresh.
-      - **orphan**       — claims file for a domain absent from affinity → warn.
-
-    Cross-file duplicate ``approved`` identifying URIs are collected globally and
-    are blocking (unless an ``ownership_override`` marks the shared class as a
-    conformed dimension, in which case it lands in ``shared_dimensions``, a
-    warning). Domains whose registry exists but are absent from
-    ``data-domains.yaml`` are reported as ``unowned`` (warning).
-
-    Slice 4 governance scans run on each valid registry:
-
-      - **MDM-anchor gate** — broad (approved) class claims require their domain's
-        declared ``mdm_anchor`` reference-data anchors to be decided
-        (approved/deferred); pending anchors block (``anchor_pending``), and a
-        domain with broad claims but no declared anchors warns
-        (``anchor_missing``).
-      - **deviation-log** — approved ``gap`` (client-native) claims must carry a
-        deviation record (owner + reason); missing → ``deviation_missing``
-        (blocking).
-      - **ownership-boundary** — approved claims whose ``class_uri`` namespace is
-        owned by a *different* data-domain (per ``data-domains.yaml``) block as
-        ``ownership_conflicts`` unless an ``ownership_override`` is present.
-      - **passthrough-review** — high-use (multi-source / measure / join)
-        passthrough claims not yet ``passthrough_reviewed`` → ``passthrough_review``
-        (warning).
-    """
     report = ClaimCheckReport()
-    domain_tables = load_affinity_domain_tables(
-        analysis_dir,
-        excluded_systems=excluded_affinity_systems,
-    )
-    domain_table_cols = load_affinity_domain_table_columns(
-        analysis_dir,
-        excluded_systems=excluded_affinity_systems,
-    )
     uri_index = _build_uri_owner_index(data_domains)
 
-    lower_filter = [d.lower() for d in domains_filter] if domains_filter else None
-
     def in_scope(domain: str) -> bool:
-        if lower_filter is None:
+        if domains_filter is None:
             return True
-        return any(f in domain.lower() for f in lower_filter)
+        return any(fragment.lower() in domain.lower() for fragment in domains_filter)
 
     # uri -> (label, claim) of the first approved claim that owns it.
     approved_uris: dict[str, tuple[str, Claim]] = {}
-    seen_files: set[str] = set()
 
-    def scan_duplicates(domain: str, registry: ClaimRegistry) -> None:
+    def scan_duplicates(domain: str, registry: DomainCompleteness) -> None:
         for claim in registry.claims:
             if claim.status != "approved":
                 continue
@@ -422,30 +334,26 @@ def check_claims_coverage(
             else:
                 approved_uris[uri] = (label, claim)
 
-    for domain in sorted(domain_tables):
+    for registry in facts.domains:
+        domain = registry.domain
         if not in_scope(domain):
             continue
-        expected = domain_tables[domain]
-        path = registry_path(claims_dir, domain)
-        seen_files.add(path.name)
+        table_facts = facts.tables_for_domain(domain)
 
-        if not path.exists():
+        if not registry.registry_exists:
             report.missing.append(domain)
-            report.uncovered_tables[domain] = sorted(f"{s}.{t}" for s, t in expected)
+            report.uncovered_tables[domain] = sorted(
+                f"{fact.system}.{fact.table}" for fact in table_facts
+            )
             continue
 
-        try:
-            registry = load_registry(path)
-        except Exception as exc:
-            report.invalid[domain] = [f"could not load registry: {exc}"]
+        if registry.load_error is not None:
+            report.invalid[domain] = [registry.load_error]
             continue
-
         if data_domains is not None and domain not in data_domains:
             report.unowned.append(domain)
-
-        errors = validation_errors(validate_registry(registry))
-        if errors:
-            report.invalid[domain] = [i.message for i in errors]
+        if registry.validation_errors:
+            report.invalid[domain] = list(registry.validation_errors)
             scan_duplicates(domain, registry)
             continue
 
@@ -456,7 +364,7 @@ def check_claims_coverage(
         scan_duplicates(domain, registry)
         _run_governance_scans(
             domain,
-            registry,
+            registry.claims,
             report,
             uri_index,
             check_mdm_anchor=check_mdm_anchor,
@@ -466,73 +374,88 @@ def check_claims_coverage(
         # F2/F7: surface persisted grain-conflict records (distinct-grain tables
         # collapsed onto one reference class) as a blocking governance signal.
         conflicts = [
-            f"{gc.get('ref_class', '')}: "
-            f"{', '.join(gc.get('candidate_entities', []))}"
-            for gc in registry.grain_conflicts
-            if isinstance(gc, dict) and gc.get("candidate_entities")
+            f"{conflict.ref_class}: {', '.join(conflict.candidate_entities)}"
+            for conflict in registry.grain_conflicts
         ]
         if conflicts:
             report.grain_conflicts[domain] = sorted(conflicts)
 
-        covered = _registry_covered_tables(registry)
-        gaps = expected - covered
+        gaps = [fact for fact in table_facts if fact.registry_coverage is None]
         if gaps:
             report.incomplete.append(domain)
-            report.uncovered_tables[domain] = sorted(f"{s}.{t}" for s, t in gaps)
+            report.uncovered_tables[domain] = sorted(
+                f"{fact.system}.{fact.table}" for fact in gaps
+            )
             continue
 
         # F6: column-omission gate. Compare how many columns actually reached the
         # registry against the trustworthy affinity source-column count. A shortfall
         # means columns were dropped before the registry (e.g. prompt truncation),
         # so the registry must not be trusted as complete.
-        expected_cols = domain_table_cols.get(domain, {})
-        covered_cols = _registry_covered_columns(registry)
         omissions: list[str] = []
-        for key in sorted(covered):
-            affinity_total = expected_cols.get(key, 0)
-            reg_total = covered_cols.get(key, 0)
+        for fact in table_facts:
+            affinity_total = fact.assignment.total_columns
+            reg_total = fact.registry_coverage.total_columns if fact.registry_coverage else 0
             if affinity_total and reg_total < affinity_total:
-                system, table = key
                 omissions.append(
-                    f"{system}.{table} (registry {reg_total} of {affinity_total} "
+                    f"{fact.system}.{fact.table} (registry {reg_total} of {affinity_total} "
                     "source columns)"
                 )
         if omissions:
             report.column_omissions[domain] = omissions
             continue
 
-        stored = registry.freshness.affinity_sha256
-        algorithm_version = registry.algorithm_version or 0
-        if not stored or algorithm_version < ALIGNMENT_ALGORITHM_VERSION:
+        if registry.freshness.state == "unverifiable":
             report.unverifiable.append(domain)
             continue
-
-        if stored != compute_affinity_hash(expected):
+        if registry.freshness.state == "stale":
             report.stale.append(domain)
         else:
             report.ok.append(domain)
 
     # Orphan claims files: a registry for a domain not present in affinity.
-    if claims_dir.is_dir():
-        for claims_file in sorted(claims_dir.glob("*-claims.yaml")):
-            if claims_file.name in seen_files:
-                continue
-            orphan_domain = claims_file.name.replace("-claims.yaml", "")
-            if not in_scope(orphan_domain):
-                continue
-            report.orphan.append(orphan_domain)
-            try:
-                registry = load_registry(claims_file)
-            except Exception:
-                continue
-            scan_duplicates(orphan_domain, registry)
-            _run_governance_scans(
-                orphan_domain,
-                registry,
-                report,
-                uri_index,
-                check_mdm_anchor=check_mdm_anchor,
-                check_ownership=check_ownership,
-            )
+    for registry in facts.orphan_registries:
+        if not in_scope(registry.domain):
+            continue
+        report.orphan.append(registry.domain)
+        if registry.load_error is not None:
+            continue
+        scan_duplicates(registry.domain, registry)
+        _run_governance_scans(
+            registry.domain,
+            registry.claims,
+            report,
+            uri_index,
+            check_mdm_anchor=check_mdm_anchor,
+            check_ownership=check_ownership,
+        )
 
     return report
+
+
+def check_claims_coverage(
+    *,
+    claims_dir: Path,
+    analysis_dir: Path,
+    data_domains: dict[str, object] | None = None,
+    domains_filter: list[str] | None = None,
+    check_mdm_anchor: bool = True,
+    check_ownership: bool = True,
+    excluded_affinity_systems: set[str] | None = None,
+    facts: CompletenessFacts | None = None,
+) -> ClaimCheckReport:
+    """Build canonical facts when needed, then evaluate the Claim Registry view."""
+
+    facts = facts or compute_completeness_facts(
+        analysis_dir=analysis_dir,
+        claims_dir=claims_dir,
+        domains_filter=domains_filter,
+        excluded_affinity_systems=excluded_affinity_systems,
+    )
+    return evaluate_claims_coverage(
+        facts,
+        data_domains=data_domains,
+        domains_filter=domains_filter,
+        check_mdm_anchor=check_mdm_anchor,
+        check_ownership=check_ownership,
+    )

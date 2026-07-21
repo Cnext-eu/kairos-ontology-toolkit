@@ -297,6 +297,28 @@ class TestLoadGraphWithCatalogDiagnostics:
         assert len(result.graph) > 0
         assert result.diagnostics == []
 
+    def test_quiet_suppresses_progress_output(self, tmp_path, capsys):
+        """Machine-readable callers can load catalog imports without stdout noise."""
+        from kairos_ontology.core.catalog_utils import load_graph_with_catalog
+
+        onto = tmp_path / "test.ttl"
+        onto.write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.com/ont/t> a owl:Ontology .\n",
+            encoding="utf-8",
+        )
+        catalog = tmp_path / "catalog.xml"
+        catalog.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"/>\n',
+            encoding="utf-8",
+        )
+
+        result = load_graph_with_catalog(onto, catalog, quiet=True)
+
+        assert len(result.graph) > 0
+        assert capsys.readouterr().out == ""
+
     def test_unresolved_import_produces_warning_diagnostic(self, tmp_path):
         """Unresolved owl:imports generates a warning in diagnostics."""
         from kairos_ontology.core.catalog_utils import load_graph_with_catalog

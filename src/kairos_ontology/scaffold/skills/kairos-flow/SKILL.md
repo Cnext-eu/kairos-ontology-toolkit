@@ -164,20 +164,33 @@ xrefs:
    kairos-ontology status --format markdown   # objective block for status.md
    kairos-ontology status --format json       # machine-readable, for your reasoning
    ```
-3. **Load continuation state** — read `.kairos-state/status.md` regions 2 & 3 and
+   `status --format json` now also carries per-instance `facts` (DD-101): claims
+   `{"proposed": N, "approved": N}`, silver `{"bound_classes": [...],
+   "aspirational_classes": [...], "release_eligible": bool}`, and validate
+   `{"data_valid": bool}`. Read these fields directly — never hand-derive them.
+3. **Optionally run the composed release gate** when the user asks "are we ready
+   to ship / release" or before recommending `kairos-execute-project --strict`:
+   ```bash
+   kairos-ontology check-release --format json
+   ```
+   This composes `check-claims` (claim validity/freshness, source completeness,
+   extension sync) with release eligibility, validation, and projection facts
+   into one `is_blocking` decision — the same machine truth `status` uses, just
+   pre-aggregated. Still read-only; still never invoked in place of a phase skill.
+4. **Load continuation state** — read `.kairos-state/status.md` regions 2 & 3 and
    any `phases/**/*.md` with `status: in-progress | open-questions | blocked`.
    Ignore `_archive/`.
-4. **Reconcile** scan vs continuation (see §5) and refresh `status.md` region 1.
-5. **Present a compact overview**: per-phase state + the first incomplete phase
+5. **Reconcile** scan vs continuation (see §5) and refresh `status.md` region 1.
+6. **Present a compact overview**: per-phase state + the first incomplete phase
    (`next_phase` from the scan) + any open questions / blockers from continuation.
-6. **Offer a decision:**
+7. **Offer a decision:**
    - **Clean start** -> begin the first `not-started` phase (or `next_phase`).
    - **Continue** -> resume the `in-progress` / `open-questions` instance, opening
      its phase log's **Open questions** as the agenda.
    - **Data-product vertical slice** -> when `next_phase` is `domain`, or the user
      asks for a quick report pack / semantic model / data product, keep the lifecycle
      gates but scope the next domain pass to that product (see §6).
-7. **Hand off** to the matching phase skill (§6). After it returns, update
+8. **Hand off** to the matching phase skill (§6). After it returns, update
    `status.md` regions 2 & 3 and the phase index.
 
 > If `.kairos-state/` does not exist yet (fresh hub), create it and seed
@@ -194,7 +207,9 @@ xrefs:
 | Multiple open logs for one instance | Newest by `last_updated` is active; archive the rest to `_archive/`. |
 | Scan older than artifact mtime (stale) | Re-run `kairos-ontology status` before presenting. |
 | Continuation has `blocked`/`open-questions` but scan says `done` | Respect the block — surface it; objective completeness does not clear intent. |
-| Silver `done` but eligible claims are unbound **aspirational stubs** (DD-096) | Silver is **not** fully done — the stub is a target, not a bound model. Fold "aspirational stubs pending binding" into `status.md` regions 2–3 (open questions / next actions) and route to `kairos-design-mapping` to bind. Classify via `BindingAnalysis` over authorities, not generated `meta.is_aspirational`. |
+| Claims exist but some are `status: proposed` (e.g. conformance/`derive-claims` output) | Proposals are **candidates, not progress**. The claims phase is not done while eligible proposals await approval. Do **not** copy the proposal list into `status.md`; record only the intent — read the count from the claims instance's `facts.proposed` (status JSON) and state "N proposed claims awaiting batch approval" — as a next action and route to **kairos-design-source** (curate + `check-claims`) or **kairos-design-domain** (claim governance). The Claim Registry + `check-claims` are the machine truth for which claims are proposed vs approved. |
+| Silver `done` but eligible claims are unbound **aspirational stubs** (DD-096) | Silver is **not** fully done — the stub is a target, not a bound model. Read the silver instance's `facts.aspirational_classes`/`facts.release_eligible` (status JSON) rather than re-deriving them; fold "aspirational stubs pending binding" into `status.md` regions 2–3 (open questions / next actions) and route to `kairos-design-mapping` to bind. Classify via `BindingAnalysis` over authorities, not generated `meta.is_aspirational`. |
+| User asks "is this release-ready / can we ship" | Run `kairos-ontology check-release` (DD-101) and report its `is_blocking` + per-section reasons verbatim — don't re-derive a ship/no-ship verdict from the phase table yourself. |
 
 ---
 
@@ -216,6 +231,30 @@ xrefs:
 Follow the canonical order `discovery → source → domain → mapping → claims →
 silver → gold → validate → project`. Respect each target skill's own pre-flight
 (it runs after the hand-off).
+
+**Proposals, approvals, and stubs — surface intent, not machine truth.** Three
+lifecycle signals commonly appear at resume; route them without re-deriving or
+copying the underlying registry data (the Claim Registry, `check-claims`,
+`kairos-ontology status`, and `check-release` are the machine truth):
+
+- **Proposals awaiting approval** — `status: proposed` claims from Core Concepts
+  Conformance / `derive-claims` (deterministic, AI-free, authorizing nothing).
+  Read the count from the claims instance's `facts.proposed`
+  (`status --format json`) or `claims.proposed_counts` (`check-release --format
+  json`) — do not count them yourself. Record "N proposals awaiting batch
+  approval" as a next action and route to **kairos-design-source** (curate +
+  `check-claims`) or **kairos-design-domain** (claim governance). Never present a
+  proposal as approved progress.
+- **Approved-but-unbound stubs** — approved, materialization-eligible claims whose
+  Silver model is still an aspirational stub (DD-096). Read the silver instance's
+  `facts.aspirational_classes` (`status --format json`) or a domain's
+  `release.aspirational_classes`/`release_eligible` (`check-release --format
+  json`, DD-101) — same underlying `BindingAnalysis`, either surface is
+  authoritative. Record "aspirational stubs pending binding" and route to
+  **kairos-design-mapping** to add the binding mapping, then re-project.
+- **Mapping / binding next steps** — the concrete action that clears the above is
+  almost always a SKOS mapping (**kairos-design-mapping**) followed by
+  re-projection (**kairos-execute-project**). Point there; don't do it here.
 
 **Optional evidence-planning report (DD-086):** When source analysis exists and
 `integration/sources/powerbi/` or `businessdiscovery/*.ttl` is present, surface

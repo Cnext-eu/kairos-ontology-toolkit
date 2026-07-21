@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Tests for deterministic multi-source claim derivation (DD-EL-5)."""
+"""Tests for deterministic multi-source claim derivation (DD-095)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -15,11 +16,18 @@ from kairos_ontology.core.claim_registry import (
     CoverageSystem,
     CoverageTable,
     EvidenceSource,
+    dump_registry,
     load_registry,
     write_registry,
 )
 from kairos_ontology.cli.main import cli
+from kairos_ontology.core.conformance_artifact import (
+    ARTIFACT_RELPATH,
+    ConformanceArtifactError,
+    compute_scorecard,
+)
 from kairos_ontology.core.derive_claims import (
+    CONFORMANCE_EVIDENCE_TYPE,
     class_claim_id,
     derive_claims_for_domain,
     detect_sample_signal,
@@ -86,6 +94,65 @@ def _ev_types(claim: Claim) -> set[str]:
 
 def _by_id(registry: ClaimRegistry, cid: str) -> Claim:
     return next(c for c in registry.claims if c.id == cid)
+
+
+def _conformance_artifact() -> dict:
+    concepts = [
+        {
+            "uri": "https://example.org/ref/core#Conforming",
+            "label": "Conforming",
+            "tier": "required",
+            "outcome": "conforms",
+        },
+        {
+            "uri": "https://example.org/ref/core#RenamedStandard",
+            "label": "Renamed Standard",
+            "tier": "required",
+            "outcome": "conforms-with-rename",
+            "rename_to": "Business Name",
+        },
+        {
+            "uri": "https://example.org/ref/core#PartialConcept",
+            "label": "Partial Concept",
+            "tier": "recommended",
+            "outcome": "partial",
+        },
+        {
+            "uri": "https://example.org/ref/core#DeviatingConcept",
+            "label": "Deviating Concept",
+            "tier": "recommended",
+            "outcome": "deviates",
+            "deviation_reason": "The business uses a different lifecycle.",
+        },
+        {
+            "uri": "https://example.org/ref/core#OptionalConcept",
+            "label": "Optional Concept",
+            "tier": "optional",
+            "outcome": "conforms",
+        },
+        {
+            "uri": "https://example.org/ref/core#ExcludedConcept",
+            "label": "Excluded Concept",
+            "tier": "optional",
+            "outcome": "not-applicable",
+        },
+    ]
+    return {
+        "schema_version": 1,
+        "archetype": {"id": "test-archetype"},
+        "core_concepts": concepts,
+        "scorecard": compute_scorecard(concepts),
+    }
+
+
+def _write_conformance(hub_root: Path, artifact: dict | None = None) -> Path:
+    path = hub_root / ARTIFACT_RELPATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(artifact or _conformance_artifact(), sort_keys=False),
+        encoding="utf-8",
+    )
+    return path
 
 
 class TestMultiSourceAggregation:
@@ -189,6 +256,119 @@ class TestProposedOnly:
                 assert claim.status == "proposed"
 
 
+class TestConformanceEvidence:
+    def test_all_outcomes_map_to_proposed_claim_policy(self):
+        derived, stats = derive_claims_for_domain(
+            "client",
+            _base_registry(),
+            conformance_artifact=_conformance_artifact(),
+        )
+
+        expected = {
+            "Conforming": "claim",
+            "RenamedStandard": "claim",
+            "PartialConcept": "specialize",
+            "DeviatingConcept": "gap",
+            "OptionalConcept": "claim",
+        }
+        for local_name, disposition in expected.items():
+            claim = _by_id(derived, class_claim_id("client", local_name))
+            assert claim.status == "proposed"
+            assert claim.type == "class"
+            assert claim.disposition == disposition
+            assert claim.class_uri == f"https://example.org/ref/core#{local_name}"
+            assert CONFORMANCE_EVIDENCE_TYPE in _ev_types(claim)
+            assert "Human approval is required" in (claim.rationale or "")
+
+        renamed = _by_id(
+            derived,
+            class_claim_id("client", "RenamedStandard"),
+        )
+        assert "Business Name" in (renamed.rationale or "")
+        assert "rename_to" in renamed.evidence_sources[0].note
+        assert all(c.id != class_claim_id("client", "Business Name") for c in derived.claims)
+
+        gap = _by_id(derived, class_claim_id("client", "DeviatingConcept"))
+        assert gap.deviation is not None
+        assert gap.deviation.reason == "The business uses a different lifecycle."
+        assert "deviation_reason" in gap.evidence_sources[0].note
+
+        assert all(
+            c.id != class_claim_id("client", "ExcludedConcept")
+            for c in derived.claims
+        )
+        assert stats.conformance_concepts == 6
+        assert stats.conformance_proposals == 5
+        assert stats.conformance_not_applicable == 1
+        assert stats.new_claims == 5
+
+    def test_conformance_rerun_is_byte_stable_and_deduplicated(self):
+        artifact = _conformance_artifact()
+        first, _ = derive_claims_for_domain(
+            "client",
+            _base_registry(),
+            conformance_artifact=artifact,
+        )
+        second, stats = derive_claims_for_domain(
+            "client",
+            first,
+            conformance_artifact=artifact,
+        )
+
+        assert dump_registry(first) == dump_registry(second)
+        assert stats.evidence_added == 0
+        for claim in second.claims:
+            keys = [
+                (
+                    ev.type,
+                    ev.system or "",
+                    ev.table or "",
+                    ev.column or "",
+                    ev.model or "",
+                    ev.measure or "",
+                    ev.note or "",
+                )
+                for ev in claim.evidence_sources
+            ]
+            assert keys == sorted(keys)
+
+    def test_not_applicable_removes_prior_generated_proposal(self):
+        artifact = _conformance_artifact()
+        first, _ = derive_claims_for_domain(
+            "client",
+            _base_registry(),
+            conformance_artifact=artifact,
+        )
+        artifact["core_concepts"][0]["outcome"] = "not-applicable"
+        artifact["scorecard"] = compute_scorecard(artifact["core_concepts"])
+
+        second, stats = derive_claims_for_domain(
+            "client",
+            first,
+            conformance_artifact=artifact,
+        )
+
+        assert all(
+            claim.id != class_claim_id("client", "Conforming")
+            for claim in second.claims
+        )
+        assert stats.conformance_not_applicable == 2
+
+    def test_contradictory_concepts_fail_explicitly(self):
+        artifact = _conformance_artifact()
+        duplicate = dict(artifact["core_concepts"][0])
+        duplicate["outcome"] = "partial"
+        artifact["core_concepts"].append(duplicate)
+        artifact["scorecard"] = compute_scorecard(artifact["core_concepts"])
+
+        with pytest.raises(ConformanceArtifactError, match="duplicate concept URI"):
+            derive_claims_for_domain(
+                "client",
+                _base_registry(),
+                conformance_artifact=artifact,
+            )
+
+
 class TestSampleSignal:
     def test_enum_candidate(self):
         assert "enum-candidate" in detect_sample_signal("status", None, ["A", "B", "A", "B"])
@@ -254,6 +434,20 @@ class TestRunDeriveClaims:
         second = (claims_dir / "client-claims.yaml").read_text(encoding="utf-8")
         assert first == second
 
+    def test_default_conformance_artifact_is_cached_and_stable(self, tmp_path):
+        claims_dir, analysis_dir = self._write_hub(tmp_path)
+        _write_conformance(tmp_path)
+
+        first_report = run_derive_claims(claims_dir, analysis_dir=analysis_dir)
+        first = (claims_dir / "client-claims.yaml").read_text(encoding="utf-8")
+        second_report = run_derive_claims(claims_dir, analysis_dir=analysis_dir)
+        second = (claims_dir / "client-claims.yaml").read_text(encoding="utf-8")
+
+        assert first == second
+        assert first_report.total_conformance_proposals == 5
+        assert second_report.total_conformance_proposals == 5
+        assert second_report.written == []
+
     def test_human_decision_preserved(self, tmp_path):
         claims_dir = tmp_path / "model" / "claims"
         claims_dir.mkdir(parents=True)
@@ -283,6 +477,67 @@ class TestRunDeriveClaims:
         assert cls.owner == "client-team"
         assert "affinity" in _ev_types(cls)
 
+    def test_conformance_preserves_prior_human_decision(self, tmp_path):
+        claims_dir = tmp_path / "model" / "claims"
+        claims_dir.mkdir(parents=True)
+        curated_uri = "https://example.org/client#ReviewedConforming"
+        prior = Claim(
+            id=class_claim_id("client", "Conforming"),
+            type="class",
+            status="approved",
+            disposition="skip",
+            origin="imported",
+            class_uri=curated_uri,
+            owner="domain-steward",
+            rationale="Human-reviewed exclusion.",
+            evidence_sources=[EvidenceSource(type="review", note="approved by steward")],
+        )
+        registry = _base_registry()
+        registry.claims.append(prior)
+        write_registry(registry, claims_dir / "client-claims.yaml")
+        _write_conformance(tmp_path)
+
+        run_derive_claims(claims_dir)
+
+        out = load_registry(claims_dir / "client-claims.yaml")
+        claim = _by_id(out, class_claim_id("client", "Conforming"))
+        assert claim.status == "approved"
+        assert claim.disposition == "skip"
+        assert claim.owner == "domain-steward"
+        assert claim.rationale == "Human-reviewed exclusion."
+        assert claim.class_uri == curated_uri
+        assert CONFORMANCE_EVIDENCE_TYPE in _ev_types(claim)
+
+    def test_unknown_conformance_outcome_is_validation_error(self, tmp_path):
+        claims_dir, analysis_dir = self._write_hub(tmp_path)
+        artifact = _conformance_artifact()
+        artifact["core_concepts"][0]["outcome"] = "mystery"
+        artifact["scorecard"] = compute_scorecard(artifact["core_concepts"])
+        _write_conformance(tmp_path, artifact)
+
+        with pytest.raises(ConformanceArtifactError, match="invalid outcome 'mystery'"):
+            run_derive_claims(claims_dir, analysis_dir=analysis_dir)
+
+    def test_malformed_conformance_yaml_is_parse_error(self, tmp_path):
+        claims_dir, analysis_dir = self._write_hub(tmp_path)
+        path = tmp_path / ARTIFACT_RELPATH
+        path.parent.mkdir(parents=True)
+        path.write_text("core_concepts: [\n", encoding="utf-8")
+
+        with pytest.raises(ConformanceArtifactError, match="Could not parse"):
+            run_derive_claims(claims_dir, analysis_dir=analysis_dir)
+
+    def test_absent_conformance_artifact_is_compatible(self, tmp_path):
+        claims_dir, analysis_dir = self._write_hub(tmp_path)
+
+        report = run_derive_claims(claims_dir, analysis_dir=analysis_dir)
+
+        assert report.total_conformance_proposals == 0
+        assert all(
+            CONFORMANCE_EVIDENCE_TYPE not in _ev_types(claim)
+            for claim in load_registry(claims_dir / "client-claims.yaml").claims
+        )
+
 
 class TestCli:
     def test_derive_claims_cli_round_trip(self, tmp_path):
@@ -291,6 +546,7 @@ class TestCli:
         claims_dir.mkdir(parents=True)
         analysis_dir.mkdir(parents=True)
         write_registry(_base_registry(), claims_dir / "client-claims.yaml")
+        _write_conformance(tmp_path)
         (analysis_dir / "crm-affinity.yaml").write_text(
             yaml.safe_dump({
                 "schema_version": 2, "system": "crm",
@@ -307,9 +563,12 @@ class TestCli:
         )
         assert result.exit_code == 0, result.output
         assert "Derived claims for 1 domain" in result.output
+        assert "5/6 conformance proposal(s)" in result.output
         reg = load_registry(claims_dir / "client-claims.yaml")
         cls = _by_id(reg, class_claim_id("client", "TradeParty"))
         assert "affinity" in _ev_types(cls)
+        conformance_claim = _by_id(reg, class_claim_id("client", "OptionalConcept"))
+        assert conformance_claim.status == "proposed"
 
 
 class TestSkosLoader:

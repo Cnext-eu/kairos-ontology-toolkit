@@ -29,6 +29,20 @@ logger = logging.getLogger(__name__)
 INVENTORY_VERSION = "1.1"
 
 
+class InventoryMigrationRequiredError(ValueError):
+    """Raised when a runtime reader encounters a retired stem-named inventory."""
+
+
+@dataclass(frozen=True)
+class LegacyInventoryFile:
+    """A stem-named reference inventory that must be migrated before it is read."""
+
+    path: Path
+    source_paths: tuple[Path, ...]
+    canonical_filenames: tuple[str, ...]
+    error: str | None = None
+
+
 def compute_source_hash(path: Path) -> str:
     """Return the SHA-256 hex digest of a source TTL file's bytes."""
     h = hashlib.sha256()
@@ -110,6 +124,101 @@ def iter_reference_inventory_sources(ref_models_dir: Path) -> list[Path]:
     ]
 
 
+def _canonical_filename_from_generated_from(inventory: dict[str, Any]) -> str | None:
+    """Derive the required filename from inventory provenance when it is a ref model."""
+    generated_from = inventory.get("generated_from")
+    if not generated_from or generated_from == "(graph)":
+        return None
+    source_path = Path(str(generated_from))
+    if _ref_model_id(source_path, ref_models_dir=None) is None:
+        return None
+    return inventory_filename(source_path)
+
+
+def find_legacy_inventory_files(
+    *,
+    ref_models_dir: Path | None,
+    inventory_dir: Path,
+) -> list[LegacyInventoryFile]:
+    """Find retired stem-named inventories for namespaced reference-model sources.
+
+    A local ontology is still allowed to use ``{stem}-inventory.yaml``.  Provenance
+    in a local inventory distinguishes that valid file from a retired reference-model
+    inventory with the same stem.
+    """
+    if ref_models_dir is None or not ref_models_dir.is_dir() or not inventory_dir.is_dir():
+        return []
+
+    sources_by_legacy_name: dict[str, list[Path]] = {}
+    for source_path in iter_reference_inventory_sources(ref_models_dir):
+        canonical = inventory_filename(source_path, ref_models_dir=ref_models_dir)
+        legacy_name = f"{source_path.stem}-inventory.yaml"
+        if canonical != legacy_name:
+            sources_by_legacy_name.setdefault(legacy_name, []).append(source_path)
+
+    findings: list[LegacyInventoryFile] = []
+    for legacy_name, source_paths in sorted(sources_by_legacy_name.items()):
+        path = inventory_dir / legacy_name
+        if not path.is_file():
+            continue
+
+        ordered_sources = tuple(sorted(source_paths))
+        canonical_filenames = tuple(
+            sorted(
+                {
+                    inventory_filename(source_path, ref_models_dir=ref_models_dir)
+                    for source_path in ordered_sources
+                }
+            )
+        )
+        error: str | None = None
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            error = f"cannot read valid YAML: {exc}"
+        else:
+            if not isinstance(raw, dict):
+                error = "does not contain a YAML mapping"
+            else:
+                provenance_filename = _canonical_filename_from_generated_from(raw)
+                if provenance_filename == path.name:
+                    # A valid local-domain inventory happens to share the old stem.
+                    continue
+                if provenance_filename and provenance_filename not in canonical_filenames:
+                    error = (
+                        "provenance identifies a different reference-model source "
+                        f"({provenance_filename})"
+                    )
+
+        findings.append(
+            LegacyInventoryFile(
+                path=path,
+                source_paths=ordered_sources,
+                canonical_filenames=canonical_filenames,
+                error=error,
+            )
+        )
+    return findings
+
+
+def legacy_inventory_error(finding: LegacyInventoryFile) -> str:
+    """Return an actionable diagnostic for a retired inventory filename."""
+    targets = ", ".join(finding.canonical_filenames)
+    message = (
+        f"{finding.path.name} uses retired stem-based reference inventory naming; "
+        f"migrate it to {targets} with `kairos-ontology migrate --hub <hub>`."
+    )
+    if finding.error:
+        return f"{message} Migration cannot proceed until the legacy file is fixed: {finding.error}."
+    if len(finding.canonical_filenames) > 1:
+        return (
+            f"{message} Its stem collides across reference models, so the toolkit will not "
+            "guess which canonical inventory owns it. Preserve it, resolve the collision, "
+            "then rerun the migration."
+        )
+    return message
+
+
 def generate_inventory(
     ttl_path: Path | None = None,
     *,
@@ -169,7 +278,7 @@ def write_inventory(inventory: dict[str, Any], output_path: Path) -> Path:
     return output_path
 
 
-def load_inventory(path: Path) -> dict[str, Any]:
+def load_inventory(path: Path, *, allow_legacy: bool = False) -> dict[str, Any]:
     """Load a previously generated inventory from YAML.
 
     Raises:
@@ -180,6 +289,14 @@ def load_inventory(path: Path) -> dict[str, Any]:
         data = yaml.safe_load(f)
     if not isinstance(data, dict):
         raise ValueError(f"Inventory file {path} does not contain a YAML mapping")
+    expected_filename = _canonical_filename_from_generated_from(data)
+    if not allow_legacy and expected_filename and path.name != expected_filename:
+        finding = LegacyInventoryFile(
+            path=path,
+            source_paths=(),
+            canonical_filenames=(expected_filename,),
+        )
+        raise InventoryMigrationRequiredError(legacy_inventory_error(finding))
     return data
 
 
@@ -196,11 +313,12 @@ class InventoryCheckReport:
     unverifiable: list[str] = field(default_factory=list)
     ok: list[str] = field(default_factory=list)
     orphan: list[str] = field(default_factory=list)
+    migration_required: list[str] = field(default_factory=list)
 
     @property
     def is_blocking(self) -> bool:
-        """True when a missing or stale inventory was found (hard failure)."""
-        return bool(self.missing or self.stale)
+        """True when an inventory is missing, stale, or requires format migration."""
+        return bool(self.missing or self.stale or self.migration_required)
 
     @property
     def has_warnings(self) -> bool:
@@ -240,9 +358,16 @@ def check_inventories(
       - **unverifiable** — inventory exists but has no stored hash (pre-DD-047) → warn.
       - **ok**       — inventory exists and hash matches.
       - **orphan**   — inventory file with no corresponding source TTL → warn.
+      - **migration_required** — retired stem-named ref inventory → blocking.
     """
     report = InventoryCheckReport()
     seen_files: set[str] = set()
+    legacy_files = find_legacy_inventory_files(
+        ref_models_dir=ref_models_dir,
+        inventory_dir=inventory_dir,
+    )
+    report.migration_required = [legacy_inventory_error(finding) for finding in legacy_files]
+    legacy_names = {finding.path.name for finding in legacy_files}
 
     sources: list[tuple[Path, bool]] = []
     if ref_models_dir and ref_models_dir.is_dir():
@@ -284,7 +409,7 @@ def check_inventories(
 
     if inventory_dir.is_dir():
         for inv_file in sorted(inventory_dir.glob("*-inventory.yaml")):
-            if inv_file.name not in seen_files:
+            if inv_file.name not in seen_files and inv_file.name not in legacy_names:
                 report.orphan.append(inv_file.name)
 
     return report
@@ -312,11 +437,12 @@ class DomainScope:
     unverifiable: list[str] = field(default_factory=list)
     ok: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
+    migration_required: list[str] = field(default_factory=list)
 
     @property
     def is_blocking(self) -> bool:
         """True when an in-scope inventory is missing or stale."""
-        return bool(self.missing or self.stale)
+        return bool(self.missing or self.stale or self.migration_required)
 
 
 def resolve_domain_inventory_keys(
@@ -393,6 +519,9 @@ def scope_inventory_report(
     scope.stale = sorted(k for k in report.stale if k in scope.keys)
     scope.unverifiable = sorted(k for k in report.unverifiable if k in scope.keys)
     scope.ok = sorted(k for k in report.ok if k in scope.keys)
+    # Stem-named reference inventories are globally unsafe: a scoped workflow must
+    # not silently consume one while another domain is being modeled.
+    scope.migration_required = sorted(report.migration_required)
     if unresolved_by_domain:
         merged: list[str] = []
         for uris in unresolved_by_domain.values():

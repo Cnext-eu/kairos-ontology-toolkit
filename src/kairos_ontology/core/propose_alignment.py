@@ -23,12 +23,10 @@ from typing import Any
 
 import yaml
 
-from .alignment_coverage import (
+from .completeness_model import (
     ALIGNMENT_ALGORITHM_VERSION,
     ALIGNMENT_HASH_SCHEMA_VERSION,
-    auto_disposition,
     compute_affinity_hash,
-    recommend_disposition,
 )
 from .claim_registry import (
     load_registry,
@@ -80,8 +78,66 @@ CATCH_ALL_MIN_COLUMNS = 3
 #: ``analyse-sources`` stays on the mini tier.
 HIGH_ACCURACY_MODEL = "gpt-5.4"
 
-# ``ALIGNMENT_ALGORITHM_VERSION`` is imported from ``alignment_coverage`` (the
-# lower-level module) and re-exported via that import for use across this module.
+# Completeness metadata lives in ``completeness_model``.  The narrow column-triage
+# heuristics below belong to proposal generation rather than the coverage model.
+
+#: Lower-cased substrings that identify likely operational/audit custom columns.
+#: They only inform the proposal bucket; they never remove a coverage obligation.
+_OPERATIONAL_PATTERNS = (
+    "created_", "updated_", "modified_", "inserted_", "deleted_",
+    "_created", "_updated", "_modified", "createdat", "updatedat",
+    "_by", "createdby", "modifiedby", "timestamp", "rowversion",
+    "row_version", "loaddate", "load_date", "load_ts", "loadts",
+    "etl_", "_etl", "_dwh", "dwh_", "is_deleted", "isdeleted",
+    "source_id", "sourceid", "source_system", "sourcesystem",
+    "_guid", "guid", "uuid", "_uid", "_hash", "checksum",
+)
+
+_CF_SLOT_RE = re.compile(r"^cf[a-z]*\d+$", re.IGNORECASE)
+
+_AUDIT_AUTO_PATTERNS = (
+    "created_", "_created", "createdon", "createdby", "createdat",
+    "updated_", "_updated", "updatedon", "updatedby", "updatedat",
+    "modified_", "_modified", "modifiedon", "modifiedby",
+    "inserted_", "is_deleted", "isdeleted",
+    "rowversion", "row_version",
+    "loaddate", "load_date", "load_ts", "loadts", "last_ingest", "ingest_date",
+    "etl_", "_etl", "_dwh", "dwh_",
+    "tenant_id", "tenantid",
+    "_hash", "checksum",
+)
+
+
+def _is_operational_column(column: str) -> bool:
+    """Return whether a custom column looks operational/audit-oriented."""
+
+    name = (column or "").lower()
+    return any(pattern in name for pattern in _OPERATIONAL_PATTERNS)
+
+
+def is_generic_vendor_slot(column: str) -> bool:
+    """Return whether a name is an opaque vendor custom-field slot."""
+
+    return bool(_CF_SLOT_RE.match((column or "").strip()))
+
+
+def auto_disposition(column: str) -> str | None:
+    """Return the narrow auto-fillable disposition, if one is safe."""
+
+    name = (column or "").lower()
+    if any(pattern in name for pattern in _AUDIT_AUTO_PATTERNS):
+        return "skip"
+    return None
+
+
+def recommend_disposition(column: str) -> str:
+    """Return an advisory custom-column disposition recommendation."""
+
+    if is_generic_vendor_slot(column):
+        return "silver-passthrough"
+    if _is_operational_column(column) or auto_disposition(column) == "skip":
+        return "skip"
+    return ""
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -176,11 +232,11 @@ class DomainAlignment:
     #: DD-070 (issue #166) — params signature (cross_module/accelerator/pool) so the
     #: freshness skip distinguishes a cross-module run from a home-only one.
     alignment_params_sha256: str | None = None
-    #: DD-061 — SHA-256 over the affinity ``(system, table)`` set this run saw,
-    #: enabling the deterministic ``check-alignment`` freshness gate.
+    #: DD-094 — SHA-256 over the affinity ``(system, table)`` set this run saw,
+    #: enabling the canonical completeness freshness check.
     affinity_sha256: str | None = None
     #: Issue #182 — algorithm/prompt-contract version this output was produced with.
-    #: Lets ``check-alignment`` flag output from an older, pre-hardening version.
+    #: Lets the canonical completeness gate flag pre-hardening output as unverifiable.
     algorithm_version: int = ALIGNMENT_ALGORITHM_VERSION
 
 
@@ -329,7 +385,7 @@ def extract_ref_model_inventory(
 
 def _load_inventory_classes(inventory_dir: Path) -> list[dict[str, Any]]:
     """Load all classes from YAML inventory files in a directory (DD-044)."""
-    from .inventory import load_inventory
+    from .inventory import InventoryMigrationRequiredError, load_inventory
 
     all_classes: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -337,6 +393,10 @@ def _load_inventory_classes(inventory_dir: Path) -> list[dict[str, Any]]:
     for yaml_file in sorted(inventory_dir.glob("*.yaml")):
         try:
             inv = load_inventory(yaml_file)
+        except InventoryMigrationRequiredError:
+            # A retired inventory must block alignment rather than be silently
+            # skipped and replaced with a direct source-model read.
+            raise
         except Exception as e:
             logger.warning("Failed to load inventory %s: %s", yaml_file, e)
             continue
@@ -2407,7 +2467,7 @@ def _propose_alignments(
                 "class(es)"
             )
 
-        # Write output (Claim Registry — DD-EL-1)
+        # Write output (Claim Registry — DD-094)
         alignments.append(alignment)
         if emit_claims:
             out_path = write_claims_output(
@@ -2427,7 +2487,7 @@ def run_propose_alignment(
     output_dir: Path,
     **kwargs: Any,
 ) -> list[Path]:
-    """Run alignment for all domains and write the Claim Registry (DD-EL-1).
+    """Run alignment for all domains and write the Claim Registry (DD-094).
 
     Emits candidate (``proposed``) claims into ``{domain}-claims.yaml`` under
     *output_dir* (typically the hub's ``model/claims/``). Returns the list of
@@ -2594,7 +2654,7 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
 
     Extracted from :func:`write_alignment_output` so the same structure can feed
     both the (retired) alignment YAML writer and the Claim Registry converter
-    (``DD-EL-1``). Does not touch the filesystem and does not merge preserved
+    (DD-094). Does not touch the filesystem and does not merge preserved
     dispositions — callers do that before serializing.
     """
     data: dict[str, Any] = {
@@ -2605,7 +2665,7 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
         "domain_uris": alignment.domain_uris,
         "generated_at": alignment.generated_at,
         "model_used": alignment.model_used,
-        # DD-061: digest of the affinity (system, table) set for the freshness gate.
+        # DD-094: digest of the affinity (system, table) set for the freshness gate.
         "source_sha256": alignment.affinity_sha256,
         "tables": [],
         "reference_rollup": alignment.reference_rollup,
@@ -2694,7 +2754,7 @@ def write_claims_output(
     *,
     inventory_dir: Path | None = None,
 ) -> Path:
-    """Write a domain alignment as a Claim Registry (``DD-EL-1``).
+    """Write a domain alignment as a Claim Registry (DD-094).
 
     The governance-facing output of ``propose-alignment``: candidate concepts are
     emitted as ``proposed`` claims into ``{domain}-claims.yaml``. When a claims

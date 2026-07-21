@@ -8,7 +8,7 @@ from click.testing import CliRunner
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF
 
-from kairos_ontology.core.alignment_coverage import (
+from kairos_ontology.core.completeness_model import (
     ALIGNMENT_ALGORITHM_VERSION,
     compute_affinity_hash,
 )
@@ -86,13 +86,17 @@ dom:Party a owl:Class ;
     if with_drift:
         ext = """@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 
+# >>> kairos-managed (generated from the Claim Registry — do not edit)
 <https://example.org/domain/party> kairos-ext:silverIncludeImports true .
+# <<< kairos-managed
 """
     else:
         ext = """@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 @prefix ref: <https://example.org/ref/party#> .
 
+# >>> kairos-managed (generated from the Claim Registry — do not edit)
 ref:TradeParty kairos-ext:silverInclude true .
+# <<< kairos-managed
 """
     (extensions / "party-silver-ext.ttl").write_text(ext, encoding="utf-8")
 
@@ -266,12 +270,15 @@ def test_foundation_import_not_flagged_or_stripped(tmp_path):
 
 <https://example.org/domain/party> a owl:Ontology ;
     rdfs:label "Party"@en ;
-    owl:imports <{foundation_iri}> ;
-    owl:imports <https://example.org/ref/party> .
+    owl:imports <{foundation_iri}> .
 
 dom:Party a owl:Class ;
     rdfs:label "Party"@en ;
     rdfs:comment "Party entity."@en .
+
+# >>> kairos-managed (generated from the Claim Registry — do not edit)
+<https://example.org/domain/party> <http://www.w3.org/2002/07/owl#imports> <https://example.org/ref/party> .
+# <<< kairos-managed
 """
     (ontologies / "party.ttl").write_text(ontology, encoding="utf-8")
 
@@ -475,9 +482,8 @@ def test_managed_block_sync_is_idempotent(tmp_path):
     assert onto_after_2.count("# >>> kairos-managed") == 1
 
 
-def test_managed_block_migrates_legacy_inline_imports(tmp_path):
-    """A legacy file with an inline external import (no markers) is migrated:
-    the managed import moves into the block, authored local triples are kept."""
+def test_sync_rejects_legacy_inline_imports_without_modifying_authored_ttl(tmp_path):
+    """Legacy whole-graph output is migration-required, never auto-rewritten."""
     claims_dir, ontologies, extensions = _setup_authored(tmp_path)
     legacy = """@prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -493,20 +499,58 @@ dom:VipParty a owl:Class ;
 """
     (ontologies / "party.ttl").write_text(legacy, encoding="utf-8")
 
-    apply_projection_sync(
+    before = (ontologies / "party.ttl").read_text(encoding="utf-8")
+    report = apply_projection_sync(
         claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
     )
-    onto_text = (ontologies / "party.ttl").read_text(encoding="utf-8")
+    assert report.is_blocking
+    assert "migrate --hub" in (report.domains[0].error or "")
+    assert (ontologies / "party.ttl").read_text(encoding="utf-8") == before
 
-    # The external import now lives only inside the managed block...
-    authored_region, _, managed_region = onto_text.partition("# >>> kairos-managed")
-    assert "<https://example.org/ref/party>" in managed_region
-    assert "<https://example.org/ref/party>" not in authored_region
-    # ...the foundation import stays authored, and the local class is retained.
-    assert "<https://example.org/domain/_foundation>" in authored_region
-    assert "VipParty" in onto_text
 
-    report = evaluate_projection_sync(
-        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+def test_sync_imported_helper_delegates_to_canonical_filter():
+    """`claim_projection_sync` consumes the canonical imported-class filter (DD-096).
+
+    The sync helper must be the canonical
+    ``binding_analysis.approved_imported_class_uris`` set minus classes local to the
+    importing domain — never a divergent reimplementation of the claim filter.
+    """
+    from kairos_ontology.core.binding_analysis import approved_imported_class_uris
+    from kairos_ontology.core.claim_projection_sync import (
+        _approved_imported_class_uris,
     )
-    assert not report.is_blocking
+
+    ontology_iri = "https://example.org/domain/party"
+    external_a = "https://example.org/ref/party#TradeParty"
+    external_b = "https://example.org/ref/org#Organisation"
+    local = "https://example.org/domain/party#VipParty"
+    registry = ClaimRegistry(
+        domain="party",
+        claims=[
+            # Included: approved + imported + claim/specialize, external.
+            Claim(id="a", type="class", status="approved", disposition="claim",
+                  origin="imported", class_uri=external_a),
+            Claim(id="b", type="class", status="approved", disposition="specialize",
+                  origin="imported", class_uri=external_b),
+            # Excluded by the sync-local rule (approved imported but local domain URI).
+            Claim(id="c", type="class", status="approved", disposition="claim",
+                  origin="imported", class_uri=local),
+            # Excluded by the canonical filter: proposed / rejected / gap / authored.
+            Claim(id="d", type="class", status="proposed", disposition="claim",
+                  origin="imported", class_uri="https://example.org/ref/x#Proposed"),
+            Claim(id="e", type="class", status="rejected", disposition="claim",
+                  origin="imported", class_uri="https://example.org/ref/x#Rejected"),
+            Claim(id="f", type="class", status="approved", disposition="gap",
+                  origin="imported", class_uri="https://example.org/ref/x#Gap"),
+            Claim(id="g", type="class", status="approved", disposition="claim",
+                  origin="authored", class_uri="https://example.org/ref/x#Authored"),
+        ],
+    )
+
+    sync_set = _approved_imported_class_uris(registry, ontology_iri)
+    assert sync_set == {external_a, external_b}
+
+    # Parity: the sync set is exactly the canonical set minus local-domain URIs.
+    canonical = approved_imported_class_uris(registry)
+    assert canonical == {external_a, external_b, local}
+    assert sync_set == {u for u in canonical if not u.startswith(ontology_iri)}

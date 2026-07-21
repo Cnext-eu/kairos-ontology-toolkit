@@ -4,10 +4,13 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 import pytest
 
 from kairos_ontology.core.claim_registry import (
     CLAIM_REGISTRY_SCHEMA_VERSION,
+    HUMAN_CURATED_FIELDS,
     TRIAGE_TO_DISPOSITION,
     Claim,
     ClaimRegistry,
@@ -315,6 +318,35 @@ class TestMergePreservingDecisions:
         ev = merged.claims[0].evidence_sources
         assert [(e.system, e.table) for e in ev] == [("erp", "customer")]
 
+    def test_decided_claim_confidence_refreshed(self):
+        existing = self._existing(proposed_confidence=0.4)
+        new = self._new_proposed()
+        new.claims[0].proposed_confidence = 0.9
+
+        merged = merge_preserving_decisions(new, existing)
+
+        assert merged.claims[0].proposed_confidence == 0.9
+
+    def test_decided_claim_type_is_governed(self):
+        new = self._new_proposed()
+        new.claims[0].type = "property"
+        new.claims[0].property_uri = "https://ex.org/generated#tradeParty"
+
+        merged = merge_preserving_decisions(new, self._existing())
+
+        assert merged.claims[0].type == "class"
+        assert merged.claims[0].property_uri is None
+
+    def test_empty_new_evidence_keeps_prior_evidence(self):
+        new = self._new_proposed()
+        new.claims[0].evidence_sources = []
+
+        merged = merge_preserving_decisions(new, self._existing())
+
+        assert [(e.system, e.table) for e in merged.claims[0].evidence_sources] == [
+            ("crm", "account")
+        ]
+
     def test_proposed_existing_is_replaced(self):
         merged = merge_preserving_decisions(
             self._new_proposed(), self._existing(status="proposed")
@@ -326,11 +358,15 @@ class TestMergePreservingDecisions:
 
     def test_coverage_and_meta_from_new(self):
         new = self._new_proposed()
+        new.freshness = Freshness(
+            affinity_sha256="new-affinity", alignment_params_sha256="new-params"
+        )
         new.coverage = [CoverageSystem(system="erp", tables=[CoverageTable(
             table="customer", anchor_state="matched")])]
         merged = merge_preserving_decisions(new, self._existing())
         assert merged.algorithm_version == 4
         assert merged.generated_at == "2026-06-15T20:00:00Z"
+        assert merged.freshness == new.freshness
         assert merged.coverage[0].system == "erp"
 
     def test_vanished_decided_claim_retained(self):
@@ -363,6 +399,107 @@ class TestMergePreservingDecisions:
         ids = [c.id for c in merged.claims]
         assert ids == sorted(ids)
         assert validation_errors(validate_registry(merged)) == []
+
+    def test_dump_keeps_sorted_claims_and_claim_key_order(self):
+        new = self._new_proposed()
+        new.claims.insert(
+            0,
+            Claim(
+                id="party-a",
+                type="property",
+                property_uri="https://ex.org/party#a",
+                evidence_sources=[
+                    EvidenceSource(
+                        type="source_column",
+                        system="erp",
+                        table="customer",
+                        column="a",
+                    )
+                ],
+                proposed_confidence=0.8,
+            ),
+        )
+
+        text = dump_registry(merge_preserving_decisions(new, self._existing()))
+
+        assert text.index("id: party-a") < text.index("id: party-trade-party")
+        assert text.index("type: property") < text.index("property_uri:")
+        assert text.index("property_uri:") < text.index("origin:")
+        assert text.index("evidence_sources:") < text.index("proposed_confidence:")
+
+    def test_different_domains_are_rejected(self):
+        existing = self._existing()
+        existing.domain = "invoice"
+
+        with pytest.raises(ValueError, match="different domains"):
+            merge_preserving_decisions(self._new_proposed(), existing)
+
+
+def test_claim_merge_policy_covers_every_claim_field():
+    """Adding a Claim field requires an explicit curated-or-refreshed policy choice."""
+    identity_fields = {"id"}
+    refreshed_fields = {"evidence_sources", "proposed_confidence"}
+    claim_fields = {claim_field.name for claim_field in fields(Claim)}
+
+    assert claim_fields == identity_fields | refreshed_fields | set(HUMAN_CURATED_FIELDS)
+
+
+def test_every_curated_claim_field_survives_regeneration():
+    previous = Claim(
+        id="party-country",
+        type="reference_data",
+        status="approved",
+        disposition="specialize",
+        origin="authored",
+        class_uri="https://ex.org/common#Country",
+        property_uri="https://ex.org/common#countryCode",
+        owner="data-governance",
+        evidence_sources=[EvidenceSource(type="source_table", system="mdm", table="country")],
+        silver_impact=SilverImpact(table="dim_country", column="code", change_type="breaking"),
+        reference_data=ReferenceData(
+            authority_system="iso",
+            code_system="ISO-3166-1",
+            key="alpha2",
+            scd_type=1,
+        ),
+        mdm_anchor=True,
+        deviation=Deviation(reason="approved exception", owner="architecture"),
+        ownership_override=OwnershipOverride(owner="cdo", rationale="conformed dimension"),
+        passthrough_reviewed=True,
+        rationale="reviewed decision",
+        proposed_confidence=0.2,
+        superseded_by="party-country-v2",
+    )
+    candidate = Claim(
+        id=previous.id,
+        type="property",
+        status="proposed",
+        disposition="claim",
+        origin="imported",
+        property_uri="https://ex.org/generated#country",
+        owner="generated-owner",
+        evidence_sources=[
+            EvidenceSource(
+                type="source_column",
+                system="erp",
+                table="customer",
+                column="country",
+            )
+        ],
+        silver_impact=SilverImpact(table="generated_country"),
+        rationale="generated rationale",
+        proposed_confidence=0.95,
+    )
+
+    merged = merge_preserving_decisions(
+        ClaimRegistry(domain="party", claims=[candidate]),
+        ClaimRegistry(domain="party", claims=[previous]),
+    ).claims[0]
+
+    for field_name in HUMAN_CURATED_FIELDS:
+        assert getattr(merged, field_name) == getattr(previous, field_name)
+    assert merged.evidence_sources == candidate.evidence_sources
+    assert merged.proposed_confidence == candidate.proposed_confidence
 
 
 class TestSlice4Schema:
@@ -476,4 +613,3 @@ class TestSlice4Schema:
         assert c.passthrough_reviewed is True
         # evidence still refreshed from the new run
         assert {e.type for e in c.evidence_sources} == {"affinity"}
-
