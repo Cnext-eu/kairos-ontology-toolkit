@@ -46,11 +46,15 @@ from .claim_projection_sync import ProjectionSyncReport, evaluate_projection_syn
 from .completeness_model import compute_completeness_facts
 from .source_coverage import SourceCoverageReport, check_source_coverage
 from .status import HubStatus, scan_hub_status
+from .transformation_candidates import (
+    TransformationReadinessReport,
+    evaluate_transformation_readiness,
+)
 
 #: Schema version of :meth:`LifecycleGateReport.to_dict` (DD-100). Bump only on
 #: a breaking change (removed/renamed key or changed meaning); additive new
 #: keys do not require a bump.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -222,6 +226,7 @@ class LifecycleGateReport:
     claims: ClaimCheckReport
     source_coverage: SourceCoverageReport | None
     projection_sync: ProjectionSyncReport
+    transformation_candidates: TransformationReadinessReport
     release: tuple[DomainReleaseFact, ...]
     validation: ValidationFact
     project: ProjectionFact
@@ -237,6 +242,7 @@ class LifecycleGateReport:
             self.claims.is_blocking
             or bool(self.source_coverage is not None and self.source_coverage.is_blocking)
             or self.projection_sync.is_blocking
+            or self.transformation_candidates.is_blocking
             or bool(self.release_blocking_domains)
             or self.validation.passed is False
         )
@@ -254,6 +260,7 @@ class LifecycleGateReport:
                 else None
             ),
             "projection_sync": _projection_sync_to_dict(self.projection_sync),
+            "transformation_candidates": self.transformation_candidates.to_dict(),
             "release": [r.to_dict() for r in self.release],
             "validation": self.validation.to_dict(),
             "project": self.project.to_dict(),
@@ -406,6 +413,10 @@ def evaluate_lifecycle_gate(
     release = _compute_release_facts(hub_root, claims_dir, domains_filter)
 
     status = scan_hub_status(hub_root, toolkit_version=toolkit_version)
+    transformation_candidates = evaluate_transformation_readiness(
+        hub_root,
+        stage="release",
+    )
 
     return LifecycleGateReport(
         schema_version=SCHEMA_VERSION,
@@ -413,6 +424,7 @@ def evaluate_lifecycle_gate(
         claims=claim_report,
         source_coverage=source_report,
         projection_sync=sync_report,
+        transformation_candidates=transformation_candidates,
         release=release,
         validation=_validation_fact(status),
         project=_project_fact(status),

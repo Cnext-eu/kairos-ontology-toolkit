@@ -195,6 +195,10 @@ ontology-reference-models/          # Imported industry reference models
   outputs; ontology/glossary own meaning; SKOS owns source-to-domain semantics; Silver
   extensions own semantic keys/SK/FK/SCD and `silverSourceRef`. Generated virtual
   vocabularies and `output/` are never hand-edited.
+- **Imported dbt evidence:** explicit repository-contained SQL/dbt roots can be inventoried
+  under `model/planning/dbt-transformations/`. The inventory is non-executable and
+  non-projecting; deterministic SQL signals trigger a governed
+  **dbt-transformation checkpoint** before Mapping/Silver, not a new lifecycle phase.
 - **`_master.ttl`** must import every domain ontology.
 
 ## 4  Available Projections
@@ -413,12 +417,15 @@ Default paths:
 
 ### Adding an advanced dbt transformation
 
-1. Invoke **kairos-develop-dbt-transformation** for grain, contract, SQL, and tests.
-2. Run `sync-dbt-contracts`; map the generated virtual source with
+1. For imported evidence, invoke **kairos-design-source** and inventory only explicitly
+   selected roots with `inventory-dbt-candidates`.
+2. Invoke **kairos-develop-dbt-transformation** for grain, target, authority, replacement
+   scope, contract, SQL, and tests.
+3. Run `sync-dbt-contracts`; map the generated virtual source with
    **kairos-design-mapping** and set Silver routing with **kairos-design-silver**.
    For a governed wrong-grain replacement, declare canonical
    `meta.kairos.replaces_sources[].table_iri`; do not add an unsafe direct mapping.
-3. Project and validate each required adapter:
+4. Project and validate each required adapter:
    `project --target dbt --platform <fabric|databricks>`, then
    `validate-dbt --platform <fabric|databricks>`.
 

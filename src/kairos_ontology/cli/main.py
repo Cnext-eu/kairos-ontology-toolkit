@@ -89,6 +89,8 @@ _SKILL_COVERED_COMMANDS = {
     "source-privacy": "kairos-design-source",
     "generate-staging": "kairos-design-source",
     "analyse-sources": "kairos-design-source",
+    "inventory-dbt-candidates": "kairos-design-source",
+    "check-transformation-readiness": "kairos-develop-dbt-transformation",
     "derive-claims": "kairos-design-source",
     "draft-model-report": "kairos-design-domain",
     "decide-claims": "kairos-design-domain",
@@ -811,6 +813,16 @@ def validate(
         else _resolve_ref_models_dir(cwd, hub_root)
     )
     catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
+    from ..core.reference_modules import resolve_hub_accelerator
+
+    try:
+        accelerator = resolve_hub_accelerator(
+            explicit=accelerator,
+            hub_root=hub_root,
+            ref_models_dir=ref_models_path,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     # Report destination: always the hub's output/ dir, never the process CWD
     # (mirrors the `project` command's output_path resolution below).
@@ -977,6 +989,16 @@ def project(
         else _resolve_ref_models_dir(cwd, hub_root)
     )
     catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
+    from ..core.reference_modules import resolve_hub_accelerator
+
+    try:
+        accelerator = resolve_hub_accelerator(
+            explicit=accelerator,
+            hub_root=hub_root,
+            ref_models_dir=ref_models_path,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     if output is not None:
         output_path = Path(output)
@@ -1127,6 +1149,7 @@ def init(domain, company_domain, force):
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "model" / "planning",
+        hub / "model" / "planning" / "dbt-transformations",
         hub / "referencemodels-unpacked",
         hub / "businessdiscovery",
         hub / "businessdiscovery" / "_extractions",
@@ -1206,6 +1229,7 @@ def init(domain, company_domain, force):
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
         "model/mappings/custom-transformations": "model/mappings/custom-transformations",
+        "model/planning/dbt-transformations": "model/planning/dbt-transformations",
         "businessdiscovery": "businessdiscovery",
         "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/sources": "integration/sources",
@@ -4986,6 +5010,115 @@ def conformance_validate(artifact_file, refmodels_root):
     click.echo(f"✅ Conformance artifact valid: {path}", err=True)
 
 
+@cli.command(name="inventory-dbt-candidates")
+@click.option(
+    "--from",
+    "--root",
+    "artifact_roots",
+    type=click.Path(path_type=Path),
+    multiple=True,
+    required=True,
+    help="Explicit repository-contained SQL/dbt artifact root (repeatable; --root alias).",
+)
+@click.option(
+    "--hub",
+    "hub_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Ontology-hub root (default: auto-detect).",
+)
+@click.option(
+    "--repository-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Repository root used for stable candidate paths (default: auto-detect).",
+)
+def inventory_transformation_candidates_cmd(artifact_roots, hub_path, repository_root):
+    """Inventory explicit transformation evidence into committed planning YAML."""
+    from ..core.hub_utils import find_hub_root, find_managed_root
+    from ..core.transformation_candidates import (
+        TransformationCandidateError,
+        inventory_transformation_candidates,
+        write_candidate_inventory,
+    )
+
+    cwd = Path.cwd()
+    hub_root = Path(hub_path).resolve() if hub_path else find_hub_root(cwd, require_model=False)
+    if hub_root is None:
+        raise click.ClickException("Could not locate an ontology-hub root; pass --hub.")
+    repo_root = (
+        Path(repository_root).resolve()
+        if repository_root
+        else (find_managed_root(cwd) or hub_root).resolve()
+    )
+    try:
+        inventory = inventory_transformation_candidates(
+            hub_root,
+            list(artifact_roots),
+            repository_root=repo_root,
+        )
+        output = write_candidate_inventory(hub_root, inventory)
+    except TransformationCandidateError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"✓ Inventoried {len(inventory.candidates)} transformation candidate(s): {output}"
+    )
+
+
+@cli.command(name="check-transformation-readiness")
+@click.option("--stage", type=click.Choice(["mapping", "silver"]), required=True)
+@click.option(
+    "--table",
+    "table_scope",
+    multiple=True,
+    help="Governed source-table scope to evaluate (repeatable; default: all).",
+)
+@click.option(
+    "--hub",
+    "hub_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Ontology-hub root (default: auto-detect).",
+)
+@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text")
+def check_transformation_readiness_cmd(stage, table_scope, hub_path, output_format):
+    """Enforce deterministic, non-writing Mapping or Silver readiness."""
+    from ..core.hub_utils import find_hub_root
+    from ..core.transformation_candidates import (
+        TransformationCandidateError,
+        evaluate_transformation_readiness,
+    )
+
+    hub_root = (
+        Path(hub_path).resolve()
+        if hub_path
+        else find_hub_root(Path.cwd(), require_model=False)
+    )
+    if hub_root is None:
+        raise click.ClickException("Could not locate an ontology-hub root; pass --hub.")
+    try:
+        report = evaluate_transformation_readiness(
+            hub_root,
+            stage=stage,
+            table_scope=table_scope,
+        )
+    except TransformationCandidateError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_format == "json":
+        click.echo(json.dumps(report.to_dict(), indent=2))
+    elif not report.inventory_exists:
+        click.echo("✓ No transformation candidate inventory; existing hub behavior is unchanged.")
+    else:
+        click.echo(f"🔎 Transformation readiness ({stage})")
+        for candidate in report.candidates:
+            marker = "❌" if candidate.is_blocking else ("⚠" if candidate.reasons else "✓")
+            click.echo(f"   {marker} {candidate.id}: {candidate.status}")
+            for reason in candidate.reasons:
+                click.echo(f"      - {reason}")
+    if report.is_blocking:
+        raise SystemExit(1)
+
+
 @cli.command(name='status')
 @click.option('--hub', 'hub_path', type=click.Path(), default=None,
               help='Path to the ontology-hub root (default: auto-detect).')
@@ -5576,6 +5709,7 @@ def migrate(check, dry_run, legacy_formats, hub_path):
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "model" / "planning",
+        hub / "model" / "planning" / "dbt-transformations",
         hub / "referencemodels-unpacked",
         hub / "integration" / "sources",
         hub / "integration" / "discovery",
@@ -5822,6 +5956,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "model" / "planning",
+        hub / "model" / "planning" / "dbt-transformations",
         hub / "referencemodels-unpacked",
         hub / "businessdiscovery",
         hub / "businessdiscovery" / "_extractions",
@@ -5901,6 +6036,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
         "model/mappings/custom-transformations": "model/mappings/custom-transformations",
+        "model/planning/dbt-transformations": "model/planning/dbt-transformations",
         "businessdiscovery": "businessdiscovery",
         "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/sources": "integration/sources",

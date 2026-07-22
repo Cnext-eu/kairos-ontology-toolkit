@@ -99,15 +99,22 @@ Do not edit `.kairos-state/status.md`; `kairos-flow` owns global continuation st
 
 1. Locate the hub from the current directory.
 2. Read the phase log if it exists and offer to resume.
-3. Confirm these inputs exist:
+3. Read `model/planning/dbt-transformations/candidates.yaml` when present. Select one
+   candidate by its stable repository-relative artifact ID, verify its checksum state, and
+   distinguish machine observations from governed assessment fields. A changed/orphaned
+   candidate requires reassessment; a rename requires explicit relinking.
+   Every non-`unassessed` disposition must record the current `assessed_sha256`. When marking
+   a candidate `implemented`, set `implemented_model_name` to the exact discovered dbt
+   contract resource name; it need not match the imported artifact filename.
+4. Confirm these inputs exist:
    - `businessdiscovery/` glossary and approved business context;
    - `model/ontologies/`;
    - `integration/sources/` vocabularies and available profiling metadata;
    - `model/mappings/`;
    - `model/extensions/*-silver-ext.ttl`;
    - `integration/transforms/dbt/` when updating an existing model.
-4. Select one transformation and one semantic target.
-5. Build a bounded evidence packet containing only relevant:
+5. Select one transformation and one semantic target.
+6. Build a bounded evidence packet containing only relevant:
    - glossary concepts and definitions;
    - ontology classes/properties/relationships/ranges;
    - masked source column evidence and analysis;
@@ -117,7 +124,7 @@ Do not edit `.kairos-state/status.md`; `kairos-flow` owns global continuation st
    - generated virtual vocabulary and projection reports;
    - manifest dependencies when available; and
    - selected adapter and approved package constraints.
-6. Report missing, conflicting, or inferred evidence separately.
+7. Report missing, conflicting, or inferred evidence separately.
 
 If source or domain evidence is incomplete, stop and route to the owning design skill.
 
@@ -213,7 +220,7 @@ Implementation rules:
 - prefix custom macros with `<hub-or-domain>__`;
 - never use the reserved `kairos_` prefix;
 - use only toolkit-approved package dependencies;
-- write adapter-portable SQL or explicit adapter dispatch for Fabric and Databricks;
+- write portable SQL or explicit adapter dispatch for every adapter declared by the contract;
 - alias joined inputs so dbt unit tests can mock them;
 - add unit tests for windows, ranking, fallback, complex cases, and regressions;
 - add data tests for key uniqueness/non-nullness, accepted values, relationships, grain,
@@ -284,11 +291,23 @@ The transformation is ready for review when:
   virtual-table exact match, contract target, and `silverSourceRef`;
 - SKOS mappings and Silver policy passed their owning skill gates;
 - custom resources are self-contained and collision-free;
-- Fabric and Databricks parse successfully;
+- every adapter declared by the contract parses successfully;
 - compile succeeds or is explicitly environment-blocked;
 - unit/data tests exist for every recorded decision;
 - no secrets, PII, or proprietary fixtures are present; and
 - the phase log contains no unresolved blocking question.
+
+Finally run both deterministic gates:
+
+```bash
+$env:KAIROS_SKILL_CONTEXT = "1"
+kairos-ontology check-transformation-readiness --stage mapping
+kairos-ontology check-transformation-readiness --stage silver
+```
+
+Do not mark the candidate `implemented` until `implemented_model_name` identifies a
+discoverable contract and the managed virtual vocabulary is synchronized. The Silver gate may
+still remain blocked by mapping or `silverSourceRef` work owned by their respective skills.
 
 Warehouse-backed tests remain required before production publication even when toolkit
 offline validation is complete.

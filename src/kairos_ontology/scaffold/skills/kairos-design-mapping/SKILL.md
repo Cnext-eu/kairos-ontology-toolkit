@@ -118,6 +118,22 @@ may be presented as "auto-approved" (still shown, but not blocking):
 
 The user can override any auto-approved mapping.
 
+### Gate 6: Transformation readiness (deterministic)
+
+Before creating or modifying mapping TTL, run:
+
+```bash
+$env:KAIROS_SKILL_CONTEXT = "1"
+kairos-ontology check-transformation-readiness --stage mapping
+```
+
+A non-zero result is blocking. Do not write mapping TTL; report the evaluator's reasons
+verbatim and hand off to **kairos-develop-dbt-transformation**. The planning inventory is
+not mapping authority: SQL operation signals trigger assessment, while a direct mapping is
+forbidden only when the governed candidate decision establishes overlapping replacement
+scope. A deferred candidate may coexist with a narrow direct slice only when its rationale
+and distinct-grain statement are recorded.
+
 ---
 
 ## Phased Workflow
@@ -187,6 +203,10 @@ The user can override any auto-approved mapping.
 > survivorship, stop and hand off to **kairos-develop-dbt-transformation**. Return here
 > after synchronization to map the generated virtual table and columns; SKOS remains
 > the authority for virtual-source-to-domain meaning.
+>
+> When an imported candidate exists, do not re-derive this boundary from SQL in the skill.
+> Use `check-transformation-readiness --stage mapping` as the machine decision and record
+> its candidate ID in the mapping phase log.
 
 ### Phase 2 — Column-to-Property Mapping (per confirmed table)
 

@@ -179,11 +179,14 @@ Use this table to pick the correct skill for a user's intent:
 > sources already exist, run the modeling skill's mandatory **source-completeness
 > check** (every time, including the first pass) before proposing classes.
 >
-> **Advanced dbt branch:** When a mapped Silver entity needs joins, windows,
-> aggregations, fallback rules, JSON expansion, or a grain change that cannot be
-> expressed safely as normal column mappings, insert
+> **Advanced dbt checkpoint:** When imported SQL evidence or a mapped Silver entity
+> needs joins, windows, aggregations, fallback rules, JSON expansion, or a grain change
+> that cannot be expressed safely as normal column mappings, inventory explicit evidence
+> roots during source onboarding and insert
 > **kairos-develop-dbt-transformation** between domain design and the final
-> virtual-source mapping/Silver review. Simple mappings remain on the canonical path.
+> virtual-source mapping/Silver review. This is a checkpoint, not a new lifecycle phase.
+> `check-transformation-readiness --stage mapping|silver` is the deterministic gate;
+> simple mappings and hubs without a candidate inventory remain on the canonical path.
 
 | User intent | Correct skill |
 |---|---|

@@ -148,6 +148,24 @@ not a fleet-mode decision and not reusable consent for another invocation.
 
 Ask the user what source material they have:
 
+### Imported SQL/dbt transformation evidence
+
+If source onboarding includes authored SQL or a dbt project that may define joins,
+aggregation, windows, ranking, unions, fallback rules, survivorship, or a changed row
+grain, keep it as evidence and inventory only the explicit repository-contained roots the
+user identifies:
+
+```bash
+$env:KAIROS_SKILL_CONTEXT = "1"
+kairos-ontology inventory-dbt-candidates --from <repo-relative-artifact-root>
+```
+
+Pass `--from` once per approved root. Do not scan all of `.import/sources/`, copy the SQL
+into `integration/transforms/dbt/`, or treat it as executable/source authority. Review the
+generated `model/planning/dbt-transformations/candidates.yaml`; deterministic operation
+signals are observations, while grain, semantic target, authority, replacement scope, and
+disposition remain governed assessment decisions.
+
 | Input type | Path |
 |---|---|
 | **CSV, Excel, or Parquet files** (exports, data dumps) | → Phase 1 (import-flatfile) |
@@ -568,17 +586,21 @@ The command produces `{system}-affinity.yaml` files in
 
 After the source vocabulary and analysis are complete:
 
-1. **Create a draft model report when reporting/business evidence exists** — run
+1. **Assess imported transformation candidates when present** — read
+   `model/planning/dbt-transformations/candidates.yaml`. If advanced candidates are
+   unassessed or changed, hand off to **kairos-develop-dbt-transformation** before Mapping
+   or Silver; do not infer authority from Power BI/parity artifacts.
+2. **Create a draft model report when reporting/business evidence exists** — run
    `kairos-ontology draft-model-report` to produce all-domain draft evidence packs
    and one advisory cross-domain Mermaid ERD before domain design. Use this when
    `integration/sources/powerbi/` or `businessdiscovery/*.ttl` exists.
-2. **Design domain ontology** — invoke the **kairos-design-domain** skill.
+3. **Design domain ontology** — invoke the **kairos-design-domain** skill.
    It uses the affinity reports from Phase 4 as a mandatory prerequisite
    (Step 0a) to scope which tables to model per domain.
-3. **Create SKOS mappings** — invoke the **kairos-design-mapping** skill to
+4. **Create SKOS mappings** — invoke the **kairos-design-mapping** skill to
    map source columns to domain ontology properties
-4. **Design silver annotations** — invoke the **kairos-design-silver** skill
-5. **Generate output** — invoke the **kairos-execute-project** skill
+5. **Design silver annotations** — invoke the **kairos-design-silver** skill
+6. **Generate output** — invoke the **kairos-execute-project** skill
 
 ### Draft model report (`draft-model-report`)
 

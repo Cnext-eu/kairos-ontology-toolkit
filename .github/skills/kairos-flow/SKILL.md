@@ -210,6 +210,7 @@ xrefs:
 | Claims exist but some are `status: proposed` (e.g. conformance/`derive-claims` output) | Proposals are **candidates, not progress**. The claims phase is not done while eligible proposals await approval. Do **not** copy the proposal list into `status.md`; record only the intent — read the count from the claims instance's `facts.proposed` (status JSON) and state "N proposed claims awaiting batch approval" — as a next action and route to **kairos-design-source** (curate + `check-claims`) or **kairos-design-domain** (claim governance). The Claim Registry + `check-claims` are the machine truth for which claims are proposed vs approved. |
 | Silver `done` but eligible claims are unbound **aspirational stubs** (DD-096) | Silver is **not** fully done — the stub is a target, not a bound model. Read the silver instance's `facts.aspirational_classes`/`facts.release_eligible` (status JSON) rather than re-deriving them; fold "aspirational stubs pending binding" into `status.md` regions 2–3 (open questions / next actions) and route to `kairos-design-mapping` to bind. Classify via `BindingAnalysis` over authorities, not generated `meta.is_aspirational`. |
 | User asks "is this release-ready / can we ship" | Run `kairos-ontology check-release` (DD-101) and report its `is_blocking` + per-section reasons verbatim — don't re-derive a ship/no-ship verdict from the phase table yourself. |
+| Status facts report unresolved/changed advanced dbt candidates | Keep the canonical next phase unchanged, add transformation assessment to continuation next actions, and route to `kairos-develop-dbt-transformation` before Mapping/Silver. Run `check-transformation-readiness` rather than interpreting SQL in the flow skill. |
 
 ---
 
@@ -220,6 +221,7 @@ xrefs:
 | discovery | `kairos-design-discovery` | — (recommended first) |
 | source | `kairos-design-source` | discovery done/skipped |
 | domain | `kairos-design-domain` | sources imported + analysed |
+| dbt-transformation checkpoint | `kairos-develop-dbt-transformation` | candidate readiness reports unresolved advanced evidence; checkpoint only, not a `PHASE_ORDER` phase |
 | mapping | `kairos-design-mapping` | domain + source vocab exist |
 | claims | `kairos-design-domain` (claim governance) | mappings + evidence |
 | silver | `kairos-design-silver` | domain + mappings |
@@ -231,6 +233,11 @@ xrefs:
 Follow the canonical order `discovery → source → domain → mapping → claims →
 silver → gold → validate → project`. Respect each target skill's own pre-flight
 (it runs after the hand-off).
+
+Before handing off to Mapping or Silver, run the matching deterministic readiness command.
+A non-zero result temporarily overrides the ordinary phase handoff and routes to the
+dbt-transformation checkpoint. Do not mark the mapping/silver phase `blocked` in the scan;
+record the blocker in continuation state while `status` remains objective and observational.
 
 **Proposals, approvals, and stubs — surface intent, not machine truth.** Three
 lifecycle signals commonly appear at resume; route them without re-deriving or

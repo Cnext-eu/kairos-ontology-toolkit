@@ -117,12 +117,13 @@ def build_dbt_contract_graph(contract: DbtContractModel) -> Graph:
     for column in contract.columns:
         column_iri = _column_iri(contract.virtual_source_iri, column.name)
         is_key = column.name in natural_key
+        nullable = not (is_key or column.not_null)
         graph.add((column_iri, RDF.type, KAIROS_BRONZE.SourceColumn))
         graph.add((column_iri, RDFS.label, Literal(column.description or column.name)))
         graph.add((column_iri, KAIROS_BRONZE.sourceTable, table))
         graph.add((column_iri, KAIROS_BRONZE.columnName, Literal(column.name)))
         graph.add((column_iri, KAIROS_BRONZE.dataType, Literal(column.data_type)))
-        graph.add((column_iri, KAIROS_BRONZE.nullable, Literal(not is_key, datatype=XSD.boolean)))
+        graph.add((column_iri, KAIROS_BRONZE.nullable, Literal(nullable, datatype=XSD.boolean)))
         graph.add((column_iri, KAIROS_BRONZE.isPrimaryKey, Literal(is_key, datatype=XSD.boolean)))
         graph.add((column_iri, KAIROS_DBT.modelRef, Literal(contract.name)))
     return graph

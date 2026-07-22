@@ -55,7 +55,12 @@ def _make_hub(tmp_path: Path) -> tuple[Path, Path]:
                                 "description": "Order identifier.",
                                 "data_type": "string",
                             },
-                            {"name": "amount", "data_type": "decimal(18,2)"},
+                            {
+                                "name": "amount",
+                                "data_type": "decimal(18,2)",
+                                "data_tests": ["not_null"],
+                            },
+                            {"name": "notes", "data_type": "string"},
                         ],
                     }
                 ],
@@ -101,7 +106,16 @@ def test_writes_bronze_compatible_graph_with_stable_iris(tmp_path: Path) -> None
     assert {col["name"] for col in parsed[0]["tables"][0]["columns"]} == {
         "order_id",
         "amount",
+        "notes",
     }
+
+    columns = {
+        str(graph.value(subject, KAIROS_BRONZE.columnName)): subject
+        for subject in graph.subjects(RDF.type, KAIROS_BRONZE.SourceColumn)
+    }
+    assert graph.value(columns["order_id"], KAIROS_BRONZE.nullable).toPython() is False
+    assert graph.value(columns["amount"], KAIROS_BRONZE.nullable).toPython() is False
+    assert graph.value(columns["notes"], KAIROS_BRONZE.nullable).toPython() is True
 
 
 def test_semantically_equal_graph_is_not_rewritten(tmp_path: Path) -> None:

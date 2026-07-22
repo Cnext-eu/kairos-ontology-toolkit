@@ -40,6 +40,14 @@ from kairos_ontology.core.lifecycle_gate import (
     evaluate_lifecycle_gate,
 )
 from kairos_ontology.core.status import scan_hub_status
+from kairos_ontology.core.transformation_candidates import (
+    AssessmentApproval,
+    CandidateAssessment,
+    CandidateFacts,
+    CandidateInventory,
+    TransformationCandidate,
+    write_candidate_inventory,
+)
 
 WIDGET_TTL = textwrap.dedent(
     """\
@@ -186,6 +194,47 @@ class TestReleaseEligibility:
         assert report.release == ()
         assert not report.release_blocking_domains
         assert report.is_blocking is False
+
+    def test_transformation_candidate_report_is_composed_as_blocking_section(self, tmp_path):
+        hub = _build_hub(tmp_path, claim_status=None)
+        facts = CandidateFacts(
+            artifact_path="evidence/orders.sql",
+            sha256="a" * 64,
+            proposed_model_name="orders",
+        )
+        write_candidate_inventory(
+            hub,
+            CandidateInventory(
+                roots=("evidence",),
+                candidates=(
+                    TransformationCandidate(
+                        id=facts.artifact_path,
+                        facts=facts,
+                        assessment=CandidateAssessment(
+                            status="accepted",
+                            semantic_target="https://example.com/ontology#Widget",
+                            authority_classification="operational-source",
+                            replacement_scope=("https://example.com/bronze/crm#widgets",),
+                            rationale="Governed replacement is approved.",
+                            confidence="high",
+                            evidence=("Reviewed candidate SQL and source grain.",),
+                            approval=AssessmentApproval(
+                                "reviewer",
+                                "2026-07-22T20:00:00Z",
+                            ),
+                            assessed_sha256=facts.sha256,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        report = _evaluate(hub)
+
+        assert report.transformation_candidates.inventory_exists is True
+        assert report.transformation_candidates.is_blocking is True
+        assert report.is_blocking is True
+        assert report.to_dict()["transformation_candidates"]["stage"] == "release"
 
     def test_approved_unbound_claim_blocks_release(self, tmp_path):
         hub = _build_hub(tmp_path, claim_status="approved", with_binding=False)
@@ -405,12 +454,12 @@ class TestComposedReportShape:
         report = _evaluate(hub)
         payload = report.to_dict()
 
-        assert payload["schema_version"] == 1
+        assert payload["schema_version"] == 2
         assert payload["is_blocking"] is True
         assert payload["release_blocking_domains"] == ["widget"]
         for key in (
             "claims", "source_coverage", "projection_sync", "release",
-            "validation", "project", "hub_root",
+            "validation", "project", "hub_root", "transformation_candidates",
         ):
             assert key in payload
 
@@ -482,7 +531,7 @@ class TestCheckReleaseCli:
         result, _dest = self._invoke_in(hub, ["check-release", "--format", "json"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
-        assert payload["schema_version"] == 1
+        assert payload["schema_version"] == 2
         assert payload["is_blocking"] is False
         assert payload["release"][0]["bound_classes"] == ["Widget"]
 
