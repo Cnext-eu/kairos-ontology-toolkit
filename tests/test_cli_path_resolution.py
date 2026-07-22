@@ -62,6 +62,27 @@ def _patch_projections(monkeypatch):
     return calls
 
 
+def _write_accelerator_packs(root: Path, *names: str) -> Path:
+    ref_models = root / "ontology-reference-models"
+    for name in names:
+        blueprint = (
+            ref_models
+            / "accelerator-packs"
+            / name
+            / "client-hub-blueprint"
+        )
+        blueprint.mkdir(parents=True)
+        (blueprint / "data-domains.yaml").write_text("groups: []\n", encoding="utf-8")
+    return ref_models
+
+
+def _configure_accelerator(hub: Path, accelerator: str) -> None:
+    (hub / "pyproject.toml").write_text(
+        f'[tool.kairos]\naccelerator = "{accelerator}"\n',
+        encoding="utf-8",
+    )
+
+
 # --------------------------------------------------------------------------- #
 # validate
 # --------------------------------------------------------------------------- #
@@ -139,6 +160,19 @@ def test_validate_explicit_ref_models_resolves_its_catalog(tmp_path, monkeypatch
     assert calls["validation"]["catalog_path"] == catalog
 
 
+def test_validate_uses_hub_configured_accelerator(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    _write_accelerator_packs(tmp_path, "finance", "logistics")
+    _configure_accelerator(tmp_path, "logistics")
+    calls = _patch_validation(monkeypatch)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["validate", "--syntax"])
+
+    assert result.exit_code == 0, result.output
+    assert calls["validation"]["accelerator"] == "logistics"
+
+
 # --------------------------------------------------------------------------- #
 # project
 # --------------------------------------------------------------------------- #
@@ -190,6 +224,59 @@ def test_project_explicit_ref_models_resolves_its_catalog(tmp_path, monkeypatch)
 
     assert result.exit_code == 0, result.output
     assert calls["projection"]["catalog_path"] == catalog
+
+
+def test_project_explicit_accelerator_overrides_hub_configuration(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    _write_accelerator_packs(tmp_path, "finance", "logistics")
+    _configure_accelerator(tmp_path, "finance")
+    calls = _patch_projections(monkeypatch)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli,
+        ["project", "--target", "neo4j", "--accelerator", "logistics"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["projection"]["accelerator"] == "logistics"
+
+
+def test_project_infers_single_installed_accelerator(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    _write_accelerator_packs(tmp_path, "logistics")
+    calls = _patch_projections(monkeypatch)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])
+
+    assert result.exit_code == 0, result.output
+    assert calls["projection"]["accelerator"] == "logistics"
+
+
+def test_project_rejects_unknown_configured_accelerator(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    _write_accelerator_packs(tmp_path, "logistics")
+    _configure_accelerator(tmp_path, "unknown")
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])
+
+    assert result.exit_code == 1
+    assert "Unknown accelerator 'unknown' from hub configuration" in result.output
+    assert "Available: logistics" in result.output
+
+
+def test_project_rejects_ambiguous_accelerator_inference(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    _write_accelerator_packs(tmp_path, "finance", "logistics")
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])
+
+    assert result.exit_code == 1
+    assert "Accelerator selection is ambiguous" in result.output
+    assert "[tool.kairos].accelerator" in result.output
 
 
 def test_project_explicit_output_wins(tmp_path, monkeypatch):

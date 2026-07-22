@@ -142,6 +142,7 @@ class HubStatus:
     hub_root: str
     toolkit_version: str
     phases: list[PhaseStatus] = field(default_factory=list)
+    transformation_candidates: dict | None = None
 
     def phase(self, name: str) -> PhaseStatus | None:
         for p in self.phases:
@@ -158,13 +159,16 @@ class HubStatus:
         return None
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "schema_version": SCHEMA_VERSION,
             "hub_root": self.hub_root,
             "toolkit_version": self.toolkit_version,
             "next_phase": self.next_phase,
             "phases": [p.to_dict() for p in self.phases],
         }
+        if self.transformation_candidates is not None:
+            result["transformation_candidates"] = self.transformation_candidates
+        return result
 
 
 def _rel(path: Path, hub_root: Path) -> str:
@@ -500,7 +504,47 @@ def scan_hub_status(hub_root: Path, *, toolkit_version: str = "") -> HubStatus:
         _scan_validate(hub_root),
         _scan_project(hub_root),
     ]
-    return HubStatus(str(hub_root), toolkit_version, phases)
+    from .transformation_candidates import (
+        INVENTORY_RELPATH,
+        TransformationCandidateError,
+        load_candidate_inventory,
+    )
+
+    try:
+        candidate_inventory = load_candidate_inventory(hub_root)
+    except TransformationCandidateError as exc:
+        candidate_inventory = None
+        candidate_facts = {
+            "inventory_path": INVENTORY_RELPATH.as_posix(),
+            "error": str(exc),
+        }
+    else:
+        candidate_facts = None
+    if candidate_inventory is not None:
+        status_counts: dict[str, int] = {}
+        for candidate in candidate_inventory.candidates:
+            status = candidate.assessment.status
+            status_counts[status] = status_counts.get(status, 0) + 1
+        candidate_facts = {
+            "inventory_path": INVENTORY_RELPATH.as_posix(),
+            "candidate_count": len(candidate_inventory.candidates),
+            "orphaned_count": sum(
+                not candidate.facts.present for candidate in candidate_inventory.candidates
+            ),
+            "reassessment_required_count": sum(
+                candidate.assessment.status != "unassessed"
+                and candidate.assessment.assessed_sha256 != candidate.facts.sha256
+                for candidate in candidate_inventory.candidates
+            ),
+            "assessment_status_counts": dict(sorted(status_counts.items())),
+            **candidate_inventory.to_dict(),
+        }
+    return HubStatus(
+        str(hub_root),
+        toolkit_version,
+        phases,
+        transformation_candidates=candidate_facts,
+    )
 
 
 _STATE_ICON = {

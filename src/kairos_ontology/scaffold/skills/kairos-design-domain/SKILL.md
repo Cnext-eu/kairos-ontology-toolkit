@@ -329,11 +329,18 @@ and Gate 3 — these are non-negotiable.
 ```bash
 ls ontology-hub/integration/sources/        # any source systems imported?
 ls ontology-hub/integration/sources/_analysis/ 2>/dev/null   # analysed?
+cat ontology-hub/model/planning/dbt-transformations/candidates.yaml 2>/dev/null
 ls ontology-hub/.kairos-state/phases/domain/*.md 2>/dev/null # prior modeling phase log(s)?
 ls ontology-hub/model/ontologies/           # existing domain .ttl files?
 ls ontology-hub/businessdiscovery/*.ttl 2>/dev/null                  # discovery artifacts?
 ls ontology-hub/.kairos-state/phases/discovery.md 2>/dev/null        # discovery phase log?
 ```
+
+If the transformation-candidate inventory exists, use it as advisory evidence when
+deciding classes and association grains. Do not flatten an association candidate into an
+entity merely because its SQL exposes additional columns. Domain design may continue, but
+record unresolved grain/semantic-target questions and require transformation assessment
+before Mapping or Silver.
 
 **P1b — Discovery-Completeness Checkpoint (ALWAYS, every start — fires in P2a AND the
 sources-exist branches).** Discovery (`discovery → source → domain → …`, kairos-help §2)

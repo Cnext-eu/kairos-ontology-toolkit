@@ -42,3 +42,7 @@ parquet = [
 #   "preview" — latest pre-release (rc/beta/alpha) for testing new features
 #   "v2.16.0" — explicit pinned version
 channel = "stable"
+
+# Optional accelerator pack selected for scoped validation and projection. When omitted,
+# Kairos infers a single installed pack and requires an explicit choice if several exist.
+# accelerator = "logistics"

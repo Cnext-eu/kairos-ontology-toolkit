@@ -33,6 +33,9 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/integration/discovery").is_dir()
             assert Path("ontology-hub/model/mappings").is_dir()
             assert Path(
+                "ontology-hub/model/planning/dbt-transformations/README.md"
+            ).is_file()
+            assert Path(
                 "ontology-hub/model/mappings/custom-transformations/README.md"
             ).is_file()
             assert Path("ontology-hub/output/medallion/dbt").is_dir()

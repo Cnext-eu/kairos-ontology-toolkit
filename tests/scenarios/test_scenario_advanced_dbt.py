@@ -16,7 +16,7 @@ from kairos_ontology.core.claim_registry import (
     write_registry,
 )
 from kairos_ontology.core.dbt_contract_sync import sync_dbt_contracts
-from kairos_ontology.core.projector import run_projections
+from kairos_ontology.core.projector import ProjectionRunError, run_projections
 from kairos_ontology.core.source_coverage import check_source_coverage
 
 BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
@@ -32,7 +32,11 @@ def _write_graph(graph: Graph, path: Path) -> None:
     graph.serialize(path, format="turtle")
 
 
-def _create_hub(root: Path) -> Path:
+def _create_hub(
+    root: Path,
+    *,
+    supported_adapters: list[str] | None = None,
+) -> Path:
     hub = root / "advanced-dbt-hub"
 
     ontology = Graph()
@@ -143,7 +147,7 @@ having count(*) > 1
                         "target_class": str(DOMAIN.Shipment),
                         "virtual_source_iri": str(VIRTUAL),
                         "grain": "one row per shipment",
-                        "supported_adapters": ["fabric", "databricks"],
+                        "supported_adapters": supported_adapters or ["fabric", "databricks"],
                         "natural_key": ["shipment_id"],
                         "required_packages": [],
                         "required_macros": [],
@@ -175,7 +179,11 @@ having count(*) > 1
                 },
                 "columns": [
                     {"name": "shipment_id", "data_type": "string"},
-                    {"name": "route_code", "data_type": "string"},
+                    {
+                        "name": "route_code",
+                        "data_type": "string",
+                        "data_tests": ["not_null"],
+                    },
                 ],
             }
         ],
@@ -249,6 +257,43 @@ def test_wrong_grain_sources_are_covered_only_by_governed_replacement(
     assert report.domain_counts["shipment"] == (2, 2)
     assert report.direct_counts["shipment"] == 0
     assert report.replacement_counts["shipment"] == 2
+
+
+def test_virtual_vocabulary_preserves_contract_nullability(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    vocabulary = (
+        hub
+        / "integration"
+        / "sources"
+        / "custom-transformations"
+        / "int_shipment_conformed.vocabulary.ttl"
+    )
+    graph = Graph().parse(vocabulary, format="turtle")
+
+    shipment_id = URIRef(f"{VIRTUAL}/shipment_id")
+    route_code = URIRef(f"{VIRTUAL}/route_code")
+    assert graph.value(shipment_id, BRONZE.nullable).toPython() is False
+    assert graph.value(route_code, BRONZE.nullable).toPython() is False
+
+
+def test_single_adapter_contract_rejects_other_projection(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path, supported_adapters=["fabric"])
+
+    run_projections(
+        ontologies_path=hub / "model" / "ontologies",
+        catalog_path=hub / "missing-catalog.xml",
+        output_path=tmp_path / "fabric-output",
+        target="dbt",
+        platform="fabric",
+    )
+    with pytest.raises(ProjectionRunError, match="dbt projection failed"):
+        run_projections(
+            ontologies_path=hub / "model" / "ontologies",
+            catalog_path=hub / "missing-catalog.xml",
+            output_path=tmp_path / "databricks-output",
+            target="dbt",
+            platform="databricks",
+        )
 
 
 @pytest.mark.parametrize(

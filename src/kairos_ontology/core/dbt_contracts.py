@@ -57,6 +57,7 @@ class DbtContractColumn:
     name: str
     data_type: str
     description: str | None = None
+    not_null: bool = False
 
 
 @dataclass(frozen=True)
@@ -261,7 +262,32 @@ def _parse_columns(model: dict[str, Any], path: Path, name: str) -> tuple[DbtCon
         description = raw.get("description")
         if description is not None and not isinstance(description, str):
             raise _error(path, f"{context}.description must be a string")
-        columns.append(DbtContractColumn(column_name, data_type, description))
+        tests = raw.get("data_tests", raw.get("tests", []))
+        if not isinstance(tests, list):
+            raise _error(path, f"{context}.data_tests/tests must be a list")
+        has_not_null_test = any(
+            test == "not_null" or (isinstance(test, dict) and "not_null" in test)
+            for test in tests
+        )
+
+        constraints = raw.get("constraints", [])
+        if not isinstance(constraints, list):
+            raise _error(path, f"{context}.constraints must be a list")
+        has_not_null_constraint = False
+        for constraint in constraints:
+            if not isinstance(constraint, dict) or not isinstance(constraint.get("type"), str):
+                raise _error(path, f"{context}.constraints must contain mappings with a type")
+            if constraint["type"] == "not_null":
+                has_not_null_constraint = True
+
+        columns.append(
+            DbtContractColumn(
+                column_name,
+                data_type,
+                description,
+                not_null=has_not_null_test or has_not_null_constraint,
+            )
+        )
     return tuple(columns)
 
 
@@ -483,10 +509,11 @@ def _parse_contract(
         f"model {name!r}.meta.kairos.supported_adapters",
         non_empty=True,
     )
-    if len(set(adapters)) != len(adapters) or set(adapters) != SUPPORTED_ADAPTERS:
+    if len(set(adapters)) != len(adapters) or not set(adapters) <= SUPPORTED_ADAPTERS:
         raise _error(
             path,
-            f"model {name!r} supported_adapters must declare both {sorted(SUPPORTED_ADAPTERS)}",
+            f"model {name!r} supported_adapters must contain unique values from "
+            f"{sorted(SUPPORTED_ADAPTERS)}",
         )
 
     columns = _parse_columns(model, path, name)

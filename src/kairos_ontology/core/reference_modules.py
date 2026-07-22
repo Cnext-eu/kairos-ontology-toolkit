@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tomllib
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -274,6 +275,81 @@ def _data_domains_path(ref_models_dir: Path, accelerator: str | None) -> Path | 
     )
     paths = sorted(ref_models_dir.glob(pattern))
     return paths[0] if paths else None
+
+
+def available_accelerators(ref_models_dir: Path | None) -> tuple[str, ...]:
+    """Return accelerator packs that expose managed module configuration."""
+    if ref_models_dir is None or not Path(ref_models_dir).is_dir():
+        return ()
+    paths = Path(ref_models_dir).glob(
+        "accelerator-packs/*/client-hub-blueprint/data-domains.yaml"
+    )
+    return tuple(sorted({path.parents[1].name for path in paths}))
+
+
+def resolve_hub_accelerator(
+    *,
+    explicit: str | None,
+    hub_root: Path | None,
+    ref_models_dir: Path | None,
+) -> str | None:
+    """Resolve one accelerator for managed-import analysis.
+
+    An explicit CLI value takes precedence over ``[tool.kairos].accelerator``.
+    Without either setting, a single installed accelerator is inferred; multiple
+    installed packs are ambiguous and must be selected explicitly.
+    """
+    selected = explicit.strip() if explicit and explicit.strip() else None
+    source = "--accelerator"
+
+    if selected is None and hub_root is not None:
+        hub = Path(hub_root)
+        pyproject = next(
+            (
+                candidate
+                for candidate in (hub / "pyproject.toml", hub.parent / "pyproject.toml")
+                if candidate.is_file()
+            ),
+            hub / "pyproject.toml",
+        )
+        if pyproject.is_file():
+            try:
+                document = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+                raise ValueError(f"Cannot read hub configuration {pyproject}: {exc}") from exc
+            tool_config = document.get("tool", {})
+            if not isinstance(tool_config, dict):
+                raise ValueError(f"{pyproject}: [tool] must be a table")
+            kairos_config = tool_config.get("kairos", {})
+            if not isinstance(kairos_config, dict):
+                raise ValueError(f"{pyproject}: [tool.kairos] must be a table")
+            configured = kairos_config.get("accelerator")
+            if configured is not None:
+                if not isinstance(configured, str) or not configured.strip():
+                    raise ValueError(
+                        f"{pyproject}: [tool.kairos].accelerator must be one non-empty string"
+                    )
+                selected = configured.strip()
+                source = "hub configuration"
+
+    available = available_accelerators(ref_models_dir)
+    if selected is not None:
+        has_ref_models = ref_models_dir is not None and Path(ref_models_dir).is_dir()
+        if has_ref_models and selected not in available:
+            choices = ", ".join(available) or "(none)"
+            raise ValueError(
+                f"Unknown accelerator {selected!r} from {source}. Available: {choices}"
+            )
+        return selected
+
+    if len(available) > 1:
+        choices = ", ".join(available)
+        raise ValueError(
+            "Accelerator selection is ambiguous. "
+            f"Available: {choices}. Pass --accelerator or set "
+            "[tool.kairos].accelerator in the hub pyproject.toml."
+        )
+    return available[0] if available else None
 
 
 def load_accelerator_module_config(

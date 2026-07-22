@@ -116,6 +116,28 @@ def test_discovers_valid_contract(tmp_path: Path) -> None:
     assert contract.replaces_sources == ()
 
 
+@pytest.mark.parametrize("adapter", ["fabric", "databricks"])
+def test_accepts_single_supported_adapter(tmp_path: Path, adapter: str) -> None:
+    model = _model()
+    model["meta"]["kairos"]["supported_adapters"] = [adapter]
+    hub, transforms, _ = _hub(tmp_path, model)
+
+    contract = discover_dbt_contracts(transforms, hub)[0]
+
+    assert contract.supported_adapters == (adapter,)
+
+
+def test_parses_column_not_null_tests_and_constraints(tmp_path: Path) -> None:
+    model = _model()
+    model["columns"][0]["data_tests"] = ["not_null"]
+    model["columns"][1]["constraints"] = [{"type": "not_null"}]
+    hub, transforms, _ = _hub(tmp_path, model)
+
+    contract = discover_dbt_contracts(transforms, hub)[0]
+
+    assert [column.not_null for column in contract.columns] == [True, True]
+
+
 def test_parses_canonical_source_replacements(tmp_path: Path) -> None:
     model = _model()
     model["meta"]["kairos"]["replaces_sources"] = [
@@ -188,8 +210,10 @@ def test_rejects_unsafe_file_and_symlink_escape(tmp_path: Path) -> None:
             "supported_adapters",
         ),
         (
-            lambda m: m["meta"]["kairos"].update(supported_adapters=["fabric"]),
-            "declare both",
+            lambda m: m["meta"]["kairos"].update(
+                supported_adapters=["fabric", "fabric"]
+            ),
+            "unique values",
         ),
         (lambda m: m["config"].update(materialized="ephemeral"), "materialization"),
         (lambda m: m["meta"]["kairos"].update(natural_key=["missing"]), "natural_key"),

@@ -578,14 +578,15 @@ approved packages they require but do not rewrite `packages.yml`.
 
 ## 13. Fabric and Databricks compatibility
 
-Each custom transformation must declare both adapters unless an explicit exception is
-approved.
+Each custom transformation declares the non-empty subset of adapters it supports. Hub
+projection configuration selects the active adapter; selecting an adapter outside that
+subset is a validation error.
 
 Adapter compatibility requires:
 
 1. portable SQL or adapter-dispatched macros;
-2. valid type mappings for Fabric and Databricks;
-3. successful `dbt parse` for each generated project;
+2. valid type mappings for every declared adapter;
+3. successful `dbt parse` for each declared adapter's generated project;
 4. successful adapter-specific `dbt compile`;
 5. contract-compatible materialization on each adapter; and
 6. runtime tests on each adapter in integration CI.

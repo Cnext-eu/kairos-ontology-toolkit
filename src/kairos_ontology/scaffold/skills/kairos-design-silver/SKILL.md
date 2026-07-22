@@ -93,6 +93,23 @@ downstream Silver/Gold can be designed against a stable contract before mappings
 
 See the **kairos-execute-project** skill for the `--emit-aspirational-stubs` flag.
 
+## Transformation readiness gate (BLOCKING)
+
+Before creating or modifying Silver extension TTL, run:
+
+```bash
+$env:KAIROS_SKILL_CONTEXT = "1"
+kairos-ontology check-transformation-readiness --stage silver
+```
+
+A non-zero result is blocking. Report its reasons verbatim and hand off to
+**kairos-develop-dbt-transformation**. For every accepted candidate, the deterministic
+gate must confirm the contracted model and synchronized virtual source; the existing
+mapping/source coverage gates remain authoritative for virtual-table exact matches,
+column mappings, `silverSourceRef`, and direct/replacement conflicts. Deferred candidates
+must retain a rationale and distinct-grain statement. `status` is observational and does
+not replace this command.
+
 ## Part A — Silver Schema Design
 
 The silver schema projection is governed by two rule sets:
