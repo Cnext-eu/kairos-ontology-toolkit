@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc3] — 2026-07-22
+
+### Added
+- **Governed imported-dbt candidate assessment (DD-105):** explicit repository-contained
+  SQL/dbt roots can be inventoried as non-executable planning evidence, surfaced in
+  deterministic status, and checked before Mapping, Silver, and release.
+
+### Changed
+- Custom dbt contracts may declare a valid subset of Fabric/Databricks adapters; projection
+  still rejects a selected adapter the model does not support.
+- Validation and projection resolve accelerator context from the explicit CLI option, hub
+  configuration, or an unambiguous installed pack.
+
+### Fixed
+- Managed virtual-source vocabularies now preserve explicit non-key `not_null`
+  tests/constraints instead of marking every non-key contract column nullable.
+
 ## [4.7.0rc2] — 2026-07-22
 
 ### Added
