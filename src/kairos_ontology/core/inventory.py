@@ -139,16 +139,25 @@ def find_legacy_inventory_files(
     *,
     ref_models_dir: Path | None,
     inventory_dir: Path,
+    ontology_dir: Path | None = None,
 ) -> list[LegacyInventoryFile]:
     """Find retired stem-named inventories for namespaced reference-model sources.
 
-    A local ontology is still allowed to use ``{stem}-inventory.yaml``.  Provenance
-    in a local inventory distinguishes that valid file from a retired reference-model
-    inventory with the same stem.
+    A live local ontology canonically owns its ``{stem}-inventory.yaml`` filename.
+    Those files are excluded before provenance inspection so stale or malformed local
+    inventories are handled by the normal freshness check instead of ref migration.
     """
     if ref_models_dir is None or not ref_models_dir.is_dir() or not inventory_dir.is_dir():
         return []
 
+    local_inventory_names = (
+        {
+            inventory_filename(source_path)
+            for source_path in sorted(ontology_dir.glob("**/*.ttl"))
+        }
+        if ontology_dir is not None and ontology_dir.is_dir()
+        else set()
+    )
     sources_by_legacy_name: dict[str, list[Path]] = {}
     for source_path in iter_reference_inventory_sources(ref_models_dir):
         canonical = inventory_filename(source_path, ref_models_dir=ref_models_dir)
@@ -160,6 +169,8 @@ def find_legacy_inventory_files(
     for legacy_name, source_paths in sorted(sources_by_legacy_name.items()):
         path = inventory_dir / legacy_name
         if not path.is_file():
+            continue
+        if legacy_name in local_inventory_names:
             continue
 
         ordered_sources = tuple(sorted(source_paths))
@@ -482,6 +493,7 @@ def check_inventories(
     legacy_files = find_legacy_inventory_files(
         ref_models_dir=ref_models_dir,
         inventory_dir=inventory_dir,
+        ontology_dir=ontology_dir,
     )
     report.migration_required = [legacy_inventory_error(finding) for finding in legacy_files]
     legacy_names = {finding.path.name for finding in legacy_files}

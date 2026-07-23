@@ -2977,6 +2977,7 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
     legacy_inventories = find_legacy_inventory_files(
         ref_models_dir=ref_path,
         inventory_dir=out_path,
+        ontology_dir=ont_path,
     )
     if legacy_inventories:
         click.echo("❌ Legacy inventory format detected; generation will not overwrite it.", err=True)
