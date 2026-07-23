@@ -198,6 +198,35 @@ class TestInventoryCollisionRegression:
         assert check.exit_code == 0, check.output
         assert "STALE" not in check.output
 
+    def test_local_and_reference_module_with_same_stem_coexist(self, tmp_path, monkeypatch):
+        ref_root = tmp_path / "ontology-reference-models"
+        ref_ttl = (
+            ref_root / "derived-ontologies" / "DCSA" / "current" / "booking"
+            / "booking.ttl"
+        )
+        ref_ttl.parent.mkdir(parents=True)
+        ref_ttl.write_text(self._ref_ttl("DCSA", "ReferenceBooking"), encoding="utf-8")
+
+        ontology_dir = tmp_path / "model" / "ontologies"
+        ontology_dir.mkdir(parents=True)
+        (ontology_dir / "booking.ttl").write_text(
+            self._ref_ttl("Local", "LocalBooking"),
+            encoding="utf-8",
+        )
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        generated = runner.invoke(cli, ["generate-inventory"])
+
+        assert generated.exit_code == 0, generated.output
+        inventory_dir = tmp_path / "referencemodels-unpacked"
+        assert (inventory_dir / "booking-inventory.yaml").is_file()
+        assert (inventory_dir / "dcsa-booking-inventory.yaml").is_file()
+
+        checked = runner.invoke(cli, ["check-inventory"])
+        assert checked.exit_code == 0, checked.output
+        assert "MIGRATION REQUIRED" not in checked.output
+
     def test_generate_rejects_legacy_stem_inventory_until_migrated(self, tmp_path, monkeypatch):
         ref_root = tmp_path / "ontology-reference-models"
         ttl = (

@@ -392,6 +392,7 @@ def _plan_inventory_format_migration(
     *,
     ref_models_dir: Path | None,
     inventory_dir: Path,
+    ontology_dir: Path | None,
 ) -> None:
     """Move unambiguous old stem inventories to their canonical namespaced names."""
     from .inventory import find_legacy_inventory_files, legacy_inventory_error
@@ -399,6 +400,7 @@ def _plan_inventory_format_migration(
     for finding in find_legacy_inventory_files(
         ref_models_dir=ref_models_dir,
         inventory_dir=inventory_dir,
+        ontology_dir=ontology_dir,
     ):
         if finding.error:
             plan.errors.append(legacy_inventory_error(finding))
@@ -439,10 +441,14 @@ def plan_legacy_format_migration(
     hub = Path(hub)
     plan = LegacyFormatMigrationPlan(hub=hub)
     inventories = inventory_dir or hub / "referencemodels-unpacked"
+    ontology_dir = hub / "model" / "ontologies"
+    if not ontology_dir.is_dir() and (hub / "ontologies").is_dir():
+        ontology_dir = hub / "ontologies"
     _plan_inventory_format_migration(
         plan,
         ref_models_dir=ref_models_dir,
         inventory_dir=inventories,
+        ontology_dir=ontology_dir,
     )
 
     from .claim_projection_sync import plan_legacy_projection_sync_migration

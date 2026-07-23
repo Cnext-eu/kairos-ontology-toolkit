@@ -190,6 +190,159 @@ def test_inventory_migration_handles_mixed_canonical_and_legacy_files(tmp_path):
     assert not legacy.exists()
 
 
+def test_inventory_migration_ignores_local_and_reference_pair_with_same_stem(tmp_path):
+    hub = tmp_path / "hub"
+    reference = _reference_source(hub, "DCSA", "booking", "ReferenceBooking")
+    ontology_dir = hub / "model" / "ontologies"
+    ontology_dir.mkdir(parents=True)
+    local = ontology_dir / "booking.ttl"
+    local.write_text(_reference_ttl("Local", "LocalBooking"), encoding="utf-8")
+
+    inventory_dir = hub / "referencemodels-unpacked"
+    inventory_dir.mkdir()
+    local_inventory = inventory_dir / "booking-inventory.yaml"
+    write_inventory(
+        generate_inventory(local, include_specializations=False),
+        local_inventory,
+    )
+    write_inventory(
+        generate_inventory(reference),
+        inventory_dir / "dcsa-booking-inventory.yaml",
+    )
+
+    plan = plan_legacy_format_migration(
+        hub,
+        ref_models_dir=hub / "ontology-reference-models",
+    )
+
+    assert plan.is_valid, plan.errors
+    assert plan.inventory_moves == []
+    assert local_inventory not in plan.removals
+    assert not plan.has_changes
+
+
+def test_inventory_migration_preview_uses_flat_layout_ontology_source(tmp_path):
+    hub = tmp_path / "hub"
+    reference = _reference_source(hub, "DCSA", "booking", "ReferenceBooking")
+    ontology_dir = hub / "ontologies"
+    ontology_dir.mkdir(parents=True)
+    local = ontology_dir / "booking.ttl"
+    local.write_text(_reference_ttl("Local", "LocalBooking"), encoding="utf-8")
+
+    inventory_dir = hub / "referencemodels-unpacked"
+    inventory_dir.mkdir()
+    local_inventory = inventory_dir / "booking-inventory.yaml"
+    write_inventory(
+        generate_inventory(local, include_specializations=False),
+        local_inventory,
+    )
+    write_inventory(
+        generate_inventory(reference),
+        inventory_dir / "dcsa-booking-inventory.yaml",
+    )
+
+    plan = plan_legacy_format_migration(
+        hub,
+        ref_models_dir=hub / "ontology-reference-models",
+    )
+
+    assert plan.is_valid, plan.errors
+    assert plan.inventory_moves == []
+    assert local_inventory not in plan.removals
+
+
+def test_local_inventory_corruption_is_stale_not_reference_migration(tmp_path):
+    hub = tmp_path / "hub"
+    reference = _reference_source(hub, "DCSA", "booking", "ReferenceBooking")
+    ontology_dir = hub / "model" / "ontologies"
+    ontology_dir.mkdir(parents=True)
+    local = ontology_dir / "booking.ttl"
+    local.write_text(_reference_ttl("Local", "LocalBooking"), encoding="utf-8")
+
+    inventory_dir = hub / "referencemodels-unpacked"
+    inventory_dir.mkdir()
+    local_inventory = inventory_dir / "booking-inventory.yaml"
+    local_inventory.write_text("- malformed\n- inventory\n", encoding="utf-8")
+    write_inventory(
+        generate_inventory(reference),
+        inventory_dir / "dcsa-booking-inventory.yaml",
+    )
+
+    report = check_inventories(
+        ontology_dir=ontology_dir,
+        ref_models_dir=hub / "ontology-reference-models",
+        inventory_dir=inventory_dir,
+    )
+    plan = plan_legacy_format_migration(
+        hub,
+        ref_models_dir=hub / "ontology-reference-models",
+    )
+
+    assert report.migration_required == []
+    assert report.stale == ["booking"]
+    assert plan.is_valid, plan.errors
+    assert plan.inventory_moves == []
+
+
+def test_stale_local_inventory_is_not_reference_migration(tmp_path):
+    hub = tmp_path / "hub"
+    reference = _reference_source(hub, "DCSA", "booking", "ReferenceBooking")
+    ontology_dir = hub / "model" / "ontologies"
+    ontology_dir.mkdir(parents=True)
+    local = ontology_dir / "booking.ttl"
+    local.write_text(_reference_ttl("Local", "LocalBooking"), encoding="utf-8")
+
+    inventory_dir = hub / "referencemodels-unpacked"
+    inventory_dir.mkdir()
+    write_inventory(
+        generate_inventory(local, include_specializations=False),
+        inventory_dir / "booking-inventory.yaml",
+    )
+    write_inventory(
+        generate_inventory(reference),
+        inventory_dir / "dcsa-booking-inventory.yaml",
+    )
+    local.write_text(
+        _reference_ttl("Local", "ChangedLocalBooking"),
+        encoding="utf-8",
+    )
+
+    report = check_inventories(
+        ontology_dir=ontology_dir,
+        ref_models_dir=hub / "ontology-reference-models",
+        inventory_dir=inventory_dir,
+    )
+
+    assert report.migration_required == []
+    assert report.stale == ["booking"]
+
+
+def test_inventory_migration_rejects_mismatched_reference_provenance(tmp_path):
+    hub = tmp_path / "hub"
+    reference = _reference_source(hub, "DCSA", "booking", "ReferenceBooking")
+    inventory_dir = hub / "referencemodels-unpacked"
+    inventory_dir.mkdir()
+    legacy_inventory = generate_inventory(reference)
+    legacy_inventory["generated_from"] = str(
+        hub
+        / "ontology-reference-models"
+        / "derived-ontologies"
+        / "IMO"
+        / "current"
+        / "booking"
+        / "booking.ttl"
+    )
+    write_inventory(legacy_inventory, inventory_dir / "booking-inventory.yaml")
+
+    plan = plan_legacy_format_migration(
+        hub,
+        ref_models_dir=hub / "ontology-reference-models",
+    )
+
+    assert not plan.is_valid
+    assert any("different reference-model source" in error for error in plan.errors)
+
+
 def test_inventory_migration_rejects_malformed_legacy_input_and_runtime_reader_diagnoses(tmp_path):
     hub = tmp_path / "hub"
     source = _reference_source(hub, "BSP", "party", "TradeParty")
