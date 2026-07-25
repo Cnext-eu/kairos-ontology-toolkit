@@ -57,7 +57,7 @@ class TestScanAcmeHub:
         silver = {i.name for i in _phase(status, "silver").instances}
         gold = {i.name for i in _phase(status, "gold").instances}
         assert silver == {"client", "invoice", "logistics"}
-        assert gold == {"client", "invoice"}
+        assert gold == {"client", "invoice", "logistics"}
 
     def test_source_in_progress_without_affinity(self):
         # acme-hub has vocabularies but no _analysis affinity reports.

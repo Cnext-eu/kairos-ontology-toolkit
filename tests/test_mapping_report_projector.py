@@ -3,12 +3,14 @@
 """Unit tests for the mapping report projector."""
 
 import textwrap
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
 from rdflib import Graph
 
 from kairos_ontology.core.projections.report_projector import (
+    ReportContractItem,
     _build_entity_view,
     _build_report_data,
     _extract_domain_prefix,
@@ -262,6 +264,51 @@ class TestExtractDomainPrefix:
 # ── Tests: _build_report_data ──────────────────────────────────────────
 
 class TestBuildReportData:
+    def test_contract_item_is_typed_and_immutable(self):
+        item = ReportContractItem("mapping-route", "customers: split", "table mapping")
+
+        with pytest.raises(FrozenInstanceError):
+            item.value = "changed"
+
+    def test_contract_payload_has_deterministic_lanes(
+        self, sources_dir, mappings_dir, ontology_graph
+    ):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+
+        contract = _build_report_data(systems[0], mappings, classes)["report_contract"]
+
+        assert list(contract) == ["schema_version", "lanes"]
+        assert [lane["key"] for lane in contract["lanes"]] == [
+            "normative-effective-policy",
+            "implemented-generated-artifacts-checks",
+            "approved-deviations-known-limitations",
+            "downstream-runtime-observations",
+        ]
+        assert [section["key"] for section in contract["lanes"][0]["sections"]] == [
+            "prep-routing-transformations",
+            "identity-grain-lineage-multi-source",
+            "cdc-scd-fk-hash-dq",
+            "gold-product-contract",
+            "governance-expectations",
+            "adapter-capability-compile-evidence",
+            "strict-release-blockers",
+        ]
+
+    def test_runtime_observations_are_explicitly_not_evaluated(
+        self, sources_dir, mappings_dir, ontology_graph
+    ):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+
+        runtime = _build_report_data(systems[0], mappings, classes)["report_contract"]["lanes"][3]
+
+        assert runtime["key"] == "downstream-runtime-observations"
+        assert {section["status"] for section in runtime["sections"]} == {"not-evaluated"}
+        assert all("does not observe" in section["reason"] for section in runtime["sections"])
+
     def test_coverage_calculation(self, sources_dir, mappings_dir, ontology_graph):
         systems = _parse_source_systems(sources_dir)
         mappings = _parse_mappings(mappings_dir)
@@ -553,3 +600,21 @@ class TestGenerateMappingReport:
         )
         html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "Match Type Distribution" in html
+
+    def test_outputs_distinguish_contract_lanes_and_runtime_boundary(
+        self, sources_dir, mappings_dir, ontology_graph, template_dir
+    ):
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        result = generate_mapping_report(
+            ontology_classes=classes,
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            template_dir=template_dir,
+        )
+
+        for content in result.values():
+            assert "Normative / effective policy" in content
+            assert "Implemented / generated artifacts and checks" in content
+            assert "Approved deviations / known limitations" in content
+            assert "Downstream runtime observations" in content
+            assert "not-evaluated" in content

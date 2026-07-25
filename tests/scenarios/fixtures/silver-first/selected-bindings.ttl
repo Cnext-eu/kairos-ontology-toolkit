@@ -2,13 +2,23 @@
 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
 @prefix map: <https://acme.example/mapping/selected#> .
 @prefix bronze-ap: <https://acme.example/bronze/adminpulse#> .
+@prefix bronze-crm: <https://acme.example/bronze/crmsystem#> .
 @prefix bronze-lp: <https://acme.example/bronze/logisticspro#> .
 @prefix acme: <https://acme.example/ontology/client#> .
 @prefix refp: <https://refmodel.example/ontology/party#> .
 
+bronze-ap:tblClient skos:exactMatch acme:Client .
 bronze-ap:tblRelation skos:exactMatch acme:Client .
+bronze-crm:Customers skos:exactMatch acme:Client .
 
+bronze-ap:tblClient_ClientID skos:exactMatch acme:clientId .
+bronze-ap:tblClient_CreatedDate skos:exactMatch acme:createdAt .
+bronze-ap:tblClient_Name skos:exactMatch acme:clientName .
 bronze-ap:tblRelation_ClientID skos:exactMatch acme:clientId .
+bronze-ap:tblRelation_ModifiedDate skos:exactMatch acme:lastModifiedAt .
+bronze-crm:Customers_CustCode skos:exactMatch acme:clientId .
+bronze-crm:Customers_CustEmail skos:exactMatch acme:email .
+bronze-crm:Customers_CustName skos:exactMatch acme:clientName .
 
 bronze-lp:tblShipmentParty skos:exactMatch refp:TradeParty .
 
@@ -24,6 +34,44 @@ map:relation a kairos-map:TableMapping ;
 map:relationClientId a kairos-map:ColumnMapping ;
     kairos-map:sourceColumn bronze-ap:tblRelation_ClientID ;
     kairos-map:targetProperty acme:clientId ;
+    kairos-map:matchType "exactMatch" .
+map:client a kairos-map:TableMapping ;
+    kairos-map:sourceTable bronze-ap:tblClient ;
+    kairos-map:targetClass acme:Client ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" .
+map:clientId a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-ap:tblClient_ClientID ;
+    kairos-map:targetProperty acme:clientId ;
+    kairos-map:matchType "exactMatch" .
+map:clientCreatedAt a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-ap:tblClient_CreatedDate ;
+    kairos-map:targetProperty acme:createdAt ;
+    kairos-map:matchType "exactMatch" .
+map:clientName a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-ap:tblClient_Name ;
+    kairos-map:targetProperty acme:clientName ;
+    kairos-map:matchType "exactMatch" .
+map:crmClient a kairos-map:TableMapping ;
+    kairos-map:sourceTable bronze-crm:Customers ;
+    kairos-map:targetClass acme:Client ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" .
+map:crmClientId a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-crm:Customers_CustCode ;
+    kairos-map:targetProperty acme:clientId ;
+    kairos-map:matchType "exactMatch" .
+map:crmClientEmail a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-crm:Customers_CustEmail ;
+    kairos-map:targetProperty acme:email ;
+    kairos-map:matchType "exactMatch" .
+map:crmClientName a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-crm:Customers_CustName ;
+    kairos-map:targetProperty acme:clientName ;
+    kairos-map:matchType "exactMatch" .
+map:relationModifiedAt a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-ap:tblRelation_ModifiedDate ;
+    kairos-map:targetProperty acme:lastModifiedAt ;
     kairos-map:matchType "exactMatch" .
 map:shipmentParty a kairos-map:TableMapping ;
     kairos-map:sourceTable bronze-lp:tblShipmentParty ;

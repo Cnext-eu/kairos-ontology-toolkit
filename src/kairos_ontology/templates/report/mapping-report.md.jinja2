@@ -30,6 +30,28 @@ flowchart LR
 
 ---
 
+## Projection Contract Lanes
+
+Contract schema: `{{ report_contract.schema_version }}`
+
+These lanes separate projection-time policy and evidence from downstream runtime outcomes.
+{% for lane in report_contract.lanes %}
+
+### {{ lane.title }}
+
+{{ lane.description }}
+
+| Contract area | Status | Reason / available facts |
+|---------------|--------|--------------------------|
+{% for section in lane.sections -%}
+| {{ section.title }} | **{{ section.status }}** | {{ section.reason }}{% if section["items"] %}<br>{% for item in section["items"] %}`{{ item.name }}`: {{ item.value }} _(evidence: {{ item.evidence }})_{% if not loop.last %}<br>{% endif %}{% endfor %}{% endif %} |
+{% endfor %}
+{% endfor %}
+> **Runtime boundary:** every downstream runtime category is `not-evaluated`.
+> Projection does not imply successful execution, quality, freshness, or SLA attainment.
+
+---
+
 ## Match Type Distribution
 
 ```mermaid

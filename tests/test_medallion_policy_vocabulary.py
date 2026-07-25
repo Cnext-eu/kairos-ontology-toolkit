@@ -454,6 +454,120 @@ def test_common_gold_materialization_annotations_trigger_table_shape(
     assert "goldTableType" in report
 
 
+def test_gold_table_requires_explicit_physical_name():
+    conforms, report = _validate_ext(
+        """
+        @prefix ex: <https://example.test/#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        ex:Entity
+            kairos-ext:goldTableType "dimension" ;
+            kairos-ext:goldSourceModel "entity" ;
+            kairos-ext:goldSourceVersion "1.0.0" ;
+            kairos-ext:dimensionExposure "current-only" ;
+            kairos-ext:dimensionVersionBinding "current" .
+        """
+    )
+    assert not conforms
+    assert "goldTableName" in report
+
+
+@pytest.mark.parametrize(
+    ("endpoints", "bindings", "expected"),
+    [
+        (
+            "ex:Left, ex:Right, ex:Third",
+            '"Left=left_sk", "Right=right_sk"',
+            "More than 2 values",
+        ),
+        (
+            "ex:Left, ex:Right",
+            '"Left=left_sk", "invalid binding"',
+            "Pattern",
+        ),
+    ],
+)
+def test_gold_bridge_requires_exact_endpoints_and_valid_bindings(
+    endpoints: str,
+    bindings: str,
+    expected: str,
+):
+    conforms, report = _validate_ext(
+        f"""
+        @prefix ex: <https://example.test/#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        ex:Bridge
+            kairos-ext:goldTableType "bridge" ;
+            kairos-ext:goldTableName "bridge_example" ;
+            kairos-ext:goldSourceModel "example_bridge" ;
+            kairos-ext:goldSourceVersion "1.0.0" ;
+            kairos-ext:bridgeGrain "one relationship allocation" ;
+            kairos-ext:bridgeEndpoint {endpoints} ;
+            kairos-ext:bridgeEndpointBinding {bindings} ;
+            kairos-ext:bridgeCardinality "many-to-many" ;
+            kairos-ext:bridgeAllocationSemantics "no-allocation-approved" .
+        """
+    )
+    assert not conforms
+    assert expected in report
+
+
+def test_gold_fact_linked_incremental_policy_is_validated_without_type():
+    conforms, report = _validate_ext(
+        """
+        @prefix ex: <https://example.test/#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        ex:Fact
+            kairos-ext:goldTableType "fact" ;
+            kairos-ext:goldTableName "fact_example" ;
+            kairos-ext:goldSourceModel "example" ;
+            kairos-ext:goldSourceVersion "1.0.0" ;
+            kairos-ext:factGrain "one event" ;
+            kairos-ext:factType "transaction" ;
+            kairos-ext:dimensionVersionBinding "as-of-event-date" ;
+            kairos-ext:incrementalPolicy ex:IncompleteIncremental .
+        """
+    )
+    assert not conforms
+    assert "mergeIdentity" in report
+
+
+@pytest.mark.parametrize(
+    ("link", "resource_body", "expected"),
+    [
+        (
+            "measure",
+            'kairos-ext:measureId "example.total"',
+            "measureDefinition",
+        ),
+        (
+            "calendarProfile",
+            'kairos-ext:calendarApprovalStatus "approved"',
+            "calendarStartDate",
+        ),
+        (
+            "securityPolicy",
+            "kairos-ext:failClosed true",
+            "entitlementSource",
+        ),
+    ],
+)
+def test_linked_gold_resources_are_shaped_without_explicit_type(
+    link: str,
+    resource_body: str,
+    expected: str,
+):
+    conforms, report = _validate_ext(
+        f"""
+        @prefix ex: <https://example.test/#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+        ex:Product kairos-ext:{link} ex:Resource .
+        ex:Resource {resource_body} .
+        """
+    )
+    assert not conforms
+    assert expected in report
+
+
 def _measure_data(state: str, *, expression: bool, dependency: bool) -> str:
     expression_triple = (
         'kairos-ext:measureExpression "SUM([amount])" ;' if expression else ""
@@ -530,6 +644,10 @@ def test_scenario_uses_prep_array_authority_and_first_class_gold_policy():
     assert "tblInvoiceLine_LineDetails" not in mapping_text
 
     gold = _parse(SCENARIO / "model" / "extensions" / "invoice-gold-ext.ttl")
+    silver = _parse(SCENARIO / "model" / "extensions" / "invoice-silver-ext.ttl")
+    for policy in gold.objects(None, EXT.incrementalPolicy):
+        for triple in silver.triples((policy, None, None)):
+            gold.add(triple)
     assert list(gold.triples((None, EXT.goldProductProfile, None)))
     assert list(gold.subjects(RDF.type, EXT.Measure))
     conforms, _, report = validate(

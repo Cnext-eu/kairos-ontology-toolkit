@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Mapping
 
 from .mapping_specs import MappingContractSpec, SourceMappings
-from .gold_specs import DimensionalGoldSpec, GoldPhysicalPlan
+from .gold_specs import GoldProductLogicalSpec, GoldProductPhysicalSpec
 from .specs import (
     AdapterPlan,
     BindingPolicy,
@@ -83,6 +83,7 @@ class DbtInputs:
     silver_extension: str | None
     ref_model_defaults: tuple[str, ...]
     peer_extensions: tuple[str, ...]
+    peer_ontologies: tuple[str, ...]
     logical_sources_only: bool
     contracts: tuple[tuple[str, "DbtContractModel"], ...]
     emit_aspirational_stubs: bool
@@ -108,6 +109,7 @@ class DbtInputs:
         silver_ext_path: "Path | None" = None,
         ref_model_defaults: list | None = None,
         peer_ext_paths: list | None = None,
+        peer_ontology_paths: list | None = None,
         logical_sources_only: bool = False,
         contract_registry: "Mapping[str, DbtContractModel] | None" = None,
         emit_aspirational_stubs: bool = False,
@@ -153,6 +155,9 @@ class DbtInputs:
             ),
             ref_model_defaults=tuple(str(path) for path in (ref_model_defaults or ())),
             peer_extensions=tuple(str(path) for path in (peer_ext_paths or ())),
+            peer_ontologies=tuple(
+                str(path) for path in (peer_ontology_paths or ())
+            ),
             logical_sources_only=logical_sources_only,
             contracts=tuple(sorted((contract_registry or {}).items())),
             emit_aspirational_stubs=emit_aspirational_stubs,
@@ -252,7 +257,7 @@ class ShapedProject:
     silver_models: tuple[SilverModelSpec, ...]
     silver_outcomes: tuple[SilverModelOutcome, ...]
     schema_documents: tuple[SchemaDocumentSpec, ...]
-    gold_product: DimensionalGoldSpec | None
+    gold_product: GoldProductLogicalSpec | None
     silver_registry: SilverRegistry
     coverage: CoverageSpec | None
     macros: MacroSetSpec
@@ -277,5 +282,5 @@ class MaterializationPlan:
     project: ProjectConfigPlan
     release: ReleasePlan
     silver: SilverPhysicalPlan | None = None
-    gold: GoldPhysicalPlan | None = None
+    gold: GoldProductPhysicalSpec | None = None
     policy: MedallionPolicySpec | None = None

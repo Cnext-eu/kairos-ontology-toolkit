@@ -8,8 +8,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rdflib import OWL, RDF, RDFS, URIRef
+from rdflib import Graph, OWL, RDF, RDFS, URIRef
 
+from ...ontology_loader import load_ontology
 from .context import BoundSources
 from .mapping_bind import bind_mapping_documents, mapping_context
 from .mapping_specs import SourceMappings
@@ -18,6 +19,7 @@ from .specs import (
     BoundSchemaModel,
     BoundSilverModel,
     ClassBindingObservation,
+    ClassFact,
     ContractFact,
     EntityCoverageSpec,
     EnumValueFact,
@@ -49,7 +51,9 @@ class _CandidateEmission:
         return class_uri in self._eligible
 
 
-def _classes_context(inputs: "DbtInputs") -> list[dict[str, str]]:
+def _classes_context(
+    classes: tuple[ClassFact, ...],
+) -> list[dict[str, str]]:
     return [
         {
             "uri": item.uri,
@@ -57,7 +61,7 @@ def _classes_context(inputs: "DbtInputs") -> list[dict[str, str]]:
             "label": item.label,
             "comment": item.comment,
         }
-        for item in inputs.classes
+        for item in classes
     ]
 
 
@@ -536,31 +540,61 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
     from .builders import metadata_context, outcome_from_context
     from .policy_bind import bind_policy_facts
 
+    ontology_uri = detect_ontology_uri(inputs.graph, inputs.namespace)
+    ontology_metadata = replace(
+        inputs.ontology_metadata,
+        iri=inputs.ontology_metadata.iri or str(ontology_uri),
+        version=(
+            inputs.ontology_metadata.version
+            or str(inputs.graph.value(ontology_uri, OWL.versionInfo) or "")
+        ),
+    )
+    authoring_graph = Graph()
+    authoring_graph += inputs.graph
+    peer_ontologies = set(inputs.peer_ontologies)
+    for peer_ontology in sorted(peer_ontologies):
+        path = Path(peer_ontology)
+        if path.is_file():
+            authoring_graph += load_ontology(path).graph
     graph = merge_ext_graph(
-        inputs.graph,
+        authoring_graph,
         Path(inputs.silver_extension) if inputs.silver_extension else None,
         fallback_paths=[Path(path) for path in inputs.ref_model_defaults],
         peer_ext_paths=[Path(path) for path in inputs.peer_extensions],
     )
-    classes = _classes_context(inputs)
+    class_facts = list(inputs.classes)
+    known_class_uris = {item.uri for item in class_facts}
+    for resource in sorted(graph.subjects(RDF.type, OWL.Class), key=str):
+        resource_uri = str(resource)
+        if resource_uri in known_class_uris or not (
+            graph.value(resource, KAIROS_EXT.identityStrategy)
+            or graph.value(resource, KAIROS_EXT.silverTableName)
+        ):
+            continue
+        local_name = resource_uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+        class_facts.append(
+            ClassFact(
+                uri=resource_uri,
+                name=local_name,
+                label=str(graph.value(resource, RDFS.label) or local_name),
+                comment=str(
+                    graph.value(resource, RDFS.comment)
+                    or f"{local_name} entity"
+                ),
+            )
+        )
+        known_class_uris.add(resource_uri)
+    bound_classes = tuple(class_facts)
+    classes = _classes_context(bound_classes)
     source_root = inputs.sources_root or inputs.bronze_root
     systems = _parse_bronze(Path(source_root) if source_root else None)
     mapping_facts = bind_mapping_documents(
         Path(inputs.mappings_root) if inputs.mappings_root else None
     )
     mappings, mapping_ns = mapping_context(mapping_facts)
-    ontology_uri = detect_ontology_uri(graph, inputs.namespace)
-    ontology_metadata = replace(
-        inputs.ontology_metadata,
-        iri=inputs.ontology_metadata.iri or str(ontology_uri),
-        version=(
-            inputs.ontology_metadata.version
-            or str(graph.value(ontology_uri, OWL.versionInfo) or "")
-        ),
-    )
     foreign_key_facts = extract_foreign_key_facts(graph)
     policy_entity_uris = {
-        item.uri for item in inputs.classes
+        item.uri for item in bound_classes
     } | {
         class_uri
         for fact in foreign_key_facts
@@ -577,7 +611,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         preparation_root=inputs.preparation_root,
         gold_extension=inputs.gold_extension,
         entity_uris=frozenset(policy_entity_uris),
-        dq_entity_uris=frozenset(item.uri for item in inputs.classes),
+        dq_entity_uris=frozenset(item.uri for item in bound_classes),
     )
     _augment_prepared_relations(systems, policy_facts)
     contracts = dict(inputs.contracts)
@@ -620,7 +654,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
             ),
             eligible=item.uri in inputs.eligible_class_uris,
         )
-        for item in inputs.classes
+        for item in bound_classes
     )
 
     # The retained graph-dependent model extractor is confined to bind. Its output is
@@ -695,7 +729,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
     parent_relations = tuple(
         sorted(
             (item.uri, str(parent))
-            for item in inputs.classes
+            for item in bound_classes
             for parent in graph.objects(URIRef(item.uri), RDFS.subClassOf)
             if isinstance(parent, URIRef)
             and not str(parent).startswith("http://www.w3.org/")
@@ -711,7 +745,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
     virtual_table_uris = frozenset(
         contract.virtual_source_iri for contract in contracts.values()
     )
-    class_uris = {item.uri for item in inputs.classes}
+    class_uris = {item.uri for item in bound_classes}
     replacement_input_uris = frozenset(
         replacement.table_iri
         for contract in contracts.values()
@@ -720,7 +754,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
     )
 
     return BoundSources(
-        classes=inputs.classes,
+        classes=bound_classes,
         namespace=inputs.namespace,
         ontology_name=inputs.ontology_name,
         ontology_metadata=ontology_metadata,

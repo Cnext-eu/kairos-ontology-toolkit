@@ -18,6 +18,7 @@ import yaml
 class ReleaseDisposition(str, Enum):
     SUPPORTED = "supported"
     DEVIATION = "deviation"
+    NOT_EVALUATED = "not-evaluated"
     BLOCKING = "blocking"
 
 
@@ -699,6 +700,19 @@ def _evaluate_dq(
                     ReleaseDisposition.BLOCKING,
                     "approved baseline requires a matching evaluated DQ result",
                 )
+            elif status == "not-evaluated":
+                _finding(
+                    findings,
+                    rule_id,
+                    "release.dq-runtime-not-evaluated",
+                    domain,
+                    ReleaseDisposition.NOT_EVALUATED,
+                    (
+                        "DQ contract generated; no matching downstream runtime "
+                        "observation was imported."
+                    ),
+                    tuple(str(item) for item in rule.get("evidence", [])),
+                )
             else:
                 _finding(
                     findings,
@@ -981,6 +995,9 @@ def evaluate_release(inputs: ReleaseEvaluationInput) -> ReleaseEvaluationResult:
         ),
         "deviation_count": sum(
             item.disposition is ReleaseDisposition.DEVIATION for item in ordered
+        ),
+        "not_evaluated_count": sum(
+            item.disposition is ReleaseDisposition.NOT_EVALUATED for item in ordered
         ),
     }
     return ReleaseEvaluationResult(

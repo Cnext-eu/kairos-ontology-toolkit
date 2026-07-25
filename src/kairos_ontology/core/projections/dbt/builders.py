@@ -316,11 +316,10 @@ def build_silver_registry(
     for model in materialized_models:
         identity = model.identity
         if (
-            model.kind not in {SilverModelKind.ENTITY, SilverModelKind.UNION}
-            or
             identity.outcome in {ModelOutcome.SKIPPED, ModelOutcome.FOLDED}
             or not identity.class_uri
             or not identity.model_name
+            or names.get(identity.class_uri) != identity.model_name
         ):
             continue
         names[identity.class_uri] = identity.model_name

@@ -34,17 +34,17 @@ are maintained by hand. Over time they drift apart.
 The Kairos Ontology Toolkit closes this gap:
 
 ```
-   OWL/Turtle Ontology          ┌─ DDL + ERD  (Silver layer)
-   (single source of truth)  ──►├─ dbt models
-                                ├─ Neo4j Cypher
-                                ├─ Azure Search indexes
-                                ├─ A2UI JSON schemas
-                                └─ LLM prompt context
+   Source vocab + prep policy ─┐
+   Typed mappings             ├─► Governed domain + extension contracts
+   OWL/Turtle domain model   ─┘      ├─ Silver dbt / DDL / parity
+                                      ├─ Profile-driven Gold / Power BI
+                                      ├─ Neo4j / Azure Search / A2UI
+                                      └─ Reports and prompt context
 ```
 
 **You should use this toolkit when you want to:**
 
-- Define your data model **once** and generate all downstream artifacts
+- Govern source preparation, mappings, domain semantics, and target policy before generation
 - Keep every generated artifact **traceable** to its source ontology IRI and
   version
 - Support **multiple data domains** (customer, order, party, …) that can be
@@ -75,10 +75,10 @@ dbt model, etc.). Each ontology can produce artifacts for multiple targets.
 
 ### Silver Layer
 
-A specific projection target that generates **data warehouse DDL** (CREATE
-TABLE / ALTER TABLE), **Mermaid ERD diagrams**, and **SVG exports**. Designed
-for Snowflake-style analytics databases with SCD Type 1/2, surrogate keys,
-audit envelopes, and GDPR satellite tables.
+A shared logical authority rendered as **dbt SQL/schema YAML**, adapter-specific
+**data warehouse DDL**, constraint/index metadata, quality links, parity manifests,
+and **Mermaid ERD diagrams**. SCD1/SCD2 behavior requires complete runtime policy;
+identity and physical keys are explicit rather than inferred.
 
 ---
 
@@ -307,6 +307,13 @@ ontology-hub/output/
 │   └── docs/diagrams/
 │       ├── customer/customer-erd.mmd
 │       └── master-erd.mmd
+├── medallion/powerbi/
+│   └── customer/
+│       ├── dbt/                       # profile-owned dimensional dbt
+│       ├── Customer.SemanticModel/    # governed TMDL
+│       ├── customer-gold-ddl.sql
+│       ├── customer-gold-erd.mmd
+│       └── customer-gold-product.json
 ├── neo4j/
 │   └── customer-schema.cypher
 ├── prompt/
@@ -355,10 +362,8 @@ ex:Country
     kairos-ext:isReferenceData "true"^^xsd:boolean ;
     kairos-ext:scdType "1" .
 
-# GDPR satellite table (exempt from S3 flattening)
-ex:CustomerPII
-    kairos-ext:gdprSatelliteOf ex:Customer ;
-    kairos-ext:scdType "2" .
+# Sensitive columns remain ordinary governed columns. Classification, access policy,
+# and any decomposition must be explicit in the approved model and security contract.
 ```
 
 ### Physical and runtime contract

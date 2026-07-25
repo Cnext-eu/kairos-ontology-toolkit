@@ -223,16 +223,17 @@ def test_silver_projection_gate_passes_in_sync_and_blocks_drift(tmp_path):
     result = _run_claims_to_silver_ext(hub, domains="client")
     assert result.exit_code == 0, result.output
 
-    from kairos_ontology.core.projector import run_projections
+    from kairos_ontology.core.projector import ProjectionRunError, run_projections
 
     output_path = hub / "output"
-    run_projections(
-        ontologies_path=ontologies_dir,
-        catalog_path=hub / "catalog-v001.xml",  # does not exist — graceful fallback
-        output_path=output_path,
-        target="silver",
-        namespace=None,
-    )
+    with pytest.raises(ProjectionRunError, match="silver projection failed"):
+        run_projections(
+            ontologies_path=ontologies_dir,
+            catalog_path=hub / "catalog-v001.xml",
+            output_path=output_path,
+            target="silver",
+            namespace=None,
+        )
 
     report = json.loads((output_path / "projection-report.json").read_text(encoding="utf-8"))
     projections = {p["domain"]: p for p in report["projections"] if "domain" in p}

@@ -555,7 +555,7 @@ class TestMappingToSqlConsistency:
             all_sql += f.read_text(encoding="utf-8") + "\n"
 
         assert "COALESCE(" in all_sql.upper()
-        assert "'EUR'" in all_sql
+        assert "0x455552" in all_sql
         assert " * " in all_sql
 
     def test_table_mappings_produce_models(self, projected_hub):

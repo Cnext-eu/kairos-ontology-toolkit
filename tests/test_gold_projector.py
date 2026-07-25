@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -17,6 +18,7 @@ from kairos_ontology.core.projections.dbt import (
     GoldContractError,
     GoldPhysicalPlan,
 )
+from kairos_ontology.core.projections.dbt import gold_materialize
 from kairos_ontology.core.projections.dbt.policy_normalize import (
     PolicyNormalizationError,
 )
@@ -128,6 +130,43 @@ def test_profile_specs_and_plans_are_frozen_slotted_dataclasses():
         assert dataclasses.is_dataclass(record)
         assert record.__dataclass_params__.frozen
         assert "__slots__" in record.__dict__
+
+
+def test_profile_materializer_registry_accepts_future_logical_spec_types(monkeypatch):
+    logical = SimpleNamespace(
+        profile=gold_materialize.GoldProfileName.DIMENSIONAL_POWERBI_V1,
+        profile_version="future-v1",
+        ontology_name="future",
+        ontology_version="1.0.0",
+        adapter="fabric",
+    )
+    physical = SimpleNamespace(
+        profile=logical.profile,
+        profile_version=logical.profile_version,
+        adapter=logical.adapter,
+        adapter_version="1",
+    )
+
+    def materializer(spec, *, adapter_version, capability_results):
+        assert spec is logical
+        assert adapter_version == "1"
+        assert capability_results == ()
+        return physical
+
+    monkeypatch.setitem(
+        gold_materialize._PROFILE_MATERIALIZERS,
+        logical.profile,
+        materializer,
+    )
+
+    assert (
+        gold_materialize.materialize_gold_product(
+            logical,
+            adapter_version="1",
+            capability_results=(),
+        )
+        is physical
+    )
 
 
 def test_explicit_zero_dimension_facts_are_not_inferred(invoice_gold):

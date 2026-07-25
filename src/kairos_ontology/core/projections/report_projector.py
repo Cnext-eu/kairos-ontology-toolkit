@@ -12,6 +12,7 @@ Produces:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +47,107 @@ MATCH_LABELS = {
     "broadMatch": "Broad",
     "relatedMatch": "Related",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ReportContractItem:
+    """One immutable projection-time report fact and its evidence."""
+
+    name: str
+    value: str
+    evidence: str
+
+    def to_template_dict(self) -> dict[str, str]:
+        """Return the deterministic template representation."""
+        return {"name": self.name, "value": self.value, "evidence": self.evidence}
+
+
+@dataclass(frozen=True, slots=True)
+class ReportContractSection:
+    """One typed report category with an honest availability disposition."""
+
+    key: str
+    title: str
+    status: str
+    reason: str
+    items: tuple[ReportContractItem, ...] = ()
+
+    def to_template_dict(self) -> dict[str, object]:
+        """Return the deterministic template representation."""
+        return {
+            "key": self.key,
+            "title": self.title,
+            "status": self.status,
+            "reason": self.reason,
+            "items": [item.to_template_dict() for item in self.items],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReportContractCategories:
+    """The complete, typed category set required by the mapping-report contract."""
+
+    prep_routing_transformations: ReportContractSection
+    identity_grain_lineage_multi_source: ReportContractSection
+    cdc_scd_fk_hash_dq: ReportContractSection
+    gold_product_contract: ReportContractSection
+    governance_expectations: ReportContractSection
+    adapter_capability_compile_evidence: ReportContractSection
+    strict_release_blockers: ReportContractSection
+
+    def to_template_list(self) -> list[dict[str, object]]:
+        """Return categories in stable contract order."""
+        return [
+            self.prep_routing_transformations.to_template_dict(),
+            self.identity_grain_lineage_multi_source.to_template_dict(),
+            self.cdc_scd_fk_hash_dq.to_template_dict(),
+            self.gold_product_contract.to_template_dict(),
+            self.governance_expectations.to_template_dict(),
+            self.adapter_capability_compile_evidence.to_template_dict(),
+            self.strict_release_blockers.to_template_dict(),
+        ]
+
+
+@dataclass(frozen=True, slots=True)
+class ReportContractLane:
+    """One semantic lane that must not be confused with another lane."""
+
+    key: str
+    title: str
+    description: str
+    categories: ReportContractCategories
+
+    def to_template_dict(self) -> dict[str, object]:
+        """Return the deterministic template representation."""
+        return {
+            "key": self.key,
+            "title": self.title,
+            "description": self.description,
+            "sections": self.categories.to_template_list(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MappingReportContract:
+    """Immutable projection-time contract lanes rendered by both report formats."""
+
+    normative_effective_policy: ReportContractLane
+    implemented_generated_artifacts_checks: ReportContractLane
+    approved_deviations_known_limitations: ReportContractLane
+    downstream_runtime_observations: ReportContractLane
+    schema_version: str = "mapping-report-contract-v1"
+
+    def to_template_dict(self) -> dict[str, object]:
+        """Return deterministic keys without exposing mutable dataclass internals."""
+        return {
+            "schema_version": self.schema_version,
+            "lanes": [
+                self.normative_effective_policy.to_template_dict(),
+                self.implemented_generated_artifacts_checks.to_template_dict(),
+                self.approved_deviations_known_limitations.to_template_dict(),
+                self.downstream_runtime_observations.to_template_dict(),
+            ],
+        }
 
 
 def _extract_local_name(uri: str) -> str:
@@ -153,6 +255,7 @@ def _parse_mappings(mappings_dir: Path) -> dict:
                     else None
                 ),
                 "mapping_resource_uri": mapping.resource_uri,
+                "capabilities": _expression_capabilities(mapping.row_filter),
             }
         )
     for mapping in facts.columns:
@@ -163,6 +266,7 @@ def _parse_mappings(mappings_dir: Path) -> dict:
                 "expression_contract": expression_summary(mapping.expression),
                 "filter_condition": None,
                 "mapping_resource_uri": mapping.resource_uri,
+                "capabilities": _expression_capabilities(mapping.expression),
             }
         )
     return result
@@ -626,6 +730,15 @@ def _build_report_data(
             ),
         })
 
+    report_contract = _build_mapping_report_contract(
+        system=system,
+        mappings=mappings,
+        table_reports=table_reports,
+        total_columns=total_columns,
+        total_mapped=total_mapped,
+        action_items=action_items,
+    )
+
     return {
         "system": system,
         "tables": table_reports,
@@ -646,7 +759,275 @@ def _build_report_data(
         "decisions": decisions,
         "open_questions": open_questions,
         "next_actions": next_actions,
+        "report_contract": report_contract.to_template_dict(),
     }
+
+
+_CONTRACT_CATEGORY_TITLES = (
+    ("prep-routing-transformations", "Prep routing and transformations"),
+    (
+        "identity-grain-lineage-multi-source",
+        "Identity, grain, lineage, and multi-source",
+    ),
+    ("cdc-scd-fk-hash-dq", "CDC, SCD, foreign keys, hash, and data quality"),
+    ("gold-product-contract", "Gold product contract"),
+    (
+        "governance-expectations",
+        "Ownership, stewardship, classification, compatibility, SLA, and freshness",
+    ),
+    (
+        "adapter-capability-compile-evidence",
+        "Adapter capability and compile evidence",
+    ),
+    ("strict-release-blockers", "Strict-release blocker reasons"),
+)
+
+
+def _section(
+    key: str,
+    status: str,
+    reason: str,
+    items: tuple[ReportContractItem, ...] = (),
+) -> ReportContractSection:
+    """Build a contract section using the canonical title."""
+    title = dict(_CONTRACT_CATEGORY_TITLES)[key]
+    return ReportContractSection(key, title, status, reason, items)
+
+
+def _empty_categories(status: str, reason: str) -> ReportContractCategories:
+    """Build a complete category set with one explicit disposition."""
+    sections = {
+        key.replace("-", "_"): _section(key, status, reason)
+        for key, _title in _CONTRACT_CATEGORY_TITLES
+    }
+    return ReportContractCategories(**sections)
+
+
+def _expression_capabilities(expression: object) -> tuple[str, ...]:
+    """Return authored capabilities from an immutable mapping expression tree."""
+    if expression is None:
+        return ()
+    capabilities = set(getattr(expression, "capabilities", ()))
+    for argument in getattr(expression, "arguments", ()):
+        capabilities.update(_expression_capabilities(argument))
+    for branch in getattr(expression, "branches", ()):
+        capabilities.update(_expression_capabilities(branch.condition))
+        capabilities.update(_expression_capabilities(branch.result))
+    capabilities.update(_expression_capabilities(getattr(expression, "else_expression", None)))
+    return tuple(sorted(capabilities))
+
+
+def _build_mapping_report_contract(
+    *,
+    system: dict,
+    mappings: dict,
+    table_reports: list[dict],
+    total_columns: int,
+    total_mapped: int,
+    action_items: list[dict],
+) -> MappingReportContract:
+    """Build immutable contract lanes only from inputs owned by this projector."""
+    prep_items: list[ReportContractItem] = []
+    lineage_items: list[ReportContractItem] = []
+    capability_values: set[str] = set()
+    for table in sorted(table_reports, key=lambda item: item["source_table"]):
+        if table["target_entity"]:
+            lineage_items.append(
+                ReportContractItem(
+                    "table-lineage",
+                    f"{table['source_table']} -> {table['target_entity']}",
+                    "named table mapping",
+                )
+            )
+        if table["table_mapping_type"]:
+            prep_items.append(
+                ReportContractItem(
+                    "table-mapping-type",
+                    f"{table['source_table']}: {table['table_mapping_type']}",
+                    "kairos-map:TableMapping",
+                )
+            )
+        if table["table_filter"]:
+            prep_items.append(
+                ReportContractItem(
+                    "row-filter",
+                    f"{table['source_table']}: {table['table_filter']}",
+                    "typed rowFilter expression",
+                )
+            )
+        for column in sorted(table["columns"], key=lambda item: item["source_name"]):
+            if column["mapped"] and column["expression_contract"]:
+                prep_items.append(
+                    ReportContractItem(
+                        "scalar-transformation",
+                        (
+                            f"{table['source_table']}.{column['source_name']}: "
+                            f"{column['expression_contract']}"
+                        ),
+                        "typed column mapping expression",
+                    )
+                )
+
+    for entries in mappings.get("table_maps", {}).values():
+        for entry in entries:
+            capability_values.update(entry.get("capabilities", ()))
+    for entries in mappings.get("column_maps", {}).values():
+        for entry in entries:
+            capability_values.update(entry.get("capabilities", ()))
+
+    unavailable_reason = (
+        "This projector does not receive this policy category; no status is inferred."
+    )
+    normative = _empty_categories("not-available", unavailable_reason)
+    normative = ReportContractCategories(
+        prep_routing_transformations=_section(
+            "prep-routing-transformations",
+            "available" if prep_items else "not-available",
+            (
+                "Typed table mapping types, filters, and scalar expressions are "
+                "projection inputs."
+                if prep_items
+                else (
+                    "No typed table mapping types, filters, or scalar expressions "
+                    "were provided."
+                )
+            ),
+            tuple(prep_items),
+        ),
+        identity_grain_lineage_multi_source=_section(
+            "identity-grain-lineage-multi-source",
+            "partial" if lineage_items else "not-available",
+            (
+                "Table lineage is available; identity, grain, and multi-source policy are "
+                "not inputs to this projector."
+                if lineage_items
+                else unavailable_reason
+            ),
+            tuple(lineage_items),
+        ),
+        cdc_scd_fk_hash_dq=normative.cdc_scd_fk_hash_dq,
+        gold_product_contract=normative.gold_product_contract,
+        governance_expectations=normative.governance_expectations,
+        adapter_capability_compile_evidence=_section(
+            "adapter-capability-compile-evidence",
+            "partial" if capability_values else "not-available",
+            (
+                "Authored capability requirements are available; adapter compile evidence "
+                "is not evaluated by this projector."
+                if capability_values
+                else unavailable_reason
+            ),
+            tuple(
+                ReportContractItem(
+                    "required-capability",
+                    capability,
+                    "typed mapping expression",
+                )
+                for capability in sorted(capability_values)
+            ),
+        ),
+        strict_release_blockers=normative.strict_release_blockers,
+    )
+
+    check_items = (
+        ReportContractItem(
+            "mapping-coverage",
+            f"{total_mapped}/{total_columns} source columns mapped",
+            "mapping-report coverage calculation",
+        ),
+        ReportContractItem(
+            "mapping-review-findings",
+            str(len(action_items)),
+            "mapping-report action-item calculation",
+        ),
+    )
+    blocker_items = tuple(
+        ReportContractItem(
+            "strict-release-blocker",
+            str(reason),
+            "strict-release input supplied to mapping-report projection",
+        )
+        for reason in sorted(mappings.get("strict_release_blockers", ()), key=str)
+    )
+    compile_items = tuple(
+        ReportContractItem(
+            "adapter-compile-evidence",
+            str(evidence),
+            "adapter evidence supplied to mapping-report projection",
+        )
+        for evidence in sorted(mappings.get("adapter_compile_evidence", ()), key=str)
+    )
+    implemented = _empty_categories("not-available", unavailable_reason)
+    implemented = ReportContractCategories(
+        prep_routing_transformations=_section(
+            "prep-routing-transformations",
+            "available",
+            "The report generated deterministic mapping coverage and review checks.",
+            check_items,
+        ),
+        identity_grain_lineage_multi_source=implemented.identity_grain_lineage_multi_source,
+        cdc_scd_fk_hash_dq=implemented.cdc_scd_fk_hash_dq,
+        gold_product_contract=implemented.gold_product_contract,
+        governance_expectations=implemented.governance_expectations,
+        adapter_capability_compile_evidence=_section(
+            "adapter-capability-compile-evidence",
+            "available" if compile_items else "not-available",
+            (
+                "Supplied adapter compile evidence is reported without re-evaluation."
+                if compile_items
+                else unavailable_reason
+            ),
+            compile_items,
+        ),
+        strict_release_blockers=_section(
+            "strict-release-blockers",
+            "blocked" if blocker_items else "not-available",
+            (
+                "Strict-release blocker reasons supplied to this projector."
+                if blocker_items
+                else "No strict-release evaluation input was provided to this projector."
+            ),
+            blocker_items,
+        ),
+    )
+
+    limitations = _empty_categories(
+        "not-available",
+        "No approved deviation or known-limitation input was provided to this projector.",
+    )
+    runtime = _empty_categories(
+        "not-evaluated",
+        (
+            "Mapping-report projection does not observe downstream runtime execution, "
+            "health, freshness, quality results, or SLA attainment."
+        ),
+    )
+    return MappingReportContract(
+        normative_effective_policy=ReportContractLane(
+            "normative-effective-policy",
+            "Normative / effective policy",
+            "Authored and effective projection-time requirements; not runtime observations.",
+            normative,
+        ),
+        implemented_generated_artifacts_checks=ReportContractLane(
+            "implemented-generated-artifacts-checks",
+            "Implemented / generated artifacts and checks",
+            "Artifacts and deterministic checks produced in this report projection.",
+            implemented,
+        ),
+        approved_deviations_known_limitations=ReportContractLane(
+            "approved-deviations-known-limitations",
+            "Approved deviations / known limitations",
+            "Only explicitly supplied approvals and limitations belong in this lane.",
+            limitations,
+        ),
+        downstream_runtime_observations=ReportContractLane(
+            "downstream-runtime-observations",
+            "Downstream runtime observations",
+            "Runtime outcomes are outside projection and are never implied successful.",
+            runtime,
+        ),
+    )
 
 
 def generate_mapping_report(

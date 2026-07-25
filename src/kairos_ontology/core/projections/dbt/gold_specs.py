@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
 
 from .policy_specs import (
     BridgeCardinality,
@@ -42,6 +43,25 @@ class GoldContractError(ValueError):
 class GoldSecurityKind(str, Enum):
     RLS = "RLS"
     OLS = "OLS"
+
+
+class GoldProductLogicalSpec(Protocol):
+    """Common contract implemented by each profile-specific logical product."""
+
+    profile: GoldProfileName
+    profile_version: str
+    ontology_name: str
+    ontology_version: str
+    adapter: str
+
+
+class GoldProductPhysicalSpec(Protocol):
+    """Common contract implemented by each profile-specific physical plan."""
+
+    profile: GoldProfileName
+    profile_version: str
+    adapter: str
+    adapter_version: str
 
 
 @dataclass(frozen=True, slots=True)

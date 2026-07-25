@@ -69,6 +69,7 @@ def generate_gold_artifacts(
     silver_ext_path: Path | None = None,
     ref_model_defaults: list | None = None,
     peer_ext_paths: list | None = None,
+    peer_ontology_paths: list | None = None,
     target_platform: str = "fabric",
     contract_registry: Mapping[str, object] | None = None,
     eligible_class_uris: set[str] | None = None,
@@ -90,6 +91,7 @@ def generate_gold_artifacts(
         silver_ext_path=silver_ext_path,
         ref_model_defaults=ref_model_defaults,
         peer_ext_paths=peer_ext_paths,
+        peer_ontology_paths=peer_ontology_paths,
         contract_registry=contract_registry,
         eligible_class_uris=eligible_class_uris,
     )

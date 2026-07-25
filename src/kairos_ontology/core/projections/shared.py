@@ -126,15 +126,11 @@ class ForeignKeyDescriptor:
         explicit_fact: bool = False,
     ) -> bool:
         """Return whether this relationship qualifies for Gold projection."""
-        return (
-            explicit_fact
-            or self.gold_column_name is not None
-            or self.is_silver_fk
-        )
+        return explicit_fact or self.is_silver_fk
 
     def physical_column_name(self, target_key_stem: str, *, layer: str) -> str:
         """Resolve the FK's physical source-column name for a projection layer."""
-        override = self.gold_column_name if layer == "gold" else self.silver_column_name
+        override = None if layer == "gold" else self.silver_column_name
         return portable_sql_identifier(
             override or f"{target_key_stem}_sk",
             annotation=f"{layer} foreign-key column",

@@ -15,6 +15,7 @@ from .gold_specs import (
     GoldColumnSpec,
     GoldContractError,
     GoldMeasureSpec,
+    GoldProductLogicalSpec,
     GoldRelationshipSpec,
     GoldSecurityBindingSpec,
     GoldSecurityKind,
@@ -839,7 +840,7 @@ GoldProfileBuilder = Callable[
         str,
         str,
     ],
-    DimensionalGoldSpec,
+    GoldProductLogicalSpec,
 ]
 
 _PROFILE_BUILDERS: dict[GoldProfileName, GoldProfileBuilder] = {
@@ -856,7 +857,7 @@ def shape_gold_product(
     ontology_name: str,
     ontology_version: str,
     required: bool = False,
-) -> DimensionalGoldSpec | None:
+) -> GoldProductLogicalSpec | None:
     """Dispatch one exact registered profile; no generic dimensional fallback exists."""
     profile = policy.gold.profile
     if profile is None:

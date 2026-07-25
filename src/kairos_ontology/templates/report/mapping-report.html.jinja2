@@ -339,6 +339,56 @@
   </table>
 </div>
 
+{# ── Projection Contract Lanes ── #}
+<div class="card">
+  <h2 style="border: none; margin: 0 0 0.5rem; padding: 0;">
+    Projection Contract Lanes
+  </h2>
+  <p style="color: var(--muted); font-size: 0.875rem; margin-bottom: 1rem;">
+    Contract schema: <code>{{ report_contract.schema_version }}</code>. Projection-time
+    policy and evidence are separated from downstream runtime outcomes.
+  </p>
+  {% for lane in report_contract.lanes %}
+  <div style="margin-bottom: 1.25rem;">
+    <h3 style="font-size: 1rem;">{{ lane.title }}</h3>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 0.5rem;">
+      {{ lane.description }}
+    </p>
+    <table>
+      <thead>
+        <tr><th>Contract area</th><th>Status</th><th>Reason / available facts</th></tr>
+      </thead>
+      <tbody>
+      {% for section in lane.sections %}
+        <tr>
+          <td>{{ section.title }}</td>
+          <td><code>{{ section.status }}</code></td>
+          <td>
+            {{ section.reason }}
+            {% if section["items"] %}
+            <ul style="margin: 0.35rem 0 0 1rem;">
+              {% for item in section["items"] %}
+              <li>
+                <code>{{ item.name }}</code>: {{ item.value }}
+                <span style="color: var(--muted);">(evidence: {{ item.evidence }})</span>
+              </li>
+              {% endfor %}
+            </ul>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+  <p class="action-item action-info" style="margin-bottom: 0;">
+    <strong>Runtime boundary:</strong>&nbsp; every downstream runtime category is
+    <code>not-evaluated</code>. Projection does not imply successful execution, quality,
+    freshness, or SLA attainment.
+  </p>
+</div>
+
 {# ── Entity Detail Sections (target-centric view) ── #}
 {% if entity_view %}
 <h2>Domain Entity Details</h2>

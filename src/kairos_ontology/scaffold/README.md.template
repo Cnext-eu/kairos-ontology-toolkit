@@ -8,10 +8,10 @@ Kairos ontology hub for **{description}**.
 # Install dependencies (includes kairos-ontology-toolkit)
 uv sync
 
-# Validate all ontologies
+# Validate authored semantics and policies
 kairos-ontology validate
 
-# Generate all projections
+# Generate only after source preparation, mappings, and target policy are reviewed
 kairos-ontology project
 
 # Generate a single target
@@ -30,22 +30,27 @@ uv run --extra dbt-validate dbt parse
 
 ```
 ├── ontology-hub/                        # Main ontology workspace
-│   ├── ontologies/                      # Domain ontologies (Turtle/RDF)
-│   ├── shapes/                          # SHACL validation constraints
-│   ├── mappings/                        # SKOS synonym mappings
+│   ├── integration/
+│   │   ├── sources/                     # Bronze source vocabularies
+│   │   └── preparation/                 # Source-side prep contracts
+│   ├── model/
+│   │   ├── ontologies/                  # Domain ontologies
+│   │   ├── extensions/                  # Silver/Gold policy
+│   │   ├── mappings/                    # Typed SKOS mappings
+│   │   ├── governance/                  # Release baseline
+│   │   ├── shapes/                      # SHACL constraints
+│   │   └── reference-models/            # Shared ontology modules
 │   └── output/                          # Generated projections (gitignored)
-├── ontology-reference-models/           # Reference ontologies
-│   ├── authoritative-ontologies/        # FIBO, Schema.org, etc.
-│   ├── derived-ontologies/              # Industry-specific derived models
-│   └── catalog-v001.xml                 # OASIS XML catalog for import resolution
+└── catalog-v001.xml                     # OASIS import catalog
 ```
 
 ## Workflow
 
-1. Create or edit `.ttl` files in `ontology-hub/ontologies/`.
-2. Run `kairos-ontology validate` to check for errors.
-3. Run `kairos-ontology project` to regenerate downstream artifacts.
-4. Commit on a feature branch, open a PR for review.
+1. Import and review source vocabularies and `integration/preparation/` policy.
+2. Author domain semantics, typed mappings, and Silver/Gold extension contracts.
+3. Validate syntax, SHACL, runtime policy, and strict-release prerequisites.
+4. Project artifacts and review Silver parity plus target-specific evidence.
+5. Commit on a feature branch and open a PR for review.
 
 ## Naming conventions
 

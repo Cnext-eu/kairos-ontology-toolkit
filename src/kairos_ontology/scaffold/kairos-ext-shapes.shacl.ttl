@@ -432,6 +432,11 @@ kairos-ext:GoldTableShape a sh:NodeShape ;
     sh:targetSubjectsOf kairos-ext:goldTableType ;
     sh:targetSubjectsOf kairos-ext:goldInclude ;
     sh:property [
+        sh:path kairos-ext:goldTableName ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
         sh:path kairos-ext:goldTableType ;
         sh:minCount 1 ;
         sh:maxCount 1 ;
@@ -446,6 +451,11 @@ kairos-ext:GoldTableShape a sh:NodeShape ;
         sh:path kairos-ext:goldSourceVersion ;
         sh:minCount 1 ;
         sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:incrementalPolicy ;
+        sh:maxCount 1 ;
+        sh:node kairos-ext:IncrementalPolicyShape ;
     ] ;
     sh:sparql [
         sh:message "Facts require factGrain, factType, dimensionVersionBinding and a complete linked incrementalPolicy containing correction and late-arrival policy."@en ;
@@ -516,8 +526,24 @@ kairos-ext:GoldTableShape a sh:NodeShape ;
         """ ;
     ] .
 
+kairos-ext:GoldBridgeShape a sh:NodeShape ;
+    sh:targetSubjectsOf kairos-ext:bridgeEndpoint ;
+    sh:property [
+        sh:path kairos-ext:bridgeEndpoint ;
+        sh:minCount 2 ;
+        sh:maxCount 2 ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:bridgeEndpointBinding ;
+        sh:minCount 2 ;
+        sh:maxCount 2 ;
+        sh:datatype xsd:string ;
+        sh:pattern "^[^= ]+=[A-Za-z_][A-Za-z0-9_]*$" ;
+    ] .
+
 kairos-ext:MeasureShape a sh:NodeShape ;
     sh:targetClass kairos-ext:Measure ;
+    sh:targetObjectsOf kairos-ext:measure ;
     sh:property [ sh:path kairos-ext:measureId ; sh:minCount 1 ; sh:maxCount 1 ] ;
     sh:property [ sh:path kairos-ext:measureDefinition ; sh:minCount 1 ; sh:maxCount 1 ] ;
     sh:property [ sh:path kairos-ext:measureExpression ; sh:maxCount 1 ] ;
@@ -586,6 +612,7 @@ kairos-ext:MeasureShape a sh:NodeShape ;
 
 kairos-ext:CalendarProfileShape a sh:NodeShape ;
     sh:targetClass kairos-ext:CalendarProfile ;
+    sh:targetObjectsOf kairos-ext:calendarProfile ;
     sh:property [ sh:path kairos-ext:calendarStartDate ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
     sh:property [ sh:path kairos-ext:calendarEndDate ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
     sh:property [
@@ -622,6 +649,7 @@ kairos-ext:CalendarProfileShape a sh:NodeShape ;
 
 kairos-ext:SecurityPolicyShape a sh:NodeShape ;
     sh:targetClass kairos-ext:SecurityPolicy ;
+    sh:targetObjectsOf kairos-ext:securityPolicy ;
     sh:property [ sh:path kairos-ext:entitlementSource ; sh:minCount 1 ; sh:maxCount 1 ] ;
     sh:property [ sh:path kairos-ext:identityMapping ; sh:minCount 1 ; sh:maxCount 1 ] ;
     sh:property [ sh:path kairos-ext:rolePolicy ; sh:minCount 1 ] ;

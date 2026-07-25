@@ -43,7 +43,12 @@ from tests.scenarios.conftest import (
 from tests.test_dbt_phases import _client_inputs
 
 
-def _artifacts(domain: str, adapter: str = "fabric") -> dict:
+def _artifacts(
+    domain: str,
+    adapter: str = "fabric",
+    *,
+    include_gold: bool = True,
+) -> dict:
     graph, namespace, classes = _load_ontology(domain)
     peers = [EXTENSIONS_DIR / "client-silver-ext.ttl"] if domain == "invoice" else []
     return generate_dbt_artifacts(
@@ -55,7 +60,11 @@ def _artifacts(domain: str, adapter: str = "fabric") -> dict:
         ontology_name=domain,
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,
-        gold_ext_path=EXTENSIONS_DIR / f"{domain}-gold-ext.ttl",
+        gold_ext_path=(
+            EXTENSIONS_DIR / f"{domain}-gold-ext.ttl"
+            if include_gold
+            else None
+        ),
         silver_ext_path=EXTENSIONS_DIR / f"{domain}-silver-ext.ttl",
         peer_ext_paths=peers,
         target_platform=adapter,
@@ -258,7 +267,7 @@ def test_silver_automatically_routes_all_runtime_sources_through_prep():
 
 
 def test_databricks_renderer_has_no_fabric_only_array_sql():
-    artifacts = _artifacts("invoice", "databricks")
+    artifacts = _artifacts("invoice", "databricks", include_gold=False)
     child = artifacts["models/staging/billing_pro/stg_billingpro__invoice_line_details.sql"]
     parent = artifacts["models/staging/billing_pro/stg_billing_pro__tbl_invoice.sql"]
     assert "POSEXPLODE" in child

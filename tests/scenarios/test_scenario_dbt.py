@@ -268,22 +268,6 @@ class TestReferenceData:
 
 
 # ---------------------------------------------------------------------------
-# GDPR satellite tests — ClientPII gdprSatelliteOf
-# ---------------------------------------------------------------------------
-
-class TestGDPRSatellite:
-    """ClientPII marked as gdprSatelliteOf=Client should produce a model."""
-
-    def test_client_pii_model_generated(self, client_dbt_artifacts):
-        """GDPR satellite should get its own dbt model."""
-        sql_keys = [k for k in client_dbt_artifacts if k.endswith(".sql")]
-        model_names = {k.split("/")[-1].replace(".sql", "") for k in sql_keys}
-        assert "client_pii" in model_names, (
-            "Missing client_pii model for GDPR satellite"
-        )
-
-
-# ---------------------------------------------------------------------------
 # Derived formula tests — lineTotal derivationFormula
 # ---------------------------------------------------------------------------
 

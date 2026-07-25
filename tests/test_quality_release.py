@@ -697,6 +697,19 @@ def test_runtime_dq_status_semantics(status, runtime_required, blocking):
     )
 
     assert bool(result.blockers) is blocking
+    if status == "not-evaluated" and not runtime_required:
+        finding = next(
+            item
+            for item in result.findings
+            if item.code == "release.dq-runtime-not-evaluated"
+        )
+        assert finding.disposition is ReleaseDisposition.NOT_EVALUATED
+        assert result.report["not_evaluated_count"] == 1
+        assert not any(
+            item.code == "release.dq-contract"
+            and item.disposition is ReleaseDisposition.SUPPORTED
+            for item in result.findings
+        )
 
 
 @pytest.mark.parametrize(

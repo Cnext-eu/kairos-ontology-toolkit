@@ -123,6 +123,18 @@ def _run_all_phases(inputs: DbtInputs):
     return bound, contract, shaped, plan, render_project(shaped, plan)
 
 
+def test_extension_ontology_version_does_not_override_domain_version():
+    inputs = _client_inputs()
+    inputs = dataclasses.replace(
+        inputs,
+        ontology_metadata=dataclasses.replace(inputs.ontology_metadata, version=""),
+    )
+
+    bound = bind_sources(inputs)
+
+    assert bound.ontology_metadata.version == "1.0.0"
+
+
 def _assert_deeply_immutable(value: object, path: str = "result") -> None:
     forbidden = (
         Graph,

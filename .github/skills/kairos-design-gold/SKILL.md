@@ -11,12 +11,15 @@ Gold is a consumption-oriented data-product layer. It is not universally dimensi
 Every product must name a registered profile; the only implemented profile is
 `dimensional-powerbi-v1`. Unknown or missing profiles fail closed.
 
-## Interaction and state
+## Design fleet mode (DD-088)
 
-Default to interactive design. Confirm table roles, grains, version bindings, measures,
-calendar assumptions, and security with stakeholders. A skill-scoped fleet override may
-make and record high-confidence decisions, but it must stop for ambiguous measures,
-security policy, PII/proprietary risk, or destructive choices.
+Default is interactive design. Confirm table roles, grains, version bindings, measures,
+calendar assumptions, and security with stakeholders. A fleet override
+applies only to this skill invocation and is never inherited by another skill or a later resume.
+
+In fleet mode, mark decisions as **AI-approved**, record rationale, confidence, and
+evidence for every checkpoint, and stop for ambiguous measures, security policy,
+PII/proprietary risk, destructive choices, or low-confidence business semantics.
 
 Read and update `ontology-hub/.kairos-state/phases/gold/<product>.md`. Record decisions,
 evidence, confidence, unresolved questions, and whether approval was user-confirmed or

@@ -1334,9 +1334,13 @@ def run_projections(
         dbt_coverage_data: dict[str, dict] = {}
 
         # Collect all silver extension file paths for cross-domain NK resolution.
-        # For dbt/silver targets, peer_ext_paths allows FK resolution across domains.
+        # Medallion targets use peer Silver policy for cross-domain authority.
         all_silver_ext_paths: list[Path] = []
-        if target_name in ("dbt", "silver") and extensions_dir and extensions_dir.exists():
+        if (
+            target_name in ("dbt", "silver", "powerbi")
+            and extensions_dir
+            and extensions_dir.exists()
+        ):
             all_silver_ext_paths = sorted(extensions_dir.glob("*-silver-ext.ttl"))
 
         for onto_info in ontology_graphs:
@@ -2694,6 +2698,40 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             for cls in gold_imported:
                 if cls["uri"] not in existing_uris:
                     classes.append(cls)
+    if target == "powerbi" and peer_ext_paths:
+        from .projections.shared import KAIROS_EXT
+
+        peer_graph = Graph()
+        for peer_path in peer_ext_paths:
+            if peer_path and Path(peer_path).is_file():
+                peer_graph.parse(peer_path, format="turtle")
+        peer_silver_classes = {
+            str(subject)
+            for predicate in (
+                KAIROS_EXT.silverTableName,
+                KAIROS_EXT.identityStrategy,
+            )
+            for subject in peer_graph.subjects(predicate, None)
+            if isinstance(subject, URIRef)
+        }
+        existing_uris = {item["uri"] for item in classes}
+        for class_uri, row in all_class_rows:
+            if class_uri not in peer_silver_classes or class_uri in existing_uris:
+                continue
+            class_name = extract_local_name(class_uri)
+            classes.append(
+                OntologyClassInfo(
+                    uri=class_uri,
+                    name=class_name,
+                    label=str(row.label) if row.label else class_name,
+                    comment=(
+                        str(row.comment)
+                        if row.comment
+                        else f"{class_name} entity"
+                    ),
+                ).to_dict()
+            )
+            existing_uris.add(class_uri)
 
     if not classes:
         return {}
@@ -2759,6 +2797,19 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         )
     elif target == 'powerbi':
         from .projections.medallion_gold_projector import generate_gold_artifacts
+        peer_ontology_paths: list[Path] = []
+        for peer_extension in peer_ext_paths or ():
+            peer_name = Path(peer_extension).stem.removesuffix("-silver-ext")
+            candidates = (
+                Path(peer_extension).parent.parent / "ontologies" / f"{peer_name}.ttl",
+                Path(peer_extension).parent / f"{peer_name}.ttl",
+            )
+            peer_ontology = next(
+                (candidate for candidate in candidates if candidate.is_file()),
+                None,
+            )
+            if peer_ontology is not None:
+                peer_ontology_paths.append(peer_ontology)
         return generate_gold_artifacts(
             classes=classes,
             graph=graph,
@@ -2773,6 +2824,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             silver_ext_path=projection_ext_path,
             ref_model_defaults=ref_model_defaults,
             peer_ext_paths=peer_ext_paths,
+            peer_ontology_paths=peer_ontology_paths,
             target_platform=target_platform,
             contract_registry=contract_registry,
             eligible_class_uris=eligible_class_uris,

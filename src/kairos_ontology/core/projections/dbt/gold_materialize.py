@@ -11,8 +11,15 @@ from .gold_specs import (
     GoldPhysicalColumnPlan,
     GoldPhysicalPlan,
     GoldPhysicalTablePlan,
+    GoldProductLogicalSpec,
+    GoldProductPhysicalSpec,
 )
-from .policy_specs import CanonicalTypeKind, CapabilityDisposition, CapabilityResultSpec
+from .policy_specs import (
+    CanonicalTypeKind,
+    CapabilityDisposition,
+    CapabilityResultSpec,
+    GoldProfileName,
+)
 
 _TMDL_TYPES = {
     CanonicalTypeKind.STRING: "String",
@@ -30,7 +37,7 @@ _TMDL_TYPES = {
 }
 
 
-def materialize_gold_product(
+def _materialize_dimensional_powerbi(
     spec: DimensionalGoldSpec,
     *,
     adapter_version: str,
@@ -122,4 +129,30 @@ def materialize_gold_product(
         ),
         erd_artifact_path=f"{domain}/{domain}-gold-erd.mmd",
         report_artifact_path=f"{domain}/{domain}-gold-product.json",
+    )
+
+
+_PROFILE_MATERIALIZERS = {
+    GoldProfileName.DIMENSIONAL_POWERBI_V1: _materialize_dimensional_powerbi,
+}
+
+
+def materialize_gold_product(
+    spec: GoldProductLogicalSpec,
+    *,
+    adapter_version: str,
+    capability_results: tuple[CapabilityResultSpec, ...],
+) -> GoldProductPhysicalSpec:
+    """Dispatch physical planning by exact profile without a generic Gold fallback."""
+    materializer = _PROFILE_MATERIALIZERS.get(spec.profile)
+    if materializer is not None:
+        return materializer(
+            spec,
+            adapter_version=adapter_version,
+            capability_results=capability_results,
+        )
+    raise GoldContractError(
+        "gold.profile-materializer-missing",
+        f"Gold profile {spec.profile.value!r} has no physical materializer",
+        rule_id="DD-112-profile",
     )
