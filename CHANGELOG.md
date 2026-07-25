@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc5] — 2026-07-25
+
+### Added
+- **Typed medallion contract redesign (DD-106–DD-115):** immutable bind, normalize,
+  shape, materialize, and render phases now govern preparation, Silver, Gold, quality,
+  lineage, identity, incremental processing, and adapter capabilities.
+- **Profile-driven Gold products:** dimensional Power BI v1 now uses explicit table roles,
+  governed measures, calendars, security, incremental policy, and strict release evidence.
+- **Typed operational reporting:** reports distinguish normative policy, generated checks,
+  known deviations, and downstream runtime observations without inferring success.
+
+### Changed
+- Silver dbt, YAML, DDL, ERD, preparation, and multi-source outputs now consume shared
+  contracts with deterministic parity and canonical hashing.
+- Scaffold skills, SHACL authorities, documentation, and lifecycle/status guidance now
+  describe the redesigned medallion and release boundaries.
+- Missing downstream DQ observations are reported as `not-evaluated`, not supported.
+
+### Fixed
+- Registered future Gold profiles dispatch through their materializer registry.
+- Peer ontology metadata loads through the canonical semantic boundary without allowing
+  extension versions to override the domain ontology version.
+- Gold foreign-key qualification no longer reads the removed Gold column override.
+
 ## [4.7.0rc4] — 2026-07-23
 
 ### Fixed
