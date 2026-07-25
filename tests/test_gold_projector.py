@@ -1,1254 +1,615 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Tests for the gold layer projector (G1-G8 rules — Power BI star schema)."""
+"""DD-112/DD-113 profile-driven Gold product tests."""
 
+from __future__ import annotations
+
+import dataclasses
 import json
-import logging
-import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
-from rdflib import Graph, Literal, Namespace, URIRef
-from rdflib.namespace import XSD
+import pytest
+import yaml
+from rdflib import Literal, Namespace, URIRef
 
+from kairos_ontology.core.projections.dbt import (
+    DimensionalGoldSpec,
+    GoldContractError,
+    GoldPhysicalPlan,
+)
+from kairos_ontology.core.projections.dbt import gold_materialize
+from kairos_ontology.core.projections.dbt.policy_normalize import (
+    PolicyNormalizationError,
+)
 from kairos_ontology.core.projections.medallion_gold_projector import (
-    _camel_to_snake,
-    _classify_tables,
-    _generate_date_dimension,
-    _mmd_type,
-    _tmdl_guid,
-    _to_pascal_case,
-    build_gold_tables,
     generate_gold_artifacts,
-    generate_master_gold_erd,
-    XSD_TO_GOLD_SQL,
-    XSD_TO_TMDL,
-    KAIROS_EXT,
+)
+from tests.scenarios.conftest import (
+    EXTENSIONS_DIR,
+    MAPPINGS_DIR,
+    SHAPES_DIR,
+    SOURCES_DIR,
+    TEMPLATE_DIR,
+    _load_ontology,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-BASE = "http://example.com/ont/test#"
-EXT = Namespace("https://kairos.cnext.eu/ext#")
-NS = Namespace(BASE)
-
-
-def _make_graph(ttl: str) -> Graph:
-    g = Graph()
-    g.parse(data=textwrap.dedent(ttl), format="turtle")
-    return g
+def _metadata(domain: str) -> dict[str, str]:
+    return {
+        "iri": f"https://acme.example/ontology/{domain}",
+        "version": "1.0.0",
+        "toolkit_version": "test",
+    }
 
 
-def _simple_ontology() -> tuple[Graph, list[dict]]:
-    """Minimal ontology: Customer (dimension), Order (fact) with FK to Customer."""
-    ttl = f"""
-        @prefix ex:  <{BASE}> .
-        @prefix owl: <http://www.w3.org/2002/07/owl#> .
-        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+def _write_gold(tmp_path: Path, domain: str, content: str) -> Path:
+    path = tmp_path / f"{domain}-gold-ext.ttl"
+    path.write_text(content, encoding="utf-8")
+    return path
 
-        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
 
-        ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "A customer."@en .
-        ex:Product a owl:Class ; rdfs:label "Product"@en ; rdfs:comment "A product."@en .
-        ex:Order a owl:Class ; rdfs:label "Order"@en ; rdfs:comment "An order."@en .
+def _gold_text(domain: str) -> str:
+    return (EXTENSIONS_DIR / f"{domain}-gold-ext.ttl").read_text(encoding="utf-8")
 
-        ex:customerName a owl:DatatypeProperty ;
-            rdfs:domain ex:Customer ;
-            rdfs:range xsd:string ;
-            rdfs:label "customer name"@en .
 
-        ex:productName a owl:DatatypeProperty ;
-            rdfs:domain ex:Product ;
-            rdfs:range xsd:string ;
-            rdfs:label "product name"@en .
+def _generate(
+    domain: str,
+    *,
+    gold_path: Path | None = None,
+    platform: str = "fabric",
+) -> dict[str, str]:
+    graph, namespace, classes = _load_ontology(domain)
+    peers = (
+        [EXTENSIONS_DIR / "client-silver-ext.ttl"]
+        if domain == "invoice"
+        else []
+    )
+    return generate_gold_artifacts(
+        classes=classes,
+        graph=graph,
+        template_dir=TEMPLATE_DIR,
+        namespace=namespace,
+        shapes_dir=SHAPES_DIR,
+        ontology_name=domain,
+        ontology_metadata=_metadata(domain),
+        sources_dir=SOURCES_DIR,
+        mappings_dir=MAPPINGS_DIR,
+        gold_ext_path=(
+            gold_path
+            if gold_path is not None
+            else EXTENSIONS_DIR / f"{domain}-gold-ext.ttl"
+        ),
+        silver_ext_path=EXTENSIONS_DIR / f"{domain}-silver-ext.ttl",
+        peer_ext_paths=peers,
+        target_platform=platform,
+    )
 
-        ex:orderDate a owl:DatatypeProperty ;
-            rdfs:domain ex:Order ;
-            rdfs:range xsd:date ;
-            rdfs:label "order date"@en .
 
-        ex:orderAmount a owl:DatatypeProperty ;
-            rdfs:domain ex:Order ;
-            rdfs:range xsd:decimal ;
-            rdfs:label "order amount"@en .
+@pytest.fixture(scope="module")
+def client_gold() -> dict[str, str]:
+    return _generate("client")
 
-        ex:hasCustomer a owl:ObjectProperty, owl:FunctionalProperty ;
-            rdfs:domain ex:Order ;
-            rdfs:range ex:Customer ;
-            rdfs:label "has customer"@en .
 
-        ex:hasProduct a owl:ObjectProperty, owl:FunctionalProperty ;
-            rdfs:domain ex:Order ;
-            rdfs:range ex:Product ;
-            rdfs:label "has product"@en .
-    """
-    g = _make_graph(ttl)
-    classes = [
-        {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
-        {"uri": f"{BASE}Product", "name": "Product", "label": "Product", "comment": ""},
-        {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
+@pytest.fixture(scope="module")
+def invoice_gold() -> dict[str, str]:
+    return _generate("invoice")
+
+
+def _report(artifacts: dict[str, str], domain: str) -> dict:
+    return json.loads(artifacts[f"{domain}/{domain}-gold-product.json"])
+
+
+def test_profile_registry_is_authoritative_and_absent_profile_blocks():
+    graph, namespace, classes = _load_ontology("client")
+    with pytest.raises(GoldContractError, match="gold.profile-missing"):
+        generate_gold_artifacts(
+            classes=classes,
+            graph=graph,
+            template_dir=TEMPLATE_DIR,
+            namespace=namespace,
+            ontology_name="client",
+            ontology_metadata=_metadata("client"),
+            sources_dir=SOURCES_DIR,
+            mappings_dir=MAPPINGS_DIR,
+            silver_ext_path=EXTENSIONS_DIR / "client-silver-ext.ttl",
+        )
+
+
+def test_unknown_profile_fails_closed(tmp_path: Path):
+    text = _gold_text("client").replace(
+        "dimensional-powerbi-v1",
+        "wide-feature-product-v1",
+    )
+    with pytest.raises(PolicyNormalizationError, match="unsupported Gold product profile"):
+        _generate("client", gold_path=_write_gold(tmp_path, "client", text))
+
+
+def test_profile_specs_and_plans_are_frozen_slotted_dataclasses():
+    for record in (DimensionalGoldSpec, GoldPhysicalPlan):
+        assert dataclasses.is_dataclass(record)
+        assert record.__dataclass_params__.frozen
+        assert "__slots__" in record.__dict__
+
+
+def test_profile_materializer_registry_accepts_future_logical_spec_types(monkeypatch):
+    logical = SimpleNamespace(
+        profile=gold_materialize.GoldProfileName.DIMENSIONAL_POWERBI_V1,
+        profile_version="future-v1",
+        ontology_name="future",
+        ontology_version="1.0.0",
+        adapter="fabric",
+    )
+    physical = SimpleNamespace(
+        profile=logical.profile,
+        profile_version=logical.profile_version,
+        adapter=logical.adapter,
+        adapter_version="1",
+    )
+
+    def materializer(spec, *, adapter_version, capability_results):
+        assert spec is logical
+        assert adapter_version == "1"
+        assert capability_results == ()
+        return physical
+
+    monkeypatch.setitem(
+        gold_materialize._PROFILE_MATERIALIZERS,
+        logical.profile,
+        materializer,
+    )
+
+    assert (
+        gold_materialize.materialize_gold_product(
+            logical,
+            adapter_version="1",
+            capability_results=(),
+        )
+        is physical
+    )
+
+
+def test_explicit_zero_dimension_facts_are_not_inferred(invoice_gold):
+    report = _report(invoice_gold, "invoice")
+    assert {table["role"] for table in report["tables"]} == {"fact"}
+    assert {table["name"] for table in report["tables"]} == {
+        "fact_invoice",
+        "fact_invoice_line",
+    }
+    assert all(table["fact_grain"] for table in report["tables"])
+    assert all(table["fact_type"] == "transaction" for table in report["tables"])
+    assert all(table["incremental_policy"] for table in report["tables"])
+    assert all(
+        table["correction_policy"] == "replace-by-total-order"
+        for table in report["tables"]
+    )
+    assert all(
+        table["late_arrival_policy"] == "reconcile-with-lookback"
+        for table in report["tables"]
+    )
+
+
+@pytest.mark.parametrize(
+    "fact_type",
+    ("transaction", "periodic-snapshot", "accumulating-snapshot"),
+)
+def test_all_fact_types_preserve_explicit_grain(
+    tmp_path: Path,
+    fact_type: str,
+):
+    text = _gold_text("invoice").replace(
+        'factType "transaction"',
+        f'factType "{fact_type}"',
+        1,
+    )
+    report = _report(
+        _generate(
+            "invoice",
+            gold_path=_write_gold(tmp_path, "invoice", text),
+        ),
+        "invoice",
+    )
+    fact = next(item for item in report["tables"] if item["name"] == "fact_invoice")
+    assert fact["fact_type"] == fact_type
+    assert fact["fact_grain"] == "one invoice or credit-note source record"
+
+
+def test_dimension_exposure_and_source_version_are_explicit(client_gold):
+    report = _report(client_gold, "client")
+    table = report["tables"][0]
+    assert table["role"] == "dimension"
+    assert table["dimension_exposure"] == "dual"
+    assert table["version_binding"] == "current"
+    assert table["source_model"] == "client"
+    assert table["source_version"] == "1.0.0"
+    assert report["silver_authority"]["parity"]["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    ("exposure", "current_view", "current_filter"),
+    (
+        ("current-only", False, True),
+        ("history-only", False, False),
+        ("dual", True, False),
+    ),
+)
+def test_dimension_exposure_modes_are_physical(
+    tmp_path: Path,
+    exposure: str,
+    current_view: bool,
+    current_filter: bool,
+):
+    text = _gold_text("client").replace(
+        'dimensionExposure "dual"',
+        f'dimensionExposure "{exposure}"',
+    )
+    artifacts = _generate(
+        "client",
+        gold_path=_write_gold(tmp_path, "client", text),
+    )
+    sql = artifacts["client/dbt/models/gold/client/dim_client.sql"]
+    assert ("where is_current = 1" in sql) is current_filter
+    assert (
+        "client/dbt/models/gold/client/dim_client_current.sql" in artifacts
+    ) is current_view
+
+
+def test_explicit_bridge_grain_endpoints_cardinality_and_weight(tmp_path: Path):
+    text = _gold_text("invoice") + """
+acme-inv:InvoiceLineTax
+    kairos-ext:goldTableType "bridge" ;
+    kairos-ext:goldTableName "bridge_invoice_line_tax" ;
+    kairos-ext:goldSourceModel "invoice_line_tax" ;
+    kairos-ext:goldSourceVersion "1.0.0" ;
+    kairos-ext:bridgeGrain "one tax allocation per invoice line" ;
+    kairos-ext:bridgeEndpoint acme-inv:Invoice, acme-inv:InvoiceLine ;
+    kairos-ext:bridgeEndpointBinding
+        "Invoice=invoice_line_tax_sk", "InvoiceLine=_source_record_key" ;
+    kairos-ext:bridgeCardinality "many-to-many" ;
+    kairos-ext:bridgeWeightColumn "tax_rate" ;
+    kairos-ext:bridgeAllocationSemantics "weighted-by-tax-rate" .
+"""
+    artifacts = _generate(
+        "invoice",
+        gold_path=_write_gold(tmp_path, "invoice", text),
+    )
+    bridge = next(
+        table
+        for table in _report(artifacts, "invoice")["tables"]
+        if table["role"] == "bridge"
+    )
+    assert bridge["bridge_grain"] == "one tax allocation per invoice line"
+    assert bridge["bridge_cardinality"] == "many-to-many"
+    assert bridge["bridge_weight_column"] == "tax_rate"
+    assert len(bridge["bridge_endpoint_bindings"]) == 2
+    assert "BRIDGE_INVOICE_LINE_TAX" in artifacts[
+        "invoice/invoice-gold-erd.mmd"
     ]
-    return g, classes
 
 
-def _ontology_with_reference() -> tuple[Graph, list[dict]]:
-    """Ontology with reference data class."""
-    ttl = f"""
-        @prefix ex:  <{BASE}> .
-        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-        @prefix owl: <http://www.w3.org/2002/07/owl#> .
-        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+def test_source_model_and_version_drift_block(tmp_path: Path):
+    original = _gold_text("client")
+    for old, new, code in (
+        ('goldSourceModel "client"', 'goldSourceModel "missing"', "source-model-drift"),
+        ('goldSourceVersion "1.0.0"', 'goldSourceVersion "9.0"', "source-version-drift"),
+    ):
+        path = _write_gold(tmp_path, "client", original.replace(old, new))
+        with pytest.raises(GoldContractError, match=code):
+            _generate("client", gold_path=path)
 
-        <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
 
-        ex:Country a owl:Class ; rdfs:label "Country"@en ; rdfs:comment "Country ref."@en .
-        ex:Country kairos-ext:isReferenceData "true"^^xsd:boolean .
+def test_missing_silver_measure_column_blocks(tmp_path: Path):
+    text = _gold_text("invoice").replace(
+        "measureColumnDependency acme-inv:totalAmount",
+        "measureColumnDependency acme-inv:notMaterialized",
+        1,
+    )
+    with pytest.raises(GoldContractError, match="missing-column-dependency"):
+        _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
 
-        ex:countryCode a owl:DatatypeProperty ;
-            rdfs:domain ex:Country ;
-            rdfs:range xsd:string ;
-            rdfs:label "country code"@en .
-    """
-    g = _make_graph(ttl)
-    classes = [
-        {"uri": f"{BASE}Country", "name": "Country", "label": "Country", "comment": ""},
+
+def test_approved_measure_keeps_base_column_and_emits_dax(invoice_gold):
+    fact_sql = invoice_gold[
+        "invoice/dbt/models/gold/invoice/fact_invoice.sql"
     ]
-    return g, classes
-
-
-# ---------------------------------------------------------------------------
-# G1 — Star schema classification
-# ---------------------------------------------------------------------------
-
-class TestClassification:
-    def test_fact_classification_by_fk_count(self):
-        """G1: Class with ≥2 outgoing FK → fact."""
-        g, classes = _simple_ontology()
-        class_uris = {c["uri"] for c in classes}
-        result = _classify_tables(g, classes, class_uris)
-        assert result[f"{BASE}Order"] == "fact"
-
-    def test_dimension_classification_no_fk(self):
-        """G1: Class with no outgoing FK → dimension."""
-        g, classes = _simple_ontology()
-        class_uris = {c["uri"] for c in classes}
-        result = _classify_tables(g, classes, class_uris)
-        assert result[f"{BASE}Customer"] == "dimension"
-        assert result[f"{BASE}Product"] == "dimension"
-
-    def test_reference_data_always_dimension(self):
-        """G6: isReferenceData → always dimension."""
-        g, classes = _ontology_with_reference()
-        class_uris = {c["uri"] for c in classes}
-        result = _classify_tables(g, classes, class_uris)
-        assert result[f"{BASE}Country"] == "dimension"
-
-    def test_explicit_override(self):
-        """G1: goldTableType override."""
-        g, classes = _simple_ontology()
-        # Force Customer to be a fact
-        g.add((URIRef(f"{BASE}Customer"), KAIROS_EXT.goldTableType,
-               Literal("fact")))
-        class_uris = {c["uri"] for c in classes}
-        result = _classify_tables(g, classes, class_uris)
-        assert result[f"{BASE}Customer"] == "fact"
-
-
-# ---------------------------------------------------------------------------
-# G2 — dim_/fact_ prefixes
-# ---------------------------------------------------------------------------
-
-class TestGoldNaming:
-    def test_fact_prefix(self):
-        """G2: Fact tables get fact_ prefix."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "fact_order" in ddl
-
-    def test_dimension_prefix(self):
-        """G2: Dimension tables get dim_ prefix."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "dim_customer" in ddl
-
-    def test_reference_gets_dim_prefix(self):
-        """G6: Reference data gets dim_ prefix (not ref_ like silver)."""
-        g, classes = _ontology_with_reference()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "dim_country" in ddl
-        assert "ref_country" not in ddl
-
-
-# ---------------------------------------------------------------------------
-# G3 — SCD Type 2 on dimensions
-# ---------------------------------------------------------------------------
-
-class TestSCD2:
-    def test_dimension_scd2_columns(self):
-        """G3: Dimension tables with SCD2 get valid_from/valid_to/is_current."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        # Customer dimension should have SCD2 columns
-        assert "valid_from" in ddl
-        assert "valid_to" in ddl
-        assert "is_current" in ddl
-
-    def test_fact_no_scd_columns(self):
-        """G3: Fact tables never get SCD columns."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        # Split by table creation to check fact specifically
-        fact_section = ddl.split("fact_order")[1].split("CREATE TABLE")[0] \
-            if "fact_order" in ddl else ""
-        # valid_from should NOT be in the fact table section
-        assert "valid_from" not in fact_section
-
-
-# ---------------------------------------------------------------------------
-# G8 — Power BI optimised types
-# ---------------------------------------------------------------------------
-
-class TestGoldTypes:
-    def test_int_surrogate_keys(self):
-        """G8: Surrogate keys are INT (not STRING like silver)."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "INT" in ddl
-        # Should not have STRING surrogate keys
-        assert "STRING NOT NULL  -- Surrogate key" not in ddl
-
-    def test_boolean_maps_to_bit(self):
-        """G8: BOOLEAN maps to BIT for Power BI."""
-        assert XSD_TO_GOLD_SQL[str(XSD.boolean)] == "BIT"
-
-    def test_tmdl_type_mapping(self):
-        """G8: TMDL types map correctly."""
-        assert XSD_TO_TMDL[str(XSD.string)] == "String"
-        assert XSD_TO_TMDL[str(XSD.integer)] == "Int64"
-        assert XSD_TO_TMDL[str(XSD.boolean)] == "Boolean"
-        assert XSD_TO_TMDL[str(XSD.decimal)] == "Decimal"
-
-
-# ---------------------------------------------------------------------------
-# Date dimension
-# ---------------------------------------------------------------------------
-
-class TestDateDimension:
-    def test_date_dim_generated_by_default(self):
-        """Date dimension is generated by default."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "dim_date" in ddl
-        assert "date_key" in ddl
-
-    def test_date_dim_has_yyyymmdd_key(self):
-        """Date dimension key is INT (YYYYMMDD format)."""
-        dim = _generate_date_dimension("gold_test")
-        assert dim.pk_column == "date_key"
-        pk_col = [c for c in dim.columns if c.name == "date_key"][0]
-        assert pk_col.sql_type == "INT"
-
-    def test_date_dim_has_calendar_hierarchy(self):
-        """Date dimension has Calendar hierarchy."""
-        dim = _generate_date_dimension("gold_test")
-        assert "Calendar" in dim.hierarchies
-
-    def test_date_dim_disabled(self):
-        """Date dimension can be disabled via annotation."""
-        g, classes = _simple_ontology()
-        onto_uri = URIRef(BASE.rstrip("#"))
-        g.add((onto_uri, KAIROS_EXT.generateDateDimension,
-               Literal("false", datatype=XSD.boolean)))
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "dim_date" not in ddl
-
-
-# ---------------------------------------------------------------------------
-# Output artifacts
-# ---------------------------------------------------------------------------
-
-class TestOutputArtifacts:
-    def test_ddl_file_generated(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        assert "test/test-gold-ddl.sql" in result
-
-    def test_alter_file_generated(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        assert "test/test-gold-alter.sql" in result
-
-    def test_erd_file_generated(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        assert "test/test-gold-erd.mmd" in result
-
-    def test_tmdl_definition_generated(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        sm = "test/Test.SemanticModel/definition"
-        assert f"{sm}/model.tmdl" in result
-
-    def test_tmdl_tables_generated(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        sm = "test/Test.SemanticModel/definition"
-        tmdl_tables = [k for k in result if k.startswith(f"{sm}/tables/")]
-        assert len(tmdl_tables) >= 3  # dim_customer, dim_product, fact_order + dim_date
-
-    def test_tmdl_relationships_generated(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        sm = "test/Test.SemanticModel/definition"
-        assert f"{sm}/relationships/relationships.tmdl" in result
-
-    def test_fabric_semantic_model_wrappers_generated(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-
-        model = "test/Test.SemanticModel"
-        platform = json.loads(result[f"{model}/.platform"])
-        pbism = json.loads(result[f"{model}/definition.pbism"])
-        database = result[f"{model}/definition/database.tmdl"]
-
-        assert platform["metadata"]["type"] == "SemanticModel"
-        assert platform["metadata"]["displayName"] == "Test"
-        assert platform["config"]["version"] == "2.0"
-        assert pbism["version"] == "4.2"
-        assert database == "database\n\tcompatibilityLevel: 1604\n"
-        assert "test/Test.pbip" not in result
-
-    def test_views_for_scd2_dimensions(self):
-        """SCD2 framing views generated for dimensions with SCD2."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        views_key = "test/test-gold-views.sql"
-        assert views_key in result
-        views = result[views_key]
-        assert "v_dim_customer" in views
-        assert "WHERE is_current = 1" in views
-
-
-# ---------------------------------------------------------------------------
-# TMDL content validation
-# ---------------------------------------------------------------------------
-
-class TestTMDLContent:
-    def test_tmdl_definition_has_direct_lake(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        defn = result["test/Test.SemanticModel/definition/model.tmdl"]
-        assert "model Model" in defn
-        assert "culture: en-US" in defn
-
-    def test_tmdl_table_has_columns(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        # Find the customer dimension table TMDL
-        cust_key = [k for k in result if "dim_customer" in k and k.endswith(".tmdl")]
-        assert cust_key
-        content = result[cust_key[0]]
-        assert "table dim_customer" in content
-        assert "column customer_sk" in content
-
-    def test_tmdl_relationships_has_fk(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        sm = "test/Test.SemanticModel/definition"
-        rels = result[f"{sm}/relationships/relationships.tmdl"]
-        assert "relationship" in rels
-        assert "fromColumn:" in rels
-        assert "toColumn:" in rels
-
-    def test_tmdl_partition_direct_lake(self):
-        """TMDL tables use DirectLake mode."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        cust_key = [k for k in result if "dim_customer" in k and k.endswith(".tmdl")]
-        content = result[cust_key[0]]
-        assert "directLake" in content
-
-    def test_tmdl_output_is_parser_ready_for_fabric_package(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-
-        for path, content in result.items():
-            if path.endswith(".tmdl"):
-                assert "///" not in content
-                assert " = m" not in content
-        table_tmdl = result["test/Test.SemanticModel/definition/tables/dim_customer.tmdl"]
-        assert "partition dim_customer = entity" in table_tmdl
-
-    def test_tmdl_relationships_omit_cross_domain_targets(self, caplog):
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix ref: <https://example.org/ref/location#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en .
-
-            ex:Customer a owl:Class ; rdfs:label "Customer"@en .
-            ex:Order a owl:Class ; rdfs:label "Order"@en .
-            ref:Location a owl:Class ; rdfs:label "Location"@en .
-
-            ex:orderAmount a owl:DatatypeProperty ;
-                rdfs:domain ex:Order ;
-                rdfs:range xsd:decimal ;
-                rdfs:label "order amount"@en .
-
-            ex:hasCustomer a owl:ObjectProperty, owl:FunctionalProperty ;
-                rdfs:domain ex:Order ;
-                rdfs:range ex:Customer ;
-                rdfs:label "has customer"@en .
-
-            ex:hasLocation a owl:ObjectProperty, owl:FunctionalProperty ;
-                rdfs:domain ex:Order ;
-                rdfs:range ref:Location ;
-                rdfs:label "has location"@en .
-        """
-        g = _make_graph(ttl)
-        classes = [
-            {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
-            {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
-        ]
-
-        caplog.set_level(logging.WARNING, logger="kairos_ontology.core.projections")
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        sm = "test/Test.SemanticModel/definition"
-        rels = result[f"{sm}/relationships/relationships.tmdl"]
-        erd = result["test/test-gold-erd.mmd"]
-
-        assert "toColumn: dim_customer.customer_sk" in rels
-        assert "dim_location" not in rels
-        assert "DIM_CUSTOMER ||--o{ FACT_ORDER" in erd
-        assert "DIM_LOCATION" not in erd
-        assert "Skipping cross-domain gold TMDL relationship" in caplog.text
-
-
-# ---------------------------------------------------------------------------
-# G4 — GDPR satellite → secured dimension
-# ---------------------------------------------------------------------------
-
-class TestGDPR:
-    def test_gdpr_satellite_generates_rls(self):
-        """G4: GDPR satellite creates RLS role in TMDL."""
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-
-            ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "Customer."@en .
-            ex:CustomerPII a owl:Class ; rdfs:label "CustomerPII"@en ; rdfs:comment "PII."@en .
-            ex:CustomerPII kairos-ext:gdprSatelliteOf ex:Customer .
-
-            ex:customerName a owl:DatatypeProperty ;
-                rdfs:domain ex:Customer ; rdfs:range xsd:string .
-            ex:email a owl:DatatypeProperty ;
-                rdfs:domain ex:CustomerPII ; rdfs:range xsd:string .
-        """
-        g = _make_graph(ttl)
-        classes = [
-            {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
-            {"uri": f"{BASE}CustomerPII", "name": "CustomerPII", "label": "CustomerPII", "comment": ""},
-        ]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        rls_key = "test/Test.SemanticModel/definition/roles/rls-roles.tmdl"
-        assert rls_key in result
-        rls = result[rls_key]
-        assert "role" in rls
-        assert "Restrict_" in rls
-
-    def test_ols_restricted_column_generates_role(self):
-        """OLS: olsRestricted columns generate a RestrictedColumns role."""
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-
-            ex:Employee a owl:Class ; rdfs:label "Employee"@en ; rdfs:comment "Employee."@en .
-
-            ex:employeeName a owl:DatatypeProperty ;
-                rdfs:domain ex:Employee ; rdfs:range xsd:string .
-            ex:salary a owl:DatatypeProperty ;
-                rdfs:domain ex:Employee ; rdfs:range xsd:decimal ;
-                kairos-ext:olsRestricted "true"^^xsd:boolean .
-        """
-        g = _make_graph(ttl)
-        classes = [
-            {"uri": f"{BASE}Employee", "name": "Employee", "label": "Employee", "comment": ""},
-        ]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        rls_key = "test/Test.SemanticModel/definition/roles/rls-roles.tmdl"
-        assert rls_key in result
-        rls = result[rls_key]
-        assert "RestrictedColumns" in rls
-        assert "columnPermission" in rls
-        assert "salary" in rls
-
-
-# ---------------------------------------------------------------------------
-# Perspectives
-# ---------------------------------------------------------------------------
-
-class TestPerspectives:
-    def test_perspective_generates_tmdl(self):
-        """Classes with kairos-ext:perspective generate a perspectives.tmdl file."""
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-
-            ex:Customer a owl:Class ; rdfs:label "Customer"@en ; rdfs:comment "Customer."@en .
-            ex:Customer kairos-ext:perspective "Sales" .
-
-            ex:Product a owl:Class ; rdfs:label "Product"@en ; rdfs:comment "Product."@en .
-            ex:Product kairos-ext:perspective "Sales" .
-
-            ex:customerName a owl:DatatypeProperty ;
-                rdfs:domain ex:Customer ; rdfs:range xsd:string .
-            ex:productName a owl:DatatypeProperty ;
-                rdfs:domain ex:Product ; rdfs:range xsd:string .
-        """
-        g = _make_graph(ttl)
-        classes = [
-            {"uri": f"{BASE}Customer", "name": "Customer", "label": "Customer", "comment": ""},
-            {"uri": f"{BASE}Product", "name": "Product", "label": "Product", "comment": ""},
-        ]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        persp_key = "test/Test.SemanticModel/definition/perspectives/perspectives.tmdl"
-        assert persp_key in result
-        content = result[persp_key]
-        assert "perspective 'Sales'" in content
-        assert "perspectiveTable dim_customer" in content
-
-    def test_no_perspective_no_file(self):
-        """No perspective file generated when no annotations present."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        persp_keys = [k for k in result if "perspectives" in k]
-        assert len(persp_keys) == 0
-
-
-# ---------------------------------------------------------------------------
-# Calculation groups (time intelligence)
-# ---------------------------------------------------------------------------
-
-class TestCalculationGroups:
-    def test_time_intelligence_generates_file(self):
-        """generateTimeIntelligence = true creates a calculation group."""
-        g, classes = _simple_ontology()
-        onto_uri = URIRef(BASE.rstrip("#"))
-        g.add((onto_uri, KAIROS_EXT.generateTimeIntelligence,
-               Literal("true", datatype=XSD.boolean)))
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        cg_key = "test/Test.SemanticModel/definition/calculationGroups/time-intelligence.tmdl"
-        assert cg_key in result
-        content = result[cg_key]
-        assert "calculationGroup" in content
-        assert "YTD" in content
-        assert "QTD" in content
-        assert "MTD" in content
-        assert "SAMEPERIODLASTYEAR" in content
-
-    def test_no_time_intelligence_by_default(self):
-        """No calculation group generated when annotation is absent."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        cg_keys = [k for k in result if "calculationGroups" in k]
-        assert len(cg_keys) == 0
-
-
-# ---------------------------------------------------------------------------
-# goldExclude
-# ---------------------------------------------------------------------------
-
-class TestGoldExclude:
-    def test_excluded_class_not_in_output(self):
-        g, classes = _simple_ontology()
-        g.add((URIRef(f"{BASE}Product"), KAIROS_EXT.goldExclude,
-               Literal("true", datatype=XSD.boolean)))
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "dim_product" not in ddl
-
-
-# ---------------------------------------------------------------------------
-# Measures (DAX)
-# ---------------------------------------------------------------------------
-
-class TestMeasures:
-    def test_measure_generates_dax_file(self):
-        """Measures annotated with measureExpression generate DAX output."""
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-
-            ex:Order a owl:Class ; rdfs:label "Order"@en ; rdfs:comment "Order."@en .
-            ex:Order kairos-ext:goldTableType "fact" .
-
-            ex:orderAmount a owl:DatatypeProperty ;
-                rdfs:domain ex:Order ; rdfs:range xsd:decimal ;
-                rdfs:label "order amount"@en ;
-                kairos-ext:measureExpression "SUM([order_amount])" ;
-                kairos-ext:measureFormatString "$#,##0.00" .
-        """
-        g = _make_graph(ttl)
-        classes = [
-            {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
-        ]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        dax_key = "test/measures/test-measures.dax"
-        assert dax_key in result
-        dax = result[dax_key]
-        assert "SUM([order_amount])" in dax
-        assert "$#,##0.00" in dax
-
-
-# ---------------------------------------------------------------------------
-# ERD content
-# ---------------------------------------------------------------------------
-
-class TestERD:
-    def test_erd_star_schema_relationships(self):
-        """ERD shows fact → dimension relationships."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        erd = result.get("test/test-gold-erd.mmd", "")
-        assert "erDiagram" in erd
-        assert "FACT_ORDER" in erd
-        assert "DIM_CUSTOMER" in erd
-
-
-# ---------------------------------------------------------------------------
-# Gold schema naming
-# ---------------------------------------------------------------------------
-
-class TestSchemaName:
-    def test_default_schema(self):
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "gold_test" in ddl
-
-    def test_custom_schema(self):
-        g, classes = _simple_ontology()
-        onto_uri = URIRef(BASE.rstrip("#"))
-        g.add((onto_uri, KAIROS_EXT.goldSchema, Literal("custom_gold")))
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "custom_gold" in ddl
-
-
-# ---------------------------------------------------------------------------
-# Utility functions
-# ---------------------------------------------------------------------------
-
-class TestUtils:
-    def test_tmdl_guid_deterministic(self):
-        """TMDL GUID is deterministic for same input."""
-        assert _tmdl_guid("test") == _tmdl_guid("test")
-
-    def test_tmdl_guid_format(self):
-        """TMDL GUID has correct format."""
-        guid = _tmdl_guid("test")
-        parts = guid.split("-")
-        assert len(parts) == 5
-
-    def test_mmd_type_sanitises(self):
-        assert _mmd_type("DECIMAL(18,4)") == "DECIMAL_18_4"
-        assert _mmd_type("VARCHAR(256)") == "VARCHAR_256"
-
-    def test_camel_to_snake(self):
-        assert _camel_to_snake("OrderLine") == "order_line"
-        assert _camel_to_snake("hasCustomer") == "has_customer"
-
-    def test_to_pascal_case(self):
-        assert _to_pascal_case("test") == "Test"
-        assert _to_pascal_case("supply_chain") == "SupplyChain"
-        assert _to_pascal_case("supply-chain") == "SupplyChain"
-        assert _to_pascal_case("hr") == "Hr"
-
-
-# ---------------------------------------------------------------------------
-# TMDL folder structure (standard Power BI layout)
-# ---------------------------------------------------------------------------
-
-class TestTMDLFolderStructure:
-    def test_semantic_model_folder_uses_pascal_case(self):
-        """TMDL files live under {Domain}.SemanticModel/definition/."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        sm = "test/Test.SemanticModel/definition"
-        assert f"{sm}/model.tmdl" in result
-        tables = [k for k in result if f"{sm}/tables/" in k]
-        assert len(tables) >= 3
-        rels = [k for k in result if f"{sm}/relationships/" in k]
-        assert len(rels) == 1
-
-    def test_model_tmdl_filename(self):
-        """Root TMDL file is model.tmdl (not definition.tmdl)."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        model_keys = [k for k in result if k.endswith("model.tmdl")]
-        assert len(model_keys) == 1
-        assert "definition.tmdl" not in " ".join(result.keys())
-
-
-# ---------------------------------------------------------------------------
-# Business-friendly display names (PBI_Description)
-# ---------------------------------------------------------------------------
-
-class TestBusinessFriendlyNames:
-    def test_tmdl_column_has_pbi_description(self):
-        """Columns with rdfs:label get PBI_Description annotation."""
-        g, classes = _simple_ontology()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        cust_key = [k for k in result if "dim_customer" in k and k.endswith(".tmdl")]
-        assert cust_key
-        content = result[cust_key[0]]
-        assert "PBI_Description" in content
-
-    def test_tmdl_measure_has_description(self):
-        """Measures get a description property in TMDL."""
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-
-            ex:Order a owl:Class ; rdfs:label "Order"@en ; rdfs:comment "Order."@en .
-            ex:Order kairos-ext:goldTableType "fact" .
-
-            ex:totalSales a owl:DatatypeProperty ;
-                rdfs:domain ex:Order ; rdfs:range xsd:decimal ;
-                rdfs:label "Total Sales"@en ;
-                kairos-ext:measureExpression "SUM([order_amount])" ;
-                kairos-ext:measureFormatString "$#,##0.00" .
-        """
-        g = _make_graph(ttl)
-        classes = [
-            {"uri": f"{BASE}Order", "name": "Order", "label": "Order", "comment": ""},
-        ]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        fact_key = [k for k in result if "fact_order" in k and k.endswith(".tmdl")]
-        assert fact_key
-        content = result[fact_key[0]]
-        assert 'description:' in content
-
-
-# ---------------------------------------------------------------------------
-# Empty / edge cases
-# ---------------------------------------------------------------------------
-
-class TestEdgeCasesEmpty:
-    """Edge-case tests for empty or minimal inputs."""
-
-    def test_generate_gold_artifacts_empty_classes(self):
-        """Empty class list with a valid graph should return a dict with no CREATE TABLE."""
-        ttl = f"""
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-        """
-        g = _make_graph(ttl)
-        result = generate_gold_artifacts([], g, BASE, ontology_name="test")
-        assert isinstance(result, dict)
-        for content in result.values():
-            assert "CREATE TABLE" not in content
-
-    def test_generate_gold_artifacts_empty_graph(self):
-        """Valid classes with an empty graph should not raise."""
-        g = Graph()
-        classes = [
-            {"uri": f"{BASE}Widget", "name": "Widget", "label": "Widget", "comment": ""},
-        ]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        assert isinstance(result, dict)
-
-    def test_class_without_rdfs_label(self):
-        """A class with no rdfs:label should fall back to the local name."""
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-            ex:Gadget a owl:Class ; rdfs:comment "A gadget without a label."@en .
-            ex:gadgetCode a owl:DatatypeProperty ;
-                rdfs:domain ex:Gadget ; rdfs:range xsd:string .
-        """
-        g = _make_graph(ttl)
-        classes = [
-            {"uri": f"{BASE}Gadget", "name": "Gadget", "label": "Gadget", "comment": ""},
-        ]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        assert isinstance(result, dict)
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "gadget" in ddl.lower()
-
-
-class TestEdgeCases:
-    def test_empty_classes_returns_empty(self):
-        g = Graph()
-        result = generate_gold_artifacts([], g, BASE, ontology_name="test")
-        assert result == {}
-
-    def test_single_class_defaults_to_dimension(self):
-        """A single class with no FK defaults to dimension."""
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-            <{BASE.rstrip('#')}> a owl:Ontology ; rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-            ex:Widget a owl:Class ; rdfs:label "Widget"@en ; rdfs:comment "A widget."@en .
-            ex:widgetName a owl:DatatypeProperty ;
-                rdfs:domain ex:Widget ; rdfs:range xsd:string .
-        """
-        g = _make_graph(ttl)
-        classes = [{"uri": f"{BASE}Widget", "name": "Widget", "label": "Widget", "comment": ""}]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "dim_widget" in ddl
-        assert "fact_widget" not in ddl
-
-
-# ---------------------------------------------------------------------------
-# G5 — Class-per-table inheritance (default)
-# ---------------------------------------------------------------------------
-
-def _ontology_with_subclasses(extra_onto_annotations: str = "") -> tuple[Graph, list[dict]]:
-    """Ontology with Party (parent) → LegalEntity, SoleProprietorship (subtypes)."""
-    ttl = f"""
-        @prefix ex:  <{BASE}> .
-        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-        @prefix owl: <http://www.w3.org/2002/07/owl#> .
-        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-        @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-        <{BASE.rstrip('#')}> a owl:Ontology ;
-            rdfs:label "Test"@en ;
-            owl:versionInfo "1.0" {extra_onto_annotations} .
-
-        ex:Party a owl:Class ; rdfs:label "Party"@en ; rdfs:comment "A party."@en .
-        ex:LegalEntity a owl:Class ;
-            rdfs:subClassOf ex:Party ;
-            rdfs:label "Legal Entity"@en ;
-            rdfs:comment "A legal entity."@en .
-        ex:SoleProprietorship a owl:Class ;
-            rdfs:subClassOf ex:Party ;
-            rdfs:label "Sole Proprietorship"@en ;
-            rdfs:comment "A sole proprietorship."@en .
-
-        ex:partyName a owl:DatatypeProperty ;
-            rdfs:domain ex:Party ;
-            rdfs:range xsd:string ;
-            rdfs:label "party name"@en .
-
-        ex:registrationNumber a owl:DatatypeProperty ;
-            rdfs:domain ex:LegalEntity ;
-            rdfs:range xsd:string ;
-            rdfs:label "registration number"@en .
-
-        ex:ownerName a owl:DatatypeProperty ;
-            rdfs:domain ex:SoleProprietorship ;
-            rdfs:range xsd:string ;
-            rdfs:label "owner name"@en .
-    """
-    g = _make_graph(ttl)
-    classes = [
-        {"uri": f"{BASE}Party", "name": "Party", "label": "Party", "comment": ""},
-        {"uri": f"{BASE}LegalEntity", "name": "LegalEntity",
-         "label": "Legal Entity", "comment": ""},
-        {"uri": f"{BASE}SoleProprietorship", "name": "SoleProprietorship",
-         "label": "Sole Proprietorship", "comment": ""},
+    ddl = invoice_gold["invoice/invoice-gold-ddl.sql"]
+    dax = invoice_gold["invoice/measures/invoice-measures.dax"]
+    assert "total_amount as total_amount" in fact_sql
+    assert "total_amount" in ddl
+    assert "[invoice.total-amount] = SUM([total_amount])" in dax
+    assert "not data validation" in dax
+    measure = next(
+        item
+        for item in _report(invoice_gold, "invoice")["measures"]
+        if item["id"] == "invoice.total-amount"
+    )
+    assert measure["data_type"] == "decimal"
+    assert measure["format_string"] == "#,##0.00"
+    assert measure["folder"] == "Finance"
+
+
+def test_legacy_measure_expression_on_datatype_property_has_no_behavior():
+    graph, namespace, classes = _load_ontology("invoice")
+    ext = Namespace("https://kairos.cnext.eu/ext#")
+    graph.add(
+        (
+            URIRef("https://acme.example/ontology/invoice#totalAmount"),
+            ext.measureExpression,
+            Literal("SUM([legacy])"),
+        )
+    )
+    artifacts = generate_gold_artifacts(
+        classes,
+        graph,
+        TEMPLATE_DIR,
+        namespace,
+        shapes_dir=SHAPES_DIR,
+        ontology_name="invoice",
+        ontology_metadata=_metadata("invoice"),
+        sources_dir=SOURCES_DIR,
+        mappings_dir=MAPPINGS_DIR,
+        gold_ext_path=EXTENSIONS_DIR / "invoice-gold-ext.ttl",
+        silver_ext_path=EXTENSIONS_DIR / "invoice-silver-ext.ttl",
+        peer_ext_paths=[EXTENSIONS_DIR / "client-silver-ext.ttl"],
+    )
+    report = _report(artifacts, "invoice")
+    assert len(report["measures"]) == 2
+    assert "SUM([legacy])" not in artifacts["invoice/measures/invoice-measures.dax"]
+    assert "total_amount" in artifacts[
+        "invoice/dbt/models/gold/invoice/fact_invoice.sql"
     ]
-    return g, classes
 
 
-class TestClassPerTable:
-    """G5: Default class-per-table inheritance generates separate subtype tables."""
-
-    def test_subtypes_get_separate_tables(self):
-        """Each subclass produces its own gold table."""
-        g, classes = _ontology_with_subclasses()
-        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
-        table_names = {t.name for t in tables}
-        assert "dim_party" in table_names
-        assert "dim_legal_entity" in table_names
-        assert "dim_sole_proprietorship" in table_names
-
-    def test_subtype_pk_is_parent_sk(self):
-        """Subtype table PK is the parent's surrogate key (shared PK)."""
-        g, classes = _ontology_with_subclasses()
-        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
-        by_name = {t.name: t for t in tables}
-        le = by_name["dim_legal_entity"]
-        assert le.pk_column == "party_sk"
-
-    def test_subtype_has_fk_to_parent(self):
-        """Subtype table has FK constraint referencing parent table."""
-        g, classes = _ontology_with_subclasses()
-        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
-        by_name = {t.name: t for t in tables}
-        le = by_name["dim_legal_entity"]
-        fk_targets = [fk[1] for fk in le.fk_constraints]
-        assert any("dim_party" in t for t in fk_targets)
-
-    def test_subtype_has_own_properties_only(self):
-        """Subtype table contains only its own properties, not inherited ones."""
-        g, classes = _ontology_with_subclasses()
-        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
-        by_name = {t.name: t for t in tables}
-        le = by_name["dim_legal_entity"]
-        col_names = {c.name for c in le.columns}
-        assert "registration_number" in col_names
-        assert "party_name" not in col_names
-
-    def test_parent_has_shared_properties(self):
-        """Parent table retains its own (shared) properties."""
-        g, classes = _ontology_with_subclasses()
-        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
-        by_name = {t.name: t for t in tables}
-        party = by_name["dim_party"]
-        col_names = {c.name for c in party.columns}
-        assert "party_name" in col_names
-
-    def test_parent_has_no_discriminator(self):
-        """Parent table does NOT have a discriminator column in class-per-table mode."""
-        g, classes = _ontology_with_subclasses()
-        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
-        by_name = {t.name: t for t in tables}
-        party = by_name["dim_party"]
-        col_names = {c.name for c in party.columns}
-        assert "party_type" not in col_names
-
-    def test_ddl_contains_subtype_tables(self):
-        """DDL output includes CREATE TABLE for subtype tables."""
-        g, classes = _ontology_with_subclasses()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result.get("test/test-gold-ddl.sql", "")
-        assert "dim_legal_entity" in ddl
-        assert "dim_sole_proprietorship" in ddl
+@pytest.mark.parametrize(
+    ("lifecycle", "emitted", "release_state"),
+    (
+        ("intent", False, "blocking"),
+        ("provisional", True, "blocking"),
+        ("validated", True, "blocking"),
+        ("approved", True, "ready"),
+    ),
+)
+def test_measure_lifecycle_controls_emission_and_release(
+    tmp_path: Path,
+    lifecycle: str,
+    emitted: bool,
+    release_state: str,
+):
+    text = _gold_text("invoice").replace(
+        'measureLifecycleState "approved"',
+        f'measureLifecycleState "{lifecycle}"',
+        1,
+    )
+    if lifecycle == "intent":
+        text = text.replace(
+            '    kairos-ext:measureExpression "SUM([total_amount])" ;\n',
+            "",
+            1,
+        )
+    artifacts = _generate(
+        "invoice",
+        gold_path=_write_gold(tmp_path, "invoice", text),
+    )
+    report = _report(artifacts, "invoice")
+    measure = next(
+        item for item in report["measures"] if item["id"] == "invoice.total-amount"
+    )
+    assert measure["emitted"] is emitted
+    dax = artifacts.get("invoice/measures/invoice-measures.dax", "")
+    assert ("[invoice.total-amount]" in dax) is emitted
+    assert artifacts["__release_data__"]["gold_status"]["measures"] == release_state
+    assert measure["data_validated_by_projection"] is False
 
 
-class TestDiscriminatorOptIn:
-    """G5: Explicit discriminator strategy preserves old flattening behaviour."""
+def test_measure_cycle_and_missing_measure_dependency_block(tmp_path: Path):
+    cycle = _gold_text("invoice") + """
+acme-inv:TotalInvoiceAmount
+    kairos-ext:measureDependency acme-inv:TotalLineAmount .
+acme-inv:TotalLineAmount
+    kairos-ext:measureDependency acme-inv:TotalInvoiceAmount .
+"""
+    with pytest.raises(PolicyNormalizationError, match="dependency cycle"):
+        _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", cycle))
 
-    def test_discriminator_flattens_subtypes(self):
-        """With goldInheritanceStrategy 'discriminator', subtypes fold into parent."""
-        g, classes = _ontology_with_subclasses(
-            '; kairos-ext:goldInheritanceStrategy "discriminator"')
-        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
-        table_names = {t.name for t in tables}
-        assert "dim_party" in table_names
-        assert "dim_legal_entity" not in table_names
-        assert "dim_sole_proprietorship" not in table_names
-
-    def test_discriminator_adds_discriminator_col(self):
-        """Discriminator strategy adds a type column on the parent."""
-        g, classes = _ontology_with_subclasses(
-            '; kairos-ext:goldInheritanceStrategy "discriminator"')
-        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
-        by_name = {t.name: t for t in tables}
-        party = by_name["dim_party"]
-        col_names = {c.name for c in party.columns}
-        assert "party_type" in col_names
-
-    def test_discriminator_merges_subtype_props(self):
-        """Discriminator strategy merges subtype properties into parent table."""
-        g, classes = _ontology_with_subclasses(
-            '; kairos-ext:goldInheritanceStrategy "discriminator"')
-        tables = build_gold_tables(classes, g, BASE, ontology_name="test")
-        by_name = {t.name: t for t in tables}
-        party = by_name["dim_party"]
-        col_names = {c.name for c in party.columns}
-        assert "registration_number" in col_names
-        assert "owner_name" in col_names
+    missing = _gold_text("invoice") + """
+acme-inv:TotalInvoiceAmount
+    kairos-ext:measureDependency acme-inv:MissingMeasure .
+"""
+    with pytest.raises(PolicyNormalizationError, match="do not resolve"):
+        _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", missing))
 
 
-# ---------------------------------------------------------------------------
-# ERD — No "PK FK" combined marker (Mermaid parse error)
-# ---------------------------------------------------------------------------
+def test_approved_measure_requires_owner_tests_and_evidence(tmp_path: Path):
+    original = _gold_text("invoice")
+    cases = (
+        (
+            original.replace(
+                '    kairos-ext:measureOwnerRole "Finance Data Owner" ;\n',
+                "",
+                1,
+            ),
+            "owner",
+        ),
+        (
+            original.replace(
+                '    kairos-ext:measureValidationTest '
+                '"invoice-total-reconciliation" ;\n',
+                "",
+                1,
+            ),
+            "tests and validation evidence",
+        ),
+        (
+            original.replace(
+                '    kairos-ext:measureValidationTest '
+                '"invoice-total-reconciliation" ;\n',
+                '    kairos-ext:measureValidationTest '
+                '"invoice-total-reconciliation" .\n',
+                1,
+            ).replace(
+                '    kairos-ext:measureValidationEvidence '
+                '"dq-run:invoice-total-v1" .\n',
+                "",
+                1,
+            ),
+            "tests and validation evidence",
+        ),
+    )
+    for text, message in cases:
+        with pytest.raises((PolicyNormalizationError, ValueError), match=message):
+            _generate(
+                "invoice",
+                gold_path=_write_gold(
+                    tmp_path,
+                    "invoice",
+                    text,
+                ),
+            )
 
-class TestErdNoPkFk:
-    """ERD must never emit 'PK FK' — Mermaid only allows one key marker."""
 
-    def test_erd_no_pk_fk_class_per_table(self):
-        """Class-per-table subtype PK (which is also FK) emits only PK."""
-        g, classes = _ontology_with_subclasses()
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        erd = result.get("test/test-gold-erd.mmd", "")
-        assert "PK FK" not in erd
-        assert " PK" in erd  # PK marker still present
+def test_calendar_is_only_generated_when_explicit_and_approved(
+    client_gold,
+    invoice_gold,
+):
+    assert not any("dim_date" in path for path in client_gold)
+    assert "invoice/dbt/models/gold/shared/dim_date.sql" in invoice_gold
+    assert (
+        "invoice/Invoice.SemanticModel/definition/"
+        "calculationGroups/time-intelligence.tmdl"
+    ) in invoice_gold
+    calendar = _report(invoice_gold, "invoice")["calendar"]
+    assert calendar["bounds"] == ["2020-01-01", "2035-12-31"]
+    assert calendar["week_pattern"] == "iso-8601-monday"
+    assert calendar["locale"] == "en-BE"
+    assert calendar["holiday_source"] == "none-approved"
+    assert calendar["time_zone"] == "Europe/Brussels"
+    assert calendar["period_closure"] == "finance-approved-period-status"
+    assert calendar["roles"][0]["binding"] == "fact_invoice.invoice_date"
 
-    def test_erd_no_pk_fk_gdpr_satellite(self):
-        """GDPR satellite PK (which is also FK) emits only PK."""
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-            <{BASE.rstrip('#')}> a owl:Ontology ;
-                rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-            ex:Customer a owl:Class ;
-                rdfs:label "Customer"@en ; rdfs:comment "A customer."@en .
-            ex:CustomerPII a owl:Class ;
-                rdfs:label "Customer PII"@en ; rdfs:comment "GDPR data."@en ;
-                kairos-ext:gdprSatelliteOf ex:Customer .
-            ex:email a owl:DatatypeProperty ;
-                rdfs:domain ex:CustomerPII ; rdfs:range xsd:string ;
-                rdfs:label "email"@en .
-        """
-        g = _make_graph(ttl)
-        classes = [
-            {"uri": f"{BASE}Customer", "name": "Customer",
-             "label": "Customer", "comment": ""},
-            {"uri": f"{BASE}CustomerPII", "name": "CustomerPII",
-             "label": "Customer PII", "comment": ""},
+def test_draft_calendar_blocks_time_intelligence(tmp_path: Path):
+    text = _gold_text("invoice").replace(
+        'calendarApprovalStatus "approved"',
+        'calendarApprovalStatus "draft"',
+    )
+    artifacts = _generate(
+        "invoice",
+        gold_path=_write_gold(tmp_path, "invoice", text),
+    )
+    assert not any("dim_date" in path for path in artifacts)
+    assert artifacts["__release_data__"]["gold_status"]["calendar"] == "blocking"
+
+
+def test_calendar_bounds_and_role_bindings_are_validated(tmp_path: Path):
+    invalid_range = _gold_text("invoice").replace("2020-01-01", "2040-01-01")
+    with pytest.raises(PolicyNormalizationError, match="start date"):
+        _generate(
+            "invoice",
+            gold_path=_write_gold(tmp_path, "invoice", invalid_range),
+        )
+    invalid_role = _gold_text("invoice").replace(
+        "Invoice.invoice_date",
+        "Invoice.not_materialized",
+    )
+    with pytest.raises(GoldContractError, match="missing-role-column"):
+        _generate(
+            "invoice",
+            gold_path=_write_gold(tmp_path, "invoice", invalid_role),
+        )
+
+
+def test_complete_security_is_fail_closed_and_perspectives_are_navigation_only(
+    client_gold,
+):
+    report = _report(client_gold, "client")
+    assert report["security"]["fail_closed"] is True
+    assert report["security"]["positive_tests"]
+    assert report["security"]["negative_tests"]
+    assert report["security"]["test_evidence"]
+    roles = client_gold[
+        "client/Client.SemanticModel/definition/roles/security.tmdl"
+    ]
+    assert "filterExpression: FALSE()" in roles
+    assert "columnPermission dim_client.email" in roles
+    assert "metadataPermission: none" in roles
+    assert all(
+        perspective["security_boundary"] is False
+        for perspective in report["perspectives"]
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    (
+        '    kairos-ext:negativeSecurityTest "unauthorized-client-reader" ;\n',
+        '    kairos-ext:securityTestEvidence "security-run:client-access-v1" ;\n',
+    ),
+)
+def test_incomplete_security_blocks_projection(tmp_path: Path, line: str):
+    text = _gold_text("client").replace(line, "", 1)
+    with pytest.raises(ValueError):
+        _generate("client", gold_path=_write_gold(tmp_path, "client", text))
+
+
+def test_databricks_requires_declared_downstream_powerbi_deviations(tmp_path: Path):
+    with pytest.raises(GoldContractError, match="adapter-capability-blocking"):
+        _generate("client", platform="databricks")
+
+    text = _gold_text("client") + """
+acme:DatabricksTmdlDeviation a kairos-ext:Deviation ;
+    kairos-ext:adapterName "databricks" ;
+    kairos-ext:policyReference "DD-113-tmdl" ;
+    kairos-ext:deviationScope "gold" ;
+    kairos-ext:deviationRationale "Power BI is downstream of Databricks SQL." ;
+    kairos-ext:deviationOwnerRole "Platform Owner" ;
+    kairos-ext:approvalStatus "approved" ;
+    kairos-ext:reviewDate "2026-07-25" ;
+    kairos-ext:expiryDate "2099-12-31" ;
+    kairos-ext:deviationEvidence "review:databricks-tmdl" .
+
+acme:DatabricksSecurityDeviation a kairos-ext:Deviation ;
+    kairos-ext:adapterName "databricks" ;
+    kairos-ext:policyReference "DD-113-security" ;
+    kairos-ext:deviationScope "gold" ;
+    kairos-ext:deviationRationale "Security enforcement is in downstream Power BI." ;
+    kairos-ext:deviationOwnerRole "Security Owner" ;
+    kairos-ext:approvalStatus "approved" ;
+    kairos-ext:reviewDate "2026-07-25" ;
+    kairos-ext:expiryDate "2099-12-31" ;
+    kairos-ext:deviationEvidence "review:databricks-security" .
+"""
+    artifacts = _generate(
+        "client",
+        gold_path=_write_gold(tmp_path, "client", text),
+        platform="databricks",
+    )
+    report = _report(artifacts, "client")
+    assert report["adapter"]["semantic_mode"] == "directQuery"
+    assert len(report["adapter"]["approved_deviations"]) == 2
+    ddl = artifacts["client/client-gold-ddl.sql"]
+    assert "USING DELTA" in ddl
+
+
+def test_ddl_tmdl_dax_erd_and_report_are_deterministic(invoice_gold):
+    second = _generate("invoice")
+    comparable = {
+        path: content
+        for path, content in invoice_gold.items()
+        if path != "__release_data__"
+    }
+    assert comparable == {
+        path: content
+        for path, content in second.items()
+        if path != "__release_data__"
+    }
+    assert "CREATE TABLE" in invoice_gold["invoice/invoice-gold-ddl.sql"]
+    assert "erDiagram" in invoice_gold["invoice/invoice-gold-erd.mmd"]
+    schema = yaml.safe_load(
+        invoice_gold[
+            "invoice/dbt/models/gold/invoice/_invoice__gold_models.yml"
         ]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        erd = result.get("test/test-gold-erd.mmd", "")
-        assert "PK FK" not in erd
-
-
-# ---------------------------------------------------------------------------
-# Explicit fact FK aggressiveness
-# ---------------------------------------------------------------------------
-
-class TestExplicitFactAggressiveFKs:
-    """When goldTableType 'fact' is explicit, all object properties get FK columns."""
-
-    def test_explicit_fact_gets_fk_from_non_functional_property(self):
-        """Object property without FunctionalProperty or maxCardinality 1 should
-        still produce a FK column when the owning class has explicit goldTableType 'fact'."""
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-            <{BASE.rstrip('#')}> a owl:Ontology ;
-                rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-
-            ex:Customer a owl:Class ;
-                rdfs:label "Customer"@en ; rdfs:comment "A customer."@en .
-            ex:Product a owl:Class ;
-                rdfs:label "Product"@en ; rdfs:comment "A product."@en .
-            ex:Sale a owl:Class ;
-                rdfs:label "Sale"@en ; rdfs:comment "A sale."@en .
-            ex:Sale kairos-ext:goldTableType "fact" .
-
-            ex:soldTo a owl:ObjectProperty ;
-                rdfs:domain ex:Sale ; rdfs:range ex:Customer ;
-                rdfs:label "sold to"@en .
-            ex:soldProduct a owl:ObjectProperty ;
-                rdfs:domain ex:Sale ; rdfs:range ex:Product ;
-                rdfs:label "sold product"@en .
-
-            ex:saleAmount a owl:DatatypeProperty ;
-                rdfs:domain ex:Sale ; rdfs:range xsd:decimal ;
-                rdfs:label "sale amount"@en .
-        """
-        g = _make_graph(ttl)
-        classes = [
-            {"uri": f"{BASE}Customer", "name": "Customer",
-             "label": "Customer", "comment": ""},
-            {"uri": f"{BASE}Product", "name": "Product",
-             "label": "Product", "comment": ""},
-            {"uri": f"{BASE}Sale", "name": "Sale",
-             "label": "Sale", "comment": ""},
-        ]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result["test/test-gold-ddl.sql"]
-        # Both non-functional object properties should produce FK columns
-        assert "customer_sk" in ddl, "Expected FK column for soldTo → Customer"
-        assert "product_sk" in ddl, "Expected FK column for soldProduct → Product"
-
-    def test_auto_classified_fact_does_not_get_non_functional_fks(self):
-        """Auto-classified fact (no explicit goldTableType) should NOT get FK columns
-        from non-functional, non-max-cardinality-1 object properties."""
-        ttl = f"""
-            @prefix ex:  <{BASE}> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix rdfs:<http://www.w3.org/2000/01/rdf-schema#> .
-            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-            <{BASE.rstrip('#')}> a owl:Ontology ;
-                rdfs:label "Test"@en ; owl:versionInfo "1.0" .
-
-            ex:Customer a owl:Class ;
-                rdfs:label "Customer"@en ; rdfs:comment "A customer."@en .
-            ex:Product a owl:Class ;
-                rdfs:label "Product"@en ; rdfs:comment "A product."@en .
-            ex:Warehouse a owl:Class ;
-                rdfs:label "Warehouse"@en ; rdfs:comment "A warehouse."@en .
-            ex:Shipment a owl:Class ;
-                rdfs:label "Shipment"@en ; rdfs:comment "A shipment."@en .
-
-            ex:shipCustomer a owl:ObjectProperty, owl:FunctionalProperty ;
-                rdfs:domain ex:Shipment ; rdfs:range ex:Customer ;
-                rdfs:label "ship customer"@en .
-            ex:shipProduct a owl:ObjectProperty, owl:FunctionalProperty ;
-                rdfs:domain ex:Shipment ; rdfs:range ex:Product ;
-                rdfs:label "ship product"@en .
-            ex:shipWarehouse a owl:ObjectProperty ;
-                rdfs:domain ex:Shipment ; rdfs:range ex:Warehouse ;
-                rdfs:label "ship warehouse"@en .
-
-            ex:shipDate a owl:DatatypeProperty ;
-                rdfs:domain ex:Shipment ; rdfs:range xsd:date ;
-                rdfs:label "ship date"@en .
-        """
-        g = _make_graph(ttl)
-        classes = [
-            {"uri": f"{BASE}Customer", "name": "Customer",
-             "label": "Customer", "comment": ""},
-            {"uri": f"{BASE}Product", "name": "Product",
-             "label": "Product", "comment": ""},
-            {"uri": f"{BASE}Warehouse", "name": "Warehouse",
-             "label": "Warehouse", "comment": ""},
-            {"uri": f"{BASE}Shipment", "name": "Shipment",
-             "label": "Shipment", "comment": ""},
-        ]
-        result = generate_gold_artifacts(classes, g, BASE, ontology_name="test")
-        ddl = result["test/test-gold-ddl.sql"]
-        # Auto-classified as fact (2 functional FKs), but non-functional warehouse
-        # should NOT get an FK column on the fact table
-        assert "customer_sk" in ddl, "Functional FK should still be present"
-        assert "product_sk" in ddl, "Functional FK should still be present"
-        # Extract fact_shipment DDL block only
-        fact_start = ddl.index("fact_shipment")
-        fact_block = ddl[fact_start:ddl.index(";", fact_start)]
-        assert "warehouse_sk" not in fact_block, \
-            "Non-functional property should NOT produce FK on auto-classified fact"
-
-
-# ---------------------------------------------------------------------------
-# TestMasterGoldErd — generate_master_gold_erd
-# ---------------------------------------------------------------------------
-
-
-class TestMasterGoldErd:
-    """Tests for generate_master_gold_erd merging per-domain ERD files."""
-
-    @staticmethod
-    def _write_domain_erd(base: Path, domain: str, body: str) -> None:
-        """Create ``{domain}/{domain}-gold-erd.mmd`` under *base*."""
-        d = base / domain
-        d.mkdir(parents=True, exist_ok=True)
-        (d / f"{domain}-gold-erd.mmd").write_text(
-            f"erDiagram\n%% Gold Star Schema ERD: {domain}\n{body}\n",
-            encoding="utf-8",
-        )
-
-    def test_happy_path_two_domains(self, tmp_path: Path) -> None:
-        """Two domain ERDs are merged into one master ERD."""
-        self._write_domain_erd(
-            tmp_path, "sales",
-            '    dim_customer ||--o{ fact_order : "places"',
-        )
-        self._write_domain_erd(
-            tmp_path, "inventory",
-            '    dim_warehouse ||--o{ fact_stock : "holds"',
-        )
-
-        result = generate_master_gold_erd(tmp_path, hub_name="test-hub")
-
-        assert result is not None
-        assert result.startswith("erDiagram")
-        assert "Master Gold Star Schema ERD" in result
-        assert "test-hub" in result
-        # Both domain sections present
-        assert "%% --- Domain: sales ---" in result
-        assert "%% --- Domain: inventory ---" in result
-        # Body content preserved
-        assert "dim_customer" in result
-        assert "dim_warehouse" in result
-
-    def test_empty_directory(self, tmp_path: Path) -> None:
-        """An existing but empty directory returns None."""
-        result = generate_master_gold_erd(tmp_path, hub_name="empty")
-        assert result is None
-
-    def test_nonexistent_path(self, tmp_path: Path) -> None:
-        """A path that does not exist returns None."""
-        result = generate_master_gold_erd(tmp_path / "nonexistent", hub_name="x")
-        assert result is None
-
-    def test_skips_master_file(self, tmp_path: Path) -> None:
-        """The master-gold-erd.mmd file itself is not included."""
-        self._write_domain_erd(tmp_path, "sales", '    dim_customer { string name }')
-        # Plant a master file that should be ignored
-        (tmp_path / "master-gold-erd.mmd").write_text(
-            "erDiagram\n    SHOULD_NOT_APPEAR { string x }\n", encoding="utf-8",
-        )
-
-        result = generate_master_gold_erd(tmp_path, hub_name="h")
-
-        assert result is not None
-        assert "SHOULD_NOT_APPEAR" not in result
-        assert "dim_customer" in result
-
-    def test_strips_per_file_headers(self, tmp_path: Path) -> None:
-        """Per-file 'erDiagram' and '%% Gold Star Schema ERD:' lines are stripped."""
-        self._write_domain_erd(tmp_path, "hr", '    dim_employee { string name }')
-
-        result = generate_master_gold_erd(tmp_path, hub_name="h")
-
-        assert result is not None
-        lines = result.splitlines()
-        # Only one erDiagram header (the master one)
-        assert sum(1 for ln in lines if ln.strip() == "erDiagram") == 1
-        # No per-domain header comment leaked through
-        assert not any(
-            ln.strip().startswith("%% Gold Star Schema ERD:") for ln in lines
-        )
+    )
+    assert {item["name"] for item in schema["models"]} == {
+        "fact_invoice",
+        "fact_invoice_line",
+    }

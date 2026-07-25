@@ -282,7 +282,7 @@ def _compute_release_facts(
     if not claims_dir.is_dir():
         return ()
 
-    lowers = [d.lower() for d in domains_filter] if domains_filter else None
+    lowers = [domain.lower() for domain in domains_filter] if domains_filter else None
 
     def in_scope(name: str) -> bool:
         if lowers is None:

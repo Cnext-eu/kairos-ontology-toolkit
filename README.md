@@ -27,9 +27,10 @@
 
 ---
 
-**Turn OWL/Turtle ontologies into production-ready data artifacts** — medallion-layer
-SQL schemas, dbt models, Power BI semantic models, graph databases, search indexes,
-and AI prompt context — with built-in validation and a single CLI command.
+**Turn governed OWL/Turtle models and source contracts into data artifacts** —
+medallion-layer SQL schemas, dbt models, Power BI semantic models, graph databases,
+search indexes, and AI prompt context. Production release remains gated by preparation,
+typed mappings, Silver parity, validation, and target-specific evidence.
 
 > 📖 **New here?** Read the [User Guide](docs/USER_GUIDE.md) for a complete walkthrough.
 
@@ -41,11 +42,11 @@ and AI prompt context — with built-in validation and a single CLI command.
 |----------|-----------|
 | 🔍 **Validation** | 3-level pipeline: RDF/OWL syntax → SHACL constraints → SPARQL consistency |
 | 🏗️ **8 Projection Targets** | Silver DDL, dbt, Power BI / TMDL, Neo4j, Azure Search, a2ui, prompt, HTML report |
-| 🥈 **Medallion Architecture** | Full silver + gold layers with SCD2, GDPR satellites, junction tables, conformed dimensions |
+| 🥈 **Medallion Architecture** | Mandatory source preparation, typed mappings, shared Silver authority, SCD1/SCD2 runtime contracts, and profile-driven Gold |
 | 📦 **Hub Scaffolding** | `kairos init` bootstraps a complete ontology repository with CI, skills, and config |
 | 🔗 **Full Traceability** | SKOS-based source→domain lineage in every generated SQL comment and schema YAML |
 | 🌐 **Multi-Domain** | Each domain deploys independently; cross-domain FK joins resolve automatically |
-| 📊 **Power BI** | Star-schema gold layer, TMDL import/export, DAX measures, hierarchies, RLS |
+| 📊 **Power BI** | Governed dimensional Gold profile, TMDL/DAX, approved calendars, and fail-closed RLS/OLS scaffolds |
 
 ## 🚀 Quick Start
 
@@ -59,7 +60,7 @@ kairos-ontology init my-ontology-hub
 # Validate ontologies
 kairos-ontology validate --all
 
-# Generate all projection targets
+# After authoring preparation, mappings, and Silver/Gold policy, generate projections
 kairos-ontology project --target all
 ```
 
@@ -88,7 +89,7 @@ kairos-ontology-toolkit/
 │   ├── projections/                  # 8 projection generators
 │   │   ├── medallion_silver_projector.py   # Silver DDL + ERD
 │   │   ├── medallion_dbt_projector.py      # dbt models (silver + gold)
-│   │   ├── medallion_gold_projector.py     # Gold star-schema definitions
+│   │   ├── medallion_gold_projector.py     # Profile-driven Gold orchestration
 │   │   └── ...                             # neo4j, azure-search, a2ui, prompt, report
 │   ├── scaffold/                     # Hub repo templates (distributed via init/update)
 │   ├── templates/                    # Jinja2 output templates per target
@@ -104,18 +105,21 @@ When you run `kairos-ontology init`, you get a fully configured ontology hub:
 
 ```
 my-ontology-hub/
+├── integration/
+│   ├── sources/             # Immutable Bronze source vocabulary descriptions
+│   └── preparation/         # Source-side normalization and routing policy
 ├── model/
-│   ├── ontologies/          # Domain ontologies (.ttl) — the single source of truth
-│   ├── extensions/          # Silver/gold extension annotations (*-silver-ext.ttl, *-gold-ext.ttl)
-│   ├── mappings/            # SKOS source-to-domain column mappings
+│   ├── ontologies/          # Domain semantics
+│   ├── extensions/          # Silver/Gold policy contracts
+│   ├── mappings/            # Typed SKOS source-to-domain mappings
+│   ├── governance/          # Strict-release baseline and evidence policy
+│   ├── shapes/              # SHACL validation shapes
 │   └── reference-models/    # Shared/imported ontologies + XML catalog
-├── sources/                 # Bronze source vocabulary descriptions
 ├── output/                  # Generated projections (per target, per domain)
 │   └── medallion/
 │       ├── dbt/             # dbt project (models/, macros/, dbt_project.yml)
 │       ├── silver/          # DDL + ERD diagrams
 │       └── powerbi/         # TMDL + star schema
-├── shapes/                  # SHACL validation shapes (optional)
 └── .github/skills/          # Copilot agent skills for interactive modeling
 ```
 

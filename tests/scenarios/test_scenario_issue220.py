@@ -79,7 +79,7 @@ def test_shared_dim_date_emitted_once_and_domain_neutral(tmp_path):
     content = dim_date.read_text(encoding="utf-8")
     assert "schema='gold_shared'" in content
     # Domain-neutral: no single domain name leaks into the conformed dimension.
-    assert "-- Domain: shared" in content
+    assert "-- Approved governed calendar; no date bounds are inferred." in content
     # No per-domain gold folder duplicate.
     assert not (dbt / "models" / "gold" / "client" / "dim_date.sql").exists()
 
@@ -161,6 +161,7 @@ def test_domain_only_projection_does_not_flag_peer_import_as_drift(tmp_path):
         catalog_path=hub / "catalog-v001.xml",  # absent → graceful fallback
         output_path=hub / "output",
         target="dbt",
+        degraded=True,
     )
 
     dbt = hub / "output" / "medallion" / "dbt"

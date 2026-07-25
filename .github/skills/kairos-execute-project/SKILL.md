@@ -84,7 +84,8 @@ covered by the stub flow, and to `dbt` runs that did not request stubs.
    - Explain what the extension file provides (annotation decisions: natural keys, SCD types, FK declarations, schema names).
    - Offer the user a choice:
      - **(Recommended)** Invoke the design skill to create the extensions first.
-     - Run anyway with defaults (all columns SCD Type 1, no natural keys, no FK — produces valid but incomplete output).
+     - Run non-runtime targets only. dbt/Silver runtime projection fails closed
+       rather than inferring SCD, identity, CDC, hash, or FK behavior.
 4. **If files are present:** proceed with projection normally.
 5. **For bare `project` (all targets):** run non-medallion targets immediately; apply the pre-flight check only for the medallion subset.
 
@@ -123,9 +124,9 @@ unmapped-affinity-table check the stub flow exists to work around). It does
 checks, the extension-sync gate, the MDM-anchor gate, and the ownership-boundary
 gate all still run and still block as normal (see below). This is narrower than
 `--warn-only`, which would also silence those other gates — never substitute
-`--warn-only` for this exception. Strict release blocking for unbound stubs is a
-separate mechanism (the `project --strict` release gate, DD-096) and is
-unaffected by `--no-source-coverage`; keep it enforced in release CI regardless
+`--warn-only` for this exception. Strict DD-114 release evaluation is a separate
+mechanism (`project --strict`) and is unaffected by `--no-source-coverage`; keep
+it enforced in release CI regardless
 of how stubs were emitted.
 
 #### Claim-driven extension sync (Slice 2)
@@ -189,12 +190,12 @@ You:
 
 | Target | Output | Use case |
 |--------|--------|----------|
-| **dbt** | SQL models + schema.yml | Data warehouse modeling |
+| **dbt** | SQL/YAML + physical DDL/metadata/ERD/parity manifest | Data warehouse modeling |
 | **neo4j** | Cypher schema scripts | Graph database setup |
 | **azure-search** | Index + synonym map JSON | Azure AI Search configuration |
 | **a2ui** | Message schema JSON | UI generation / form scaffolding |
 | **prompt** | Compact + detailed context JSON | LLM prompt context injection |
-| **silver** | DDL + ALTER + Mermaid ERD | MS Fabric / Delta Lake silver layer |
+| **silver** | Evidence-bound dbt/Silver parity bundle | Silver physical review |
 | **powerbi** | Star schema DDL + TMDL + DAX + ERD | Power BI / MS Fabric gold layer |
 | **report** | HTML mapping reports | Business analyst mapping coverage review |
 | **mdm-profile** | Immutable MDM policy profile (JSON + review MD) | Master Data Management — consumed by `kairos-mdm-runtime` (opt-in; requires `*-mdm-ext.ttl`) |
@@ -212,7 +213,11 @@ You:
 - **azure-search**: When building a search index. Maps ontology properties to Azure Search field types with filters and facets.
 - **a2ui**: When generating UI forms. Creates JSON schemas that describe the data structure for automatic UI rendering.
 - **prompt**: When using the ontology as LLM context. Generates a compact version (entity→fields map) and a detailed version (with types, descriptions, relationships).
-- **silver**: When building the silver layer of a medallion data platform (e.g. MS Fabric warehouse). Generates T-SQL DDL (`CREATE TABLE`), FK/UNIQUE constraints (`ALTER TABLE`), and a Mermaid ERD. Requires a `*-silver-ext.ttl` annotation file in `model/extensions/`. Imported classes (via `owl:imports`) are not projected by default — use `silverInclude` or `silverIncludeImports` to claim them (DD-021). See the **kairos-design-silver** skill.
+- **silver**: An explicit facade over the same DD-110 pipeline as `dbt`. It requires
+  source vocabulary, preparation policy, mappings, and normalized Silver policy; it
+  fails closed rather than inventing ontology-only DDL. It emits adapter DDL,
+  unenforced constraint/index metadata, ERD, and a field-level parity manifest together
+  with the matching dbt SQL/YAML.
 - **mdm-profile**: When a domain has Master Data Management policy. Projects an **immutable, content-addressed** MDM profile (`output/mdm/{domain}-mdm-profile.json` + `.md` review summary) from a `*-mdm-ext.ttl` extension (`kairos-mdm:` vocabulary). **Opt-in** — not part of bare `project`/`--target all`; run it explicitly. Author policy with the **kairos-design-mdm** skill; validate with `mdm-validate`. The profile is consumed by the separate `kairos-mdm-runtime` repo (design-time only here).
 
 ## CLI commands
@@ -288,21 +293,23 @@ python -m kairos_ontology project --target dbt --emit-aspirational-stubs
     many of its (vacuous) tests pass.
 - **Binding.** Add a SKOS source mapping (via **kairos-design-mapping**) and re-project;
   the stub is transparently replaced by the real, populated model. Incremental/SCD
-  models use `on_schema_change='sync_all_columns'` and the first bound run is a full
-  refresh (safe — the stub had zero rows).
-- **Release gating.** A stub is **not** release-eligible merely by existing or by
-  passing its (vacuous) generated tests. Under the strict release gate, all
-  approved, materialization-eligible, *unbound* claims block release until bound.
-  Gold/Power BI is still generated over a stub dependency but is marked
-  non-release-eligible while a release-blocking stub is in its closure. This
-  strict blocker is independent of `check-claims --no-source-coverage` above —
-  skipping the mapping-coverage *gate* to emit a stub never skips the release
-  *gate* that keeps it from shipping unbound. Before running `project --strict`
-  in CI, `kairos-ontology check-release` (DD-101) reports the same
-  release-eligible/aspirational facts (plus claim/source-coverage/extension-sync
-  and committed validation/projection state) **without generating any output** —
-  use it as the read-only preflight; it never replaces `project --strict`'s
-  actual enforcement.
+  models use the authored DD-109 schema-evolution and approved backfill policy;
+  no automatic full refresh or column sync is inferred.
+- **Release gating.** Ordinary projection always emits **review-only** release
+  metadata and never claims release readiness. `project --strict` runs the
+  DD-114/DD-115 evaluator after generation and exits nonzero for any blocking
+  baseline, policy, prep, mapping, runtime capability, adapter compile evidence,
+  deviation, artifact, binding, coverage, DQ, security, measure, calendar,
+  warning, or closure finding. Registry support is not compile evidence.
+  Strict mode requires an approved, unexpired
+  `model/governance/release-baseline.yaml`; scoped supported adapter evidence
+  must match the target adapter/version/capability, and any deviation must be
+  approved, owned, evidenced, reviewed, unexpired, and scope-matched. The run
+  writes deterministic `release-manifest.json` and `release-report.json` before
+  failing, so every blocker is actionable. `check-release` remains a read-only
+  lifecycle preflight and does not replace this artifact-aware evaluator.
+  Run `kairos-ontology check-release` without generating any output to inspect
+  lifecycle facts, then use `project --strict` for final enforcement.
 - **OKF capture.** Record stub-emission runs and any release-gate blockers in
   `phases/project.md` as *State update proposals* (aspirational stubs pending binding).
 
@@ -317,9 +324,9 @@ data platform from ontology → warehouse → BI layer.  They all write to
 
 | Target | What it does | Key inputs | Key outputs |
 |--------|-------------|------------|-------------|
-| **silver** | Generates the **physical schema** for the silver warehouse layer | `*-silver-ext.ttl` | DDL (`CREATE TABLE`), FK/UNIQUE constraints (`ALTER TABLE`), Mermaid ERD + SVG |
-| **dbt** | Generates a **dbt Core project** with transformation models that populate the silver schema from bronze sources | `*-silver-ext.ttl` + bronze vocabularies + SKOS mappings | SQL models, `schema.yml` with tests, `dbt_project.yml`, macros |
-| **powerbi** | Generates the **gold layer** star schema + Power BI semantic model | `*-gold-ext.ttl` | Gold DDL, TMDL semantic model, DAX measures, star-schema ERD |
+| **silver** | Runs the same evidence-bound DD-110 Silver pipeline as dbt | Silver policy + preparation + sources + mappings | SQL/YAML, adapter DDL, constraint metadata, ERD, parity manifest |
+| **dbt** | Generates the complete dbt and physical Silver bundle | Silver policy + preparation + sources + mappings | SQL/YAML, project config, DDL, metadata, ERD, parity manifest |
+| **powerbi** | Generates one registered Gold data-product profile | Passing Silver parity + `*-gold-ext.ttl` | Dimensional dbt/DDL, TMDL, DAX, ERD, governed product report |
 
 > **Import whitelisting (DD-021):** The silver and powerbi targets only project
 > classes defined in the hub domain by default. Imported classes (via `owl:imports`)
@@ -340,20 +347,22 @@ data platform from ontology → warehouse → BI layer.  They all write to
       └──────┬──────┘  └────┬─────┘  └──────┬───────┘
              │               │               │
              ▼               ▼               ▼
-      DDL + ALTER      dbt project      TMDL + DAX
-      + ERD            (silver SQL)     + gold DDL + ERD
+      shared parity     dbt + shared     TMDL + DAX
+      bundle            parity bundle    + gold DDL + ERD
 ```
 
 ### Running the full medallion pipeline
 
-There is no `--target medallion` shorthand — run `--target all` (default) or
-run the three targets individually:
+There is no `--target medallion` shorthand. `--target all` runs `dbt`, which already
+includes the Silver physical/parity bundle, plus the other standard targets. Use
+`--target silver` only when explicitly requesting the same evidence-bound Silver bundle
+without Gold:
 
 ```bash
 # All three medallion targets (plus neo4j, prompt, etc.)
 python -m kairos_ontology project
 
-# Just the medallion pipeline (run separately)
+# Explicit Silver-only facade (optional; not repeated by --target all)
 python -m kairos_ontology project --target silver
 python -m kairos_ontology project --target dbt
 python -m kairos_ontology project --target powerbi
@@ -402,17 +411,18 @@ pre-handoff QA.
 
 | Target | Required files | Skill for guidance |
 |--------|---------------|-------------------|
-| **silver** | `model/extensions/<domain>-silver-ext.ttl` with `kairos-ext:` annotations (naturalKey, silverSchema, scdType, etc.) | `kairos-design-silver` |
-| **dbt** | All silver prerequisites PLUS `integration/sources/<system>/*.vocabulary.ttl` (bronze) AND `model/mappings/<system>-to-<domain>.ttl` (SKOS mappings) | `kairos-design-silver` |
-| **powerbi** | `model/extensions/<domain>-gold-ext.ttl` with gold annotations (goldTableType, goldSchema, measureExpression, etc.) | `kairos-design-gold` |
+| **silver** | Silver policy PLUS preparation policy, `integration/sources/`, and `model/mappings/` evidence | `kairos-design-silver` |
+| **dbt** | The identical Silver evidence set; Gold inputs are additive | `kairos-design-silver` |
+| **powerbi** | The complete Silver evidence set plus a registered `goldProductProfile`, exact source model/version bindings, explicit table roles, and governed measure/calendar/security resources | `kairos-design-gold` |
 
 ### What gets generated in detail
 
-**Silver target** — physical schema definition:
-- `CREATE TABLE` with typed columns, SK, IRI, audit envelope columns
-- `ALTER TABLE` for UNIQUE constraints (from SHACL) and FK relationships
-- Mermaid ERD showing entity relationships
-- Master ERD combining all domains
+**Silver physical outputs (also emitted by dbt):**
+- adapter-mapped `analyses/{domain}/{domain}-ddl.sql`;
+- `metadata/{domain}-silver-constraints.json` with explicit enforcement/deviation state;
+- Mermaid domain/master ERDs from actual emitted models and columns; and
+- `metadata/{domain}-silver-parity.json`, whose deterministic field/artifact hashes are
+  mandatory for strict release.
 
 **dbt target** — transformation logic:
 - One `.sql` model per entity per source system (e.g., `silver_client__crmsystem.sql`)
@@ -422,15 +432,26 @@ pre-handoff QA.
 - Handles split patterns (one source → multiple entity subtypes)
 - Handles merge patterns (multiple sources → one entity)
 - Cross-domain FK joins via surrogate keys
+- DD-109 SCD1/SCD2 plans with separate business-valid/system intervals, canonical
+  CDC order, bounded lookback, idempotent replay, explicit delete/correction/backfill,
+  and adapter-aware Fabric/Databricks merge behavior
+- Canonical hash-v1 macro (SHA-256 over typed length-delimited bytes), runtime
+  tests, and temporal-FK cardinality/quarantine artifacts
 - Contracted intermediate models copied from `integration/transforms/dbt/` when their
   synchronized virtual-source mappings and Silver routing are valid
 
-**Power BI target** — analytical layer:
-- Star-schema DDL (dimension + fact + bridge tables)
-- TMDL semantic model (`.tmdl` files for Power BI Desktop / Fabric)
-- DAX measures from `measureExpression` annotations
-- Hierarchies, perspectives, calculation groups
-- Gold-layer Mermaid ERD
+**Power BI target** — profile-driven analytical product:
+- the only implemented profile is `dimensional-powerbi-v1`; missing/unknown profiles fail;
+- only explicit fact/dimension/bridge roles are materialized, including zero-dimension facts;
+- dimensional dbt and adapter DDL consume the actual passing Silver registry;
+- first-class governed measures retain base columns and emit only when lifecycle permits;
+- date/time intelligence appears only from an approved calendar profile;
+- RLS/OLS scaffolding appears only from a complete fail-closed entitlement contract;
+- perspectives remain navigation-only;
+- Fabric emits DirectLake TMDL; Databricks downstream-Power-BI output requires approved
+  scoped deviations; and
+- TMDL, DAX, ERD, and a product-readiness report never claim deployment, runtime
+  enforcement, or data validation from syntax alone.
 
 ## Output structure
 

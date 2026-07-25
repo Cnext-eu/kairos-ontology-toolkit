@@ -16,7 +16,12 @@ import yaml
 
 from .completeness_model import compute_completeness_facts
 from .dbt_contract_sync import DbtContractSyncError, sync_dbt_contracts
-from .dbt_contracts import DbtContractError, DbtContractModel, discover_dbt_contracts
+from .dbt_contracts import (
+    APPROVED_DECISION_STATUSES,
+    DbtContractError,
+    DbtContractModel,
+    discover_dbt_contracts,
+)
 
 INVENTORY_RELPATH = Path("model/planning/dbt-transformations/candidates.yaml")
 SCHEMA_VERSION = 1
@@ -797,6 +802,33 @@ def evaluate_transformation_readiness(
                 if set(assessment.replacement_scope) != actual_scope:
                     reasons.append(
                         "candidate replacement scope does not match the discovered dbt contract"
+                    )
+                    blocking = True
+                decisions = tuple(getattr(contract, "decisions", ()))
+                if not decisions:
+                    reasons.append(
+                        "DD-107 contracted transformation requires at least one explicit "
+                        "approved decision with accepted evidence and executable verified tests"
+                    )
+                    blocking = True
+                unapproved = tuple(
+                    decision.id
+                    for decision in decisions
+                    if decision.status not in APPROVED_DECISION_STATUSES
+                )
+                if unapproved:
+                    reasons.append(
+                        "contract decisions require approval before mapping: "
+                        + ", ".join(unapproved)
+                    )
+                    blocking = True
+                if any(
+                    not decision.evidence or not decision.verified_by
+                    for decision in decisions
+                ):
+                    reasons.append(
+                        "DD-107 contract decisions require accepted profiling/evidence "
+                        "and executable verified tests"
                     )
                     blocking = True
                 if sync_error is not None:

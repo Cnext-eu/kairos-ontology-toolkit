@@ -3,6 +3,7 @@
 """Projection orchestrator - generates downstream artifacts."""
 
 import json
+import hashlib
 import logging
 import traceback as _tb
 from collections.abc import Iterable, Mapping
@@ -189,7 +190,12 @@ for _target_spec in (
     TargetSpec("azure-search", "azure-search", OutputCategory.STANDARD),
     TargetSpec("a2ui", "a2ui", OutputCategory.STANDARD),
     TargetSpec("prompt", "prompt", OutputCategory.STANDARD),
-    TargetSpec("silver", "medallion/dbt", OutputCategory.MEDALLION),
+    TargetSpec(
+        "silver",
+        "medallion/dbt",
+        OutputCategory.MEDALLION,
+        include_in_all=False,
+    ),
     TargetSpec(
         "powerbi",
         "medallion/powerbi",
@@ -331,6 +337,10 @@ class ProjectionReport:
     # Captured logger warnings: {domain: [(target, message)]}
     captured_warnings: Dict[str, List[tuple]] = field(default_factory=dict)
 
+    # Strict-release inputs emitted by typed projectors; enforcement is incremental.
+    release_data: Dict[str, Any] = field(default_factory=dict)
+    release_evaluation: Dict[str, Any] = field(default_factory=dict)
+
     # Running counters
     _total_files: int = field(default=0, repr=False)
     _errors: int = field(default=0, repr=False)
@@ -460,6 +470,8 @@ class ProjectionReport:
             "domains": self.domains,
             "projections": self.projections,
             "post_steps": self.post_steps,
+            "release_data": self.release_data,
+            "release_evaluation": self.release_evaluation,
             "events": self.events,
         }
 
@@ -762,13 +774,21 @@ def _discover_extensions(
 
     elif target_name == "powerbi":
         if extensions_dir and extensions_dir.exists():
-            candidates = list(extensions_dir.glob(f"{onto_name}-gold-ext.ttl"))
-            candidates += list(extensions_dir.glob("*-gold-ext.ttl"))
+            candidates = list(extensions_dir.glob(f"{onto_name}-silver-ext.ttl"))
+            candidates += list(extensions_dir.glob("*-silver-ext.ttl"))
             ext_path = candidates[0] if candidates else None
         if not ext_path:
+            candidates = list(src_file.parent.glob(f"{onto_name}-silver-ext.ttl"))
+            candidates += list(src_file.parent.glob("*-silver-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+        if extensions_dir and extensions_dir.exists():
+            candidates = list(extensions_dir.glob(f"{onto_name}-gold-ext.ttl"))
+            candidates += list(extensions_dir.glob("*-gold-ext.ttl"))
+            gold_ext_path = candidates[0] if candidates else None
+        if not gold_ext_path:
             candidates = list(src_file.parent.glob(f"{onto_name}-gold-ext.ttl"))
             candidates += list(src_file.parent.glob("*-gold-ext.ttl"))
-            ext_path = candidates[0] if candidates else None
+            gold_ext_path = candidates[0] if candidates else None
 
     elif target_name == "dbt":
         # dbt needs silver-ext.ttl for naturalKey/silver annotations
@@ -1044,23 +1064,23 @@ def run_projections(
     accelerator: str | None = None,
 ):
     """Run projection generation.
-    
+
     Args:
         ontologies_path: Path to ontology files
         catalog_path: Path to XML catalog for imports
         output_path: Where to write generated files
         target: Projection target (dbt, neo4j, etc.) or 'all'
-        namespace: Base namespace to project (e.g., 'http://example.org/ont/'). 
+        namespace: Base namespace to project (e.g., 'http://example.org/ont/').
                    If None, auto-detects from ontology.
         platform: dbt SQL adapter platform (``fabric`` or ``databricks``).
         emit_aspirational_stubs: When True, the dbt/silver projector emits typed
             zero-row Silver stubs for approved, materialization-eligible claims that
             have no bronze mapping yet (target-first stub → bind loop, DD-096).
             Defaults to False; also honoured via ``KAIROS_EMIT_ASPIRATIONAL_STUBS``.
-        strict: Release gate (DD-096 / DEC-1). When True, the run fails after
-            projection if any approved, materialization-eligible claim has no bronze
-            mapping (an *unbound target*), so an incomplete hub cannot be released
-            with vacuous zero-row stubs. Independent of ``emit_aspirational_stubs``.
+        strict: DD-114/DD-115 fail-closed release evaluation. The run persists
+            deterministic review evidence, then fails when baseline, binding,
+            coverage, DQ, capability, compile, security, measure, calendar, or
+            artifact evidence is blocking.
     """
     import os
 
@@ -1083,12 +1103,13 @@ def run_projections(
         toolkit_version=toolkit_version,
         generated_at=generated_at_iso(generated_at),
     )
+    release_evaluation_result = None
     unbound_eligible_by_domain: dict[str, list[str]] = {}
     fatal_target_errors: list[str] = []
 
     print("🚀 Kairos Ontology Projections")
     print("=" * 50)
-    
+
     # Get ontology files. `ontologies_path` may be the model/ontologies directory
     # or one concrete ontology file selected by `kairos-ontology project --ontology`.
     ontology_root = ontologies_path.parent if ontologies_path.is_file() else ontologies_path
@@ -1098,20 +1119,25 @@ def run_projections(
         ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
     # Skip non-domain files: silver-ext annotations, _master imports, etc.
     ontology_files = [f for f in ontology_files if _is_domain_ontology(f)]
-    
+
     if not ontology_files:
         print(f"  ⚠️  No ontology files found in {ontologies_path}")
         report.record("warning", f"No ontology files found in {ontologies_path}")
         report.write(output_path)
+        if strict:
+            raise ProjectionRunError(
+                "Strict release blocked: no domain ontologies were available "
+                "[DD-114-projection]"
+            )
         return
-    
+
     print(f"\nFound {len(ontology_files)} ontology file(s)")
     print("Each ontology will generate separate output files per domain\n")
-    
+
     # Process each ontology file separately (each represents a data domain)
     print("Loading ontologies...")
     ontology_graphs = []
-    
+
     for onto_file in ontology_files:
         try:
             from .ontology_loader import SemanticProfile, load_ontology
@@ -1132,7 +1158,7 @@ def run_projections(
                         domain=onto_file.stem,
                         target="load",
                     )
-            
+
             # Store graph with its source file info
             ontology_graphs.append({
                 'file': onto_file,
@@ -1161,7 +1187,7 @@ def run_projections(
             report.record("error", f"Could not parse {onto_file.name}: {e}",
                           domain=onto_file.stem)
             fatal_target_errors.append(f"{onto_file.stem}: ontology load failed: {e}")
-    
+
     if not ontology_graphs:
         print("  ⚠️  No ontologies loaded - check ontology files exist")
         report.record("error", "No ontologies loaded — check ontology files exist")
@@ -1169,9 +1195,9 @@ def run_projections(
         if fatal_target_errors:
             raise ProjectionRunError("; ".join(fatal_target_errors))
         return
-    
+
     print()
-    
+
     # DD-021: Collect hub domain namespaces (for import whitelisting).
     # Used to distinguish peer hub imports from external reference models.
     hub_domain_namespaces: set = set()
@@ -1199,10 +1225,10 @@ def run_projections(
         report.record("warning", f"Could not collect hub domain bases: {exc}")
     # Create output directories
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Determine template directory
     template_base = Path(__file__).parent.parent / "templates"
-    
+
     # Look for SHACL shapes directory — hub layout: model/ontologies/, model/shapes/
     hub_root = ontology_root.parent.parent if ontology_root.parent else None
     shapes_dir = hub_root / "model" / "shapes" if hub_root else None
@@ -1271,7 +1297,7 @@ def run_projections(
             else output_path / target_name
         )
         target_output.mkdir(parents=True, exist_ok=True)
-        
+
         total_files = 0
         target_failed = False
         pending_dbt_artifacts: dict[str, str] = {}
@@ -1308,16 +1334,20 @@ def run_projections(
         dbt_coverage_data: dict[str, dict] = {}
 
         # Collect all silver extension file paths for cross-domain NK resolution.
-        # For dbt/silver targets, peer_ext_paths allows FK resolution across domains.
+        # Medallion targets use peer Silver policy for cross-domain authority.
         all_silver_ext_paths: list[Path] = []
-        if target_name in ("dbt", "silver") and extensions_dir and extensions_dir.exists():
+        if (
+            target_name in ("dbt", "silver", "powerbi")
+            and extensions_dir
+            and extensions_dir.exists()
+        ):
             all_silver_ext_paths = sorted(extensions_dir.glob("*-silver-ext.ttl"))
 
         for onto_info in ontology_graphs:
             onto_graph = onto_info['graph']
             onto_name = onto_info['name']
             load_result = onto_info['load_result']
-            
+
             # Auto-detect namespace for this ontology if not provided
             onto_namespace = namespace
             if onto_namespace is None:
@@ -1339,7 +1369,7 @@ def run_projections(
             # Populate namespace on the domain entry (first time we know it)
             if onto_name in report.domains and not report.domains[onto_name].get("namespace"):
                 report.domains[onto_name]["namespace"] = onto_namespace
-            
+
             try:
                 # Discover extension files for this target/domain
                 ext_path, gold_ext_path = _discover_extensions(
@@ -1433,7 +1463,7 @@ def run_projections(
                 # DD-023: Discover reference model default extensions
                 ref_defaults = _discover_ref_model_defaults(
                     onto_info["file"], catalog_path,
-                    target="gold" if target_name == "powerbi" else "silver",
+                    target="silver",
                 )
                 if module_context and target_name in ("silver", "dbt", "powerbi"):
                     from .reference_modules import active_default_annotation_paths
@@ -1491,7 +1521,7 @@ def run_projections(
                     # reject invalid bound models in every mode, emit typed zero-row
                     # stubs when enabled, and report unbound claims in strict mode.
                     eligible_class_uris: set[str] | None = None
-                    if target_name == "dbt":
+                    if target_name in {"dbt", "silver"}:
                         governed_class_uris: set[str] = set()
                         if claims_dir:
                             claims_file = claims_dir / f"{onto_name}-claims.yaml"
@@ -1542,15 +1572,28 @@ def run_projections(
                         )
                 if artifacts:
                     # Extract coverage data before writing (not a real file artifact)
-                    if target_name == "dbt" and "__coverage_data__" in artifacts:
+                    if (
+                        target_name in {"dbt", "silver"}
+                        and "__coverage_data__" in artifacts
+                    ):
                         dbt_coverage_data[onto_name] = artifacts.pop("__coverage_data__")
                     # Release gate (DD-096 / DEC-1): collect unbound approved claims.
-                    if target_name == "dbt" and "__unbound_eligible__" in artifacts:
+                    if (
+                        target_name in {"dbt", "silver"}
+                        and "__unbound_eligible__" in artifacts
+                    ):
                         unbound_eligible_by_domain[onto_name] = artifacts.pop(
                             "__unbound_eligible__"
                         )
+                    if (
+                        target_name in {"dbt", "silver", "powerbi"}
+                        and "__release_data__" in artifacts
+                    ):
+                        report.release_data[onto_name] = artifacts.pop(
+                            "__release_data__"
+                        )
 
-                    if target_name == "dbt":
+                    if target_name in {"dbt", "silver"}:
                         _merge_dbt_artifacts(
                             pending_dbt_artifacts,
                             artifacts,
@@ -1566,7 +1609,7 @@ def run_projections(
                     )
 
                     # Track dbt domains for project config generation
-                    if target_name == "dbt":
+                    if target_name in {"dbt", "silver"}:
                         dbt_domain_names.append(onto_name)
                         # Check if gold models were produced
                         if any(k.startswith("models/gold/") for k in artifacts):
@@ -1582,6 +1625,30 @@ def run_projections(
                                   domain=onto_name, target=target_name)
             except Exception as e:
                 target_failed = True
+                if target_name in {"dbt", "silver", "powerbi"}:
+                    blocking_rules = tuple(
+                        getattr(e, "blocking_rules", ())
+                    )
+                    if (
+                        not blocking_rules
+                        and str(getattr(e, "code", "")).startswith("prep.")
+                    ):
+                        blocking_rules = (
+                            (
+                                str(getattr(e, "rule_id", "DD-106-prep")),
+                                str(e),
+                            ),
+                        )
+                    if blocking_rules:
+                        report.release_data[onto_name] = {
+                            "policy_version": "1.0",
+                            "preparation_routes": [],
+                            "blocking_reasons": [
+                                {"rule_id": rule_id, "reason": reason}
+                                for rule_id, reason in blocking_rules
+                            ],
+                            "capabilities": [],
+                        }
                 print(f"  [{onto_name}] ✗ Failed: {e}")
                 _tb.print_exc()
                 report.record_projection(
@@ -1592,7 +1659,11 @@ def run_projections(
                 )
 
         # After all domains: generate dbt project config (once, with all domains)
-        if target_name == "dbt" and dbt_domain_names and not target_failed:
+        if (
+            target_name in {"dbt", "silver"}
+            and dbt_domain_names
+            and not target_failed
+        ):
             try:
                 from .projections.medallion_dbt_projector import generate_dbt_project_config
                 dbt_template_dir = Path(__file__).parent.parent / "templates" / "dbt"
@@ -1647,14 +1718,20 @@ def run_projections(
                 fatal_target_errors.append(message)
                 report.record_post_step("dbt_assembly", status="error", reason=str(exc))
                 print(f"  ✗ {message}\n")
-        elif target_name == "dbt" and target_failed:
-            message = "dbt projection failed; no dbt artifacts were written"
+        elif target_name in {"dbt", "silver"} and target_failed:
+            message = (
+                f"{target_name} projection failed; no dbt artifacts were written"
+            )
             fatal_target_errors.append(message)
             report.record_post_step("dbt_assembly", status="error", reason=message)
             print(f"  ✗ {message}\n")
 
         # After all domains: merge per-domain coverage data into a single report
-        if target_name == "dbt" and dbt_coverage_data and not target_failed:
+        if (
+            target_name in {"dbt", "silver"}
+            and dbt_coverage_data
+            and not target_failed
+        ):
             import json as _json
             merged_coverage = {
                 "domains": dbt_coverage_data,
@@ -1684,8 +1761,8 @@ def run_projections(
             print(f"  ✓ Merged coverage report for {len(dbt_coverage_data)} domain(s)")
             report.record_post_step("coverage_report", status="ok")
 
-        # After all domains: generate master ERD for silver target
-        if target_name == "silver" and total_files > 0:
+        # DD-110: dbt and the explicit Silver facade emit the same physical ERDs.
+        if target_name in {"dbt", "silver"} and total_files > 0:
             from .projections.medallion_silver_projector import generate_master_erd, render_mermaid_svg
             dbt_output = output_path / "medallion" / "dbt"
             hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
@@ -1849,8 +1926,132 @@ def run_projections(
         # Record the managed detail-report set so a later run prunes report files
         # it no longer produces (convergent output, DD-096 C3 style).
         _reconcile_managed_output(report_output, managed_detail_files)
-    
-    print("✅ Projection generation completed!")
+
+    if "dbt" in targets_to_run:
+        from .release_evaluator import (
+            ReleaseEvaluationInput,
+            evaluate_release,
+            load_dq_runtime_results,
+            load_release_baseline,
+        )
+
+        dbt_spec = get_target_spec("dbt")
+        dbt_output = (
+            dbt_spec.output_path(output_path)
+            if dbt_spec is not None
+            else output_path / "dbt"
+        )
+        for data in report.release_data.values():
+            for artifact in data.get("generated_artifacts", []):
+                artifact_path = dbt_output / str(artifact.get("path", ""))
+                if artifact_path.is_file():
+                    artifact["sha256"] = hashlib.sha256(
+                        artifact_path.read_bytes()
+                    ).hexdigest()
+        governance = hub_root / "model" / "governance" if hub_root else None
+        baseline_result = load_release_baseline(
+            governance / "release-baseline.yaml"
+            if governance is not None
+            else Path("model") / "governance" / "release-baseline.yaml"
+        )
+        runtime_results = ()
+        release_input_errors = list(fatal_target_errors)
+        runtime_result_path = (
+            governance / "dq-runtime-results.json"
+            if governance is not None
+            else Path("model") / "governance" / "dq-runtime-results.json"
+        )
+        try:
+            runtime_results = load_dq_runtime_results(runtime_result_path)
+        except (json.JSONDecodeError, ValueError) as exc:
+            release_input_errors.append(
+                f"DQ runtime result evidence is invalid: {exc}"
+            )
+        release_input_errors.extend(
+            (
+                f"{item.get('domain', '')}: dbt projection "
+                f"{item.get('status', 'unknown')} — "
+                f"{item.get('error') or item.get('reason') or 'unexpected skip'}"
+            )
+            for item in report.projections
+            if item.get("target") == "dbt" and item.get("status") != "ok"
+        )
+        release_evaluation_result = evaluate_release(
+            ReleaseEvaluationInput(
+                strict=strict,
+                generated_at=report.generated_at,
+                toolkit_version=toolkit_version,
+                baseline_result=baseline_result,
+                domains=tuple(sorted(report.release_data.items())),
+                projection_errors=tuple(sorted(set(release_input_errors))),
+                closure_incomplete=tuple(
+                    sorted(
+                        name
+                        for name, domain in report.domains.items()
+                        if domain.get("import_complete") is not True
+                    )
+                ),
+                warnings=tuple(
+                    sorted(
+                        str(event.get("message", ""))
+                        for event in report.events
+                        if event.get("level") == "warning"
+                    )
+                ),
+                runtime_results=runtime_results,
+            )
+        )
+        release_manifest_path = output_path / "release-manifest.json"
+        release_report_path = output_path / "release-report.json"
+        release_manifest_path.write_text(
+            json.dumps(
+                release_evaluation_result.manifest,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        release_report_path.write_text(
+            json.dumps(
+                release_evaluation_result.report,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        report.release_evaluation = {
+            **release_evaluation_result.report,
+            "manifest": release_manifest_path.name,
+            "report": release_report_path.name,
+        }
+        if strict:
+            print(
+                "   🔒 Strict release: "
+                + (
+                    "release-ready"
+                    if release_evaluation_result.release_ready
+                    else (
+                        f"blocked by {len(release_evaluation_result.blockers)} "
+                        "finding(s)"
+                    )
+                )
+            )
+        else:
+            print(
+                "   ⚠ Release metadata is review-only; ordinary projection never "
+                "claims release readiness"
+            )
+
+    if (
+        strict
+        and release_evaluation_result is not None
+        and release_evaluation_result.blockers
+    ):
+        print("⚠️ Projection artifacts generated for review; strict release is blocked")
+    else:
+        print("✅ Projection generation completed!")
     print(f"   Generated artifacts for {len(ontology_graphs)} data domain(s)")
 
     # Write the projection report
@@ -1894,20 +2095,24 @@ def run_projections(
     if fatal_target_errors:
         raise ProjectionRunError("; ".join(fatal_target_errors))
 
-    # Release gate (DD-096 / DEC-1): under --strict, block release when any approved,
-    # materialization-eligible claim has no bronze mapping. Such unbound targets would
-    # otherwise pass CI as vacuous zero-row stubs. All approved eligible claims block
-    # (DEC-1 option a); waivers are a future per-claim extension.
-    if strict and unbound_eligible_by_domain:
-        lines = []
-        for domain_name in sorted(unbound_eligible_by_domain):
-            names = ", ".join(unbound_eligible_by_domain[domain_name])
-            lines.append(f"{domain_name}: {names}")
-        detail = "; ".join(lines)
+    if (
+        strict
+        and release_evaluation_result is not None
+        and release_evaluation_result.blockers
+    ):
+        details = []
+        for blocker in release_evaluation_result.blockers:
+            evidence = (
+                f" [{', '.join(blocker.evidence)}]"
+                if blocker.evidence
+                else ""
+            )
+            details.append(
+                f"{blocker.rule_id}/{blocker.code}: {blocker.message}{evidence}"
+            )
         raise ProjectionRunError(
-            "Release gate (--strict): approved, materialization-eligible claim(s) "
-            "have no bronze mapping and are not release-eligible. Bind them via "
-            f"kairos-design-mapping. Unbound targets — {detail}"
+            "Strict release blocked. Resolve every blocking finding in "
+            f"release-report.json: {'; '.join(details)}"
         )
 
 
@@ -2030,25 +2235,25 @@ def extract_ontology_metadata(
 
 def _auto_detect_namespace(graph: Graph) -> str:
     """Auto-detect the ontology's base namespace using semantic web best practices.
-    
+
     Method 1: Check owl:Ontology declaration (preferred - semantic web standard)
     Method 2: Exclude owl:imports and count classes in remaining namespaces
     Method 3: Fallback to URN format
-    
+
     This approach scales to any external ontology without hardcoded exclusion lists.
     """
-    
+
     # Method 1: Look for owl:Ontology declaration (BEST PRACTICE)
     # The namespace containing the owl:Ontology instance is the main ontology namespace
     ontology_query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
-    
+
     SELECT ?ontology
     WHERE {
         ?ontology a owl:Ontology .
     }
     """
-    
+
     # Standard W3C namespaces to always exclude
     standard_namespaces = {
         'http://www.w3.org/2002/07/owl#',
@@ -2057,11 +2262,11 @@ def _auto_detect_namespace(graph: Graph) -> str:
         'http://www.w3.org/2001/XMLSchema#',
         'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
     }
-    
+
     ontology_namespaces = []
     for row in graph.query(ontology_query):
         onto_uri = str(row['ontology'])
-        
+
         # Extract namespace from ontology URI.
         # Key insight: many ontologies declare URI without '#' (e.g.
         # https://example.com/ont/client) but their classes use '#' fragments
@@ -2083,25 +2288,25 @@ def _auto_detect_namespace(graph: Graph) -> str:
                 namespace = onto_uri.rsplit('/', 1)[0] + '/'
             else:
                 namespace = onto_uri + ':'  # URN format
-        
+
         # Skip standard W3C ontologies
         if namespace not in standard_namespaces:
             ontology_namespaces.append(namespace)
-    
+
     # Method 2: Get imported ontology namespaces to exclude
     imports_query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
-    
+
     SELECT ?imported
     WHERE {
         ?ontology owl:imports ?imported .
     }
     """
-    
+
     imported_namespaces = set()
     for row in graph.query(imports_query):
         import_uri = str(row['imported'])
-        
+
         # Extract namespace from import URI
         if '#' in import_uri:
             namespace = import_uri.rsplit('#', 1)[0] + '#'
@@ -2109,34 +2314,34 @@ def _auto_detect_namespace(graph: Graph) -> str:
             namespace = import_uri.rsplit('/', 1)[0] + '/'
         else:
             namespace = import_uri + ':'
-        
+
         imported_namespaces.add(namespace)
-    
+
     # If we found owl:Ontology declarations, prefer the one that's NOT imported
     if ontology_namespaces:
         for onto_ns in ontology_namespaces:
             # Check if this ontology namespace is NOT in the imports
             if onto_ns not in imported_namespaces:
                 return onto_ns
-        
+
         # If all ontology namespaces are imported (rare), return the first one
         return ontology_namespaces[0]
-    
+
     # Method 3: Fallback - count classes per namespace, excluding imports and standards
     class_query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
-    
+
     SELECT ?class
     WHERE {
         ?class a owl:Class .
         FILTER(isIRI(?class))
     }
     """
-    
+
     namespace_counts = {}
     for row in graph.query(class_query):
         class_uri = str(row['class'])
-        
+
         # Extract namespace
         if '#' in class_uri:
             namespace = class_uri.rsplit('#', 1)[0] + '#'
@@ -2144,21 +2349,21 @@ def _auto_detect_namespace(graph: Graph) -> str:
             namespace = class_uri.rsplit('/', 1)[0] + '/'
         else:
             namespace = class_uri.rsplit(':', 1)[0] + ':'
-        
+
         # Skip standard W3C namespaces
         if namespace in standard_namespaces:
             continue
-        
+
         # Skip imported namespaces
         if namespace in imported_namespaces:
             continue
-        
+
         namespace_counts[namespace] = namespace_counts.get(namespace, 0) + 1
-    
+
     if namespace_counts:
         # Return namespace with most classes
         return max(namespace_counts, key=namespace_counts.get)
-    
+
     # Ultimate fallback
     return "urn:kairos:ont:core:"
 
@@ -2369,7 +2574,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
                     eligible_class_uris: Optional[set] = None,
                     semantic_index=None) -> dict:
     """Run a specific projection type using simplified logic.
-    
+
     Args:
         target: Projection type (dbt, neo4j, azure-search, a2ui, prompt, silver)
         graph: RDFLib graph for this specific ontology
@@ -2419,7 +2624,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
     query = """
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-    
+
     SELECT ?class ?label ?comment
     WHERE {
         ?class a owl:Class .
@@ -2428,13 +2633,13 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
         FILTER(isIRI(?class))
     }
     """
-    
+
     # Collect ALL classes from the graph (local + imported)
     all_class_rows = []
     for row in graph.query(query):
         class_uri = str(row['class'])
         all_class_rows.append((class_uri, row))
-    
+
     # Local classes: those in the domain namespace
     classes = []
     for class_uri, row in all_class_rows:
@@ -2447,7 +2652,7 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             label=str(row.label) if row.label else class_name,
             comment=str(row.comment) if row.comment else f"{class_name} entity",
         ).to_dict())
-    
+
     # DD-021: Import whitelisting — include claimed imported classes
     # For silver/gold/dbt targets, check extension files for silverInclude/goldInclude
     # and the bulk silverIncludeImports/goldIncludeImports flags
@@ -2461,6 +2666,22 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             ref_model_defaults=ref_model_defaults,
         )
         classes.extend(imported_classes)
+        if target == "powerbi" and projection_ext_path:
+            silver_imported = _discover_whitelisted_imports(
+                graph,
+                namespace,
+                all_class_rows,
+                projection_ext_path=projection_ext_path,
+                gold_ext_path=gold_ext_path,
+                target="silver",
+                hub_domain_namespaces=hub_domain_namespaces or set(),
+                ref_model_defaults=ref_model_defaults,
+            )
+            existing_uris = {item["uri"] for item in classes}
+            for imported in silver_imported:
+                if imported["uri"] not in existing_uris:
+                    classes.append(imported)
+                    existing_uris.add(imported["uri"])
         # dbt generates both silver AND gold models — also discover gold claims
         # so that goldInclude-only imports are available for gold model generation.
         if target == 'dbt' and gold_ext_path:
@@ -2477,10 +2698,44 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             for cls in gold_imported:
                 if cls["uri"] not in existing_uris:
                     classes.append(cls)
-    
+    if target == "powerbi" and peer_ext_paths:
+        from .projections.shared import KAIROS_EXT
+
+        peer_graph = Graph()
+        for peer_path in peer_ext_paths:
+            if peer_path and Path(peer_path).is_file():
+                peer_graph.parse(peer_path, format="turtle")
+        peer_silver_classes = {
+            str(subject)
+            for predicate in (
+                KAIROS_EXT.silverTableName,
+                KAIROS_EXT.identityStrategy,
+            )
+            for subject in peer_graph.subjects(predicate, None)
+            if isinstance(subject, URIRef)
+        }
+        existing_uris = {item["uri"] for item in classes}
+        for class_uri, row in all_class_rows:
+            if class_uri not in peer_silver_classes or class_uri in existing_uris:
+                continue
+            class_name = extract_local_name(class_uri)
+            classes.append(
+                OntologyClassInfo(
+                    uri=class_uri,
+                    name=class_name,
+                    label=str(row.label) if row.label else class_name,
+                    comment=(
+                        str(row.comment)
+                        if row.comment
+                        else f"{class_name} entity"
+                    ),
+                ).to_dict()
+            )
+            existing_uris.add(class_uri)
+
     if not classes:
         return {}
-    
+
     meta = ontology_metadata or {}
 
     # Generate based on target using full-featured projector classes
@@ -2525,28 +2780,54 @@ def _run_projection(target: str, graph: Graph, output_path: Path, template_base:
             ontology_name, ontology_metadata=meta, semantic_index=semantic_index,
         )
     elif target == 'silver':
-        from .projections.medallion_silver_projector import generate_silver_artifacts
-        return generate_silver_artifacts(
-            classes=classes,
-            graph=graph,
-            namespace=namespace,
-            shapes_dir=shapes_dir,
-            ontology_name=ontology_name or "domain",
-            projection_ext_path=projection_ext_path,
-            ontology_metadata=meta,
+        from .projections.medallion_dbt_projector import generate_dbt_artifacts
+        return generate_dbt_artifacts(
+            classes, graph, template_base / "dbt", namespace, shapes_dir,
+            ontology_name, ontology_metadata=meta,
+            bronze_dir=sources_dir, sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            silver_ext_path=projection_ext_path,
             ref_model_defaults=ref_model_defaults,
+            peer_ext_paths=peer_ext_paths,
+            target_platform=target_platform,
+            contract_registry=contract_registry,
+            emit_aspirational_stubs=emit_aspirational_stubs,
+            eligible_class_uris=eligible_class_uris,
+            require_silver_evidence=True,
         )
     elif target == 'powerbi':
         from .projections.medallion_gold_projector import generate_gold_artifacts
+        peer_ontology_paths: list[Path] = []
+        for peer_extension in peer_ext_paths or ():
+            peer_name = Path(peer_extension).stem.removesuffix("-silver-ext")
+            candidates = (
+                Path(peer_extension).parent.parent / "ontologies" / f"{peer_name}.ttl",
+                Path(peer_extension).parent / f"{peer_name}.ttl",
+            )
+            peer_ontology = next(
+                (candidate for candidate in candidates if candidate.is_file()),
+                None,
+            )
+            if peer_ontology is not None:
+                peer_ontology_paths.append(peer_ontology)
         return generate_gold_artifacts(
             classes=classes,
             graph=graph,
+            template_dir=template_base / "dbt",
             namespace=namespace,
             shapes_dir=shapes_dir,
             ontology_name=ontology_name or "domain",
-            projection_ext_path=projection_ext_path,
             ontology_metadata=meta,
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            gold_ext_path=gold_ext_path,
+            silver_ext_path=projection_ext_path,
             ref_model_defaults=ref_model_defaults,
+            peer_ext_paths=peer_ext_paths,
+            peer_ontology_paths=peer_ontology_paths,
+            target_platform=target_platform,
+            contract_registry=contract_registry,
+            eligible_class_uris=eligible_class_uris,
         )
-    
+
     return {}

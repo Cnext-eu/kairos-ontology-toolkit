@@ -8,18 +8,21 @@ from pathlib import Path
 
 import pytest
 import yaml
-from rdflib import Graph, Literal, URIRef
-from rdflib.namespace import RDFS
+from rdflib import Graph, Literal, Namespace, RDF, URIRef
+from rdflib.namespace import OWL
 
+from kairos_ontology.core.projections.dbt.builders import (
+    build_silver_registry,
+    outcome_from_context,
+)
 from kairos_ontology.core.projections.medallion_dbt_projector import (
-    _build_silver_model_registry,
     _build_sk_iri_columns,
     _camel_to_snake,
     _parse_bronze,
     _parse_skos_mappings,
     _extract_shacl_tests,
     _silver_model_name_for_class,
-    _source_record_id_expression,
+    _source_record_key_expression,
     _source_type_to_databricks,
     _source_type_to_target,
     _xsd_to_target,
@@ -74,22 +77,83 @@ BRONZE_TTL = textwrap.dedent("""\
         kairos-bronze:columnName "IsActive" ;
         kairos-bronze:dataType "bit" ;
         kairos-bronze:nullable "false"^^xsd:boolean .
+
+    bronze-ap:tblClient_ModifiedDate a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-ap:tblClient ;
+        kairos-bronze:columnName "ModifiedDate" ;
+        kairos-bronze:dataType "datetime" ;
+        kairos-bronze:nullable "false"^^xsd:boolean .
+""")
+
+PREP_TTL = textwrap.dedent("""\
+    @prefix prep: <https://example.com/preparation/adminpulse#> .
+    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
+    @prefix kairos-prep: <https://kairos.cnext.eu/preparation#> .
+
+    prep:clientPolicy a kairos-prep:PreparationPolicy ;
+        kairos-prep:sourceTable bronze-ap:tblClient ;
+        kairos-prep:prepMode "normalize" ;
+        kairos-prep:schemaChangePolicy "fail" ;
+        kairos-prep:cleanupRule prep:nameTrim ;
+        kairos-prep:typeConversion prep:clientIdCast ;
+        kairos-prep:cdcMapping prep:clientCdc ;
+        kairos-prep:recordKeyPolicy prep:clientKey .
+
+    prep:nameTrim a kairos-prep:CleanupRule ;
+        kairos-prep:sourceColumn bronze-ap:tblClient_Name ;
+        kairos-prep:cleanupOperation "trim" ;
+        kairos-prep:lossless true .
+
+    prep:clientIdCast a kairos-prep:TypeConversion ;
+        kairos-prep:sourceColumn bronze-ap:tblClient_ClientID ;
+        kairos-prep:targetType "string" ;
+        kairos-prep:parsePolicy "integer-lexical" ;
+        kairos-prep:errorPolicy "fail" .
+
+    prep:clientCdc a kairos-prep:CdcMapping ;
+        kairos-prep:rawUpdateTimestampColumn bronze-ap:tblClient_ModifiedDate ;
+        kairos-prep:normalizedUpdateTimestampField prep:sourceUpdatedAt .
+
+    prep:sourceUpdatedAt a kairos-prep:PreparedColumn ;
+        kairos-prep:targetColumnName "_source_updated_at" ;
+        kairos-prep:targetType "timestamp" .
+
+    prep:clientKey a kairos-prep:RecordKeyPolicy ;
+        kairos-prep:sourceScope "adminpulse" ;
+        kairos-prep:tableScope "tblClient" ;
+        kairos-prep:recordKeyComponent bronze-ap:tblClient_ClientID ;
+        kairos-prep:recordKeyOutput prep:sourceRecordKey .
+
+    prep:sourceRecordKey a kairos-prep:PreparedColumn ;
+        kairos-prep:targetColumnName "_source_record_key" ;
+        kairos-prep:targetType "string" .
 """)
 
 SKOS_MAPPING_TTL = textwrap.dedent("""\
     @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/adminpulse#> .
     @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
     @prefix party: <http://kairos.example/ontology/> .
 
-    bronze-ap:tblClient skos:exactMatch party:Client ;
-        kairos-map:mappingType "direct" .
+    bronze-ap:tblClient skos:exactMatch party:Client .
+    map:client a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:tblClient ;
+        kairos-map:targetClass party:Client ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
 
-    bronze-ap:tblClient_ClientID skos:exactMatch party:clientId ;
-        kairos-map:transform "CAST(source.ClientID AS STRING)" .
+    bronze-ap:tblClient_ClientID skos:exactMatch party:clientId .
+    map:clientId a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblClient_ClientID ;
+        kairos-map:targetProperty party:clientId ;
+        kairos-map:matchType "exactMatch" .
 
-    bronze-ap:tblClient_Name skos:closeMatch party:clientName ;
-        kairos-map:transform "TRIM(source.Name)" .
+    bronze-ap:tblClient_Name skos:closeMatch party:clientName .
+    map:clientName a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblClient_Name ;
+        kairos-map:targetProperty party:clientName ;
+        kairos-map:matchType "closeMatch" .
 """)
 
 ONTOLOGY_TTL = textwrap.dedent("""\
@@ -150,11 +214,319 @@ SHACL_TTL = textwrap.dedent("""\
 """)
 
 
+_GENERATE_DBT_ARTIFACTS = generate_dbt_artifacts
+
+
+def _write_explicit_test_prep(
+    source_root: Path,
+    mappings_root: Path,
+    ontology_graph: Graph,
+    preparation_root: Path,
+    *,
+    platform: str,
+) -> None:
+    """Author explicit prep fixtures for legacy projector-focused test cases."""
+    if preparation_root.is_dir() and any(preparation_root.rglob("*.ttl")):
+        return
+
+    bronze = Namespace("https://kairos.cnext.eu/bronze#")
+    prep = Namespace("https://kairos.cnext.eu/preparation#")
+    ext = Namespace("https://kairos.cnext.eu/ext#")
+    mapping = Namespace("https://kairos.cnext.eu/mapping#")
+    skos = Namespace("http://www.w3.org/2004/02/skos/core#")
+    rdfs = Namespace("http://www.w3.org/2000/01/rdf-schema#")
+
+    source_graph = Graph()
+    for path in sorted(source_root.rglob("*.ttl")):
+        source_graph.parse(path, format="turtle")
+    mapping_graph = Graph()
+    for path in sorted(mappings_root.rglob("*.ttl")):
+        mapping_graph.parse(path, format="turtle")
+
+    mapped_tables = {
+        table
+        for contract in mapping_graph.subjects(RDF.type, mapping.TableMapping)
+        for table in mapping_graph.objects(contract, mapping.sourceTable)
+        if (table, RDF.type, bronze.SourceTable) in source_graph
+    }
+    if not mapped_tables:
+        return
+
+    output = Graph()
+    supplemental_source = Graph()
+    type_by_xsd = {
+        "http://www.w3.org/2001/XMLSchema#boolean": "boolean",
+        "http://www.w3.org/2001/XMLSchema#date": "date",
+        "http://www.w3.org/2001/XMLSchema#dateTime": "timestamp",
+        "http://www.w3.org/2001/XMLSchema#decimal": "decimal(18,4)",
+        "http://www.w3.org/2001/XMLSchema#double": "float64",
+        "http://www.w3.org/2001/XMLSchema#float": "float64",
+        "http://www.w3.org/2001/XMLSchema#int": "int32",
+        "http://www.w3.org/2001/XMLSchema#integer": "int64",
+        "http://www.w3.org/2001/XMLSchema#long": "int64",
+        "http://www.w3.org/2001/XMLSchema#short": "int16",
+        "http://www.w3.org/2001/XMLSchema#string": "string",
+    }
+    reserved = {
+        "status",
+        "type",
+        "value",
+    } if platform == "fabric" else set()
+
+    for index, table in enumerate(sorted(mapped_tables, key=str), 1):
+        table_name = str(
+            source_graph.value(table, bronze.tableName)
+            or source_graph.value(table, rdfs.label)
+            or str(table).rsplit("#", 1)[-1]
+        )
+        columns = sorted(
+            source_graph.subjects(bronze.sourceTable, table),
+            key=str,
+        )
+        by_name = {
+            str(
+                source_graph.value(column, bronze.columnName)
+                or str(column).rsplit("#", 1)[-1]
+            ): column
+            for column in columns
+        }
+        authored_pk_names = [
+            name.strip()
+            for value in source_graph.objects(table, bronze.primaryKeyColumns)
+            for name in str(value).split(",")
+            if name.strip()
+        ]
+        primary_keys = [
+            by_name[name] for name in authored_pk_names if name in by_name
+        ] or [
+            column
+            for column in columns
+            if str(source_graph.value(column, bronze.isPrimaryKey)).lower()
+            == "true"
+        ]
+        if not primary_keys and columns:
+            primary_keys = [columns[0]]
+            name = next(
+                column_name
+                for column_name, column in by_name.items()
+                if column == columns[0]
+            )
+            supplemental_source.add(
+                (table, bronze.primaryKeyColumns, Literal(name))
+            )
+            supplemental_source.add(
+                (columns[0], bronze.isPrimaryKey, Literal(True))
+            )
+
+        policy = URIRef(f"urn:test-prep:table:{index}")
+        output.add((policy, RDF.type, prep.PreparationPolicy))
+        output.add((policy, prep.sourceTable, table))
+        output.add((policy, prep.prepMode, Literal("normalize")))
+        output.add((policy, prep.schemaChangePolicy, Literal("fail")))
+
+        key = URIRef(f"urn:test-prep:key:{index}")
+        key_output = URIRef(f"urn:test-prep:key-output:{index}")
+        output.add((policy, prep.recordKeyPolicy, key))
+        output.add((key, prep.sourceScope, Literal("test-source")))
+        output.add((key, prep.tableScope, Literal(table_name)))
+        for column in primary_keys:
+            output.add((key, prep.recordKeyComponent, column))
+        output.add((key, prep.recordKeyOutput, key_output))
+        output.add((key_output, prep.targetColumnName, Literal("_source_record_key")))
+        output.add((key_output, prep.targetType, Literal("string")))
+
+        for column_index, column in enumerate(columns, 1):
+            column_name = next(
+                name for name, candidate in by_name.items() if candidate == column
+            )
+            if (
+                not column_name.replace("_", "").isalnum()
+                or column_name[0].isdigit()
+                or column_name.lower() in reserved
+            ):
+                rename = URIRef(
+                    f"urn:test-prep:rename:{index}:{column_index}"
+                )
+                output.add((policy, prep.physicalRename, rename))
+                output.add((rename, prep.sourceColumn, column))
+                output.add(
+                    (
+                        rename,
+                        prep.targetColumnName,
+                        Literal(f"{_camel_to_snake(column_name)}_source"),
+                    )
+                )
+
+            target_ranges = {
+                str(
+                    ontology_graph.value(target, ext.silverDataType)
+                    or ontology_graph.value(target, rdfs.range)
+                    or ""
+                )
+                for predicate in (
+                    skos.exactMatch,
+                    skos.closeMatch,
+                    skos.narrowMatch,
+                    skos.broadMatch,
+                )
+                for target in mapping_graph.objects(column, predicate)
+            }
+            canonical_targets = {
+                type_by_xsd.get(value, value.lower())
+                for value in target_ranges
+                if value in type_by_xsd
+                or value.lower()
+                in {
+                    "boolean",
+                    "date",
+                    "float64",
+                    "int16",
+                    "int32",
+                    "int64",
+                    "string",
+                    "timestamp",
+                }
+                or value.lower().startswith("decimal(")
+            }
+            if len(canonical_targets) == 1:
+                target = next(iter(canonical_targets))
+                source_type = str(
+                    source_graph.value(column, bronze.dataType) or ""
+                ).lower()
+                source_base = source_type.split("(", 1)[0]
+                source_kind = {
+                    "bigint": "int64",
+                    "bit": "boolean",
+                    "bool": "boolean",
+                    "boolean": "boolean",
+                    "date": "date",
+                    "datetime": "timestamp",
+                    "datetime2": "timestamp",
+                    "decimal": "decimal",
+                    "float": "float64",
+                    "int": "int32",
+                    "integer": "int32",
+                    "numeric": "decimal",
+                    "smallint": "int16",
+                    "timestamp": "timestamp",
+                }.get(source_base, "string")
+                target_kind = "decimal" if target.startswith("decimal(") else target
+                if source_kind == target_kind:
+                    continue
+                parse_policy = (
+                    "boolean-canonical"
+                    if source_kind == "boolean"
+                    else (
+                        "integer-lexical"
+                        if source_kind in {"int16", "int32", "int64"}
+                        else (
+                            "decimal-invariant"
+                            if source_kind in {"decimal", "float64"}
+                            else "strict-text"
+                        )
+                    )
+                )
+                conversion = URIRef(
+                    f"urn:test-prep:conversion:{index}:{column_index}"
+                )
+                output.add((policy, prep.typeConversion, conversion))
+                output.add((conversion, prep.sourceColumn, column))
+                output.add(
+                    (
+                        conversion,
+                        prep.targetType,
+                        Literal(target),
+                    )
+                )
+                output.add(
+                    (
+                        conversion,
+                        prep.parsePolicy,
+                        Literal(parse_policy),
+                    )
+                )
+                output.add((conversion, prep.errorPolicy, Literal("fail")))
+
+        incremental_name = source_graph.value(table, bronze.incrementalColumn)
+        incremental_column = (
+            by_name.get(str(incremental_name))
+            if incremental_name is not None
+            else None
+        )
+        if incremental_column is not None:
+            cdc = URIRef(f"urn:test-prep:cdc:{index}")
+            cdc_output = URIRef(f"urn:test-prep:cdc-output:{index}")
+            output.add((policy, prep.cdcMapping, cdc))
+            output.add(
+                (cdc, prep.rawUpdateTimestampColumn, incremental_column)
+            )
+            output.add(
+                (cdc, prep.normalizedUpdateTimestampField, cdc_output)
+            )
+            output.add(
+                (
+                    cdc_output,
+                    prep.targetColumnName,
+                    Literal("_source_updated_at"),
+                )
+            )
+            output.add((cdc_output, prep.targetType, Literal("timestamp")))
+
+    preparation_root.mkdir(parents=True, exist_ok=True)
+    output.serialize(
+        preparation_root / "__projector-test-prep.ttl",
+        format="turtle",
+    )
+    if supplemental_source:
+        supplemental_source.serialize(
+            source_root / "__projector-test-source-keys.ttl",
+            format="turtle",
+        )
+
+
+def generate_dbt_artifacts(*args, **kwargs):
+    """Run projector tests with explicit DD-106 policies for their source fixtures."""
+    graph = kwargs.get("graph") or (args[1] if len(args) > 1 else Graph())
+    ext = Namespace("https://kairos.cnext.eu/ext#")
+    for prop in tuple(graph.subjects(RDF.type, OWL.ObjectProperty)):
+        authored = (
+            (ext.silverForeignKeyTemporalMode, Literal("none")),
+            (ext.silverForeignKeyChangeDetection, Literal(False)),
+            (ext.silverForeignKeyCardinality, Literal("zero-or-one")),
+            (ext.silverForeignKeyMissingPolicy, Literal("fail")),
+            (ext.silverForeignKeyAmbiguousPolicy, Literal("fail")),
+            (ext.silverForeignKeyLateParentPolicy, Literal("fail")),
+        )
+        for predicate, value in authored:
+            if graph.value(prop, predicate) is None:
+                graph.add((prop, predicate, value))
+    source_root = kwargs.get("sources_dir") or kwargs.get("bronze_dir")
+    mappings_root = kwargs.get("mappings_dir")
+    if source_root is not None and mappings_root is not None:
+        source_root = Path(source_root)
+        preparation_root = Path(
+            kwargs.get("preparation_dir")
+            or source_root.parent / "preparation"
+        )
+        _write_explicit_test_prep(
+            source_root,
+            Path(mappings_root),
+            graph,
+            preparation_root,
+            platform=kwargs.get("target_platform", "fabric"),
+        )
+        kwargs["preparation_dir"] = preparation_root
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+
+
 @pytest.fixture
 def bronze_dir(tmp_path):
     d = tmp_path / "bronze"
     d.mkdir()
     (d / "adminpulse.ttl").write_text(BRONZE_TTL, encoding="utf-8")
+    prep = tmp_path / "preparation"
+    prep.mkdir()
+    (prep / "adminpulse-prep.ttl").write_text(PREP_TTL, encoding="utf-8")
     return d
 
 
@@ -252,9 +624,9 @@ class TestBronzeParsing:
     def test_parse_bronze_columns(self, bronze_dir):
         systems = _parse_bronze(bronze_dir)
         cols = systems[0]["tables"][0]["columns"]
-        assert len(cols) == 3
+        assert len(cols) == 4
         col_names = {c["name"] for c in cols}
-        assert col_names == {"ClientID", "Name", "IsActive"}
+        assert col_names == {"ClientID", "Name", "IsActive", "ModifiedDate"}
 
         # Check PK column
         pk_col = next(c for c in cols if c["name"] == "ClientID")
@@ -270,20 +642,19 @@ class TestBronzeParsing:
     def test_parse_bronze_none_dir(self):
         assert _parse_bronze(None) == []
 
-    def test_source_record_id_uses_declared_bronze_primary_key(self, bronze_dir):
+    def test_source_record_key_uses_declared_bronze_primary_key(self, bronze_dir):
         systems = _parse_bronze(bronze_dir)
-        expression, generated_after_mapping = _source_record_id_expression(
+        expression, generated_after_mapping = _source_record_key_expression(
             systems,
             ("adminpulse", "tbl_client", systems[0]["tables"][0]["uri"]),
             "src",
-            "client_sk",
         )
         assert expression == (
             "{{ dbt_utils.generate_surrogate_key([\"'tblClient'\", 'src.ClientID']) }}"
         )
         assert generated_after_mapping is False
 
-    def test_source_record_id_falls_back_when_bronze_has_no_primary_key(self):
+    def test_source_record_key_rejects_missing_primary_key(self):
         systems = [
             {
                 "tables": [
@@ -295,14 +666,15 @@ class TestBronzeParsing:
                 ]
             }
         ]
-        expression, generated_after_mapping = _source_record_id_expression(
-            systems,
-            ("source", "rows", "https://example.org/bronze#rows"),
-            "src",
-            "row_sk",
-        )
-        assert expression == "CONCAT('rows|', row_sk)"
-        assert generated_after_mapping is True
+        with pytest.raises(
+            ValueError,
+            match="identity.source-record-key-missing.*DD-108-source-identity",
+        ):
+            _source_record_key_expression(
+                systems,
+                ("source", "rows", "https://example.org/bronze#rows"),
+                "src",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -326,12 +698,12 @@ class TestSkosMapping:
 
         id_key = "https://example.com/bronze/adminpulse#tblClient_ClientID"
         assert id_key in col_maps
-        assert col_maps[id_key][0]["transform"] == "CAST(source.ClientID AS STRING)"
+        assert col_maps[id_key][0]["expression_fact"] is None
         assert col_maps[id_key][0]["match_type"] == "exactMatch"
 
         name_key = "https://example.com/bronze/adminpulse#tblClient_Name"
         assert name_key in col_maps
-        assert col_maps[name_key][0]["transform"] == "TRIM(source.Name)"
+        assert col_maps[name_key][0]["expression_fact"] is None
         assert col_maps[name_key][0]["match_type"] == "closeMatch"
 
     def test_parse_skos_empty_dir(self, tmp_path):
@@ -355,16 +727,38 @@ class TestSkosMapping:
         split_ttl = textwrap.dedent("""\
             @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
             @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+            @prefix map: <https://example.com/mapping/contacts#> .
             @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
             @prefix party: <http://kairos.example/ontology/> .
 
-            bronze-ap:tblContacts skos:exactMatch party:Client ;
+            bronze-ap:tblContacts skos:exactMatch party:Client,
+                                                     party:ContactPerson .
+            map:client a kairos-map:TableMapping ;
+                kairos-map:sourceTable bronze-ap:tblContacts ;
+                kairos-map:targetClass party:Client ;
                 kairos-map:mappingType "split" ;
-                kairos-map:filterCondition "source.ContactType = 'CLIENT'" .
-
-            bronze-ap:tblContacts skos:exactMatch party:ContactPerson ;
+                kairos-map:matchType "exactMatch" ;
+                kairos-map:rowFilter map:isClient .
+            map:contact a kairos-map:TableMapping ;
+                kairos-map:sourceTable bronze-ap:tblContacts ;
+                kairos-map:targetClass party:ContactPerson ;
                 kairos-map:mappingType "split" ;
-                kairos-map:filterCondition "source.ContactType = 'CONTACT'" .
+                kairos-map:matchType "exactMatch" ;
+                kairos-map:rowFilter map:isContact .
+            map:isClient a kairos-map:LiteralExpression ;
+                kairos-map:literalValue true ;
+                kairos-map:outputType "boolean" ;
+                kairos-map:nullable false ;
+                kairos-map:nullPolicy "never-null" ;
+                kairos-map:determinism "deterministic" ;
+                kairos-map:requiresCapability "typed-literal" .
+            map:isContact a kairos-map:LiteralExpression ;
+                kairos-map:literalValue true ;
+                kairos-map:outputType "boolean" ;
+                kairos-map:nullable false ;
+                kairos-map:nullPolicy "never-null" ;
+                kairos-map:determinism "deterministic" ;
+                kairos-map:requiresCapability "typed-literal" .
         """)
         d = tmp_path / "mappings"
         d.mkdir()
@@ -379,45 +773,83 @@ class TestSkosMapping:
         assert "http://kairos.example/ontology/ContactPerson" in targets
 
 
-    def test_parse_skos_default_value(self, tmp_path):
-        """kairos-map:defaultValue is captured in column_maps."""
+    def test_parse_skos_coalesce_contract(self, tmp_path):
+        """A structured COALESCE AST is captured without SQL."""
         default_ttl = textwrap.dedent("""\
             @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
             @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+            @prefix map: <https://example.com/mapping/default#> .
             @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
             @prefix party: <http://kairos.example/ontology/> .
 
-            bronze-ap:tblClient skos:exactMatch party:Client ;
-                kairos-map:mappingType "direct" .
-
-            bronze-ap:tblClient_Email skos:exactMatch party:email ;
-                kairos-map:transform "source.Email" ;
-                kairos-map:defaultValue "'unknown@example.com'" .
+            bronze-ap:tblClient skos:exactMatch party:Client .
+            bronze-ap:tblClient_Email skos:exactMatch party:email .
+            map:table a kairos-map:TableMapping ;
+                kairos-map:sourceTable bronze-ap:tblClient ;
+                kairos-map:targetClass party:Client ;
+                kairos-map:mappingType "direct" ;
+                kairos-map:matchType "exactMatch" .
+            map:email a kairos-map:ColumnMapping ;
+                kairos-map:sourceColumn bronze-ap:tblClient_Email ;
+                kairos-map:targetProperty party:email ;
+                kairos-map:matchType "exactMatch" ;
+                kairos-map:expression map:coalesce .
+            map:coalesce a kairos-map:FunctionExpression ;
+                kairos-map:function "coalesce" ;
+                kairos-map:arguments ( map:emailSource map:fallback ) ;
+                kairos-map:outputType "string" ;
+                kairos-map:nullable false ;
+                kairos-map:nullPolicy "first-non-null" ;
+                kairos-map:determinism "deterministic" ;
+                kairos-map:requiresCapability "null-handling" .
+            map:emailSource a kairos-map:SourceColumnExpression ;
+                kairos-map:sourceColumn bronze-ap:tblClient_Email ;
+                kairos-map:outputType "string" ;
+                kairos-map:nullable true ;
+                kairos-map:nullPolicy "propagate" ;
+                kairos-map:determinism "deterministic" ;
+                kairos-map:requiresCapability "source-column" .
+            map:fallback a kairos-map:LiteralExpression ;
+                kairos-map:literalValue "unknown@example.com" ;
+                kairos-map:outputType "string" ;
+                kairos-map:nullable false ;
+                kairos-map:nullPolicy "never-null" ;
+                kairos-map:determinism "deterministic" ;
+                kairos-map:requiresCapability "typed-literal" .
         """)
         d = tmp_path / "mappings"
         d.mkdir()
         (d / "default-val.ttl").write_text(default_ttl, encoding="utf-8")
         maps, _ = _parse_skos_mappings(d)
         col = maps["column_maps"]["https://example.com/bronze/adminpulse#tblClient_Email"][0]
-        assert col["default_value"] == "'unknown@example.com'"
-        assert col["transform"] == "source.Email"
+        assert col["expression_fact"].kind == "function"
+        assert col["expression_fact"].operation == "coalesce"
 
     def test_parse_multi_target_column(self, tmp_path):
         """One source column → two target properties produces two entries."""
         multi_ttl = textwrap.dedent("""\
             @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
             @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+            @prefix map: <https://example.com/mapping/multi#> .
             @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
             @prefix party: <http://kairos.example/ontology/> .
 
-            bronze-ap:tblClient skos:exactMatch party:Client ;
-                kairos-map:mappingType "direct" .
-
-            bronze-ap:tblClient_Name skos:exactMatch party:clientName ;
-                kairos-map:transform "source.Name" .
-
-            bronze-ap:tblClient_Name skos:exactMatch party:displayName ;
-                kairos-map:transform "source.Name" .
+            bronze-ap:tblClient skos:exactMatch party:Client .
+            bronze-ap:tblClient_Name skos:exactMatch party:clientName,
+                                                            party:displayName .
+            map:table a kairos-map:TableMapping ;
+                kairos-map:sourceTable bronze-ap:tblClient ;
+                kairos-map:targetClass party:Client ;
+                kairos-map:mappingType "direct" ;
+                kairos-map:matchType "exactMatch" .
+            map:name a kairos-map:ColumnMapping ;
+                kairos-map:sourceColumn bronze-ap:tblClient_Name ;
+                kairos-map:targetProperty party:clientName ;
+                kairos-map:matchType "exactMatch" .
+            map:display a kairos-map:ColumnMapping ;
+                kairos-map:sourceColumn bronze-ap:tblClient_Name ;
+                kairos-map:targetProperty party:displayName ;
+                kairos-map:matchType "exactMatch" .
         """)
         d = tmp_path / "mappings"
         d.mkdir()
@@ -534,9 +966,11 @@ class TestGenerateDbtArtifacts:
         source_files = [k for k in artifacts if "_sources.yml" in k]
         assert len(source_files) >= 1
 
-        # No staging models (staging layer removed — silver reads bronze directly)
+        # Normalize mode emits exactly one integrated prep model.
         staging_files = [k for k in artifacts if "stg_" in k]
-        assert len(staging_files) == 0
+        assert "models/staging/admin_pulse/stg_admin_pulse__tbl_client.sql" in (
+            staging_files
+        )
 
         # Should have silver model
         silver_files = [k for k in artifacts if "models/silver/" in k and k.endswith(".sql")]
@@ -553,10 +987,10 @@ class TestGenerateDbtArtifacts:
         assert "metaplane/dbt_expectations" in packages_yml
         assert "calogica" not in packages_yml
 
-    def test_silver_model_uses_source(
+    def test_silver_model_uses_integrated_prep(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
     ):
-        """Silver model uses source() to read from bronze (no staging ref)."""
+        """Normalize mode routes Silver through its generated prep model."""
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=ontology_graph,
@@ -572,10 +1006,8 @@ class TestGenerateDbtArtifacts:
             if "models/silver/" in k and k.endswith(".sql") and "_sources" not in k
         )
         content = artifacts[silver_key]
-        # Silver reads from bronze via source()
-        assert "source(" in content
-        # No ref to staging models
-        assert "stg_" not in content
+        assert "ref('stg_admin_pulse__tbl_client')" in content
+        assert "source('admin_pulse', 'tblClient')" not in content
 
     def test_dbt_project_yml(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
@@ -630,22 +1062,70 @@ GOLD_ONTOLOGY_TTL = textwrap.dedent("""\
 
     <http://kairos.example/ontology> a owl:Ontology ;
         rdfs:label "Test Ontology" ;
-        owl:versionInfo "1.0.0" .
+        owl:versionInfo "1.0.0" ;
+        kairos-ext:goldSchema "gold_sales" ;
+        kairos-ext:goldProductProfile "dimensional-powerbi-v1" ;
+        kairos-ext:calendarProfile ex:Calendar .
 
     ex:Customer a owl:Class ;
         rdfs:label "Customer" ;
         rdfs:comment "A customer entity" ;
-        kairos-ext:naturalKey "customerId" .
+        kairos-ext:naturalKey "customerId" ;
+        kairos-ext:goldTableType "dimension" ;
+        kairos-ext:goldSourceModel "customer" ;
+        kairos-ext:goldSourceVersion "1.0.0" ;
+        kairos-ext:dimensionExposure "current-only" ;
+        kairos-ext:dimensionVersionBinding "current" .
 
     ex:Product a owl:Class ;
         rdfs:label "Product" ;
         rdfs:comment "A product entity" ;
-        kairos-ext:naturalKey "productId" .
+        kairos-ext:naturalKey "productId" ;
+        kairos-ext:goldTableType "dimension" ;
+        kairos-ext:goldSourceModel "product" ;
+        kairos-ext:goldSourceVersion "1.0.0" ;
+        kairos-ext:dimensionExposure "current-only" ;
+        kairos-ext:dimensionVersionBinding "current" .
 
     ex:Order a owl:Class ;
         rdfs:label "Order" ;
         rdfs:comment "An order entity" ;
-        kairos-ext:naturalKey "orderId" .
+        kairos-ext:naturalKey "orderId" ;
+        kairos-ext:goldTableType "fact" ;
+        kairos-ext:goldSourceModel "order" ;
+        kairos-ext:goldSourceVersion "1.0.0" ;
+        kairos-ext:factGrain "one order source record" ;
+        kairos-ext:factType "transaction" ;
+        kairos-ext:dimensionVersionBinding "current" ;
+        kairos-ext:incrementalPolicy ex:OrderIncremental .
+
+    ex:OrderIncremental a kairos-ext:IncrementalPolicy ;
+        kairos-ext:mergeIdentity "_source_record_key" ;
+        kairos-ext:cdcOperation "_cdc_operation" ;
+        kairos-ext:sourceUpdateTimestamp "_loaded_at" ;
+        kairos-ext:sourceEffectiveTimestamp "order_date" ;
+        kairos-ext:ingestionTimestamp "_ingested_at" ;
+        kairos-ext:totalOrderTieBreaker "_source_record_key" ;
+        kairos-ext:lookbackWindow "7 days" ;
+        kairos-ext:hardDeletePolicy "tombstone" ;
+        kairos-ext:softDeletePolicy "apply-operation" ;
+        kairos-ext:lateArrivalPolicy "reconcile-with-lookback" ;
+        kairos-ext:correctionPolicy "replace-by-total-order" ;
+        kairos-ext:replayPolicy "idempotent-merge" ;
+        kairos-ext:backfillPolicy "full-rebuild-approved" ;
+        kairos-ext:schemaChangePolicy "fail" .
+
+    ex:Calendar a kairos-ext:CalendarProfile ;
+        kairos-ext:calendarStartDate "2020-01-01"^^xsd:date ;
+        kairos-ext:calendarEndDate "2030-12-31"^^xsd:date ;
+        kairos-ext:fiscalYearStartMonth 1 ;
+        kairos-ext:weekPattern "iso-8601-monday" ;
+        kairos-ext:calendarLocale "en-US" ;
+        kairos-ext:holidaySource "none-approved" ;
+        kairos-ext:calendarTimeZone "UTC" ;
+        kairos-ext:periodClosurePolicy "none-approved" ;
+        kairos-ext:rolePlayingDate "OrderDate=Order.order_date" ;
+        kairos-ext:calendarApprovalStatus "approved" .
 
     ex:customerId a owl:DatatypeProperty ;
         rdfs:label "customer ID" ;
@@ -781,24 +1261,65 @@ GOLD_BRONZE_TTL = textwrap.dedent("""\
 GOLD_MAPPING_TTL = textwrap.dedent("""\
     @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/sales#> .
     @prefix bronze-sales: <https://example.com/bronze/sales#> .
     @prefix ex: <http://kairos.example/ontology/> .
 
-    bronze-sales:tblCustomer skos:exactMatch ex:Customer ;
-        kairos-map:mappingType "direct" .
+    bronze-sales:tblCustomer skos:exactMatch ex:Customer .
     bronze-sales:tblCustomer_CustomerID skos:exactMatch ex:customerId .
     bronze-sales:tblCustomer_Name skos:exactMatch ex:customerName .
-
-    bronze-sales:tblProduct skos:exactMatch ex:Product ;
-        kairos-map:mappingType "direct" .
+    bronze-sales:tblProduct skos:exactMatch ex:Product .
     bronze-sales:tblProduct_ProductID skos:exactMatch ex:productId .
     bronze-sales:tblProduct_Name skos:exactMatch ex:productName .
-
-    bronze-sales:tblOrder skos:exactMatch ex:Order ;
-        kairos-map:mappingType "direct" .
+    bronze-sales:tblOrder skos:exactMatch ex:Order .
     bronze-sales:tblOrder_OrderID skos:exactMatch ex:orderId .
     bronze-sales:tblOrder_OrderDate skos:exactMatch ex:orderDate .
     bronze-sales:tblOrder_Amount skos:exactMatch ex:orderAmount .
+
+    map:customer a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-sales:tblCustomer ;
+        kairos-map:targetClass ex:Customer ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:product a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-sales:tblProduct ;
+        kairos-map:targetClass ex:Product ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:order a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-sales:tblOrder ;
+        kairos-map:targetClass ex:Order ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+
+    map:customerId a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-sales:tblCustomer_CustomerID ;
+        kairos-map:targetProperty ex:customerId ;
+        kairos-map:matchType "exactMatch" .
+    map:customerName a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-sales:tblCustomer_Name ;
+        kairos-map:targetProperty ex:customerName ;
+        kairos-map:matchType "exactMatch" .
+    map:productId a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-sales:tblProduct_ProductID ;
+        kairos-map:targetProperty ex:productId ;
+        kairos-map:matchType "exactMatch" .
+    map:productName a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-sales:tblProduct_Name ;
+        kairos-map:targetProperty ex:productName ;
+        kairos-map:matchType "exactMatch" .
+    map:orderId a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-sales:tblOrder_OrderID ;
+        kairos-map:targetProperty ex:orderId ;
+        kairos-map:matchType "exactMatch" .
+    map:orderDate a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-sales:tblOrder_OrderDate ;
+        kairos-map:targetProperty ex:orderDate ;
+        kairos-map:matchType "exactMatch" .
+    map:orderAmount a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-sales:tblOrder_Amount ;
+        kairos-map:targetProperty ex:orderAmount ;
+        kairos-map:matchType "exactMatch" .
 """)
 
 
@@ -878,16 +1399,15 @@ class TestGoldDbtModels:
         )
         fact_key = next(k for k in artifacts if "fact_order.sql" in k)
         content = artifacts[fact_key]
-        assert "materialized='table'" in content
+        assert "materialized='incremental'" in content
         assert "gold_sales" in content
         # Fact table should reference silver model
         assert "ref(" in content
-        # Should mention it's a fact table
-        assert "Fact table" in content
+        assert "Explicit role: fact" in content
 
     def test_gold_dimension_scd2_framing(self, gold_ontology_graph, template_dir,
                                          gold_bronze_dir, gold_mappings_dir):
-        """SCD2 dimension gold model applies is_current = 1 framing."""
+        """Current filtering is not invented without an SCD2 Silver authority."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
             graph=gold_ontology_graph,
@@ -899,8 +1419,7 @@ class TestGoldDbtModels:
         )
         dim_key = next(k for k in artifacts if "dim_customer.sql" in k)
         content = artifacts[dim_key]
-        # SCD2 framing should be applied
-        assert "is_current = 1" in content
+        assert "is_current = 1" not in content
 
     def test_gold_schema_yaml(self, gold_ontology_graph, template_dir,
                               gold_bronze_dir, gold_mappings_dir):
@@ -1056,21 +1575,34 @@ CROSS_DOMAIN_BRONZE_TTL = textwrap.dedent("""\
 CROSS_DOMAIN_MAPPING_TTL = textwrap.dedent("""\
     @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/cross-domain#> .
     @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
     @prefix ex: <http://kairos.example/ontology/> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 
-    bronze-ap:Relation skos:exactMatch ex:Client ;
-        kairos-map:mappingType "direct" .
-
-    bronze-ap:Relation_id skos:exactMatch ex:clientId ;
-        kairos-map:transform "CAST(source.id AS STRING)" .
-
-    bronze-ap:Relation_Name skos:exactMatch ex:clientName ;
-        kairos-map:transform "source.Name" .
-
-    bronze-ap:Relation_id skos:exactMatch ex:representsParty ;
-        kairos-map:transform "source.id" ;
+    bronze-ap:Relation skos:exactMatch ex:Client .
+    bronze-ap:Relation_id skos:exactMatch ex:clientId,
+                                                 ex:representsParty ;
         rdfs:comment "FK to party — resolved via join" .
+    bronze-ap:Relation_Name skos:exactMatch ex:clientName .
+
+    map:client a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:Relation ;
+        kairos-map:targetClass ex:Client ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:clientId a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:Relation_id ;
+        kairos-map:targetProperty ex:clientId ;
+        kairos-map:matchType "exactMatch" .
+    map:clientName a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:Relation_Name ;
+        kairos-map:targetProperty ex:clientName ;
+        kairos-map:matchType "exactMatch" .
+    map:party a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:Relation_id ;
+        kairos-map:targetProperty ex:representsParty ;
+        kairos-map:matchType "exactMatch" .
 """)
 
 
@@ -1169,9 +1701,9 @@ class TestCrossDomainFK:
         # Join should reference the target natural key (party_id from naturalKey)
         assert "party_ref" in content
         assert "party_id" in content
-        assert "party_ref.is_current = 1" in content
+        assert "[party_ref].[is_current] = 1" not in content
 
-    def test_fk_change_participates_in_scd2_hash_by_default(
+    def test_fk_change_never_creates_an_implicit_hash_contract(
         self, cross_domain_classes, cross_domain_graph, template_dir,
         cross_domain_bronze_dir, cross_domain_mappings_dir,
     ):
@@ -1188,7 +1720,8 @@ class TestCrossDomainFK:
             key for key in artifacts
             if "client.sql" in key and "models/silver/" in key
         )
-        assert "'party_sk'" in artifacts[silver_key]
+        assert "party_ref.party_sk as party_sk" in artifacts[silver_key]
+        assert "kairos_canonical_hash_v1" not in artifacts[silver_key]
 
     def test_fk_can_use_as_of_parent_resolution(
         self, cross_domain_classes, cross_domain_graph, template_dir,
@@ -1203,28 +1736,52 @@ class TestCrossDomainFK:
             (prop, URIRef(f"{ext}silverForeignKeyAsOfColumn"), Literal("event_ts"))
         )
         cross_domain_graph.add(
+            (prop, URIRef(f"{ext}silverForeignKeyInterval"), Literal("closed-open"))
+        )
+        cross_domain_graph.add(
+            (prop, URIRef(f"{ext}silverForeignKeyTimeZone"), Literal("UTC"))
+        )
+        cross_domain_graph.add(
+            (prop, URIRef(f"{ext}silverForeignKeyPrecision"), Literal("microsecond"))
+        )
+        cross_domain_graph.add(
             (
-                URIRef("http://kairos.example/ontology/Party"),
-                URIRef(f"{ext}scdValidFromColumn"),
-                Literal("party_effective_at"),
+                prop,
+                URIRef(f"{ext}silverForeignKeyCardinality"),
+                Literal("exactly-one"),
             )
         )
-        artifacts = generate_dbt_artifacts(
-            classes=cross_domain_classes,
-            graph=cross_domain_graph,
-            template_dir=template_dir,
-            namespace="http://kairos.example/ontology/",
-            ontology_name="client",
-            bronze_dir=cross_domain_bronze_dir,
-            mappings_dir=cross_domain_mappings_dir,
+        cross_domain_graph.add(
+            (
+                prop,
+                URIRef(f"{ext}silverForeignKeyMissingPolicy"),
+                Literal("quarantine"),
+            )
         )
-        silver_key = next(
-            key for key in artifacts
-            if "client.sql" in key and "models/silver/" in key
+        cross_domain_graph.add(
+            (
+                prop,
+                URIRef(f"{ext}silverForeignKeyAmbiguousPolicy"),
+                Literal("fail"),
+            )
         )
-        sql = artifacts[silver_key]
-        assert "relation.event_ts >= party_ref.valid_from" in sql
-        assert "relation.event_ts < party_ref.valid_to" in sql
+        cross_domain_graph.add(
+            (
+                prop,
+                URIRef(f"{ext}silverForeignKeyLateParentPolicy"),
+                Literal("restate"),
+            )
+        )
+        with pytest.raises(ValueError, match="history-target-required"):
+            generate_dbt_artifacts(
+                classes=cross_domain_classes,
+                graph=cross_domain_graph,
+                template_dir=template_dir,
+                namespace="http://kairos.example/ontology/",
+                ontology_name="client",
+                bronze_dir=cross_domain_bronze_dir,
+                mappings_dir=cross_domain_mappings_dir,
+            )
 
     def test_fk_change_can_be_excluded_from_scd2_hash(
         self, cross_domain_classes, cross_domain_graph, template_dir,
@@ -1253,11 +1810,8 @@ class TestCrossDomainFK:
             key for key in artifacts
             if "client.sql" in key and "models/silver/" in key
         )
-        hash_line = next(
-            line for line in artifacts[silver_key].splitlines()
-            if "kairos_row_hash" in line
-        )
-        assert "'party_sk'" not in hash_line
+        assert "party_ref.party_sk as party_sk" in artifacts[silver_key]
+        assert "kairos_canonical_hash_v1" not in artifacts[silver_key]
 
     def test_nonportable_schema_override_is_rejected(
         self, cross_domain_classes, cross_domain_graph, template_dir,
@@ -2211,7 +2765,8 @@ class TestMergeExplicitFKMappingScope:
             "column_maps": {
                 f"{ap}_TypeCode": [{
                     "target_uri": self.HAS_TYPE,
-                    "transform": "source.TypeCode", "match_type": "exactMatch",
+                    "referenced_column_uris": (f"{ap}_TypeCode",),
+                    "match_type": "exactMatch",
                 }],
             },
         }
@@ -2254,8 +2809,8 @@ class TestMergeExplicitFKMappingScope:
                 # references ap's physical TypeCode column.
                 f"{ap}#synthetic_ClientType": [{
                     "target_uri": self.HAS_TYPE,
-                    "source_columns": ["TypeCode"],
-                    "transform": "source.TypeCode", "match_type": "exactMatch",
+                    "referenced_column_uris": (f"{ap}_TypeCode",),
+                    "match_type": "exactMatch",
                 }],
             },
         }
@@ -2340,25 +2895,49 @@ _NK_BRONZE_CRM_TTL = textwrap.dedent("""\
 _NK_MAPPING_TTL = textwrap.dedent("""\
     @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/nk#> .
     @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
     @prefix bronze-crm: <https://example.com/bronze/crm#> .
     @prefix ex: <http://kairos.example/ontology/> .
 
-    bronze-ap:tblClient skos:exactMatch ex:Client ;
-        kairos-map:mappingType "direct" .
+    bronze-ap:tblClient skos:exactMatch ex:Client .
     bronze-ap:tblClient_ClientID skos:exactMatch ex:clientId .
     bronze-ap:tblClient_Name skos:exactMatch ex:clientName .
 
-    bronze-crm:Customers skos:exactMatch ex:Client ;
-        kairos-map:mappingType "direct" .
+    bronze-crm:Customers skos:exactMatch ex:Client .
     bronze-crm:Customers_CustName skos:exactMatch ex:clientName .
+
+    map:apTable a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:tblClient ;
+        kairos-map:targetClass ex:Client ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:crmTable a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-crm:Customers ;
+        kairos-map:targetClass ex:Client ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:apId a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblClient_ClientID ;
+        kairos-map:targetProperty ex:clientId ;
+        kairos-map:matchType "exactMatch" .
+    map:apName a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblClient_Name ;
+        kairos-map:targetProperty ex:clientName ;
+        kairos-map:matchType "exactMatch" .
+    map:crmName a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-crm:Customers_CustName ;
+        kairos-map:targetProperty ex:clientName ;
+        kairos-map:matchType "exactMatch" .
 """)
 
 
 class TestMergeNKCoverageWarning:
     """A source that does not map a natural-key column triggers a loud warning."""
 
-    def test_missing_nk_in_one_source_warns(self, tmp_path, template_dir, caplog):
+    def test_missing_nk_in_one_source_keeps_branch_identities(
+        self, tmp_path, template_dir, caplog,
+    ):
         graph = Graph()
         graph.parse(data=_NK_ONTOLOGY_TTL, format="turtle")
         bronze = tmp_path / "bronze"
@@ -2381,9 +2960,10 @@ class TestMergeNKCoverageWarning:
             )
         # Both per-source views generated → merge path was exercised
         assert any("corporate" not in k and "__from_" in k for k in artifacts)
-        msgs = " ".join(r.getMessage() for r in caplog.records)
-        assert "natural-key column" in msgs and "client_id" in msgs, (
-            f"Expected NK-coverage warning naming client_id, got:\n{msgs}"
+        sql = next(value for key, value in artifacts.items() if key.endswith("/client.sql"))
+        assert "_source_record_key" in sql
+        assert "natural-key column" not in " ".join(
+            record.getMessage() for record in caplog.records
         )
 
 
@@ -2447,13 +3027,26 @@ _UNPROJECTED_BRONZE_TTL = textwrap.dedent("""\
 _UNPROJECTED_MAPPING_TTL = textwrap.dedent("""\
     @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/unprojected#> .
     @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
     @prefix ex: <http://kairos.example/ontology/> .
 
-    bronze-ap:tblVip skos:exactMatch ex:VipClient ;
-        kairos-map:mappingType "direct" .
+    bronze-ap:tblVip skos:exactMatch ex:VipClient .
     bronze-ap:tblVip_VipID skos:exactMatch ex:clientId .
     bronze-ap:tblVip_VipName skos:exactMatch ex:clientName .
+    map:table a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:tblVip ;
+        kairos-map:targetClass ex:VipClient ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:id a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblVip_VipID ;
+        kairos-map:targetProperty ex:clientId ;
+        kairos-map:matchType "exactMatch" .
+    map:name a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblVip_VipName ;
+        kairos-map:targetProperty ex:clientName ;
+        kairos-map:matchType "exactMatch" .
 """)
 
 
@@ -2497,7 +3090,11 @@ class TestUnprojectedClassMapping:
             f"Expected a warning naming the unprojected class VipClient:\n{msgs}"
         )
         # No vip model and no rows folded into client (Client has no own mapping).
-        assert not any("vip" in k.lower() for k in artifacts), (
+        assert not any(
+            "vip" in k.lower()
+            for k in artifacts
+            if k.startswith("models/silver/")
+        ), (
             f"Unprojected VipClient must not produce a model:\n{list(artifacts)}"
         )
 
@@ -2599,6 +3196,11 @@ _FOLDED_SUBTYPE_BRONZE_TTL = textwrap.dedent("""\
         kairos-bronze:sourceTable bronze-qargo:bookings ;
         kairos-bronze:columnName "confirmed_at" ;
         kairos-bronze:dataType "nvarchar(255)" .
+    bronze-qargo:bookings_status a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-qargo:bookings ;
+        kairos-bronze:columnName "status" ;
+        kairos-bronze:dataType "nvarchar(30)" ;
+        kairos-bronze:nullable false .
 
     bronze-qargo:orders a kairos-bronze:SourceTable ;
         rdfs:label "orders" ;
@@ -2618,24 +3220,80 @@ _FOLDED_SUBTYPE_BRONZE_TTL = textwrap.dedent("""\
 _FOLDED_SUBTYPE_MAPPING_TTL = textwrap.dedent("""\
     @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/folded#> .
     @prefix bronze-qargo: <https://example.com/bronze/qargo#> .
     @prefix bronze-qlik: <https://example.com/bronze/qlik#> .
     @prefix ex: <http://kairos.example/ontology/booking/> .
 
-    bronze-qlik:bookings skos:exactMatch ex:Booking ;
-        kairos-map:mappingType "direct" .
+    bronze-qlik:bookings skos:exactMatch ex:Booking .
     bronze-qlik:bookings_booking_ref skos:exactMatch ex:carrierBookingReference .
 
-    bronze-qargo:bookings skos:exactMatch ex:ConfirmedBooking ;
-        kairos-map:mappingType "direct" ;
-        kairos-map:filterCondition "source.status = 'confirmed'" .
+    bronze-qargo:bookings skos:exactMatch ex:ConfirmedBooking .
     bronze-qargo:bookings_booking_ref skos:exactMatch ex:carrierBookingReference .
     bronze-qargo:bookings_confirmed_at skos:exactMatch ex:confirmedAt .
 
-    bronze-qargo:orders skos:exactMatch ex:BookingRequest ;
-        kairos-map:mappingType "direct" .
+    bronze-qargo:orders skos:exactMatch ex:BookingRequest .
     bronze-qargo:orders_booking_ref skos:exactMatch ex:carrierBookingReference .
     bronze-qargo:orders_requested_at skos:exactMatch ex:requestedAt .
+
+    map:qlik a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-qlik:bookings ;
+        kairos-map:targetClass ex:Booking ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:qargoBooking a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-qargo:bookings ;
+        kairos-map:targetClass ex:ConfirmedBooking ;
+        kairos-map:mappingType "split" ;
+        kairos-map:matchType "exactMatch" ;
+        kairos-map:rowFilter map:confirmedFilter .
+    map:qargoOrder a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-qargo:orders ;
+        kairos-map:targetClass ex:BookingRequest ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:qlikRef a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-qlik:bookings_booking_ref ;
+        kairos-map:targetProperty ex:carrierBookingReference ;
+        kairos-map:matchType "exactMatch" .
+    map:qargoRef a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-qargo:bookings_booking_ref ;
+        kairos-map:targetProperty ex:carrierBookingReference ;
+        kairos-map:matchType "exactMatch" .
+    map:confirmedAt a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-qargo:bookings_confirmed_at ;
+        kairos-map:targetProperty ex:confirmedAt ;
+        kairos-map:matchType "exactMatch" .
+    map:orderRef a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-qargo:orders_booking_ref ;
+        kairos-map:targetProperty ex:carrierBookingReference ;
+        kairos-map:matchType "exactMatch" .
+    map:requestedAt a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-qargo:orders_requested_at ;
+        kairos-map:targetProperty ex:requestedAt ;
+        kairos-map:matchType "exactMatch" .
+    map:confirmedFilter a kairos-map:OperatorExpression ;
+        kairos-map:operator "equal" ;
+        kairos-map:arguments ( map:statusInput map:confirmedLiteral ) ;
+        kairos-map:outputType "boolean" ;
+        kairos-map:nullable false ;
+        kairos-map:nullPolicy "three-valued" ;
+        kairos-map:determinism "deterministic" ;
+        kairos-map:requiresCapability "scalar-operator" .
+    map:statusInput a kairos-map:SourceColumnExpression ;
+        kairos-map:sourceColumn bronze-qargo:bookings_status ;
+        kairos-map:outputType "string" ;
+        kairos-map:nullable false ;
+        kairos-map:nullPolicy "propagate" ;
+        kairos-map:determinism "deterministic" ;
+        kairos-map:requiresCapability "source-column" .
+    map:confirmedLiteral a kairos-map:LiteralExpression ;
+        kairos-map:literalValue "confirmed" ;
+        kairos-map:outputType "string" ;
+        kairos-map:nullable false ;
+        kairos-map:nullPolicy "never-null" ;
+        kairos-map:determinism "deterministic" ;
+        kairos-map:requiresCapability "typed-literal" .
 """)
 
 
@@ -2706,7 +3364,10 @@ class TestProjectedFoldedSubtypeMappings:
         confirmed_sql = artifacts["models/silver/booking/booking__from_qargo__bookings.sql"]
         request_sql = artifacts["models/silver/booking/booking__from_qargo__orders.sql"]
         assert "'ConfirmedBooking' as booking_type" in confirmed_sql
-        assert "where status = 'confirmed'" in confirmed_sql
+        assert (
+            "where ([bookings].[status_source] = "
+            "CONVERT(VARCHAR(8000), 0x636F6E6669726D6564))"
+        ) in confirmed_sql
         assert "'request' as booking_type" in request_sql
 
     def test_folded_subtype_specific_columns_survive_parent_union(
@@ -2725,8 +3386,8 @@ class TestProjectedFoldedSubtypeMappings:
         schema_yml = yaml.safe_load(artifacts["models/silver/booking/_booking__models.yml"])
         booking_model = next(m for m in schema_yml["models"] if m["name"] == "booking")
         schema_columns = {c["name"] for c in booking_model["columns"]}
-        assert "confirmed_at as confirmed_at" in confirmed_sql
-        assert "requested_at as requested_at" in request_sql
+        assert "[bookings].[confirmed_at] as confirmed_at" in confirmed_sql
+        assert "[orders].[requested_at] as requested_at" in request_sql
         assert "confirmed_at" in union_sql
         assert "requested_at" in union_sql
         assert {"booking_type", "confirmed_at", "requested_at"} <= schema_columns
@@ -2737,14 +3398,49 @@ class TestProjectedFoldedSubtypeMappings:
         single_mapping = textwrap.dedent("""\
             @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
             @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+            @prefix map: <https://example.com/mapping/single-folded#> .
             @prefix bronze-qargo: <https://example.com/bronze/qargo#> .
             @prefix ex: <http://kairos.example/ontology/booking/> .
 
-            bronze-qargo:bookings skos:exactMatch ex:ConfirmedBooking ;
-                kairos-map:mappingType "direct" ;
-                kairos-map:filterCondition "source.status = 'confirmed'" .
+            bronze-qargo:bookings skos:exactMatch ex:ConfirmedBooking .
             bronze-qargo:bookings_booking_ref skos:exactMatch ex:carrierBookingReference .
             bronze-qargo:bookings_confirmed_at skos:exactMatch ex:confirmedAt .
+            map:table a kairos-map:TableMapping ;
+                kairos-map:sourceTable bronze-qargo:bookings ;
+                kairos-map:targetClass ex:ConfirmedBooking ;
+                kairos-map:mappingType "split" ;
+                kairos-map:matchType "exactMatch" ;
+                kairos-map:rowFilter map:filter .
+            map:reference a kairos-map:ColumnMapping ;
+                kairos-map:sourceColumn bronze-qargo:bookings_booking_ref ;
+                kairos-map:targetProperty ex:carrierBookingReference ;
+                kairos-map:matchType "exactMatch" .
+            map:confirmedAt a kairos-map:ColumnMapping ;
+                kairos-map:sourceColumn bronze-qargo:bookings_confirmed_at ;
+                kairos-map:targetProperty ex:confirmedAt ;
+                kairos-map:matchType "exactMatch" .
+            map:filter a kairos-map:OperatorExpression ;
+                kairos-map:operator "equal" ;
+                kairos-map:arguments ( map:status map:confirmed ) ;
+                kairos-map:outputType "boolean" ;
+                kairos-map:nullable false ;
+                kairos-map:nullPolicy "three-valued" ;
+                kairos-map:determinism "deterministic" ;
+                kairos-map:requiresCapability "scalar-operator" .
+            map:status a kairos-map:SourceColumnExpression ;
+                kairos-map:sourceColumn bronze-qargo:bookings_status ;
+                kairos-map:outputType "string" ;
+                kairos-map:nullable false ;
+                kairos-map:nullPolicy "propagate" ;
+                kairos-map:determinism "deterministic" ;
+                kairos-map:requiresCapability "source-column" .
+            map:confirmed a kairos-map:LiteralExpression ;
+                kairos-map:literalValue "confirmed" ;
+                kairos-map:outputType "string" ;
+                kairos-map:nullable false ;
+                kairos-map:nullPolicy "never-null" ;
+                kairos-map:determinism "deterministic" ;
+                kairos-map:requiresCapability "typed-literal" .
         """)
         graph, bronze, mappings, classes = self._setup(tmp_path, mapping_ttl=single_mapping)
         artifacts = generate_dbt_artifacts(
@@ -2758,7 +3454,10 @@ class TestProjectedFoldedSubtypeMappings:
         booking_sql = artifacts["models/silver/booking/booking.sql"]
         assert "'ConfirmedBooking' as booking_type" in booking_sql
         assert "confirmed_at" in booking_sql
-        assert "where status = 'confirmed'" in booking_sql
+        assert (
+            "where ([bookings].[status_source] = "
+            "CONVERT(VARCHAR(8000), 0x636F6E6669726D6564))"
+        ) in booking_sql
 
     def test_transitive_folded_subtype_mapping_routes_to_parent(
         self, tmp_path, template_dir
@@ -2874,23 +3573,91 @@ SPLIT_BRONZE_TTL = textwrap.dedent("""\
 SPLIT_MAPPING_TTL = textwrap.dedent("""\
     @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/split#> .
     @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
     @prefix ex: <http://kairos.example/ontology/> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-    bronze-ap:tblClient skos:exactMatch ex:CorporateClient ;
+    bronze-ap:tblClient skos:exactMatch ex:CorporateClient,
+                                               ex:SoleProprietorClient,
+                                               ex:IndividualClient .
+    bronze-ap:tblClient_ClientID skos:exactMatch ex:clientId .
+
+    map:corporate a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:tblClient ;
+        kairos-map:targetClass ex:CorporateClient ;
         kairos-map:mappingType "split" ;
-        kairos-map:filterCondition "source.type = 0" .
-
-    bronze-ap:tblClient skos:exactMatch ex:SoleProprietorClient ;
+        kairos-map:matchType "exactMatch" ;
+        kairos-map:rowFilter map:isCorporate .
+    map:sole a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:tblClient ;
+        kairos-map:targetClass ex:SoleProprietorClient ;
         kairos-map:mappingType "split" ;
-        kairos-map:filterCondition "source.type = 1" .
-
-    bronze-ap:tblClient skos:exactMatch ex:IndividualClient ;
+        kairos-map:matchType "exactMatch" ;
+        kairos-map:rowFilter map:isSole .
+    map:individual a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:tblClient ;
+        kairos-map:targetClass ex:IndividualClient ;
         kairos-map:mappingType "split" ;
-        kairos-map:filterCondition "source.type = 2" .
+        kairos-map:matchType "exactMatch" ;
+        kairos-map:rowFilter map:isIndividual .
+    map:clientId a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblClient_ClientID ;
+        kairos-map:targetProperty ex:clientId ;
+        kairos-map:matchType "exactMatch" .
 
-    bronze-ap:tblClient_ClientID skos:exactMatch ex:clientId ;
-        kairos-map:transform "CAST(source.ClientID AS STRING)" .
+    map:typeInput a kairos-map:SourceColumnExpression ;
+        kairos-map:sourceColumn bronze-ap:tblClient_type ;
+        kairos-map:outputType "int32" ;
+        kairos-map:nullable false ;
+        kairos-map:nullPolicy "propagate" ;
+        kairos-map:determinism "deterministic" ;
+        kairos-map:requiresCapability "source-column" .
+    map:zero a kairos-map:LiteralExpression ;
+        kairos-map:literalValue "0"^^xsd:int ;
+        kairos-map:outputType "int32" ;
+        kairos-map:nullable false ;
+        kairos-map:nullPolicy "never-null" ;
+        kairos-map:determinism "deterministic" ;
+        kairos-map:requiresCapability "typed-literal" .
+    map:one a kairos-map:LiteralExpression ;
+        kairos-map:literalValue "1"^^xsd:int ;
+        kairos-map:outputType "int32" ;
+        kairos-map:nullable false ;
+        kairos-map:nullPolicy "never-null" ;
+        kairos-map:determinism "deterministic" ;
+        kairos-map:requiresCapability "typed-literal" .
+    map:two a kairos-map:LiteralExpression ;
+        kairos-map:literalValue "2"^^xsd:int ;
+        kairos-map:outputType "int32" ;
+        kairos-map:nullable false ;
+        kairos-map:nullPolicy "never-null" ;
+        kairos-map:determinism "deterministic" ;
+        kairos-map:requiresCapability "typed-literal" .
+    map:isCorporate a kairos-map:OperatorExpression ;
+        kairos-map:operator "equal" ;
+        kairos-map:arguments ( map:typeInput map:zero ) ;
+        kairos-map:outputType "boolean" ;
+        kairos-map:nullable false ;
+        kairos-map:nullPolicy "three-valued" ;
+        kairos-map:determinism "deterministic" ;
+        kairos-map:requiresCapability "scalar-operator" .
+    map:isSole a kairos-map:OperatorExpression ;
+        kairos-map:operator "equal" ;
+        kairos-map:arguments ( map:typeInput map:one ) ;
+        kairos-map:outputType "boolean" ;
+        kairos-map:nullable false ;
+        kairos-map:nullPolicy "three-valued" ;
+        kairos-map:determinism "deterministic" ;
+        kairos-map:requiresCapability "scalar-operator" .
+    map:isIndividual a kairos-map:OperatorExpression ;
+        kairos-map:operator "equal" ;
+        kairos-map:arguments ( map:typeInput map:two ) ;
+        kairos-map:outputType "boolean" ;
+        kairos-map:nullable false ;
+        kairos-map:nullPolicy "three-valued" ;
+        kairos-map:determinism "deterministic" ;
+        kairos-map:requiresCapability "scalar-operator" .
 """)
 
 
@@ -2948,17 +3715,17 @@ class TestSplitFilterCondition:
             mappings_dir=split_mappings_dir,
         )
 
-        # Corporate → type = 0
+        # Corporate → prepared discriminator = 0
         corp_key = next(k for k in artifacts if "corporate_client.sql" in k)
-        assert "type = 0" in artifacts[corp_key]
+        assert "[tbl_client].[type_source] = 0" in artifacts[corp_key]
 
         # Sole proprietor → type = 1
         sole_key = next(k for k in artifacts if "sole_proprietor_client.sql" in k)
-        assert "type = 1" in artifacts[sole_key]
+        assert "[tbl_client].[type_source] = 1" in artifacts[sole_key]
 
         # Individual → type = 2
         indiv_key = next(k for k in artifacts if "individual_client.sql" in k)
-        assert "type = 2" in artifacts[indiv_key]
+        assert "[tbl_client].[type_source] = 2" in artifacts[indiv_key]
 
     def test_split_models_do_not_share_filter(
         self, split_classes, split_graph, template_dir,
@@ -2977,10 +3744,9 @@ class TestSplitFilterCondition:
 
         sole_key = next(k for k in artifacts if "sole_proprietor_client.sql" in k)
         content = artifacts[sole_key]
-        # Should NOT have type = 0 (that's CorporateClient's filter)
-        assert "type = 0" not in content
-        # Should have type = 1
-        assert "type = 1" in content
+        # Should NOT have the corporate prepared discriminator.
+        assert "[tbl_client].[type_source] = 0" not in content
+        assert "[tbl_client].[type_source] = 1" in content
 
 
 # ---------------------------------------------------------------------------
@@ -3073,12 +3839,19 @@ NK_MAPPING_ACCOUNT_TTL = textwrap.dedent("""\
     @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
     @prefix ex: <http://kairos.example/ontology/> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/account#> .
 
-    bronze-ap:tblAccount skos:exactMatch ex:Account ;
-        kairos-map:mappingType "direct" .
-
-    bronze-ap:tblAccount_Code skos:exactMatch ex:accountCode ;
-        kairos-map:transform "source.Code" .
+    bronze-ap:tblAccount skos:exactMatch ex:Account .
+    bronze-ap:tblAccount_Code skos:exactMatch ex:accountCode .
+    map:table a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:tblAccount ;
+        kairos-map:targetClass ex:Account ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:code a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblAccount_Code ;
+        kairos-map:targetProperty ex:accountCode ;
+        kairos-map:matchType "exactMatch" .
 """)
 
 NK_MAPPING_WIDGET_TTL = textwrap.dedent("""\
@@ -3086,12 +3859,19 @@ NK_MAPPING_WIDGET_TTL = textwrap.dedent("""\
     @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
     @prefix ex: <http://kairos.example/ontology/> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/widget#> .
 
-    bronze-ap:tblWidget skos:exactMatch ex:Widget ;
-        kairos-map:mappingType "direct" .
-
-    bronze-ap:tblWidget_Code skos:exactMatch ex:widgetCode ;
-        kairos-map:transform "source.Code" .
+    bronze-ap:tblWidget skos:exactMatch ex:Widget .
+    bronze-ap:tblWidget_Code skos:exactMatch ex:widgetCode .
+    map:table a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:tblWidget ;
+        kairos-map:targetClass ex:Widget ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:code a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblWidget_Code ;
+        kairos-map:targetProperty ex:widgetCode ;
+        kairos-map:matchType "exactMatch" .
 """)
 
 NK_ONTOLOGY_FK_CHILD_TTL = textwrap.dedent("""\
@@ -3175,27 +3955,30 @@ class TestNaturalKeyWarning:
             )
         assert "no kairos-ext:naturalKey" not in caplog.text
 
-    def test_bound_model_without_natural_key_is_rejected(
+    def test_bound_model_without_natural_key_uses_source_scoped_join_key(
         self, template_dir, nk_sources_dir, nk_mappings_widget, caplog,
     ):
-        """Every bound model requires a usable incremental key."""
+        """A physical join key does not require an invented business natural key."""
         g = Graph()
         g.parse(data=NK_ONTOLOGY_WITHOUT_KEY_TTL, format="turtle")
         classes = [{"uri": "http://kairos.example/ontology/Widget",
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        with pytest.raises(ValueError, match="NULL surrogate keys"):
-            generate_dbt_artifacts(
-                classes=classes,
-                graph=g,
-                template_dir=template_dir,
-                namespace="http://kairos.example/ontology/",
-                ontology_name="widget",
-                sources_dir=nk_sources_dir,
-                mappings_dir=nk_mappings_widget,
-            )
-    def test_missing_natural_key_error_includes_remediation_guidance(
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="widget",
+            sources_dir=nk_sources_dir,
+            mappings_dir=nk_mappings_widget,
+        )
+        sql = next(value for key, value in artifacts.items() if key.endswith("/widget.sql"))
+        assert "_source_record_key" in sql
+        assert "widget_iri" not in sql
+
+    def test_missing_natural_key_does_not_invent_business_identity(
         self, template_dir, nk_sources_dir, nk_mappings_widget,
     ):
         g = Graph()
@@ -3204,38 +3987,44 @@ class TestNaturalKeyWarning:
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        with pytest.raises(ValueError, match="kairos-design-silver"):
-            generate_dbt_artifacts(
-                classes=classes,
-                graph=g,
-                template_dir=template_dir,
-                namespace="http://kairos.example/ontology/",
-                ontology_name="widget",
-                sources_dir=nk_sources_dir,
-                mappings_dir=nk_mappings_widget,
-            )
-    def test_error_mentions_fk_child_context(
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="widget",
+            sources_dir=nk_sources_dir,
+            mappings_dir=nk_mappings_widget,
+        )
+        release = artifacts["__release_data__"]
+        assert any(
+            item["rule_id"] == "DD-108-identity"
+            for item in release["blocking_reasons"]
+        )
+
+    def test_fk_child_without_natural_key_keeps_source_identity(
         self, template_dir, nk_sources_dir, nk_mappings_widget,
     ):
-        """An FK-child (silverForeignKeyOn target) without naturalKey should get
-        a context-aware warning naming its parent and explaining the options."""
+        """Weak entities no longer force an invented natural key."""
         g = Graph()
         g.parse(data=NK_ONTOLOGY_FK_CHILD_TTL, format="turtle")
         classes = [{"uri": "http://kairos.example/ontology/Widget",
                      "name": "Widget", "label": "Widget",
                      "comment": "A widget entity"}]
 
-        with pytest.raises(ValueError, match="FK-child of Gadget.*weak entity"):
-            generate_dbt_artifacts(
-                classes=classes,
-                graph=g,
-                template_dir=template_dir,
-                namespace="http://kairos.example/ontology/",
-                ontology_name="widget",
-                sources_dir=nk_sources_dir,
-                mappings_dir=nk_mappings_widget,
-            )
-    def test_governed_target_first_model_rejects_null_incremental_key(
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="widget",
+            sources_dir=nk_sources_dir,
+            mappings_dir=nk_mappings_widget,
+        )
+        sql = next(value for key, value in artifacts.items() if key.endswith("/widget.sql"))
+        assert "_source_record_key" in sql
+
+    def test_governed_target_first_model_has_non_null_physical_key(
         self, template_dir, nk_sources_dir, nk_mappings_widget,
     ):
         g = Graph()
@@ -3244,17 +4033,19 @@ class TestNaturalKeyWarning:
                     "name": "Widget", "label": "Widget",
                     "comment": "A widget entity"}]
 
-        with pytest.raises(ValueError, match="NULL surrogate keys"):
-            generate_dbt_artifacts(
-                classes=classes,
-                graph=g,
-                template_dir=template_dir,
-                namespace="http://kairos.example/ontology/",
-                ontology_name="widget",
-                sources_dir=nk_sources_dir,
-                mappings_dir=nk_mappings_widget,
-                eligible_class_uris={"http://kairos.example/ontology/Widget"},
-            )
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=g,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="widget",
+            sources_dir=nk_sources_dir,
+            mappings_dir=nk_mappings_widget,
+            eligible_class_uris={"http://kairos.example/ontology/Widget"},
+        )
+        sql = next(value for key, value in artifacts.items() if key.endswith("/widget.sql"))
+        assert "generate_surrogate_key" in sql
+        assert "CAST(NULL" not in sql.split(" as widget_sk", 1)[0].splitlines()[-1]
 
     def test_scd2_sequences_multiple_source_versions_per_key(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir,
@@ -3269,11 +4060,14 @@ class TestNaturalKeyWarning:
             mappings_dir=mappings_dir,
         )
         sql = artifacts["models/silver/client/client.sql"]
-        assert "LAG(_row_hash) over" in sql
-        assert "LEAD(valid_from) over" in sql
-        assert "first_changed as" in sql
-        assert "group by client_sk" in sql
-        assert "inner join first_changed c" in sql
+        assert "kairos_row_hash" not in sql
+        assert "replay_deduplicated" not in sql
+        assert "materialized='table'" in sql
+        release = artifacts["__release_data__"]
+        assert any(
+            item["rule_id"] == "DD-108-identity"
+            for item in release["blocking_reasons"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3349,14 +4143,27 @@ SILVER_FK_ANNOTATION_BRONZE_TTL = textwrap.dedent("""\
 SILVER_FK_ANNOTATION_MAPPING_TTL = textwrap.dedent("""\
     @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/fk#> .
     @prefix bronze: <https://example.com/bronze/erp#> .
     @prefix ex: <http://kairos.example/ontology/> .
 
-    bronze:Orders skos:exactMatch ex:Order ;
-        kairos-map:mappingType "direct" .
+    bronze:Orders skos:exactMatch ex:Order .
 
     bronze:Orders_order_id skos:exactMatch ex:orderId .
     bronze:Orders_customer_id skos:exactMatch ex:placedBy .
+    map:table a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze:Orders ;
+        kairos-map:targetClass ex:Order ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:orderId a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze:Orders_order_id ;
+        kairos-map:targetProperty ex:orderId ;
+        kairos-map:matchType "exactMatch" .
+    map:customer a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze:Orders_customer_id ;
+        kairos-map:targetProperty ex:placedBy ;
+        kairos-map:matchType "exactMatch" .
 """)
 
 
@@ -3426,24 +4233,26 @@ class TestSilverForeignKeyAnnotation:
 
 
 class TestSilverModelRegistry:
-    """Tests for _build_silver_model_registry and registry-aware resolution."""
+    """Tests for the typed Silver registry and registry-aware resolution."""
+
+    @staticmethod
+    def _registry(meta, relations=()):
+        return build_silver_registry(
+            tuple(outcome_from_context(item) for item in meta),
+            relations,
+        )
 
     def test_registry_maps_class_uri_to_model_name(self):
         """Registry maps class URIs from entity metadata to snake_case model names."""
-        g = Graph()
         meta = [
             {"class_name": "TransportOrder", "class_uri": "http://ex.com/TransportOrder",
              "skipped": False, "column_names": ["order_name", "status"]},
             {"class_name": "Customer", "class_uri": "http://ex.com/Customer",
              "skipped": False, "column_names": ["customer_name"]},
         ]
-        classes = [
-            {"uri": "http://ex.com/TransportOrder", "name": "TransportOrder",
-             "label": "TO", "comment": ""},
-            {"uri": "http://ex.com/Customer", "name": "Customer",
-             "label": "C", "comment": ""},
-        ]
-        name_reg, cols_reg = _build_silver_model_registry(meta, classes, g)
+        registry = self._registry(meta)
+        name_reg = dict(registry.names)
+        cols_reg = dict(registry.columns)
         assert name_reg["http://ex.com/TransportOrder"] == "transport_order"
         assert name_reg["http://ex.com/Customer"] == "customer"
         assert cols_reg["transport_order"] == {"order_name", "status"}
@@ -3451,30 +4260,23 @@ class TestSilverModelRegistry:
 
     def test_registry_maps_parent_uri_to_child(self):
         """Parent class URI maps to child's model when single child extends it."""
-        g = Graph()
         parent_uri = URIRef("http://refmodel.org/PurchaseOrder")
         child_uri = URIRef("http://ex.com/HubOrder")
-        g.add((child_uri, RDFS.subClassOf, parent_uri))
 
         meta = [
             {"class_name": "HubOrder", "class_uri": str(child_uri),
              "skipped": False, "column_names": ["order_id"]},
         ]
-        classes = [
-            {"uri": str(child_uri), "name": "HubOrder", "label": "HO", "comment": ""},
-        ]
-        name_reg, _ = _build_silver_model_registry(meta, classes, g)
+        registry = self._registry(meta, ((str(child_uri), str(parent_uri)),))
+        name_reg = dict(registry.names)
         # Parent resolves to child's model name
         assert name_reg[str(parent_uri)] == "hub_order"
 
     def test_registry_skips_ambiguous_parent(self):
         """Parent with multiple children is NOT registered (ambiguous)."""
-        g = Graph()
         parent_uri = URIRef("http://refmodel.org/Party")
         child1_uri = URIRef("http://ex.com/Customer")
         child2_uri = URIRef("http://ex.com/Supplier")
-        g.add((child1_uri, RDFS.subClassOf, parent_uri))
-        g.add((child2_uri, RDFS.subClassOf, parent_uri))
 
         meta = [
             {"class_name": "Customer", "class_uri": str(child1_uri),
@@ -3482,24 +4284,24 @@ class TestSilverModelRegistry:
             {"class_name": "Supplier", "class_uri": str(child2_uri),
              "skipped": False, "column_names": []},
         ]
-        classes = [
-            {"uri": str(child1_uri), "name": "Customer", "label": "", "comment": ""},
-            {"uri": str(child2_uri), "name": "Supplier", "label": "", "comment": ""},
-        ]
-        name_reg, _ = _build_silver_model_registry(meta, classes, g)
+        registry = self._registry(
+            meta,
+            (
+                (str(child1_uri), str(parent_uri)),
+                (str(child2_uri), str(parent_uri)),
+            ),
+        )
+        name_reg = dict(registry.names)
         # Parent should NOT be in registry (ambiguous)
         assert str(parent_uri) not in name_reg
 
     def test_registry_skips_skipped_classes(self):
         """Skipped classes (no mapping) are not registered."""
-        g = Graph()
         meta = [
             {"class_name": "NoMapping", "class_uri": "http://ex.com/NoMapping",
              "skipped": True, "column_names": []},
         ]
-        classes = [{"uri": "http://ex.com/NoMapping", "name": "NoMapping",
-                    "label": "", "comment": ""}]
-        name_reg, _ = _build_silver_model_registry(meta, classes, g)
+        name_reg = dict(self._registry(meta).names)
         assert "http://ex.com/NoMapping" not in name_reg
 
     def test_resolver_uses_registry_first(self):
@@ -3858,7 +4660,11 @@ class TestDbtTypeStringMacro:
             namespace="http://kairos.example/ontology/",
             ontology_name="item",
         )
-        all_sql = "\n".join(v for v in artifacts.values() if v)
+        all_sql = "\n".join(
+            value
+            for value in artifacts.values()
+            if isinstance(value, str) and value
+        )
         assert "dbt_utils.type_string" not in all_sql, (
             "Generated SQL must not use deprecated dbt_utils.type_string()"
         )
@@ -3977,19 +4783,24 @@ BANK_ACCOUNT_MAPPING_TTL = textwrap.dedent("""\
     @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
     @prefix ex: <http://kairos.example/ontology/> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/bank#> .
 
-    bronze-ap:tblBankAccount skos:exactMatch ex:BankAccount ;
-        kairos-map:mappingType "direct" .
-
-    bronze-ap:tblBankAccount_bankIBAN skos:exactMatch ex:bankIBAN ;
-        kairos-map:transform "source.adminpulse_relations.bankIBAN" .
+    bronze-ap:tblBankAccount skos:exactMatch ex:BankAccount .
+    bronze-ap:tblBankAccount_bankIBAN skos:exactMatch ex:bankIBAN .
+    map:table a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:tblBankAccount ;
+        kairos-map:targetClass ex:BankAccount ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:iban a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblBankAccount_bankIBAN ;
+        kairos-map:targetProperty ex:bankIBAN ;
+        kairos-map:matchType "exactMatch" .
 """)
 
 
 class TestSkIriUsesSourceExpression:
-    """CR-001 — In SCD2 silver models, the mapped CTE must use source column expressions
-    (to avoid T-SQL alias-before-definition in the mapping CTE), while source_data
-    must use the aliased column names (since it reads FROM mapped)."""
+    """Runtime-neutral models keep generated identity expressions in source scope."""
 
     @pytest.fixture
     def bank_sources_dir(self, tmp_path):
@@ -4034,44 +4845,36 @@ class TestSkIriUsesSourceExpression:
         (adminpulse_relations.bankIBAN), not the snake_case alias."""
         import re as _re
         sql = self._get_sql(template_dir, bank_sources_dir, bank_mappings_dir)
-        # BankAccount defaults to SCD2 — model must have a mapped CTE
-        assert "mapped as (" in sql, "SCD2 model must have a mapped CTE"
-        mapped_block = _re.search(r"mapped\s+as\s+\((.+?)\),\s*\n\s*source_data", sql, _re.DOTALL)
-        assert mapped_block, "mapped CTE block not found before source_data"
-        assert "adminpulse_relations.bankIBAN" in mapped_block.group(1), (
+        assert "mapped as (" in sql
+        mapped_block = _re.search(
+            r"mapped\s+as\s+\((.+?)\)\s*\nselect",
+            sql,
+            _re.DOTALL,
+        )
+        assert mapped_block
+        assert "[adminpulse_relations].[bankIBAN]" in mapped_block.group(1), (
             "mapped CTE must use the source column expression, got:\n" + mapped_block.group(1)
         )
 
-    def test_source_data_sk_uses_aliased_name(
+    def test_no_source_data_stage_is_inferred_without_runtime_authority(
         self, template_dir, bank_sources_dir, bank_mappings_dir
     ):
-        """In source_data (which reads FROM mapped), the SK must use the aliased column
-        name — the source expression is no longer visible there."""
+        """An SCD annotation alone cannot create a parallel source_data runtime."""
         sql = self._get_sql(template_dir, bank_sources_dir, bank_mappings_dir)
-        assert "source_data" in sql, "SCD2 model must have a source_data CTE"
-        assert "generate_surrogate_key(['bank_iban'])" in sql, (
-            "source_data SK must use aliased column 'bank_iban' (FROM mapped), got:\n" + sql
-        )
+        assert "source_data" not in sql
+        assert "adminpulse_relations._source_record_key" in sql
+        assert "generate_surrogate_key(['bank_iban'])" not in sql
 
     def test_iri_expression_uses_source_column_in_mapped(
         self, template_dir, bank_sources_dir, bank_mappings_dir
     ):
-        """The IRI CONCAT in source_data must use the aliased column name."""
-        import re as _re
+        """The generated IRI remains in the source-scoped mapped stage."""
         sql = self._get_sql(template_dir, bank_sources_dir, bank_mappings_dir)
         # Source expression still appears somewhere (in the mapped CTE column expression)
-        assert "adminpulse_relations.bankIBAN" in sql, (
+        assert "[adminpulse_relations].[bankIBAN]" in sql, (
             "Source column expression must appear in the mapped CTE, got:\n" + sql
         )
-        # The IRI CONCAT in source_data must use the alias
-        source_data_block = _re.search(
-            r"source_data\s+as\s+\((.+?)\)\s*\n", sql, _re.DOTALL
-        )
-        if source_data_block:
-            block = source_data_block.group(1)
-            assert "bank_iban" in block, (
-                "source_data IRI must use aliased column 'bank_iban':\n" + block
-            )
+        assert "source_data" not in sql
 
     def test_no_source_lookup_falls_back_to_alias(self):
         """Without a source lookup, _build_sk_iri_columns falls back to the alias (safe default)."""
@@ -4167,20 +4970,31 @@ _CR005_PARTY_MAPPING_TTL = textwrap.dedent("""\
     @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
     @prefix party: <http://kairos.example/ontology/party#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/party#> .
 
-    bronze-ap:tblRelations skos:exactMatch party:Party ;
-        kairos-map:mappingType "direct" .
+    bronze-ap:tblRelations skos:exactMatch party:Party .
 
-    bronze-ap:tblRelations_uniqueIdentifier skos:closeMatch party:partyIdentifier ;
-        kairos-map:transform "source.adminpulse_relations.uniqueIdentifier" .
+    bronze-ap:tblRelations_uniqueIdentifier skos:closeMatch party:partyIdentifier .
 
     bronze-ap:tblRelations_remark skos:exactMatch party:remark .
+    map:table a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-ap:tblRelations ;
+        kairos-map:targetClass party:Party ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:identifier a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblRelations_uniqueIdentifier ;
+        kairos-map:targetProperty party:partyIdentifier ;
+        kairos-map:matchType "closeMatch" .
+    map:remark a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-ap:tblRelations_remark ;
+        kairos-map:targetProperty party:remark ;
+        kairos-map:matchType "exactMatch" .
 """)
 
 
 class TestScd2SourceDataUsesAliasedColumns:
-    """CR-005 — In SCD2 models, SK and IRI in source_data must use the aliased column
-    name (from mapped CTE), not the original source column name."""
+    """An isolated scdType annotation does not establish DD-109 runtime."""
 
     @pytest.fixture
     def party_sources_dir(self, tmp_path):
@@ -4224,45 +5038,30 @@ class TestScd2SourceDataUsesAliasedColumns:
         sql_key = next(k for k in artifacts if "party.sql" in k)
         return artifacts[sql_key]
 
-    def test_source_data_sk_uses_aliased_name(
+    def test_source_data_is_not_inferred(
         self, template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
     ):
-        """In source_data CTE, generate_surrogate_key must use the aliased column
-        name (party_identifier), not the original source name (uniqueIdentifier)."""
+        """No source_data CTE exists without identity, incremental, and CDC facts."""
         sql = self._get_sql(
             template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
         )
-        assert "source_data" in sql, "SCD2 model must have a source_data CTE"
-        # The source_data CTE must use the aliased name
-        assert "generate_surrogate_key(['party_identifier'])" in sql, (
-            "source_data SK must reference aliased column 'party_identifier', got:\n" + sql
-        )
+        assert "source_data" not in sql
+        assert "adminpulse_relations._source_record_key" in sql
+        assert "generate_surrogate_key(['party_identifier'])" not in sql
         # The original source column must NOT appear in the SK expression
         assert "generate_surrogate_key(['uniqueIdentifier'])" not in sql, (
             "source_data SK must NOT use original source column 'uniqueIdentifier':\n" + sql
         )
 
-    def test_source_data_iri_uses_aliased_name(
+    def test_generated_iri_remains_source_scoped(
         self, template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
     ):
-        """In source_data CTE, the IRI CONCAT must use the aliased column name."""
+        """The structural fallback does not invent a historical IRI stage."""
         sql = self._get_sql(
             template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
         )
-        import re as _re
-        # Find the IRI expression inside source_data block
-        source_data_block = _re.search(
-            r"source_data\s+as\s+\((.+?)\)\s*\n", sql, _re.DOTALL
-        )
-        assert source_data_block, "source_data CTE not found in SQL"
-        block = source_data_block.group(1)
-        assert "uniqueIdentifier" not in block, (
-            "source_data IRI must NOT reference 'uniqueIdentifier' — "
-            "that column doesn't exist in 'mapped':\n" + block
-        )
-        assert "party_identifier" in block, (
-            "source_data IRI must reference aliased column 'party_identifier':\n" + block
-        )
+        assert "source_data" not in sql
+        assert "uniqueIdentifier" in sql
 
     def test_mapped_cte_still_uses_source_expression(
         self, template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
@@ -4274,9 +5073,11 @@ class TestScd2SourceDataUsesAliasedColumns:
         )
         import re as _re
         mapped_block = _re.search(
-            r"mapped\s+as\s+\((.+?)\),\s*\n\s*source_data", sql, _re.DOTALL
+            r"mapped\s+as\s+\((.+?)\)\s*\nselect",
+            sql,
+            _re.DOTALL,
         )
-        assert mapped_block, "mapped CTE not found before source_data in SQL"
+        assert mapped_block
         block = mapped_block.group(1)
         assert "uniqueIdentifier" in block, (
             "mapped CTE must use source column 'uniqueIdentifier' in its expression:\n" + block
@@ -4388,18 +5189,29 @@ _ISSUE_194_MAPPING_TTL = textwrap.dedent("""\
     @prefix bronze-qargo: <https://example.com/bronze/qargo#> .
     @prefix party: <http://kairos.example/ontology/party#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/issue194#> .
 
-    bronze-qargo:companies skos:exactMatch party:CargoOperator ;
-        kairos-map:mappingType "direct" .
-
-    bronze-qargo:companies_company_id skos:exactMatch party:partyIdentifier ;
-        kairos-map:transform "source.companies.company_id" .
-
-    bronze-qargo:companies_name skos:exactMatch party:partyName ;
-        kairos-map:transform "source.companies.name" .
-
-    bronze-qargo:companies_billing_address skos:exactMatch party:hasBillingAddress ;
-        kairos-map:transform "source.companies.billing_address" .
+    bronze-qargo:companies skos:exactMatch party:CargoOperator .
+    bronze-qargo:companies_company_id skos:exactMatch party:partyIdentifier .
+    bronze-qargo:companies_name skos:exactMatch party:partyName .
+    bronze-qargo:companies_billing_address skos:exactMatch party:hasBillingAddress .
+    map:table a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze-qargo:companies ;
+        kairos-map:targetClass party:CargoOperator ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:id a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-qargo:companies_company_id ;
+        kairos-map:targetProperty party:partyIdentifier ;
+        kairos-map:matchType "exactMatch" .
+    map:name a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-qargo:companies_name ;
+        kairos-map:targetProperty party:partyName ;
+        kairos-map:matchType "exactMatch" .
+    map:address a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze-qargo:companies_billing_address ;
+        kairos-map:targetProperty party:hasBillingAddress ;
+        kairos-map:matchType "exactMatch" .
 """)
 
 
@@ -4453,17 +5265,11 @@ class TestIssue194Scd2InheritedFkScope:
     ):
         sql = self._get_sql(template_dir, sources_dir, mappings_dir, silver_ext_path)
         mapped_block = sql.split("mapped as (", 1)[1].split(
-            "\n\n),\n\nsource_data", 1
+            "\n)\nselect", 1
         )[0]
-        source_data_block = sql.split("source_data as (", 1)[1].split("\n\n)", 1)[0]
 
         assert "address_ref.address_sk as billing_address_sk" in mapped_block, (
             "FK lookup must be selected while address_ref is in scope:\n" + mapped_block
         )
-        assert "billing_address_sk," in source_data_block, (
-            "source_data must read the mapped FK alias from mapped:\n" + source_data_block
-        )
-        assert "address_ref.address_sk" not in source_data_block, (
-            "source_data reads from mapped, so the FK join alias is out of scope:\n"
-            + source_data_block
-        )
+        assert "source_data" not in sql
+        assert "select *\nfrom mapped" in sql

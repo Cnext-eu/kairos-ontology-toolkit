@@ -15,28 +15,13 @@ names must match across targets for the acme-hub ``client`` domain (which sets a
 
 import re
 
-from kairos_ontology.core.projections.medallion_silver_projector import (
-    generate_silver_artifacts,
-)
 from kairos_ontology.core.projections.shared import (
     silver_schema_name,
     silver_table_name,
 )
 
-from .conftest import (
-    EXTENSIONS_DIR,
-    SHAPES_DIR,
-)
-
-
-def _client_silver_ddl(client_ontology) -> str:
-    graph, namespace, classes = client_ontology
-    arts = generate_silver_artifacts(
-        classes=classes, graph=graph, namespace=namespace, shapes_dir=SHAPES_DIR,
-        ontology_name="client",
-        projection_ext_path=EXTENSIONS_DIR / "client-silver-ext.ttl",
-    )
-    return "\n".join(v for k, v in arts.items() if k.endswith(".sql"))
+def _client_silver_ddl(client_dbt_artifacts) -> str:
+    return client_dbt_artifacts["analyses/client/client-ddl.sql"]
 
 
 class TestNamingParity:
@@ -57,9 +42,9 @@ class TestNamingParity:
         assert "models/silver/client/client_type.sql" in paths
 
     def test_silver_and_dbt_agree_on_schema_and_tables(
-        self, client_ontology, client_dbt_artifacts
+        self, client_dbt_artifacts
     ):
-        ddl = _client_silver_ddl(client_ontology)
+        ddl = _client_silver_ddl(client_dbt_artifacts)
         # Silver DDL schema-qualifies tables as silver.<table>; client_pii and
         # identifier both carry silverTableName overrides.
         assert "silver.client_pii" in ddl
@@ -71,11 +56,11 @@ class TestNamingParity:
                 f"dbt missing model for {tbl}"
             )
 
-    def test_sk_key_parity(self, client_ontology, client_dbt_artifacts):
+    def test_sk_key_parity(self, client_dbt_artifacts):
         # The SK/unique_key derives from the (shared) physical table name, so the
         # dbt unique_key for identifier must be identifier_sk — matching silver's
         # primary key column (silver names the PK <table>_sk).
-        ddl = _client_silver_ddl(client_ontology)
+        ddl = _client_silver_ddl(client_dbt_artifacts)
         assert "identifier_sk" in ddl
         model = next(
             v for k, v in client_dbt_artifacts.items()

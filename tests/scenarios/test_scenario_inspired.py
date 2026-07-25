@@ -12,11 +12,7 @@ These tests verify that:
 import pytest
 from rdflib import Graph, Namespace, RDFS, URIRef
 
-from kairos_ontology.core.projections.medallion_silver_projector import (
-    generate_silver_artifacts,
-)
-
-from .conftest import EXTENSIONS_DIR, SHAPES_DIR, ONTOLOGIES_DIR
+from .conftest import ONTOLOGIES_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -24,18 +20,9 @@ from .conftest import EXTENSIONS_DIR, SHAPES_DIR, ONTOLOGIES_DIR
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
-def client_silver_with_identifier(client_ontology):
+def client_silver_with_identifier(client_dbt_artifacts):
     """Generate silver artifacts for client domain (includes Identifier pattern)."""
-    graph, namespace, classes = client_ontology
-    ext_path = EXTENSIONS_DIR / "client-silver-ext.ttl"
-    return generate_silver_artifacts(
-        classes=classes,
-        graph=graph,
-        namespace=namespace,
-        shapes_dir=SHAPES_DIR,
-        ontology_name="client",
-        projection_ext_path=ext_path if ext_path.exists() else None,
-    )
+    return client_dbt_artifacts
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +34,7 @@ class TestInspiredIdentifierPattern:
 
     def test_identifier_table_in_ddl(self, client_silver_with_identifier):
         """Identifier class should produce a CREATE TABLE in silver DDL."""
-        ddl_key = _find_artifact(client_silver_with_identifier, ".sql")
+        ddl_key = _find_artifact(client_silver_with_identifier, "-ddl.sql")
         assert ddl_key is not None, "No DDL SQL artifact generated"
         ddl = client_silver_with_identifier[ddl_key].lower()
         assert "identifier" in ddl, (
@@ -57,13 +44,13 @@ class TestInspiredIdentifierPattern:
 
     def test_identifier_has_value_column(self, client_silver_with_identifier):
         """The identifier table should have identifier_value column."""
-        ddl_key = _find_artifact(client_silver_with_identifier, ".sql")
+        ddl_key = _find_artifact(client_silver_with_identifier, "-ddl.sql")
         ddl = client_silver_with_identifier[ddl_key].lower()
         assert "identifier_value" in ddl, "DDL missing identifier_value column"
 
     def test_identifier_has_scheme_column(self, client_silver_with_identifier):
         """The identifier table should have identifier_scheme column."""
-        ddl_key = _find_artifact(client_silver_with_identifier, ".sql")
+        ddl_key = _find_artifact(client_silver_with_identifier, "-ddl.sql")
         ddl = client_silver_with_identifier[ddl_key].lower()
         assert "identifier_scheme" in ddl, "DDL missing identifier_scheme column"
 
@@ -104,7 +91,7 @@ class TestSeeAlsoBackReference:
 
     def test_see_also_not_in_silver_output(self, client_silver_with_identifier):
         """Silver projection output should NOT contain rdfs:seeAlso targets."""
-        ddl_key = _find_artifact(client_silver_with_identifier, ".sql")
+        ddl_key = _find_artifact(client_silver_with_identifier, "-ddl.sql")
         ddl = client_silver_with_identifier[ddl_key].lower()
         assert "seealso" not in ddl, "rdfs:seeAlso should not appear in silver DDL"
         assert "fibo" not in ddl, "FIBO URIs should not appear in silver DDL"

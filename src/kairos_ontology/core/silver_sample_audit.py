@@ -130,13 +130,6 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
     return columns
 
 
-def _source_column_tokens(transform: str | None, source_columns: list[str] | None) -> set[str]:
-    tokens = set(source_columns or [])
-    if transform:
-        tokens.update(re.findall(r"source\.([A-Za-z0-9_]+)", transform))
-    return tokens
-
-
 def _all_dbt_sql(dbt_output_dir: Path) -> dict[str, str]:
     if not dbt_output_dir or not dbt_output_dir.is_dir():
         return {}
@@ -220,13 +213,6 @@ def _samples_parse_as(sql_type: str, samples: list[str]) -> tuple[int, int]:
         else:
             ok += 1
     return ok, total
-
-
-def _cast_target(transform: str | None) -> str | None:
-    if not transform:
-        return None
-    match = re.search(r"\bCAST\s*\(.+?\s+AS\s+([A-Za-z0-9_(),]+)", transform, re.IGNORECASE)
-    return match.group(1) if match else None
 
 
 def _sample_shape(value: str) -> str:
@@ -352,42 +338,32 @@ def run_silver_sample_audit(
                 findings.append(AuditFinding(
                     severity=SEVERITY_WARNING,
                     code="missing_mapped_samples",
-                    message="Mapped column has no sample values; semantic and transform checks are limited.",
+                    message="Mapped column has no sample values; semantic and expression checks are limited.",
                     source=column.system,
                     table=column.table_name,
                     column=column.name,
                     target=target,
                 ))
 
-            table_col_names = {
-                c.name for c in source_columns.values() if c.table_uri == column.table_uri
-            }
-            for token in _source_column_tokens(col_map.get("transform"), col_map.get("source_columns")):
-                if token not in table_col_names:
+            for referenced_uri in col_map.get("referenced_column_uris") or ():
+                referenced = source_columns.get(referenced_uri)
+                if referenced is None or referenced.table_uri != column.table_uri:
                     findings.append(AuditFinding(
                         severity=SEVERITY_ERROR,
-                        code="missing_transform_source_column",
-                        message=f"Transform references source column '{token}' that is not on the mapped table.",
+                        code="invalid_expression_source_column",
+                        message=(
+                            f"Expression references source column IRI {referenced_uri!r} "
+                            "that is not on the mapped table."
+                        ),
                         source=column.system,
                         table=column.table_name,
                         column=column.name,
                         target=target,
-                        evidence={"transform": col_map.get("transform")},
-                    ))
-
-            cast_type = _cast_target(col_map.get("transform"))
-            if cast_type and column.samples:
-                ok, total = _samples_parse_as(cast_type, column.samples)
-                if ok < total:
-                    findings.append(AuditFinding(
-                        severity=SEVERITY_WARNING,
-                        code="cast_sample_incompatibility",
-                        message=f"{total - ok}/{total} sample value(s) may not cast cleanly to {cast_type}.",
-                        source=column.system,
-                        table=column.table_name,
-                        column=column.name,
-                        target=target,
-                        evidence={"samples_checked": total, "cast_type": cast_type},
+                        evidence={
+                            "mapping_resource_uri": col_map.get(
+                                "mapping_resource_uri"
+                            )
+                        },
                     ))
 
             target_tokens = _target_sql_tokens(target, mapping_ns)

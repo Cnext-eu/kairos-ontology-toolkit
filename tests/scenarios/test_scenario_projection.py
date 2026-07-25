@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from rdflib import Graph, Namespace
+from rdflib import Graph, Namespace, RDF
 
 from .conftest import HUB_ROOT, MAPPINGS_DIR, SHAPES_DIR
 
@@ -374,13 +374,27 @@ def _parse_expected_mappings(mapping_file: Path) -> dict:
     table_mappings = []
     column_mappings = []
     fk_mappings = []
+    table_contracts = {
+        (
+            g.value(mapping, KAIROS_MAP.sourceTable),
+            g.value(mapping, KAIROS_MAP.targetClass),
+        ): str(g.value(mapping, KAIROS_MAP.mappingType) or "")
+        for mapping in g.subjects(RDF.type, KAIROS_MAP.TableMapping)
+    }
+    column_contracts = {
+        (
+            g.value(mapping, KAIROS_MAP.sourceColumn),
+            g.value(mapping, KAIROS_MAP.targetProperty),
+        ): str(mapping)
+        for mapping in g.subjects(RDF.type, KAIROS_MAP.ColumnMapping)
+    }
 
     for pred in match_preds:
         for subj, obj in g.subject_objects(pred):
             subj_local = extract_local_name(str(subj))
             obj_local = extract_local_name(str(obj))
-            mapping_type = str(g.value(subj, KAIROS_MAP.mappingType) or "direct")
-            transform = str(g.value(subj, KAIROS_MAP.transform) or "")
+            mapping_type = table_contracts.get((subj, obj), "direct")
+            expression_contract = column_contracts.get((subj, obj), "")
             comment = str(g.value(subj, RDFS.comment) or "")
 
             # Heuristic: table-level mappings have PascalCase targets (classes)
@@ -389,9 +403,11 @@ def _parse_expected_mappings(mapping_file: Path) -> dict:
                 table_mappings.append((subj_local, obj_local, mapping_type))
             elif "FK" in comment or "join" in comment.lower():
                 # FK mappings produce SK join columns, not direct columns
-                fk_mappings.append((subj_local, obj_local, transform))
+                fk_mappings.append((subj_local, obj_local, expression_contract))
             else:
-                column_mappings.append((subj_local, obj_local, transform))
+                column_mappings.append(
+                    (subj_local, obj_local, expression_contract)
+                )
 
     return {
         "table_mappings": table_mappings,
@@ -528,11 +544,8 @@ class TestMappingToSqlConsistency:
             + "\n".join(f"  - {m}" for m in missing)
         )
 
-    def test_transforms_in_sql(self, projected_hub):
-        """Transform expressions from mapping files should appear in SQL."""
-        mapping_file = MAPPINGS_DIR / "billingpro-to-invoice.ttl"
-        expected = _parse_expected_mappings(mapping_file)
-
+    def test_typed_expression_contracts_render_in_sql(self, projected_hub):
+        """Validated COALESCE and arithmetic AST nodes should appear in SQL."""
         invoice_dir = (
             projected_hub / "output" / "medallion" / "dbt"
             / "models" / "silver" / "invoice"
@@ -541,28 +554,9 @@ class TestMappingToSqlConsistency:
         for f in invoice_dir.rglob("*.sql"):
             all_sql += f.read_text(encoding="utf-8") + "\n"
 
-        # Check that non-trivial transforms (CAST, expressions) appear in SQL
-        transforms_found = 0
-        transforms_expected = 0
-        for _bronze_col, _target_prop, transform in expected["column_mappings"]:
-            if not transform or transform.startswith("source."):
-                continue  # simple column rename, won't appear verbatim
-            transforms_expected += 1
-            # The transform with "source." prefix stripped should be in SQL
-            # (projector replaces source.X with the actual ref)
-            # Check for the function/expression keyword
-            keywords = []
-            if "CAST(" in transform.upper():
-                keywords.append("CAST(")
-            if "*" in transform:
-                keywords.append("*")
-            if keywords and any(kw in all_sql.upper() for kw in keywords):
-                transforms_found += 1
-
-        assert transforms_found > 0, (
-            f"No transform expressions found in SQL "
-            f"(expected {transforms_expected} non-trivial transforms)"
-        )
+        assert "COALESCE(" in all_sql.upper()
+        assert "0x455552" in all_sql
+        assert " * " in all_sql
 
     def test_table_mappings_produce_models(self, projected_hub):
         """Each table-level mapping should produce at least one .sql model file."""

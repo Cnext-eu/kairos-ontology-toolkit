@@ -94,15 +94,19 @@ def test_feature_off_produces_no_stub(graph, classes, template_dir):
 
 
 def _file_artifacts(artifacts: dict) -> dict:
-    """Drop internal ``__...__`` analysis keys that never reach disk."""
-    return {k: v for k, v in artifacts.items() if not k.startswith("__")}
+    """Select executable files; release review metadata records eligibility."""
+    return {
+        k: v
+        for k, v in artifacts.items()
+        if not k.startswith("__") and not k.startswith("metadata/")
+    }
 
 
 def test_feature_off_byte_identical_ignores_eligibility(graph, classes, template_dir):
     """With stubs disabled, passing eligible_class_uris changes no on-disk file.
 
-    ``__unbound_eligible__`` is an internal (release-gate) key stripped by the
-    orchestrator before writing, so the file artifacts must be byte-identical.
+    Executable files remain identical; DD-114 review metadata intentionally
+    records eligibility even when stub emission is disabled.
     """
     baseline = generate_dbt_artifacts(
         classes=classes, graph=graph, template_dir=template_dir,
@@ -135,7 +139,7 @@ def test_feature_on_emits_typed_zero_row_stub(graph, classes, template_dir):
     # Structural + datatype columns are typed via cast(null as ...).
     assert "cast(null as" in content
     assert "client_sk" in content
-    assert "client_iri" in content
+    assert "client_iri" not in content
     assert "is_active" in content
     assert "kairos_aspirational_stub" in content
     assert "'is_aspirational': true" in content

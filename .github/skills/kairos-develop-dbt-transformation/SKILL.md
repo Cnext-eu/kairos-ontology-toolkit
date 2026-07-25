@@ -4,7 +4,7 @@ description: >
   Interactive, evidence-grounded workflow for creating and updating contracted
   advanced dbt transformations that feed generated Kairos Silver models. Use for
   joins, windows, rankings, aggregations, JSON expansion, fallback rules, or grain
-  changes that exceed normal SKOS mapping expressions. NOT for ordinary mappings
+  changes that exceed the typed deterministic scalar mapping contract. NOT for ordinary mappings
   (kairos-design-mapping) or merely running projections (kairos-execute-project).
 ---
 
@@ -29,6 +29,8 @@ silently approve its grain, identity, mappings, or Silver policy.
 
 1. **Evidence before SQL.** Read the relevant glossary, ontology, sources, mappings,
    Silver extensions, and existing dbt artifacts before proposing a contract.
+   Source profiling evidence is mandatory; if representative fixtures or a working
+   executable flow are unavailable, record the gap and do not claim implementation readiness.
 2. **Grain before columns.** Obtain explicit approval of the semantic target, row grain,
    entity-versus-association choice, identity, overlap, deduplication, and survivorship.
 3. **Contract before implementation.** Approve output columns/types, physical key columns,
@@ -214,8 +216,8 @@ integration/transforms/dbt/
 Implementation rules:
 
 - use `source()` and `ref()`, never hard-coded physical relations;
-- keep source normalization, joins, windows, aggregation, fallback, and grain formation in
-  the custom model;
+- keep joins, windows, aggregation, cross-relation fallback, and grain formation in
+  the custom model; source rename/trim/cast/sentinel/JSON/CDC cleanup stays in prep;
 - emit canonical business values rather than final Silver SK/FK/IRI values;
 - prefix custom macros with `<hub-or-domain>__`;
 - never use the reserved `kairos_` prefix;
@@ -223,6 +225,8 @@ Implementation rules:
 - write portable SQL or explicit adapter dispatch for every adapter declared by the contract;
 - alias joined inputs so dbt unit tests can mock them;
 - add unit tests for windows, ranking, fallback, complex cases, and regressions;
+- run those tests against masked representative fixtures (or a governed working flow)
+  before synchronizing the virtual source;
 - add data tests for key uniqueness/non-nullness, accepted values, relationships, grain,
   and fan-out;
 - omit raw sensitive values from fixtures; and
@@ -241,7 +245,8 @@ Show the proposed diff and update the phase log.
 
 3. Inspect the generated managed vocabulary under
    `integration/sources/custom-transformations/`.
-4. Invoke `kairos-design-mapping` to map the virtual table and columns through SKOS.
+4. Invoke `kairos-design-mapping` to author named v2 `TableMapping` / `ColumnMapping`
+   resources for the virtual table and columns through SKOS.
    A governed replacement requires table-level `skos:exactMatch` from the virtual table to
    `target_class`. Do not map the replaced Bronze table directly merely to satisfy coverage.
 5. Invoke `kairos-design-silver` to confirm `silverSourceRef`, semantic natural key,

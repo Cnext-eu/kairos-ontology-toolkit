@@ -12,12 +12,13 @@ description: >
 ## Design fleet mode (DD-088)
 
 Default is interactive: ask the user to confirm every table→entity and
-column→property mapping, confidence level, transform, and coverage checkpoint. If
+column→property mapping, confidence level, typed scalar-expression contract, and
+coverage checkpoint. If
 the user explicitly requests design fleet mode, make those checkpoint decisions
 with AI judgment for testing speed, but mark them as **AI-approved** rather than
-user-confirmed. Record rationale, confidence, examples/transform warnings, and
+user-confirmed. Record rationale, confidence, examples/expression warnings, and
 evidence references in `phases/mapping/<source>-to-<domain>.md`; stop for
-low-confidence mappings, lossy transforms, PII/proprietary risk, or unmapped
+low-confidence mappings, lossy cleanup requests, PII/proprietary risk, or unmapped
 business-critical columns.
 
 Any fleet override applies only to this skill invocation. It expires when the
@@ -27,7 +28,7 @@ skill ends or pauses and is never inherited by another skill or a later resume.
 
 After dbt/silver projection, `kairos-ontology audit-silver-samples` can review
 the generated dbt SQL against source samples and mappings without a warehouse.
-Use its findings as mapping feedback: missing mapped samples, transform/type
+Use its findings as mapping feedback: missing mapped samples, expression/type
 risks, cross-source sample-shape mismatches, and target aliases missing from SQL
 should be corrected here before dataplatform handoff.
 
@@ -195,14 +196,20 @@ and distinct-grain statement are recorded.
 > `split_candidate` on a `Type` discriminator suggests mapping one source table to
 > several subclasses. These are candidates only; all carry
 > `requires_human_confirmation: true` and MUST be confirmed before you encode any
-> split/dedup/multi-target mapping.
+> split or multi-target mapping. Route source-technical duplicate removal with a
+> complete total order to `kairos-prep:TechnicalDedupe`; route business ranking,
+> merge, or grain change to contracted dbt.
 
-> **Advanced transformation boundary:** ordinary row/column alignment and supported
-> `kairos-map:transform` expressions belong here. If correct grain requires joins,
+> **DD-107 boundary:** ordinary alignment may use only named v2 `TableMapping` /
+> `ColumnMapping` resources and a validated, typed, deterministic scalar AST. If correct
+> grain requires joins,
 > windows, ranking, aggregation, fallback across relations, JSON expansion, or
 > survivorship, stop and hand off to **kairos-develop-dbt-transformation**. Return here
 > after synchronization to map the generated virtual table and columns; SKOS remains
 > the authority for virtual-source-to-domain meaning.
+> Rename, trim, cast/parse, sentinel handling, JSON extraction, and CDC normalization
+> belong in `integration/preparation/` through **kairos-design-source**, never in a
+> mapping expression.
 >
 > When an imported candidate exists, do not re-derive this boundary from SQL in the skill.
 > Use `check-transformation-readiness --stage mapping` as the machine decision and record
@@ -219,11 +226,11 @@ For each confirmed table→entity pair:
    **mandatory** — populate it from the bronze `sampleValues`, **masking PII**
    (see Privacy note below):
 
-| Source Column | Examples | Target Property | Match Type | Transform | Confidence |
+| Source Column | Examples | Target Property | Match Type | Expression / Route | Confidence |
 |---|---|---|---|---|---|
 | `customer_name` | `Acme NV`, `Globex` | `name` | exact | — | High ✓ |
 | `cust_email` | `jo***@***.com` | `email` | exact | — | High ✓ |
-| `WEIGHT_KG` | `12.5`, `8.0` | `weight` | close | `CAST(... AS DECIMAL)` | Medium |
+| `WEIGHT_KG` | `12.5`, `8.0` | `weight` | close | Prep type conversion first | Medium |
 | `INTERNAL_FLAG` | `Y`, `N` | — | operational | — | — |
 | `LEGACY_CODE` | `A1`, `B7` | — | deprecated | — | — |
 
@@ -240,12 +247,12 @@ For each confirmed table→entity pair:
 > If `propose-alignment` produced an `*-alignment.yaml`, reuse its already-masked
 > `example_values` rather than re-reading raw bronze values.
 
-> **Transform compatibility (`transform_compat`).** When an `*-alignment.yaml`
+> **Type/cleanup compatibility (`transform_compat`).** When an `*-alignment.yaml`
 > carries a `transform_compat` note on a column (e.g. *"2/5 sample values are
 > non-numeric — CAST may NULL/fail"*), surface it as a **warning** next to that
-> row's Transform. It is advisory: it never blocks and never changes confidence,
-> but the user should confirm the cast/cleaning policy before you write a
-> `CAST(...)` transform.
+> row's route. It is advisory: it never blocks and never changes confidence,
+> but the user should confirm the parse/cleanup policy before handing it to
+> **kairos-design-source**. Never copy a SQL hint into mapping TTL.
 
 > **If a business glossary is loaded (Phase 0, step 5):** when a source column name
 > or description matches a concept's `skos:altLabel`, surface the concept's linked
@@ -256,14 +263,15 @@ For each confirmed table→entity pair:
 > writing TTL (never auto-approve a glossary-derived mapping). Record glossary-based
 > decisions in the session file.
 
-> **If DD-045 hints are loaded:** pre-fill the *Transform* column from each
-> column's `transform_hint`, and mark the row's source as machine-suggested. A
+> **If DD-045 hints are loaded:** classify each `transform_hint` as direct, prep,
+> safe-scalar AST, or contracted-transformation routing, and mark the row's source as
+> machine-suggested. A
 > hint with `requires_human_confirmation: false` (exact-name + same-logical-type
 > passthrough) may use the auto-approve fast-track; **every** hint with
 > `requires_human_confirmation: true` MUST be confirmed by the user before TTL.
 > Always derive the SKOS predicate yourself from the `alignment` category (hints do
-> not carry a SKOS predicate — see below). Never paste a `CAST(...)` hint into TTL
-> without confirming the encoding with the user.
+> not carry a SKOS predicate — see below). Cast/trim/rename hints are prep evidence;
+> joins/windows/aggregation/fallback/JSON expansion require contracted dbt.
 
 ### Phase 3 — Validation & Report
 
@@ -293,12 +301,12 @@ For each confirmed table→entity pair:
 
 | Field (column-level) | Meaning | How to use |
 |---|---|---|
-| `transform_hint` | Suggested SQL transform (`source.Col` passthrough or `CAST(...)`) | Pre-fill the Transform column; confirm unless trivial passthrough |
+| `transform_hint` | Legacy advisory operation hint | Classify as direct, prep, safe scalar AST, or contracted dbt; never paste SQL |
 | `transform_confidence` | 0.0–1.0 deterministic confidence | Show as evidence; do not treat as approval |
 | `requires_human_confirmation` | `false` only for exact-name + same-logical-type passthrough | If `true`, you MUST confirm with the user before TTL |
 | `transform_rationale` | Why the hint was generated | Show to the user as evidence |
 | `example_values` (DD-075) | Masked sample values from bronze (default-on) | Populate the Phase 2 Examples column; never copy into TTL |
-| `transform_compat` (DD-075) | Advisory "N/M samples incompatible with CAST target" | Show as a Transform warning; confirm cast/cleaning policy |
+| `transform_compat` (DD-075) | Advisory "N/M samples incompatible with target type" | Show as a prep/type warning; confirm parse/cleaning policy |
 
 | Field (table-level) | Meaning | How to use |
 |---|---|---|
@@ -311,10 +319,11 @@ For each confirmed table→entity pair:
    `custom`→needs a new property first). The hint generator deliberately omits the
    SKOS predicate because it is a trivial relabel of `alignment`.
 2. **Hints accelerate, never decide.** Still read the bronze vocabulary and domain
-   ontology independently (Gate 4). Still confirm every non-trivial transform and
+   ontology independently (Gate 4). Still confirm every non-trivial expression/route and
    every structural hint (Gate 5).
-3. **Honor `requires_human_confirmation`.** A polished `CAST(...)` hint is a
-   *candidate* — confirm the source encoding/business policy before writing it.
+3. **Honor `requires_human_confirmation`.** A polished cast hint is a prep
+   *candidate* — confirm the source encoding/business policy, then hand it to
+   **kairos-design-source** rather than writing it into mapping TTL.
 4. **Hints are optional.** If no hint file exists, run the workflow exactly as
    before.
 
@@ -396,7 +405,7 @@ Use the right SKOS predicate based on the relationship:
 | Condition | SKOS Predicate | When to use |
 |-----------|---------------|-------------|
 | Exact name + same semantics | `skos:exactMatch` | Column directly represents the property |
-| Similar concept, needs transform | `skos:closeMatch` | Column value needs casting/reformatting |
+| Similar business meaning | `skos:closeMatch` | Semantics are close but not identical |
 | Source column is broader (1→many) | `skos:broadMatch` | One source column splits into multiple properties |
 | Source column is narrower (many→1) | `skos:narrowMatch` | Multiple source columns combine into one property |
 | Loosely related | `skos:relatedMatch` | Informational link, not used in dbt generation |
@@ -406,23 +415,43 @@ Use the right SKOS predicate based on the relationship:
 
 ---
 
-## Transform Vocabulary
+## Structured scalar-expression contract (DD-107)
 
-When a column needs transformation, use `kairos-map:transform` with these
-supported expressions (used in dbt SQL generation):
+Never author SQL strings. A direct `ColumnMapping` without `kairos-map:expression`
+derives a typed source-column reference. Non-trivial scalar logic uses named expression
+resources and ordered RDF lists.
 
-| Pattern | Example | Meaning |
-|---------|---------|---------|
-| `source.{col}` | `source.customer_name` | Passthrough (default) |
-| `CAST({expr} AS {type})` | `CAST(source.weight AS DECIMAL(18,4))` | Type conversion |
-| `CASE WHEN {cond} THEN {val} ...` | `CASE WHEN source.status = 'A' THEN 'Active'...` | Conditional |
-| `COALESCE({col1}, {col2}, ...)` | `COALESCE(source.email, source.alt_email)` | Null fallback |
-| `UPPER/LOWER/TRIM({col})` | `TRIM(source.name)` | String normalization |
-| `CONCAT({col1}, ' ', {col2})` | `CONCAT(source.first, ' ', source.last)` | String concatenation |
-| `LEFT/RIGHT({col}, N)` | `LEFT(source.postal_code, 4)` | Substring |
+Every expression node MUST declare:
 
-For composite mappings (multiple source columns → one property), use
-`kairos-map:sourceColumns` with space-separated column names.
+- `kairos-map:outputType` — canonical type (`string`, `int32`, `decimal(p,s)`, etc.);
+- `kairos-map:nullable` and the exact `kairos-map:nullPolicy`;
+- `kairos-map:determinism "deterministic"`;
+- exactly one `kairos-map:requiresCapability`; and
+- source inputs as `kairos-map:sourceColumn` IRIs, never identifier strings.
+
+Allowed nodes:
+
+| Node | Allowlist |
+|---|---|
+| `SourceColumnExpression` | One governed source-column IRI |
+| `LiteralExpression` / `NullExpression` | Typed RDF literal / explicitly typed NULL |
+| `OperatorExpression` | `add`, `subtract`, `multiply`, `divide`, `modulo`, `negate`, comparisons, `and`, `or`, `not`, `is-null`, `is-not-null` |
+| `FunctionExpression` | `abs`, `round`, `concat`, `upper`, `lower`, `length`, `coalesce`, `nullif` |
+| `CaseExpression` | Ordered `CaseBranch` resources plus an explicit `elseExpression` |
+| `MacroExpression` | Exact approved IRIs: `macro:concat`, `macro:dayOfWeek`, `macro:monthName`, `macro:quarter` |
+
+`mappingType` is only `direct` or `split`. A split requires one typed boolean
+`rowFilter`; a direct mapping forbids row loss.
+
+**Route instead of encoding:**
+
+- rename, trim, cast/parse, sentinel, JSON, and CDC work → **kairos-design-source**
+  (`kairos-prep`);
+- joins, windows, ranking, aggregation, cross-relation fallback, JSON expansion,
+  deduplication that changes business grain, or any grain change →
+  **kairos-develop-dbt-transformation**;
+- map only the synchronized virtual source after its contract decisions, evidence, tests,
+  adapter support, and replacement chain are ready.
 
 ---
 
@@ -450,7 +479,7 @@ For composite mappings (multiple source columns → one property), use
 
 ### customers → Client
 
-| Source Column | Target Property | Match | Transform | Confirmed |
+| Source Column | Target Property | Match | Expression / Route | Confirmed |
 |---|---|---|---|---|
 | customer_name | name | exact | — | ✅ |
 | cust_email | email | exact | — | ✅ (auto) |
@@ -483,22 +512,55 @@ After confirmation, generate files in `model/mappings/{source}-to-{domain}.ttl`:
 ```turtle
 @prefix skos:      <http://www.w3.org/2004/02/skos/core#> .
 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix map:       <https://ontology.example.com/mapping/{source}-to-{domain}#> .
 @prefix bronze:    <https://kairos.cnext.eu/source/{system}#> .
 @prefix domain:    <https://ontology.example.com/{domain}#> .
 
-# Table-level mapping
-bronze:{SourceTable}
-    skos:exactMatch domain:{Entity} ;
-    kairos-map:mappingType "direct" .
+bronze:{SourceTable} skos:exactMatch domain:{Entity} .
+map:table-{SourceTable}-{Entity} a kairos-map:TableMapping ;
+    kairos-map:sourceTable bronze:{SourceTable} ;
+    kairos-map:targetClass domain:{Entity} ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" .
 
-# Column-level mappings
-bronze:{sourceColumn}
-    skos:exactMatch domain:{property} .
+bronze:{sourceColumn} skos:exactMatch domain:{property} .
+map:column-{sourceColumn}-{property} a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze:{sourceColumn} ;
+    kairos-map:targetProperty domain:{property} ;
+    kairos-map:matchType "exactMatch" .
 
-bronze:{transformedColumn}
-    skos:closeMatch domain:{property} ;
-    kairos-map:transform "CAST(source.{col} AS DECIMAL(18,4))" .
+# Example null fallback: all nodes are named, typed, and deterministic.
+bronze:email skos:exactMatch domain:email .
+map:column-email a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze:email ;
+    kairos-map:targetProperty domain:email ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:expression map:email-fallback .
+map:email-fallback a kairos-map:FunctionExpression ;
+    kairos-map:function "coalesce" ;
+    kairos-map:arguments ( map:email-input map:email-default ) ;
+    kairos-map:outputType "string" ;
+    kairos-map:nullable false ;
+    kairos-map:nullPolicy "first-non-null" ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:requiresCapability "null-handling" .
+map:email-input a kairos-map:SourceColumnExpression ;
+    kairos-map:sourceColumn bronze:email ;
+    kairos-map:outputType "string" ;
+    kairos-map:nullable true ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:requiresCapability "source-column" .
+map:email-default a kairos-map:LiteralExpression ;
+    kairos-map:literalValue "unknown@example.invalid" ;
+    kairos-map:outputType "string" ;
+    kairos-map:nullable false ;
+    kairos-map:nullPolicy "never-null" ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:requiresCapability "typed-literal" .
 ```
+
+Always write the corresponding SKOS triple as well as the named mapping resource.
 
 ---
 
@@ -532,36 +594,23 @@ bronze:{transformedColumn}
 
 ---
 
-## JSON-Expanded Columns (DD-039)
+## Prepared JSON columns (DD-106)
 
-When the bronze vocabulary contains columns with `kairos-bronze:derivedFromJson`
-(created by `import-source` from `extract-schema` v1.1 output), these represent
-flattened JSON fields available in the `bronze_expanded` schema.
-
-### Mapping to expanded columns
-
-Map domain properties to expanded column URIs the same way as regular columns:
+Map scalar or array-child outputs declared in
+`integration/preparation/{source}-prep.ttl` like any governed source column:
 
 ```turtle
-bronze-sys:tblOrders_details__firstName skos:exactMatch domain:firstName ;
-    kairos-map:transform "source.firstName" .
+bronze-sys:tblOrders_details__firstName skos:exactMatch domain:firstName .
+map:details-first-name a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-sys:tblOrders_details__firstName ;
+    kairos-map:targetProperty domain:firstName ;
+    kairos-map:matchType "exactMatch" .
 ```
 
-### Recommending silverSourceRef
-
-**After mapping** to any `derivedFromJson` column, suggest adding
-`kairos-ext:silverSourceRef` to the silver extension file:
-
-```turtle
-domain:Order kairos-ext:silverSourceRef "stg_erp_orders_details" .
-```
-
-This tells the dbt projector to use `{{ ref('stg_erp_orders_details') }}`
-instead of `{{ source('erp', 'tblOrders') }}`, routing the model through
-the `bronze_expanded` staging layer that flattens JSON.
-
-**Without this annotation**, the projector uses raw bronze — which won't have
-the expanded columns available.
+The projector routes normalized physical tables and array-child relations through
+their generated `stg_{source}__{table}` model automatically. Do not add
+`silverSourceRef` for ordinary preparation; that annotation is reserved for a
+governed contracted dbt transformation.
 
 ---
 
@@ -569,7 +618,10 @@ the expanded columns available.
 
 - ❌ Writing mapping TTL without reading the bronze vocabulary first
 - ❌ Assuming column names directly correspond to property names without checking
-- ❌ Using `skos:exactMatch` for everything (use closeMatch when transforms are needed)
+- ❌ Using `skos:exactMatch` for everything (choose match type by semantics, not cleanup)
+- ❌ Writing SQL fragments, comments, statement separators, casts, or JSON expressions in TTL
+- ❌ Encoding joins/windows/aggregation/ranking/cross-relation fallback in a mapping AST
+- ❌ Hand-editing generated virtual-source vocabularies or generated SQL
 - ❌ Mapping operational columns (created_by, updated_at) to domain properties
 - ❌ Skipping the session file "because it's just one table"
 - ❌ Presenting 50+ columns in one wall of text (chunk to 15 max)

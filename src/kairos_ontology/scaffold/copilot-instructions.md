@@ -240,7 +240,7 @@ commands have no corresponding skill and may be run directly via CLI.
 
 **CLI soft skill-gate:** Skill-managed commands (`validate`, `project`, `init`,
 `new-repo`, `migrate`, `update`, `update-refmodels`, `import-source`,
-`import-flatfile`, `generate-staging`, `analyse-sources`, `sync-dbt-contracts`,
+`import-flatfile`, `analyse-sources`, `sync-dbt-contracts`,
 `validate-dbt`, `mdm-validate`,
 `init-dataplatform`)
 emit a loud stderr warning when run directly, redirecting to the owning skill,
@@ -264,7 +264,7 @@ grants a fleet-mode override for one specific active skill invocation.
 | **kairos-design-domain** | Hard gates require user naming confirmation before TTL generation |
 | **kairos-design-mapping** | Every table→entity and column→property mapping needs explicit user approval |
 | **kairos-design-silver** | Extension annotations (SCD types, natural keys, FK) need design review |
-| **kairos-design-gold** | Gold measure definitions and star-schema design need stakeholder sign-off |
+| **kairos-design-gold** | Gold profile, dimensional role/grain, measure, calendar, and security contracts need stakeholder sign-off |
 | **kairos-design-mdm** | MDM policy (match keys, survivorship, auto-action bounds, reference-data licensing) is governance-owned and reviewed before the profile is trusted |
 | **kairos-design-source** | Source vocabulary descriptions need verification against source docs |
 | **kairos-develop-dbt-transformation** | Grain, identity, fallback rules, contract decisions, mappings, and Silver policy require evidence and approval |
@@ -315,6 +315,14 @@ Each ontology domain produces separate output artifacts per target.
 > not generate FK columns automatically.  Use `kairos-ext:silverForeignKey` /
 > `silverForeignKeyOn` in the silver extension file to declare FK relationships.
 > See the **kairos-design-silver** skill §3e for details.
+
+> **DD-109 runtime:** SCD1/SCD2 has no inferred fallback. It requires one complete
+> incremental policy and prep-provided canonical CDC operation, source-update,
+> business-effective, ingestion, total-order, lookback, delete, late-arrival,
+> correction, replay, backfill, and schema-evolution facts. Canonical hashes use
+> contract v1 SHA-256 typed length-delimited bytes. Every FK declares current/as-of/
+> none, cardinality, all failure actions, and change-detection participation.
+> `_loaded_at` is injected load metadata and never source business-effective time.
 
 ## Scaffold packaging rules
 

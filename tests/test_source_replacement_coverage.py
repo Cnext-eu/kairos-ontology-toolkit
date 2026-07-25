@@ -76,7 +76,7 @@ def _hub(tmp_path: Path) -> dict[str, Path]:
                 "virtual_source_iri": VIRTUAL_TABLE,
                 "grain": "one row per party",
                 "supported_adapters": ["fabric", "databricks"],
-                "natural_key": ["party_id"],
+                "grain_key": ["party_id"],
                 "required_packages": [],
                 "required_macros": [],
                 "replaces_sources": [{"table_iri": SOURCE_TABLE}],

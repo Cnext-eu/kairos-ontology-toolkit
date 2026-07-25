@@ -26,6 +26,10 @@ src/kairos_ontology/
 │   ├── medallion_dbt_projector.py
 │   ├── medallion_silver_projector.py
 │   ├── medallion_gold_projector.py
+│   ├── dbt/gold_specs.py
+│   ├── dbt/gold_shape.py
+│   ├── dbt/gold_materialize.py
+│   ├── dbt/gold_render.py
 │   ├── neo4j_projector.py
 │   ├── azure_search_projector.py
 │   ├── a2ui_projector.py
@@ -188,8 +192,8 @@ target-specific modules in `projections/` → renders Jinja2 templates from
 | azure-search | `{domain}/indexes/{domain}-index.json` | `templates/azure-search/` |
 | a2ui | `{domain}/schemas/{domain}-message-schema.json` | `templates/a2ui/` |
 | prompt | `{domain}-context.json` + detailed variant | `templates/prompt/` |
-| silver | DDL + ALTER + Mermaid ERD | *(no template — inline SQL)* |
-| powerbi | Star schema DDL + TMDL + DAX + ERD | *(no template — inline)* |
+| silver | Shared-spec Fabric/Databricks DDL + constraint metadata + ERD + parity manifest | graph-free render facade |
+| powerbi | Registered Gold profile: dimensional dbt/DDL + TMDL + DAX + ERD/report | Typed Gold specs/plans; graph-free renderer |
 
 ## Validation system
 

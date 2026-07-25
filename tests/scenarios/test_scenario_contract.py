@@ -25,7 +25,7 @@ KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
 
 # System-generated columns that don't come from SKOS mappings
 SYSTEM_COLUMNS = {
-    "_sk", "_iri", "_type", "_source_system", "_source_record_id", "_loaded_at",
+    "_sk", "_iri", "_type", "_source_system", "_source_record_key", "_loaded_at",
     "_row_hash", "valid_from", "valid_to", "is_current",
 }
 
@@ -286,7 +286,9 @@ class TestSchemaYamlCompleteness:
         sql_columns: set[str] = set()
         for key, content in client_dbt_artifacts.items():
             if (key.endswith(".sql")
+                    and key.startswith("models/silver/")
                     and "__from_" not in key
+                    and "__dq_quarantine" not in key
                     and "dim_date" not in key
                     and "macros/" not in key):
                 sql_columns.update(_get_sql_columns(content))
@@ -313,17 +315,13 @@ class TestFilterConditionsApplied:
         g = _load_mappings_graph()
         domain_ns = "https://acme.example/ontology/client#"
 
-        # Find all filter conditions from mappings
-        filters: list[str] = []
-        for match_pred in (SKOS.exactMatch, SKOS.closeMatch, SKOS.narrowMatch):
-            for source_tbl, _, target_cls in g.triples((None, match_pred, None)):
-                if not str(target_cls).startswith(domain_ns):
-                    continue
-                filter_cond = g.value(source_tbl, KAIROS_MAP.filterCondition)
-                if filter_cond:
-                    filters.append(str(filter_cond))
-
-        assert len(filters) > 0, "No filter conditions found in mappings"
+        filter_contracts = [
+            mapping
+            for mapping in g.subjects(RDF.type, KAIROS_MAP.TableMapping)
+            if str(g.value(mapping, KAIROS_MAP.targetClass) or "").startswith(domain_ns)
+            and g.value(mapping, KAIROS_MAP.rowFilter) is not None
+        ]
+        assert len(filter_contracts) == 3
 
         # Collect all SQL from per-source models
         all_per_source_sql = ""
@@ -331,18 +329,8 @@ class TestFilterConditionsApplied:
             if key.endswith(".sql") and "__from_" in key:
                 all_per_source_sql += content + "\n"
 
-        # Each filter should appear (with 'source.' prefix stripped)
-        missing_filters = []
-        for filt in filters:
-            # Filter in mapping: "source.Type = 0" → in SQL: "Type = 0"
-            clean_filter = filt.replace("source.", "")
-            if clean_filter not in all_per_source_sql:
-                missing_filters.append(filt)
-
-        assert not missing_filters, (
-            "Filter conditions from mappings not found in per-source SQL:\n"
-            + "\n".join(f"  - {f}" for f in missing_filters)
-        )
+        for value in (0, 1, 2):
+            assert f"[tbl_client].[client_type_code] = {value}" in all_per_source_sql
 
 
 class TestNoPhantomColumns:
@@ -423,7 +411,7 @@ class TestSilverExtTypesMatchCasts:
         # Get all SQL content (exclude macros)
         all_sql = ""
         for key, content in client_dbt_artifacts.items():
-            if key.endswith(".sql") and "macros/" not in key:
+            if key.startswith("models/silver/") and key.endswith(".sql"):
                 all_sql += content + "\n"
 
         # Check 1: Every annotated column should appear as an alias in SQL
@@ -451,7 +439,12 @@ class TestSilverExtTypesMatchCasts:
             match = re.search(cast_pattern, all_sql)
             if match:
                 actual_type = match.group(1).upper()
-                if actual_type != expected_type.upper():
+                accepted_types = {
+                    "BOOLEAN": {"BOOLEAN", "BIT"},
+                    "STRING": {"STRING", "VARCHAR"},
+                    "TIMESTAMP": {"TIMESTAMP", "DATETIME2"},
+                }.get(expected_type.upper(), {expected_type.upper()})
+                if actual_type not in accepted_types:
                     type_mismatches.append(
                         f"{prop}: silverDataType={expected_type}, "
                         f"SQL CAST uses {actual_type}"

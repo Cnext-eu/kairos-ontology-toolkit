@@ -96,40 +96,45 @@ but **not yet consumed** by a projector — safe to ignore until it is wired up.
 
 ---
 
-## 4. Gold layer annotations (Power BI star schema, G1–G8)
+## 4. Gold product profile annotations (DD-112/DD-113)
+
+Gold is a consumption-oriented profile registry, not a universal star-schema rule.
+The only implemented profile is `dimensional-powerbi-v1`.
 
 ### 4a. Ontology-level
 
-| Annotation | Range | Purpose | Default |
-|---|---|---|---|
-| `goldSchema` | string | Target gold schema name | `gold_{domain}` |
-| `goldInheritanceStrategy` | string | Gold subclass strategy: `class-per-table` (default) or `discriminator` | `class-per-table` |
-| `generateDateDimension` | boolean | Auto-generate a `dim_date` table | `true` |
-| `generateTimeIntelligence` | boolean | Generate a Time Intelligence calculation group (YTD, QTD, PY, YoY %). Requires a date dimension | `false` |
+| Annotation | Range | Purpose |
+|---|---|---|
+| `goldProductProfile` | string | Required registered profile; v1 accepts only `dimensional-powerbi-v1` |
+| `goldSchema` | string | Required explicit target schema |
+| `measure` | `Measure` | Links first-class governed measures |
+| `calendarProfile` | `CalendarProfile` | Links explicit bounded calendar assumptions |
+| `securityPolicy` | `SecurityPolicy` | Links a complete fail-closed RLS/OLS contract |
 
 ### 4b. Class-level
 
 | Annotation | Range | Purpose |
 |---|---|---|
-| `goldTableType` | string | Override star-schema classification (G1): `fact` / `dimension` / `bridge` |
-| `goldTableName` | string | Explicit gold table name (without `dim_`/`fact_` prefix) |
-| `goldExclude` | boolean | Exclude this class from gold projection entirely |
-| `perspective` | string | Space-separated perspective names; each generates a Power BI perspective grouping its member tables |
-| `incrementalColumn` | string | **RESERVED** (read into a field but not yet rendered) — intended date column for a Power BI incremental refresh policy. **Distinct from `kairos-bronze:incrementalColumn`** — see §7 |
+| `goldTableType` | string | Required explicit `fact`, `dimension`, or `bridge`; never inferred |
+| `goldTableName` | string | Deterministic physical/semantic table name |
+| `goldSourceModel` / `goldSourceVersion` | string | Exact passing Silver registry binding |
+| `factGrain` / `factType` | string | Required fact grain and transaction/periodic/accumulating behavior |
+| `dimensionExposure` / `dimensionVersionBinding` | string | Explicit current/history/dual and version behavior |
+| `bridgeGrain`, `bridgeEndpoint`, `bridgeEndpointBinding` | mixed | Explicit bridge row grain and endpoint key bindings |
+| `bridgeCardinality`, `bridgeWeightColumn`, `bridgeAllocationSemantics` | string | Explicit bridge cardinality and allocation |
+| `perspective` | string | Navigation-only table grouping; never security |
 
-### 4c. Property-level
+### 4c. Governed semantic resources
 
 | Annotation | Range | Purpose |
 |---|---|---|
-| `goldColumnName` | string | Gold column name override (bypasses camel-to-snake) |
-| `goldDataType` | string | SQL data type override for gold (G8) |
-| `measureExpression` | string | DAX measure expression (e.g. `SUM([amount])`); property becomes a measure, not a column |
-| `measureFormatString` | string | DAX format string for the measure (e.g. `$#,##0.00`) |
-| `hierarchyName` | string | Power BI hierarchy this property belongs to (G5) |
-| `hierarchyLevel` | integer | Level order within the hierarchy (1 = top) (G5) |
-| `degenerateDimension` | boolean | Keep this attribute on the fact table instead of a separate dimension (G1) |
-| `olsRestricted` | boolean | Add column to the Object-Level Security `RestrictedColumns` role |
-| `rolePlayingAs` | string | **RESERVED** (projector code path commented out) — role names for role-playing dimensions |
+| `measureExpression` | string | DAX on a first-class `Measure`; never removes its base column |
+| `measureLifecycleState` | string | `intent`, `provisional`, `validated`, or `approved` |
+| `measureColumnDependency` / `measureDependency` | resource | Resolved emitted-column and measure dependencies |
+| `measureDataType`, `measureFormatString`, `measureFolder` | string | Semantic result and display contract |
+| `measureOwnerRole`, `measureValidationTest`, `measureValidationEvidence` | string | Approval/test evidence |
+| Calendar fields | mixed | Bounds, fiscal/week, locale, holiday, time zone, closure, role dates, approval |
+| Security fields | mixed | Entitlement source, identity map, roles/direction/bindings/tests/evidence, fail closed |
 
 ---
 

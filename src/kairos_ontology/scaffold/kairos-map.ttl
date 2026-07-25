@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
 #
-# Kairos Mapping Vocabulary
-# Namespace: https://kairos.cnext.eu/mapping#
-#
-# Extends SKOS mappings with technical transformation metadata for
-# generating dbt models. Used alongside skos:exactMatch / closeMatch
-# to describe HOW a bronze source column maps to a silver domain property.
+# Kairos Mapping Vocabulary v2 — typed scalar contracts (DD-107)
 
 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix macro: <https://kairos.cnext.eu/mapping/macro#> .
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -17,59 +13,193 @@
 <https://kairos.cnext.eu/mapping>
     a owl:Ontology ;
     rdfs:label "Kairos Mapping Vocabulary" ;
-    owl:versionInfo "1.0.0" ;
-    rdfs:comment "Technical mapping annotations for bronze-to-silver column transformations." .
+    owl:versionInfo "2.0.0" ;
+    rdfs:comment "Structured, typed, deterministic scalar source-to-domain mapping contracts." .
 
-# ---------------------------------------------------------------------------
-# Mapping type (table-level)
-# ---------------------------------------------------------------------------
+kairos-map:MappingContract a owl:Class ;
+    rdfs:label "Mapping Contract" ;
+    rdfs:comment "A named, provenance-stable v2 mapping contract." .
+
+kairos-map:TableMapping a owl:Class ;
+    rdfs:subClassOf kairos-map:MappingContract ;
+    rdfs:label "Table Mapping" ;
+    rdfs:comment "A source-table to target-class alignment with an optional typed split predicate." .
+
+kairos-map:ColumnMapping a owl:Class ;
+    rdfs:subClassOf kairos-map:MappingContract ;
+    rdfs:label "Column Mapping" ;
+    rdfs:comment "A source-column to target-property alignment with a typed scalar expression." .
+
+kairos-map:ScalarExpression a owl:Class ;
+    rdfs:label "Scalar Expression" ;
+    rdfs:comment "An adapter-neutral, deterministic, column-bounded expression node." .
+
+kairos-map:SourceColumnExpression a owl:Class ;
+    rdfs:subClassOf kairos-map:ScalarExpression ;
+    rdfs:label "Source Column Expression" ;
+    rdfs:comment "A source-column IRI resolved against exactly one governed relation." .
+
+kairos-map:LiteralExpression a owl:Class ;
+    rdfs:subClassOf kairos-map:ScalarExpression ;
+    rdfs:label "Literal Expression" ;
+    rdfs:comment "A typed RDF literal rendered with safe SQL literal rules." .
+
+kairos-map:NullExpression a owl:Class ;
+    rdfs:subClassOf kairos-map:ScalarExpression ;
+    rdfs:label "Null Expression" ;
+    rdfs:comment "An explicitly typed NULL." .
+
+kairos-map:OperatorExpression a owl:Class ;
+    rdfs:subClassOf kairos-map:ScalarExpression ;
+    rdfs:label "Operator Expression" ;
+    rdfs:comment "An allowlisted deterministic scalar operator over an ordered RDF argument list." .
+
+kairos-map:FunctionExpression a owl:Class ;
+    rdfs:subClassOf kairos-map:ScalarExpression ;
+    rdfs:label "Function Expression" ;
+    rdfs:comment "An allowlisted deterministic scalar function over an ordered RDF argument list." .
+
+kairos-map:CaseExpression a owl:Class ;
+    rdfs:subClassOf kairos-map:ScalarExpression ;
+    rdfs:label "Case Expression" ;
+    rdfs:comment "A searched CASE with ordered branches and an explicit ELSE expression." .
+
+kairos-map:CaseBranch a owl:Class ;
+    rdfs:label "Case Branch" ;
+    rdfs:comment "One typed WHEN/THEN branch." .
+
+kairos-map:MacroExpression a owl:Class ;
+    rdfs:subClassOf kairos-map:ScalarExpression ;
+    rdfs:label "Macro Expression" ;
+    rdfs:comment "An invocation of an exact approved namespaced macro IRI." .
+
+kairos-map:ApprovedMacro a owl:Class ;
+    rdfs:label "Approved Macro" ;
+    rdfs:comment "A toolkit-owned deterministic scalar macro supported by both adapters." .
+
+kairos-map:sourceTable a owl:ObjectProperty ;
+    rdfs:domain kairos-map:TableMapping ;
+    rdfs:range owl:Thing ;
+    rdfs:label "source table" .
+
+kairos-map:targetClass a owl:ObjectProperty ;
+    rdfs:domain kairos-map:TableMapping ;
+    rdfs:range owl:Class ;
+    rdfs:label "target class" .
 
 kairos-map:mappingType a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:TableMapping ;
+    rdfs:range xsd:string ;
     rdfs:label "mapping type" ;
-    rdfs:comment """How the source table maps to the silver target:
-  direct  — 1:1 table mapping
-  split   — one source table → multiple silver tables
-  merge   — multiple source tables → one silver table
-  pivot   — source rows become silver columns (or vice versa)
-  lookup  — source table is used as a lookup/enrichment join""" ;
-    rdfs:range xsd:string .
+    rdfs:comment "Either direct or split. Relational/grain-changing forms require a contracted transformation." .
 
-# ---------------------------------------------------------------------------
-# Column-level mapping properties
-# ---------------------------------------------------------------------------
+kairos-map:rowFilter a owl:ObjectProperty ;
+    rdfs:domain kairos-map:TableMapping ;
+    rdfs:range kairos-map:ScalarExpression ;
+    rdfs:label "row filter" ;
+    rdfs:comment "A typed boolean predicate permitted only for an explicit split mapping." .
 
-kairos-map:transform a owl:DatatypeProperty ;
-    rdfs:label "transform" ;
-    rdfs:comment """SQL expression to transform the source value to the silver value.
-Use 'source.' prefix to reference source columns.
-Examples:
-  CAST(source.ClientID AS STRING)
-  TRIM(source.Name)
-  CONCAT(source.Street, ' ', source.Nr)
-  CASE WHEN source.IsActive = 1 THEN true ELSE false END""" ;
-    rdfs:range xsd:string .
+kairos-map:sourceColumn a owl:ObjectProperty ;
+    rdfs:domain owl:Thing ;
+    rdfs:range owl:Thing ;
+    rdfs:label "source column" ;
+    rdfs:comment "A source-column IRI, never a SQL identifier string." .
 
-kairos-map:sourceColumns a owl:DatatypeProperty ;
-    rdfs:label "source columns" ;
-    rdfs:comment "Space-separated list of source column names used in a computed mapping." ;
-    rdfs:range xsd:string .
+kairos-map:targetProperty a owl:ObjectProperty ;
+    rdfs:domain kairos-map:ColumnMapping ;
+    rdfs:range rdf:Property ;
+    rdfs:label "target property" .
 
-kairos-map:defaultValue a owl:DatatypeProperty ;
-    rdfs:label "default value" ;
-    rdfs:comment "Default value when the source column is NULL or missing." ;
-    rdfs:range xsd:string .
+kairos-map:matchType a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:MappingContract ;
+    rdfs:range xsd:string ;
+    rdfs:label "SKOS match type" ;
+    rdfs:comment "exactMatch, closeMatch, narrowMatch, broadMatch, or relatedMatch." .
 
-kairos-map:filterCondition a owl:DatatypeProperty ;
-    rdfs:label "filter condition" ;
-    rdfs:comment "SQL WHERE clause fragment to filter source rows (e.g. 'source.IsDeleted = 0')." ;
-    rdfs:range xsd:string .
+kairos-map:expression a owl:ObjectProperty ;
+    rdfs:domain kairos-map:ColumnMapping ;
+    rdfs:range kairos-map:ScalarExpression ;
+    rdfs:label "expression" ;
+    rdfs:comment "Optional expression root; absence means a derived direct source-column reference." .
 
-kairos-map:deduplicationKey a owl:DatatypeProperty ;
-    rdfs:label "deduplication key" ;
-    rdfs:comment "Space-separated columns to use for ROW_NUMBER() deduplication in staging." ;
-    rdfs:range xsd:string .
+kairos-map:outputType a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:ScalarExpression ;
+    rdfs:range xsd:string ;
+    rdfs:label "output type" .
 
-kairos-map:deduplicationOrder a owl:DatatypeProperty ;
-    rdfs:label "deduplication order" ;
-    rdfs:comment "ORDER BY clause for deduplication (e.g. 'ModifiedDate DESC')." ;
-    rdfs:range xsd:string .
+kairos-map:nullable a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:ScalarExpression ;
+    rdfs:range xsd:boolean ;
+    rdfs:label "nullable" .
+
+kairos-map:nullPolicy a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:ScalarExpression ;
+    rdfs:range xsd:string ;
+    rdfs:label "null policy" .
+
+kairos-map:determinism a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:ScalarExpression ;
+    rdfs:range xsd:string ;
+    rdfs:label "determinism" .
+
+kairos-map:requiresCapability a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:ScalarExpression ;
+    rdfs:range xsd:string ;
+    rdfs:label "required adapter capability" .
+
+kairos-map:literalValue a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:LiteralExpression ;
+    rdfs:range rdfs:Literal ;
+    rdfs:label "literal value" .
+
+kairos-map:operator a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:OperatorExpression ;
+    rdfs:range xsd:string ;
+    rdfs:label "operator" .
+
+kairos-map:function a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:FunctionExpression ;
+    rdfs:range xsd:string ;
+    rdfs:label "function" .
+
+kairos-map:arguments a owl:ObjectProperty ;
+    rdfs:domain kairos-map:ScalarExpression ;
+    rdfs:range rdf:List ;
+    rdfs:label "ordered arguments" .
+
+kairos-map:branches a owl:ObjectProperty ;
+    rdfs:domain kairos-map:CaseExpression ;
+    rdfs:range rdf:List ;
+    rdfs:label "ordered CASE branches" .
+
+kairos-map:when a owl:ObjectProperty ;
+    rdfs:domain kairos-map:CaseBranch ;
+    rdfs:range kairos-map:ScalarExpression ;
+    rdfs:label "when expression" .
+
+kairos-map:then a owl:ObjectProperty ;
+    rdfs:domain kairos-map:CaseBranch ;
+    rdfs:range kairos-map:ScalarExpression ;
+    rdfs:label "then expression" .
+
+kairos-map:elseExpression a owl:ObjectProperty ;
+    rdfs:domain kairos-map:CaseExpression ;
+    rdfs:range kairos-map:ScalarExpression ;
+    rdfs:label "else expression" .
+
+kairos-map:macro a owl:ObjectProperty ;
+    rdfs:domain kairos-map:MacroExpression ;
+    rdfs:range kairos-map:ApprovedMacro ;
+    rdfs:label "approved macro" .
+
+macro:concat a kairos-map:ApprovedMacro ;
+    rdfs:label "portable concat" .
+
+macro:dayOfWeek a kairos-map:ApprovedMacro ;
+    rdfs:label "portable day of week" .
+
+macro:monthName a kairos-map:ApprovedMacro ;
+    rdfs:label "portable month name" .
+
+macro:quarter a kairos-map:ApprovedMacro ;
+    rdfs:label "portable quarter" .

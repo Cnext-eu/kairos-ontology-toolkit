@@ -1,0 +1,426 @@
+-- Silver DD-109 SCD2 runtime model: {{ model_name }}
+-- History basis: {{ runtime.time_basis }}
+-- Business-valid and system/load intervals are separate closed-open intervals.
+-- Replay: {{ runtime.replay }}; backfill: {{ runtime.backfill }}
+-- Delete: CDC 'delete' is hard={{ runtime.hard_delete }}; normalized soft-delete
+-- flags use operation 'soft-delete' and soft={{ runtime.soft_delete }}.
+-- Late arrival: {{ runtime.late_arrival }}; correction: {{ runtime.correction }}
+{{"{%"}} if var('kairos_full_rebuild', false)
+    and '{{ runtime.backfill }}' != 'full-rebuild-approved' {{"%}"}}
+{{"{{"}} exceptions.raise_compiler_error(
+  "DD-109 full rebuild is not approved for {{ model_name }}"
+) {{"}}"}}
+{{"{%"}} endif {{"%}"}}
+{{"{%"}} if var('kairos_backfill_start', none) is not none
+    and '{{ runtime.backfill }}' != 'range-replay-approved' {{"%}"}}
+{{"{{"}} exceptions.raise_compiler_error(
+  "DD-109 range replay is not approved for {{ model_name }}"
+) {{"}}"}}
+{{"{%"}} endif {{"%}"}}
+{{"{{"}} config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    schema='{{ schema_name }}',
+    unique_key={{ unique_key | tojson }},
+    on_schema_change='{{ runtime.on_schema_change }}'
+) {{"}}"}}
+
+{%- if runtime.model_kind == "entity" %}
+{%- for cte in source_ctes %}
+{% if loop.first %}with {% else %}     {% endif %}{{ cte.alias }} as (
+    select *
+{%- if cte.ref_model %}
+    from {{"{{"}} ref('{{ cte.ref_model }}') {{"}}"}}
+{%- else %}
+    from {{"{{"}} source('{{ cte.source_name }}', '{{ cte.table_name }}') {{"}}"}}
+{%- endif %}
+{%- if cte.filter %}
+    where {{ cte.filter }}
+{%- endif %}
+){% if not loop.last %},{% endif %}
+{%- endfor %},
+mapped as (
+    select
+{%- for column in runtime.input_select_columns %}
+        {{ column.expression }} as {{ column.target_name }},
+{%- endfor %}
+{%- for lookup in runtime.temporal_lookups %}
+        {{ lookup.match_count_expression }} as {{ lookup.match_count_column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+{%- if not runtime.temporal_lookups %}
+        1 as _kairos_runtime_row
+{%- endif %}
+    from {{ source_ctes[0].alias }}
+{%- for join in joins %}
+    {{ join.type }} join {{ join.ref }} as {{ join.alias }}
+        on {{ join.condition }}
+{%- endfor %}
+{%- if where_clause %}
+    where {{ where_clause }}
+{%- endif %}
+),
+{%- else %}
+with unioned as (
+{%- for source_model in source_models %}
+    select
+{%- for column in runtime.input_columns %}
+        {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+    from {{"{{"}} ref('{{ source_model }}') {{"}}"}}
+{%- if not loop.last %}
+    union all
+{%- endif %}
+{%- endfor %}
+),
+{%- if branch_relationship == "exactly-equivalent" %}
+conformance_ranked as (
+    select
+        *,
+        row_number() over (
+            partition by {{ integration_key_expression }}
+            order by
+                case _source_identity_ref
+{%- for source in source_precedence %}
+                    when '{{ source }}' then {{ loop.index }}
+{%- endfor %}
+                    else {{ source_precedence | length + 1 }}
+                end,
+                _source_record_key
+        ) as _kairos_conformance_rank
+    from unioned
+),
+conformed as (
+    select *
+    from conformance_ranked
+    where _kairos_conformance_rank = 1
+),
+{%- endif %}
+mapped as (
+    select *
+    from {% if branch_relationship == "exactly-equivalent" %}conformed{% else %}unioned{% endif %}
+),
+{%- endif %}
+bounded_input as (
+    select *
+    from mapped
+    where 1 = 1
+{{"{%"}} if is_incremental() and not var('kairos_full_rebuild', false) {{"%}"}}
+      and {{ runtime.ingested_at }} >=
+        {{"{{"}} kairos_runtime_lookback_floor(
+          "(select coalesce(max({{ runtime.system_from }}), "
+          ~ "cast('1900-01-01' as {{ runtime.timestamp_type }})) from "
+          ~ this ~ ")",
+          {{ runtime.lookback_amount }},
+          "{{ runtime.lookback_unit }}"
+        ) {{"}}"}}
+{{"{%"}} endif {{"%}"}}
+{{"{%"}} if var('kairos_backfill_start', none) is not none {{"%}"}}
+      and {{ runtime.source_effective_at }} >=
+        CAST(
+          '{{"{{"}} var("kairos_backfill_start") {{"}}"}}'
+          AS {{ runtime.timestamp_type }}
+        )
+{{"{%"}} endif {{"%}"}}
+{{"{%"}} if var('kairos_backfill_end', none) is not none {{"%}"}}
+      and {{ runtime.source_effective_at }} <
+        CAST(
+          '{{"{{"}} var("kairos_backfill_end") {{"}}"}}'
+          AS {{ runtime.timestamp_type }}
+        )
+{{"{%"}} endif {{"%}"}}
+),
+accepted_input as (
+    select *
+    from bounded_input
+    where 1 = 1
+{%- if runtime.hard_delete == "ignore" %}
+      and {{ runtime.cdc_operation }} <> 'delete'
+{%- endif %}
+{%- if runtime.soft_delete == "ignore" %}
+      and {{ runtime.cdc_operation }} <> 'soft-delete'
+{%- endif %}
+{%- for action in runtime.temporal_actions %}
+{%- if action.quarantine_missing %}
+      and {{ action.match_count_column }} > 0
+{%- endif %}
+{%- if action.quarantine_ambiguous %}
+      and {{ action.match_count_column }} <= 1
+{%- endif %}
+{%- endfor %}
+),
+incoming_events as (
+    select
+{%- for column in runtime.columns %}
+{%- if column.target_name != "_loaded_at" %}
+        {% if column.generated_after_mapping | default(false) %}{{ column.expression }}{% else %}{{ column.target_name }}{% endif %} as {{ column.target_name }},
+{%- endif %}
+{%- endfor %}
+{%- for diagnostic in runtime.diagnostic_columns %}
+        {{ diagnostic }},
+{%- endfor %}
+        {{"{{"}} kairos_current_timestamp() {{"}}"}} as _loaded_at,
+        case
+            when {{ runtime.cdc_operation }} = 'delete' then 1
+            when {{ runtime.cdc_operation }} = 'soft-delete' then 1
+            else 0
+        end
+            as {{ runtime.deleted_flag }}
+{%- if runtime.canonical_hash %},
+        {{ runtime.canonical_hash }} as _row_hash
+{%- endif %}
+    from accepted_input
+),
+affected_keys as (
+    select distinct
+{%- for column in runtime.merge_identity %}
+        {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+    from incoming_events
+),
+existing_history as (
+{{"{%"}} if is_incremental() {{"%}"}}
+    select target.*
+    from {{"{{"}} this {{"}}"}} target
+    inner join affected_keys affected
+      on
+{%- for column in runtime.merge_identity %}
+        target.{{ column }} = affected.{{ column }}{% if not loop.last %} and{% endif %}
+{%- endfor %}
+{{"{%"}} if is_incremental() and not var('kairos_full_rebuild', false) {{"%}"}}
+    where target.{{ runtime.system_from }} >=
+        {{"{{"}} kairos_runtime_lookback_floor(
+          "(select min({{ runtime.ingested_at }}) from incoming_events)",
+          {{ runtime.lookback_amount }},
+          "{{ runtime.lookback_unit }}"
+        ) {{"}}"}}
+       or target.{{ runtime.current_flag }} = 1
+{{"{%"}} endif {{"%}"}}
+{{"{%"}} else {{"%}"}}
+    select incoming.*
+    from incoming_events incoming
+    where 1 = 0
+{{"{%"}} endif {{"%}"}}
+),
+all_events as (
+    select
+{%- for column in runtime.columns %}
+{%- if column.target_name != "_loaded_at" %}
+        {{ column.target_name }},
+{%- endif %}
+{%- endfor %}
+{%- for diagnostic in runtime.diagnostic_columns %}
+        {{ diagnostic }},
+{%- endfor %}
+        _loaded_at,
+        {{ runtime.deleted_flag }}
+{%- if runtime.canonical_hash %},
+        _row_hash
+{%- endif %}
+    from incoming_events
+    union all
+    select
+{%- for column in runtime.columns %}
+{%- if column.target_name != "_loaded_at" %}
+        {{ column.target_name }},
+{%- endif %}
+{%- endfor %}
+{%- for diagnostic in runtime.diagnostic_columns %}
+        {{ diagnostic }},
+{%- endfor %}
+        _loaded_at,
+        {{ runtime.deleted_flag }}
+{%- if runtime.canonical_hash %},
+        _row_hash
+{%- endif %}
+    from existing_history
+),
+replay_deduplicated as (
+    select *
+    from (
+        select
+            *,
+            row_number() over (
+                partition by
+{%- for column in runtime.merge_identity + runtime.ordering_columns %}
+                    {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+                    , {{ runtime.cdc_operation }}
+                    , {{ runtime.deleted_flag }}
+{%- if runtime.canonical_hash %}
+                    , _row_hash
+{%- else %}
+{%- for column in runtime.compare_columns %}
+                    , {{ column }}
+{%- endfor %}
+{%- endif %}
+                order by _loaded_at
+            ) as _kairos_replay_rank
+        from all_events
+    ) replayed
+    where _kairos_replay_rank = 1
+),
+contradictory_replay_ties as (
+    select
+{%- for column in runtime.merge_identity + runtime.ordering_columns %}
+        {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+    from replay_deduplicated
+    group by
+{%- for column in runtime.merge_identity + runtime.ordering_columns %}
+        {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+    having count(*) > 1
+),
+replay_tie_guard as (
+    select case
+        when exists (select 1 from contradictory_replay_ties)
+          then {{ runtime.contradictory_tie_failure }}
+        else 1
+    end as _kairos_replay_tie_ok
+),
+corrected_events as (
+    select *
+    from (
+        select
+            replayed.*,
+            row_number() over (
+                partition by
+{%- for column in runtime.merge_identity %}
+                    {{ column }},
+{%- endfor %}
+                    {% if runtime.time_basis == "business-valid" %}{{ runtime.source_effective_at }}{% else %}{{ runtime.ingested_at }}{% endif %}
+                order by
+{%- for column in runtime.ordering_columns %}
+                    {{ column }} desc{% if not loop.last %},{% endif %}
+{%- endfor %}
+            ) as _kairos_correction_rank
+        from replay_deduplicated replayed
+        cross join replay_tie_guard guard
+        where guard._kairos_replay_tie_ok = 1
+    ) corrected
+    where _kairos_correction_rank = 1
+),
+change_ranked as (
+    select
+        *,
+{%- if runtime.canonical_hash %}
+        lag(_row_hash) over (
+            partition by
+{%- for column in runtime.merge_identity %}
+                {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+            order by
+                {% if runtime.time_basis == "business-valid" %}{{ runtime.source_effective_at }}{% else %}{{ runtime.ingested_at }}{% endif %},
+{%- for column in runtime.ordering_columns %}
+                {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+        ) as _kairos_previous_hash,
+{%- else %}
+{%- for column in runtime.compare_columns %}
+        lag({{ column }}) over (
+            partition by
+{%- for identity_column in runtime.merge_identity %}
+                {{ identity_column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+            order by
+                {% if runtime.time_basis == "business-valid" %}{{ runtime.source_effective_at }}{% else %}{{ runtime.ingested_at }}{% endif %},
+{%- for order_column in runtime.ordering_columns %}
+                {{ order_column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+        ) as _kairos_previous_{{ column }},
+{%- endfor %}
+{%- endif %}
+        lag({{ runtime.deleted_flag }}) over (
+            partition by
+{%- for column in runtime.merge_identity %}
+                {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+            order by
+                {% if runtime.time_basis == "business-valid" %}{{ runtime.source_effective_at }}{% else %}{{ runtime.ingested_at }}{% endif %},
+{%- for column in runtime.ordering_columns %}
+                {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+        ) as _kairos_previous_deleted
+    from corrected_events
+),
+changed_events as (
+    select *
+    from change_ranked
+    where _kairos_previous_deleted is null
+       or {{"{{"}} kairos_values_distinct(
+            "{{ runtime.deleted_flag }}",
+            "_kairos_previous_deleted"
+          ) {{"}}"}}
+{%- if runtime.canonical_hash %}
+       or {{"{{"}} kairos_values_distinct(
+            "_row_hash",
+            "_kairos_previous_hash"
+          ) {{"}}"}}
+{%- else %}
+{%- for column in runtime.compare_columns %}
+       or {{"{{"}} kairos_values_distinct(
+            "{{ column }}",
+            "_kairos_previous_{{ column }}"
+          ) {{"}}"}}
+{%- endfor %}
+{%- endif %}
+),
+versioned as (
+    select
+{%- for column in runtime.columns %}
+{%- if column.target_name != "_loaded_at" %}
+        {{ column.target_name }},
+{%- endif %}
+{%- endfor %}
+{%- for diagnostic in runtime.diagnostic_columns %}
+        {{ diagnostic }},
+{%- endfor %}
+        _loaded_at,
+        {{ runtime.deleted_flag }},
+{%- if runtime.canonical_hash %}
+        _row_hash,
+{%- endif %}
+{%- if runtime.time_basis == "business-valid" %}
+        {{ runtime.source_effective_at }} as {{ runtime.business_valid_from }},
+        lead({{ runtime.source_effective_at }}) over (
+            partition by
+{%- for column in runtime.merge_identity %}
+                {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+            order by {{ runtime.source_effective_at }},
+{%- for column in runtime.ordering_columns %}
+                {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+        ) as {{ runtime.business_valid_to }},
+{%- else %}
+        cast(null as {{ runtime.timestamp_type }}) as {{ runtime.business_valid_from }},
+        cast(null as {{ runtime.timestamp_type }}) as {{ runtime.business_valid_to }},
+{%- endif %}
+        {{ runtime.ingested_at }} as {{ runtime.system_from }},
+        lead({{ runtime.ingested_at }}) over (
+            partition by
+{%- for column in runtime.merge_identity %}
+                {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+            order by {{ runtime.ingested_at }},
+{%- for column in runtime.ordering_columns %}
+                {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+        ) as {{ runtime.system_to }},
+        case
+            when row_number() over (
+                partition by
+{%- for column in runtime.merge_identity %}
+                    {{ column }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+                order by {{ runtime.ingested_at }} desc,
+{%- for column in runtime.ordering_columns %}
+                    {{ column }} desc{% if not loop.last %},{% endif %}
+{%- endfor %}
+            ) = 1 then 1
+            else 0
+        end as {{ runtime.current_flag }}
+    from changed_events
+)
+select *
+from versioned

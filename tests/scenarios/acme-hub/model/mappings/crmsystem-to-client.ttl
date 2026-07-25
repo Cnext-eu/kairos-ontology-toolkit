@@ -1,32 +1,34 @@
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
-@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
-@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix bronze-crm: <https://acme.example/bronze/crmsystem#> .
 @prefix acme: <https://acme.example/ontology/client#> .
+@prefix bronze-crm: <https://acme.example/bronze/crmsystem#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix map: <https://acme.example/mapping/crmsystem-to-client#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 
-# ---------------------------------------------------------------------------
-# Table-level: Customers → CorporateClient (multi-source scenario)
-#
-# This exercises the multi-source pattern: AdminPulse.tblClient AND
-# CrmSystem.Customers both map to CorporateClient.  The projector must
-# generate per-source view models and a UNION ALL parent model.
-# ---------------------------------------------------------------------------
-bronze-crm:Customers skos:exactMatch acme:CorporateClient ;
-    kairos-map:mappingType "merge" .
+map:column__Customers_CustCode__to__clientId a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-crm:Customers_CustCode ;
+    kairos-map:targetProperty acme:clientId .
 
-# ---------------------------------------------------------------------------
-# Column-level: Customers columns → Client properties
-# Uses different source column names than AdminPulse to verify per-source
-# column extraction.
-# ---------------------------------------------------------------------------
-bronze-crm:Customers_CustCode skos:exactMatch acme:clientId ;
-    kairos-map:transform "source.CustCode" .
+map:column__Customers_CustEmail__to__email a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-crm:Customers_CustEmail ;
+    kairos-map:targetProperty acme:email .
 
-bronze-crm:Customers_CustName skos:exactMatch acme:clientName ;
-    kairos-map:transform "source.CustName" .
+map:column__Customers_CustName__to__clientName a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-crm:Customers_CustName ;
+    kairos-map:targetProperty acme:clientName .
 
-bronze-crm:Customers_CustEmail skos:exactMatch acme:email ;
-    kairos-map:transform "source.CustEmail" .
+map:table__Customers__to__CorporateClient a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable bronze-crm:Customers ;
+    kairos-map:targetClass acme:CorporateClient .
 
-# Note: No VATNumber, City, Country mappings — these should appear as
-# CAST(NULL AS ...) in the CRM per-source model.
+bronze-crm:Customers skos:exactMatch acme:CorporateClient .
+
+bronze-crm:Customers_CustCode skos:exactMatch acme:clientId .
+
+bronze-crm:Customers_CustEmail skos:exactMatch acme:email .
+
+bronze-crm:Customers_CustName skos:exactMatch acme:clientName .

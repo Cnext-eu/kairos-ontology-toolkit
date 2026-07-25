@@ -34,7 +34,7 @@ def _model() -> dict:
                 "virtual_source_iri": "https://example.com/source#shipmentConformed",
                 "grain": "one row per source system and shipment",
                 "supported_adapters": ["fabric", "databricks"],
-                "natural_key": ["source_system", "shipment_id"],
+                "grain_key": ["source_system", "shipment_id"],
                 "required_packages": ["dbt-labs/dbt_utils"],
                 "required_macros": ["logistics__company_description"],
                 "decisions": [
@@ -109,7 +109,7 @@ def test_discovers_valid_contract(tmp_path: Path) -> None:
     assert len(contracts) == 1
     contract = contracts[0]
     assert contract.name == "int_shipment_conformed"
-    assert contract.natural_key == ("source_system", "shipment_id")
+    assert contract.grain_key == ("source_system", "shipment_id")
     assert contract.sql_path.is_absolute()
     assert contract.decisions[0].approval is not None
     assert contract.decisions[0].evidence[0].artifact == "evidence.ttl"
@@ -216,7 +216,7 @@ def test_rejects_unsafe_file_and_symlink_escape(tmp_path: Path) -> None:
             "unique values",
         ),
         (lambda m: m["config"].update(materialized="ephemeral"), "materialization"),
-        (lambda m: m["meta"]["kairos"].update(natural_key=["missing"]), "natural_key"),
+        (lambda m: m["meta"]["kairos"].update(grain_key=["missing"]), "grain_key"),
         (
             lambda m: m["meta"]["kairos"].update(required_packages=["other/package"]),
             "unapproved packages",

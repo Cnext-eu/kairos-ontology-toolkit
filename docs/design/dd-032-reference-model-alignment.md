@@ -244,25 +244,33 @@ domain:name           skos:exactMatch fibo-x:hasName .
 
 **Before (flat properties):**
 ```turtle
+@prefix map: <https://example.com/mapping/adminpulse-party#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
 bronze-ap:Relation_businessNumber
-    skos:closeMatch party:registrationNumber ;
-    kairos-map:transform "source.business_number" .
+    skos:closeMatch party:registrationNumber .
+map:business-number a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-ap:Relation_businessNumber ;
+    kairos-map:targetProperty party:registrationNumber ;
+    kairos-map:matchType "closeMatch" .
 ```
 
 **After (Identifier pattern):**
 ```turtle
+@prefix map: <https://example.com/mapping/adminpulse-party#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
 bronze-ap:Relation_businessNumber
-    skos:closeMatch party:identifierValue ;
-    kairos-map:targetClass party:Identifier ;
-    kairos-map:transform "source.business_number" ;
-    kairos-map:contextValue "KBO" ;
-    kairos-map:contextProperty party:identifierScheme .
+    skos:closeMatch party:identifierValue .
+map:identifier-value a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-ap:Relation_businessNumber ;
+    kairos-map:targetProperty party:identifierValue ;
+    kairos-map:matchType "closeMatch" .
 ```
 
 The mapping now needs to express:
 1. Which class the source value maps INTO (not just which property)
-2. What context/scheme qualifier applies
-3. How to construct the composite natural key (party NK + scheme)
+2. What governed source/prep column provides the context/scheme qualifier
+3. Whether constructing Identifier rows changes grain and therefore requires a
+   contracted dbt transformation under DD-107
 
 **Recommendation:** When adopting Inspired patterns, update source mappings in the same
 PR. Don't leave mappings pointing at deprecated flat properties.

@@ -3,7 +3,7 @@ name: kairos-execute-report
 description: >
   Generate advanced HTML mapping reports showing how source systems map to
   the domain ontology. Combines source-centric and entity-centric views with
-  data flow diagrams, transform expressions, coverage dashboards, and action items.
+  data flow diagrams, typed expression summaries, coverage dashboards, and action items.
 ---
 
 # Mapping Report Skill
@@ -26,7 +26,7 @@ two complementary perspectives:
 ### Source-centric view (organized by source table)
 
 - **Table-to-entity mappings** — which source tables map to which domain ontology classes
-- **Column-to-property mappings** — source columns → ontology properties with transform details
+- **Column-to-property mappings** — source columns → ontology properties with contract details
 - **SKOS match types** — color-coded semantic alignment badges
 - **Coverage bars** — per-table and overall source coverage
 
@@ -34,8 +34,8 @@ two complementary perspectives:
 
 - **Domain entity sections** — collapsible, grouped by target ontology class
 - **Domain badges** — shows which ontology domain each property belongs to
-- **Transform expressions** — `kairos-map:transform` SQL expressions displayed inline
-- **Filter conditions** — `kairos-map:filterCondition` type discriminators
+- **Expression contracts** — SQL-free typed AST summaries and provenance
+- **Row filters** — typed boolean `rowFilter` contracts for explicit split mappings
 - **Source table associations** — which source tables feed each entity, with mapping type
 
 ### Dashboards and summaries
@@ -48,22 +48,36 @@ two complementary perspectives:
 - **Uncovered domain properties** — ontology properties not reached by any source mapping
 - **Action items** — errors, warnings, and info items with severity counts
 
+The companion `projection-report.json` release data is the DD-109 runtime audit
+surface. Review `runtime_semantics` and `temporal_foreign_keys` for merge identity,
+source/effective/ingestion/load time roles, complete ordering, lookback, hash
+version/algorithm, delete/late/correction/replay/backfill/schema actions, temporal
+mode/cardinality/failure actions, rule IDs, adapter dispositions, and evidence.
+These are projection-time contracts, not claims about observed production runs.
+
+For dbt projection, also review `release-manifest.json` and
+`release-report.json`. Ordinary projection labels them `review-only` and keeps
+`release_ready` false. Strict mode records deterministic supported, deviation,
+and blocking dispositions; adapter compile evidence, artifact hashes, versions,
+DQ contract coverage/results, binding/coverage, and Gold security/measure/calendar
+status are explicit. A `not-evaluated` DQ result is not runtime health. Kairos
+does not run monitoring, alerting, or trend storage.
+
 ## kairos-map: annotations
 
 The report extracts these annotations from mapping TTL files when present:
 
 | Annotation | Purpose | Example |
 |-----------|---------|---------|
-| `kairos-map:transform` | SQL transform expression | `TRIM(source.name)` |
-| `kairos-map:filterCondition` | Row filter / type discriminator | `source.type = 1` |
-| `kairos-map:mappingType` | Mapping pattern | `direct`, `split`, `merge`, `pivot`, `lookup` |
-| `kairos-map:sourceColumns` | Multi-column source | `first_name last_name` |
-| `kairos-map:defaultValue` | Default when NULL | `'Unknown'` |
-| `kairos-map:deduplicationKey` | ROW_NUMBER partition | `source.relation_id` |
-| `kairos-map:deduplicationOrder` | ROW_NUMBER order | `source.modified_date DESC` |
+| `kairos-map:TableMapping` | Named table alignment | `direct` or typed-filter `split` |
+| `kairos-map:ColumnMapping` | Named column alignment | Source-column IRI → target property |
+| `kairos-map:expression` | Typed scalar AST root | CASE, COALESCE, operator, function, or approved macro |
+| `kairos-map:rowFilter` | Typed split predicate | Boolean scalar AST |
+| `kairos-map:outputType` / `nullable` / `nullPolicy` | Node type/null contract | `string`, `false`, `first-non-null` |
+| `kairos-map:determinism` / `requiresCapability` | Portability contract | `deterministic`, `case-expression` |
 
-If no `kairos-map:` annotations are present, the report still works — transform
-columns show "—" and the report degrades gracefully to the basic SKOS view.
+Source-to-domain alignments require named v2 mapping resources. External-reference SKOS
+alignments without Kairos mapping contracts can still appear as basic semantic links.
 
 ## Prerequisites
 
@@ -78,8 +92,8 @@ Before generating a report, ensure:
 3. **SKOS mappings exist** — `model/mappings/{system}-to-{domain}.ttl` contains SKOS alignment
    between source column/table URIs and domain ontology URIs.
 
-4. **kairos-map: annotations** (optional) — enrich mappings with transform expressions,
-   filter conditions, and mapping types for richer reports.
+4. **kairos-map v2 contracts** — named table/column resources with typed scalar ASTs
+   where direct mapping is insufficient.
 
 ## Generating the report
 

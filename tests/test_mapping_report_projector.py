@@ -3,12 +3,14 @@
 """Unit tests for the mapping report projector."""
 
 import textwrap
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
 from rdflib import Graph
 
 from kairos_ontology.core.projections.report_projector import (
+    ReportContractItem,
     _build_entity_view,
     _build_report_data,
     _extract_domain_prefix,
@@ -56,18 +58,52 @@ VOCAB_TTL = textwrap.dedent("""\
 MAPPING_TTL = textwrap.dedent("""\
     @prefix skos:  <http://www.w3.org/2004/02/skos/core#> .
     @prefix km:    <https://kairos.cnext.eu/mapping#> .
+    @prefix map:   <http://example.com/mapping#> .
     @prefix src:   <http://example.com/source/> .
     @prefix onto:  <http://example.com/ontology#> .
 
-    src:erp_customers skos:exactMatch onto:Customer ;
-        km:mappingType "direct" .
+    src:erp_customers skos:exactMatch onto:Customer .
 
-    src:erp_customers_id skos:exactMatch onto:customerId ;
-        km:transform "CAST(source.customer_id AS STRING)" .
+    src:erp_customers_id skos:exactMatch onto:customerId .
 
-    src:erp_customers_name skos:closeMatch onto:customerName ;
-        km:transform "TRIM(source.name)" ;
-        km:filterCondition "source.type = 1" .
+    src:erp_customers_name skos:closeMatch onto:customerName .
+    map:table a km:TableMapping ;
+        km:sourceTable src:erp_customers ;
+        km:targetClass onto:Customer ;
+        km:mappingType "split" ;
+        km:matchType "exactMatch" ;
+        km:rowFilter map:filter .
+    map:id a km:ColumnMapping ;
+        km:sourceColumn src:erp_customers_id ;
+        km:targetProperty onto:customerId ;
+        km:matchType "exactMatch" .
+    map:name a km:ColumnMapping ;
+        km:sourceColumn src:erp_customers_name ;
+        km:targetProperty onto:customerName ;
+        km:matchType "closeMatch" ;
+        km:expression map:upperName .
+    map:filter a km:LiteralExpression ;
+        km:literalValue true ;
+        km:outputType "boolean" ;
+        km:nullable false ;
+        km:nullPolicy "never-null" ;
+        km:determinism "deterministic" ;
+        km:requiresCapability "typed-literal" .
+    map:upperName a km:FunctionExpression ;
+        km:function "upper" ;
+        km:arguments ( map:nameInput ) ;
+        km:outputType "string" ;
+        km:nullable true ;
+        km:nullPolicy "propagate" ;
+        km:determinism "deterministic" ;
+        km:requiresCapability "scalar-function" .
+    map:nameInput a km:SourceColumnExpression ;
+        km:sourceColumn src:erp_customers_name ;
+        km:outputType "string" ;
+        km:nullable true ;
+        km:nullPolicy "propagate" ;
+        km:determinism "deterministic" ;
+        km:requiresCapability "source-column" .
 """)
 
 ONTOLOGY_TTL = textwrap.dedent("""\
@@ -178,24 +214,23 @@ class TestParseMappings:
         result = _parse_mappings(mappings_dir)
         assert "http://example.com/source/erp_customers_email" not in result["column_maps"]
 
-    def test_extracts_transform(self, mappings_dir):
+    def test_extracts_expression_contract(self, mappings_dir):
         result = _parse_mappings(mappings_dir)
         cm = result["column_maps"]
         id_entry = cm["http://example.com/source/erp_customers_id"][0]
-        assert id_entry["transform"] == "CAST(source.customer_id AS STRING)"
+        assert id_entry["expression_contract"] == "direct source-column reference"
         name_entry = cm["http://example.com/source/erp_customers_name"][0]
-        assert name_entry["transform"] == "TRIM(source.name)"
+        assert name_entry["expression_contract"] == "function upper"
 
-    def test_extracts_filter_condition(self, mappings_dir):
+    def test_extracts_row_filter_contract(self, mappings_dir):
         result = _parse_mappings(mappings_dir)
-        cm = result["column_maps"]
-        name_entry = cm["http://example.com/source/erp_customers_name"][0]
-        assert name_entry["filter_condition"] == "source.type = 1"
+        table = result["table_maps"]["http://example.com/source/erp_customers"][0]
+        assert table["filter_condition"] == "typed literal (boolean)"
 
     def test_extracts_mapping_type(self, mappings_dir):
         result = _parse_mappings(mappings_dir)
         tm = result["table_maps"]["http://example.com/source/erp_customers"]
-        assert tm[0]["mapping_type"] == "direct"
+        assert tm[0]["mapping_type"] == "split"
 
 
 # ── Tests: _extract_ontology_properties ────────────────────────────────
@@ -229,6 +264,51 @@ class TestExtractDomainPrefix:
 # ── Tests: _build_report_data ──────────────────────────────────────────
 
 class TestBuildReportData:
+    def test_contract_item_is_typed_and_immutable(self):
+        item = ReportContractItem("mapping-route", "customers: split", "table mapping")
+
+        with pytest.raises(FrozenInstanceError):
+            item.value = "changed"
+
+    def test_contract_payload_has_deterministic_lanes(
+        self, sources_dir, mappings_dir, ontology_graph
+    ):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+
+        contract = _build_report_data(systems[0], mappings, classes)["report_contract"]
+
+        assert list(contract) == ["schema_version", "lanes"]
+        assert [lane["key"] for lane in contract["lanes"]] == [
+            "normative-effective-policy",
+            "implemented-generated-artifacts-checks",
+            "approved-deviations-known-limitations",
+            "downstream-runtime-observations",
+        ]
+        assert [section["key"] for section in contract["lanes"][0]["sections"]] == [
+            "prep-routing-transformations",
+            "identity-grain-lineage-multi-source",
+            "cdc-scd-fk-hash-dq",
+            "gold-product-contract",
+            "governance-expectations",
+            "adapter-capability-compile-evidence",
+            "strict-release-blockers",
+        ]
+
+    def test_runtime_observations_are_explicitly_not_evaluated(
+        self, sources_dir, mappings_dir, ontology_graph
+    ):
+        systems = _parse_source_systems(sources_dir)
+        mappings = _parse_mappings(mappings_dir)
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+
+        runtime = _build_report_data(systems[0], mappings, classes)["report_contract"]["lanes"][3]
+
+        assert runtime["key"] == "downstream-runtime-observations"
+        assert {section["status"] for section in runtime["sections"]} == {"not-evaluated"}
+        assert all("does not observe" in section["reason"] for section in runtime["sections"])
+
     def test_coverage_calculation(self, sources_dir, mappings_dir, ontology_graph):
         systems = _parse_source_systems(sources_dir)
         mappings = _parse_mappings(mappings_dir)
@@ -299,7 +379,9 @@ class TestBuildReportData:
         assert report["warning_count"] == 1
         assert report["info_count"] == 1
 
-    def test_transform_in_column_report(self, sources_dir, mappings_dir, ontology_graph):
+    def test_expression_contract_in_column_report(
+        self, sources_dir, mappings_dir, ontology_graph
+    ):
         systems = _parse_source_systems(sources_dir)
         mappings = _parse_mappings(mappings_dir)
         classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
@@ -307,9 +389,11 @@ class TestBuildReportData:
 
         tbl = report["tables"][0]
         mapped_cols = [c for c in tbl["columns"] if c["mapped"]]
-        transforms = {c["source_name"]: c["transform"] for c in mapped_cols}
-        assert transforms["customer_id"] == "CAST(source.customer_id AS STRING)"
-        assert transforms["name"] == "TRIM(source.name)"
+        expressions = {
+            c["source_name"]: c["expression_contract"] for c in mapped_cols
+        }
+        assert expressions["customer_id"] == "direct source-column reference"
+        assert expressions["name"] == "function upper"
 
     def test_entity_view_present(self, sources_dir, mappings_dir, ontology_graph):
         systems = _parse_source_systems(sources_dir)
@@ -358,16 +442,21 @@ class TestBuildEntityView:
         assert len(customer["source_tables"]) >= 1
         assert customer["source_tables"][0]["table_name"] == "customers"
 
-    def test_entity_column_has_transform(self, sources_dir, mappings_dir, ontology_graph):
+    def test_entity_column_has_expression_contract(
+        self, sources_dir, mappings_dir, ontology_graph
+    ):
         systems = _parse_source_systems(sources_dir)
         mappings = _parse_mappings(mappings_dir)
         classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
         entities = _build_entity_view(systems[0], mappings, classes)
 
         customer = next(e for e in entities if e["name"] == "Customer")
-        id_map = next(cm for cm in customer["column_mappings"]
-                      if cm["source_column"] == "customer_id")
-        assert id_map["transform"] == "CAST(source.customer_id AS STRING)"
+        name_map = next(
+            cm
+            for cm in customer["column_mappings"]
+            if cm["source_column"] == "name"
+        )
+        assert name_map["expression_contract"] == "function upper"
 
 
 # ── Tests: generate_mapping_report (integration) ──────────────────────
@@ -485,7 +574,7 @@ class TestGenerateMappingReport:
         html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "Domain Entity Details" in html
 
-    def test_html_contains_transform(
+    def test_html_contains_expression_contract(
         self, sources_dir, mappings_dir, ontology_graph, template_dir
     ):
         classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
@@ -496,8 +585,8 @@ class TestGenerateMappingReport:
             template_dir=template_dir,
         )
         html = next(v for k, v in result.items() if k.endswith(".html"))
-        assert "CAST(source.customer_id AS STRING)" in html
-        assert "TRIM(source.name)" in html
+        assert "Expression Contract" in html
+        assert "function upper" in html
 
     def test_html_contains_match_distribution(
         self, sources_dir, mappings_dir, ontology_graph, template_dir
@@ -511,3 +600,21 @@ class TestGenerateMappingReport:
         )
         html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "Match Type Distribution" in html
+
+    def test_outputs_distinguish_contract_lanes_and_runtime_boundary(
+        self, sources_dir, mappings_dir, ontology_graph, template_dir
+    ):
+        classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
+        result = generate_mapping_report(
+            ontology_classes=classes,
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+            template_dir=template_dir,
+        )
+
+        for content in result.values():
+            assert "Normative / effective policy" in content
+            assert "Implemented / generated artifacts and checks" in content
+            assert "Approved deviations / known limitations" in content
+            assert "Downstream runtime observations" in content
+            assert "not-evaluated" in content

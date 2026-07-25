@@ -57,7 +57,7 @@ class TestScanAcmeHub:
         silver = {i.name for i in _phase(status, "silver").instances}
         gold = {i.name for i in _phase(status, "gold").instances}
         assert silver == {"client", "invoice", "logistics"}
-        assert gold == {"client", "invoice"}
+        assert gold == {"client", "invoice", "logistics"}
 
     def test_source_in_progress_without_affinity(self):
         # acme-hub has vocabularies but no _analysis affinity reports.
@@ -391,11 +391,17 @@ class TestSilverFacts:
                 """\
                 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
                 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+                @prefix map: <https://example.com/mapping/crm-widget#> .
                 @prefix bronze: <https://example.com/bronze/crm#> .
                 @prefix w: <http://acme.example/widget#> .
 
-                bronze:widgets skos:exactMatch w:Widget ;
-                    kairos-map:mappingType "direct" .
+                map:widgetsToWidget a kairos-map:TableMapping ;
+                    kairos-map:mappingType "direct" ;
+                    kairos-map:matchType "exactMatch" ;
+                    kairos-map:sourceTable bronze:widgets ;
+                    kairos-map:targetClass w:Widget .
+
+                bronze:widgets skos:exactMatch w:Widget .
                 """
             ),
             encoding="utf-8",
@@ -440,4 +446,3 @@ class TestValidateFacts:
 
     def test_data_valid_absent_when_no_report(self, tmp_path):
         assert _phase(scan_hub_status(tmp_path), "validate").instances == []
-

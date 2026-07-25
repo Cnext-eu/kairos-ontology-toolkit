@@ -1,12 +1,13 @@
-# kairos-ext: Kairos Projection Extension Vocabulary (silver + gold + imports + FK)
+# kairos-ext: Kairos Medallion Policy Vocabulary
 #
 # Namespace: https://kairos.cnext.eu/ext#
 # Prefix:    kairos-ext:
 #
 # This ontology defines annotation properties used to drive the medallion
-# projections (silver DDL/ERD, gold Power BI star schema) from OWL/Turtle domain
-# ontologies. Rule families: Silver R1-R16, Gold G1-G8, Import Whitelisting
-# (DD-021), Foreign Keys (DD-022).
+# projections from OWL/Turtle domain ontologies. It is the fresh-hub authoring
+# contract defined by DD-106 through DD-115. Technical source preparation is
+# declared separately with kairos-prep; probabilistic matching and survivorship
+# are declared with the imported kairos-mdm vocabulary.
 #
 # These annotations belong in SEPARATE projection extension files
 # (e.g. customer-silver-ext.ttl, customer-gold-ext.ttl) that import the domain
@@ -25,8 +26,9 @@
 
 <https://kairos.cnext.eu/ext> a owl:Ontology ;
     rdfs:label "Kairos Extension Vocabulary"@en ;
-    rdfs:comment "Annotation properties for silver-layer projection (DDL, ERD)."@en ;
-    owl:versionInfo "1.0.0" .
+    rdfs:comment "Policy vocabulary for explicit Silver identity, lineage, temporal, incremental and quality contracts and governed Gold product, measure, calendar and security contracts."@en ;
+    owl:imports <https://kairos.cnext.eu/mdm> ;
+    owl:versionInfo "2.0.0" .
 
 # ---------------------------------------------------------------------------
 # Ontology-level annotations
@@ -38,18 +40,6 @@ kairos-ext:silverSchema a owl:AnnotationProperty ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
-kairos-ext:surrogateKeyStrategy a owl:AnnotationProperty ;
-    rdfs:label "surrogate key strategy"@en ;
-    rdfs:comment "RESERVED (declared but not yet consumed — surrogate keys are currently generated unconditionally). Intended strategy for generating surrogate keys (R2). Values: 'uuid'."@en ;
-    rdfs:domain owl:Ontology ;
-    rdfs:range xsd:string .
-
-kairos-ext:includeNaturalKeyColumn a owl:AnnotationProperty ;
-    rdfs:label "include natural key column"@en ;
-    rdfs:comment "If true, include {table}_iri IRI lineage column (R3). Default: true."@en ;
-    rdfs:domain owl:Ontology ;
-    rdfs:range xsd:boolean .
-
 kairos-ext:namingConvention a owl:AnnotationProperty ;
     rdfs:label "naming convention"@en ;
     rdfs:comment "Column/table naming convention (R4). Values: 'camel-to-snake'."@en ;
@@ -58,7 +48,7 @@ kairos-ext:namingConvention a owl:AnnotationProperty ;
 
 kairos-ext:auditEnvelope a owl:AnnotationProperty ;
     rdfs:label "audit envelope"@en ;
-    rdfs:comment "Comma-separated 'name TYPE' audit columns appended to every non-reference table (R9). Standard source lineage columns (_source_system, _source_record_id, _loaded_at) are generated independently for every final Silver row."@en ;
+    rdfs:comment "Comma-separated 'name TYPE' audit columns appended to every non-reference table (R9). Standard source lineage columns (_source_system, _source_record_key, _loaded_at) are generated independently for every final Silver row."@en ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
@@ -72,21 +62,15 @@ kairos-ext:silverTableName a owl:AnnotationProperty ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
-kairos-ext:silverSourceRef a owl:AnnotationProperty ;
-    rdfs:label "silver source ref"@en ;
-    rdfs:comment "dbt model name to use as {{ ref() }} instead of {{ source() }} for this class (DD-039). Use when the class sources from a bronze_expanded staging model (JSON flattening). If absent, the projector uses the default {{ source(system, table) }} from SKOS mappings."@en ;
+kairos-ext:contractedTransformationRef a owl:AnnotationProperty ;
+    rdfs:label "contracted transformation reference"@en ;
+    rdfs:comment "Approved dbt contract identifier that routes relational, grain-forming, deduplication, complex fallback, or contribution-building logic through a proven virtual source. It is not authority for ordinary source preparation."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
 kairos-ext:scdType a owl:AnnotationProperty ;
     rdfs:label "SCD type"@en ;
-    rdfs:comment "Slowly Changing Dimension type (R5, R8). Values: '1' (overwrite) or '2' (history). Default: '2'."@en ;
-    rdfs:domain owl:Class ;
-    rdfs:range xsd:string .
-
-kairos-ext:scdValidFromColumn a owl:AnnotationProperty ;
-    rdfs:label "SCD valid-from column"@en ;
-    rdfs:comment "Mapped Silver timestamp column that supplies business-effective valid_from values for SCD2 history and as-of FK resolution. If absent, valid_from uses projection system time and the class cannot be an as-of FK target."@en ;
+    rdfs:comment "Explicit runtime behavior: '1' overwrite or '2' history. Both require incrementalPolicy; SCD2 also requires scd2TimeBasis."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
@@ -102,29 +86,11 @@ kairos-ext:discriminatorColumn a owl:AnnotationProperty ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
-kairos-ext:gdprSatelliteOf a owl:AnnotationProperty ;
-    rdfs:label "GDPR satellite of"@en ;
-    rdfs:comment "Marks this class as a GDPR satellite table whose PK/FK points to the given parent class (R7)."@en ;
-    rdfs:domain owl:Class ;
-    rdfs:range owl:Class .
-
 kairos-ext:isReferenceData a owl:AnnotationProperty ;
     rdfs:label "is reference data"@en ;
     rdfs:comment "If true, the table is a reference/code-list table with ref_ prefix and SCD type 1 (R8)."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:boolean .
-
-kairos-ext:partitionBy a owl:AnnotationProperty ;
-    rdfs:label "partition by"@en ;
-    rdfs:comment "Column name(s) for PARTITIONED BY clause (R10)."@en ;
-    rdfs:domain owl:Class ;
-    rdfs:range xsd:string .
-
-kairos-ext:clusterBy a owl:AnnotationProperty ;
-    rdfs:label "cluster by"@en ;
-    rdfs:comment "Column name(s) for CLUSTER BY (Delta Lake Liquid Clustering) (R10)."@en ;
-    rdfs:domain owl:Class ;
-    rdfs:range xsd:string .
 
 # ---------------------------------------------------------------------------
 # Property-level annotations
@@ -157,7 +123,7 @@ kairos-ext:derivationFormula a owl:AnnotationProperty ;
 
 kairos-ext:naturalKey a owl:AnnotationProperty ;
     rdfs:label "natural key"@en ;
-    rdfs:comment "Space-separated list of property names (camelCase) that form the natural/business key for this class. Used for surrogate key generation and IRI construction in silver."@en ;
+    rdfs:comment "Ordered, explicitly authored business-identifier columns. Authority is determined by identityStrategy; the projector never invents missing natural keys or treats this annotation alone as cross-source equivalence."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
@@ -174,12 +140,6 @@ kairos-ext:conditionalOnType a owl:AnnotationProperty ;
 # ---------------------------------------------------------------------------
 # Silver Fabric Warehouse annotations (S4)
 # ---------------------------------------------------------------------------
-
-kairos-ext:inlineRefThreshold a owl:AnnotationProperty ;
-    rdfs:label "inline reference threshold"@en ;
-    rdfs:comment "Maximum number of business columns for a reference table to be inlined into the parent (S4). Default: 3."@en ;
-    rdfs:domain owl:Ontology ;
-    rdfs:range xsd:integer .
 
 # ===========================================================================
 # Gold Layer Annotations (G1-G8)
@@ -200,31 +160,13 @@ kairos-ext:goldSchema a owl:AnnotationProperty ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
-kairos-ext:goldInheritanceStrategy a owl:AnnotationProperty ;
-    rdfs:label "gold inheritance strategy"@en ;
-    rdfs:comment "OWL subclass projection strategy for gold layer (G5). Values: 'class-per-table' (default) or 'discriminator'. When 'class-per-table', each subclass gets its own table with shared PK/FK to parent. When 'discriminator', subtypes are flattened into the parent table. Can be set at ontology level (default for all classes) or per-class override."@en ;
-    rdfs:domain owl:Ontology ;
-    rdfs:range xsd:string .
-
-kairos-ext:generateDateDimension a owl:AnnotationProperty ;
-    rdfs:label "generate date dimension"@en ;
-    rdfs:comment "If true, auto-generate a dim_date table with YYYYMMDD integer key and calendar hierarchy. Default: true."@en ;
-    rdfs:domain owl:Ontology ;
-    rdfs:range xsd:boolean .
-
-kairos-ext:generateTimeIntelligence a owl:AnnotationProperty ;
-    rdfs:label "generate time intelligence"@en ;
-    rdfs:comment "If true, generate a Time Intelligence calculation group (YTD, QTD, MTD, PY, YoY %) in the semantic model. Requires a date dimension. Default: false."@en ;
-    rdfs:domain owl:Ontology ;
-    rdfs:range xsd:boolean .
-
 # ---------------------------------------------------------------------------
 # Gold — Class-level annotations
 # ---------------------------------------------------------------------------
 
 kairos-ext:goldTableType a owl:AnnotationProperty ;
     rdfs:label "gold table type"@en ;
-    rdfs:comment "Override automatic star-schema classification (G1). Values: 'fact', 'dimension', 'bridge'."@en ;
+    rdfs:comment "Required explicit dimensional table role. Values: 'fact', 'dimension', or 'bridge'. Role is never inferred from foreign-key counts."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
@@ -234,21 +176,21 @@ kairos-ext:goldTableName a owl:AnnotationProperty ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
-kairos-ext:goldExclude a owl:AnnotationProperty ;
-    rdfs:label "gold exclude"@en ;
-    rdfs:comment "If true, exclude this class from the gold layer projection entirely."@en ;
-    rdfs:domain owl:Class ;
-    rdfs:range xsd:boolean .
-
-kairos-ext:perspective a owl:AnnotationProperty ;
-    rdfs:label "perspective"@en ;
-    rdfs:comment "Space-separated perspective names this table belongs to (e.g. 'Sales Finance'). Each distinct name generates a Power BI perspective grouping its member tables."@en ;
+kairos-ext:goldSourceModel a owl:AnnotationProperty ;
+    rdfs:label "Gold source model"@en ;
+    rdfs:comment "Required exact binding to the materialized Silver registry model."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
-kairos-ext:incrementalColumn a owl:AnnotationProperty ;
-    rdfs:label "incremental column"@en ;
-    rdfs:comment "RESERVED (not yet rendered by the gold projector). Intended date/timestamp column to drive a Power BI incremental refresh policy on this fact table. NOTE: distinct from kairos-bronze:incrementalColumn, which drives dbt incremental loads. Do not confuse the two."@en ;
+kairos-ext:goldSourceVersion a owl:AnnotationProperty ;
+    rdfs:label "Gold source model version"@en ;
+    rdfs:comment "Required version binding checked against the materialized Silver registry."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:perspective a owl:AnnotationProperty ;
+    rdfs:label "perspective"@en ;
+    rdfs:comment "Navigation-only perspective names. Perspectives never grant, deny, or hide data as a security boundary."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:string .
 
@@ -256,49 +198,16 @@ kairos-ext:incrementalColumn a owl:AnnotationProperty ;
 # Gold — Property-level annotations
 # ---------------------------------------------------------------------------
 
-kairos-ext:goldColumnName a owl:AnnotationProperty ;
-    rdfs:label "gold column name"@en ;
-    rdfs:comment "Column name override in gold table. Bypasses camel-to-snake conversion."@en ;
-    rdfs:range xsd:string .
-
-kairos-ext:goldDataType a owl:AnnotationProperty ;
-    rdfs:label "gold data type"@en ;
-    rdfs:comment "SQL data type override for gold layer (G8). E.g. 'INT', 'DECIMAL(18,2)'."@en ;
-    rdfs:range xsd:string .
-
 kairos-ext:measureExpression a owl:AnnotationProperty ;
     rdfs:label "measure expression"@en ;
-    rdfs:comment "DAX measure expression for Power BI (e.g. 'SUM([amount])'). Property becomes a measure, not a column."@en ;
+    rdfs:comment "DAX expression on a first-class Measure resource. Required physical input columns remain materialized."@en ;
+    rdfs:domain kairos-ext:Measure ;
     rdfs:range xsd:string .
 
 kairos-ext:measureFormatString a owl:AnnotationProperty ;
     rdfs:label "measure format string"@en ;
     rdfs:comment "DAX format string for the measure (e.g. '$#,##0.00', '0.0%')."@en ;
-    rdfs:range xsd:string .
-
-kairos-ext:hierarchyName a owl:AnnotationProperty ;
-    rdfs:label "hierarchy name"@en ;
-    rdfs:comment "Name of the Power BI hierarchy this property belongs to (G5). E.g. 'Geography'."@en ;
-    rdfs:range xsd:string .
-
-kairos-ext:hierarchyLevel a owl:AnnotationProperty ;
-    rdfs:label "hierarchy level"@en ;
-    rdfs:comment "Level order within the hierarchy (G5). 1 = top level."@en ;
-    rdfs:range xsd:integer .
-
-kairos-ext:degenerateDimension a owl:AnnotationProperty ;
-    rdfs:label "degenerate dimension"@en ;
-    rdfs:comment "If true, keep this dimension attribute directly on the fact table instead of a separate dimension (G1)."@en ;
-    rdfs:range xsd:boolean .
-
-kairos-ext:olsRestricted a owl:AnnotationProperty ;
-    rdfs:label "OLS restricted"@en ;
-    rdfs:comment "If true, add this column to the Object-Level Security (OLS) RestrictedColumns role in the semantic model, hiding it from members of that role. Default: false."@en ;
-    rdfs:range xsd:boolean .
-
-kairos-ext:rolePlayingAs a owl:AnnotationProperty ;
-    rdfs:label "role playing as"@en ;
-    rdfs:comment "RESERVED (declared but not yet consumed — the gold projector code path is commented out). Space-separated role names for role-playing dimension usage (e.g. 'order_date ship_date'). Each role is intended to create a separate relationship in the semantic model."@en ;
+    rdfs:domain kairos-ext:Measure ;
     rdfs:range xsd:string .
 
 # ===========================================================================
@@ -370,7 +279,7 @@ kairos-ext:silverForeignKeyOn a owl:AnnotationProperty ;
 
 kairos-ext:silverForeignKeyTemporalMode a owl:AnnotationProperty ;
     rdfs:label "silver foreign key temporal mode"@en ;
-    rdfs:comment "Controls lookup of an SCD2 parent in dbt Silver. Values: 'current' (join only is_current = 1), 'as-of' (effective timestamp range join), or 'none' for a non-SCD target. Default for an SCD2 target: 'current'."@en ;
+    rdfs:comment "Required lookup policy. Values: current (join only is_current = 1), as-of (effective timestamp range join), or none for a non-SCD target."@en ;
     rdfs:domain owl:ObjectProperty ;
     rdfs:range xsd:string .
 
@@ -382,6 +291,755 @@ kairos-ext:silverForeignKeyAsOfColumn a owl:AnnotationProperty ;
 
 kairos-ext:silverForeignKeyChangeDetection a owl:AnnotationProperty ;
     rdfs:label "silver foreign key change detection"@en ;
-    rdfs:comment "Whether a resolved FK surrogate-key change participates in the child SCD2 row hash. Default: true."@en ;
+    rdfs:comment "Explicitly declares whether a resolved FK surrogate-key change participates in child change detection."@en ;
     rdfs:domain owl:ObjectProperty ;
     rdfs:range xsd:boolean .
+
+# ===========================================================================
+# DD-108 through DD-115 policy resources
+# ===========================================================================
+
+kairos-ext:MultiSourcePolicy a owl:Class ;
+    rdfs:label "Multi-source policy"@en ;
+    rdfs:comment "Deterministic conformance policy for branches contributing to one Silver entity."@en .
+
+kairos-ext:IncrementalPolicy a owl:Class ;
+    rdfs:label "Incremental policy"@en ;
+    rdfs:comment "Complete CDC, ordering, replay, deletion, late-arrival and schema-change contract."@en .
+
+kairos-ext:HashPolicy a owl:Class ;
+    rdfs:label "Hash policy"@en ;
+    rdfs:comment "Versioned canonical hash-input serialization contract."@en .
+
+kairos-ext:DataQualityRule a owl:Class ;
+    rdfs:label "Data quality rule"@en ;
+    rdfs:comment "Stable, versioned and executable reusable quality policy. MDM-specific quality rules remain in kairos-mdm."@en .
+
+kairos-ext:Measure a owl:Class ;
+    rdfs:label "Measure"@en ;
+    rdfs:comment "First-class governed semantic measure with stable identity, dependencies and lifecycle."@en .
+
+kairos-ext:CalendarProfile a owl:Class ;
+    rdfs:label "Calendar profile"@en ;
+    rdfs:comment "Approved production calendar and time-intelligence assumptions."@en .
+
+kairos-ext:SecurityPolicy a owl:Class ;
+    rdfs:label "Security policy"@en ;
+    rdfs:comment "Complete fail-closed projection-time RLS and OLS contract."@en .
+
+kairos-ext:AdapterSupport a owl:Class ;
+    rdfs:label "Adapter support"@en ;
+    rdfs:comment "Versioned capability and compile-evidence statement for one required adapter."@en .
+
+kairos-ext:Deviation a owl:Class ;
+    rdfs:label "Approved deviation"@en ;
+    rdfs:comment "Scope-limited, reviewed exception to a named policy requirement."@en .
+
+# Identity and lineage
+
+kairos-ext:businessGrain a owl:AnnotationProperty ;
+    rdfs:label "business grain"@en ;
+    rdfs:comment "Required stable statement of what one materialized entity row represents."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:identityStrategy a owl:AnnotationProperty ;
+    rdfs:label "identity strategy"@en ;
+    rdfs:comment "Required identity strategy: business-key, source-scoped-immutable-key, deterministic-integration-key, externally-mastered-identifier, or surrogate-only."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:entityInstanceIriPolicy a owl:AnnotationProperty ;
+    rdfs:label "entity-instance IRI policy"@en ;
+    rdfs:comment "Required policy for a materialized entity: emit a stable entity-instance IRI column, or omit it. Entity-instance IRIs are semantic identifiers and are distinct from source identity and physical join keys."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:keyScope a owl:AnnotationProperty ;
+    rdfs:label "key scope"@en ;
+    rdfs:comment "Scope in which the declared identity is unique, such as source-table, domain, or enterprise."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:sourceIdentity a owl:AnnotationProperty ;
+    rdfs:label "source identity"@en ;
+    rdfs:comment "Reference to the prepared source-record identity used for replay and lineage; never implicit business equivalence."@en ;
+    rdfs:domain owl:Class .
+
+kairos-ext:drivingSource a owl:AnnotationProperty ;
+    rdfs:label "driving source"@en ;
+    rdfs:comment "Required sourceIdentity reference for a multi-contributor entity. Single-source entities deterministically use only-source mode and must not author this field."@en ;
+    rdfs:domain owl:Class .
+
+kairos-ext:changeDetectionStrategy a owl:AnnotationProperty ;
+    rdfs:label "change detection strategy"@en ;
+    rdfs:comment "Required strategy for detecting meaningful row changes: compare-columns or canonical-hash."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:lineagePolicy a owl:AnnotationProperty ;
+    rdfs:label "lineage policy"@en ;
+    rdfs:comment "Required lineage contract describing emitted source-record and load metadata."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:contributionLineagePolicy a owl:AnnotationProperty ;
+    rdfs:label "contribution lineage policy"@en ;
+    rdfs:comment "Contract for exposing every source-record contribution from composite transformations."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:reconciliationLimitation a owl:AnnotationProperty ;
+    rdfs:label "reconciliation limitation"@en ;
+    rdfs:comment "Required limitation statement when identityStrategy is surrogate-only."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+# Multi-source deterministic conformance
+
+kairos-ext:multiSourcePolicy a owl:AnnotationProperty ;
+    rdfs:label "multi-source policy"@en ;
+    rdfs:comment "Links a materialized entity to its deterministic multi-source conformance policy."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range kairos-ext:MultiSourcePolicy .
+
+kairos-ext:branchRelationship a owl:AnnotationProperty ;
+    rdfs:label "branch relationship"@en ;
+    rdfs:comment "Whether source branches are disjoint, overlapping, or exactly-equivalent."@en ;
+    rdfs:domain kairos-ext:MultiSourcePolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:normalizationPolicy a owl:AnnotationProperty ;
+    rdfs:label "normalization policy"@en ;
+    rdfs:comment "Reviewed code, unit, currency and time-zone normalization rules."@en ;
+    rdfs:domain kairos-ext:MultiSourcePolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:sourcePrecedence a owl:AnnotationProperty ;
+    rdfs:label "source precedence"@en ;
+    rdfs:comment "Deterministic source precedence for exact conformance; not MDM survivorship."@en ;
+    rdfs:domain kairos-ext:MultiSourcePolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:attributeConflictPolicy a owl:AnnotationProperty ;
+    rdfs:label "attribute conflict policy"@en ;
+    rdfs:comment "Deterministic behavior when exact-equivalent branches disagree."@en ;
+    rdfs:domain kairos-ext:MultiSourcePolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:keyCollisionPolicy a owl:AnnotationProperty ;
+    rdfs:label "key collision policy"@en ;
+    rdfs:comment "Behavior for natural or deterministic integration-key collisions."@en ;
+    rdfs:domain kairos-ext:MultiSourcePolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:branchDeletionPolicy a owl:AnnotationProperty ;
+    rdfs:label "branch deletion policy"@en ;
+    rdfs:comment "Multi-source branch deletion behavior."@en ;
+    rdfs:domain kairos-ext:MultiSourcePolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:branchLateArrivalPolicy a owl:AnnotationProperty ;
+    rdfs:label "branch late-arrival policy"@en ;
+    rdfs:comment "Multi-source branch late-arrival behavior."@en ;
+    rdfs:domain kairos-ext:MultiSourcePolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:reconciliationTest a owl:AnnotationProperty ;
+    rdfs:label "reconciliation test"@en ;
+    rdfs:comment "Executable reconciliation test reference for each branch and the aligned union."@en ;
+    rdfs:domain kairos-ext:MultiSourcePolicy .
+
+# Complete incremental, CDC, SCD and canonical hashing policy
+
+kairos-ext:incrementalPolicy a owl:AnnotationProperty ;
+    rdfs:label "incremental policy"@en ;
+    rdfs:comment "Links an incremental Silver or Gold entity to its complete execution policy."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range kairos-ext:IncrementalPolicy .
+
+kairos-ext:mergeIdentity a owl:AnnotationProperty ;
+    rdfs:label "merge identity"@en ;
+    rdfs:comment "Ordered columns or properties that uniquely identify merge candidates."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:cdcOperation a owl:AnnotationProperty ;
+    rdfs:label "CDC operation"@en ;
+    rdfs:comment "Normalized CDC operation field consumed from prep."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy .
+
+kairos-ext:sourceUpdateTimestamp a owl:AnnotationProperty ;
+    rdfs:label "source update timestamp"@en ;
+    rdfs:comment "Normalized source update timestamp; distinct from ingestion, effective and load time."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy .
+
+kairos-ext:sourceEffectiveTimestamp a owl:AnnotationProperty ;
+    rdfs:label "source effective timestamp"@en ;
+    rdfs:comment "Normalized source business-effective timestamp when supplied."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy .
+
+kairos-ext:ingestionTimestamp a owl:AnnotationProperty ;
+    rdfs:label "ingestion timestamp"@en ;
+    rdfs:comment "Normalized source ingestion timestamp; never projection time."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy .
+
+kairos-ext:totalOrderTieBreaker a owl:AnnotationProperty ;
+    rdfs:label "total-order tie-breaker"@en ;
+    rdfs:comment "Complete deterministic ordering fields after source timestamps."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:lookbackWindow a owl:AnnotationProperty ;
+    rdfs:label "lookback window"@en ;
+    rdfs:comment "Explicit incremental re-read interval and unit."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:hardDeletePolicy a owl:AnnotationProperty ;
+    rdfs:label "hard-delete policy"@en ;
+    rdfs:comment "Behavior for captured normalized CDC operation='delete'. Snapshot absence is not inferred."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:softDeletePolicy a owl:AnnotationProperty ;
+    rdfs:label "soft-delete policy"@en ;
+    rdfs:comment "Behavior for source soft-delete flags normalized to operation='soft-delete'; apply-operation emits a logical tombstone."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:lateArrivalPolicy a owl:AnnotationProperty ;
+    rdfs:label "late-arrival policy"@en ;
+    rdfs:comment "Deterministic behavior for out-of-order records."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:correctionPolicy a owl:AnnotationProperty ;
+    rdfs:label "correction policy"@en ;
+    rdfs:comment "Deterministic behavior for corrections to previously processed records."@en ;
+    rdfs:range xsd:string .
+
+kairos-ext:replayPolicy a owl:AnnotationProperty ;
+    rdfs:label "replay policy"@en ;
+    rdfs:comment "Replay and idempotency behavior."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:backfillPolicy a owl:AnnotationProperty ;
+    rdfs:label "backfill policy"@en ;
+    rdfs:comment "Backfill behavior, including hash-contract changes."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:schemaChangePolicy a owl:AnnotationProperty ;
+    rdfs:label "schema-change policy"@en ;
+    rdfs:comment "Fail, quarantine, or explicitly approved behavior for source schema changes."@en ;
+    rdfs:domain kairos-ext:IncrementalPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:scd2TimeBasis a owl:AnnotationProperty ;
+    rdfs:label "SCD2 time basis"@en ;
+    rdfs:comment "Required SCD2 basis: business-valid or load-history."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:hashPolicy a owl:AnnotationProperty ;
+    rdfs:label "hash policy"@en ;
+    rdfs:comment "Links canonical-hash change detection to its serialization contract."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range kairos-ext:HashPolicy .
+
+kairos-ext:hashContractVersion a owl:AnnotationProperty ;
+    rdfs:label "hash contract version"@en ;
+    rdfs:comment "Version of the ordered, typed, length-delimited canonical serialization."@en ;
+    rdfs:domain kairos-ext:HashPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:hashAlgorithm a owl:AnnotationProperty ;
+    rdfs:label "hash algorithm"@en ;
+    rdfs:comment "Hash algorithm. Medallion policy v1 requires SHA-256."@en ;
+    rdfs:domain kairos-ext:HashPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:hashInput a owl:AnnotationProperty ;
+    rdfs:label "hash input"@en ;
+    rdfs:comment "One non-empty RDF list of properties in canonical byte order. Repeated unordered predicate values are invalid."@en ;
+    rdfs:domain kairos-ext:HashPolicy ;
+    rdfs:range rdf:List .
+
+kairos-ext:hashNullRepresentation a owl:AnnotationProperty ;
+    rdfs:label "hash null representation"@en ;
+    rdfs:comment "Collision-safe null marker. Contract v1 requires typed-length-delimited-null."@en ;
+    rdfs:domain kairos-ext:HashPolicy ;
+    rdfs:range xsd:string .
+
+# Temporal FK failure policy
+
+kairos-ext:silverForeignKeyInterval a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key interval"@en ;
+    rdfs:comment "As-of interval boundary semantics, such as closed-open."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:string .
+
+kairos-ext:silverForeignKeyTimeZone a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key time zone"@en ;
+    rdfs:comment "Normalized time zone used by temporal FK comparison."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:string .
+
+kairos-ext:silverForeignKeyPrecision a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key precision"@en ;
+    rdfs:comment "Normalized timestamp precision used by temporal FK comparison."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:string .
+
+kairos-ext:silverForeignKeyCardinality a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key cardinality"@en ;
+    rdfs:comment "Expected lookup cardinality: zero-or-one or exactly-one."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:string .
+
+kairos-ext:silverForeignKeyMissingPolicy a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key missing-parent policy"@en ;
+    rdfs:comment "Behavior for no parent match: fail, quarantine, retry, or unknown-member."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:string .
+
+kairos-ext:silverForeignKeyAmbiguousPolicy a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key ambiguous-parent policy"@en ;
+    rdfs:comment "Behavior for multiple parent matches; silently selecting one is forbidden."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:string .
+
+kairos-ext:silverForeignKeyLateParentPolicy a owl:AnnotationProperty ;
+    rdfs:label "silver foreign key late-parent policy"@en ;
+    rdfs:comment "Restatement behavior when a missing parent arrives later."@en ;
+    rdfs:domain owl:ObjectProperty ;
+    rdfs:range xsd:string .
+
+# Gold product profile and explicit dimensional contracts
+
+kairos-ext:goldProductProfile a owl:AnnotationProperty ;
+    rdfs:label "gold product profile"@en ;
+    rdfs:comment "Required named, versioned Gold profile. Policy v1 supports only dimensional-powerbi-v1."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
+kairos-ext:factGrain a owl:AnnotationProperty ;
+    rdfs:label "fact grain"@en ;
+    rdfs:comment "Required statement of what one fact row represents."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:factType a owl:AnnotationProperty ;
+    rdfs:label "fact type"@en ;
+    rdfs:comment "Required fact behavior: transaction, periodic-snapshot, or accumulating-snapshot."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:dimensionExposure a owl:AnnotationProperty ;
+    rdfs:label "dimension exposure"@en ;
+    rdfs:comment "Required dimension history exposure: current-only, history-only, or dual."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:dimensionVersionBinding a owl:AnnotationProperty ;
+    rdfs:label "dimension version binding"@en ;
+    rdfs:comment "Fact policy for binding current or as-of dimension versions."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:bridgeGrain a owl:AnnotationProperty ;
+    rdfs:label "bridge grain"@en ;
+    rdfs:comment "Required statement of what one bridge row represents."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:bridgeEndpoint a owl:AnnotationProperty ;
+    rdfs:label "bridge endpoint"@en ;
+    rdfs:comment "Exactly two explicit Gold table resources joined by the bridge."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range owl:Class .
+
+kairos-ext:bridgeEndpointBinding a owl:AnnotationProperty ;
+    rdfs:label "bridge endpoint binding"@en ;
+    rdfs:comment "Required endpoint-resource to emitted Silver key-column binding."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:bridgeCardinality a owl:AnnotationProperty ;
+    rdfs:label "bridge cardinality"@en ;
+    rdfs:comment "Required endpoint cardinality: one-to-many or many-to-many."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:bridgeWeightColumn a owl:AnnotationProperty ;
+    rdfs:label "bridge weight column"@en ;
+    rdfs:comment "Optional emitted Silver column containing allocation weight."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+kairos-ext:bridgeAllocationSemantics a owl:AnnotationProperty ;
+    rdfs:label "bridge allocation semantics"@en ;
+    rdfs:comment "Required explicit allocation behavior, including an approved no-allocation policy."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
+
+# First-class measures
+
+kairos-ext:measure a owl:AnnotationProperty ;
+    rdfs:label "measure"@en ;
+    rdfs:comment "Links a Gold product ontology to a first-class governed measure."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range kairos-ext:Measure .
+
+kairos-ext:measureId a owl:AnnotationProperty ;
+    rdfs:label "measure identifier"@en ;
+    rdfs:comment "Stable identifier for the governed measure."@en ;
+    rdfs:domain kairos-ext:Measure ;
+    rdfs:range xsd:string .
+
+kairos-ext:measureDefinition a owl:AnnotationProperty ;
+    rdfs:label "measure business definition"@en ;
+    rdfs:comment "Reviewed business definition independent of DAX syntax."@en ;
+    rdfs:domain kairos-ext:Measure ;
+    rdfs:range xsd:string .
+
+kairos-ext:measureColumnDependency a owl:AnnotationProperty ;
+    rdfs:label "measure column dependency"@en ;
+    rdfs:comment "Required emitted Silver or Gold column used by the measure; may repeat."@en ;
+    rdfs:domain kairos-ext:Measure .
+
+kairos-ext:measureDependency a owl:AnnotationProperty ;
+    rdfs:label "measure dependency"@en ;
+    rdfs:comment "Another governed measure required by this measure; cycles are invalid."@en ;
+    rdfs:domain kairos-ext:Measure ;
+    rdfs:range kairos-ext:Measure .
+
+kairos-ext:measureLifecycleState a owl:AnnotationProperty ;
+    rdfs:label "measure lifecycle state"@en ;
+    rdfs:comment "Governance state: intent, provisional, validated, or approved."@en ;
+    rdfs:domain kairos-ext:Measure ;
+    rdfs:range xsd:string .
+
+kairos-ext:measureDataType a owl:AnnotationProperty ;
+    rdfs:label "measure data type"@en ;
+    rdfs:comment "Semantic result type required from provisional state onward."@en ;
+    rdfs:domain kairos-ext:Measure ;
+    rdfs:range xsd:string .
+
+kairos-ext:measureFolder a owl:AnnotationProperty ;
+    rdfs:label "measure folder"@en ;
+    rdfs:comment "Semantic-model display folder."@en ;
+    rdfs:domain kairos-ext:Measure ;
+    rdfs:range xsd:string .
+
+kairos-ext:measureOwnerRole a owl:AnnotationProperty ;
+    rdfs:label "measure owner role"@en ;
+    rdfs:comment "Abstract role accountable for measure approval."@en ;
+    rdfs:domain kairos-ext:Measure ;
+    rdfs:range xsd:string .
+
+kairos-ext:measureValidationTest a owl:AnnotationProperty ;
+    rdfs:label "measure validation test"@en ;
+    rdfs:comment "Executable validation test reference; may repeat."@en ;
+    rdfs:domain kairos-ext:Measure .
+
+kairos-ext:measureValidationEvidence a owl:AnnotationProperty ;
+    rdfs:label "measure validation evidence"@en ;
+    rdfs:comment "Imported validation evidence required for validated and approved measures."@en ;
+    rdfs:domain kairos-ext:Measure .
+
+# Calendar and security
+
+kairos-ext:calendarProfile a owl:AnnotationProperty ;
+    rdfs:label "calendar profile"@en ;
+    rdfs:comment "Links a Gold product to its approved calendar contract."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range kairos-ext:CalendarProfile .
+
+kairos-ext:calendarStartDate a owl:AnnotationProperty ;
+    rdfs:label "calendar start date"@en ;
+    rdfs:comment "Approved inclusive calendar start date."@en ;
+    rdfs:domain kairos-ext:CalendarProfile ;
+    rdfs:range xsd:date .
+
+kairos-ext:calendarEndDate a owl:AnnotationProperty ;
+    rdfs:label "calendar end date"@en ;
+    rdfs:comment "Approved inclusive calendar end date."@en ;
+    rdfs:domain kairos-ext:CalendarProfile ;
+    rdfs:range xsd:date .
+
+kairos-ext:fiscalYearStartMonth a owl:AnnotationProperty ;
+    rdfs:label "fiscal year start month"@en ;
+    rdfs:comment "Month number 1 through 12 that starts the fiscal year."@en ;
+    rdfs:domain kairos-ext:CalendarProfile ;
+    rdfs:range xsd:integer .
+
+kairos-ext:weekPattern a owl:AnnotationProperty ;
+    rdfs:label "week pattern"@en ;
+    rdfs:comment "Approved week numbering and week-start convention."@en ;
+    rdfs:domain kairos-ext:CalendarProfile ;
+    rdfs:range xsd:string .
+
+kairos-ext:calendarLocale a owl:AnnotationProperty ;
+    rdfs:label "calendar locale"@en ;
+    rdfs:comment "Locale for calendar names and week conventions."@en ;
+    rdfs:domain kairos-ext:CalendarProfile ;
+    rdfs:range xsd:string .
+
+kairos-ext:holidaySource a owl:AnnotationProperty ;
+    rdfs:label "holiday source"@en ;
+    rdfs:comment "Governed holiday source or explicit no-holiday policy."@en ;
+    rdfs:domain kairos-ext:CalendarProfile .
+
+kairos-ext:calendarTimeZone a owl:AnnotationProperty ;
+    rdfs:label "calendar time zone"@en ;
+    rdfs:comment "IANA time zone used for date boundaries."@en ;
+    rdfs:domain kairos-ext:CalendarProfile ;
+    rdfs:range xsd:string .
+
+kairos-ext:periodClosurePolicy a owl:AnnotationProperty ;
+    rdfs:label "period closure policy"@en ;
+    rdfs:comment "Governed handling of open and closed reporting periods."@en ;
+    rdfs:domain kairos-ext:CalendarProfile ;
+    rdfs:range xsd:string .
+
+kairos-ext:rolePlayingDate a owl:AnnotationProperty ;
+    rdfs:label "role-playing date"@en ;
+    rdfs:comment "Explicit role name and source date-column binding; may repeat."@en ;
+    rdfs:domain kairos-ext:CalendarProfile ;
+    rdfs:range xsd:string .
+
+kairos-ext:calendarApprovalStatus a owl:AnnotationProperty ;
+    rdfs:label "calendar approval status"@en ;
+    rdfs:comment "Explicit calendar governance state: draft or approved."@en ;
+    rdfs:domain kairos-ext:CalendarProfile ;
+    rdfs:range xsd:string .
+
+kairos-ext:securityPolicy a owl:AnnotationProperty ;
+    rdfs:label "security policy"@en ;
+    rdfs:comment "Links a Gold product to a complete fail-closed security contract."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range kairos-ext:SecurityPolicy .
+
+kairos-ext:entitlementSource a owl:AnnotationProperty ;
+    rdfs:label "entitlement source"@en ;
+    rdfs:comment "Governed logical source of entitlement rows; never a secret or environment identity."@en ;
+    rdfs:domain kairos-ext:SecurityPolicy .
+
+kairos-ext:identityMapping a owl:AnnotationProperty ;
+    rdfs:label "identity mapping"@en ;
+    rdfs:comment "Projection-time mapping from model identity to entitlement identity."@en ;
+    rdfs:domain kairos-ext:SecurityPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:rolePolicy a owl:AnnotationProperty ;
+    rdfs:label "role policy"@en ;
+    rdfs:comment "RLS or OLS role behavior."@en ;
+    rdfs:domain kairos-ext:SecurityPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:filterDirection a owl:AnnotationProperty ;
+    rdfs:label "filter direction"@en ;
+    rdfs:comment "Explicit relationship filter propagation for security."@en ;
+    rdfs:domain kairos-ext:SecurityPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:securityBinding a owl:AnnotationProperty ;
+    rdfs:label "security binding"@en ;
+    rdfs:comment "Table, column and role binding required by the policy; may repeat."@en ;
+    rdfs:domain kairos-ext:SecurityPolicy ;
+    rdfs:range xsd:string .
+
+kairos-ext:positiveSecurityTest a owl:AnnotationProperty ;
+    rdfs:label "positive security test"@en ;
+    rdfs:comment "Executable allowed-access test reference."@en ;
+    rdfs:domain kairos-ext:SecurityPolicy .
+
+kairos-ext:negativeSecurityTest a owl:AnnotationProperty ;
+    rdfs:label "negative security test"@en ;
+    rdfs:comment "Executable denied-access test reference."@en ;
+    rdfs:domain kairos-ext:SecurityPolicy .
+
+kairos-ext:securityTestEvidence a owl:AnnotationProperty ;
+    rdfs:label "security test evidence"@en ;
+    rdfs:comment "Imported positive and negative access-test evidence."@en ;
+    rdfs:domain kairos-ext:SecurityPolicy .
+
+kairos-ext:failClosed a owl:AnnotationProperty ;
+    rdfs:label "fail closed"@en ;
+    rdfs:comment "Must be true for generated RLS or OLS output."@en ;
+    rdfs:domain kairos-ext:SecurityPolicy ;
+    rdfs:range xsd:boolean .
+
+# Reusable data-quality policy
+
+kairos-ext:dataQualityRule a owl:AnnotationProperty ;
+    rdfs:label "data quality rule"@en ;
+    rdfs:comment "Attaches a reusable quality rule to its governed resource."@en ;
+    rdfs:range kairos-ext:DataQualityRule .
+
+kairos-ext:dqRuleId a owl:AnnotationProperty ;
+    rdfs:label "data quality rule identifier"@en ;
+    rdfs:comment "Stable rule identifier."@en ;
+    rdfs:domain kairos-ext:DataQualityRule ;
+    rdfs:range xsd:string .
+
+kairos-ext:dqRuleVersion a owl:AnnotationProperty ;
+    rdfs:label "data quality rule version"@en ;
+    rdfs:comment "Version of the rule contract."@en ;
+    rdfs:domain kairos-ext:DataQualityRule ;
+    rdfs:range xsd:string .
+
+kairos-ext:dqCategory a owl:AnnotationProperty ;
+    rdfs:label "data quality category"@en ;
+    rdfs:comment "Category: contract, source, business, or operational."@en ;
+    rdfs:domain kairos-ext:DataQualityRule ;
+    rdfs:range xsd:string .
+
+kairos-ext:dqScope a owl:AnnotationProperty ;
+    rdfs:label "data quality scope"@en ;
+    rdfs:comment "Entity, property, relationship or dataset scope evaluated by the rule."@en ;
+    rdfs:domain kairos-ext:DataQualityRule ;
+    rdfs:range xsd:string .
+
+kairos-ext:dqCheckType a owl:AnnotationProperty ;
+    rdfs:label "data quality check type"@en ;
+    rdfs:comment "Supported check: contract-shape, freshness, volume, duplicate-rate, range, distribution, reconciliation, referential-coverage, or cross-field."@en ;
+    rdfs:domain kairos-ext:DataQualityRule ;
+    rdfs:range xsd:string .
+
+kairos-ext:dqCheckExpression a owl:AnnotationProperty ;
+    rdfs:label "data quality declarative check expression"@en ;
+    rdfs:comment "Toolkit-owned key=value parameters for the named check kind. Raw SQL, comments, calls, subqueries and statement fragments are forbidden."@en ;
+    rdfs:domain kairos-ext:DataQualityRule ;
+    rdfs:range xsd:string .
+
+kairos-ext:dqSeverity a owl:AnnotationProperty ;
+    rdfs:label "data quality severity"@en ;
+    rdfs:comment "Severity assigned to a failed rule."@en ;
+    rdfs:domain kairos-ext:DataQualityRule ;
+    rdfs:range xsd:string .
+
+kairos-ext:dqTolerance a owl:AnnotationProperty ;
+    rdfs:label "data quality tolerance"@en ;
+    rdfs:comment "Explicit numeric or expression threshold for acceptance."@en ;
+    rdfs:domain kairos-ext:DataQualityRule ;
+    rdfs:range xsd:string .
+
+kairos-ext:dqAction a owl:AnnotationProperty ;
+    rdfs:label "data quality action"@en ;
+    rdfs:comment "Action when tolerance is exceeded: warn, quarantine, or block."@en ;
+    rdfs:domain kairos-ext:DataQualityRule ;
+    rdfs:range xsd:string .
+
+kairos-ext:dqOwnerRole a owl:AnnotationProperty ;
+    rdfs:label "data quality owner role"@en ;
+    rdfs:comment "Abstract role accountable for the rule."@en ;
+    rdfs:domain kairos-ext:DataQualityRule ;
+    rdfs:range xsd:string .
+
+kairos-ext:dqEvidence a owl:AnnotationProperty ;
+    rdfs:label "data quality evidence"@en ;
+    rdfs:comment "Governed evidence supporting the threshold or rule."@en ;
+    rdfs:domain kairos-ext:DataQualityRule .
+
+kairos-ext:dqTestRef a owl:AnnotationProperty ;
+    rdfs:label "data quality executable test reference"@en ;
+    rdfs:comment "Toolkit-owned namespaced executable test or approved package reference."@en ;
+    rdfs:domain kairos-ext:DataQualityRule .
+
+# Adapter capability and approved deviation metadata
+
+kairos-ext:adapterSupport a owl:AnnotationProperty ;
+    rdfs:label "adapter support"@en ;
+    rdfs:comment "Links governed policy to a versioned required-adapter capability statement."@en ;
+    rdfs:range kairos-ext:AdapterSupport .
+
+kairos-ext:adapterName a owl:AnnotationProperty ;
+    rdfs:label "adapter name"@en ;
+    rdfs:comment "Explicit adapter identifier; unknown adapters fail."@en ;
+    rdfs:domain kairos-ext:AdapterSupport ;
+    rdfs:range xsd:string .
+
+kairos-ext:adapterVersion a owl:AnnotationProperty ;
+    rdfs:label "adapter version"@en ;
+    rdfs:comment "Version or bounded version range covered by this statement."@en ;
+    rdfs:domain kairos-ext:AdapterSupport ;
+    rdfs:range xsd:string .
+
+kairos-ext:evidenceScope a owl:AnnotationProperty ;
+    rdfs:label "adapter evidence scope"@en ;
+    rdfs:comment "Exact project, prep, silver, quality, gold, resource, or wildcard scope compiled by this evidence."@en ;
+    rdfs:domain kairos-ext:AdapterSupport ;
+    rdfs:range xsd:string .
+
+kairos-ext:capability a owl:AnnotationProperty ;
+    rdfs:label "capability"@en ;
+    rdfs:comment "Named semantic or physical capability; may repeat."@en ;
+    rdfs:domain kairos-ext:AdapterSupport ;
+    rdfs:range xsd:string .
+
+kairos-ext:supportStatus a owl:AnnotationProperty ;
+    rdfs:label "support status"@en ;
+    rdfs:comment "Status: supported, unsupported, partial, or environment-blocked."@en ;
+    rdfs:domain kairos-ext:AdapterSupport ;
+    rdfs:range xsd:string .
+
+kairos-ext:compileEvidence a owl:AnnotationProperty ;
+    rdfs:label "compile evidence"@en ;
+    rdfs:comment "Immutable evidence reference for successful adapter compilation."@en ;
+    rdfs:domain kairos-ext:AdapterSupport .
+
+kairos-ext:deviation a owl:AnnotationProperty ;
+    rdfs:label "deviation"@en ;
+    rdfs:comment "Links a governed resource to an approved scope-limited deviation."@en ;
+    rdfs:range kairos-ext:Deviation .
+
+kairos-ext:policyReference a owl:AnnotationProperty ;
+    rdfs:label "policy reference"@en ;
+    rdfs:comment "Versioned policy requirement being deviated from."@en ;
+    rdfs:domain kairos-ext:Deviation ;
+    rdfs:range xsd:string .
+
+kairos-ext:deviationScope a owl:AnnotationProperty ;
+    rdfs:label "deviation scope"@en ;
+    rdfs:comment "Exact bounded resource and adapter scope of the deviation."@en ;
+    rdfs:domain kairos-ext:Deviation ;
+    rdfs:range xsd:string .
+
+kairos-ext:deviationRationale a owl:AnnotationProperty ;
+    rdfs:label "deviation rationale"@en ;
+    rdfs:comment "Reviewed reason for accepting the deviation."@en ;
+    rdfs:domain kairos-ext:Deviation ;
+    rdfs:range xsd:string .
+
+kairos-ext:deviationOwnerRole a owl:AnnotationProperty ;
+    rdfs:label "deviation owner role"@en ;
+    rdfs:comment "Abstract role accountable for review."@en ;
+    rdfs:domain kairos-ext:Deviation ;
+    rdfs:range xsd:string .
+
+kairos-ext:approvalStatus a owl:AnnotationProperty ;
+    rdfs:label "approval status"@en ;
+    rdfs:comment "Governance approval state."@en ;
+    rdfs:domain kairos-ext:Deviation ;
+    rdfs:range xsd:string .
+
+kairos-ext:reviewDate a owl:AnnotationProperty ;
+    rdfs:label "review date"@en ;
+    rdfs:comment "Required next review date."@en ;
+    rdfs:domain kairos-ext:Deviation ;
+    rdfs:range xsd:date .
+
+kairos-ext:expiryDate a owl:AnnotationProperty ;
+    rdfs:label "expiry date"@en ;
+    rdfs:comment "Optional date after which approval is invalid."@en ;
+    rdfs:domain kairos-ext:Deviation ;
+    rdfs:range xsd:date .
+
+kairos-ext:deviationEvidence a owl:AnnotationProperty ;
+    rdfs:label "deviation evidence"@en ;
+    rdfs:comment "Immutable review or verification evidence supporting this bounded deviation."@en ;
+    rdfs:domain kairos-ext:Deviation .

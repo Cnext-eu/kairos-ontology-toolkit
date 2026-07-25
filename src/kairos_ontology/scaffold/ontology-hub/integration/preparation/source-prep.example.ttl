@@ -1,0 +1,58 @@
+@prefix prep: <https://example.com/preparation/orders#> .
+@prefix bronze: <https://example.com/bronze/orders#> .
+@prefix kairos-prep: <https://kairos.cnext.eu/preparation#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://example.com/preparation/orders> a owl:Ontology ;
+    rdfs:label "Orders source preparation policy"@en ;
+    rdfs:comment "Complete incremental source example with canonical CDC and source-scoped record identity."@en ;
+    owl:imports <https://kairos.cnext.eu/preparation>,
+                <https://example.com/bronze/orders> ;
+    owl:versionInfo "1.0.0" .
+
+prep:ordersPolicy a kairos-prep:PreparationPolicy ;
+    kairos-prep:sourceTable bronze:orders ;
+    kairos-prep:prepMode "normalize" ;
+    kairos-prep:schemaChangePolicy "fail" ;
+    kairos-prep:recordKeyPolicy prep:ordersRecordKey ;
+    kairos-prep:cdcMapping prep:ordersCdc .
+
+prep:ordersCdc a kairos-prep:CdcMapping ;
+    kairos-prep:rawOperationColumn bronze:orders_operation ;
+    kairos-prep:rawUpdateTimestampColumn bronze:orders_updatedAt ;
+    kairos-prep:rawEffectiveTimestampColumn bronze:orders_effectiveAt ;
+    kairos-prep:rawIngestionTimestampColumn bronze:orders_ingestedAt ;
+    kairos-prep:rawSequenceColumn bronze:orders_sequence ;
+    kairos-prep:operationCodeMap "I=insert, U=update, D=delete" ;
+    kairos-prep:normalizedOperationField prep:cdcOperation ;
+    kairos-prep:normalizedUpdateTimestampField prep:sourceUpdatedAt ;
+    kairos-prep:normalizedEffectiveTimestampField prep:sourceEffectiveAt ;
+    kairos-prep:normalizedIngestionTimestampField prep:ingestedAt ;
+    kairos-prep:normalizedSequenceField prep:cdcSequence .
+
+prep:ordersRecordKey a kairos-prep:RecordKeyPolicy ;
+    kairos-prep:sourceScope "orders-api" ;
+    kairos-prep:tableScope "orders" ;
+    kairos-prep:recordKeyComponent bronze:orders_orderId ;
+    kairos-prep:recordKeyOutput prep:sourceRecordKey .
+
+prep:sourceRecordKey a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_source_record_key" ;
+    kairos-prep:targetType "string" .
+
+prep:cdcOperation a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_cdc_operation" ;
+    kairos-prep:targetType "string" .
+prep:sourceUpdatedAt a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_source_updated_at" ;
+    kairos-prep:targetType "timestamp" .
+prep:sourceEffectiveAt a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_source_effective_at" ;
+    kairos-prep:targetType "timestamp" .
+prep:ingestedAt a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_ingested_at" ;
+    kairos-prep:targetType "timestamp" .
+prep:cdcSequence a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_cdc_sequence" ;
+    kairos-prep:targetType "string" .

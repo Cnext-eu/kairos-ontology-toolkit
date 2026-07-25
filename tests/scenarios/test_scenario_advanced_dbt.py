@@ -98,9 +98,23 @@ def _create_hub(
     mapping = Graph()
     virtual_table = URIRef(str(VIRTUAL))
     mapping.add((virtual_table, SKOS.exactMatch, DOMAIN.Shipment))
-    mapping.add((virtual_table, KMAP.mappingType, Literal("direct")))
-    mapping.add((URIRef(f"{VIRTUAL}/shipment_id"), SKOS.exactMatch, DOMAIN.shipmentId))
-    mapping.add((URIRef(f"{VIRTUAL}/route_code"), SKOS.exactMatch, DOMAIN.routeCode))
+    table_mapping = URIRef(f"{VIRTUAL}/mapping/table")
+    mapping.add((table_mapping, RDF.type, KMAP.TableMapping))
+    mapping.add((table_mapping, KMAP.sourceTable, virtual_table))
+    mapping.add((table_mapping, KMAP.targetClass, DOMAIN.Shipment))
+    mapping.add((table_mapping, KMAP.mappingType, Literal("direct")))
+    mapping.add((table_mapping, KMAP.matchType, Literal("exactMatch")))
+    for name, target in (
+        ("shipment_id", DOMAIN.shipmentId),
+        ("route_code", DOMAIN.routeCode),
+    ):
+        source_column = URIRef(f"{VIRTUAL}/{name}")
+        mapping_resource = URIRef(f"{VIRTUAL}/mapping/{name}")
+        mapping.add((source_column, SKOS.exactMatch, target))
+        mapping.add((mapping_resource, RDF.type, KMAP.ColumnMapping))
+        mapping.add((mapping_resource, KMAP.sourceColumn, source_column))
+        mapping.add((mapping_resource, KMAP.targetProperty, target))
+        mapping.add((mapping_resource, KMAP.matchType, Literal("exactMatch")))
     _write_graph(
         mapping,
         hub / "model" / "mappings" / "custom-transformations" / "shipment.ttl",
@@ -148,7 +162,7 @@ having count(*) > 1
                         "virtual_source_iri": str(VIRTUAL),
                         "grain": "one row per shipment",
                         "supported_adapters": supported_adapters or ["fabric", "databricks"],
-                        "natural_key": ["shipment_id"],
+                        "grain_key": ["shipment_id"],
                         "required_packages": [],
                         "required_macros": [],
                         "replaces_sources": [
@@ -370,7 +384,7 @@ def test_fabric_and_databricks_share_the_same_semantic_contract(tmp_path: Path) 
                         "meta": {
                             key: value
                             for key, value in column.get("meta", {}).items()
-                            if key != "data_type"
+                            if key not in {"data_type", "physical_type"}
                         },
                     }
                     for column in model["columns"]

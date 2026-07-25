@@ -88,25 +88,11 @@ class TestDddProjectionOutput:
 class TestDddIsolation:
     """The DDD overlay must not alter silver or gold projection output."""
 
-    def test_silver_output_unaffected_by_ddd_overlay(self, client_ontology):
-        # Silver extension discovery globs *-silver-ext.ttl and must ignore the
-        # DDD overlay entirely. Re-projecting silver yields identical artifacts.
-        from kairos_ontology.core.projections.medallion_silver_projector import (
-            generate_silver_artifacts,
-        )
-        from .conftest import SHAPES_DIR
-
-        graph, namespace, classes = client_ontology
-        silver_ext = EXTENSIONS_DIR / "client-silver-ext.ttl"
-        artifacts = generate_silver_artifacts(
-            classes=classes,
-            graph=graph,
-            namespace=namespace,
-            shapes_dir=SHAPES_DIR,
-            ontology_name="client",
-            projection_ext_path=silver_ext if silver_ext.exists() else None,
-        )
+    def test_silver_output_unaffected_by_ddd_overlay(self, client_dbt_artifacts):
+        artifacts = client_dbt_artifacts
         # No DDD predicates should appear in generated silver DDL/ERD.
-        blob = "\n".join(artifacts.values())
+        blob = "\n".join(
+            value for value in artifacts.values() if isinstance(value, str)
+        )
         assert "kairos-ddd" not in blob
         assert "BoundedContext" not in blob

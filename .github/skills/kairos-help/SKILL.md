@@ -36,9 +36,9 @@ ontology or its annotations — never in the generated files. This is the
 |---|---|---|
 | A field must be required / NOT NULL | Add a `not_null` dbt test manually | Add `sh:minCount 1` in the SHACL shape → dbt test is generated automatically |
 | A column needs a specific SQL type | Edit the generated DDL | Add `kairos-ext:sqlType "DECIMAL(18,4)"` on the property in an extension file |
-| A table should be a fact table | Rename the generated model | Add `kairos-ext:goldTableType "fact"` on the class in the gold extension |
-| A measure needs YTD calculation | Write DAX in the TMDL output | Add `kairos-ext:generateTimeIntelligence true` on the ontology |
-| A field should be hidden from some users | Edit the RLS role manually | Add `kairos-ext:olsRestricted true` on the property |
+| A table should be a fact table | Rename the generated model | Author its explicit role, grain/type, source version, version binding, and runtime policy |
+| A measure needs YTD calculation | Write DAX in generated TMDL | Link an approved bounded calendar profile with role-playing date bindings |
+| A field should be hidden from some users | Edit a generated role | Add a complete fail-closed `SecurityPolicy` with an explicit OLS binding and tests |
 
 ### 1.3  Separation of Concerns
 
@@ -61,8 +61,10 @@ For the medallion gold layer, follow this rule:
 - **Semantic model = business metrics** — DAX measures, relationships, hierarchies, RLS/OLS, perspectives, calculation groups, business-friendly names
 - **Reports = visuals only** — consume semantic model measures; no business logic in reports
 
-The toolkit enforces this: properties with `kairos-ext:measureExpression` are
-**skipped** in dbt SQL and rendered **only** in TMDL/DAX.
+The toolkit enforces this with first-class `kairos-ext:Measure` resources.
+Measures never replace or remove physical input columns. Intent measures are
+documentation-only; provisional and later measures emit DAX only after every declared
+column/measure dependency resolves.
 
 ## 2  Fresh Hub Lifecycle — From Empty Repo to First Projection
 
@@ -207,8 +209,8 @@ The toolkit supports the following projection targets:
 
 | Target | Command flag | What it generates | When to use |
 |---|---|---|---|
-| `dbt` | `--target dbt --platform fabric\|databricks` | Adapter-specific dbt Core project, including validated contracted intermediates | Data warehouse / lakehouse pipeline |
-| `silver` | `--target silver` | Spark SQL DDL, Mermaid ERD, ALTER TABLE FK scripts for MS Fabric Warehouse | Silver-layer physical schema |
+| `dbt` | `--target dbt --platform fabric\|databricks` | dbt SQL/YAML plus adapter DDL, constraint metadata, ERD, and parity manifest from one `SilverModelSpec` | Data warehouse / lakehouse pipeline |
+| `silver` | `--target silver --platform fabric\|databricks` | Explicit evidence-bound facade over the same Silver pipeline; fails without source/prep/mapping/policy evidence | Silver physical/parity review |
 | `powerbi` | `--target powerbi` | Power BI TMDL semantic model (tables, measures, relationships, RLS, perspectives) | BI semantic layer |
 | `neo4j` | `--target neo4j` | Cypher constraints, indexes, and import scripts | Graph database |
 | `azure-search` | `--target azure-search` | Azure AI Search index definitions (JSON) | Search / RAG scenarios |
@@ -217,7 +219,7 @@ The toolkit supports the following projection targets:
 | `report` | `--target report` | HTML mapping report with data flow diagrams and coverage dashboards | Documentation / governance |
 | `ddd` | `--target ddd` | Mermaid context maps + aggregate overviews + Markdown architecture report from `*-ddd-ext.ttl` overlays → `output/architecture/ddd/` | DDD architecture documentation |
 | `mdm-profile` | `--target mdm-profile` | Immutable, content-addressed MDM policy profile (JSON + review MD) from `*-mdm-ext.ttl` → `output/mdm/` | Master Data Management (opt-in; consumed by `kairos-mdm-runtime`) |
-| `all` | `--target all` | All of the above | Full regeneration |
+| `all` | `--target all` | Standard targets; dbt already includes the Silver physical/parity bundle | Full regeneration |
 
 Structured semantic inspection commands use the same recursive closure and semantic index
 as validation and projection:
@@ -263,6 +265,14 @@ kairos-ontology explain-term https://example.org/ont/client#Client \
 > `kairos-ext:silverIncludeImports` / `kairos-ext:goldIncludeImports` on the
 > ontology to explicitly claim imported classes for projection.  See the
 > silver and gold medallion skills for details.
+
+> **Runtime semantics (DD-109):** Fresh hubs get no generic SCD fallback. SCD1/SCD2
+> classes link a complete incremental policy and source prep supplies canonical CDC
+> operation, separate source-update/effective/ingestion timestamps, and total order.
+> SCD2 emits separate business-valid and system intervals. Optional canonical hashes
+> use contract v1 SHA-256 typed length-delimited bytes. Every FK declares
+> current/as-of/none, cardinality, all failure actions, and change-detection
+> participation. Missing or adapter-unsupported behavior blocks before render.
 >
 > **Managed reference modules (DD-104):** Accelerator `data-domains.yaml` may define
 > version-pinned module profiles with roots, descendant policy, an explicit projection
@@ -379,15 +389,18 @@ Default paths:
 
 | Annotation | Level | Effect |
 |---|---|---|
-| `goldTableType` | Class | `"fact"`, `"dimension"`, `"bridge"` — controls gold table naming and SCD behaviour |
-| `goldSchema` | Class | Target schema for the gold table |
-| `measureExpression` | Property | DAX expression → rendered in TMDL only, skipped in dbt |
+| `goldProductProfile` | Ontology | Required registered Gold product profile; v1 supports only `dimensional-powerbi-v1` |
+| `goldTableType` | Class | Required explicit `"fact"`, `"dimension"`, or `"bridge"` role; never inferred |
+| `goldSourceModel` / `goldSourceVersion` | Class | Exact actual Silver registry binding |
+| `goldSchema` | Ontology | Target schema for the Gold product |
+| `measureExpression` | `Measure` resource | Governed DAX expression; never removes a physical column |
 | `sqlType` | Property | Override SQL column type |
-| `generateDateDimension` | Ontology | `true` → auto-generates `dim_date` with Calendar hierarchy |
-| `generateTimeIntelligence` | Ontology | `true` → generates YTD/QTD/MTD/PY/YoY% calculation group |
-| `perspective` | Class | Name of the perspective this table belongs to |
-| `incrementalColumn` | Class | Column for incremental loads (dbt `is_incremental()` filter) |
-| `olsRestricted` | Property | `true` → column is restricted via Object-Level Security |
+| `calendarProfile` | Ontology | Links an explicit approved bounded calendar; no calendar is invented |
+| `securityPolicy` | Ontology | Links a complete fail-closed RLS/OLS entitlement contract |
+| `perspective` | Class | Navigation-only grouping; never a security boundary |
+| `incrementalPolicy` | Class | Complete DD-109 merge/CDC/time/order/delete/replay/backfill contract |
+| `hashPolicy` | Class | Canonical hash v1 inputs, SHA-256, and explicit null representation |
+| `silverForeignKeyTemporalMode` | Object property | Explicit `current`, `as-of`, or `none` lookup |
 
 ## 7  Common Workflows
 
@@ -447,8 +460,8 @@ Default paths:
 |---|---|---|
 | Validation fails with "No owl:Ontology" | Missing ontology header | Add `<uri> a owl:Ontology ; rdfs:label "..." ; owl:versionInfo "1.0" .` |
 | dbt model missing a column | Property lacks `rdfs:domain` | Add `rdfs:domain` pointing to the class |
-| Gold table named wrong | Missing `kairos-ext:goldTableType` | Add annotation in extension file |
-| TMDL measure not generated | Missing `kairos-ext:measureExpression` | Add DAX expression annotation |
+| Gold projection blocks | Missing/unknown profile or stale Silver binding | Select `dimensional-powerbi-v1`; update `goldSourceModel` and `goldSourceVersion` from passing Silver parity |
+| TMDL measure not generated | Measure is `intent` or has unresolved dependencies | Promote through governance only after expression, dependencies, type/format/folder, tests, evidence, and owner are complete |
 | SHACL validation passes but dbt test fails | Shape constraint mismatch | Align SHACL `sh:minCount` with expected NOT NULL behaviour |
 
 ## 10  Keeping This Skill Up to Date

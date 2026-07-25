@@ -1,0 +1,27 @@
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix ref: <https://refmodel.example/ontology/party#> .
+
+<https://acme.example/ontology/logistics>
+    a owl:Ontology ;
+    owl:versionInfo "1.0.0" ;
+    kairos-ext:goldSchema "gold" ;
+    kairos-ext:goldProductProfile "dimensional-powerbi-v1" .
+
+ref:Carrier
+    kairos-ext:goldInclude true ;
+    kairos-ext:goldTableType "dimension" ;
+    kairos-ext:goldTableName "dim_carrier" ;
+    kairos-ext:goldSourceModel "carrier" ;
+    kairos-ext:goldSourceVersion "1.0.0" ;
+    kairos-ext:dimensionExposure "current-only" ;
+    kairos-ext:dimensionVersionBinding "current" .
+
+ref:TradeParty
+    kairos-ext:goldInclude true ;
+    kairos-ext:goldTableType "dimension" ;
+    kairos-ext:goldTableName "dim_trade_party" ;
+    kairos-ext:goldSourceModel "trade_party" ;
+    kairos-ext:goldSourceVersion "1.0.0" ;
+    kairos-ext:dimensionExposure "current-only" ;
+    kairos-ext:dimensionVersionBinding "current" .

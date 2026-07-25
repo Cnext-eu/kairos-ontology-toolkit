@@ -84,11 +84,9 @@ class ForeignKeyDescriptor:
     max_cardinality_classes: frozenset[URIRef]
     silver_foreign_key: bool
     silver_column_name: Optional[str]
-    gold_column_name: Optional[str]
     redirected: bool
     reverse: bool
     junction_table_name: Optional[str]
-    degenerate_dimension: bool
     nullable: Optional[bool]
     conditional_on_type: str
 
@@ -128,15 +126,11 @@ class ForeignKeyDescriptor:
         explicit_fact: bool = False,
     ) -> bool:
         """Return whether this relationship qualifies for Gold projection."""
-        return (
-            explicit_fact
-            or self.gold_column_name is not None
-            or self.is_silver_fk
-        )
+        return explicit_fact or self.is_silver_fk
 
     def physical_column_name(self, target_key_stem: str, *, layer: str) -> str:
         """Resolve the FK's physical source-column name for a projection layer."""
-        override = self.gold_column_name if layer == "gold" else self.silver_column_name
+        override = None if layer == "gold" else self.silver_column_name
         return portable_sql_identifier(
             override or f"{target_key_stem}_sk",
             annotation=f"{layer} foreign-key column",
@@ -150,6 +144,25 @@ class ForeignKeyClassification:
     descriptors: tuple[ForeignKeyDescriptor, ...]
     diagnostics: tuple[ForeignKeyDiagnostic, ...]
     outgoing_relationship_sources: tuple[URIRef, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ForeignKeyAuthoringFact:
+    """Graph-free authored observations used by FK policy normalization."""
+
+    property_uri: str
+    domain_value: str | None
+    domain_is_uri: bool
+    range_value: str | None
+    range_is_uri: bool
+    foreign_key_on: str | None
+    silver_foreign_key: bool
+    silver_column_name: Optional[str]
+    is_functional: bool
+    max_cardinality_classes: frozenset[str]
+    junction_table_name: Optional[str]
+    nullable: Optional[bool]
+    conditional_on_type: str
 
 
 def _max_cardinality_classes(graph: Graph, prop: URIRef) -> frozenset[URIRef]:
@@ -185,8 +198,54 @@ def _nullable_annotation(graph: Graph, prop: URIRef) -> Optional[bool]:
     return str(value).lower() not in ("false", "0")
 
 
-def classify_foreign_keys(graph: Graph) -> ForeignKeyClassification:
-    """Normalize authored OWL and Silver FK signals into one projection contract.
+def extract_foreign_key_facts(graph: Graph) -> tuple[ForeignKeyAuthoringFact, ...]:
+    """Consume RDF and return domain-specific FK authoring observations."""
+    return tuple(
+        ForeignKeyAuthoringFact(
+            property_uri=str(prop),
+            domain_value=(
+                str(domain) if (domain := graph.value(prop, RDFS.domain)) is not None
+                else None
+            ),
+            domain_is_uri=isinstance(domain, URIRef),
+            range_value=(
+                str(range_value)
+                if (range_value := graph.value(prop, RDFS.range)) is not None
+                else None
+            ),
+            range_is_uri=isinstance(range_value, URIRef),
+            foreign_key_on=(
+                str(fk_on)
+                if (fk_on := graph.value(prop, KAIROS_EXT.silverForeignKeyOn))
+                is not None
+                else None
+            ),
+            silver_foreign_key=bool_val(
+                graph, prop, KAIROS_EXT.silverForeignKey, False,
+            ),
+            silver_column_name=(
+                str_val(graph, prop, KAIROS_EXT.silverColumnName) or None
+            ),
+            is_functional=(prop, RDF.type, OWL.FunctionalProperty) in graph,
+            max_cardinality_classes=frozenset(
+                str(owner) for owner in _max_cardinality_classes(graph, prop)
+            ),
+            junction_table_name=(
+                str_val(graph, prop, KAIROS_EXT.junctionTableName) or None
+            ),
+            nullable=_nullable_annotation(graph, prop),
+            conditional_on_type=str_val(
+                graph, prop, KAIROS_EXT.conditionalOnType,
+            ),
+        )
+        for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str)
+    )
+
+
+def normalize_foreign_key_facts(
+    facts: tuple[ForeignKeyAuthoringFact, ...],
+) -> ForeignKeyClassification:
+    """Classify bound FK observations without reading RDF.
 
     Invalid ``silverForeignKey``/``silverForeignKeyOn`` annotations are retained
     as deterministic diagnostics but never become descriptors.
@@ -195,20 +254,14 @@ def classify_foreign_keys(graph: Graph) -> ForeignKeyClassification:
     diagnostics: list[ForeignKeyDiagnostic] = []
     outgoing_relationship_sources: list[URIRef] = []
 
-    for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str):
-        domain = graph.value(prop, RDFS.domain)
-        range_class = graph.value(prop, RDFS.range)
-        fk_on = graph.value(prop, KAIROS_EXT.silverForeignKeyOn)
-        silver_foreign_key = bool_val(
-            graph, prop, KAIROS_EXT.silverForeignKey, False,
-        )
+    for fact in facts:
+        prop = URIRef(fact.property_uri)
+        domain = fact.domain_value
+        range_class = fact.range_value
+        fk_on = fact.foreign_key_on
+        silver_foreign_key = fact.silver_foreign_key
         prop_local = local_name(str(prop))
-        junction_table_name = (
-            str_val(graph, prop, KAIROS_EXT.junctionTableName) or None
-        )
-        degenerate_dimension = bool_val(
-            graph, prop, KAIROS_EXT.degenerateDimension, False,
-        )
+        junction_table_name = fact.junction_table_name
 
         if domain is None or range_class is None:
             if fk_on is not None:
@@ -237,8 +290,11 @@ def classify_foreign_keys(graph: Graph) -> ForeignKeyClassification:
                 ))
             continue
 
-        if not isinstance(domain, URIRef) or not isinstance(range_class, URIRef):
+        if not fact.domain_is_uri or not fact.range_is_uri:
             continue
+        domain = URIRef(domain)
+        range_class = URIRef(range_class)
+        fk_on = URIRef(fk_on) if fk_on is not None else None
 
         redirected = fk_on is not None
         reverse = False
@@ -246,7 +302,7 @@ def classify_foreign_keys(graph: Graph) -> ForeignKeyClassification:
         target_class = range_class
         if redirected:
             if fk_on != domain and fk_on != range_class:
-                if not junction_table_name and not degenerate_dimension:
+                if not junction_table_name:
                     # Preserve the established Gold heuristic for an invalid
                     # annotation while still excluding it from FK projection.
                     outgoing_relationship_sources.append(domain)
@@ -266,30 +322,26 @@ def classify_foreign_keys(graph: Graph) -> ForeignKeyClassification:
                 target_class = domain
                 reverse = True
 
-        if not junction_table_name and not degenerate_dimension:
+        if not junction_table_name:
             outgoing_relationship_sources.append(source_class)
 
-        silver_column_name = str_val(graph, prop, KAIROS_EXT.silverColumnName) or None
-        gold_column_name = str_val(graph, prop, KAIROS_EXT.goldColumnName) or None
         descriptors.append(ForeignKeyDescriptor(
             property_uri=prop,
             domain_class=domain,
             range_class=range_class,
             source_class=source_class,
             target_class=target_class,
-            is_functional=(prop, RDF.type, OWL.FunctionalProperty) in graph,
-            max_cardinality_classes=_max_cardinality_classes(graph, prop),
+            is_functional=fact.is_functional,
+            max_cardinality_classes=frozenset(
+                URIRef(owner) for owner in fact.max_cardinality_classes
+            ),
             silver_foreign_key=silver_foreign_key,
-            silver_column_name=silver_column_name,
-            gold_column_name=gold_column_name,
+            silver_column_name=fact.silver_column_name,
             redirected=redirected,
             reverse=reverse,
             junction_table_name=junction_table_name,
-            degenerate_dimension=degenerate_dimension,
-            nullable=_nullable_annotation(graph, prop),
-            conditional_on_type=str_val(
-                graph, prop, KAIROS_EXT.conditionalOnType,
-            ),
+            nullable=fact.nullable,
+            conditional_on_type=fact.conditional_on_type,
         ))
 
     return ForeignKeyClassification(
@@ -297,6 +349,11 @@ def classify_foreign_keys(graph: Graph) -> ForeignKeyClassification:
         tuple(diagnostics),
         tuple(outgoing_relationship_sources),
     )
+
+
+def classify_foreign_keys(graph: Graph) -> ForeignKeyClassification:
+    """Compatibility facade combining RDF extraction and pure normalization."""
+    return normalize_foreign_key_facts(extract_foreign_key_facts(graph))
 
 
 # ---------------------------------------------------------------------------

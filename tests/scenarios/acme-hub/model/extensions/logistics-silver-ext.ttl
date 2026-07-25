@@ -1,6 +1,14 @@
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 @prefix refp:       <https://refmodel.example/ontology/party#> .
 @prefix acme-log:   <https://acme.example/ontology/logistics#> .
+@prefix prep-lp:    <https://acme.example/preparation/logisticspro#> .
+@prefix owl:        <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs:       <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://acme.example/ontology/logistics/silver-policy> a owl:Ontology ;
+    rdfs:label "ACME Logistics Silver policy"@en ;
+    rdfs:comment "Explicit Silver identity, lineage, history, and import-claim policy."@en ;
+    owl:versionInfo "2.0.0" .
 
 # ---------------------------------------------------------------------------
 # DD-021: Claim imported reference model classes for silver projection
@@ -9,9 +17,25 @@
 # Per-class claiming — only TradeParty and Carrier are projected
 refp:TradeParty kairos-ext:silverInclude true ;
     kairos-ext:scdType "2" ;
+    kairos-ext:scd2TimeBasis "load-history" ;
+    kairos-ext:incrementalPolicy acme-log:LogisticsRuntime ;
+    kairos-ext:businessGrain "one logistics trade-party source record" ;
+    kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-lp:shipmentPartyKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
     kairos-ext:naturalKey "party_code" .
 
 refp:Carrier kairos-ext:silverInclude true ;
+    kairos-ext:businessGrain "one logistics carrier source record" ;
+    kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-lp:carrierKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
     kairos-ext:naturalKey "carrier_code" .
 
 # ---------------------------------------------------------------------------
@@ -22,13 +46,37 @@ refp:Carrier kairos-ext:silverInclude true ;
 # ---------------------------------------------------------------------------
 refp:Organization kairos-ext:silverInclude true ;
     kairos-ext:scdType "2" ;
+    kairos-ext:scd2TimeBasis "load-history" ;
+    kairos-ext:incrementalPolicy acme-log:LogisticsRuntime ;
+    kairos-ext:businessGrain "one logistics organization source record" ;
+    kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-lp:shipmentPartyKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
     kairos-ext:inheritanceStrategy "discriminator" ;
     kairos-ext:discriminatorColumn "org_type" ;
     kairos-ext:naturalKey "org_name" .
+
+acme-log:LogisticsRuntime a kairos-ext:IncrementalPolicy ;
+    kairos-ext:mergeIdentity "_source_record_key" ;
+    kairos-ext:cdcOperation "_cdc_operation" ;
+    kairos-ext:sourceUpdateTimestamp "_source_updated_at" ;
+    kairos-ext:sourceEffectiveTimestamp "_source_effective_at" ;
+    kairos-ext:ingestionTimestamp "_ingested_at" ;
+    kairos-ext:totalOrderTieBreaker "_cdc_sequence, _source_record_key" ;
+    kairos-ext:lookbackWindow "2 days" ;
+    kairos-ext:hardDeletePolicy "tombstone" ;
+    kairos-ext:softDeletePolicy "apply-operation" ;
+    kairos-ext:lateArrivalPolicy "reconcile-with-lookback" ;
+    kairos-ext:correctionPolicy "replace-by-total-order" ;
+    kairos-ext:replayPolicy "idempotent-merge" ;
+    kairos-ext:backfillPolicy "full-rebuild-approved" ;
+    kairos-ext:schemaChangePolicy "fail" .
 
 # ---------------------------------------------------------------------------
 # Issue #172 (A) — silverExclude.
 # BaseMarker emits no table; ActiveMarker (its subclass) still inherits markerCode.
 # ---------------------------------------------------------------------------
 acme-log:BaseMarker kairos-ext:silverExclude true .
-

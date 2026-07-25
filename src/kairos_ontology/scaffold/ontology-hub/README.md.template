@@ -35,6 +35,19 @@ coverage.
 The file `ontology-hub/model/ontologies/_master.ttl` imports all domain ontologies
 into a single unified graph.  Keep it updated when adding or removing domains.
 
+## Governed lifecycle
+
+Use the canonical lifecycle:
+
+`discovery → source → domain → mapping → claims → silver → gold → validate → project`
+
+Source onboarding includes an explicit `integration/preparation/` contract. Typed mappings
+bind prepared source fields to domain properties. Silver dbt, YAML, DDL, constraints, and
+ERD share one parity-checked authority. Gold is profile-driven; the v1 Power BI profile
+requires explicit table roles, governed measures/calendars, and fail-closed security.
+Projection emits evidence and checks but does not claim runtime monitoring or deployment
+success.
+
 ## Conventions
 
 - One domain per `.ttl` file (e.g., `customer.ttl`, `order.ttl`).

@@ -205,6 +205,10 @@ def client_dbt_artifacts(client_ontology):
         namespace=namespace,
         shapes_dir=SHAPES_DIR,
         ontology_name="client",
+        ontology_metadata={
+            "iri": "https://acme.example/ontology/client",
+            "version": "1.0.0",
+        },
         bronze_dir=SOURCES_DIR,
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,
@@ -233,6 +237,10 @@ def invoice_dbt_artifacts(invoice_ontology):
         namespace=namespace,
         shapes_dir=SHAPES_DIR,
         ontology_name="invoice",
+        ontology_metadata={
+            "iri": "https://acme.example/ontology/invoice",
+            "version": "1.0.0",
+        },
         bronze_dir=SOURCES_DIR,
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,

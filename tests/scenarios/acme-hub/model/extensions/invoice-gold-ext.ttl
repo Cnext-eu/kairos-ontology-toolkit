@@ -1,5 +1,8 @@
 @prefix acme-inv: <https://acme.example/ontology/invoice#> .
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
 # ---------------------------------------------------------------------------
 # Gold-layer annotations for Invoice domain
@@ -7,49 +10,72 @@
 
 # Ontology-level
 <https://acme.example/ontology/invoice>
+    a owl:Ontology ;
+    rdfs:label "ACME Invoice Gold product policy"@en ;
+    rdfs:comment "Governed dimensional Power BI profile, facts, calendar, and measures."@en ;
+    owl:versionInfo "2.0.0" ;
     kairos-ext:goldSchema "gold" ;
-    kairos-ext:generateDateDimension "true" ;
-    kairos-ext:generateTimeIntelligence "true" ;
+    kairos-ext:goldProductProfile "dimensional-powerbi-v1" ;
+    kairos-ext:calendarProfile acme-inv:FinanceCalendar ;
+    kairos-ext:measure acme-inv:TotalInvoiceAmount, acme-inv:TotalLineAmount ;
     kairos-ext:namingConvention "camel-to-snake" .
+
+acme-inv:FinanceCalendar a kairos-ext:CalendarProfile ;
+    kairos-ext:calendarStartDate "2020-01-01"^^xsd:date ;
+    kairos-ext:calendarEndDate "2035-12-31"^^xsd:date ;
+    kairos-ext:fiscalYearStartMonth 1 ;
+    kairos-ext:weekPattern "iso-8601-monday" ;
+    kairos-ext:calendarLocale "en-BE" ;
+    kairos-ext:holidaySource "none-approved" ;
+    kairos-ext:calendarTimeZone "Europe/Brussels" ;
+    kairos-ext:periodClosurePolicy "finance-approved-period-status" ;
+    kairos-ext:rolePlayingDate "InvoiceDate=Invoice.invoice_date" ;
+    kairos-ext:calendarApprovalStatus "approved" .
 
 # Class-level
 acme-inv:Invoice
     kairos-ext:goldTableType "fact" ;
     kairos-ext:goldTableName "fact_invoice" ;
-    kairos-ext:partitionBy "invoice_date" ;
-    kairos-ext:incrementalColumn "invoice_date" ;
+    kairos-ext:goldSourceModel "invoice" ;
+    kairos-ext:goldSourceVersion "1.0.0" ;
+    kairos-ext:factGrain "one invoice or credit-note source record" ;
+    kairos-ext:factType "transaction" ;
+    kairos-ext:dimensionVersionBinding "as-of-invoice-date" ;
+    kairos-ext:incrementalPolicy acme-inv:InvoiceIncremental ;
     kairos-ext:perspective "Finance" .
 
 acme-inv:InvoiceLine
     kairos-ext:goldTableType "fact" ;
-    kairos-ext:goldTableName "fact_invoice_line" .
+    kairos-ext:goldTableName "fact_invoice_line" ;
+    kairos-ext:goldSourceModel "invoice_line" ;
+    kairos-ext:goldSourceVersion "1.0.0" ;
+    kairos-ext:factGrain "one invoice line source record" ;
+    kairos-ext:factType "transaction" ;
+    kairos-ext:dimensionVersionBinding "as-of-invoice-date" ;
+    kairos-ext:incrementalPolicy acme-inv:InvoiceLineIncremental .
 
-acme-inv:InvoiceTag
-    kairos-ext:goldTableType "dimension" ;
-    kairos-ext:goldTableName "dim_invoice_tag" ;
-    kairos-ext:isReferenceData "true" .
-
-# Property-level — degenerate dimension, role-playing, column overrides
-acme-inv:invoiceNumber
-    kairos-ext:degenerateDimension "true" ;
-    kairos-ext:goldColumnName "invoice_number" ;
-    kairos-ext:goldDataType "VARCHAR(50)" .
-
-acme-inv:invoiceDate
-    kairos-ext:goldColumnName "invoice_date" ;
-    kairos-ext:goldDataType "DATE" ;
-    kairos-ext:rolePlayingAs "OrderDate" .
-
-acme-inv:totalAmount
+acme-inv:TotalInvoiceAmount a kairos-ext:Measure ;
+    kairos-ext:measureId "invoice.total-amount" ;
+    kairos-ext:measureDefinition "Sum of invoice total amounts in the active filter context." ;
     kairos-ext:measureExpression "SUM([total_amount])" ;
+    kairos-ext:measureColumnDependency acme-inv:totalAmount ;
+    kairos-ext:measureLifecycleState "approved" ;
+    kairos-ext:measureDataType "decimal" ;
     kairos-ext:measureFormatString "#,##0.00" ;
-    kairos-ext:goldDataType "DECIMAL(18,2)" ;
-    kairos-ext:nullable "false" .
+    kairos-ext:measureFolder "Finance" ;
+    kairos-ext:measureOwnerRole "Finance Data Owner" ;
+    kairos-ext:measureValidationTest "invoice-total-reconciliation" ;
+    kairos-ext:measureValidationEvidence "dq-run:invoice-total-v1" .
 
-acme-inv:lineTotal
+acme-inv:TotalLineAmount a kairos-ext:Measure ;
+    kairos-ext:measureId "invoice.total-line-amount" ;
+    kairos-ext:measureDefinition "Sum of invoice line amounts in the active filter context." ;
     kairos-ext:measureExpression "SUM([line_total])" ;
-    kairos-ext:measureFormatString "#,##0.00" .
-
-# Junction table — exercises junctionTableName in gold
-acme-inv:hasTag
-    kairos-ext:junctionTableName "invoice_tag_bridge" .
+    kairos-ext:measureColumnDependency acme-inv:lineTotal ;
+    kairos-ext:measureLifecycleState "approved" ;
+    kairos-ext:measureDataType "decimal" ;
+    kairos-ext:measureFormatString "#,##0.00" ;
+    kairos-ext:measureFolder "Finance" ;
+    kairos-ext:measureOwnerRole "Finance Data Owner" ;
+    kairos-ext:measureValidationTest "invoice-line-total-reconciliation" ;
+    kairos-ext:measureValidationEvidence "dq-run:invoice-line-total-v1" .

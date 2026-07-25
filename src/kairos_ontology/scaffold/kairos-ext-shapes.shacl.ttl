@@ -1,0 +1,727 @@
+# SHACL constraints for DD-108 through DD-115 Silver and Gold authoring policy.
+
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/ext/shapes> a owl:Ontology ;
+    rdfs:label "Kairos Medallion Extension SHACL Shapes"@en ;
+    rdfs:comment "Fail-closed identity, lineage, conformance, incremental, temporal, quality, Gold product, measure, calendar and security constraints."@en ;
+    owl:imports <https://kairos.cnext.eu/ext> ;
+    owl:versionInfo "2.0.0" .
+
+kairos-ext:SilverIdentityShape a sh:NodeShape ;
+    sh:targetSubjectsOf kairos-ext:silverTableName ;
+    sh:targetSubjectsOf kairos-ext:silverInclude ;
+    sh:targetSubjectsOf kairos-ext:scdType ;
+    sh:targetSubjectsOf kairos-ext:identityStrategy ;
+    sh:property [ sh:path kairos-ext:businessGrain ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:identityStrategy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "business-key" "source-scoped-immutable-key"
+                "deterministic-integration-key" "externally-mastered-identifier"
+                "surrogate-only" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:entityInstanceIriPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "emit" "omit" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:keyScope ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "source-table" "source-table-array-element" "domain" "enterprise" ) ;
+    ] ;
+    sh:property [ sh:path kairos-ext:sourceIdentity ; sh:minCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:drivingSource ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:contributionLineagePolicy ;
+        sh:maxCount 1 ;
+        sh:in ( "all-source-record-contributions" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:changeDetectionStrategy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "compare-columns" "canonical-hash" ) ;
+    ] ;
+    sh:property [ sh:path kairos-ext:lineagePolicy ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:sparql [
+        sh:message "surrogate-only identity requires an explicit reconciliation limitation."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:identityStrategy "surrogate-only" .
+                FILTER NOT EXISTS { $this kairos-ext:reconciliationLimitation ?limitation . }
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "canonical-hash change detection requires a HashPolicy."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:changeDetectionStrategy "canonical-hash" .
+                FILTER NOT EXISTS { $this kairos-ext:hashPolicy ?policy . }
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "business-key, deterministic-integration-key, and externally-mastered-identifier strategies require an explicitly authored naturalKey."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:identityStrategy ?strategy .
+                FILTER (?strategy IN (
+                    "business-key",
+                    "deterministic-integration-key",
+                    "externally-mastered-identifier"
+                ))
+                FILTER NOT EXISTS { $this kairos-ext:naturalKey ?key . }
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "surrogate-only identity forbids naturalKey."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:identityStrategy "surrogate-only" ;
+                    kairos-ext:naturalKey ?key .
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "reconciliationLimitation is valid only for surrogate-only identity."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:identityStrategy ?strategy ;
+                    kairos-ext:reconciliationLimitation ?limitation .
+                FILTER (?strategy != "surrogate-only")
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "source-scoped-immutable-key and surrogate-only require a source-table key scope."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:identityStrategy ?strategy ;
+                    kairos-ext:keyScope ?scope .
+                FILTER (?strategy IN ("source-scoped-immutable-key", "surrogate-only"))
+                FILTER (?scope NOT IN ("source-table", "source-table-array-element"))
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "deterministic-integration-key requires domain or enterprise key scope."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:identityStrategy "deterministic-integration-key" ;
+                    kairos-ext:keyScope ?scope .
+                FILTER (?scope NOT IN ("domain", "enterprise"))
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "externally-mastered-identifier requires enterprise key scope."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:identityStrategy "externally-mastered-identifier" ;
+                    kairos-ext:keyScope ?scope .
+                FILTER (?scope != "enterprise")
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "single-source identity deterministically uses only-source mode and forbids drivingSource or multiSourcePolicy."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:sourceIdentity ?source .
+                OPTIONAL { $this kairos-ext:drivingSource ?driving . }
+                OPTIONAL { $this kairos-ext:multiSourcePolicy ?policy . }
+            }
+            GROUP BY $this
+            HAVING (
+                COUNT(DISTINCT ?source) = 1
+                && (COUNT(DISTINCT ?driving) > 0 || COUNT(DISTINCT ?policy) > 0)
+            )
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "multi-contributor identity requires one drivingSource and one multiSourcePolicy."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:sourceIdentity ?source .
+                OPTIONAL { $this kairos-ext:drivingSource ?driving . }
+                OPTIONAL { $this kairos-ext:multiSourcePolicy ?policy . }
+            }
+            GROUP BY $this
+            HAVING (
+                COUNT(DISTINCT ?source) > 1
+                && (COUNT(DISTINCT ?driving) != 1 || COUNT(DISTINCT ?policy) != 1)
+            )
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "drivingSource must reference one of the entity's sourceIdentity values."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:drivingSource ?driving .
+                FILTER NOT EXISTS {
+                    $this kairos-ext:sourceIdentity ?driving .
+                }
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "deterministic-integration-key requires an approved exactly-equivalent multi-source policy."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:identityStrategy "deterministic-integration-key" .
+                FILTER NOT EXISTS {
+                    $this kairos-ext:multiSourcePolicy ?policy .
+                    ?policy kairos-ext:branchRelationship "exactly-equivalent" .
+                }
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "exactly-equivalent branches require deterministic-integration-key identity."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:identityStrategy ?strategy ;
+                    kairos-ext:multiSourcePolicy ?policy .
+                ?policy kairos-ext:branchRelationship "exactly-equivalent" .
+                FILTER (?strategy != "deterministic-integration-key")
+            }
+        """ ;
+    ] .
+
+kairos-ext:SCD2Shape a sh:NodeShape ;
+    sh:targetSubjectsOf kairos-ext:scdType ;
+    sh:property [
+        sh:path kairos-ext:scdType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "1" "2" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:incrementalPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:sparql [
+        sh:message "SCD2 requires scd2TimeBasis business-valid or load-history."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:scdType "2" .
+                FILTER NOT EXISTS {
+                    $this kairos-ext:scd2TimeBasis ?basis .
+                    FILTER (?basis IN ("business-valid", "load-history"))
+                }
+            }
+        """ ;
+    ] .
+
+kairos-ext:MultiSourcePolicyShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:MultiSourcePolicy ;
+    sh:property [
+        sh:path kairos-ext:branchRelationship ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "disjoint" "overlapping" "exactly-equivalent" ) ;
+    ] ;
+    sh:property [ sh:path kairos-ext:normalizationPolicy ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:sourcePrecedence ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:attributeConflictPolicy ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:keyCollisionPolicy ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:branchDeletionPolicy ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:branchLateArrivalPolicy ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:reconciliationTest ; sh:minCount 1 ] .
+
+kairos-ext:IncrementalPolicyShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:IncrementalPolicy ;
+    sh:property [ sh:path kairos-ext:mergeIdentity ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:cdcOperation ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:sourceUpdateTimestamp ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:sourceEffectiveTimestamp ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:ingestionTimestamp ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:totalOrderTieBreaker ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:lookbackWindow ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:pattern "^[1-9][0-9]* (hours|days)$" ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:hardDeletePolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "tombstone" "ignore" "quarantine" "block" "apply-operation" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:softDeletePolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "tombstone" "ignore" "quarantine" "block" "apply-operation" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:lateArrivalPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "reconcile-with-lookback" "quarantine" "block" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:correctionPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "replace-by-total-order" "revise-valid-time" "append-correction"
+                "quarantine" "block" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:replayPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "idempotent-merge" "full-rebuild" "block" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:backfillPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "full-rebuild-approved" "range-replay-approved" "block" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:schemaChangePolicy ;
+        sh:minCount 1 ;
+        sh:in ( "fail" "quarantine" "approved-contract-update" ) ;
+    ] .
+
+kairos-ext:HashPolicyShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:HashPolicy ;
+    sh:property [
+        sh:path kairos-ext:hashContractVersion ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "1" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:hashAlgorithm ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "SHA-256" ) ;
+    ] ;
+    sh:property [ sh:path kairos-ext:hashInput ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:hashNullRepresentation ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "typed-length-delimited-null" ) ;
+    ] ;
+    sh:sparql [
+        sh:message "hashInput must be one non-empty RDF list so byte order is explicit."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+            SELECT $this WHERE {
+                $this kairos-ext:hashInput ?inputs .
+                FILTER NOT EXISTS { ?inputs rdf:first ?first . }
+            }
+        """ ;
+    ] .
+
+kairos-ext:TemporalForeignKeyShape a sh:NodeShape ;
+    sh:targetSubjectsOf kairos-ext:silverForeignKeyTemporalMode ;
+    sh:property [
+        sh:path kairos-ext:silverForeignKeyTemporalMode ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "current" "as-of" "none" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:silverForeignKeyChangeDetection ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:boolean ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:silverForeignKeyInterval ;
+        sh:maxCount 1 ;
+        sh:in ( "closed-open" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:silverForeignKeyTimeZone ;
+        sh:maxCount 1 ;
+        sh:in ( "UTC" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:silverForeignKeyPrecision ;
+        sh:maxCount 1 ;
+        sh:in ( "microsecond" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:silverForeignKeyCardinality ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "zero-or-one" "exactly-one" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:silverForeignKeyMissingPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "fail" "quarantine" "retry" "unknown-member" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:silverForeignKeyAmbiguousPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "fail" "quarantine" "retry" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:silverForeignKeyLateParentPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "fail" "quarantine" "retry" "restate" "unknown-member" ) ;
+    ] ;
+    sh:sparql [
+        sh:message "as-of foreign keys require source column, interval, time zone, and precision."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:silverForeignKeyTemporalMode "as-of" .
+                FILTER (
+                    NOT EXISTS { $this kairos-ext:silverForeignKeyAsOfColumn ?column } ||
+                    NOT EXISTS { $this kairos-ext:silverForeignKeyInterval ?interval } ||
+                    NOT EXISTS { $this kairos-ext:silverForeignKeyTimeZone ?zone } ||
+                    NOT EXISTS { $this kairos-ext:silverForeignKeyPrecision ?precision }
+                )
+            }
+        """ ;
+    ] .
+
+kairos-ext:GoldProductProfileShape a sh:NodeShape ;
+    sh:targetSubjectsOf kairos-ext:goldSchema ;
+    sh:targetSubjectsOf kairos-ext:goldProductProfile ;
+    sh:property [
+        sh:path kairos-ext:goldProductProfile ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "dimensional-powerbi-v1" ) ;
+    ] .
+
+kairos-ext:GoldTableShape a sh:NodeShape ;
+    sh:targetSubjectsOf kairos-ext:goldTableName ;
+    sh:targetSubjectsOf kairos-ext:goldTableType ;
+    sh:targetSubjectsOf kairos-ext:goldInclude ;
+    sh:property [
+        sh:path kairos-ext:goldTableName ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:goldTableType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "fact" "dimension" "bridge" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:goldSourceModel ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:goldSourceVersion ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:incrementalPolicy ;
+        sh:maxCount 1 ;
+        sh:node kairos-ext:IncrementalPolicyShape ;
+    ] ;
+    sh:sparql [
+        sh:message "Facts require factGrain, factType, dimensionVersionBinding and a complete linked incrementalPolicy containing correction and late-arrival policy."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:goldTableType "fact" .
+                FILTER (
+                    NOT EXISTS { $this kairos-ext:factGrain ?grain } ||
+                    NOT EXISTS {
+                        $this kairos-ext:factType ?type .
+                        FILTER (?type IN (
+                            "transaction", "periodic-snapshot", "accumulating-snapshot"
+                        ))
+                    } ||
+                    NOT EXISTS { $this kairos-ext:dimensionVersionBinding ?binding } ||
+                    NOT EXISTS { $this kairos-ext:incrementalPolicy ?incremental }
+                )
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "Dimensions require dimensionExposure and explicit dimensionVersionBinding."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:goldTableType "dimension" .
+                FILTER (
+                    NOT EXISTS {
+                        $this kairos-ext:dimensionExposure ?exposure .
+                        FILTER (?exposure IN ("current-only", "history-only", "dual"))
+                    } ||
+                    NOT EXISTS {
+                        $this kairos-ext:dimensionVersionBinding ?binding .
+                        FILTER (?binding IN (
+                            "current", "as-of-event-date", "as-of-invoice-date",
+                            "as-of-effective-date"
+                        ))
+                    }
+                )
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "Bridges require grain, two endpoints, cardinality, and allocation semantics."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:goldTableType "bridge" .
+                FILTER (
+                    NOT EXISTS { $this kairos-ext:bridgeGrain ?grain } ||
+                    NOT EXISTS { $this kairos-ext:bridgeEndpoint ?left, ?right .
+                                 FILTER (?left != ?right) } ||
+                    NOT EXISTS {
+                        $this kairos-ext:bridgeEndpointBinding ?leftBinding,
+                                                                    ?rightBinding .
+                        FILTER (?leftBinding != ?rightBinding)
+                    } ||
+                    NOT EXISTS {
+                        $this kairos-ext:bridgeCardinality ?cardinality .
+                        FILTER (?cardinality IN ("one-to-many", "many-to-many"))
+                    } ||
+                    NOT EXISTS {
+                        $this kairos-ext:bridgeAllocationSemantics ?allocation
+                    }
+                )
+            }
+        """ ;
+    ] .
+
+kairos-ext:GoldBridgeShape a sh:NodeShape ;
+    sh:targetSubjectsOf kairos-ext:bridgeEndpoint ;
+    sh:property [
+        sh:path kairos-ext:bridgeEndpoint ;
+        sh:minCount 2 ;
+        sh:maxCount 2 ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:bridgeEndpointBinding ;
+        sh:minCount 2 ;
+        sh:maxCount 2 ;
+        sh:datatype xsd:string ;
+        sh:pattern "^[^= ]+=[A-Za-z_][A-Za-z0-9_]*$" ;
+    ] .
+
+kairos-ext:MeasureShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:Measure ;
+    sh:targetObjectsOf kairos-ext:measure ;
+    sh:property [ sh:path kairos-ext:measureId ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:measureDefinition ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:measureExpression ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:measureLifecycleState ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "intent" "provisional" "validated" "approved" ) ;
+    ] ;
+    sh:property [ sh:path kairos-ext:measureDataType ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:measureFormatString ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:measureFolder ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:measureOwnerRole ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:measureDependency ;
+        sh:class kairos-ext:Measure ;
+    ] ;
+    sh:sparql [
+        sh:message "Provisional, validated, and approved measures require DAX, dependencies, type, format, and folder."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:measureLifecycleState ?state .
+                FILTER (?state IN ("provisional", "validated", "approved"))
+                FILTER (
+                    NOT EXISTS { $this kairos-ext:measureExpression ?expression } ||
+                    NOT EXISTS { $this kairos-ext:measureDataType ?dataType } ||
+                    NOT EXISTS { $this kairos-ext:measureFormatString ?format } ||
+                    NOT EXISTS { $this kairos-ext:measureFolder ?folder } ||
+                    NOT EXISTS {
+                        { $this kairos-ext:measureColumnDependency ?column }
+                        UNION
+                        { $this kairos-ext:measureDependency ?measure }
+                    }
+                )
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "Validated and approved measures require tests and evidence; approved measures also require an owner role."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:measureLifecycleState ?state .
+                FILTER (?state IN ("validated", "approved"))
+                FILTER (
+                    NOT EXISTS { $this kairos-ext:measureValidationTest ?test } ||
+                    NOT EXISTS {
+                        $this kairos-ext:measureValidationEvidence ?evidence
+                    } ||
+                    (?state = "approved" &&
+                     NOT EXISTS { $this kairos-ext:measureOwnerRole ?owner })
+                )
+            }
+        """ ;
+    ] ;
+    sh:sparql [
+        sh:message "Measure dependency cycles are not allowed."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:measureDependency+ $this .
+            }
+        """ ;
+    ] .
+
+kairos-ext:CalendarProfileShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:CalendarProfile ;
+    sh:targetObjectsOf kairos-ext:calendarProfile ;
+    sh:property [ sh:path kairos-ext:calendarStartDate ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
+    sh:property [ sh:path kairos-ext:calendarEndDate ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
+    sh:property [
+        sh:path kairos-ext:fiscalYearStartMonth ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:integer ;
+        sh:minInclusive 1 ;
+        sh:maxInclusive 12 ;
+    ] ;
+    sh:property [ sh:path kairos-ext:weekPattern ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:calendarLocale ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:holidaySource ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:calendarTimeZone ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:periodClosurePolicy ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:rolePlayingDate ; sh:minCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:calendarApprovalStatus ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "draft" "approved" ) ;
+    ] ;
+    sh:sparql [
+        sh:message "Calendar start date must not be after calendar end date."@en ;
+        sh:select """
+            PREFIX kairos-ext: <https://kairos.cnext.eu/ext#>
+            SELECT $this WHERE {
+                $this kairos-ext:calendarStartDate ?start ;
+                      kairos-ext:calendarEndDate ?end .
+                FILTER (?start > ?end)
+            }
+        """ ;
+    ] .
+
+kairos-ext:SecurityPolicyShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:SecurityPolicy ;
+    sh:targetObjectsOf kairos-ext:securityPolicy ;
+    sh:property [ sh:path kairos-ext:entitlementSource ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:identityMapping ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:rolePolicy ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:filterDirection ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:securityBinding ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:positiveSecurityTest ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:negativeSecurityTest ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:securityTestEvidence ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:failClosed ; sh:minCount 1 ; sh:hasValue true ] .
+
+kairos-ext:DataQualityRuleShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:DataQualityRule ;
+    sh:property [
+        sh:path [ sh:inversePath kairos-ext:dataQualityRule ] ;
+        sh:minCount 1 ;
+    ] ;
+    sh:property [ sh:path kairos-ext:dqRuleId ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:dqRuleVersion ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:dqCategory ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "contract" "source" "business" "operational" ) ;
+    ] ;
+    sh:property [ sh:path kairos-ext:dqScope ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:dqCheckType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "contract-shape" "freshness" "volume" "duplicate-rate" "range"
+                "distribution" "reconciliation" "referential-coverage" "cross-field" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:dqCheckExpression ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:pattern "^[A-Za-z_][A-Za-z0-9_]*=[^;()'\"`]+(;[A-Za-z_][A-Za-z0-9_]*=[^;()'\"`]+)*$" ;
+    ] ;
+    sh:property [ sh:path kairos-ext:dqSeverity ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:dqTolerance ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:dqAction ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "warn" "quarantine" "block" ) ;
+    ] ;
+    sh:property [ sh:path kairos-ext:dqOwnerRole ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:dqEvidence ; sh:minCount 1 ] ;
+    sh:property [ sh:path kairos-ext:dqTestRef ; sh:minCount 1 ] .
+
+kairos-ext:AdapterSupportShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:AdapterSupport ;
+    sh:property [ sh:path kairos-ext:adapterName ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:adapterVersion ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:evidenceScope ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:capability ; sh:minCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:supportStatus ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "supported" "unsupported" "partial" "environment-blocked" ) ;
+    ] ;
+    sh:property [ sh:path kairos-ext:compileEvidence ; sh:minCount 1 ] .
+
+kairos-ext:DeviationShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:Deviation ;
+    sh:property [ sh:path kairos-ext:policyReference ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:deviationScope ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:deviationRationale ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:deviationOwnerRole ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:approvalStatus ; sh:minCount 1 ; sh:hasValue "approved" ] ;
+    sh:property [ sh:path kairos-ext:reviewDate ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
+    sh:property [ sh:path kairos-ext:expiryDate ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
+    sh:property [ sh:path kairos-ext:deviationEvidence ; sh:minCount 1 ] .

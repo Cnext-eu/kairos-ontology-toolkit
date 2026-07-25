@@ -1,126 +1,335 @@
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
-@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
-@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix bronze-ap: <https://acme.example/bronze/adminpulse#> .
 @prefix acme: <https://acme.example/ontology/client#> .
+@prefix bronze-ap: <https://acme.example/bronze/adminpulse#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix map: <https://acme.example/mapping/adminpulse-to-client#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-# ---------------------------------------------------------------------------
-# Table-level: split pattern — tblClient → 3 subclasses by Type discriminator
-# ---------------------------------------------------------------------------
-bronze-ap:tblClient skos:exactMatch acme:CorporateClient ;
+map:column__tblClientPII_ClientID__to__clientId a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClientPII_ClientID ;
+    kairos-map:targetProperty acme:clientId .
+
+map:column__tblClientPII_DateOfBirth__to__dateOfBirth a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClientPII_DateOfBirth ;
+    kairos-map:targetProperty acme:dateOfBirth .
+
+map:column__tblClientPII_NationalID__to__nationalId a kairos-map:ColumnMapping ;
+    kairos-map:expression map:column__tblClientPII_NationalID__to__nationalId__upper ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClientPII_NationalID ;
+    kairos-map:targetProperty acme:nationalId .
+
+map:column__tblClientType_Label__to__typeLabel a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClientType_Label ;
+    kairos-map:targetProperty acme:typeLabel .
+
+map:column__tblClientType_TypeCode__to__typeCode a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClientType_TypeCode ;
+    kairos-map:targetProperty acme:typeCode .
+
+map:column__tblClient_City__to__clientCity a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_City ;
+    kairos-map:targetProperty acme:clientCity .
+
+map:column__tblClient_ClientID__to__clientId a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_ClientID ;
+    kairos-map:targetProperty acme:clientId .
+
+map:column__tblClient_Country__to__clientCountry a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_Country ;
+    kairos-map:targetProperty acme:clientCountry .
+
+map:column__tblClient_CreatedDate__to__createdAt a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_CreatedDate ;
+    kairos-map:targetProperty acme:createdAt .
+
+map:column__tblClient_Email__to__email a kairos-map:ColumnMapping ;
+    kairos-map:expression map:column__tblClient_Email__to__email__coalesce ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_Email ;
+    kairos-map:targetProperty acme:email .
+
+map:column__tblClient_IsActive__to__isActive a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_IsActive ;
+    kairos-map:targetProperty acme:isActive .
+
+map:column__tblClient_ModifiedDate__to__lastModifiedAt a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_ModifiedDate ;
+    kairos-map:targetProperty acme:lastModifiedAt .
+
+map:column__tblClient_Name__to__clientName a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_Name ;
+    kairos-map:targetProperty acme:clientName .
+
+map:column__tblClient_Name__to__displayName a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_Name ;
+    kairos-map:targetProperty acme:displayName .
+
+map:column__tblClient_TypeCode__to__hasType a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_TypeCode ;
+    kairos-map:targetProperty acme:hasType .
+
+map:column__tblClient_TypeCode__to__typeCode a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_TypeCode ;
+    kairos-map:targetProperty acme:typeCode .
+
+map:column__tblClient_VATNumber__to__vatNumber a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_VATNumber ;
+    kairos-map:targetProperty acme:vatNumber .
+
+map:column__tblIdentifier_ClientID__to__clientId a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblIdentifier_ClientID ;
+    kairos-map:targetProperty acme:clientId .
+
+map:column__tblIdentifier_Scheme__to__identifierScheme a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblIdentifier_Scheme ;
+    kairos-map:targetProperty acme:identifierScheme .
+
+map:column__tblIdentifier_ValidFrom__to__identifierValidFrom a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblIdentifier_ValidFrom ;
+    kairos-map:targetProperty acme:identifierValidFrom .
+
+map:column__tblIdentifier_Value__to__identifierValue a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblIdentifier_Value ;
+    kairos-map:targetProperty acme:identifierValue .
+
+map:column__tblRelation_ClientID__to__clientId a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-ap:tblRelation_ClientID ;
+    kairos-map:targetProperty acme:clientId .
+
+map:table__tblClientPII__to__ClientPII a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable bronze-ap:tblClientPII ;
+    kairos-map:targetClass acme:ClientPII .
+
+map:table__tblClientType__to__ClientType a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable bronze-ap:tblClientType ;
+    kairos-map:targetClass acme:ClientType .
+
+map:table__tblClient__to__CorporateClient a kairos-map:TableMapping ;
     kairos-map:mappingType "split" ;
-    kairos-map:filterCondition "source.Type = 0" .
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:rowFilter map:table__tblClient__to__CorporateClient__filter ;
+    kairos-map:sourceTable bronze-ap:tblClient ;
+    kairos-map:targetClass acme:CorporateClient .
 
-bronze-ap:tblClient skos:exactMatch acme:SoleProprietorClient ;
+map:table__tblClient__to__IndividualClient a kairos-map:TableMapping ;
     kairos-map:mappingType "split" ;
-    kairos-map:filterCondition "source.Type = 1" .
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:rowFilter map:table__tblClient__to__IndividualClient__filter ;
+    kairos-map:sourceTable bronze-ap:tblClient ;
+    kairos-map:targetClass acme:IndividualClient .
 
-bronze-ap:tblClient skos:exactMatch acme:IndividualClient ;
+map:table__tblClient__to__SoleProprietorClient a kairos-map:TableMapping ;
     kairos-map:mappingType "split" ;
-    kairos-map:filterCondition "source.Type = 2" .
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:rowFilter map:table__tblClient__to__SoleProprietorClient__filter ;
+    kairos-map:sourceTable bronze-ap:tblClient ;
+    kairos-map:targetClass acme:SoleProprietorClient .
 
-# ---------------------------------------------------------------------------
-# Column-level: tblClient columns → Client properties
-# ---------------------------------------------------------------------------
-bronze-ap:tblClient_ClientID skos:exactMatch acme:clientId ;
-    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+map:table__tblIdentifier__to__Identifier a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable bronze-ap:tblIdentifier ;
+    kairos-map:targetClass acme:Identifier .
 
-bronze-ap:tblClient_Name skos:exactMatch acme:clientName ;
-    kairos-map:transform "source.Name" .
+map:table__tblRelation__to__Client a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "narrowMatch" ;
+    kairos-map:sourceTable bronze-ap:tblRelation ;
+    kairos-map:targetClass acme:Client .
 
-# Multi-target: same source column → second target property
-bronze-ap:tblClient_Name skos:exactMatch acme:displayName ;
-    kairos-map:transform "source.Name" .
+bronze-ap:tblClientPII skos:exactMatch acme:ClientPII .
 
-bronze-ap:tblClient_VATNumber skos:exactMatch acme:vatNumber ;
-    kairos-map:transform "source.VATNumber" .
+bronze-ap:tblClientPII_ClientID skos:exactMatch acme:clientId .
 
-bronze-ap:tblClient_Email skos:exactMatch acme:email ;
-    kairos-map:transform "source.Email" ;
-    kairos-map:defaultValue "'unknown@acme.example'" .
+bronze-ap:tblClientPII_DateOfBirth skos:exactMatch acme:dateOfBirth .
 
-bronze-ap:tblClient_IsActive skos:exactMatch acme:isActive ;
-    kairos-map:transform "CAST(source.IsActive AS BOOLEAN)" .
+bronze-ap:tblClientType skos:exactMatch acme:ClientType .
 
-bronze-ap:tblClient_CreatedDate skos:exactMatch acme:createdAt ;
-    kairos-map:transform "CAST(source.CreatedDate AS TIMESTAMP)" .
+bronze-ap:tblClientType_Label skos:exactMatch acme:typeLabel .
 
-# Direct mapping (no transform) — exercises the auto TRY_CAST path for datetime columns.
-# Regression guard: projector must emit TRY_CAST(ModifiedDate AS DATETIME2(6)), not bare DATETIME2.
+bronze-ap:tblClientType_TypeCode skos:exactMatch acme:typeCode .
+
+bronze-ap:tblClient_City skos:exactMatch acme:clientCity .
+
+bronze-ap:tblClient_ClientID skos:exactMatch acme:clientId .
+
+bronze-ap:tblClient_Country skos:exactMatch acme:clientCountry .
+
+bronze-ap:tblClient_CreatedDate skos:exactMatch acme:createdAt .
+
+bronze-ap:tblClient_IsActive skos:exactMatch acme:isActive .
+
 bronze-ap:tblClient_ModifiedDate skos:exactMatch acme:lastModifiedAt .
 
-# ---------------------------------------------------------------------------
-# Table-level: tblRelation → Client with dedup (many relations per client)
-# ---------------------------------------------------------------------------
-bronze-ap:tblRelation skos:narrowMatch acme:Client ;
-    kairos-map:mappingType "direct" ;
-    kairos-map:deduplicationKey "ClientID" ;
-    kairos-map:deduplicationOrder "ModifiedDate DESC" .
+bronze-ap:tblClient_VATNumber skos:exactMatch acme:vatNumber .
 
-# Column-level: tblRelation columns
-bronze-ap:tblRelation_ClientID skos:exactMatch acme:clientId ;
-    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+bronze-ap:tblIdentifier skos:exactMatch acme:Identifier .
 
-# ---------------------------------------------------------------------------
-# Column-level: new city/country columns
-# ---------------------------------------------------------------------------
-bronze-ap:tblClient_City skos:exactMatch acme:clientCity ;
-    kairos-map:transform "source.City" .
+bronze-ap:tblIdentifier_ClientID skos:exactMatch acme:clientId .
 
-bronze-ap:tblClient_Country skos:exactMatch acme:clientCountry ;
-    kairos-map:transform "source.Country" .
+bronze-ap:tblIdentifier_Scheme skos:exactMatch acme:identifierScheme .
 
-# FK inference: tblClient.TypeCode → ClientType.typeCode (natural key)
-bronze-ap:tblClient_TypeCode skos:exactMatch acme:typeCode ;
-    kairos-map:transform "source.TypeCode" .
+bronze-ap:tblIdentifier_ValidFrom skos:exactMatch acme:identifierValidFrom .
 
-# Explicit FK mapping: tblClient.TypeCode → CorporateClient.hasType (issue #178).
-# Only AdminPulse declares this FK; it must NOT leak into the CRMSystem per-source
-# CorporateClient view (which has no TypeCode column).
-bronze-ap:tblClient_TypeCode skos:exactMatch acme:hasType ;
-    kairos-map:transform "source.TypeCode" .
+bronze-ap:tblIdentifier_Value skos:exactMatch acme:identifierValue .
 
-# ---------------------------------------------------------------------------
-# Table-level: tblClientPII → ClientPII (GDPR satellite)
-# ---------------------------------------------------------------------------
-bronze-ap:tblClientPII skos:exactMatch acme:ClientPII ;
-    kairos-map:mappingType "direct" .
+bronze-ap:tblRelation skos:narrowMatch acme:Client .
 
-bronze-ap:tblClientPII_ClientID skos:exactMatch acme:clientId ;
-    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+bronze-ap:tblRelation_ClientID skos:exactMatch acme:clientId .
 
-bronze-ap:tblClientPII_NationalID skos:exactMatch acme:nationalId ;
-    kairos-map:transform "UPPER(TRIM(source.NationalID))" .
+map:column__tblClientPII_NationalID__to__nationalId__upper a kairos-map:FunctionExpression ;
+    kairos-map:arguments ( map:column__tblClientPII_NationalID__to__nationalId__upper_input__source ) ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:function "upper" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable true ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "scalar-function" .
 
-bronze-ap:tblClientPII_DateOfBirth skos:exactMatch acme:dateOfBirth ;
-    kairos-map:transform "CAST(source.DateOfBirth AS DATE)" .
+map:column__tblClientPII_NationalID__to__nationalId__upper_input__source a kairos-map:SourceColumnExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable true ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "source-column" ;
+    kairos-map:sourceColumn bronze-ap:tblClientPII_NationalID .
 
-# ---------------------------------------------------------------------------
-# Table-level: tblClientType → ClientType (reference data)
-# ---------------------------------------------------------------------------
-bronze-ap:tblClientType skos:exactMatch acme:ClientType ;
-    kairos-map:mappingType "direct" .
+map:column__tblClient_Email__to__email__coalesce a kairos-map:FunctionExpression ;
+    kairos-map:arguments ( map:column__tblClient_Email__to__email__coalesce_input__source map:column__tblClient_Email__to__email__coalesce_default__literal ) ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:function "coalesce" ;
+    kairos-map:nullPolicy "first-non-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "null-handling" .
 
-bronze-ap:tblClientType_TypeCode skos:exactMatch acme:typeCode ;
-    kairos-map:transform "source.TypeCode" .
+map:column__tblClient_Email__to__email__coalesce_default__literal a kairos-map:LiteralExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:literalValue "unknown@acme.example"^^xsd:string ;
+    kairos-map:nullPolicy "never-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "typed-literal" .
 
-bronze-ap:tblClientType_Label skos:exactMatch acme:typeLabel ;
-    kairos-map:transform "source.Label" .
+map:column__tblClient_Email__to__email__coalesce_input__source a kairos-map:SourceColumnExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable true ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "source-column" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_Email .
 
-# ---------------------------------------------------------------------------
-# Table-level: tblIdentifier → Identifier (multi-identifier pattern)
-# ---------------------------------------------------------------------------
-bronze-ap:tblIdentifier skos:exactMatch acme:Identifier ;
-    kairos-map:mappingType "direct" .
+map:table__tblClient__to__CorporateClient__filter a kairos-map:OperatorExpression ;
+    kairos-map:arguments ( map:table__tblClient__to__CorporateClient__filter_input__source map:table__tblClient__to__CorporateClient__filter_code__literal ) ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "three-valued" ;
+    kairos-map:nullable false ;
+    kairos-map:operator "equal" ;
+    kairos-map:outputType "boolean" ;
+    kairos-map:requiresCapability "scalar-operator" .
 
-bronze-ap:tblIdentifier_Value skos:exactMatch acme:identifierValue ;
-    kairos-map:transform "CAST(source.Value AS STRING)" .
+map:table__tblClient__to__CorporateClient__filter_code__literal a kairos-map:LiteralExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:literalValue "0"^^xsd:int ;
+    kairos-map:nullPolicy "never-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "int32" ;
+    kairos-map:requiresCapability "typed-literal" .
 
-bronze-ap:tblIdentifier_Scheme skos:exactMatch acme:identifierScheme ;
-    kairos-map:transform "CAST(source.Scheme AS STRING)" .
+map:table__tblClient__to__CorporateClient__filter_input__source a kairos-map:SourceColumnExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "int32" ;
+    kairos-map:requiresCapability "source-column" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_Type .
 
-bronze-ap:tblIdentifier_ValidFrom skos:exactMatch acme:identifierValidFrom ;
-    kairos-map:transform "CAST(source.ValidFrom AS DATE)" .
+map:table__tblClient__to__IndividualClient__filter a kairos-map:OperatorExpression ;
+    kairos-map:arguments ( map:table__tblClient__to__IndividualClient__filter_input__source map:table__tblClient__to__IndividualClient__filter_code__literal ) ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "three-valued" ;
+    kairos-map:nullable false ;
+    kairos-map:operator "equal" ;
+    kairos-map:outputType "boolean" ;
+    kairos-map:requiresCapability "scalar-operator" .
 
-bronze-ap:tblIdentifier_ClientID skos:exactMatch acme:clientId ;
-    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+map:table__tblClient__to__IndividualClient__filter_code__literal a kairos-map:LiteralExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:literalValue "2"^^xsd:int ;
+    kairos-map:nullPolicy "never-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "int32" ;
+    kairos-map:requiresCapability "typed-literal" .
+
+map:table__tblClient__to__IndividualClient__filter_input__source a kairos-map:SourceColumnExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "int32" ;
+    kairos-map:requiresCapability "source-column" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_Type .
+
+map:table__tblClient__to__SoleProprietorClient__filter a kairos-map:OperatorExpression ;
+    kairos-map:arguments ( map:table__tblClient__to__SoleProprietorClient__filter_input__source map:table__tblClient__to__SoleProprietorClient__filter_code__literal ) ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "three-valued" ;
+    kairos-map:nullable false ;
+    kairos-map:operator "equal" ;
+    kairos-map:outputType "boolean" ;
+    kairos-map:requiresCapability "scalar-operator" .
+
+map:table__tblClient__to__SoleProprietorClient__filter_code__literal a kairos-map:LiteralExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:literalValue "1"^^xsd:int ;
+    kairos-map:nullPolicy "never-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "int32" ;
+    kairos-map:requiresCapability "typed-literal" .
+
+map:table__tblClient__to__SoleProprietorClient__filter_input__source a kairos-map:SourceColumnExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "int32" ;
+    kairos-map:requiresCapability "source-column" ;
+    kairos-map:sourceColumn bronze-ap:tblClient_Type .
+
+bronze-ap:tblClientPII_NationalID skos:exactMatch acme:nationalId .
+
+bronze-ap:tblClient_Email skos:exactMatch acme:email .
+
+bronze-ap:tblClient_Name skos:exactMatch acme:clientName,
+        acme:displayName .
+
+bronze-ap:tblClient_TypeCode skos:exactMatch acme:hasType,
+        acme:typeCode .
+
+bronze-ap:tblClient skos:exactMatch acme:CorporateClient,
+        acme:IndividualClient,
+        acme:SoleProprietorClient .

@@ -1,416 +1,127 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Scenario tests for silver DDL/ERD projection using the synthetic Acme Corp hub.
+"""Scenario parity for the shared DD-110 Silver authority."""
 
-These tests exercise the silver projector with realistic multi-class ontologies
-that include cross-domain relationships and extension annotations.
-"""
+from __future__ import annotations
+
+import json
 
 import pytest
+import yaml
 
-from kairos_ontology.core.projections.medallion_silver_projector import (
-    generate_silver_artifacts,
+
+@pytest.mark.parametrize(
+    ("domain", "fixture_name"),
+    (
+        ("client", "client_dbt_artifacts"),
+        ("invoice", "invoice_dbt_artifacts"),
+        ("logistics", "logistics_dbt_artifacts"),
+    ),
 )
+def test_scenario_emits_passing_parity_manifest(
+    domain,
+    fixture_name,
+    request,
+):
+    artifacts = request.getfixturevalue(fixture_name)
+    manifest = json.loads(artifacts[f"metadata/{domain}-silver-parity.json"])
 
-from .conftest import EXTENSIONS_DIR, SHAPES_DIR
+    assert manifest["authority"] == "SilverModelSpec"
+    assert manifest["status"] == "pass"
+    assert manifest["errors"] == []
+    assert manifest["models"]
+    assert all(model["fields"] for model in manifest["models"])
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def client_silver_artifacts(client_ontology):
-    """Generate silver DDL/ERD artifacts for the client domain."""
-    graph, namespace, classes = client_ontology
-    ext_path = EXTENSIONS_DIR / "client-silver-ext.ttl"
-    return generate_silver_artifacts(
-        classes=classes,
-        graph=graph,
-        namespace=namespace,
-        shapes_dir=SHAPES_DIR,
-        ontology_name="client",
-        projection_ext_path=ext_path if ext_path.exists() else None,
+def test_client_sql_yaml_and_ddl_have_identical_final_columns(client_dbt_artifacts):
+    manifest = json.loads(
+        client_dbt_artifacts["metadata/client-silver-parity.json"]
     )
-
-
-@pytest.fixture(scope="module")
-def invoice_silver_artifacts(invoice_ontology):
-    """Generate silver DDL/ERD artifacts for the invoice domain."""
-    graph, namespace, classes = invoice_ontology
-    ext_path = EXTENSIONS_DIR / "invoice-silver-ext.ttl"
-    return generate_silver_artifacts(
-        classes=classes,
-        graph=graph,
-        namespace=namespace,
-        shapes_dir=SHAPES_DIR,
-        ontology_name="invoice",
-        projection_ext_path=ext_path if ext_path.exists() else None,
+    schema = yaml.safe_load(
+        client_dbt_artifacts["models/silver/client/_client__models.yml"]
     )
+    schema_columns = {
+        model["name"]: [column["name"] for column in model["columns"]]
+        for model in schema["models"]
+    }
+    ddl = client_dbt_artifacts["analyses/client/client-ddl.sql"]
 
-
-# ---------------------------------------------------------------------------
-# Silver DDL tests
-# ---------------------------------------------------------------------------
-
-class TestSilverDDL:
-    """Silver DDL should have CREATE TABLE for each domain class."""
-
-    def test_client_ddl_exists(self, client_silver_artifacts):
-        key = _find_artifact(client_silver_artifacts, ".sql")
-        assert key is not None, "No DDL SQL artifact generated for client domain"
-
-    def test_client_ddl_has_tables(self, client_silver_artifacts):
-        """DDL should have CREATE TABLE for the split subclasses."""
-        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
-        ddl = client_silver_artifacts[ddl_key].upper()
-        assert "CREATE TABLE" in ddl, "DDL missing CREATE TABLE statements"
-
-    def test_invoice_ddl_has_tables(self, invoice_silver_artifacts):
-        ddl_key = _find_artifact(invoice_silver_artifacts, ".sql")
-        assert ddl_key is not None, "No DDL SQL artifact for invoice domain"
-        ddl = invoice_silver_artifacts[ddl_key].upper()
-        assert "CREATE TABLE" in ddl, "Invoice DDL missing CREATE TABLE"
-
-    def test_invoice_ddl_has_invoice_table(self, invoice_silver_artifacts):
-        ddl_key = _find_artifact(invoice_silver_artifacts, ".sql")
-        ddl = invoice_silver_artifacts[ddl_key].lower()
-        assert "invoice" in ddl, "DDL missing invoice table"
-
-
-# ---------------------------------------------------------------------------
-# Silver ERD tests
-# ---------------------------------------------------------------------------
-
-class TestSilverERD:
-    """Silver ERD (Mermaid) should include entity relationships."""
-
-    def test_invoice_erd_exists(self, invoice_silver_artifacts):
-        key = _find_artifact(invoice_silver_artifacts, ".md")
-        if key is None:
-            key = _find_artifact(invoice_silver_artifacts, ".mmd")
-        assert key is not None, "No ERD artifact generated for invoice domain"
-
-    def test_invoice_erd_has_relationships(self, invoice_silver_artifacts):
-        """ERD should show the issuedTo FK from Invoice to Client."""
-        key = _find_artifact(invoice_silver_artifacts, ".md")
-        if key is None:
-            key = _find_artifact(invoice_silver_artifacts, ".mmd")
-        if key is None:
-            pytest.skip("No ERD artifact to inspect")
-        erd = invoice_silver_artifacts[key].lower()
-        # Mermaid ERDs use }|--|| or similar notation for relationships
-        has_relationship = (
-            "invoice" in erd and ("client" in erd or "issued" in erd)
-        )
-        assert has_relationship, (
-            f"Invoice ERD missing relationship to client:\n{erd[:500]}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Silver FK script tests
-# ---------------------------------------------------------------------------
-
-class TestSilverFKScript:
-    """Silver ALTER TABLE FK script for cross-domain relationships."""
-
-    def test_invoice_fk_script_exists(self, invoice_silver_artifacts):
-        """Should generate an ALTER TABLE script for cross-domain FKs."""
-        key = _find_artifact(invoice_silver_artifacts, "alter")
-        if key is None:
-            # Some versions put FK in the main DDL
-            key = _find_artifact(invoice_silver_artifacts, "fk")
-        # FK scripts are optional — just check if any artifact references FK
-        all_content = " ".join(invoice_silver_artifacts.values()).upper()
-        has_fk_ref = "FOREIGN KEY" in all_content or "REFERENCES" in all_content
-        if not has_fk_ref:
-            pytest.skip(
-                "No FK script or FOREIGN KEY reference in silver artifacts "
-                "(may be expected if FK scripts are disabled)"
-            )
-
-
-# ---------------------------------------------------------------------------
-# Silver extension annotation tests
-# ---------------------------------------------------------------------------
-
-class TestSilverExtAnnotations:
-    """Test that silver-ext annotations affect DDL generation."""
-
-    def test_client_silver_schema(self, client_silver_artifacts):
-        """Client domain uses silverSchema='silver' — tables should use silver schema."""
-        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
-        ddl = client_silver_artifacts[ddl_key].lower()
-        assert "silver" in ddl, "DDL should reference 'silver' schema"
-
-    def test_invoice_partition_by(self, invoice_silver_artifacts):
-        """Invoice has partitionBy='invoice_date' — should appear in DDL."""
-        ddl_key = _find_artifact(invoice_silver_artifacts, ".sql")
-        ddl = invoice_silver_artifacts[ddl_key].lower()
-        # partitionBy may not be emitted in all DDL flavors, check if present
-        has_partition = "partition" in ddl and "invoice_date" in ddl
-        if not has_partition:
-            pytest.skip(
-                "partitionBy not emitted in DDL (may be target-specific)"
-            )
-
-    def test_invoice_cluster_by(self, invoice_silver_artifacts):
-        """Invoice has clusterBy='client_sk' — should appear in DDL."""
-        ddl_key = _find_artifact(invoice_silver_artifacts, ".sql")
-        ddl = invoice_silver_artifacts[ddl_key].lower()
-        has_cluster = "cluster" in ddl and "client_sk" in ddl
-        if not has_cluster:
-            pytest.skip(
-                "clusterBy not emitted in DDL (may be target-specific)"
-            )
-
-    def test_reference_data_class_in_silver(self, client_silver_artifacts):
-        """ClientType (isReferenceData=true) should appear in silver DDL."""
-        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
-        ddl = client_silver_artifacts[ddl_key].lower()
-        assert "client_type" in ddl, (
-            "Reference data class ClientType missing from silver DDL"
-        )
-
-    def test_gdpr_satellite_in_silver(self, client_silver_artifacts):
-        """ClientPII (gdprSatelliteOf=Client) should appear in silver DDL."""
-        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
-        ddl = client_silver_artifacts[ddl_key].lower()
-        assert "client_pii" in ddl, (
-            "GDPR satellite ClientPII missing from silver DDL"
-        )
-
-    def test_invoice_tag_in_silver(self, invoice_silver_artifacts):
-        """InvoiceTag (isReferenceData=true) should appear in silver DDL."""
-        ddl_key = _find_artifact(invoice_silver_artifacts, ".sql")
-        ddl = invoice_silver_artifacts[ddl_key].lower()
-        assert "invoice_tag" in ddl, (
-            "Reference data class InvoiceTag missing from silver DDL"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
-
-def _find_artifact(artifacts: dict, suffix: str) -> str | None:
-    """Find the first artifact key that ends with the given suffix."""
-    for key in artifacts:
-        if key.endswith(suffix):
-            return key
-    return None
-
-
-# ---------------------------------------------------------------------------
-# DD-021: Import-only domain — logistics (imported classes via silverInclude)
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def logistics_silver_artifacts(logistics_ontology):
-    """Generate silver DDL/ERD for the logistics domain (import-only, DD-021)."""
-    graph, namespace, classes = logistics_ontology
-    ext_path = EXTENSIONS_DIR / "logistics-silver-ext.ttl"
-    return generate_silver_artifacts(
-        classes=classes,
-        graph=graph,
-        namespace=namespace,
-        shapes_dir=SHAPES_DIR,
-        ontology_name="logistics",
-        projection_ext_path=ext_path if ext_path.exists() else None,
-    )
-
-
-class TestDD021LogisticsDomain:
-    """DD-021: Import-only domain should produce DDL for whitelisted classes."""
-
-    def test_ddl_generated(self, logistics_silver_artifacts):
-        """Import-only domain produces DDL when silverInclude claims exist."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        assert ddl_key is not None, "No DDL artifact generated for logistics domain"
-        ddl = logistics_silver_artifacts[ddl_key]
-        assert "CREATE TABLE" in ddl
-
-    def test_claimed_classes_projected(self, logistics_silver_artifacts):
-        """Only classes claimed via silverInclude appear in DDL."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        ddl = logistics_silver_artifacts[ddl_key].lower()
-        # TradeParty and Carrier are claimed in logistics-silver-ext.ttl
-        assert "silver_logistics.trade_party" in ddl
-        assert "silver_logistics.carrier" in ddl
-
-    def test_hub_schema_used(self, logistics_silver_artifacts):
-        """Adopted imported classes use the hub domain schema, not the reference model's."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        ddl = logistics_silver_artifacts[ddl_key]
-        # Schema should be silver_logistics (from hub domain name)
-        assert "silver_logistics" in ddl
-        # NOT the reference model namespace
-        assert "silver_refmodel" not in ddl
-        assert "silver_party" not in ddl
-
-    def test_scd_type_override(self, logistics_silver_artifacts):
-        """Extension annotations (scdType) apply to claimed imported classes."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        ddl = logistics_silver_artifacts[ddl_key].lower()
-        # TradeParty is SCD Type 2 → should have valid_from/valid_to
-        assert "valid_from" in ddl
-        assert "valid_to" in ddl
-
-    def test_erd_generated(self, logistics_silver_artifacts):
-        """ERD diagram is generated for import-only domain."""
-        erd_key = _find_artifact(logistics_silver_artifacts, "-erd.mmd")
-        assert erd_key is not None, "No ERD artifact generated for logistics domain"
-        erd = logistics_silver_artifacts[erd_key]
-        assert "trade_party" in erd.lower()
-
-    def test_imported_properties_discovered(self, logistics_silver_artifacts):
-        """Properties from the reference model are discovered for claimed classes."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        ddl = logistics_silver_artifacts[ddl_key].lower()
-        # partyName and partyCode are properties of TradeParty in the ref model
-        assert "party_name" in ddl
-        assert "party_code" in ddl
-
-
-# ---------------------------------------------------------------------------
-# S3 Inheritance Strategy: Discriminator vs TPC (Table-Per-Concrete-Class)
-# ---------------------------------------------------------------------------
-
-class TestS3InheritanceStrategy:
-    """S3 rule respects inheritanceStrategy annotation.
-
-    Client domain uses discriminator → subtypes are folded into parent.
-    Without the annotation, subtypes would get separate tables (TPC).
-    """
-
-    def test_discriminator_folds_subtypes(self, client_silver_artifacts):
-        """With inheritanceStrategy 'discriminator', subtypes are folded into parent."""
-        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
-        ddl = client_silver_artifacts[ddl_key].lower()
-        # The parent 'client' table should exist
-        assert "silver.client" in ddl or "silver_client.client" in ddl, (
-            "Parent Client table missing from DDL"
-        )
-        # Discriminator column should be present on the parent table
-        assert "client_type" in ddl, (
-            "discriminatorColumn 'client_type' missing from DDL"
-        )
-
-    def test_discriminator_skips_subtypes(self, client_silver_artifacts):
-        """Discriminator subtypes should NOT get separate tables."""
-        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
-        ddl = client_silver_artifacts[ddl_key]
-        # Count CREATE TABLE statements — subtypes shouldn't have their own
-        tables = [
-            line for line in ddl.split("\n")
-            if "CREATE TABLE" in line.upper()
+    for model in manifest["models"]:
+        if model["model_name"] not in schema_columns:
+            continue
+        expected = model["columns"]
+        sql = client_dbt_artifacts[
+            model["representations"]["dbt_sql"]["path"]
         ]
-        table_names = [t.lower() for t in tables]
-        # CorporateClient, SoleProprietorClient, IndividualClient should NOT
-        # appear as separate tables
-        for name in table_names:
-            assert "corporate_client" not in name, (
-                "Discriminator subtype CorporateClient has its own table — should be folded"
-            )
-            assert "sole_proprietor_client" not in name, (
-                "Discriminator subtype SoleProprietorClient has its own table — should be folded"
-            )
-            assert "individual_client" not in name, (
-                "Discriminator subtype IndividualClient has its own table — should be folded"
-            )
+        marker = json.dumps(expected, separators=(",", ":"))
+        assert f"-- DD-110-COLUMNS: {marker}" in sql
+        assert f"-- DD-110-COLUMNS: {marker}" in ddl
+        assert schema_columns[model["model_name"]] == expected
 
 
-# ---------------------------------------------------------------------------
-# IRI lineage in DDL comments
-# ---------------------------------------------------------------------------
+def test_runtime_contract_has_no_legacy_silver_columns(client_dbt_artifacts):
+    ddl = client_dbt_artifacts["analyses/client/client-ddl.sql"]
 
-class TestSilverIRILineage:
-    """Silver DDL column comments should use prefixed IRI format."""
-
-    def test_data_property_has_iri_comment(self, client_silver_artifacts):
-        """Data property columns should have prefixed IRI in DDL comment."""
-        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
-        ddl = client_silver_artifacts[ddl_key]
-        # clientName property should produce: -- client:clientName
-        assert "client:clientName" in ddl, (
-            f"Expected 'client:clientName' IRI comment in DDL but not found.\n"
-            f"First 1000 chars:\n{ddl[:1000]}"
-        )
-
-    def test_fk_property_has_iri_comment(self, client_silver_artifacts):
-        """FK object property columns should have prefixed IRI in DDL comment."""
-        ddl_key = _find_artifact(client_silver_artifacts, ".sql")
-        ddl = client_silver_artifacts[ddl_key]
-        # Look for any FK column with IRI comment (format: prefix:propertyName)
-        # isIdentifiedBy → identifier_sk (if not inlined)
-        import re
-        fk_iri_pattern = re.compile(r"--\s+client:\w+")
-        matches = fk_iri_pattern.findall(ddl)
-        assert len(matches) > 0, (
-            "Expected at least one 'client:<property>' IRI comment in DDL"
-        )
+    assert "_source_record_key" in ddl
+    assert "_source_record_id" not in ddl
+    assert "_row_hash BINARY" not in ddl
+    assert "_business_valid_from" in ddl
+    assert "_business_valid_to" in ddl
+    assert "_system_from" in ddl
+    assert "_system_to" in ddl
+    assert " valid_from " not in ddl
+    assert " valid_to " not in ddl
 
 
-# ---------------------------------------------------------------------------
-# Issue #172: transitive discriminator fold + silverExclude
-# ---------------------------------------------------------------------------
+def test_temporal_fk_and_quality_links_are_explicit(invoice_dbt_artifacts):
+    metadata = json.loads(
+        invoice_dbt_artifacts["metadata/invoice-silver-constraints.json"]
+    )
+    constraints = [
+        constraint
+        for model in metadata["models"]
+        for constraint in model["constraints"]
+    ]
+    links = [
+        link
+        for model in metadata["models"]
+        for link in model["relation_links"]
+    ]
 
-class TestIssue172TransitiveFoldAndExclude:
-    """B — discriminator folding is transitive through unclaimed intermediates.
+    assert any(
+        constraint["kind"] == "foreign-key"
+        and constraint["temporal_mode"] in {"current", "as-of", "none"}
+        for constraint in constraints
+    )
+    assert all(
+        constraint["enforced"] is False
+        for constraint in constraints
+    )
+    assert any(
+        link["relation_kind"] in {
+            "dq-result",
+            "dq-quarantine",
+            "temporal-fk-quarantine",
+        }
+        for link in links
+    )
 
-    A — silverExclude removes a class's table while descendants still inherit
-    its properties.
 
-    Fixtures (acme-hub logistics domain):
-      Organization(claimed, discriminator) <- ShipOperator(UNCLAIMED) <- VesselCarrier(local)
-      BaseMarker(silverExclude) <- ActiveMarker(materialised)
-    """
+def test_erd_uses_only_emitted_models_and_temporal_annotations(
+    invoice_dbt_artifacts,
+):
+    metadata = json.loads(
+        invoice_dbt_artifacts["metadata/invoice-silver-constraints.json"]
+    )
+    emitted = {model["model_name"].upper() for model in metadata["models"]}
+    erd = invoice_dbt_artifacts["docs/diagrams/invoice/invoice-erd.mmd"]
 
-    def test_transitive_subtype_folds_into_discriminator(self, logistics_silver_artifacts):
-        """VesselCarrier reaches the discriminator root only via an unclaimed
-        intermediate, yet must fold into the organization table (no own table)."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        ddl = logistics_silver_artifacts[ddl_key].lower()
-        assert "silver_logistics.organization" in ddl
-        # The transitive subtype and the unclaimed intermediate get no own table
-        assert "silver_logistics.vessel_carrier" not in ddl
-        assert "silver_logistics.ship_operator" not in ddl
-
-    def test_intermediate_properties_fold_into_parent(self, logistics_silver_artifacts):
-        """Properties of the UNCLAIMED intermediate (ShipOperator) must fold into
-        the discriminator parent table — they would be lost without the bounded
-        ancestor merge (rubber-duck issue #1)."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        ddl = logistics_silver_artifacts[ddl_key].lower()
-        # ship_operator_code is declared on the unclaimed intermediate
-        assert "ship_operator_code" in ddl
-        # It is merged with a "from <Subtype>" provenance comment
-        assert "from vesselcarrier" in ddl
-
-    def test_discriminator_column_present_on_parent(self, logistics_silver_artifacts):
-        """The annotated discriminator column appears on the fold-target table."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        ddl = logistics_silver_artifacts[ddl_key].lower()
-        assert "org_type" in ddl
-
-    def test_existing_tables_unaffected(self, logistics_silver_artifacts):
-        """The additive #172 fixtures must not disturb existing claimed tables."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        ddl = logistics_silver_artifacts[ddl_key].lower()
-        assert "silver_logistics.trade_party" in ddl
-        assert "silver_logistics.carrier" in ddl
-
-    def test_silver_exclude_emits_no_table(self, logistics_silver_artifacts):
-        """A silverExclude'd class produces no table."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        ddl = logistics_silver_artifacts[ddl_key].lower()
-        assert "silver_logistics.base_marker" not in ddl
-
-    def test_silver_exclude_descendant_inherits_properties(self, logistics_silver_artifacts):
-        """A descendant of the excluded class still inherits its properties."""
-        ddl_key = _find_artifact(logistics_silver_artifacts, "-ddl.sql")
-        ddl = logistics_silver_artifacts[ddl_key].lower()
-        # ActiveMarker is materialised and inherits markerCode from excluded BaseMarker
-        assert "silver_logistics.active_marker" in ddl
-        assert "marker_code" in ddl
+    assert erd.startswith("erDiagram\n")
+    assert "temporal=" in erd
+    for line in erd.splitlines():
+        if "||--o{" not in line:
+            continue
+        left, remainder = line.strip().split(" ||--o{ ", 1)
+        right = remainder.split(" :", 1)[0]
+        assert left in emitted
+        assert right in emitted

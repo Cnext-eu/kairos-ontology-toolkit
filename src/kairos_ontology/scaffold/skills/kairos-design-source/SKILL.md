@@ -404,6 +404,45 @@ Verify:
 
 ---
 
+## Phase 3.5 — Author source preparation policy when required (DD-106/DD-107)
+
+Use this phase during onboarding or when **kairos-design-mapping** routes technical work
+back here. Author `integration/preparation/{source}-prep.ttl` through `rdflib.Graph`;
+never hand-concatenate Turtle and never place SQL in the policy.
+
+Preparation owns only source-technical behavior:
+
+- physical-safe rename;
+- lossless trim/text cleanup;
+- explicit type parse/cast and error policy;
+- evidence-backed sentinel normalization;
+- canonical CDC normalization: explicit raw operation code map plus distinct
+  source-update, business-effective, ingestion, and total-order sequence outputs;
+- parent-grain scalar JSON extraction or explicit keyed array-child relations;
+- source/table-scoped `_source_record_key`; and
+- source-technical duplicate removal via `kairos-prep:TechnicalDedupe`.
+
+If any downstream entity declares SCD1/SCD2, every linked source identity must
+use `prepMode "normalize"` and emit `_cdc_operation`, `_source_updated_at`,
+`_source_effective_at`, `_ingested_at`, and a complete sequence/tie breaker.
+`_loaded_at` is not a substitute: it is injected only by the Silver run clock.
+For governed complete snapshots, author `*=snapshot`; never infer an operation.
+
+Every mapped physical table must ultimately have exactly one `PreparationPolicy` with
+`prepMode`, schema-change policy, and record-key policy. Use `normalize` when any
+technical operation is present; verified `passthrough` forbids hidden cleanup.
+
+For `TechnicalDedupe`, record source-column IRIs as partition keys and positioned
+`DedupeOrderTerm` resources. The order must be contiguous and include source primary-key
+tie-breakers. Business ranking, survivorship, cross-relation fallback, joins, aggregation,
+or grain change belongs to **kairos-develop-dbt-transformation**, not prep.
+
+Present the proposed policy and evidence for confirmation before writing. In fleet mode,
+record every AI-approved choice, rationale, confidence, and evidence in the source phase
+log. Then invoke the validation skill; do not bypass its gates with a direct CLI command.
+
+---
+
 ## Phase 4 — Analyse sources (`analyse-sources`)
 
 > **When to use:** All source vocabularies have been created (via any Phase 1-3

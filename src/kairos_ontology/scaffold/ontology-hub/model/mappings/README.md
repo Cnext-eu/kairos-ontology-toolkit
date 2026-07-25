@@ -1,89 +1,103 @@
-# SKOS Mappings
+# SKOS Mapping Contracts
 
-This directory contains SKOS mapping files that link concepts across
-vocabularies. Each mapping file can serve **both** purposes below — SKOS
-predicates express the semantic relationship while `kairos-map:` annotations
-add the technical detail needed for dbt code generation. This dual-purpose
-design avoids redundancy: one file per source×domain is the single source
-of truth for alignment **and** transformation.
+This directory contains source-to-domain alignments. SKOS states semantic
+correspondence; named `kairos-map` v2 resources state the validated technical
+contract. Normal mappings never contain SQL strings.
 
-## 1. External vocabulary alignment
+## Authoring rule
 
-Link your domain ontology terms to external standards (Schema.org, FIBO):
-
-```turtle
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
-@prefix cust: <http://example.org/ontology/customer#> .
-@prefix schema: <http://schema.org/> .
-
-cust:Customer skos:exactMatch schema:Person .
-cust:customerName skos:exactMatch schema:name .
-cust:customerEmail skos:exactMatch schema:email .
-```
-
-## 2. Source-to-domain data mappings (for dbt projection)
-
-Map source system columns to domain ontology properties. Use SKOS match
-properties to express semantic correspondence, and `kairos-map:` annotations
-for technical transformation details:
+Use the **kairos-design-mapping** skill. Do not hand-edit mapping TTL outside that
+workflow: it validates source ownership, types, null behavior, determinism, adapter
+support, and transformation routing.
 
 ```turtle
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
-@prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
-@prefix party: <https://example.com/ont/party#> .
+@prefix map: <https://example.com/mapping/adminpulse-to-party#> .
+@prefix bronze: <https://example.com/bronze/adminpulse#> .
+@prefix party: <https://example.com/ontology/party#> .
 
-# Table-level: which source table feeds which domain entity
-bronze-ap:tblClient skos:exactMatch party:Client ;
-    kairos-map:mappingType "direct" .
+bronze:tblClient skos:exactMatch party:Client .
+map:client-table a kairos-map:TableMapping ;
+    kairos-map:sourceTable bronze:tblClient ;
+    kairos-map:targetClass party:Client ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" .
 
-# Column-level: 1:1 with type cast
-bronze-ap:tblClient_ClientID skos:exactMatch party:clientId ;
-    kairos-map:transform "CAST(source.ClientID AS STRING)" .
-
-# Column-level: needs cleaning
-bronze-ap:tblClient_Name skos:closeMatch party:clientName ;
-    kairos-map:transform "TRIM(source.Name)" .
-
-# Computed column: derived from multiple source columns
-bronze-ap:tblClient_FullAddress skos:narrowMatch party:addressLine1 ;
-    kairos-map:transform "CONCAT(source.Street, ' ', source.Nr, ', ', source.City)" ;
-    kairos-map:sourceColumns "Street Nr City" .
-
-# With default value for NULLs
-bronze-ap:tblClient_Country skos:exactMatch party:country ;
-    kairos-map:transform "COALESCE(source.Country, 'BE')" ;
-    kairos-map:defaultValue "BE" .
+bronze:tblClient_Name skos:exactMatch party:clientName .
+map:client-name a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze:tblClient_Name ;
+    kairos-map:targetProperty party:clientName ;
+    kairos-map:matchType "exactMatch" .
 ```
 
-### Folder structure
+Omitting `kairos-map:expression` derives a direct typed source-column reference.
 
-Organise mapping files by source system:
+## Typed scalar expressions
 
+Non-trivial scalar logic uses named AST nodes and ordered RDF lists:
+
+```turtle
+bronze:tblClient_Email skos:exactMatch party:email .
+map:client-email a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze:tblClient_Email ;
+    kairos-map:targetProperty party:email ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:expression map:email-fallback .
+
+map:email-fallback a kairos-map:FunctionExpression ;
+    kairos-map:function "coalesce" ;
+    kairos-map:arguments ( map:email-input map:email-default ) ;
+    kairos-map:outputType "string" ;
+    kairos-map:nullable false ;
+    kairos-map:nullPolicy "first-non-null" ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:requiresCapability "null-handling" .
+
+map:email-input a kairos-map:SourceColumnExpression ;
+    kairos-map:sourceColumn bronze:tblClient_Email ;
+    kairos-map:outputType "string" ;
+    kairos-map:nullable true ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:requiresCapability "source-column" .
+
+map:email-default a kairos-map:LiteralExpression ;
+    kairos-map:literalValue "unknown@example.invalid" ;
+    kairos-map:outputType "string" ;
+    kairos-map:nullable false ;
+    kairos-map:nullPolicy "never-null" ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:requiresCapability "typed-literal" .
 ```
+
+Every expression node declares output type, nullability/null policy, deterministic
+behavior, and one adapter capability. Source references are column IRIs, never
+identifier strings.
+
+Allowed operations are deterministic scalar operators/functions, CASE, COALESCE,
+typed NULL/literals, and the approved `https://kairos.cnext.eu/mapping/macro#`
+macros.
+
+## Routing boundary
+
+- Rename, trim, type parsing/cast, sentinel normalization, scalar JSON extraction,
+  CDC normalization, and source-technical deduplication belong in
+  `integration/preparation/` through **kairos-design-source**.
+- Joins, windows, ranking, aggregation, cross-relation fallback, JSON expansion,
+  merge, and grain changes require **kairos-develop-dbt-transformation**.
+- Map a contracted transformation only through its synchronized virtual source
+  after approval, evidence, tests, adapter support, and replacement readiness pass.
+
+## Layout
+
+```text
 model/mappings/
 ├── adminpulse/
 │   ├── adminpulse-to-party.ttl
 │   └── adminpulse-to-client.ttl
-├── erp-navision/
-│   └── erp-navision-to-order.ttl
-└── README.md
+└── erp-navision/
+    └── erp-navision-to-order.ttl
 ```
 
-### Naming convention for source-to-domain mappings
-
-```
-{source-system}/{source-system}-to-{domain}.ttl
-```
-
-Examples: `adminpulse/adminpulse-to-party.ttl`, `erp-navision/erp-navision-to-client.ttl`
-
-### SKOS property semantics
-
-| SKOS Property | Meaning |
-|---------------|---------|
-| `skos:exactMatch` | 1:1 mapping, same semantics |
-| `skos:closeMatch` | 1:1 but needs transformation |
-| `skos:narrowMatch` | Source is more specific → maps to broader domain concept |
-| `skos:broadMatch` | Source is broader → filter/split to domain concept |
-| `skos:relatedMatch` | Indirect — needs business logic / lookup |
+Use `{source-system}/{source-system}-to-{domain}.ttl`.

@@ -1,0 +1,195 @@
+@prefix prep: <https://acme.example/preparation/billingpro#> .
+@prefix bronze: <https://acme.example/bronze/billingpro#> .
+@prefix kairos-prep: <https://kairos.cnext.eu/preparation#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://acme.example/preparation/billingpro> a owl:Ontology ;
+    rdfs:label "BillingPro preparation policy"@en ;
+    rdfs:comment "Preparation contracts including normalized update time and a keyed JSON array child relation."@en ;
+    owl:imports <https://kairos.cnext.eu/preparation>,
+                <https://acme.example/bronze/billingpro> ;
+    owl:versionInfo "1.0.0" .
+
+prep:invoicePolicy a kairos-prep:PreparationPolicy ;
+    kairos-prep:sourceTable bronze:tblInvoice ;
+    kairos-prep:prepMode "normalize" ;
+    kairos-prep:schemaChangePolicy "fail" ;
+    kairos-prep:recordKeyPolicy prep:invoiceKey ;
+    kairos-prep:cdcMapping prep:invoiceCdc ;
+    kairos-prep:physicalRename prep:invoiceStatusRename ;
+    kairos-prep:cleanupRule prep:invoiceCurrencyTrim ;
+    kairos-prep:sentinelNormalization prep:invoiceCurrencySentinel ;
+    kairos-prep:scalarJsonExtraction prep:invoiceChannelExtraction .
+
+prep:invoiceStatusRename a kairos-prep:PhysicalRename ;
+    kairos-prep:sourceColumn bronze:tblInvoice_Status ;
+    kairos-prep:targetColumnName "invoice_status" .
+
+prep:invoiceCurrencyTrim a kairos-prep:CleanupRule ;
+    kairos-prep:sourceColumn bronze:tblInvoice_Currency ;
+    kairos-prep:cleanupOperation "trim" ;
+    kairos-prep:lossless true .
+
+prep:invoiceCurrencySentinel a kairos-prep:SentinelNormalization ;
+    kairos-prep:sourceColumn bronze:tblInvoice_Currency ;
+    kairos-prep:sentinelValue "N/A" ;
+    kairos-prep:sentinelAction "to-null" ;
+    kairos-prep:evidence "billingpro-data-profile-v1" .
+
+prep:invoiceChannelExtraction a kairos-prep:ScalarJsonExtraction ;
+    kairos-prep:sourceColumn bronze:tblInvoice_MetadataJson ;
+    kairos-prep:jsonPath "$.channel" ;
+    kairos-prep:extractedColumn prep:invoiceChannel ;
+    kairos-prep:rawPayloadRetention "retain-payload" ;
+    kairos-prep:errorPolicy "null-with-evidence" .
+
+prep:invoiceChannel a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "source_channel" ;
+    kairos-prep:targetType "string" ;
+    kairos-prep:jsonPath "$.channel" .
+
+prep:invoiceCdc a kairos-prep:CdcMapping ;
+    kairos-prep:rawOperationColumn bronze:tblInvoice_InvoiceID ;
+    kairos-prep:rawUpdateTimestampColumn bronze:tblInvoice_LastModified ;
+    kairos-prep:rawEffectiveTimestampColumn bronze:tblInvoice_InvoiceDate ;
+    kairos-prep:rawIngestionTimestampColumn bronze:tblInvoice_LastModified ;
+    kairos-prep:rawSequenceColumn bronze:tblInvoice_InvoiceID ;
+    kairos-prep:operationCodeMap "*=snapshot" ;
+    kairos-prep:normalizedOperationField prep:cdcOperation ;
+    kairos-prep:normalizedUpdateTimestampField prep:sourceUpdatedAt ;
+    kairos-prep:normalizedEffectiveTimestampField prep:sourceEffectiveAt ;
+    kairos-prep:normalizedIngestionTimestampField prep:ingestedAt ;
+    kairos-prep:normalizedSequenceField prep:cdcSequence .
+
+prep:invoiceLinePolicy a kairos-prep:PreparationPolicy ;
+    kairos-prep:sourceTable bronze:tblInvoiceLine ;
+    kairos-prep:prepMode "normalize" ;
+    kairos-prep:schemaChangePolicy "fail" ;
+    kairos-prep:recordKeyPolicy prep:invoiceLineKey ;
+    kairos-prep:cdcMapping prep:invoiceLineCdc ;
+    kairos-prep:typeConversion prep:invoiceLineIdCast ;
+    kairos-prep:arrayChildContract prep:invoiceLineDetails .
+
+prep:invoiceLineIdCast a kairos-prep:TypeConversion ;
+    kairos-prep:sourceColumn bronze:tblInvoiceLine_LineID ;
+    kairos-prep:targetType "string" ;
+    kairos-prep:parsePolicy "integer-lexical" ;
+    kairos-prep:errorPolicy "fail" .
+
+prep:invoiceLineCdc a kairos-prep:CdcMapping ;
+    kairos-prep:rawOperationColumn bronze:tblInvoiceLine_LineID ;
+    kairos-prep:rawUpdateTimestampColumn bronze:tblInvoiceLine_LineID ;
+    kairos-prep:rawEffectiveTimestampColumn bronze:tblInvoiceLine_LineID ;
+    kairos-prep:rawIngestionTimestampColumn bronze:tblInvoiceLine_LineID ;
+    kairos-prep:rawSequenceColumn bronze:tblInvoiceLine_LineID ;
+    kairos-prep:operationCodeMap "*=snapshot" ;
+    kairos-prep:normalizedOperationField prep:cdcOperation ;
+    kairos-prep:normalizedUpdateTimestampField prep:sourceUpdatedAt ;
+    kairos-prep:normalizedEffectiveTimestampField prep:sourceEffectiveAt ;
+    kairos-prep:normalizedIngestionTimestampField prep:ingestedAt ;
+    kairos-prep:normalizedSequenceField prep:cdcSequence .
+
+prep:invoiceLineDetails a kairos-prep:ArrayChildContract ;
+    kairos-prep:sourceColumn bronze:tblInvoiceLine_LineDetailsJson ;
+    kairos-prep:jsonPath "$" ;
+    kairos-prep:childRelationName "stg_billingpro__invoice_line_details" ;
+    kairos-prep:parentKeyComponent bronze:tblInvoiceLine_LineID ;
+    kairos-prep:elementIndexField "_element_index" ;
+    kairos-prep:nullArrayPolicy "zero-children" ;
+    kairos-prep:emptyArrayPolicy "zero-children" ;
+    kairos-prep:rawPayloadRetention "retain-payload" ;
+    kairos-prep:extractedColumn prep:invoiceLineDetailsTaxCode,
+        prep:invoiceLineDetailsTaxRate,
+        prep:invoiceLineDetailsDiscountPct .
+
+prep:invoiceLineDetailsTaxCode a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "tax_code" ;
+    kairos-prep:targetType "string" ;
+    kairos-prep:jsonPath "$.taxCode" .
+prep:invoiceLineDetailsTaxRate a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "tax_rate" ;
+    kairos-prep:targetType "decimal(5,2)" ;
+    kairos-prep:jsonPath "$.taxRate" .
+prep:invoiceLineDetailsDiscountPct a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "discount_pct" ;
+    kairos-prep:targetType "decimal(5,2)" ;
+    kairos-prep:jsonPath "$.discountPct" .
+
+prep:invoiceTagPolicy a kairos-prep:PreparationPolicy ;
+    kairos-prep:sourceTable bronze:tblInvoiceTag ;
+    kairos-prep:prepMode "normalize" ;
+    kairos-prep:schemaChangePolicy "fail" ;
+    kairos-prep:recordKeyPolicy prep:invoiceTagKey ;
+    kairos-prep:cdcMapping prep:invoiceTagCdc .
+
+prep:invoiceTagCdc a kairos-prep:CdcMapping ;
+    kairos-prep:rawOperationColumn bronze:tblInvoiceTag_TagID ;
+    kairos-prep:rawUpdateTimestampColumn bronze:tblInvoiceTag_TagID ;
+    kairos-prep:rawEffectiveTimestampColumn bronze:tblInvoiceTag_TagID ;
+    kairos-prep:rawIngestionTimestampColumn bronze:tblInvoiceTag_TagID ;
+    kairos-prep:rawSequenceColumn bronze:tblInvoiceTag_TagID ;
+    kairos-prep:operationCodeMap "*=snapshot" ;
+    kairos-prep:normalizedOperationField prep:cdcOperation ;
+    kairos-prep:normalizedUpdateTimestampField prep:sourceUpdatedAt ;
+    kairos-prep:normalizedEffectiveTimestampField prep:sourceEffectiveAt ;
+    kairos-prep:normalizedIngestionTimestampField prep:ingestedAt ;
+    kairos-prep:normalizedSequenceField prep:cdcSequence .
+
+prep:creditNotePolicy a kairos-prep:PreparationPolicy ;
+    kairos-prep:sourceTable bronze:tblCreditNote ;
+    kairos-prep:prepMode "normalize" ;
+    kairos-prep:schemaChangePolicy "fail" ;
+    kairos-prep:recordKeyPolicy prep:creditNoteKey ;
+    kairos-prep:cdcMapping prep:creditNoteCdc .
+
+prep:creditNoteCdc a kairos-prep:CdcMapping ;
+    kairos-prep:rawOperationColumn bronze:tblCreditNote_CreditNoteID ;
+    kairos-prep:rawUpdateTimestampColumn bronze:tblCreditNote_LastModified ;
+    kairos-prep:rawEffectiveTimestampColumn bronze:tblCreditNote_InvoiceDate ;
+    kairos-prep:rawIngestionTimestampColumn bronze:tblCreditNote_LastModified ;
+    kairos-prep:rawSequenceColumn bronze:tblCreditNote_CreditNoteID ;
+    kairos-prep:operationCodeMap "*=snapshot" ;
+    kairos-prep:normalizedOperationField prep:cdcOperation ;
+    kairos-prep:normalizedUpdateTimestampField prep:sourceUpdatedAt ;
+    kairos-prep:normalizedEffectiveTimestampField prep:sourceEffectiveAt ;
+    kairos-prep:normalizedIngestionTimestampField prep:ingestedAt ;
+    kairos-prep:normalizedSequenceField prep:cdcSequence .
+
+prep:invoiceKey a kairos-prep:RecordKeyPolicy ;
+    kairos-prep:sourceScope "billingpro" ; kairos-prep:tableScope "tblInvoice" ;
+    kairos-prep:recordKeyComponent bronze:tblInvoice_InvoiceID ;
+    kairos-prep:recordKeyOutput prep:sourceRecordKey .
+prep:invoiceLineKey a kairos-prep:RecordKeyPolicy ;
+    kairos-prep:sourceScope "billingpro" ; kairos-prep:tableScope "tblInvoiceLine" ;
+    kairos-prep:recordKeyComponent bronze:tblInvoiceLine_LineID ;
+    kairos-prep:recordKeyOutput prep:sourceRecordKey .
+prep:invoiceTagKey a kairos-prep:RecordKeyPolicy ;
+    kairos-prep:sourceScope "billingpro" ; kairos-prep:tableScope "tblInvoiceTag" ;
+    kairos-prep:recordKeyComponent bronze:tblInvoiceTag_TagID ;
+    kairos-prep:recordKeyOutput prep:sourceRecordKey .
+prep:creditNoteKey a kairos-prep:RecordKeyPolicy ;
+    kairos-prep:sourceScope "billingpro" ; kairos-prep:tableScope "tblCreditNote" ;
+    kairos-prep:recordKeyComponent bronze:tblCreditNote_CreditNoteID ;
+    kairos-prep:recordKeyOutput prep:sourceRecordKey .
+
+prep:sourceRecordKey a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_source_record_key" ;
+    kairos-prep:targetType "string" .
+
+prep:sourceUpdatedAt a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_source_updated_at" ;
+    kairos-prep:targetType "timestamp" .
+
+prep:cdcOperation a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_cdc_operation" ;
+    kairos-prep:targetType "string" .
+prep:sourceEffectiveAt a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_source_effective_at" ;
+    kairos-prep:targetType "timestamp" .
+prep:ingestedAt a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_ingested_at" ;
+    kairos-prep:targetType "timestamp" .
+prep:cdcSequence a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_cdc_sequence" ;
+    kairos-prep:targetType "string" .

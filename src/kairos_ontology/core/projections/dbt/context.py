@@ -1,78 +1,93 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Typed, immutable intermediate models for the dbt projection pipeline (DD-102).
+"""Typed hand-offs for the DD-110 dbt projection pipeline.
 
-The dbt projector is an **orchestrator** over five explicit, deterministic phases:
-
-``bind → normalize → shape → materialize → render``
-
-Each phase consumes and produces one of the frozen dataclasses defined here, so a
-downstream phase can only ever read *committed* facts from an upstream phase — never
-re-derive policy from the RDF graph or the SKOS mappings.  In particular the
-``render`` phase is handed only :class:`ShapedProject` + :class:`MaterializationPlan`
-(pure strings / metadata), which structurally guarantees it cannot reread RDF or
-reclassify projection policy.
-
-The dataclasses are ``frozen=True`` — attribute rebinding raises
-``FrozenInstanceError``.  Referenced RDF graphs and mapping dicts remain the shared
-working objects (deep-freezing rdflib graphs is neither practical nor free); the
-freeze is at the container boundary, which is what makes the phase hand-offs
-auditable.
-
-Only container-shaped fields live here; the heavy leaf helpers that actually shape
-columns / FKs / SCD config still live in
-:mod:`kairos_ontology.core.projections.medallion_dbt_projector` and are invoked by
-the phase modules (documented retained internal code — see DD-102).
+``DbtInputs`` is the authoring call boundary and may therefore hold an RDF graph.
+Every value returned by a phase is frozen, slotted, deeply immutable, and graph-free.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Mapping, Optional
+from typing import TYPE_CHECKING, Mapping
 
-if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
+from .mapping_specs import MappingContractSpec, SourceMappings
+from .gold_specs import GoldProductLogicalSpec, GoldProductPhysicalSpec
+from .specs import (
+    AdapterPlan,
+    BindingPolicy,
+    BoundCoverage,
+    BoundSchemaModel,
+    BoundSilverModel,
+    ClassBindingObservation,
+    ClassFact,
+    ContractFact,
+    CoverageSpec,
+    DqModelPhysicalPlan,
+    DocumentPhysicalPlan,
+    ForeignKeyPolicy,
+    MacroSetSpec,
+    ModelPhysicalPlan,
+    NormalizedSilverModel,
+    NormalizedCoverage,
+    NormalizedSchemaModel,
+    OntologyMetadataSpec,
+    PrepArrayChildModelSpec,
+    PrepModelPhysicalPlan,
+    PrepModelSpec,
+    PrepRouteSpec,
+    PrepSchemaPhysicalPlan,
+    ProjectConfigPlan,
+    ReleasePlan,
+    SchemaDocumentSpec,
+    SilverModelOutcome,
+    SilverPhysicalPlan,
+    SilverModelSpec,
+    SilverRegistry,
+    SourceBindingsFact,
+    SourceCatalogSpec,
+    SourceSystemFact,
+)
+from .policy_specs import MedallionPolicyFacts, MedallionPolicySpec
+
+if TYPE_CHECKING:  # pragma: no cover
     from pathlib import Path
 
-    from jinja2 import Environment
-    from rdflib import Graph, URIRef
+    from rdflib import Graph
 
-    from ...binding_analysis import BindingAnalysis
     from ...dbt_contracts import DbtContractModel
-    from ..shared import ForeignKeyClassification
-    from ..medallion_dbt_projector import SourceBindings
+    from ..shared import ForeignKeyAuthoringFact
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DbtInputs:
-    """Committed inputs to the dbt projection pipeline.
+    """Immutable copy of the public call arguments.
 
-    Mirrors the public ``generate_dbt_artifacts`` signature plus the three derived
-    values (``env`` / ``meta`` / ``onto_name``) every phase needs.  Constructed once
-    via :meth:`from_call` so the derivation is centralised and deterministic.
+    This is not a phase result: ``graph`` is consumed by :func:`bind_sources` and is
+    intentionally absent from every downstream record.
     """
 
-    classes: list
+    classes: tuple[ClassFact, ...]
     graph: "Graph"
-    template_dir: Any
+    template_root: str
     namespace: str
-    shapes_dir: "Optional[Path]"
-    ontology_name: Optional[str]
-    ontology_metadata: Optional[dict]
-    bronze_dir: "Optional[Path]"
-    sources_dir: "Optional[Path]"
-    mappings_dir: "Optional[Path]"
-    gold_ext_path: "Optional[Path]"
+    shapes_root: str | None
+    ontology_name: str
+    ontology_metadata: OntologyMetadataSpec
+    bronze_root: str | None
+    sources_root: str | None
+    preparation_root: str | None
+    mappings_root: str | None
+    gold_extension: str | None
     target_platform: str
-    silver_ext_path: "Optional[Path]"
-    ref_model_defaults: Optional[list]
-    peer_ext_paths: Optional[list]
+    silver_extension: str | None
+    ref_model_defaults: tuple[str, ...]
+    peer_extensions: tuple[str, ...]
+    peer_ontologies: tuple[str, ...]
     logical_sources_only: bool
-    contract_registry: "Optional[Mapping[str, DbtContractModel]]"
+    contracts: tuple[tuple[str, "DbtContractModel"], ...]
     emit_aspirational_stubs: bool
-    eligible_class_uris: Optional[set]
-    env: "Environment"
-    meta: dict
-    onto_name: str
+    eligible_class_uris: frozenset[str]
 
     @classmethod
     def from_call(
@@ -80,134 +95,192 @@ class DbtInputs:
         *,
         classes: list,
         graph: "Graph",
-        template_dir: Any,
+        template_dir: object,
         namespace: str,
         target_platform: str,
-        shapes_dir: "Optional[Path]" = None,
-        ontology_name: Optional[str] = None,
-        ontology_metadata: Optional[dict] = None,
-        bronze_dir: "Optional[Path]" = None,
-        sources_dir: "Optional[Path]" = None,
-        mappings_dir: "Optional[Path]" = None,
-        gold_ext_path: "Optional[Path]" = None,
-        silver_ext_path: "Optional[Path]" = None,
-        ref_model_defaults: Optional[list] = None,
-        peer_ext_paths: Optional[list] = None,
+        shapes_dir: "Path | None" = None,
+        ontology_name: str | None = None,
+        ontology_metadata: dict | None = None,
+        bronze_dir: "Path | None" = None,
+        sources_dir: "Path | None" = None,
+        preparation_dir: "Path | None" = None,
+        mappings_dir: "Path | None" = None,
+        gold_ext_path: "Path | None" = None,
+        silver_ext_path: "Path | None" = None,
+        ref_model_defaults: list | None = None,
+        peer_ext_paths: list | None = None,
+        peer_ontology_paths: list | None = None,
         logical_sources_only: bool = False,
-        contract_registry: "Optional[Mapping[str, DbtContractModel]]" = None,
+        contract_registry: "Mapping[str, DbtContractModel] | None" = None,
         emit_aspirational_stubs: bool = False,
-        eligible_class_uris: Optional[set] = None,
+        eligible_class_uris: set | None = None,
     ) -> "DbtInputs":
-        """Build the committed inputs, deriving ``env`` / ``meta`` / ``onto_name``."""
-        from jinja2 import Environment, FileSystemLoader
+        """Copy mutable call arguments into stable authoring inputs."""
+        from pathlib import Path
 
+        from .builders import build_metadata
+
+        class_facts = tuple(
+            ClassFact(
+                uri=str(item.get("uri") or ""),
+                name=str(item.get("name") or ""),
+                label=str(item.get("label") or item.get("name") or ""),
+                comment=str(item.get("comment") or ""),
+            )
+            for item in classes
+        )
+        source_location = sources_dir or bronze_dir
         return cls(
-            classes=classes,
+            classes=class_facts,
             graph=graph,
-            template_dir=template_dir,
+            template_root=str(template_dir),
             namespace=namespace,
-            shapes_dir=shapes_dir,
-            ontology_name=ontology_name,
-            ontology_metadata=ontology_metadata,
-            bronze_dir=bronze_dir,
-            sources_dir=sources_dir,
-            mappings_dir=mappings_dir,
-            gold_ext_path=gold_ext_path,
+            shapes_root=str(shapes_dir) if shapes_dir is not None else None,
+            ontology_name=ontology_name or "domain",
+            ontology_metadata=build_metadata(ontology_metadata),
+            bronze_root=str(bronze_dir) if bronze_dir is not None else None,
+            sources_root=str(sources_dir) if sources_dir is not None else None,
+            preparation_root=(
+                str(preparation_dir)
+                if preparation_dir is not None
+                else str(Path(source_location).parent / "preparation")
+                if source_location is not None
+                else None
+            ),
+            mappings_root=str(mappings_dir) if mappings_dir is not None else None,
+            gold_extension=str(gold_ext_path) if gold_ext_path is not None else None,
             target_platform=target_platform,
-            silver_ext_path=silver_ext_path,
-            ref_model_defaults=ref_model_defaults,
-            peer_ext_paths=peer_ext_paths,
+            silver_extension=(
+                str(silver_ext_path) if silver_ext_path is not None else None
+            ),
+            ref_model_defaults=tuple(str(path) for path in (ref_model_defaults or ())),
+            peer_extensions=tuple(str(path) for path in (peer_ext_paths or ())),
+            peer_ontologies=tuple(
+                str(path) for path in (peer_ontology_paths or ())
+            ),
             logical_sources_only=logical_sources_only,
-            contract_registry=contract_registry,
+            contracts=tuple(sorted((contract_registry or {}).items())),
             emit_aspirational_stubs=emit_aspirational_stubs,
-            eligible_class_uris=eligible_class_uris,
-            env=Environment(loader=FileSystemLoader(str(template_dir))),
-            meta=ontology_metadata or {},
-            onto_name=ontology_name or "domain",
+            eligible_class_uris=frozenset(eligible_class_uris or ()),
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BoundSources:
-    """Result of the **bind** phase — committed source-side facts.
+    """Graph-free result of bind: immutable authored and extracted facts only."""
 
-    Owns the ext-merged working ``graph`` (committed here because source binding
-    requires the silver-extension triples), the parsed source ``systems`` + SKOS
-    ``mappings``, the active contract registry with its contracted virtual-source
-    resolution (``virtual_table_uris`` / ``replacement_input_uris``), and the
-    canonical :class:`SourceBindings` (``class_to_sources`` + discriminator folding).
-    """
-
-    graph: "Graph"
-    systems: list
-    mappings: dict
-    mapping_ns: dict
-    contracts: "Mapping[str, DbtContractModel]"
-    virtual_table_uris: frozenset
-    replacement_input_uris: frozenset
-    source_bindings: "SourceBindings"
+    classes: tuple[ClassFact, ...]
+    namespace: str
+    ontology_name: str
+    ontology_metadata: OntologyMetadataSpec
+    target_platform: str
+    template_root: str
+    logical_sources_only: bool
+    emit_aspirational_stubs: bool
+    systems: tuple[SourceSystemFact, ...]
+    mappings: SourceMappings
+    contracts: tuple[tuple[str, ContractFact], ...]
+    virtual_table_uris: frozenset[str]
+    replacement_input_uris: frozenset[str]
+    source_bindings: SourceBindingsFact
+    binding_observations: tuple[ClassBindingObservation, ...]
+    foreign_key_facts: tuple["ForeignKeyAuthoringFact", ...]
+    ontology_uri: str
+    parent_relations: tuple[tuple[str, str], ...]
+    silver_candidates: tuple[BoundSilverModel, ...]
+    silver_outcomes: tuple[SilverModelOutcome, ...]
+    schema_candidates: tuple[BoundSchemaModel, ...]
+    coverage: BoundCoverage | None
+    macro_names: tuple[str, ...]
+    warnings: tuple[str, ...]
+    policy_facts: MedallionPolicyFacts
 
     @property
     def has_sources(self) -> bool:
-        """Whether any bronze source systems were discovered."""
         return bool(self.systems)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class NormalizedProjectFacts:
+    """Graph-free project facts forwarded by normalize to logical shaping."""
+
+    classes: tuple[ClassFact, ...]
+    ontology_name: str
+    ontology_metadata: OntologyMetadataSpec
+    template_root: str
+    logical_sources_only: bool
+    has_sources: bool
+    systems: tuple[SourceSystemFact, ...]
+    mappings: MappingContractSpec
+    contracts: tuple[str, ...]
+    virtual_table_uris: frozenset[str]
+    replacement_input_uris: frozenset[str]
+    parent_relations: tuple[tuple[str, str], ...]
+    silver_models: tuple[NormalizedSilverModel, ...]
+    silver_outcomes: tuple[SilverModelOutcome, ...]
+    schema_models: tuple[NormalizedSchemaModel, ...]
+    coverage: NormalizedCoverage | None
+    macro_names: tuple[str, ...]
+    warnings: tuple[str, ...]
+    policy: MedallionPolicySpec
+
+    @property
+    def target_platform(self) -> str:
+        """Return the adapter selected by the normalized policy authority."""
+        return self.policy.target_adapter.value.value
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectionContract:
-    """Result of the **normalize** phase — the graph/claim-derived projection policy.
+    """Result of normalize: effective policy and normalized project facts."""
 
-    Consumes the canonical FK descriptors (:class:`ForeignKeyClassification`) and the
-    canonical :class:`BindingAnalysis` (grounded in the bind phase's
-    :class:`SourceBindings`) rather than recomputing binding/FK policy.  Downstream
-    phases read these committed facts instead of re-querying the graph for policy.
-    """
+    fk_classification: ForeignKeyPolicy
+    binding_policy: BindingPolicy
+    ontology_uri: str
+    policy: MedallionPolicySpec
+    mapping_contract: MappingContractSpec
+    project: NormalizedProjectFacts
 
-    fk_classification: "ForeignKeyClassification"
-    binding_analysis: "BindingAnalysis"
-    naming_conv: str
-    ontology_uri: "URIRef"
+    @property
+    def naming_convention(self) -> str:
+        """Return the sole effective naming authority."""
+        return self.policy.naming_convention.value.value
 
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ShapedProject:
-    """Result of the **shape** phase — every model's shaped data + rendered bytes.
+    """Result of shape: ordered logical specifications and no artifact content."""
 
-    Because SQL/template rendering is interleaved with column/FK/test shaping inside
-    the retained model-generation helpers (not redesigned per scope — DD-102), the
-    shape phase materialises both the shaped model metadata (``silver_entity_meta``,
-    registries, class-name sets) and the rendered artifact bytes.  The
-    ``render`` phase then assembles and validates these strings without any RDF
-    access.
-    """
+    source_catalogs: tuple[SourceCatalogSpec, ...]
+    prep_models: tuple[PrepModelSpec, ...]
+    prep_children: tuple[PrepArrayChildModelSpec, ...]
+    prep_routes: tuple[PrepRouteSpec, ...]
+    silver_models: tuple[SilverModelSpec, ...]
+    silver_outcomes: tuple[SilverModelOutcome, ...]
+    schema_documents: tuple[SchemaDocumentSpec, ...]
+    gold_product: GoldProductLogicalSpec | None
+    silver_registry: SilverRegistry
+    coverage: CoverageSpec | None
+    macros: MacroSetSpec
+    warnings: tuple[str, ...]
+    policy: MedallionPolicySpec
 
-    source_artifacts: dict
-    silver_artifacts: dict
-    silver_warnings: list
-    silver_entity_meta: list
-    schema_artifacts: dict
-    gold_artifacts: dict
-    gold_schema_artifacts: dict
-    silver_name_registry: dict
-    silver_columns_registry: dict
-    coverage_data: dict
-    macros: dict
-    generated_class_names: Optional[frozenset]
-    aspirational_class_names: frozenset
-    has_gold: bool
+    @property
+    def has_gold(self) -> bool:
+        return self.gold_product is not None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MaterializationPlan:
-    """Result of the **materialize** phase — release metadata + project config.
+    """Result of materialize: adapter, physical model, dependency, and release plans."""
 
-    Owns the release-gate facts (``unbound_eligible_names`` → the
-    ``__unbound_eligible__`` sentinel) and the per-project dbt configuration
-    (``project_config``).  Per-model view/table/incremental/SCD selection remains
-    inside the retained silver helper (documented retained internal code — DD-102);
-    this plan captures the orchestration-level materialization/release decisions.
-    """
-
-    unbound_eligible_names: tuple
-    project_config: dict
-    known_models: frozenset
+    adapter: AdapterPlan
+    prep_models: tuple[PrepModelPhysicalPlan, ...]
+    prep_documents: tuple[PrepSchemaPhysicalPlan, ...]
+    models: tuple[ModelPhysicalPlan, ...]
+    quality_models: tuple[DqModelPhysicalPlan, ...]
+    documents: tuple[DocumentPhysicalPlan, ...]
+    project: ProjectConfigPlan
+    release: ReleasePlan
+    silver: SilverPhysicalPlan | None = None
+    gold: GoldProductPhysicalSpec | None = None
+    policy: MedallionPolicySpec | None = None

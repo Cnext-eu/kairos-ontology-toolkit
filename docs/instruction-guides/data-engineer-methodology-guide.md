@@ -309,22 +309,27 @@ output/medallion/dbt/
 
 ---
 
-## 7. Steps 4–5 — Gold Layer (Star Schema for BI)
+## 7. Steps 4–5 — Gold Data-Product Profile
 
-Gold extensions annotate your ontology for **Power BI / star schema** generation:
+Gold is profile-driven. The only v1 profile, `dimensional-powerbi-v1`, produces a
+governed Power BI dimensional product from passing Silver parity:
 
 | Annotation | Purpose |
 |---|---|
-| `kairos-ext:goldTableType` | Force fact/dimension/bridge classification |
-| `kairos-ext:goldSchema` | Schema name for gold layer |
-| `kairos-ext:measureExpression` | DAX measure definitions |
-| `kairos-ext:generateTimeIntelligence` | Auto-generate date dimension |
+| `kairos-ext:goldProductProfile` | Required registered product profile |
+| `kairos-ext:goldTableType` | Explicit fact/dimension/bridge role; never inferred |
+| `kairos-ext:goldSourceModel` / `goldSourceVersion` | Exact Silver registry binding |
+| `kairos-ext:measure` | Links first-class governed measure resources |
+| `kairos-ext:calendarProfile` | Links an explicit approved calendar contract |
+| `kairos-ext:securityPolicy` | Links a complete fail-closed RLS/OLS contract |
 
 The gold projector produces:
-- Star-schema DDL (dim_/fact_ tables with SCD Type 2 on dimensions)
-- TMDL semantic model (ready to deploy to Power BI)
-- DAX measures
-- RLS roles (from GDPR annotations)
+- dimensional dbt plus Fabric or approved-deviation Databricks DDL;
+- TMDL scaffolding that still requires matching compile/deployment evidence;
+- lifecycle-governed DAX measures without removing base columns;
+- approved calendar/time intelligence only when explicitly authored;
+- deny-by-default RLS/OLS scaffolding from complete entitlement policy; and
+- deterministic ERD and product/readiness reports.
 
 ---
 

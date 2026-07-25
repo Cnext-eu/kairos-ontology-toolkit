@@ -59,6 +59,10 @@ def _project(bundle, *, emit_stubs: bool, eligible):
         namespace=namespace,
         shapes_dir=SHAPES_DIR,
         ontology_name="client",
+        ontology_metadata={
+            "iri": "https://acme.example/ontology/client",
+            "version": "1.0.0",
+        },
         bronze_dir=SOURCES_DIR,
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,

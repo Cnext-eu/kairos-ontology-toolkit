@@ -101,7 +101,7 @@ but not an industry-wide default.
 Every Silver entity must distinguish four identities:
 
 1. **Business grain** -- the real-world occurrence represented by one row.
-2. **Source identity** -- `source_system` plus an immutable `source_record_id`.
+2. **Source identity** -- `source_system` plus an immutable `source_record_key`.
 3. **Natural key** -- business properties that identify the occurrence within a stated
    scope; source-local keys must be labelled as such.
 4. **Warehouse identity** -- generated surrogate key and projection-scoped IRI.
@@ -155,7 +155,7 @@ projector conventions.
 | Inheritance | Preserve semantic annotation; Silver projection may flatten subtypes |
 | Nullability | Derived from SHACL and explicit overrides |
 | PII | Isolate sensitive attributes in GDPR satellites where applicable |
-| Row lineage | Retain source system, immutable source record ID, and ingestion/load context |
+| Row lineage | Retain source system, immutable source-record key, and ingestion/load context |
 | Change detection | State explicitly whether relationship/FK changes create entity history |
 | Audit envelope | Use the standard generated load, hash, and soft-delete columns |
 | Multi-source conformance | Conform each source first; match and survive only under governed identity rules |
@@ -181,7 +181,7 @@ mapping notes. The two inputs serve different purposes:
 | Multi-source logic | Current executable slice is Qargo-first | Demonstrates namespace collision handling, source rollup, lineage, and priority survivorship | Retain the patterns, but require entity matching before survivorship |
 | Transformation boundary | Complex admission, adjacency, associations, and conformance live in contracted intermediates with contracts and unit tests | Complex route fallback, geozone ranking, JSON expansion, and report parity are embedded repeatedly in Silver SQL | Reuse the knowledge in one governed transformation or seed, not duplicated entity SQL |
 | Testing | PK/IRI tests and strong intermediate contracts/unit tests exist | Mostly manual build and post-build evidence; no declarative Silver model tests | Add grain, FK, status/code, temporal, and adapter conformance tests |
-| Lineage | Mapping and ontology provenance are strong, but final Silver rows do not consistently retain source-row lineage | `source_system`, `source_record_id`, and source-file lineage are explicit | Add row-level lineage to the canonical contract without importing client labels |
+| Lineage | Mapping and ontology provenance are strong, but final Silver rows do not consistently retain source-row lineage | `source_system`, `source_record_key`, and source-file lineage are explicit | Add row-level lineage to the canonical contract without importing client labels |
 | Physical quality | Generated SCD and FK patterns are consistent | Prototype includes practical same-day and survivorship guards | Treat generated SQL as testable output; do not assume projection implies correctness |
 
 The legacy model disposition should therefore be:
@@ -655,7 +655,7 @@ different source shapes.
 | Legacy report shapes become canonical entities | Apply the evidence-classification and promotion test before modeling |
 | Source-priority survivorship merges different real-world entities | Require explicit matching/equivalence before survivorship |
 | SCD2 parent history multiplies child rows during FK resolution | Require current/as-of join semantics and relationship tests |
-| Source lineage is lost after semantic projection | Make source system and immutable source record ID part of the Silver contract |
+| Source lineage is lost after semantic projection | Make source system and immutable source-record key part of the Silver contract |
 | Source-local aliases leak into industry defaults | Keep aliases, filters, and code normalization in client mappings, seeds, or transforms |
 | Deep-copied reference modules drift from upstream releases | Import by ontology IRI; allow only reproducible flattened bundles as derived output |
 | Recursive module activation creates an unusably large Silver schema | Separate semantic import closure from an explicit projection allow-list |
