@@ -1,31 +1,42 @@
-@prefix skos:      <http://www.w3.org/2004/02/skos/core#> .
-@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
 @prefix bronze-lp: <https://acme.example/bronze/logisticspro#> .
-@prefix refp:      <https://refmodel.example/ontology/party#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix map: <https://acme.example/mapping/logisticspro-to-logistics#> .
+@prefix refp: <https://refmodel.example/ontology/party#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 
-# ---------------------------------------------------------------------------
-# Table-to-entity mappings — LogisticsPro → Logistics (ref model party)
-# ---------------------------------------------------------------------------
+map:column__tblCarrier_CarrierCode__to__carrierCode a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-lp:tblCarrier_CarrierCode ;
+    kairos-map:targetProperty refp:carrierCode .
 
-# tblShipmentParty → TradeParty (ref model class, claimed via silverInclude)
-bronze-lp:tblShipmentParty skos:exactMatch refp:TradeParty ;
-    kairos-map:mappingType "direct" .
+map:column__tblShipmentParty_PartyCode__to__partyCode a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-lp:tblShipmentParty_PartyCode ;
+    kairos-map:targetProperty refp:partyCode .
 
-# tblCarrier → Carrier (ref model class, claimed via silverInclude)
-bronze-lp:tblCarrier skos:exactMatch refp:Carrier ;
-    kairos-map:mappingType "direct" .
+map:column__tblShipmentParty_PartyName__to__partyName a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-lp:tblShipmentParty_PartyName ;
+    kairos-map:targetProperty refp:partyName .
 
-# ---------------------------------------------------------------------------
-# Column-to-property mappings
-# ---------------------------------------------------------------------------
+map:table__tblCarrier__to__Carrier a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable bronze-lp:tblCarrier ;
+    kairos-map:targetClass refp:Carrier .
 
-# TradeParty columns
-bronze-lp:tblShipmentParty_PartyCode skos:exactMatch refp:partyCode ;
-    kairos-map:transform "source.PartyCode" .
+map:table__tblShipmentParty__to__TradeParty a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable bronze-lp:tblShipmentParty ;
+    kairos-map:targetClass refp:TradeParty .
 
-bronze-lp:tblShipmentParty_PartyName skos:exactMatch refp:partyName ;
-    kairos-map:transform "source.PartyName" .
+bronze-lp:tblCarrier skos:exactMatch refp:Carrier .
 
-# Carrier columns
-bronze-lp:tblCarrier_CarrierCode skos:exactMatch refp:carrierCode ;
-    kairos-map:transform "source.CarrierCode" .
+bronze-lp:tblCarrier_CarrierCode skos:exactMatch refp:carrierCode .
+
+bronze-lp:tblShipmentParty skos:exactMatch refp:TradeParty .
+
+bronze-lp:tblShipmentParty_PartyCode skos:exactMatch refp:partyCode .
+
+bronze-lp:tblShipmentParty_PartyName skos:exactMatch refp:partyName .

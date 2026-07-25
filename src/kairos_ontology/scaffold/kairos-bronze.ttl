@@ -162,29 +162,29 @@ kairos-bronze:scale a owl:DatatypeProperty ;
 
 kairos-bronze:contentType a owl:DatatypeProperty ;
     rdfs:label "content type" ;
-    rdfs:comment "Physical content type of a column. Values: 'scalar' (default, plain value), 'json-array' (JSON array to be expanded), 'json-object' (JSON object to be parsed). When set to a JSON type, the column requires OPENJSON/LATERAL FLATTEN extraction in silver." ;
+    rdfs:comment "Observed physical content type: scalar, json-array, or json-object. JSON processing authority belongs to an explicit kairos-prep contract; Bronze retains the raw value." ;
     rdfs:domain kairos-bronze:SourceColumn ;
     rdfs:range xsd:string .
 
 kairos-bronze:jsonSchema a owl:ObjectProperty ;
     rdfs:label "json schema" ;
-    rdfs:comment "Links a JSON-typed column to its schema definition describing extractable fields." ;
+    rdfs:comment "Links a JSON-typed raw column to observed structural evidence. It does not authorize extraction." ;
     rdfs:domain kairos-bronze:SourceColumn ;
     rdfs:range kairos-bronze:JsonSchema .
 
 kairos-bronze:jsonPath a owl:DatatypeProperty ;
     rdfs:label "json path" ;
-    rdfs:comment "JSON path expression to navigate to the data within the column. Default: '$'." ;
+    rdfs:comment "Observed JSON location in raw source evidence; preparation paths are authored separately." ;
     rdfs:domain kairos-bronze:SourceColumn ;
     rdfs:range xsd:string .
 
 kairos-bronze:JsonSchema a owl:Class ;
     rdfs:label "JSON Schema" ;
-    rdfs:comment "Describes the structure of JSON content within a column. Defines extractable fields with their names, types, and paths." .
+    rdfs:comment "Observed structure of raw JSON content. It is evidence, not a flattening contract." .
 
 kairos-bronze:JsonField a owl:Class ;
     rdfs:label "JSON Field" ;
-    rdfs:comment "A single field within a JSON schema that can be extracted." .
+    rdfs:comment "A field observed in raw JSON schema evidence." .
 
 kairos-bronze:jsonField a owl:ObjectProperty ;
     rdfs:label "json field" ;
@@ -194,19 +194,19 @@ kairos-bronze:jsonField a owl:ObjectProperty ;
 
 kairos-bronze:fieldName a owl:DatatypeProperty ;
     rdfs:label "field name" ;
-    rdfs:comment "Name of the JSON field (used as output column name)." ;
+    rdfs:comment "Observed JSON field name." ;
     rdfs:domain kairos-bronze:JsonField ;
     rdfs:range xsd:string .
 
 kairos-bronze:fieldType a owl:DatatypeProperty ;
     rdfs:label "field type" ;
-    rdfs:comment "Target SQL type for this field. Note: JSON extraction always uses VARCHAR; this type is used for TRY_CAST in silver." ;
+    rdfs:comment "Observed source field type; target type and parse behavior belong to kairos-prep." ;
     rdfs:domain kairos-bronze:JsonField ;
     rdfs:range xsd:string .
 
 kairos-bronze:fieldPath a owl:DatatypeProperty ;
     rdfs:label "field path" ;
-    rdfs:comment "JSON path within the element to extract this field (e.g. '$.name', '$.address.city')." ;
+    rdfs:comment "Observed path of this field in the raw JSON structure." ;
     rdfs:domain kairos-bronze:JsonField ;
     rdfs:range xsd:string .
 
@@ -218,7 +218,7 @@ kairos-bronze:fieldNullable a owl:DatatypeProperty ;
 
 kairos-bronze:fieldMaxLength a owl:DatatypeProperty ;
     rdfs:label "field max length" ;
-    rdfs:comment "Maximum VARCHAR length for extraction. Default: 255." ;
+    rdfs:comment "Observed or declared raw field maximum length." ;
     rdfs:domain kairos-bronze:JsonField ;
     rdfs:range xsd:integer .
 

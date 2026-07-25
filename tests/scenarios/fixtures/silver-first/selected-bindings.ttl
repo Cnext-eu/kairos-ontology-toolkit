@@ -1,21 +1,40 @@
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix map: <https://acme.example/mapping/selected#> .
 @prefix bronze-ap: <https://acme.example/bronze/adminpulse#> .
 @prefix bronze-lp: <https://acme.example/bronze/logisticspro#> .
 @prefix acme: <https://acme.example/ontology/client#> .
 @prefix refp: <https://refmodel.example/ontology/party#> .
 
-bronze-ap:tblRelation skos:exactMatch acme:Client ;
-    kairos-map:mappingType "direct" .
+bronze-ap:tblRelation skos:exactMatch acme:Client .
 
-bronze-ap:tblRelation_ClientID skos:exactMatch acme:clientId ;
-    kairos-map:transform "CAST(source.ClientID AS STRING)" .
+bronze-ap:tblRelation_ClientID skos:exactMatch acme:clientId .
 
-bronze-lp:tblShipmentParty skos:exactMatch refp:TradeParty ;
-    kairos-map:mappingType "direct" .
+bronze-lp:tblShipmentParty skos:exactMatch refp:TradeParty .
 
-bronze-lp:tblShipmentParty_PartyCode skos:exactMatch refp:partyCode ;
-    kairos-map:transform "source.PartyCode" .
+bronze-lp:tblShipmentParty_PartyCode skos:exactMatch refp:partyCode .
 
-bronze-lp:tblShipmentParty_PartyName skos:exactMatch refp:partyName ;
-    kairos-map:transform "source.PartyName" .
+bronze-lp:tblShipmentParty_PartyName skos:exactMatch refp:partyName .
+
+map:relation a kairos-map:TableMapping ;
+    kairos-map:sourceTable bronze-ap:tblRelation ;
+    kairos-map:targetClass acme:Client ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" .
+map:relationClientId a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-ap:tblRelation_ClientID ;
+    kairos-map:targetProperty acme:clientId ;
+    kairos-map:matchType "exactMatch" .
+map:shipmentParty a kairos-map:TableMapping ;
+    kairos-map:sourceTable bronze-lp:tblShipmentParty ;
+    kairos-map:targetClass refp:TradeParty ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" .
+map:partyCode a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-lp:tblShipmentParty_PartyCode ;
+    kairos-map:targetProperty refp:partyCode ;
+    kairos-map:matchType "exactMatch" .
+map:partyName a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze-lp:tblShipmentParty_PartyName ;
+    kairos-map:targetProperty refp:partyName ;
+    kairos-map:matchType "exactMatch" .

@@ -1,62 +1,372 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""dbt projection **normalize** phase (DD-102).
-
-Derives the graph/extension/claim projection *contract* from the committed
-:class:`BoundSources`:
-
-* the canonical FK descriptors (:func:`classify_foreign_keys`), and
-* the canonical :class:`BindingAnalysis` (grounded in the bind phase's
-  :class:`SourceBindings` so binding is never re-derived), plus
-* the domain naming convention + ontology URI used to shape Silver names.
-
-This phase owns projection *policy*: the shape phase reads these committed
-descriptors instead of re-querying the graph for FK/binding classification.
-"""
+"""Pure effective-policy classification for bound dbt facts (DD-110)."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import replace
 
-from .context import ProjectionContract
+from .context import BoundSources, NormalizedProjectFacts, ProjectionContract
+from .mapping_normalize import normalize_mapping_contract
+from .mapping_specs import MappingContractError
+from .specs import (
+    BindingPolicy,
+    ForeignKeyDescriptorSpec,
+    ForeignKeyDiagnosticSpec,
+    ForeignKeyPolicy,
+    NormalizedCoverage,
+    NormalizedSchemaModel,
+    NormalizedSilverModel,
+)
+from .policy_specs import (
+    CanonicalTypeKind,
+    CanonicalTypeSpec,
+    PolicySource,
+    SilverColumnRole,
+)
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .context import BoundSources, DbtInputs
 
-
-def normalize_contract(
-    inputs: "DbtInputs", bound: "BoundSources"
-) -> ProjectionContract:
-    """Run the normalize phase — derive the projection contract from *bound*."""
-    from ... import binding_analysis as _ba
-    from ..shared import (
-        classify_foreign_keys,
-        detect_ontology_uri,
-        silver_naming_convention,
+def _binding_policy(bound: BoundSources) -> BindingPolicy:
+    states: list[tuple[str, str]] = []
+    reasons: list[tuple[str, str]] = []
+    for observation in bound.binding_observations:
+        if observation.has_sources:
+            state = "bound"
+            reason = "bound to bronze source(s)"
+        elif observation.discriminator_parent_name:
+            state = "folded"
+            reason = (
+                "S3 discriminator subclass of "
+                f"{observation.discriminator_parent_name}"
+            )
+        elif observation.eligible:
+            state = "stub"
+            reason = "approved claim, no bronze mapping (aspirational)"
+        else:
+            state = "skipped"
+            reason = "no bronze mapping and no approving claim"
+        states.append((observation.class_uri, state))
+        reasons.append((observation.class_uri, reason))
+    return BindingPolicy(
+        states=tuple(states),
+        reasons=tuple(reasons),
+        eligible_class_uris=frozenset(
+            observation.class_uri
+            for observation in bound.binding_observations
+            if observation.eligible
+        ),
+        stubs_enabled=bound.emit_aspirational_stubs,
     )
 
-    graph = bound.graph
-    fk_classification = classify_foreign_keys(graph)
-    ontology_uri = detect_ontology_uri(graph, inputs.namespace)
-    naming_conv = silver_naming_convention(graph, ontology_uri)
 
-    # Canonical binding analysis (DD-096): grounded in the committed SourceBindings
-    # so stub emission and the release gate consume the *same* bound/folded/stub/
-    # skipped classification as status and the strict gate.
-    binding_analysis = _ba.build(
-        classes=inputs.classes,
-        graph=graph,
+def _foreign_key_policy(bound: BoundSources) -> ForeignKeyPolicy:
+    from ..shared import normalize_foreign_key_facts
+
+    classification = normalize_foreign_key_facts(bound.foreign_key_facts)
+    return ForeignKeyPolicy(
+        descriptors=tuple(
+            ForeignKeyDescriptorSpec(
+                property_uri=str(item.property_uri),
+                domain_class=str(item.domain_class),
+                range_class=str(item.range_class),
+                source_class=str(item.source_class),
+                target_class=str(item.target_class),
+                is_functional=item.is_functional,
+                max_cardinality_classes=frozenset(
+                    str(uri) for uri in item.max_cardinality_classes
+                ),
+                silver_foreign_key=item.silver_foreign_key,
+                silver_column_name=item.silver_column_name,
+                redirected=item.redirected,
+                reverse=item.reverse,
+                junction_table_name=item.junction_table_name,
+                nullable=item.nullable,
+                conditional_on_type=item.conditional_on_type,
+            )
+            for item in classification.descriptors
+        ),
+        diagnostics=tuple(
+            ForeignKeyDiagnosticSpec(
+                kind=item.kind,
+                property_uri=str(item.property_uri),
+                message=item.message,
+            )
+            for item in classification.diagnostics
+        ),
+        outgoing_relationship_sources=tuple(
+            str(uri) for uri in classification.outgoing_relationship_sources
+        ),
+    )
+
+
+def normalize_contract(bound: BoundSources) -> ProjectionContract:
+    """Classify effective policy without RDF, files, or templates."""
+    from .policy_normalize import _target_type, normalize_medallion_policy
+
+    binding_policy = _binding_policy(bound)
+    foreign_key_policy = _foreign_key_policy(bound)
+    policy = normalize_medallion_policy(
+        bound.policy_facts,
         systems=bound.systems,
         mappings=bound.mappings,
-        contract_registry=bound.contracts,
-        eligible_class_uris=inputs.eligible_class_uris,
-        stubs_enabled=inputs.emit_aspirational_stubs,
-        bindings=bound.source_bindings,
+        silver_candidates=bound.silver_candidates,
+        fk_policy=foreign_key_policy,
+        target_adapter=bound.target_platform,
+        target_source=PolicySource.OVERRIDE,
     )
+    mapping_contract = normalize_mapping_contract(
+        bound.mappings,
+        systems=bound.systems,
+        policy=policy,
+        contracts=bound.contracts,
+        replacement_input_uris=bound.replacement_input_uris,
+    )
+    mapping_inputs = {
+        item.source_column_uri: item
+        for mapping in mapping_contract.columns
+        for item in mapping.expression.metadata.referenced_inputs
+    }
+    authorities = {
+        item.identity.class_uri: item for item in policy.silver_models
+    }
+    mapped_types: dict[str, set[CanonicalTypeSpec]] = {}
+    mapped_properties: dict[str, set[str]] = {}
+    for mapping in mapping_contract.columns:
+        mapped_types.setdefault(mapping.target_column_name, set()).add(
+            mapping.target_data_type
+        )
+        mapped_properties.setdefault(mapping.target_column_name, set()).add(
+            mapping.target_property_uri
+        )
+
+    def inferred_type(column, authority) -> CanonicalTypeSpec | None:
+        if column.mapping_expression is not None:
+            return column.mapping_expression.metadata.output_type
+        declared = _target_type(column.data_type)
+        if declared is not None:
+            return declared
+        candidates = mapped_types.get(column.name, set())
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        if len(candidates) > 1:
+            raise MappingContractError(
+                "mapping.ambiguous-silver-type",
+                (
+                    f"Silver column {column.name!r} has conflicting canonical "
+                    "mapping types"
+                ),
+                resource_uri=authority.identity.class_uri if authority else "",
+                rule_id="DD-110-silver-authority",
+            )
+        timestamp_names = {
+            timestamp.column_name
+            for timestamp in authority.audit.columns
+        } if authority is not None else set()
+        runtime = authority.runtime if authority is not None else None
+        if runtime is not None:
+            timestamp_names.update(
+                {
+                    runtime.incremental.ordering.source_updated_at.value,
+                    runtime.incremental.ordering.source_effective_at.value,
+                    runtime.incremental.ordering.ingested_at.value,
+                    runtime.history.business_valid_from_column,
+                    runtime.history.business_valid_to_column,
+                    runtime.history.system_from_column,
+                    runtime.history.system_to_column,
+                }
+            )
+        if column.name in timestamp_names or column.name.endswith("_at"):
+            return CanonicalTypeSpec(CanonicalTypeKind.TIMESTAMP)
+        if column.name in {
+            "_is_deleted",
+            "_is_current",
+            "is_current",
+        }:
+            return CanonicalTypeSpec(CanonicalTypeKind.BOOLEAN)
+        if column.name.startswith("_kairos_fk_match_count_"):
+            return CanonicalTypeSpec(CanonicalTypeKind.INT64)
+        if column.name.endswith(("_sk", "_iri", "_integration_key", "_label")):
+            return CanonicalTypeSpec(CanonicalTypeKind.STRING)
+        if column.name in {
+            "_source_system",
+            "_source_identity_ref",
+            "_source_record_key",
+            "_cdc_operation",
+            "_row_hash",
+        }:
+            return CanonicalTypeSpec(CanonicalTypeKind.STRING)
+        if column.name.startswith("_cdc_sequence"):
+            return CanonicalTypeSpec(CanonicalTypeKind.INT64)
+        if column.expression.startswith("'") or "VARCHAR" in column.expression.upper():
+            return CanonicalTypeSpec(CanonicalTypeKind.STRING)
+        return None
+
+    def normalized_column(column, authority):
+        mapping = None
+        if column.mapping_resource_uri:
+            mapping = mapping_contract.column(column.mapping_resource_uri)
+            if mapping is None:
+                raise MappingContractError(
+                    "mapping.unresolved-model-expression",
+                    "Silver column references an unknown normalized mapping contract",
+                    resource_uri=column.mapping_resource_uri,
+                    rule_id="DD-107-phase-contract",
+                )
+            column = replace(column, mapping_expression=mapping.expression)
+        authority_column = next(
+            (
+                item
+                for item in authority.columns
+                if item.column.name == column.name
+            ),
+            None,
+        ) if authority is not None else None
+        canonical_type = inferred_type(column, authority)
+        nullable = (
+            mapping.expression.metadata.nullable
+            if mapping is not None
+            else authority_column.nullable.value
+            if authority_column is not None
+            else column.nullable
+        )
+        role = (
+            authority_column.role.value.value
+            if authority_column is not None
+            else SilverColumnRole.BUSINESS.value
+        )
+        provenance = set(column.provenance)
+        if mapping is not None:
+            provenance.update(
+                {
+                    f"mapping:{mapping.resource_uri}",
+                    f"property:{mapping.target_property_uri}",
+                    "rule:DD-107",
+                }
+            )
+        else:
+            provenance.update(
+                f"property:{value}"
+                for value in mapped_properties.get(column.name, ())
+            )
+        return replace(
+            column,
+            canonical_type=canonical_type,
+            nullable=nullable,
+            role=role,
+            provenance=tuple(sorted(provenance)),
+        )
+
+    def normalized_source(source):
+        if not source.filter_mapping_resource_uri:
+            return source
+        mapping = mapping_contract.table(source.filter_mapping_resource_uri)
+        if mapping is None or mapping.row_filter is None:
+            raise MappingContractError(
+                "mapping.unresolved-model-filter",
+                "Silver source references an unknown normalized rowFilter contract",
+                resource_uri=source.filter_mapping_resource_uri,
+                rule_id="DD-107-phase-contract",
+            )
+        return replace(source, filter_expression=mapping.row_filter)
+
+    def normalized_join(join):
+        if not join.source_column_uris:
+            return join
+        try:
+            inputs = tuple(mapping_inputs[uri] for uri in join.source_column_uris)
+        except KeyError as exc:
+            raise MappingContractError(
+                "mapping.unresolved-join-input",
+                "Silver FK join references a source symbol absent from normalized mappings",
+                resource_uri=str(exc.args[0]),
+                rule_id="DD-107-source-ownership",
+            ) from exc
+        return replace(join, source_inputs=inputs)
 
     return ProjectionContract(
-        fk_classification=fk_classification,
-        binding_analysis=binding_analysis,
-        naming_conv=naming_conv,
-        ontology_uri=ontology_uri,
+        fk_classification=foreign_key_policy,
+        binding_policy=binding_policy,
+        ontology_uri=bound.ontology_uri,
+        policy=policy,
+        mapping_contract=mapping_contract,
+        project=NormalizedProjectFacts(
+            classes=bound.classes,
+            ontology_name=bound.ontology_name,
+            ontology_metadata=bound.ontology_metadata,
+            template_root=bound.template_root,
+            logical_sources_only=bound.logical_sources_only,
+            has_sources=bound.has_sources,
+            systems=bound.systems,
+            mappings=mapping_contract,
+            contracts=tuple(name for name, _ in bound.contracts),
+            virtual_table_uris=bound.virtual_table_uris,
+            replacement_input_uris=bound.replacement_input_uris,
+            parent_relations=bound.parent_relations,
+            silver_models=tuple(
+                NormalizedSilverModel(
+                    identity=candidate.identity,
+                    kind=candidate.kind,
+                    columns=tuple(
+                        normalized_column(
+                            column,
+                            authorities.get(candidate.identity.class_uri),
+                        )
+                        for column in candidate.columns
+                    ),
+                    sources=tuple(
+                        normalized_source(source) for source in candidate.sources
+                    ),
+                    joins=tuple(
+                        normalized_join(join) for join in candidate.joins
+                    ),
+                    materialization_intent=candidate.requested_materialization,
+                    ontology_metadata=candidate.ontology_metadata,
+                    where_clause=candidate.where_clause,
+                    source_models=candidate.source_models,
+                    surrogate_key_expression=candidate.surrogate_key_expression,
+                    integration_key_expression=candidate.integration_key_expression,
+                    iri_expression=candidate.iri_expression,
+                    parent_model=candidate.parent_model,
+                    source_identity_ref=candidate.source_identity_ref,
+                    source_record_key_expression=candidate.source_record_key_expression,
+                    source_record_key_generated_after_mapping=(
+                        candidate.source_record_key_generated_after_mapping
+                    ),
+                    authority=authorities.get(candidate.identity.class_uri),
+                )
+                for candidate in bound.silver_candidates
+                if (
+                    candidate.identity.outcome.value != "aspirational_stub"
+                    or binding_policy.should_emit_stub(candidate.identity.class_uri)
+                )
+            ),
+            silver_outcomes=bound.silver_outcomes,
+            schema_models=tuple(
+                NormalizedSchemaModel(
+                    name=model.name,
+                    description=model.description,
+                    metadata=model.metadata,
+                    columns=model.columns,
+                    grain_columns=model.grain_columns,
+                    source_identity_columns=model.source_identity_columns,
+                    grain_where=model.grain_where,
+                    table_type=model.table_type,
+                    ontology_class=model.ontology_class,
+                    ontology_iri=model.ontology_iri,
+                    ontology_version=model.ontology_version,
+                )
+                for model in bound.schema_candidates
+            ),
+            coverage=(
+                NormalizedCoverage(
+                    domain_name=bound.coverage.domain_name,
+                    entities=bound.coverage.entities,
+                )
+                if bound.coverage is not None
+                else None
+            ),
+            macro_names=bound.macro_names,
+            warnings=bound.warnings,
+            policy=policy,
+        ),
     )

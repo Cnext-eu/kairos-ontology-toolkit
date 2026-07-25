@@ -9,6 +9,30 @@ description: >
 
 # Kairos Medallion Silver Skill
 
+## DD-109 runtime authority (mandatory for fresh hubs)
+
+There is no inferred or compatibility SCD runtime. If a class declares `scdType`
+`"1"` or `"2"`, it must link one complete `IncrementalPolicy`. Confirm:
+
+- ordered merge identity and canonical `_cdc_operation`;
+- distinct `_source_updated_at`, `_source_effective_at`, `_ingested_at`, and
+  `_loaded_at` (the last is the injected run clock only);
+- complete total-order tie breakers, bounded lookback, hard/soft delete,
+  late-arrival, correction, replay, backfill, and schema-evolution actions;
+- SCD2 `business-valid` or `load-history` basis with separate business-valid and
+  system intervals; and
+- `canonical-hash` only with hash contract `"1"`, SHA-256,
+  `typed-length-delimited-null`, and one ordered RDF list of typed inputs.
+
+Every source identity linked to such a class must route through prep that emits
+the complete normalized CDC contract. Missing facts block projection.
+
+Every materialized FK explicitly declares `current`, `as-of`, or `none`,
+zero-or-one/exactly-one cardinality, missing/ambiguous/late-parent actions, and
+change-detection participation. `as-of` requires `closed-open`, `UTC`,
+`microsecond`, and a source as-of column. Never add `is_current = 1` to an
+as-of lookup.
+
 ## Design fleet mode (DD-088)
 
 Default is interactive: ask the user to confirm SCD type, natural key, foreign
@@ -166,7 +190,8 @@ The annotation namespace must be exactly:
 > that the projection output is fully deterministic and reproducible — if the extension
 > file is re-created from scratch, the output must remain identical.
 >
-> **Never rely on implicit defaults.** If a class is SCD Type 2, write `scdType "2"`.
+> **Never rely on implicit defaults.** If a class is SCD Type 2, write `scdType "2"`
+> and its complete `incrementalPolicy`.
 > If a class is NOT reference data, write `isReferenceData "false"`.
 
 For each `owl:Class` in the domain ontology, ask the following questions
@@ -255,13 +280,19 @@ ex:{ClassName}    kairos-ext:silverExclude "true"^^xsd:boolean .
   intentional.
 
 
-> "Should `{ClassName}` maintain full history (SCD Type 2, default) or just the current
+> "Should `{ClassName}` maintain full history (SCD Type 2) or just the current
 > record (SCD Type 1, overwrite)?"
 
 Always write explicitly:
 ```turtle
-ex:{ClassName}    kairos-ext:scdType "2" .   -- history (write even though it's default)
-ex:{ClassName}    kairos-ext:scdType "1" .   -- overwrite
+ex:{ClassName}
+    kairos-ext:scdType "2" ;
+    kairos-ext:scd2TimeBasis "business-valid" ;
+    kairos-ext:incrementalPolicy ex:{ClassName}Runtime .
+
+ex:{OtherClass}
+    kairos-ext:scdType "1" ;
+    kairos-ext:incrementalPolicy ex:{OtherClass}Runtime .
 ```
 
 ### 2e — Partitioning / clustering (R10)
@@ -281,11 +312,12 @@ class in the domain MUST have at minimum:
 
 | Annotation | Required? | Default value |
 |------------|-----------|--------------|
-| `kairos-ext:scdType` | ✅ Always | `"2"` |
-| `kairos-ext:scdValidFromColumn` | When source-effective history or as-of FK lookup is required | Mapped Silver timestamp column |
+| `kairos-ext:scdType` | When SCD runtime is required | No default |
+| `kairos-ext:scd2TimeBasis` | SCD2 only | No default |
+| `kairos-ext:incrementalPolicy` | SCD1/SCD2 | No default; complete DD-109 resource |
 | `kairos-ext:isReferenceData` | ✅ Always | `"false"` |
 | `kairos-ext:inheritanceStrategy` | Only if has subclasses | `"class-per-table"` |
-| `kairos-ext:silverSourceRef` | If sourcing from bronze_expanded or a contracted model (DD-039/DD-093) | _(none — uses source())_ |
+| `kairos-ext:silverSourceRef` | Only for a governed contracted model (DD-093); prep routing is automatic (DD-106) | _(none — verified prep route)_ |
 | `kairos-ext:namingConvention` | Ontology-level | `"camel-to-snake"` |
 | `kairos-ext:includeNaturalKeyColumn` | Ontology-level | `"true"` |
 | `kairos-ext:inlineRefThreshold` | Ontology-level | `"3"` |
@@ -296,7 +328,7 @@ class in the domain MUST have at minimum:
 | `kairos-ext:silverForeignKeyOn` | On ObjectProperty (reversal pattern) | _(none)_ |
 | `kairos-ext:silverForeignKeyTemporalMode` | On an FK to an SCD2 parent | `"current"` or `"as-of"` |
 | `kairos-ext:silverForeignKeyAsOfColumn` | When temporal mode is `"as-of"` | Physical source timestamp column |
-| `kairos-ext:silverForeignKeyChangeDetection` | On an FK in an SCD2 child | `"true"` unless relationship changes are explicitly non-historical |
+| `kairos-ext:silverForeignKeyChangeDetection` | Every materialized FK | No default |
 
 Run a structured semantic scan, then validate the authored extension:
 ```bash
@@ -310,6 +342,30 @@ semantically unreliable.
 ---
 
 ## Phase 3 — Gather per-property design decisions
+
+### DD-108 identity and lineage authority
+
+Before property/FK review, every materialized class must declare `businessGrain`,
+`identityStrategy`, `entityInstanceIriPolicy`, `keyScope`, `sourceIdentity`,
+`changeDetectionStrategy`, and `lineagePolicy`.
+
+| Strategy | Required | Forbidden / boundary |
+|---|---|---|
+| `business-key` | Explicitly mapped `naturalKey` | Never infer a missing key |
+| `source-scoped-immutable-key` | `keyScope` `source-table` or `source-table-array-element` | Never treat source identity as cross-source equivalence |
+| `deterministic-integration-key` | Mapped `naturalKey`, multiple `sourceIdentity` values, and approved `exactly-equivalent` policy | No integration key for disjoint/overlapping branches |
+| `externally-mastered-identifier` | Mapped identifier columns and `enterprise` scope | Route to MDM; do not implement matching or survivorship in Silver |
+| `surrogate-only` | Source scope and explicit `reconciliationLimitation` | `naturalKey` is forbidden |
+
+For one contributor, omit `drivingSource`; the effective mode is deterministically
+`only-source`. For multiple contributors, declare one `drivingSource` from
+`sourceIdentity`, a complete `multiSourcePolicy`, and optionally
+`contributionLineagePolicy "all-source-record-contributions"`.
+
+Entity-instance IRI emission is explicitly `emit` or `omit`; it remains separate from
+ontology term/document IRIs, `_source_record_key`, integration identity, and the physical
+surrogate join key. Keep `_loaded_at`, `_ingested_at`, `_source_updated_at`, and
+`_source_effective_at` distinct and never substitute one for another.
 
 > ⚠️ **Imported reference model properties** (from `owl:imports`) typically define
 > `owl:ObjectProperty` without cardinality constraints. These will **NOT** generate
@@ -384,10 +440,11 @@ only activates when exactly one unambiguous candidate exists per NK component.
 > NK column to be resolvable via mappings. An unmapped discriminator makes the FK join
 > incomplete (partial NULL).
 >
-> **Instead:** Use the actual business key that uniquely identifies the entity across all
-> source tables (e.g., `invoiceId`). If the same ID can appear in both source tables with
-> different meaning, the source data needs deduplication or the model needs rethinking —
-> the discriminator belongs in a separate descriptive column, not in the naturalKey.
+> **Instead:** Author a natural key only when source mappings provide evidence for it.
+> If the same value can appear in multiple branches, preserve
+> `_source_system` + `_source_record_key` branch identity. Emit a shared integration key
+> only after reviewed exact-equivalence rules and reconciliation tests are approved.
+> A discriminator remains descriptive and never becomes an invented natural key.
 
 ### 3c — Nullability overrides (R11)
 
@@ -479,27 +536,35 @@ Every FK to an SCD2 parent must state which parent version is intended:
 ref:issuedTo
     kairos-ext:silverForeignKey "true"^^xsd:boolean ;
     kairos-ext:silverForeignKeyTemporalMode "current" ;
+    kairos-ext:silverForeignKeyCardinality "exactly-one" ;
+    kairos-ext:silverForeignKeyMissingPolicy "quarantine" ;
+    kairos-ext:silverForeignKeyAmbiguousPolicy "fail" ;
+    kairos-ext:silverForeignKeyLateParentPolicy "restate" ;
     kairos-ext:silverForeignKeyChangeDetection "true"^^xsd:boolean .
 
-# As-of loading: resolve the parent version effective at the source event time.
-ref:Party
-    kairos-ext:scdValidFromColumn "party_effective_at" .
-
+# As-of loading: resolve the business-valid parent version at source event time.
 ref:occurredAt
     kairos-ext:silverForeignKey "true"^^xsd:boolean ;
     kairos-ext:silverForeignKeyTemporalMode "as-of" ;
-    kairos-ext:silverForeignKeyAsOfColumn "event_timestamp" ;
+    kairos-ext:silverForeignKeyAsOfColumn "_source_effective_at" ;
+    kairos-ext:silverForeignKeyInterval "closed-open" ;
+    kairos-ext:silverForeignKeyTimeZone "UTC" ;
+    kairos-ext:silverForeignKeyPrecision "microsecond" ;
+    kairos-ext:silverForeignKeyCardinality "exactly-one" ;
+    kairos-ext:silverForeignKeyMissingPolicy "quarantine" ;
+    kairos-ext:silverForeignKeyAmbiguousPolicy "fail" ;
+    kairos-ext:silverForeignKeyLateParentPolicy "restate" ;
     kairos-ext:silverForeignKeyChangeDetection "false"^^xsd:boolean .
 ```
 
 - `current` adds `is_current = 1` to the parent lookup and prevents historical
   parent rows from multiplying the child.
-- `as-of` joins the source timestamp to `[valid_from, valid_to)`.
-- The parent must declare `scdValidFromColumn`; otherwise its validity is system/load
-  time and an as-of relationship is rejected rather than producing a plausible wrong join.
-- `silverForeignKeyChangeDetection` controls whether the resolved FK surrogate key
-  participates in the child `_row_hash`. The default is `true`.
-- SCD2 dbt models use timestamp precision for `valid_from`/`valid_to`, so multiple
+- `as-of` joins the normalized source timestamp to
+  `[_business_valid_from, _business_valid_to)`.
+- The parent must have business-valid SCD2 authority; load-history is rejected.
+- `silverForeignKeyChangeDetection` explicitly controls whether the resolved FK
+  participates in child change detection; omission blocks projection.
+- SCD2 dbt models use microsecond precision, so multiple
   changes on the same day remain distinct.
 
 ---
@@ -528,10 +593,12 @@ ref:occurredAt
 > `check-claims` is read-only and deterministic (no AI). Use `--warn-only`
 > only as a deliberate, documented override (e.g. a domain you intentionally defer).
 
-Once your silver extension annotations are complete **and the claims gate
-is green**, generate the artifacts by invoking the **kairos-execute-project** skill
-with target `silver` (for DDL + ERD) or `dbt` (for dbt models — requires SKOS
-mappings).
+Once your Silver extension annotations are complete **and the claims gate is green**,
+invoke **kairos-execute-project** with target `dbt` (complete bundle) or `silver`
+(the same evidence-bound Silver pipeline). Both targets consume identical
+bind/normalize output. Neither can infer plausible DDL from ontology classes alone:
+source vocabulary, preparation policy, mappings, identity/runtime policy, and bound
+models are required.
 
 For a contracted custom intermediate, first hand off to
 **kairos-develop-dbt-transformation**. After `sync-dbt-contracts` and virtual-source
@@ -554,9 +621,13 @@ contract model name.
 
 Artifacts are written to the dbt project tree under `output/medallion/dbt/`:
 
-**DDL & constraints** (in `analyses/{DOMAIN}/`):
-- `{DOMAIN}-ddl.sql` — CREATE TABLE statements (Spark SQL / MS Fabric Warehouse compatible)
-- `{DOMAIN}-alter.sql` — ALTER TABLE statements for UNIQUE and FK constraints
+**Physical contract:**
+- `analyses/{DOMAIN}/{DOMAIN}-ddl.sql` — Fabric or Databricks DDL from the same
+  `SilverModelSpec` as dbt SQL and YAML
+- `metadata/{DOMAIN}-silver-constraints.json` — deterministic PK/unique/FK and index
+  metadata, including explicit `enforced: false` capability/deviation status
+- `metadata/{DOMAIN}-silver-parity.json` — field-level SQL/YAML/DDL/ERD mapping and
+  deterministic hashes; strict release blocks missing or drifted parity
 
 **ERD diagrams** (in `docs/diagrams/{DOMAIN}/`):
 - `{DOMAIN}-erd.mmd` — Mermaid `erDiagram` for this domain
@@ -592,11 +663,14 @@ with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
 ### Check per-domain DDL
 
 Key things to verify:
-- Schema name matches expected (`silver_{domain}`)
-- Tables appear in correct order: root → subtype → satellite → reference
-- Column ordering per table: SK → IRI → FK → discriminator → business → SCD → audit
-- Reference tables have `ref_` prefix and no SCD/audit columns
-- GDPR satellites use parent SK as PK, no own SK
+- parity manifest status is `pass`;
+- schema/table names and ordered columns match SQL, YAML, and DDL;
+- canonical types map through the declared Fabric/Databricks adapter profile;
+- `_source_record_key` is the source identity field (no old alias);
+- DD-109 uses `_row_hash` canonical hexadecimal text plus distinct business-valid and
+  system intervals;
+- temporal FKs say `current`, `as-of`, or `none` explicitly; and
+- every unenforced constraint is metadata/deviation, never an enforcement claim.
 
 ### Check master ERD
 
@@ -611,25 +685,8 @@ Verify:
 > **Tip**: The master ERD is the best way to review the full silver layer model with
 > a client. Share `output/medallion/dbt/docs/diagrams/master-erd.mmd` for stakeholder review.
 
-### Update master ERD manually (if needed)
-
-The master ERD is auto-generated from per-domain ERDs. If you need to add cross-domain
-relationships that aren't captured by FK annotations, add them directly to
-`output/medallion/dbt/docs/diagrams/master-erd.mmd` after generation:
-
-```
-erDiagram
-    %% Master ERD — my-hub (all domains)
-
-    %% --- Domain: customer ---
-    ...
-
-    %% --- Domain: order ---
-    ...
-
-    %% Cross-domain relationships (manually added)
-    CUSTOMER ||--o{ ORDER : "places"
-```
+Do not edit generated ERDs. A missing relationship means the emitted Silver model lacks
+an explicit FK/temporal contract; fix the source mapping or Silver policy and regenerate.
 
 ### Fix and iterate
 
@@ -641,26 +698,10 @@ The master ERD is regenerated automatically on every run.
 
 ## Column ordering convention (reference)
 
-| Position | Column(s) |
-|----------|-----------|
-| 1 | `{table}_sk` — surrogate key (PK) |
-| 2 | `{table}_iri` — OWL IRI lineage (UNIQUE) |
-| 3 | FK columns (one per max-cardinality-1 object property) |
-| 4 | Discriminator column (only for discriminator strategy) |
-| 5 | Business columns (from OWL data properties) |
-| 6 | `valid_from`, `valid_to` (TIMESTAMP), `is_current` (SCD Type 2 only) |
-| 7 | Audit/lineage envelope: `_created_at`, `_updated_at`, `_source_system`, `_source_record_id`, `_loaded_at`, `_load_date`, `_batch_id` |
-| 8 | `_row_hash` BINARY — SHA-256 hash of business columns (S5) |
-| 9 | `_deleted_at` TIMESTAMP NULL — soft-delete tracking (S6) |
-
-## Table ordering convention (within a schema)
-
-| Position | Type |
-|----------|------|
-| 1 | Root / stand-alone tables (no FK, not ref) |
-| 2 | Subtype satellite tables (PK = FK to parent) |
-| 3 | Satellite / junction tables (own SK + FK) |
-| 4 | Reference tables (`ref_` prefix) |
+There is no DDL-only reorder. The ordered `SilverModelSpec.columns` tuple is the
+authority for dbt SQL, schema YAML, DDL, metadata, and ERD. Identity strategy controls
+whether integration identity and entity IRI columns are emitted. Runtime-generated
+columns follow the DD-109 contract in that exact shared order.
 
 ---
 
@@ -673,104 +714,22 @@ A property becomes `NOT NULL` when:
 
 ---
 
-## Silver Fabric Warehouse Rules (S1-S8)
+## Adapter physical rules (DD-110/DD-111)
 
-These rules are specific to the silver-layer Fabric Warehouse projector and adapt the
-common R1-R16 annotation vocabulary to the physical constraints of MS Fabric Warehouse
-and Spark SQL.
-
-### S1 — Spark SQL types
-
-All data types are Spark SQL native. Type mappings:
-
-| Logical type | Spark SQL type |
-|--------------|---------------|
-| Boolean | `BOOLEAN` (not BIT) |
-| Timestamp / datetime | `TIMESTAMP` (not DATETIME2) |
-| String / text | `STRING` (not NVARCHAR) |
-| Floating point | `DOUBLE` (not FLOAT) |
-
-SK, IRI, discriminator, and audit columns all use `STRING`, `TIMESTAMP`, or `BOOLEAN`.
-
-### S2 — Constraints as comments
-
-Fabric Warehouse cannot enforce PK, FK, or UNIQUE constraints. The projector emits them
-as DDL comments instead of enforceable SQL:
-
-```sql
--- PK: party_sk
--- FK: party_sk -> silver_customer.party(party_sk)
--- UNIQUE: party_iri
-```
-
-The `{DOMAIN}-alter.sql` file is **documentation-only** — it is not executable.
-
-### S3 — Full inheritance flattening
-
-In the silver layer, **all** subtypes are merged into their parent table — not just
-empty ones (which was the old R16 behaviour). This applies regardless of the
-`inheritanceStrategy` annotation value.
-
-**Behaviour:**
-- Subtype properties become nullable columns with a `-- from {SubtypeName}` comment
-- A `{table}_type` discriminator column is auto-generated if none is annotated
-  via `kairos-ext:discriminatorColumn`
-- GDPR satellites are **exempt** — they remain separate tables
-- The `inheritanceStrategy` annotation is preserved for future Gold-layer projections
-
-**Example output:**
-```sql
--- S3: subtypes flattened: IndividualClient, OrganisationClient, SpecialClient
-CREATE TABLE silver_domain.client (
-    client_sk       STRING NOT NULL,
-    client_iri      STRING NOT NULL,
-    client_type     STRING,           -- auto-generated discriminator
-    name            STRING,
-    special_rating  INT,              -- from SpecialClient
-    ...
-)
-```
-
-### S4 — Inline small ref tables
-
-Reference tables (R8) with **≤3 business columns** are automatically denormalized
-(inlined) into the referencing parent table. The inlined columns are prefixed with the
-reference entity name.
-
-**Example:** `ref_belgian_legal_form` with columns `code`, `label` →
-parent table gets `belgian_legal_form_code STRING`, `belgian_legal_form_label STRING`.
-
-The threshold is configurable via `kairos-ext:inlineRefThreshold` on the ontology:
-```turtle
-<https://example.org/ontology> kairos-ext:inlineRefThreshold "5"^^xsd:integer .
-```
-
-### S5 — _row_hash
-
-A `_row_hash BINARY` column is added to the audit envelope. It contains a SHA-256 hash
-of all business columns, enabling efficient incremental MERGE/upsert operations without
-comparing every column.
-
-### S6 — _deleted_at
-
-A `_deleted_at TIMESTAMP NULL` column is added to the audit envelope for soft-delete
-tracking. When a source system signals a record deletion, this column records the
-timestamp instead of physically removing the row.
-
-### S7 — Canonical schema
-
-Each class belongs to exactly one schema — its owning domain (`silver_{domain}`).
-Tables are **never** duplicated across domain schemas. Cross-domain references use
-FK comments (S2) with schema-qualified names:
-
-```sql
--- FK: customer_sk -> silver_customer.customer(customer_sk)
-```
-
-### S8 — No dim_/fact_ prefixes
-
-Silver-layer tables use plain entity names (e.g. `party`, `engagement`).
-The `dim_`/`fact_` naming convention is reserved for the Gold layer.
+- Canonical types are normalized once, then mapped explicitly by the selected Fabric or
+  Databricks capability profile. Lossiness is evidence, not an implicit fallback.
+- PK, unique, FK, and index declarations have deterministic, collision-safe,
+  adapter-bounded names. `enforced: false` means metadata only; generated output never
+  claims runtime enforcement.
+- Physical layout and indexes remain deployment-profile recommendations
+  (`applied: false`) until compile/deployment evidence says otherwise.
+- Reference inlining is not Silver behavior; it is an explicit Gold optimization.
+- ERD relationships come only from emitted model columns and explicit FK/temporal
+  contracts. Cardinality is never invented from an absent declaration.
+- `_row_hash` is lowercase canonical SHA-256 text when explicitly selected.
+- Delete/current state uses `_is_deleted` and the governed current-flag column; SCD2
+  keeps `_business_valid_from/to` separate from `_system_from/to`.
+- Silver uses domain entity names directly; `dim_`/`fact_` remain Gold profile names.
 
 ---
 
@@ -982,6 +941,27 @@ is driven by:
   ontology properties, enriched with `kairos-map:` annotations for SQL transforms
 - **SHACL shapes** — data quality constraints converted to dbt tests
 
+### Executable data-quality rules (DD-115)
+
+Author reusable rules as `kairos-ext:DataQualityRule` resources and attach them
+with `kairos-ext:dataQualityRule`. Every rule requires a stable ID/version,
+category, scope, severity, tolerance, action, abstract owner role, evidence,
+declarative check expression, and the matching toolkit test reference.
+
+`dqCheckExpression` is **not SQL**. It is a closed `key=value;...` grammar for
+`contract-shape`, `freshness`, `volume`, `duplicate-rate`, `range`,
+`distribution`, `reconciliation`, `referential-coverage`, and `cross-field`.
+The test reference must be `kairos.dq.<check-kind>.v1`. Do not place SQL,
+comments, functions, or package macros in this field.
+
+`quarantine` is valid only when the check has deterministic row-level semantics.
+Projection then emits an input relation, a filtered normal model, a persistent
+result relation, and an explicit quarantine relation with source record key,
+rule/version, reason, observations, timestamps, evidence, and immutable source
+lineage. Aggregate-only checks with `quarantine` fail closed rather than dropping
+rows. The toolkit emits contracts and tests; runtime monitoring and alerting
+remain downstream.
+
 ### Prerequisites
 
 Before running the dbt projection, ensure these artifacts exist in the hub:
@@ -1035,7 +1015,7 @@ output/medallion/dbt/
 | SKOS Property | Meaning | dbt Behaviour |
 |---------------|---------|---------------|
 | `skos:exactMatch` | 1:1, same semantics | Direct column mapping (default) |
-| `skos:closeMatch` | 1:1 but needs transformation | Same SQL; annotated in `_models.yml` |
+| `skos:closeMatch` | Similar but not identical business meaning | Typed mapping contract; annotated in `_models.yml` |
 | `skos:narrowMatch` | Source more specific → domain broader | Same SQL; annotated in `_models.yml` |
 | `skos:broadMatch` | Source broader → filter/split required | Same SQL; annotated in `_models.yml` |
 | `skos:relatedMatch` | Indirect — business logic / lookup | Same SQL; annotated in `_models.yml` |
@@ -1047,16 +1027,16 @@ output/medallion/dbt/
 
 | Property | Level | Description |
 |----------|-------|-------------|
-| `kairos-map:mappingType` | Table | `direct`, `split`, `merge` (supported); `pivot`, `lookup` (planned — emits warning) |
-| `kairos-map:transform` | Column | SQL expression (`source.` prefix for columns) |
-| `kairos-map:sourceColumns` | Column | Space-separated source columns used |
-| `kairos-map:defaultValue` | Column | Default when source is NULL |
-| `kairos-map:filterCondition` | Table | SQL WHERE fragment |
-| `kairos-map:deduplicationKey` | Table | Columns for ROW_NUMBER() dedup |
-| `kairos-map:deduplicationOrder` | Table | ORDER BY for dedup |
+| `kairos-map:TableMapping` | Table | Named contract with `sourceTable`, `targetClass`, `matchType`, and `mappingType` |
+| `kairos-map:mappingType` | Table | `direct` or `split`; split requires a typed boolean `rowFilter` |
+| `kairos-map:ColumnMapping` | Column | Named contract with source-column IRI, target property, and match type |
+| `kairos-map:expression` | Column | Optional typed deterministic scalar AST root; absence is a direct source reference |
+| `kairos-map:outputType` / `nullable` / `nullPolicy` | Expression | Required type and null contract on every node |
+| `kairos-map:determinism` / `requiresCapability` | Expression | Must be deterministic and supported by Fabric + Databricks |
 
-> **Warning:** Using `pivot` or `lookup` as `mappingType` will emit a warning
-> and skip that table mapping. These patterns require manual dbt model authoring.
+> **DD-107 boundary:** mappings never contain SQL. Rename/trim/cast/sentinel/JSON/CDC
+> cleanup belongs in prep. Joins, windows, ranking, aggregation, cross-relation fallback,
+> JSON expansion, merge, and grain change require an approved contracted dbt transformation.
 
 ### dbt test mapping from SHACL
 
@@ -1141,7 +1121,7 @@ Save to `ontology-hub/.kairos-state/phases/silver/{domain}.md`:
 
 | # | Warning | Classification | Action |
 |---|---|---|---|
-| 1 | No naturalKey for {Class} | Deferred — FK-child | Will derive from parent |
+| 1 | No naturalKey for {Class} | Strategy review | Keep absent for source-scoped/surrogate-only, or obtain explicit mapped evidence; never derive |
 ```
 
 ### Saving rules

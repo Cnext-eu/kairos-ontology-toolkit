@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
-KAIROS_MAP = Namespace("https://kairos.cnext.eu/mapping#")
 
 MATCH_TYPES = [
     (SKOS.exactMatch, "exactMatch"),
@@ -133,95 +132,40 @@ def _parse_source_systems(sources_dir: Path) -> list[dict]:
 
 
 def _parse_mappings(mappings_dir: Path) -> dict:
-    """Parse SKOS mappings and return functional mapping data.
+    """Parse named v2 contracts and expose SQL-free expression summaries."""
 
-    Extracts SKOS match types together with ``kairos-map:`` technical annotations
-    (transform expressions, filter conditions, mapping types, etc.).
+    from .dbt.mapping_bind import (
+        bind_mapping_documents,
+        expression_summary,
+    )
 
-    A single source URI may map to **multiple** targets (e.g. a source table that
-    splits into several domain entities).  Both ``table_maps`` and ``column_maps``
-    therefore store *lists* of mapping entries per source URI.
-
-    Returns::
-
-        {
-            "table_maps": {source_table_uri: [{
-                "target_uri": str,
-                "match_type": str,
-                "mapping_type": str | None,
-                "filter_condition": str | None,
-                "dedup_key": str | None,
-                "dedup_order": str | None,
-            }]},
-            "column_maps": {source_col_uri: [{
-                "target_uri": str,
-                "match_type": str,
-                "transform": str | None,
-                "filter_condition": str | None,
-                "source_columns": str | None,
-                "default_value": str | None,
-            }]}
-        }
-    """
+    facts = bind_mapping_documents(mappings_dir)
     result: dict = {"table_maps": {}, "column_maps": {}}
-    if not mappings_dir or not mappings_dir.is_dir():
-        return result
-
-    g = Graph()
-    for ttl in sorted(mappings_dir.rglob("*.ttl")):
-        try:
-            g.parse(ttl, format="turtle")
-        except (SyntaxError, ValueError) as exc:
-            logger.warning("Could not parse mapping file %s: %s", ttl.name, exc)
-
-    for subj in sorted(set(g.subjects()), key=str):
-        for skos_prop, match_name in MATCH_TYPES:
-            for obj in g.objects(subj, skos_prop):
-                subj_str = str(subj)
-                obj_str = str(obj)
-
-                mapping_type = g.value(subj, KAIROS_MAP.mappingType)
-                if mapping_type is not None:
-                    entry = {
-                        "target_uri": obj_str,
-                        "match_type": match_name,
-                        "mapping_type": str(mapping_type),
-                        "filter_condition": _opt_str(
-                            g.value(subj, KAIROS_MAP.filterCondition)
-                        ),
-                        "dedup_key": _opt_str(
-                            g.value(subj, KAIROS_MAP.deduplicationKey)
-                        ),
-                        "dedup_order": _opt_str(
-                            g.value(subj, KAIROS_MAP.deduplicationOrder)
-                        ),
-                    }
-                    result["table_maps"].setdefault(subj_str, []).append(entry)
-                else:
-                    entry = {
-                        "target_uri": obj_str,
-                        "match_type": match_name,
-                        "transform": _opt_str(
-                            g.value(subj, KAIROS_MAP.transform)
-                        ),
-                        "filter_condition": _opt_str(
-                            g.value(subj, KAIROS_MAP.filterCondition)
-                        ),
-                        "source_columns": _opt_str(
-                            g.value(subj, KAIROS_MAP.sourceColumns)
-                        ),
-                        "default_value": _opt_str(
-                            g.value(subj, KAIROS_MAP.defaultValue)
-                        ),
-                    }
-                    result["column_maps"].setdefault(subj_str, []).append(entry)
-
+    for mapping in facts.tables:
+        result["table_maps"].setdefault(mapping.source_table_uri, []).append(
+            {
+                "target_uri": mapping.target_class_uri,
+                "match_type": mapping.match_type,
+                "mapping_type": mapping.mapping_type,
+                "filter_condition": (
+                    expression_summary(mapping.row_filter)
+                    if mapping.row_filter is not None
+                    else None
+                ),
+                "mapping_resource_uri": mapping.resource_uri,
+            }
+        )
+    for mapping in facts.columns:
+        result["column_maps"].setdefault(mapping.source_column_uri, []).append(
+            {
+                "target_uri": mapping.target_property_uri,
+                "match_type": mapping.match_type,
+                "expression_contract": expression_summary(mapping.expression),
+                "filter_condition": None,
+                "mapping_resource_uri": mapping.resource_uri,
+            }
+        )
     return result
-
-
-def _opt_str(val) -> str | None:
-    """Convert an rdflib Literal/URIRef to str, or return None."""
-    return str(val) if val is not None else None
 
 
 def _extract_ontology_properties(graph: Graph, namespace: Optional[str]) -> dict:
@@ -365,7 +309,7 @@ def _build_entity_view(
                     "target_label": target_prop_info["label"],
                     "target_comment": target_prop_info["comment"],
                     "domain_prefix": _extract_domain_prefix(target_prop_uri),
-                    "transform": col_map.get("transform"),
+                    "expression_contract": col_map.get("expression_contract"),
                     "filter_condition": col_map.get("filter_condition"),
                 })
 
@@ -511,7 +455,7 @@ def _build_report_data(
                     "target_label": target_prop["label"],
                     "target_comment": target_prop["comment"],
                     "domain_prefix": _extract_domain_prefix(target_prop_uri),
-                    "transform": col_map.get("transform"),
+                    "expression_contract": col_map.get("expression_contract"),
                     "filter_condition": col_map.get("filter_condition"),
                 })
 
@@ -541,7 +485,7 @@ def _build_report_data(
                     "target_label": "",
                     "target_comment": "",
                     "domain_prefix": "",
-                    "transform": None,
+                    "expression_contract": None,
                     "filter_condition": None,
                 })
                 action_items.append({
@@ -1329,4 +1273,3 @@ def generate_mapping_progress_report(
     )
 
     return {"mapping-progress.md": md}
-

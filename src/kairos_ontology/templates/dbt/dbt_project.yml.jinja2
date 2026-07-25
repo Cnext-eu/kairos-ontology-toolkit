@@ -16,6 +16,12 @@ clean-targets:
   - "target"
   - "dbt_packages"
 
+{% if adapter == "databricks" %}
+# DD-109 canonical timestamps are formatted in UTC, independent of session defaults.
+on-run-start:
+  - "SET TIME ZONE 'UTC'"
+{% endif %}
+
 models:
   {{ project_name }}:
     silver:

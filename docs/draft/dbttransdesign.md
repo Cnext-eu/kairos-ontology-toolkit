@@ -413,7 +413,7 @@ select
     debtor_search_name,
     load_status,
     source_system,
-    source_record_id
+    source_record_key
 from canonical_sources
 ```
 
@@ -472,7 +472,7 @@ select
     source.load_status,
     source.company_description,
     source.source_system,
-    source.source_record_id
+    source.source_record_key
 
 from source
 

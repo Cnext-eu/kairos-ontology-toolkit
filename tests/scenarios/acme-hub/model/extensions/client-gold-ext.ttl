@@ -1,53 +1,35 @@
 @prefix acme: <https://acme.example/ontology/client#> .
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 
-# ---------------------------------------------------------------------------
-# Gold-layer annotations for Client domain
-# ---------------------------------------------------------------------------
-
-# Ontology-level
 <https://acme.example/ontology/client>
+    a owl:Ontology ;
+    rdfs:label "ACME Client Gold product policy"@en ;
+    rdfs:comment "Governed profile with explicit Silver and security bindings."@en ;
+    owl:versionInfo "2.0.0" ;
     kairos-ext:goldSchema "gold" ;
-    kairos-ext:goldInheritanceStrategy "class-per-table" ;
+    kairos-ext:goldProductProfile "dimensional-powerbi-v1" ;
+    kairos-ext:securityPolicy acme:ClientSecurity ;
     kairos-ext:namingConvention "camel-to-snake" .
 
-# Class-level — dimension tables
-acme:CorporateClient
+acme:ClientSecurity a kairos-ext:SecurityPolicy ;
+    kairos-ext:entitlementSource "governed-client-entitlements" ;
+    kairos-ext:identityMapping "model-user-to-entitlement-subject" ;
+    kairos-ext:rolePolicy "ClientReader", "ClientProtected" ;
+    kairos-ext:filterDirection "entitlement-to-product" ;
+    kairos-ext:securityBinding "Client.client_id=ClientReader:RLS",
+                               "Client.email=ClientProtected:OLS" ;
+    kairos-ext:positiveSecurityTest "authorized-client-reader" ;
+    kairos-ext:negativeSecurityTest "unauthorized-client-reader" ;
+    kairos-ext:securityTestEvidence "security-run:client-access-v1" ;
+    kairos-ext:failClosed true .
+
+acme:Client
     kairos-ext:goldTableType "dimension" ;
-    kairos-ext:goldTableName "dim_corporate_client" ;
-    kairos-ext:scdType "2" ;
-    kairos-ext:discriminatorColumn "client_type" .
-
-acme:SoleProprietorClient
-    kairos-ext:goldTableType "dimension" ;
-    kairos-ext:goldTableName "dim_sole_proprietor_client" .
-
-acme:IndividualClient
-    kairos-ext:goldTableType "dimension" ;
-    kairos-ext:goldTableName "dim_individual_client" .
-
-acme:ClientType
-    kairos-ext:goldTableType "dimension" ;
-    kairos-ext:goldTableName "dim_client_type" ;
-    kairos-ext:isReferenceData "true" .
-
-# Exclude GDPR satellite from gold layer
-acme:ClientPII
-    kairos-ext:goldExclude "true" ;
-    kairos-ext:gdprSatelliteOf acme:Client .
-
-# Property-level — column overrides + hierarchy + role-playing
-acme:clientCity
-    kairos-ext:goldColumnName "city" ;
-    kairos-ext:goldDataType "VARCHAR(100)" ;
-    kairos-ext:hierarchyName "ClientGeography" ;
-    kairos-ext:hierarchyLevel "2" .
-
-acme:clientCountry
-    kairos-ext:goldColumnName "country" ;
-    kairos-ext:goldDataType "VARCHAR(50)" ;
-    kairos-ext:hierarchyName "ClientGeography" ;
-    kairos-ext:hierarchyLevel "1" .
-
-acme:nationalId
-    kairos-ext:olsRestricted "true" .
+    kairos-ext:goldTableName "dim_client" ;
+    kairos-ext:goldSourceModel "client" ;
+    kairos-ext:goldSourceVersion "1.0.0" ;
+    kairos-ext:dimensionExposure "dual" ;
+    kairos-ext:dimensionVersionBinding "current" ;
+    kairos-ext:perspective "ClientNavigation" .

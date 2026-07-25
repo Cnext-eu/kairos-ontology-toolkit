@@ -87,7 +87,6 @@ _SKILL_COVERED_COMMANDS = {
     "import-source": "kairos-design-source",
     "import-flatfile": "kairos-design-source",
     "source-privacy": "kairos-design-source",
-    "generate-staging": "kairos-design-source",
     "analyse-sources": "kairos-design-source",
     "inventory-dbt-candidates": "kairos-design-source",
     "check-transformation-readiness": "kairos-develop-dbt-transformation",
@@ -920,9 +919,9 @@ def validate(
     '--strict',
     is_flag=True,
     default=False,
-    help='Release gate (DD-096): fail if any approved, materialization-eligible '
-         'claim has no bronze mapping (an unbound target). Use in release CI so an '
-         'incomplete hub cannot ship vacuous zero-row stubs. Also honoured via '
+    help='Strict DD-114/DD-115 release evaluation. Requires an approved baseline, '
+         'compile evidence, complete generated artifacts, and non-blocking binding, '
+         'coverage, DQ, security, measure, and calendar status. Also honoured via '
          'KAIROS_PROJECT_STRICT.',
 )
 @click.option(
@@ -1147,6 +1146,7 @@ def init(domain, company_domain, force):
         hub / "model" / "ontologies",
         hub / "model" / "shapes",
         hub / "model" / "extensions",
+        hub / "model" / "governance",
         hub / "model" / "mappings",
         hub / "model" / "planning",
         hub / "model" / "planning" / "dbt-transformations",
@@ -1155,6 +1155,7 @@ def init(domain, company_domain, force):
         hub / "businessdiscovery" / "_extractions",
         hub / "integration" / "sources",
         hub / "integration" / "sources" / "custom-transformations",
+        hub / "integration" / "preparation",
         hub / "integration" / "transforms" / "dbt" / "models" / "intermediate",
         hub / "integration" / "transforms" / "dbt" / "macros",
         hub / "integration" / "transforms" / "dbt" / "tests",
@@ -1228,6 +1229,7 @@ def init(domain, company_domain, force):
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
         "model/mappings": "model/mappings",
+        "model/governance": "model/governance",
         "model/mappings/custom-transformations": "model/mappings/custom-transformations",
         "model/planning/dbt-transformations": "model/planning/dbt-transformations",
         "businessdiscovery": "businessdiscovery",
@@ -1235,6 +1237,7 @@ def init(domain, company_domain, force):
         "integration/sources": "integration/sources",
         "integration/sources/custom-transformations":
             "integration/sources/custom-transformations",
+        "integration/preparation": "integration/preparation",
         "integration/transforms/dbt": "integration/transforms/dbt",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
@@ -1242,6 +1245,17 @@ def init(domain, company_domain, force):
         readme_dst = hub / hub_subdir / "README.md"
         if readme_src.is_file() and (not readme_dst.exists() or force):
             shutil.copy2(readme_src, readme_dst)
+
+    # Install the normative fresh-hub medallion policy shapes.
+    for shape_name in [
+        "kairos-prep-shapes.shacl.ttl",
+        "kairos-ext-shapes.shacl.ttl",
+        "kairos-map-shapes.shacl.ttl",
+    ]:
+        shape_src = _SCAFFOLD_DIR / shape_name
+        shape_dst = hub / "model" / "shapes" / shape_name
+        if shape_src.is_file() and (not shape_dst.exists() or force):
+            shutil.copy2(shape_src, shape_dst)
 
     # 2a. Copy the business glossary template into businessdiscovery/
     glossary_tpl_src = _SCAFFOLD_DIR / "ontology-hub" / "businessdiscovery" / "glossary-template.ttl"
@@ -1257,6 +1271,26 @@ def init(domain, company_domain, force):
             shutil.rmtree(src_template_dst)
         shutil.copytree(src_template_src, src_template_dst)
         print("  ✓ Installed integration/sources/source-system-template/")
+
+    # 2c. Copy source-preparation authoring references.
+    prep_scaffold = _SCAFFOLD_DIR / "ontology-hub" / "integration" / "preparation"
+    prep_destination = hub / "integration" / "preparation"
+    for prep_name in ["source-prep.ttl.template", "source-prep.example.ttl"]:
+        prep_src = prep_scaffold / prep_name
+        prep_dst = prep_destination / prep_name
+        if prep_src.is_file() and (not prep_dst.exists() or force):
+            shutil.copy2(prep_src, prep_dst)
+
+    baseline_src = (
+        _SCAFFOLD_DIR
+        / "ontology-hub"
+        / "model"
+        / "governance"
+        / "release-baseline.yaml"
+    )
+    baseline_dst = hub / "model" / "governance" / "release-baseline.yaml"
+    if baseline_src.is_file() and (not baseline_dst.exists() or force):
+        shutil.copy2(baseline_src, baseline_dst)
 
     # 3. Copy Copilot skills into .github/skills/
     skills_src = _SCAFFOLD_DIR / "skills"
@@ -2147,56 +2181,6 @@ def extract_schema(profile_name, target, schema_name, system_name, output,
     click.echo(f"✅ Extracted {len(table_files)} tables to: {result_dir}")
     for f in table_files:
         click.echo(f"   📄 {f.name}")
-
-
-@cli.command(name='generate-staging')
-@click.option('--from', 'from_dir', type=click.Path(exists=True), required=True,
-              help='Path to extracted/<system>/ directory (from extract-schema).')
-@click.option('--output', '-o', type=click.Path(), default='models/staging',
-              help='Output directory for staging models (default: models/staging/).')
-@click.option('--source', 'source_name', default=None,
-              help='dbt source name for {{ source() }} refs (default: from manifest).')
-def generate_staging(from_dir, output, source_name):
-    """Generate bronze_expanded staging models from JSON metadata.
-
-    Reads extract-schema output (per-table YAML with json_structure) and
-    generates dbt SQL models that flatten JSON columns into typed columns.
-
-    \b
-    Generated model patterns:
-      - Flat JSON → view with JSON_VALUE extractions
-      - Array of objects → table with CROSS APPLY OPENJSON
-
-    \b
-    Examples:
-      kairos-ontology generate-staging --from extracted/adminpulse/
-      kairos-ontology generate-staging --from extracted/nms/ --output models/staging/nms
-    """
-    from ..core.generate_staging import generate_staging_models
-
-    schema_dir = Path(from_dir)
-    output_path = Path(output)
-
-    click.echo(f"🏗️  Generating staging models from: {schema_dir}")
-    click.echo(f"   Output: {output_path}")
-    click.echo()
-
-    try:
-        generated = generate_staging_models(
-            schema_dir=schema_dir,
-            output_dir=output_path,
-            source_name=source_name,
-        )
-    except FileNotFoundError as e:
-        click.echo(f"\n❌ {e}", err=True)
-        raise SystemExit(1)
-
-    if generated:
-        click.echo(f"✅ Generated {len(generated)} staging models:")
-        for p in generated:
-            click.echo(f"   📄 {p.name}")
-    else:
-        click.echo("ℹ️  No JSON columns detected — no staging models needed.")
 
 
 @cli.command(name='analyse-sources')
@@ -5955,6 +5939,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "model" / "ontologies",
         hub / "model" / "shapes",
         hub / "model" / "extensions",
+        hub / "model" / "governance",
         hub / "model" / "mappings",
         hub / "model" / "planning",
         hub / "model" / "planning" / "dbt-transformations",
@@ -5963,6 +5948,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         hub / "businessdiscovery" / "_extractions",
         hub / "integration" / "sources",
         hub / "integration" / "sources" / "custom-transformations",
+        hub / "integration" / "preparation",
         hub / "integration" / "transforms" / "dbt" / "models" / "intermediate",
         hub / "integration" / "transforms" / "dbt" / "macros",
         hub / "integration" / "transforms" / "dbt" / "tests",
@@ -6035,6 +6021,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     readme_map = {
         "model/ontologies": "model/ontologies",
         "model/shapes": "model/shapes",
+        "model/governance": "model/governance",
         "model/mappings": "model/mappings",
         "model/mappings/custom-transformations": "model/mappings/custom-transformations",
         "model/planning/dbt-transformations": "model/planning/dbt-transformations",
@@ -6043,6 +6030,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         "integration/sources": "integration/sources",
         "integration/sources/custom-transformations":
             "integration/sources/custom-transformations",
+        "integration/preparation": "integration/preparation",
         "integration/transforms/dbt": "integration/transforms/dbt",
     }
     for scaffold_subdir, hub_subdir in readme_map.items():
@@ -6050,6 +6038,16 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         dst = hub / hub_subdir / "README.md"
         if src.is_file():
             shutil.copy2(src, dst)
+
+    # Install the normative fresh-hub medallion policy shapes.
+    for shape_name in [
+        "kairos-prep-shapes.shacl.ttl",
+        "kairos-ext-shapes.shacl.ttl",
+        "kairos-map-shapes.shacl.ttl",
+    ]:
+        shape_src = _SCAFFOLD_DIR / shape_name
+        if shape_src.is_file():
+            shutil.copy2(shape_src, hub / "model" / "shapes" / shape_name)
 
     # Business glossary template into businessdiscovery/
     glossary_tpl_src = _SCAFFOLD_DIR / "ontology-hub" / "businessdiscovery" / "glossary-template.ttl"
@@ -6061,6 +6059,27 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     src_template_dst = hub / "integration" / "sources" / "source-system-template"
     if src_template_src.is_dir() and not src_template_dst.exists():
         shutil.copytree(src_template_src, src_template_dst)
+
+    # Source-preparation authoring references.
+    prep_scaffold = _SCAFFOLD_DIR / "ontology-hub" / "integration" / "preparation"
+    prep_destination = hub / "integration" / "preparation"
+    for prep_name in ["source-prep.ttl.template", "source-prep.example.ttl"]:
+        prep_src = prep_scaffold / prep_name
+        if prep_src.is_file():
+            shutil.copy2(prep_src, prep_destination / prep_name)
+
+    baseline_src = (
+        _SCAFFOLD_DIR
+        / "ontology-hub"
+        / "model"
+        / "governance"
+        / "release-baseline.yaml"
+    )
+    if baseline_src.is_file():
+        shutil.copy2(
+            baseline_src,
+            hub / "model" / "governance" / "release-baseline.yaml",
+        )
 
     # Hub-level README with company context
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"

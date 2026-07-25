@@ -5,16 +5,15 @@
 from pathlib import Path
 
 import yaml
+import pytest
 from rdflib import Graph
 
 from kairos_ontology.core.projections.medallion_dbt_projector import (
     generate_dbt_artifacts,
 )
 from kairos_ontology.core.projections.medallion_gold_projector import (
+    GoldContractError,
     generate_gold_artifacts,
-)
-from kairos_ontology.core.projections.medallion_silver_projector import (
-    generate_silver_artifacts,
 )
 
 from .conftest import TEMPLATE_DIR
@@ -32,8 +31,7 @@ ONTOLOGY = f"""
 
 <{NAMESPACE.rstrip("#")}> a owl:Ontology ;
     rdfs:label "FK parity" ;
-    owl:versionInfo "1.0" ;
-    kairos-ext:generateDateDimension false .
+    owl:versionInfo "1.0" .
 
 ex:Order a owl:Class ;
     rdfs:label "Order" ; rdfs:comment "An order." ;
@@ -58,10 +56,22 @@ ex:lineId a owl:DatatypeProperty ;
     rdfs:domain ex:OrderLine ; rdfs:range xsd:string ; rdfs:label "line ID" .
 
 ex:placedBy a owl:ObjectProperty ;
-    rdfs:domain ex:Order ; rdfs:range ex:Customer ; rdfs:label "placed by" .
+    rdfs:domain ex:Order ; rdfs:range ex:Customer ; rdfs:label "placed by" ;
+    kairos-ext:silverForeignKeyTemporalMode "none" ;
+    kairos-ext:silverForeignKeyChangeDetection false ;
+    kairos-ext:silverForeignKeyCardinality "zero-or-one" ;
+    kairos-ext:silverForeignKeyMissingPolicy "fail" ;
+    kairos-ext:silverForeignKeyAmbiguousPolicy "fail" ;
+    kairos-ext:silverForeignKeyLateParentPolicy "fail" .
 ex:hasLine a owl:ObjectProperty ;
     rdfs:domain ex:Order ; rdfs:range ex:OrderLine ; rdfs:label "has line" ;
-    kairos-ext:silverForeignKeyOn ex:OrderLine .
+    kairos-ext:silverForeignKeyOn ex:OrderLine ;
+    kairos-ext:silverForeignKeyTemporalMode "none" ;
+    kairos-ext:silverForeignKeyChangeDetection false ;
+    kairos-ext:silverForeignKeyCardinality "zero-or-one" ;
+    kairos-ext:silverForeignKeyMissingPolicy "fail" ;
+    kairos-ext:silverForeignKeyAmbiguousPolicy "fail" ;
+    kairos-ext:silverForeignKeyLateParentPolicy "fail" .
 """
 
 
@@ -116,21 +126,104 @@ MAPPING = f"""
 @prefix bronze: <https://scenario.example/bronze/erp#> .
 @prefix ex: <{NAMESPACE}> .
 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix map: <https://scenario.example/mapping/fk#> .
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 
-bronze:Orders skos:exactMatch ex:Order ;
-    kairos-map:mappingType "direct" .
+bronze:Orders skos:exactMatch ex:Order .
 bronze:Orders_order_id skos:exactMatch ex:orderId .
 bronze:Orders_customer_id skos:exactMatch ex:placedBy .
 
-bronze:Customers skos:exactMatch ex:Customer ;
-    kairos-map:mappingType "direct" .
+bronze:Customers skos:exactMatch ex:Customer .
 bronze:Customers_customer_id skos:exactMatch ex:customerId .
 
-bronze:OrderLines skos:exactMatch ex:OrderLine ;
-    kairos-map:mappingType "direct" .
+bronze:OrderLines skos:exactMatch ex:OrderLine .
 bronze:OrderLines_line_id skos:exactMatch ex:lineId .
 bronze:OrderLines_order_id skos:exactMatch ex:hasLine .
+
+map:orders a kairos-map:TableMapping ;
+    kairos-map:sourceTable bronze:Orders ;
+    kairos-map:targetClass ex:Order ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" .
+map:customers a kairos-map:TableMapping ;
+    kairos-map:sourceTable bronze:Customers ;
+    kairos-map:targetClass ex:Customer ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" .
+map:lines a kairos-map:TableMapping ;
+    kairos-map:sourceTable bronze:OrderLines ;
+    kairos-map:targetClass ex:OrderLine ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" .
+map:orderId a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze:Orders_order_id ;
+    kairos-map:targetProperty ex:orderId ;
+    kairos-map:matchType "exactMatch" .
+map:placedBy a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze:Orders_customer_id ;
+    kairos-map:targetProperty ex:placedBy ;
+    kairos-map:matchType "exactMatch" .
+map:customerId a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze:Customers_customer_id ;
+    kairos-map:targetProperty ex:customerId ;
+    kairos-map:matchType "exactMatch" .
+map:lineId a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze:OrderLines_line_id ;
+    kairos-map:targetProperty ex:lineId ;
+    kairos-map:matchType "exactMatch" .
+map:hasLine a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn bronze:OrderLines_order_id ;
+    kairos-map:targetProperty ex:hasLine ;
+    kairos-map:matchType "exactMatch" .
+"""
+
+
+PREPARATION = """
+@prefix bronze: <https://scenario.example/bronze/erp#> .
+@prefix prep: <https://scenario.example/preparation/erp#> .
+@prefix kairos-prep: <https://kairos.cnext.eu/preparation#> .
+
+prep:orders a kairos-prep:PreparationPolicy ;
+    kairos-prep:sourceTable bronze:Orders ;
+    kairos-prep:prepMode "passthrough" ;
+    kairos-prep:schemaChangePolicy "fail" ;
+    kairos-prep:recordKeyPolicy prep:ordersKey .
+prep:ordersKey a kairos-prep:RecordKeyPolicy ;
+    kairos-prep:sourceScope "erp" ;
+    kairos-prep:tableScope "Orders" ;
+    kairos-prep:recordKeyComponent bronze:Orders_order_id ;
+    kairos-prep:recordKeyOutput prep:ordersRecordKey .
+prep:ordersRecordKey a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_source_record_key" ;
+    kairos-prep:targetType "string" .
+
+prep:customers a kairos-prep:PreparationPolicy ;
+    kairos-prep:sourceTable bronze:Customers ;
+    kairos-prep:prepMode "passthrough" ;
+    kairos-prep:schemaChangePolicy "fail" ;
+    kairos-prep:recordKeyPolicy prep:customersKey .
+prep:customersKey a kairos-prep:RecordKeyPolicy ;
+    kairos-prep:sourceScope "erp" ;
+    kairos-prep:tableScope "Customers" ;
+    kairos-prep:recordKeyComponent bronze:Customers_customer_id ;
+    kairos-prep:recordKeyOutput prep:customersRecordKey .
+prep:customersRecordKey a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_source_record_key" ;
+    kairos-prep:targetType "string" .
+
+prep:lines a kairos-prep:PreparationPolicy ;
+    kairos-prep:sourceTable bronze:OrderLines ;
+    kairos-prep:prepMode "passthrough" ;
+    kairos-prep:schemaChangePolicy "fail" ;
+    kairos-prep:recordKeyPolicy prep:linesKey .
+prep:linesKey a kairos-prep:RecordKeyPolicy ;
+    kairos-prep:sourceScope "erp" ;
+    kairos-prep:tableScope "OrderLines" ;
+    kairos-prep:recordKeyComponent bronze:OrderLines_line_id ;
+    kairos-prep:recordKeyOutput prep:linesRecordKey .
+prep:linesRecordKey a kairos-prep:PreparedColumn ;
+    kairos-prep:targetColumnName "_source_record_key" ;
+    kairos-prep:targetType "string" .
 """
 
 
@@ -156,24 +249,32 @@ def _write_inputs(tmp_path: Path) -> tuple[Path, Path]:
     mappings = tmp_path / "mappings"
     sources.mkdir(parents=True)
     mappings.mkdir()
+    preparation = tmp_path / "preparation"
+    preparation.mkdir()
     (sources / "erp.ttl").write_text(SOURCE, encoding="utf-8")
     (mappings / "erp-to-fk.ttl").write_text(MAPPING, encoding="utf-8")
+    (preparation / "erp-prep.ttl").write_text(
+        PREPARATION,
+        encoding="utf-8",
+    )
     return sources.parent, mappings
 
 
 def _table_block(ddl: str, table_name: str) -> str:
     start = ddl.index(f"CREATE TABLE {table_name} (")
-    return ddl[start:ddl.index(";", start)]
+    endings = [
+        position
+        for terminator in ("\n);", "\n)\n;")
+        if (position := ddl.find(terminator, start)) >= 0
+    ]
+    return ddl[start:min(endings)]
 
 
-def test_silver_dbt_and_gold_share_direct_and_redirected_fk_contract(tmp_path):
+def test_silver_fk_contract_is_authoritative_and_unprofiled_gold_blocks(tmp_path):
     graph = Graph()
     graph.parse(data=ONTOLOGY, format="turtle")
     sources_dir, mappings_dir = _write_inputs(tmp_path)
 
-    silver = generate_silver_artifacts(
-        CLASSES, graph, NAMESPACE, ontology_name="fk_parity",
-    )
     dbt = generate_dbt_artifacts(
         CLASSES,
         graph,
@@ -184,13 +285,19 @@ def test_silver_dbt_and_gold_share_direct_and_redirected_fk_contract(tmp_path):
         mappings_dir=mappings_dir,
         ontology_metadata={"generated_at": "2026-07-21T19:13:30Z"},
     )
-    gold = generate_gold_artifacts(
-        CLASSES, graph, NAMESPACE, ontology_name="fk_parity",
-    )
+    with pytest.raises(GoldContractError, match="profile-missing"):
+        generate_gold_artifacts(
+            CLASSES,
+            graph,
+            TEMPLATE_DIR,
+            NAMESPACE,
+            ontology_name="fk_parity",
+            ontology_metadata={"version": "1.0"},
+            sources_dir=sources_dir,
+            mappings_dir=mappings_dir,
+        )
 
-    silver_ddl = silver["analyses/fk_parity/fk_parity-ddl.sql"]
-    gold_ddl = gold["fk_parity/fk_parity-gold-ddl.sql"]
-    gold_alter = gold["fk_parity/fk_parity-gold-alter.sql"]
+    silver_ddl = dbt["analyses/fk_parity/fk_parity-ddl.sql"]
     order_sql = dbt["models/silver/fk_parity/order.sql"]
     order_line_sql = dbt["models/silver/fk_parity/order_line.sql"]
     schema = yaml.safe_load(dbt["models/silver/fk_parity/_fk_parity__models.yml"])
@@ -201,18 +308,14 @@ def test_silver_dbt_and_gold_share_direct_and_redirected_fk_contract(tmp_path):
 
     silver_order = _table_block(silver_ddl, "silver_fk_parity.order")
     silver_line = _table_block(silver_ddl, "silver_fk_parity.order_line")
-    gold_order = _table_block(gold_ddl, "gold_fk_parity.dim_order")
-    gold_line = _table_block(gold_ddl, "gold_fk_parity.dim_order_line")
 
     assert "customer_sk" in silver_order
     assert "customer_sk" in order_sql and "ref('customer')" in order_sql
     assert "customer_sk" in schema_columns["order"]
-    assert "customer_sk" in gold_order
 
     assert "order_sk" in silver_line
     assert "order_sk" in order_line_sql and "ref('order')" in order_line_sql
     assert "order_sk" in schema_columns["order_line"]
-    assert "order_sk" in gold_line
 
-    assert "-- FK: order_sk -> silver_fk_parity.order (order_sk)" in silver_ddl
-    assert "-- FK: order_sk -> gold_fk_parity.dim_order (order_sk)" in gold_alter
+    assert "UNENFORCED FOREIGN-KEY" in silver_ddl
+    assert "REFERENCES silver_fk_parity.order (order_sk)" in silver_ddl

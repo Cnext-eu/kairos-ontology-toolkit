@@ -1,0 +1,410 @@
+# SHACL constraints for the DD-106 source-preparation authoring contract.
+
+@prefix kairos-prep:   <https://kairos.cnext.eu/preparation#> .
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/preparation/shapes> a owl:Ontology ;
+    rdfs:label "Kairos Source Preparation SHACL Shapes"@en ;
+    rdfs:comment "Fail-closed validation constraints for mandatory passthrough or normalize prep policy, safe technical operations, source-record identity, JSON child grain and adapter evidence."@en ;
+    owl:imports <https://kairos.cnext.eu/preparation> ;
+    owl:versionInfo "1.1.0" .
+
+kairos-prep:SourceTablePrepCoverageShape a sh:NodeShape ;
+    sh:targetSubjectsOf skos:exactMatch ;
+    sh:targetSubjectsOf skos:closeMatch ;
+    sh:targetSubjectsOf skos:narrowMatch ;
+    sh:sparql [
+        sh:message "Every mapped source table must have exactly one PreparationPolicy."@en ;
+        sh:select """
+            PREFIX kairos-prep: <https://kairos.cnext.eu/preparation#>
+            PREFIX kairos-bronze: <https://kairos.cnext.eu/bronze#>
+            SELECT $this WHERE {
+                $this a kairos-bronze:SourceTable .
+                {
+                    FILTER NOT EXISTS {
+                        ?policy a kairos-prep:PreparationPolicy ;
+                            kairos-prep:sourceTable $this .
+                    }
+                } UNION {
+                    ?first a kairos-prep:PreparationPolicy ;
+                        kairos-prep:sourceTable $this .
+                    ?second a kairos-prep:PreparationPolicy ;
+                        kairos-prep:sourceTable $this .
+                    FILTER (?first != ?second)
+                }
+            }
+        """ ;
+    ] .
+
+kairos-prep:PreparationPolicyShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:PreparationPolicy ;
+    sh:property [
+        sh:path kairos-prep:sourceTable ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-bronze:SourceTable ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:prepMode ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:in ( "passthrough" "normalize" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:schemaChangePolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "fail" "quarantine" "approved-contract-update" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:recordKeyPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-prep:RecordKeyPolicy ;
+    ] ;
+    sh:sparql [
+        sh:message "passthrough cannot contain normalization, derived CDC, or JSON extraction rules."@en ;
+        sh:select """
+            PREFIX kairos-prep: <https://kairos.cnext.eu/preparation#>
+            SELECT $this WHERE {
+                $this kairos-prep:prepMode "passthrough" ;
+                      ?operation ?value .
+                FILTER (?operation IN (
+                    kairos-prep:physicalRename,
+                    kairos-prep:cleanupRule,
+                    kairos-prep:typeConversion,
+                    kairos-prep:sentinelNormalization,
+                    kairos-prep:cdcMapping,
+                    kairos-prep:scalarJsonExtraction,
+                    kairos-prep:arrayChildContract,
+                    kairos-prep:technicalDedupe
+                ))
+            }
+        """ ;
+    ] .
+
+kairos-prep:PhysicalRenameShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:PhysicalRename ;
+    sh:property [
+        sh:path kairos-prep:sourceColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-bronze:SourceColumn ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:targetColumnName ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:pattern "^[A-Za-z_][A-Za-z0-9_]*$" ;
+        sh:message "Prepared physical names must use portable unquoted identifier characters."@en ;
+    ] .
+
+kairos-prep:CleanupRuleShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:CleanupRule ;
+    sh:property [
+        sh:path kairos-prep:sourceColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-bronze:SourceColumn ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:cleanupOperation ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "trim" "left-trim" "right-trim" "unicode-normalize" "line-ending-normalize" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:lossless ;
+        sh:hasValue true ;
+        sh:minCount 1 ;
+    ] .
+
+kairos-prep:TypeConversionShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:TypeConversion ;
+    sh:property [
+        sh:path kairos-prep:sourceColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-bronze:SourceColumn ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:targetType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:parsePolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:errorPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "fail" "quarantine" "null-with-evidence" ) ;
+    ] .
+
+kairos-prep:SentinelNormalizationShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:SentinelNormalization ;
+    sh:property [
+        sh:path kairos-prep:sourceColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-bronze:SourceColumn ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:sentinelValue ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:sentinelAction ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "to-null" "to-normalized-value" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:evidence ;
+        sh:minCount 1 ;
+    ] ;
+    sh:sparql [
+        sh:message "to-normalized-value sentinel handling requires normalizedValue."@en ;
+        sh:select """
+            PREFIX kairos-prep: <https://kairos.cnext.eu/preparation#>
+            SELECT $this WHERE {
+                $this kairos-prep:sentinelAction "to-normalized-value" .
+                FILTER NOT EXISTS { $this kairos-prep:normalizedValue ?value . }
+            }
+        """ ;
+    ] .
+
+kairos-prep:RecordKeyPolicyShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:RecordKeyPolicy ;
+    sh:property [
+        sh:path kairos-prep:sourceScope ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:tableScope ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:recordKeyComponent ;
+        sh:minCount 1 ;
+        sh:class kairos-bronze:SourceColumn ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:recordKeyOutput ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-prep:PreparedColumn ;
+    ] .
+
+kairos-prep:PreparedColumnShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:PreparedColumn ;
+    sh:property [
+        sh:path kairos-prep:targetColumnName ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:pattern "^[A-Za-z_][A-Za-z0-9_]*$" ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:targetType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] .
+
+kairos-prep:TechnicalDedupeShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:TechnicalDedupe ;
+    sh:property [
+        sh:path kairos-prep:dedupeKeyColumn ;
+        sh:minCount 1 ;
+        sh:class kairos-bronze:SourceColumn ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:dedupeOrderTerm ;
+        sh:minCount 1 ;
+        sh:class kairos-prep:DedupeOrderTerm ;
+    ] .
+
+kairos-prep:DedupeOrderTermShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:DedupeOrderTerm ;
+    sh:property [
+        sh:path kairos-prep:sourceColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-bronze:SourceColumn ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:orderPosition ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:positiveInteger ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:sortDirection ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "ASC" "DESC" "asc" "desc" ) ;
+    ] .
+
+kairos-prep:ScalarJsonExtractionShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:ScalarJsonExtraction ;
+    sh:property [
+        sh:path kairos-prep:sourceColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-bronze:SourceColumn ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:jsonPath ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:extractedColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-prep:PreparedColumn ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:rawPayloadRetention ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "retain-payload" "retain-replayable-reference" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:errorPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "fail" "quarantine" "null-with-evidence" ) ;
+    ] .
+
+kairos-prep:ArrayChildContractShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:ArrayChildContract ;
+    sh:property [
+        sh:path kairos-prep:sourceColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:class kairos-bronze:SourceColumn ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:jsonPath ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:childRelationName ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:pattern "^[A-Za-z_][A-Za-z0-9_]*$" ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:parentKeyComponent ;
+        sh:minCount 1 ;
+        sh:class kairos-bronze:SourceColumn ;
+    ] ;
+    sh:or (
+        [ sh:property [ sh:path kairos-prep:elementKeyPath ; sh:minCount 1 ; sh:maxCount 1 ;
+                        sh:pattern "^\\$\\.[A-Za-z_][A-Za-z0-9_]*$" ] ]
+        [ sh:property [ sh:path kairos-prep:elementIndexField ; sh:minCount 1 ; sh:maxCount 1 ;
+                        sh:pattern "^[A-Za-z_][A-Za-z0-9_]*$" ] ]
+    ) ;
+    sh:property [
+        sh:path kairos-prep:nullArrayPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "zero-children" "quarantine" "fail" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:emptyArrayPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "zero-children" "quarantine" "fail" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:rawPayloadRetention ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "retain-payload" "retain-replayable-reference" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-prep:extractedColumn ;
+        sh:minCount 1 ;
+        sh:class kairos-prep:PreparedColumn ;
+    ] ;
+    sh:property [
+        sh:path ( kairos-prep:extractedColumn kairos-prep:jsonPath ) ;
+        sh:pattern "^\\$\\.[A-Za-z_][A-Za-z0-9_]*$" ;
+    ] .
+
+kairos-prep:CdcMappingShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:CdcMapping ;
+    sh:or (
+        [ sh:property [ sh:path kairos-prep:rawOperationColumn ; sh:minCount 1 ] ]
+        [ sh:property [ sh:path kairos-prep:rawUpdateTimestampColumn ; sh:minCount 1 ] ]
+        [ sh:property [ sh:path kairos-prep:rawEffectiveTimestampColumn ; sh:minCount 1 ] ]
+        [ sh:property [ sh:path kairos-prep:rawIngestionTimestampColumn ; sh:minCount 1 ] ]
+        [ sh:property [ sh:path kairos-prep:rawSequenceColumn ; sh:minCount 1 ] ]
+    ) ;
+    sh:sparql [
+        sh:message "Each authored raw CDC role requires its corresponding normalized prepared field."@en ;
+        sh:select """
+            PREFIX kairos-prep: <https://kairos.cnext.eu/preparation#>
+            SELECT $this WHERE {
+                {
+                    $this kairos-prep:rawOperationColumn ?column .
+                    FILTER NOT EXISTS { $this kairos-prep:normalizedOperationField ?field . }
+                } UNION {
+                    $this kairos-prep:rawUpdateTimestampColumn ?column .
+                    FILTER NOT EXISTS { $this kairos-prep:normalizedUpdateTimestampField ?field . }
+                } UNION {
+                    $this kairos-prep:rawEffectiveTimestampColumn ?column .
+                    FILTER NOT EXISTS { $this kairos-prep:normalizedEffectiveTimestampField ?field . }
+                } UNION {
+                    $this kairos-prep:rawIngestionTimestampColumn ?column .
+                    FILTER NOT EXISTS { $this kairos-prep:normalizedIngestionTimestampField ?field . }
+                } UNION {
+                    $this kairos-prep:rawSequenceColumn ?column .
+                    FILTER NOT EXISTS { $this kairos-prep:normalizedSequenceField ?field . }
+                }
+            }
+        """ ;
+    ] .
+
+kairos-prep:AdapterSupportShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:AdapterSupport ;
+    sh:property [ sh:path kairos-prep:adapterName ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-prep:adapterVersion ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-prep:evidenceScope ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-prep:capability ; sh:minCount 1 ] ;
+    sh:property [
+        sh:path kairos-prep:supportStatus ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "supported" "unsupported" "partial" "environment-blocked" ) ;
+    ] ;
+    sh:property [ sh:path kairos-prep:compileEvidence ; sh:minCount 1 ] .
+
+kairos-prep:AdapterDeviationShape a sh:NodeShape ;
+    sh:targetClass kairos-prep:AdapterDeviation ;
+    sh:property [ sh:path kairos-prep:adapterName ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-prep:policyReference ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-prep:deviationScope ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-prep:deviationRationale ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-prep:ownerRole ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-prep:approvalStatus ; sh:minCount 1 ; sh:hasValue "approved" ] ;
+    sh:property [ sh:path kairos-prep:reviewDate ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
+    sh:property [ sh:path kairos-prep:expiryDate ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:date ] ;
+    sh:property [ sh:path kairos-prep:deviationEvidence ; sh:minCount 1 ] .

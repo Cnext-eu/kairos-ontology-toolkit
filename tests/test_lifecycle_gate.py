@@ -96,14 +96,22 @@ DIRECT_MAPPING_TTL = textwrap.dedent(
     """\
     @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <https://example.com/mapping/crm-widget#> .
     @prefix bronze: <https://example.com/bronze/crm#> .
     @prefix w: <http://acme.example/widget#> .
 
-    bronze:widgets skos:exactMatch w:Widget ;
-        kairos-map:mappingType "direct" .
+    bronze:widgets skos:exactMatch w:Widget .
 
-    bronze:widgets_name skos:exactMatch w:name ;
-        kairos-map:transform "source.name" .
+    bronze:widgets_name skos:exactMatch w:name .
+    map:table a kairos-map:TableMapping ;
+        kairos-map:sourceTable bronze:widgets ;
+        kairos-map:targetClass w:Widget ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:name a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn bronze:widgets_name ;
+        kairos-map:targetProperty w:name ;
+        kairos-map:matchType "exactMatch" .
     """
 )
 

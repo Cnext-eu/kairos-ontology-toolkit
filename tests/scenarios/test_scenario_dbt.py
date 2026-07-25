@@ -21,7 +21,12 @@ from .conftest import (
 @contextmanager
 def _caplog_context(level=logging.WARNING):
     """Context manager that captures log records at the given level."""
-    logger = logging.getLogger("kairos_ontology.core.projections.medallion_dbt_projector")
+    loggers = (
+        logging.getLogger(
+            "kairos_ontology.core.projections.medallion_dbt_projector"
+        ),
+        logging.getLogger("kairos_ontology.core.projections.dbt.render"),
+    )
     records: list[logging.LogRecord] = []
 
     class _Handler(logging.Handler):
@@ -29,14 +34,16 @@ def _caplog_context(level=logging.WARNING):
             records.append(record)
 
     handler = _Handler(level=level)
-    logger.addHandler(handler)
-    old_level = logger.level
-    logger.setLevel(level)
+    old_levels = tuple(logger.level for logger in loggers)
+    for logger in loggers:
+        logger.addHandler(handler)
+        logger.setLevel(level)
     try:
         yield records
     finally:
-        logger.removeHandler(handler)
-        logger.setLevel(old_level)
+        for logger, old_level in zip(loggers, old_levels):
+            logger.removeHandler(handler)
+            logger.setLevel(old_level)
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +59,8 @@ class TestSplitPattern:
             "client__from_admin_pulse__tbl_client__corporate_client.sql",
         )
         sql = client_dbt_artifacts[key]
-        assert "Type = 0" in sql or "type = 0" in sql.lower(), (
-            f"CorporateClient model missing 'Type = 0' filter:\n{sql}"
+        assert "[tbl_client].[client_type_code] = 0" in sql.lower(), (
+            f"CorporateClient model missing prepared type filter:\n{sql}"
         )
 
     def test_sole_proprietor_has_type_1_filter(self, client_dbt_artifacts):
@@ -62,8 +69,8 @@ class TestSplitPattern:
             "client__from_admin_pulse__tbl_client__sole_proprietor_client.sql",
         )
         sql = client_dbt_artifacts[key]
-        assert "Type = 1" in sql or "type = 1" in sql.lower(), (
-            f"SoleProprietorClient model missing 'Type = 1' filter:\n{sql}"
+        assert "[tbl_client].[client_type_code] = 1" in sql.lower(), (
+            f"SoleProprietorClient model missing prepared type filter:\n{sql}"
         )
 
     def test_individual_has_type_2_filter(self, client_dbt_artifacts):
@@ -72,8 +79,8 @@ class TestSplitPattern:
             "client__from_admin_pulse__tbl_client__individual_client.sql",
         )
         sql = client_dbt_artifacts[key]
-        assert "Type = 2" in sql or "type = 2" in sql.lower(), (
-            f"IndividualClient model missing 'Type = 2' filter:\n{sql}"
+        assert "[tbl_client].[client_type_code] = 2" in sql.lower(), (
+            f"IndividualClient model missing prepared type filter:\n{sql}"
         )
 
     def test_no_cross_contamination(self, client_dbt_artifacts):
@@ -83,7 +90,7 @@ class TestSplitPattern:
             "client__from_admin_pulse__tbl_client__sole_proprietor_client.sql",
         )
         sql = client_dbt_artifacts[key].lower()
-        assert "type = 0" not in sql, (
+        assert "client_type_code = 0" not in sql, (
             "SoleProprietorClient incorrectly contains type=0 filter"
         )
 
@@ -127,7 +134,7 @@ class TestCrossDomainFK:
 # ---------------------------------------------------------------------------
 
 class TestDefaultValues:
-    """Columns with kairos-map:defaultValue should use COALESCE or fallback."""
+    """Structured null-handling contracts should render COALESCE."""
 
     def test_email_has_default(self, client_dbt_artifacts):
         """Email mapping has defaultValue 'unknown@acme.example' — should COALESCE."""
@@ -224,14 +231,14 @@ class TestColumnMappings:
         sql = client_dbt_artifacts[key].lower()
         assert "vat_number" in sql, "Missing vat_number mapped column"
 
-    def test_cast_transform_applied(self, client_dbt_artifacts):
-        """clientId mapping has CAST(source.ClientID AS STRING) — appears in base model."""
+    def test_cast_transform_applied_in_prep(self, client_dbt_artifacts):
+        """The ClientID technical cast is owned by the generated prep model."""
         key = _find_artifact(
             client_dbt_artifacts,
-            "client__from_admin_pulse__tbl_client__corporate_client.sql",
+            "stg_admin_pulse__tbl_client.sql",
         )
         sql = client_dbt_artifacts[key].upper()
-        assert "CAST" in sql and "STRING" in sql, (
+        assert "CAST(SRC.[CLIENTID] AS VARCHAR" in sql, (
             "Missing CAST transform in client model"
         )
 
@@ -397,13 +404,13 @@ class TestMultiSource:
         )
 
     def test_admin_pulse_source_has_filter(self, client_dbt_artifacts):
-        """AdminPulse per-source view should have Type = 0 filter."""
+        """AdminPulse per-source view should use the prepared discriminator."""
         key = _find_artifact(
             client_dbt_artifacts,
             "client__from_admin_pulse__tbl_client__corporate_client.sql",
         )
         sql = client_dbt_artifacts[key]
-        assert "Type = 0" in sql, (
+        assert "[tbl_client].[client_type_code] = 0" in sql.lower(), (
             "AdminPulse per-source view missing filter condition"
         )
 
@@ -496,11 +503,11 @@ class TestSCDTypeAwareSilverModels:
         )
 
     def test_scd2_model_has_composite_unique_key(self, client_dbt_artifacts):
-        """ClientPII (scdType=2) should have composite unique_key [sk, valid_from]."""
+        """ClientPII uses merge identity plus its explicit history interval start."""
         key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
         sql = client_dbt_artifacts[key]
-        assert "client_pii_sk" in sql and "valid_from" in sql, (
-            f"SCD2 model should have composite unique_key with SK + valid_from:\n{sql}"
+        assert "_source_record_key" in sql and "_system_from" in sql, (
+            f"SCD2 model should have merge identity + system interval key:\n{sql}"
         )
 
     def test_scd2_model_has_row_hash(self, client_dbt_artifacts):
@@ -510,19 +517,21 @@ class TestSCDTypeAwareSilverModels:
         assert "_row_hash" in sql, (
             f"SCD2 model should compute _row_hash:\n{sql}"
         )
-        assert "kairos_row_hash" in sql, (
-            f"SCD2 model should use kairos_row_hash macro for _row_hash computation:\n{sql}"
+        assert "kairos_canonical_hash_v1" in sql, (
+            f"SCD2 model should use canonical hash v1 for _row_hash:\n{sql}"
         )
 
     def test_scd2_model_has_change_detection_ctes(self, client_dbt_artifacts):
-        """ClientPII (scdType=2) should have mapped/source_data/existing/changed/closed CTEs."""
+        """ClientPII uses replay, correction, change, and interval CTEs."""
         key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
         sql = client_dbt_artifacts[key]
         assert "mapped" in sql, f"SCD2 model missing 'mapped' CTE:\n{sql}"
-        assert "source_data" in sql, f"SCD2 model missing 'source_data' CTE:\n{sql}"
-        assert "existing" in sql, f"SCD2 model missing 'existing' CTE:\n{sql}"
-        assert "changed" in sql, f"SCD2 model missing 'changed' CTE:\n{sql}"
-        assert "closed" in sql, f"SCD2 model missing 'closed' CTE:\n{sql}"
+        assert "incoming_events" in sql
+        assert "existing_history" in sql
+        assert "replay_deduplicated" in sql
+        assert "corrected_events" in sql
+        assert "changed_events" in sql
+        assert "versioned" in sql
 
     def test_scd2_model_has_union_all(self, client_dbt_artifacts):
         """ClientPII (scdType=2) should UNION ALL changed + closed rows."""
@@ -545,13 +554,13 @@ class TestSCDTypeAwareSilverModels:
         key = _find_artifact(client_dbt_artifacts, "client_pii.sql")
         sql = client_dbt_artifacts[key]
         assert "_source_system" in sql
-        assert "_source_record_id" in sql
+        assert "_source_record_key" in sql
+        assert "_source_record_id" not in sql
         assert "_loaded_at" in sql
-        mapped = sql.split("mapped as (", 1)[1].split("source_data as (", 1)[0]
-        source_data = sql.split("source_data as (", 1)[1]
+        mapped = sql.split("mapped as (", 1)[1].split("bounded_input as (", 1)[0]
+        source_data = sql.split("incoming_events as (", 1)[1]
         assert (
-            "{{ dbt_utils.generate_surrogate_key([\"'tblClientPII'\", "
-            "'tbl_client_pii.ClientID']) }} as _source_record_id"
+            "tbl_client_pii._source_record_key as _source_record_key"
         ) in mapped
         assert "tbl_client_pii.ClientID" not in source_data
 
@@ -559,20 +568,17 @@ class TestSCDTypeAwareSilverModels:
         key = _find_artifact(client_dbt_artifacts, "_client__models.yml")
         schema = yaml.safe_load(client_dbt_artifacts[key])
         model = next(item for item in schema["models"] if item["name"] == "client_pii")
-        grain_test = model["data_tests"][0]["dbt_utils.unique_combination_of_columns"]
+        grain_test = next(
+            test["dbt_utils.unique_combination_of_columns"]
+            for test in model["data_tests"]
+            if "dbt_utils.unique_combination_of_columns" in test
+        )
         assert grain_test["combination_of_columns"] == [
             "_source_system",
-            "client_id",
+            "_source_record_key",
         ]
         assert grain_test["config"]["where"] == "is_current = 1"
-        source_identity_test = model["data_tests"][1][
-            "dbt_utils.unique_combination_of_columns"
-        ]
-        assert source_identity_test["combination_of_columns"] == [
-            "_source_system",
-            "_source_record_id",
-        ]
-        assert source_identity_test["config"]["where"] == "is_current = 1"
+        assert any("kairos_runtime_one_current" in test for test in model["data_tests"])
 
     def test_scd1_model_has_incremental(self, client_dbt_artifacts):
         """ClientType (scdType=1, reference) should still get incremental."""
@@ -602,10 +608,10 @@ class TestSCDTypeAwareSilverModels:
 
 
 class TestSCDTemplateSyntheticData:
-    """Render the silver template with synthetic data to verify full SQL structure."""
+    """Legacy generic template must not infer runtime from loose SCD parameters."""
 
     def test_scd2_template_renders_complete_model(self):
-        """Render silver_model.sql.jinja2 with SCD2 params and verify structure."""
+        """Loose SCD2 parameters do not activate the dedicated DD-109 runtime."""
         from jinja2 import Environment, FileSystemLoader
 
         env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
@@ -642,42 +648,25 @@ class TestSCDTemplateSyntheticData:
             ontology_metadata={},
         )
 
-        # Verify config block
+        # Generic rendering remains structural; materialization planning owns runtime.
         assert "materialized='incremental'" in sql
         assert "customer_sk" in sql
-        assert "valid_from" in sql
+        assert "valid_from" not in sql
 
         # Verify source CTE
         assert "tbl_customer" in sql
         assert "source('erp_system', 'tblCustomer')" in sql
 
-        # Verify _row_hash computation includes all hash columns
-        assert "kairos_row_hash" in sql
+        # No legacy hash or implicit SCD interval is inferred.
+        assert "kairos_row_hash" not in sql
+        assert "kairos_canonical_hash_v1" not in sql
+        assert "_row_hash" not in sql
         assert "customer_name" in sql
         assert "email" in sql
         assert "revenue" in sql
 
-        # Verify temporal columns in source_data
-        assert "kairos_current_timestamp()" in sql
-        assert "LEAD(valid_from) over" in sql
-        assert "is null then 1" in sql
-
-        # Verify change detection CTEs
-        assert "existing as" in sql
-        assert "where is_current = 1" in sql
-        assert "changed as" in sql
-        assert "closed as" in sql
-
-        # Verify closed CTE sets correct values
-        assert "kairos_current_timestamp()" in sql
-        assert "0 as is_current" in sql
-
-        # Verify final SELECT from changed/source_data
-        assert "{{% if is_incremental() %}}changed" in sql or \
-               "{% if is_incremental() %}changed" in sql
-
-        # Verify UNION ALL with closed
-        assert "union all" in sql.lower()
+        assert "existing_history" not in sql
+        assert "versioned" not in sql
 
     def test_scd1_template_renders_simple_model(self):
         """Render silver_model.sql.jinja2 with SCD1 params — no SCD2 logic."""
@@ -714,9 +703,9 @@ class TestSCDTemplateSyntheticData:
             ontology_metadata={},
         )
 
-        # Verify incremental config
+        # The generic template does not accept a parallel unique-key/SCD authority.
         assert "materialized='incremental'" in sql
-        assert "unique_key='product_sk'" in sql
+        assert "unique_key" not in sql
 
         # Verify NO SCD2 logic
         assert "source_data" not in sql
@@ -924,6 +913,11 @@ class TestCrossDomainNaturalKeyResolution:
 
 def _find_artifact(artifacts: dict, suffix: str) -> str | None:
     """Find the first artifact key that ends with the given suffix."""
+    if suffix.startswith("/") and suffix.endswith(".sql"):
+        evaluated_suffix = suffix.removesuffix(".sql") + "__dq_input.sql"
+        for key in artifacts:
+            if key.endswith(evaluated_suffix):
+                return key
     for key in artifacts:
         if key.endswith(suffix):
             return key
@@ -1173,16 +1167,18 @@ class TestSourceSystemDiscriminator:
         assert "_source_system" in sql, (
             "Union model should include _source_system column"
         )
-        assert "_source_record_id" in sql
+        assert "_source_record_key" in sql
+        assert "_source_record_id" not in sql
         assert "_loaded_at" in sql
 
     def test_union_model_sequences_sub_day_scd2_versions(self, client_dbt_artifacts):
         key = _find_artifact(client_dbt_artifacts, "/client.sql")
         sql = client_dbt_artifacts[key]
-        assert "LAG(_row_hash) over" in sql
-        assert "LEAD(valid_from) over" in sql
-        assert "first_changed as" in sql
-        assert "inner join first_changed c" in sql
+        assert "replay_deduplicated" in sql
+        assert "_kairos_correction_rank" in sql
+        assert "lead(_source_effective_at) over" in sql.lower()
+        assert "lead(_ingested_at) over" in sql.lower()
+        assert "row_number() over" in sql.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1283,6 +1279,10 @@ class TestGoldColumnValidation:
             if "models/silver/" in k and k.endswith(".sql")
             and "/_" not in k
         }
+        gold_model_names = {
+            k.split("/")[-1].replace(".sql", "")
+            for k in gold_keys
+        }
         for gk in gold_keys:
             content = client_dbt_artifacts[gk]
             # Extract ref() calls
@@ -1291,9 +1291,9 @@ class TestGoldColumnValidation:
             for ref_name in refs:
                 if ref_name.startswith("seed_"):
                     continue
-                assert ref_name in silver_model_names, (
+                assert ref_name in silver_model_names | gold_model_names, (
                     f"Gold model {gk} references ref('{ref_name}') but no "
-                    f"silver model '{ref_name}.sql' was generated. "
+                    f"materialized Silver/Gold model '{ref_name}.sql' was generated. "
                     f"Available silver models: {sorted(silver_model_names)}"
                 )
 
@@ -1639,7 +1639,7 @@ class TestMultiSourceFKPerSource:
         key = _find_artifact(invoice_dbt_artifacts, "/invoice.sql")
         assert key is not None, "invoice.sql (union) not found"
         sql = invoice_dbt_artifacts[key].lower()
-        assert "left join" not in sql, (
+        assert "join {{ ref('client') }}" not in sql, (
             f"Union model should not contain joins (FK resolved per source):\n{sql}"
         )
 
@@ -1661,9 +1661,11 @@ class TestMultiSourceFKPerSource:
         assert "left join {{ ref('client') }}" in sql, (
             f"Per-source view should resolve FK via a left join to client:\n{sql}"
         )
-        assert "client_ref.is_current = 1" in sql, (
-            f"SCD2 parent lookup must not fan out over historical rows:\n{sql}"
+        assert "[client_ref].[_business_valid_from]" in sql, (
+            f"As-of lookup must use business-valid parent history:\n{sql}"
         )
+        assert "[client_ref].[is_current] = 1" not in sql
+        assert "_match_count" in sql
         assert "client_sk" in sql, (
             f"Per-source view should emit client_sk:\n{sql}"
         )
@@ -1673,7 +1675,7 @@ class TestMultiSourceFKPerSource:
         schema = yaml.safe_load(invoice_dbt_artifacts[key])
         invoice = next(model for model in schema["models"] if model["name"] == "invoice")
         client_fk = next(column for column in invoice["columns"] if column["name"] == "client_sk")
-        assert client_fk["meta"]["temporal_mode"] == "current"
+        assert client_fk["meta"]["temporal_mode"] == "as-of"
         assert client_fk["meta"]["fk_change_detection"] == "true"
         assert any("relationships" in test for test in client_fk["tests"])
 
@@ -1862,14 +1864,18 @@ class TestLogisticsDomain:
 
 
 class TestGoldSharedDimDate:
-    """dim_date is a conformed dimension — emitted once to shared folder."""
+    """An approved calendar is the sole authority for shared dim_date."""
 
-    def test_dim_date_in_shared_folder(self, client_dbt_artifacts):
+    def test_no_unapproved_client_dim_date(self, client_dbt_artifacts):
+        """A product without a calendar profile never invents dim_date."""
+        assert not any("dim_date" in path for path in client_dbt_artifacts)
+
+    def test_dim_date_in_shared_folder(self, invoice_dbt_artifacts):
         """dim_date.sql lives in models/gold/shared/, not per-domain."""
         shared_path = "models/gold/shared/dim_date.sql"
-        assert shared_path in client_dbt_artifacts, (
+        assert shared_path in invoice_dbt_artifacts, (
             f"Expected dim_date at '{shared_path}', got keys: "
-            + str([k for k in client_dbt_artifacts if "dim_date" in k])
+            + str([k for k in invoice_dbt_artifacts if "dim_date" in k])
         )
 
     def test_dim_date_not_in_domain_folder(self, client_dbt_artifacts):
@@ -1879,13 +1885,13 @@ class TestGoldSharedDimDate:
             f"dim_date should not be at '{domain_path}' — must be in shared/"
         )
 
-    def test_shared_schema_yaml_exists(self, client_dbt_artifacts):
+    def test_shared_schema_yaml_exists(self, invoice_dbt_artifacts):
         """Shared gold schema YAML contains dim_date entry."""
         shared_schema = "models/gold/shared/_shared__gold_models.yml"
-        assert shared_schema in client_dbt_artifacts, (
+        assert shared_schema in invoice_dbt_artifacts, (
             f"Expected shared schema at '{shared_schema}'"
         )
-        content = client_dbt_artifacts[shared_schema]
+        content = invoice_dbt_artifacts[shared_schema]
         assert "dim_date" in content
 
     def test_no_duplicate_model_names(self, client_dbt_artifacts):
@@ -2098,16 +2104,14 @@ class TestCrossTableWarnings:
         cross-table warnings for inherited parent properties (they were excluded
         by design). Instead, a single consolidated info note is recorded.
         """
-        from jinja2 import Environment, FileSystemLoader
         from kairos_ontology.core.projections.medallion_dbt_projector import (
-            _gen_silver_models,
+            _extract_silver_model_facts,
         )
 
         classes, graph, ns, systems, mappings = self._subtype_inputs()
-        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
 
-        _artifacts, warnings, entity_meta = _gen_silver_models(
-            classes, graph, ns, systems, mappings, env, {}, "acme",
+        _specs, warnings, entity_meta = _extract_silver_model_facts(
+            classes, graph, ns, systems, mappings, {}, "acme",
         )
 
         # No per-column cross-table warning for the inherited parentAttr.
@@ -2127,9 +2131,8 @@ class TestCrossTableWarnings:
     def test_own_cross_table_still_warns(self):
         """Own-domain cross-table props remain genuine ⚠️ warnings (own precedence)."""
         from rdflib import RDFS
-        from jinja2 import Environment, FileSystemLoader
         from kairos_ontology.core.projections.medallion_dbt_projector import (
-            _gen_silver_models,
+            _extract_silver_model_facts,
         )
 
         classes, graph, ns, systems, mappings = self._subtype_inputs()
@@ -2140,9 +2143,8 @@ class TestCrossTableWarnings:
         graph.remove((parent_attr, RDFS.domain, URIRef(ns + "Parent")))
         graph.add((parent_attr, RDFS.domain, URIRef(ns + "Child")))
 
-        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
-        _artifacts, warnings, entity_meta = _gen_silver_models(
-            classes, graph, ns, systems, mappings, env, {}, "acme",
+        _specs, warnings, entity_meta = _extract_silver_model_facts(
+            classes, graph, ns, systems, mappings, {}, "acme",
         )
 
         cross_table = [w for w in warnings if "Cross-table reference" in w]
@@ -2155,15 +2157,13 @@ class TestCrossTableWarnings:
 
     def test_inherited_info_renders_in_session_log(self, tmp_path):
         """The consolidated info note surfaces under a ## ℹ️ Info session-log section."""
-        from jinja2 import Environment, FileSystemLoader
         from kairos_ontology.core.projections.medallion_dbt_projector import (
-            _gen_silver_models, write_dbt_session_log,
+            _extract_silver_model_facts, write_dbt_session_log,
         )
 
         classes, graph, ns, systems, mappings = self._subtype_inputs()
-        env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
-        _artifacts, _warnings, entity_meta = _gen_silver_models(
-            classes, graph, ns, systems, mappings, env, {}, "acme",
+        _specs, _warnings, entity_meta = _extract_silver_model_facts(
+            classes, graph, ns, systems, mappings, {}, "acme",
         )
 
         out = write_dbt_session_log(
@@ -2231,7 +2231,7 @@ class TestCrossDomainRefValidation:
 
     def test_no_false_positive_for_join_refs(self):
         """ref() targets in JOIN clauses should not trigger validation warnings."""
-        from kairos_ontology.core.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.dbt.render import (
             _validate_dbt_artifacts,
         )
 
@@ -2317,7 +2317,7 @@ class TestSilverColumnNameOverride:
 
     def test_real_typo_still_triggers_warning(self):
         """ref() targets that are genuinely missing still get warned about."""
-        from kairos_ontology.core.projections.medallion_dbt_projector import (
+        from kairos_ontology.core.projections.dbt.render import (
             _validate_dbt_artifacts,
         )
 
@@ -2404,47 +2404,46 @@ class TestLogicalSourcesMode:
             logical_sources_only=True,
         )
 
-        # Silver models should still have source() references
+        # Runtime Silver models still route through normalized prep refs.
         sql_files = {k: v for k, v in artifacts.items() if k.endswith(".sql")}
         assert sql_files, "Should have generated SQL models"
         for path, content in sql_files.items():
             if "silver" in path and "ddl" not in path and "alter" not in path:
-                if "{{ source(" in content:
+                if "{{ ref('stg_" in content:
                     break
         else:
-            pytest.fail("No silver model contains {{ source() }} reference")
+            pytest.fail("No Silver runtime model contains a normalized prep ref")
 
 
 # ---------------------------------------------------------------------------
-# DD-039: silverSourceRef — bronze_expanded routing tests
+# DD-106: explicit prep array-child authority
 # ---------------------------------------------------------------------------
 
-class TestSilverSourceRef:
-    """Verify silverSourceRef annotation routes to {{ ref() }} in dbt output."""
+class TestPrepArrayChildAuthority:
+    """Verify JSON child authority moved from Silver overrides into prep."""
 
-    def test_invoice_line_tax_uses_ref(self, invoice_dbt_artifacts):
-        """InvoiceLineTax has silverSourceRef → model uses {{ ref() }}."""
-        key = _find_artifact(invoice_dbt_artifacts, "invoice_line_tax.sql")
-        assert key, (
-            f"No invoice_line_tax model found. "
-            f"Available: {[k for k in invoice_dbt_artifacts if 'silver' in k]}"
-        )
-        sql = invoice_dbt_artifacts[key]
-        assert "ref('stg_billingpro_invoice_line_details')" in sql, (
-            f"Expected ref() call in invoice_line_tax model:\n{sql}"
-        )
-
-    def test_invoice_line_tax_no_source_call(self, invoice_dbt_artifacts):
-        """InvoiceLineTax with silverSourceRef should NOT use {{ source() }}."""
-        key = _find_artifact(invoice_dbt_artifacts, "invoice_line_tax.sql")
-        assert key
-        sql = invoice_dbt_artifacts[key]
-        assert "{{ source(" not in sql, (
-            f"Expected no source() call in invoice_line_tax model:\n{sql}"
+    def test_invoice_line_tax_has_array_child_contract(self):
+        prep = (
+            SOURCES_DIR.parent
+            / "preparation"
+            / "billingpro-prep.ttl"
+        ).read_text(encoding="utf-8")
+        assert "kairos-prep:ArrayChildContract" in prep
+        assert (
+            'kairos-prep:childRelationName "stg_billingpro__invoice_line_details"'
+            in prep
         )
 
-    def test_invoice_still_uses_source(self, invoice_dbt_artifacts):
-        """Invoice (no silverSourceRef) still uses {{ source() }}."""
+    def test_invoice_line_tax_mapping_uses_prepared_columns(self):
+        mapping = (MAPPINGS_DIR / "billingpro-to-invoice.ttl").read_text(
+            encoding="utf-8"
+        )
+        assert "prep-bp:invoiceLineDetails" in mapping
+        assert "prep-bp:invoiceLineDetailsTaxCode" in mapping
+        assert "bronze-bp:tblInvoiceLine_LineDetails" not in mapping
+
+    def test_invoice_uses_automatic_normalized_route(self, invoice_dbt_artifacts):
+        """Normalize mode routes Silver through the generated prep model."""
         # Invoice has multi-source (tblInvoice + tblCreditNote), so look in
         # per-source views
         invoice_keys = [
@@ -2453,23 +2452,27 @@ class TestSilverSourceRef:
             and "invoice_line" not in k and "invoice_tag" not in k
         ]
         assert invoice_keys, "No invoice silver models found"
-        # At least one model must use source()
-        has_source = any(
-            "{{ source(" in invoice_dbt_artifacts[k] for k in invoice_keys
+        has_ref = any(
+            "ref('stg_billing_pro__tbl_invoice')" in invoice_dbt_artifacts[k]
+            for k in invoice_keys
         )
-        assert has_source, (
-            "Invoice models should use source() (no silverSourceRef set)"
+        assert has_ref, (
+            "Invoice models should automatically reference normalized prep"
         )
 
-    def test_invoice_line_tax_has_mapped_columns(self, invoice_dbt_artifacts):
-        """InvoiceLineTax model contains the mapped column expressions."""
-        key = _find_artifact(invoice_dbt_artifacts, "invoice_line_tax.sql")
-        assert key
-        sql = invoice_dbt_artifacts[key]
-        # Check mapped transform expressions appear
-        assert "TaxCode" in sql or "tax_code" in sql, (
-            f"Expected TaxCode column in invoice_line_tax:\n{sql}"
+    def test_invoice_tag_runtime_source_uses_normalized_prep(
+        self, invoice_dbt_artifacts
+    ):
+        key = _find_artifact(invoice_dbt_artifacts, "invoice_tag.sql")
+        assert "{{ ref('stg_billing_pro__tbl_invoice_tag') }}" in (
+            invoice_dbt_artifacts[key]
         )
+
+    def test_invoice_line_tax_has_no_silver_source_override(self):
+        extension = (EXTENSIONS_DIR / "invoice-silver-ext.ttl").read_text(
+            encoding="utf-8"
+        )
+        assert "silverSourceRef" not in extension
 
 
 # ---------------------------------------------------------------------------
@@ -2600,25 +2603,15 @@ class TestSCDTypeAwareSchemaYaml:
             f"SCD2 unique test must have where='is_current = 1'. Got: {where!r}"
         )
 
-    def test_scd2_iri_has_where_clause_unique(self, client_dbt_artifacts):
-        """client_pii (scdType=2) _iri column must also use unique with where clause."""
+    def test_explicit_iri_omit_removes_column(self, client_dbt_artifacts):
+        """client_pii explicitly omits entity-instance IRIs."""
         import yaml
 
         key = _find_artifact(client_dbt_artifacts, "_models.yml")
         assert key is not None
         parsed = yaml.safe_load(client_dbt_artifacts[key])
 
-        iri_tests = _find_column_tests(parsed, "client_pii_iri")
-        assert iri_tests is not None, "client_pii_iri column not found in schema YAML"
-        unique_test = _find_unique_test(iri_tests)
-        assert isinstance(unique_test, dict), (
-            "SCD2 _iri unique test must be a dict with config. "
-            f"Got: {unique_test!r}"
-        )
-        where = (unique_test.get("unique") or {}).get("config", {}).get("where")
-        assert where == "is_current = 1", (
-            f"SCD2 _iri unique test must have where='is_current = 1'. Got: {where!r}"
-        )
+        assert _find_column_tests(parsed, "client_pii_iri") is None
 
     def test_scd1_sk_uses_bare_unique(self, client_dbt_artifacts):
         """client_type (scdType=1) _sk must use bare `unique` test (no where)."""
@@ -2645,7 +2638,7 @@ class TestSCDTypeAwareSchemaYaml:
             pytest.skip("_models.yml not generated")
         parsed = yaml.safe_load(client_dbt_artifacts[key])
 
-        sk_tests = _find_column_tests(parsed, "identifier_sk")
+        sk_tests = _find_column_tests_in_model(parsed, "identifier", "identifier_sk")
         if sk_tests is None:
             pytest.skip("identifier_sk not in schema YAML (model may be unmapped)")
         unique_test = _find_unique_test(sk_tests)
@@ -2691,26 +2684,20 @@ def _find_unique_test(tests: list):
 
 
 # ---------------------------------------------------------------------------
-# CR-006 fix: cross-entity naturalKey pass-through bronze column resolution
+# DD-108: cross-entity naturalKey source-evidence boundary
 # ---------------------------------------------------------------------------
 
-class TestCrossEntityNaturalKeyPassThrough:
-    """When a naturalKey column belongs to a different entity, the pass-through
-    expression must resolve to the actual bronze column name via SKOS mappings,
-    not use the domain snake_case property name (which doesn't exist in bronze).
+class TestCrossEntityNaturalKeyMapping:
+    """Cross-entity natural keys require explicit source mapping evidence."""
 
-    CR-006 secondary issue: bronze lookup was annotated as TODO and never implemented.
-    """
-
-    def test_passthrough_resolves_to_bronze_column_name(self):
-        """Pass-through expression must use actual bronze column name, not domain name.
+    def test_mapping_resolves_to_bronze_column_name(self):
+        """The identity input uses the mapped bronze column, never a guessed name.
 
         Scenario:
         - Entity 'Address' has naturalKey 'ownerId'
         - 'ownerId' is a property of 'Owner' (cross-entity)
         - Bronze table maps source column 'ownerCode' (not 'owner_id') to 'ownerId'
-        - Expected: pass-through expression = 'ownerCode', alias = 'owner_id'
-        - Broken:   pass-through expression = 'owner_id' (no such column in bronze)
+        - Expected: mapped expression = 'ownerCode', alias = 'owner_id'
         """
         from rdflib import Graph, Literal, Namespace, URIRef
         from rdflib.namespace import OWL, RDF, RDFS, XSD
@@ -2766,7 +2753,6 @@ class TestCrossEntityNaturalKeyPassThrough:
             mappings=mappings,
             systems=systems,
             include_sk_iri=True,
-            scd_type="1",
         )
 
         # Find the pass-through column for owner_id
@@ -2780,8 +2766,8 @@ class TestCrossEntityNaturalKeyPassThrough:
             f"not domain name 'owner_id'. Got: {pt_col['expression']!r}"
         )
 
-    def test_passthrough_fallback_when_no_mapping(self):
-        """When no bronze mapping exists, pass-through falls back to domain name."""
+    def test_missing_mapping_never_invents_natural_key(self):
+        """An authored natural key without source evidence is not invented."""
         from rdflib import Graph, Literal, Namespace, URIRef
         from rdflib.namespace import OWL, RDF, RDFS, XSD
         from kairos_ontology.core.projections.medallion_dbt_projector import (
@@ -2806,25 +2792,12 @@ class TestCrossEntityNaturalKeyPassThrough:
             mappings={"table_maps": {}, "column_maps": {}},
             systems=None,
             include_sk_iri=True,
-            scd_type="1",
         )
 
-        pt_col = next((c for c in cols if c.get("target_name") == "owner_id"), None)
-        assert pt_col is not None, (
-            "Pass-through column 'owner_id' should still be generated even without mapping"
-        )
-        # Falls back to domain name when no bronze mapping found
-        assert pt_col["expression"] == "owner_id", (
-            f"Fallback pass-through must use domain name 'owner_id'. "
-            f"Got: {pt_col['expression']!r}"
-        )
+        assert not any(c.get("target_name") == "owner_id" for c in cols)
 
-    def test_scd1_sk_uses_bronze_expression_for_cross_entity_nk(self):
-        """For SCD1 models, SK expression must use the bronze column name for cross-entity NK.
-
-        T-SQL does not allow referencing an alias defined in the same SELECT list,
-        so the SK/IRI expression must reference the actual source expression.
-        """
+    def test_bind_does_not_classify_sk_or_iri_from_natural_key(self):
+        """Bind reserves physical columns; normalized identity policy supplies expressions."""
         from rdflib import Graph, Literal, Namespace, URIRef
         from rdflib.namespace import OWL, RDF, RDFS, XSD
         from kairos_ontology.core.projections.medallion_dbt_projector import (
@@ -2870,19 +2843,17 @@ class TestCrossEntityNaturalKeyPassThrough:
             mappings=mappings,
             systems=systems,
             include_sk_iri=True,
-            scd_type="1",
         )
 
-        # SK expression must reference 'ownerCode' (not the alias 'owner_id')
-        # to avoid T-SQL alias-before-definition errors
         sk_col = next((c for c in cols if c.get("target_name") == "address_sk"), None)
         assert sk_col is not None, (
             f"address_sk not found in cols: {[c.get('target_name') for c in cols]}"
         )
-        assert "ownerCode" in sk_col["expression"], (
-            f"SK expression for SCD1 with cross-entity NK must use bronze column "
-            f"'ownerCode' not alias 'owner_id'. SK expr: {sk_col['expression']!r}"
-        )
+        iri_col = next(c for c in cols if c.get("target_name") == "address_iri")
+        assert sk_col["expression"] == "CAST(NULL AS {{ dbt.type_string() }})"
+        assert iri_col["expression"] == "CAST(NULL AS {{ dbt.type_string() }})"
+        mapped_key = next(c for c in cols if c.get("target_name") == "owner_id")
+        assert mapped_key["expression"] == "ownerCode"
 
 
 # ---------------------------------------------------------------------------
@@ -2914,21 +2885,15 @@ class TestDatetimePrecisionInFabricSQL:
         )
 
     def test_datetime_columns_use_datetime2_6(self, client_dbt_artifacts):
-        """Bronze 'datetime' source columns must be cast to DATETIME2(6) in per-source models.
-
-        tblClient_ModifiedDate (kairos-bronze:dataType "datetime") maps to acme:lastModifiedAt
-        without an explicit transform, so the projector must auto-emit
-        TRY_CAST(ModifiedDate AS DATETIME2(6)). The TRY_CAST is emitted in the per-source
-        folded source view, not the union wrapper.
-        """
-        key = _find_artifact(
-            client_dbt_artifacts,
-            "client__from_admin_pulse__tbl_client__corporate_client.sql",
-        )
-        assert key is not None, "folded corporate AdminPulse source view not found"
-        sql = client_dbt_artifacts[key].upper()
-        assert "DATETIME2(6)" in sql, (
-            "Expected TRY_CAST(... AS DATETIME2(6)) for datetime source columns in "
-            "the folded corporate AdminPulse source view, but DATETIME2(6) was not found. "
-            "Check _SOURCE_TO_FABRIC in medallion_dbt_projector.py."
-        )
+        """Datetime physical typing is owned by prep, not a mapping SQL cast."""
+        staging = client_dbt_artifacts[
+            "models/staging/admin_pulse/stg_admin_pulse__tbl_client.sql"
+        ].upper()
+        silver = client_dbt_artifacts[
+            _find_artifact(
+                client_dbt_artifacts,
+                "client__from_admin_pulse__tbl_client__corporate_client.sql",
+            )
+        ].upper()
+        assert "CAST(SRC.[MODIFIEDDATE] AS DATETIME2(6)) AS _SOURCE_UPDATED_AT" in staging
+        assert "TRY_CAST" not in silver

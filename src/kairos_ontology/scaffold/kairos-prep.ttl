@@ -1,0 +1,479 @@
+# Kairos Source Preparation Vocabulary
+#
+# Namespace: https://kairos.cnext.eu/preparation#
+# Prefix:    kairos-prep:
+#
+# Source-owned, technical normalization policy defined by DD-106. Bronze remains
+# immutable. Prep creates source-record identity and never business equivalence.
+
+@prefix kairos-prep:   <https://kairos.cnext.eu/preparation#> .
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/preparation> a owl:Ontology ;
+    rdfs:label "Kairos Source Preparation Vocabulary"@en ;
+    rdfs:comment "Authoring contract for source-specific names, lossless cleanup, types, sentinels, CDC inputs, source-record identity, JSON extraction, schema changes and adapter evidence without arbitrary SQL or cross-source semantics."@en ;
+    owl:imports <https://kairos.cnext.eu/bronze> ;
+    owl:versionInfo "1.1.0" .
+
+# Policy resources
+
+kairos-prep:PreparationPolicy a owl:Class ;
+    rdfs:label "Preparation policy"@en ;
+    rdfs:comment "Required per-mapped-source-table preparation contract."@en .
+
+kairos-prep:PhysicalRename a owl:Class ;
+    rdfs:label "Physical rename"@en ;
+    rdfs:comment "Safe source-column to physical prepared-column rename."@en .
+
+kairos-prep:CleanupRule a owl:Class ;
+    rdfs:label "Cleanup rule"@en ;
+    rdfs:comment "Lossless trim or textual cleanup on one source column."@en .
+
+kairos-prep:TypeConversion a owl:Class ;
+    rdfs:label "Type conversion"@en ;
+    rdfs:comment "Explicit target semantic type with parse and error policy."@en .
+
+kairos-prep:SentinelNormalization a owl:Class ;
+    rdfs:label "Sentinel normalization"@en ;
+    rdfs:comment "Evidence-backed conversion of a raw sentinel value to null or a normalized value."@en .
+
+kairos-prep:CdcMapping a owl:Class ;
+    rdfs:label "CDC mapping"@en ;
+    rdfs:comment "Mapping from raw CDC fields to normalized operation, update, effective, ingestion and sequence fields."@en .
+
+kairos-prep:RecordKeyPolicy a owl:Class ;
+    rdfs:label "Source-record key policy"@en ;
+    rdfs:comment "Ordered source-PK components combined with source and table scope into _source_record_key."@en .
+
+kairos-prep:ScalarJsonExtraction a owl:Class ;
+    rdfs:label "Scalar JSON extraction"@en ;
+    rdfs:comment "Typed scalar JSON path extraction that preserves parent grain and raw replay evidence."@en .
+
+kairos-prep:ArrayChildContract a owl:Class ;
+    rdfs:label "Array child contract"@en ;
+    rdfs:comment "Explicit keyed child relation for a JSON array of flat objects with direct scalar field paths; parent grain is unchanged. Nested, polymorphic, recursive, or non-scalar elements require contracted dbt."@en .
+
+kairos-prep:TechnicalDedupe a owl:Class ;
+    rdfs:label "Technical deduplication"@en ;
+    rdfs:comment "Source-scoped technical duplicate removal with partition keys and a complete total order."@en .
+
+kairos-prep:DedupeOrderTerm a owl:Class ;
+    rdfs:label "Deduplication order term"@en ;
+    rdfs:comment "One positioned source-column and sort-direction tie-breaker."@en .
+
+kairos-prep:PreparedColumn a owl:Class ;
+    rdfs:label "Prepared column"@en ;
+    rdfs:comment "Column exposed by a preparation policy, including derived normalized CDC or JSON fields."@en .
+
+kairos-prep:AdapterSupport a owl:Class ;
+    rdfs:label "Preparation adapter support"@en ;
+    rdfs:comment "Versioned adapter capability evidence for a preparation feature."@en .
+
+kairos-prep:AdapterDeviation a owl:Class ;
+    rdfs:label "Preparation adapter deviation"@en ;
+    rdfs:comment "Approved scope-limited deviation for an adapter-specific preparation behavior."@en .
+
+# Per-table contract
+
+kairos-prep:sourceTable a owl:ObjectProperty ;
+    rdfs:label "source table"@en ;
+    rdfs:comment "Immutable Bronze source table governed by this policy."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range kairos-bronze:SourceTable .
+
+kairos-prep:prepMode a owl:DatatypeProperty ;
+    rdfs:label "preparation mode"@en ;
+    rdfs:comment "Required mode: passthrough or normalize. Absence is blocking."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range xsd:string .
+
+kairos-prep:schemaChangePolicy a owl:DatatypeProperty ;
+    rdfs:label "schema-change policy"@en ;
+    rdfs:comment "Required behavior for drift: fail, quarantine, or approved-contract-update."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range xsd:string .
+
+kairos-prep:normalizationEvidence a owl:AnnotationProperty ;
+    rdfs:label "normalization evidence"@en ;
+    rdfs:comment "Evidence URI or governed evidence identifier supporting normalization."@en .
+
+kairos-prep:physicalRename a owl:ObjectProperty ;
+    rdfs:label "physical rename"@en ;
+    rdfs:comment "Attaches a physical-safe identifier rename."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range kairos-prep:PhysicalRename .
+
+kairos-prep:cleanupRule a owl:ObjectProperty ;
+    rdfs:label "cleanup rule"@en ;
+    rdfs:comment "Attaches an approved lossless cleanup rule."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range kairos-prep:CleanupRule .
+
+kairos-prep:typeConversion a owl:ObjectProperty ;
+    rdfs:label "type conversion"@en ;
+    rdfs:comment "Attaches an explicit parse and cast rule."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range kairos-prep:TypeConversion .
+
+kairos-prep:sentinelNormalization a owl:ObjectProperty ;
+    rdfs:label "sentinel normalization"@en ;
+    rdfs:comment "Attaches evidence-backed sentinel handling."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range kairos-prep:SentinelNormalization .
+
+kairos-prep:cdcMapping a owl:ObjectProperty ;
+    rdfs:label "CDC mapping"@en ;
+    rdfs:comment "Attaches raw-to-normalized CDC field mappings."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range kairos-prep:CdcMapping .
+
+kairos-prep:recordKeyPolicy a owl:ObjectProperty ;
+    rdfs:label "source-record key policy"@en ;
+    rdfs:comment "Attaches source/table-scoped record-key construction."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range kairos-prep:RecordKeyPolicy .
+
+kairos-prep:scalarJsonExtraction a owl:ObjectProperty ;
+    rdfs:label "scalar JSON extraction"@en ;
+    rdfs:comment "Attaches a parent-grain-preserving scalar extraction."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range kairos-prep:ScalarJsonExtraction .
+
+kairos-prep:arrayChildContract a owl:ObjectProperty ;
+    rdfs:label "array child contract"@en ;
+    rdfs:comment "Attaches an explicit array child relation contract."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range kairos-prep:ArrayChildContract .
+
+kairos-prep:technicalDedupe a owl:ObjectProperty ;
+    rdfs:label "technical deduplication"@en ;
+    rdfs:comment "Attaches source-owned technical duplicate removal; business ranking belongs in contracted dbt."@en ;
+    rdfs:domain kairos-prep:PreparationPolicy ;
+    rdfs:range kairos-prep:TechnicalDedupe .
+
+kairos-prep:adapterSupport a owl:ObjectProperty ;
+    rdfs:label "adapter support"@en ;
+    rdfs:comment "Attaches adapter capability evidence."@en ;
+    rdfs:range kairos-prep:AdapterSupport .
+
+kairos-prep:adapterDeviation a owl:ObjectProperty ;
+    rdfs:label "adapter deviation"@en ;
+    rdfs:comment "Attaches an approved adapter-specific deviation."@en ;
+    rdfs:range kairos-prep:AdapterDeviation .
+
+# Column-bound technical rules
+
+kairos-prep:sourceColumn a owl:ObjectProperty ;
+    rdfs:label "source column"@en ;
+    rdfs:comment "Raw Bronze source column consumed by this rule."@en ;
+    rdfs:range kairos-bronze:SourceColumn .
+
+kairos-prep:dedupeKeyColumn a owl:ObjectProperty ;
+    rdfs:label "deduplication key column"@en ;
+    rdfs:comment "A source-column IRI in the technical duplicate partition."@en ;
+    rdfs:domain kairos-prep:TechnicalDedupe ;
+    rdfs:range kairos-bronze:SourceColumn .
+
+kairos-prep:dedupeOrderTerm a owl:ObjectProperty ;
+    rdfs:label "deduplication order term"@en ;
+    rdfs:comment "Attaches one positioned total-order term."@en ;
+    rdfs:domain kairos-prep:TechnicalDedupe ;
+    rdfs:range kairos-prep:DedupeOrderTerm .
+
+kairos-prep:orderPosition a owl:DatatypeProperty ;
+    rdfs:label "order position"@en ;
+    rdfs:comment "Contiguous one-based order position."@en ;
+    rdfs:domain kairos-prep:DedupeOrderTerm ;
+    rdfs:range xsd:positiveInteger .
+
+kairos-prep:sortDirection a owl:DatatypeProperty ;
+    rdfs:label "sort direction"@en ;
+    rdfs:comment "ASC or DESC."@en ;
+    rdfs:domain kairos-prep:DedupeOrderTerm ;
+    rdfs:range xsd:string .
+
+kairos-prep:targetColumnName a owl:DatatypeProperty ;
+    rdfs:label "target column name"@en ;
+    rdfs:comment "Physical-safe output identifier."@en ;
+    rdfs:range xsd:string .
+
+kairos-prep:cleanupOperation a owl:DatatypeProperty ;
+    rdfs:label "cleanup operation"@en ;
+    rdfs:comment "Approved lossless operation: trim, left-trim, right-trim, unicode-normalize, or line-ending-normalize."@en ;
+    rdfs:domain kairos-prep:CleanupRule ;
+    rdfs:range xsd:string .
+
+kairos-prep:lossless a owl:DatatypeProperty ;
+    rdfs:label "lossless"@en ;
+    rdfs:comment "Must be true for ordinary prep cleanup."@en ;
+    rdfs:domain kairos-prep:CleanupRule ;
+    rdfs:range xsd:boolean .
+
+kairos-prep:targetType a owl:DatatypeProperty ;
+    rdfs:label "target type"@en ;
+    rdfs:comment "Explicit adapter-neutral semantic target type."@en ;
+    rdfs:range xsd:string .
+
+kairos-prep:parsePolicy a owl:DatatypeProperty ;
+    rdfs:label "parse policy"@en ;
+    rdfs:comment "Named deterministic parser, such as strict-iso-8601 or decimal-invariant."@en ;
+    rdfs:domain kairos-prep:TypeConversion ;
+    rdfs:range xsd:string .
+
+kairos-prep:errorPolicy a owl:DatatypeProperty ;
+    rdfs:label "error policy"@en ;
+    rdfs:comment "Parse or extraction failure behavior: fail, quarantine, or null-with-evidence."@en ;
+    rdfs:range xsd:string .
+
+kairos-prep:sentinelValue a owl:DatatypeProperty ;
+    rdfs:label "sentinel value"@en ;
+    rdfs:comment "Exact raw lexical sentinel value."@en ;
+    rdfs:domain kairos-prep:SentinelNormalization ;
+    rdfs:range xsd:string .
+
+kairos-prep:sentinelAction a owl:DatatypeProperty ;
+    rdfs:label "sentinel action"@en ;
+    rdfs:comment "Action: to-null or to-normalized-value."@en ;
+    rdfs:domain kairos-prep:SentinelNormalization ;
+    rdfs:range xsd:string .
+
+kairos-prep:normalizedValue a owl:DatatypeProperty ;
+    rdfs:label "normalized value"@en ;
+    rdfs:comment "Explicit replacement when sentinelAction is to-normalized-value."@en ;
+    rdfs:domain kairos-prep:SentinelNormalization ;
+    rdfs:range xsd:string .
+
+kairos-prep:evidence a owl:AnnotationProperty ;
+    rdfs:label "evidence"@en ;
+    rdfs:comment "Governed evidence URI or identifier. Required for sentinel normalization."@en .
+
+# CDC mappings and normalized derived fields
+
+kairos-prep:rawOperationColumn a owl:ObjectProperty ;
+    rdfs:label "raw operation column"@en ;
+    rdfs:comment "Raw source CDC operation column."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range kairos-bronze:SourceColumn .
+
+kairos-prep:rawUpdateTimestampColumn a owl:ObjectProperty ;
+    rdfs:label "raw update timestamp column"@en ;
+    rdfs:comment "Raw source update timestamp column."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range kairos-bronze:SourceColumn .
+
+kairos-prep:rawEffectiveTimestampColumn a owl:ObjectProperty ;
+    rdfs:label "raw effective timestamp column"@en ;
+    rdfs:comment "Raw source business-effective timestamp column."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range kairos-bronze:SourceColumn .
+
+kairos-prep:rawIngestionTimestampColumn a owl:ObjectProperty ;
+    rdfs:label "raw ingestion timestamp column"@en ;
+    rdfs:comment "Raw ingestion timestamp column."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range kairos-bronze:SourceColumn .
+
+kairos-prep:rawSequenceColumn a owl:ObjectProperty ;
+    rdfs:label "raw sequence column"@en ;
+    rdfs:comment "Raw source sequence or tie-breaker column; may repeat in declared order."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range kairos-bronze:SourceColumn .
+
+kairos-prep:operationCodeMap a owl:DatatypeProperty ;
+    rdfs:label "operation code map"@en ;
+    rdfs:comment "Deterministic raw-to-normalized operation mapping expressed as code pairs, not SQL. A single *=snapshot fallback explicitly classifies snapshot-only sources."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range xsd:string .
+
+kairos-prep:normalizedOperationField a owl:ObjectProperty ;
+    rdfs:label "normalized operation field"@en ;
+    rdfs:comment "Prepared _cdc_operation field."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range kairos-prep:PreparedColumn .
+
+kairos-prep:normalizedUpdateTimestampField a owl:ObjectProperty ;
+    rdfs:label "normalized update timestamp field"@en ;
+    rdfs:comment "Prepared _source_updated_at field."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range kairos-prep:PreparedColumn .
+
+kairos-prep:normalizedEffectiveTimestampField a owl:ObjectProperty ;
+    rdfs:label "normalized effective timestamp field"@en ;
+    rdfs:comment "Prepared _source_effective_at field."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range kairos-prep:PreparedColumn .
+
+kairos-prep:normalizedIngestionTimestampField a owl:ObjectProperty ;
+    rdfs:label "normalized ingestion timestamp field"@en ;
+    rdfs:comment "Prepared _ingested_at field."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range kairos-prep:PreparedColumn .
+
+kairos-prep:normalizedSequenceField a owl:ObjectProperty ;
+    rdfs:label "normalized sequence field"@en ;
+    rdfs:comment "Prepared total-order sequence field."@en ;
+    rdfs:domain kairos-prep:CdcMapping ;
+    rdfs:range kairos-prep:PreparedColumn .
+
+# Source-scoped record identity
+
+kairos-prep:sourceScope a owl:DatatypeProperty ;
+    rdfs:label "source scope"@en ;
+    rdfs:comment "Stable source-system scope included in _source_record_key."@en ;
+    rdfs:domain kairos-prep:RecordKeyPolicy ;
+    rdfs:range xsd:string .
+
+kairos-prep:tableScope a owl:DatatypeProperty ;
+    rdfs:label "table scope"@en ;
+    rdfs:comment "Stable source-table scope included in _source_record_key."@en ;
+    rdfs:domain kairos-prep:RecordKeyPolicy ;
+    rdfs:range xsd:string .
+
+kairos-prep:recordKeyComponent a owl:ObjectProperty ;
+    rdfs:label "record-key component"@en ;
+    rdfs:comment "Ordered raw source primary-key component; may repeat."@en ;
+    rdfs:domain kairos-prep:RecordKeyPolicy ;
+    rdfs:range kairos-bronze:SourceColumn .
+
+kairos-prep:recordKeyOutput a owl:ObjectProperty ;
+    rdfs:label "record-key output"@en ;
+    rdfs:comment "Prepared _source_record_key field."@en ;
+    rdfs:domain kairos-prep:RecordKeyPolicy ;
+    rdfs:range kairos-prep:PreparedColumn .
+
+# JSON contracts
+
+kairos-prep:jsonPath a owl:DatatypeProperty ;
+    rdfs:label "JSON path"@en ;
+    rdfs:comment "Bounded scalar or array JSON path; not an SQL expression."@en ;
+    rdfs:range xsd:string .
+
+kairos-prep:rawPayloadRetention a owl:DatatypeProperty ;
+    rdfs:label "raw payload retention"@en ;
+    rdfs:comment "Replay contract: retain-payload or retain-replayable-reference."@en ;
+    rdfs:range xsd:string .
+
+kairos-prep:parentKeyComponent a owl:ObjectProperty ;
+    rdfs:label "parent key component"@en ;
+    rdfs:comment "Parent source-record key component propagated to an array child."@en ;
+    rdfs:domain kairos-prep:ArrayChildContract ;
+    rdfs:range kairos-bronze:SourceColumn .
+
+kairos-prep:childRelationName a owl:DatatypeProperty ;
+    rdfs:label "child relation name"@en ;
+    rdfs:comment "Physical-safe prepared child relation name."@en ;
+    rdfs:domain kairos-prep:ArrayChildContract ;
+    rdfs:range xsd:string .
+
+kairos-prep:elementKeyPath a owl:DatatypeProperty ;
+    rdfs:label "element key path"@en ;
+    rdfs:comment "JSON path for a stable element key when available."@en ;
+    rdfs:domain kairos-prep:ArrayChildContract ;
+    rdfs:range xsd:string .
+
+kairos-prep:elementIndexField a owl:DatatypeProperty ;
+    rdfs:label "element index field"@en ;
+    rdfs:comment "Physical-safe output field retaining array order when used as the element key."@en ;
+    rdfs:domain kairos-prep:ArrayChildContract ;
+    rdfs:range xsd:string .
+
+kairos-prep:nullArrayPolicy a owl:DatatypeProperty ;
+    rdfs:label "null array policy"@en ;
+    rdfs:comment "Explicit behavior for null arrays: zero-children, quarantine, or fail."@en ;
+    rdfs:domain kairos-prep:ArrayChildContract ;
+    rdfs:range xsd:string .
+
+kairos-prep:emptyArrayPolicy a owl:DatatypeProperty ;
+    rdfs:label "empty array policy"@en ;
+    rdfs:comment "Explicit behavior for empty arrays: zero-children, quarantine, or fail."@en ;
+    rdfs:domain kairos-prep:ArrayChildContract ;
+    rdfs:range xsd:string .
+
+kairos-prep:extractedColumn a owl:ObjectProperty ;
+    rdfs:label "extracted column"@en ;
+    rdfs:comment "Prepared typed scalar field extracted from JSON; may repeat."@en ;
+    rdfs:range kairos-prep:PreparedColumn .
+
+# Adapter evidence and deviations
+
+kairos-prep:adapterName a owl:DatatypeProperty ;
+    rdfs:label "adapter name"@en ;
+    rdfs:comment "Explicit adapter identifier."@en ;
+    rdfs:range xsd:string .
+
+kairos-prep:adapterVersion a owl:DatatypeProperty ;
+    rdfs:label "adapter version"@en ;
+    rdfs:comment "Adapter version or bounded version range."@en ;
+    rdfs:range xsd:string .
+
+kairos-prep:evidenceScope a owl:DatatypeProperty ;
+    rdfs:label "adapter evidence scope"@en ;
+    rdfs:comment "Exact preparation scope compiled by the evidence statement."@en ;
+    rdfs:domain kairos-prep:AdapterSupport ;
+    rdfs:range xsd:string .
+
+kairos-prep:capability a owl:DatatypeProperty ;
+    rdfs:label "capability"@en ;
+    rdfs:comment "Named preparation capability covered by the statement."@en ;
+    rdfs:domain kairos-prep:AdapterSupport ;
+    rdfs:range xsd:string .
+
+kairos-prep:supportStatus a owl:DatatypeProperty ;
+    rdfs:label "support status"@en ;
+    rdfs:comment "supported, unsupported, partial, or environment-blocked."@en ;
+    rdfs:domain kairos-prep:AdapterSupport ;
+    rdfs:range xsd:string .
+
+kairos-prep:compileEvidence a owl:AnnotationProperty ;
+    rdfs:label "compile evidence"@en ;
+    rdfs:comment "Immutable successful compile evidence reference."@en .
+
+kairos-prep:policyReference a owl:DatatypeProperty ;
+    rdfs:label "policy reference"@en ;
+    rdfs:comment "Versioned policy requirement covered by the deviation."@en ;
+    rdfs:domain kairos-prep:AdapterDeviation ;
+    rdfs:range xsd:string .
+
+kairos-prep:deviationScope a owl:DatatypeProperty ;
+    rdfs:label "deviation scope"@en ;
+    rdfs:comment "Exact table, operation and adapter scope."@en ;
+    rdfs:domain kairos-prep:AdapterDeviation ;
+    rdfs:range xsd:string .
+
+kairos-prep:deviationRationale a owl:DatatypeProperty ;
+    rdfs:label "deviation rationale"@en ;
+    rdfs:comment "Reviewed reason for accepting the deviation."@en ;
+    rdfs:domain kairos-prep:AdapterDeviation ;
+    rdfs:range xsd:string .
+
+kairos-prep:ownerRole a owl:DatatypeProperty ;
+    rdfs:label "owner role"@en ;
+    rdfs:comment "Abstract role accountable for deviation review."@en ;
+    rdfs:domain kairos-prep:AdapterDeviation ;
+    rdfs:range xsd:string .
+
+kairos-prep:approvalStatus a owl:DatatypeProperty ;
+    rdfs:label "approval status"@en ;
+    rdfs:comment "Governance approval state."@en ;
+    rdfs:domain kairos-prep:AdapterDeviation ;
+    rdfs:range xsd:string .
+
+kairos-prep:reviewDate a owl:DatatypeProperty ;
+    rdfs:label "review date"@en ;
+    rdfs:comment "Required next review date."@en ;
+    rdfs:domain kairos-prep:AdapterDeviation ;
+    rdfs:range xsd:date .
+
+kairos-prep:expiryDate a owl:DatatypeProperty ;
+    rdfs:label "expiry date"@en ;
+    rdfs:comment "Date after which this deviation is invalid."@en ;
+    rdfs:domain kairos-prep:AdapterDeviation ;
+    rdfs:range xsd:date .
+
+kairos-prep:deviationEvidence a owl:AnnotationProperty ;
+    rdfs:label "deviation evidence"@en ;
+    rdfs:comment "Immutable approval or verification evidence."@en ;
+    rdfs:domain kairos-prep:AdapterDeviation .

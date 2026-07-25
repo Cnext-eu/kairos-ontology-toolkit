@@ -236,6 +236,18 @@ def test_implemented_candidate_can_reference_renamed_contract(tmp_path, monkeypa
 
     class _Contract:
         replaces_sources = ()
+        decisions = (
+            type(
+                "_Decision",
+                (),
+                {
+                    "id": "canonical-grain",
+                    "status": "developer_approved",
+                    "evidence": ("reviewed-evidence",),
+                    "verified_by": ("unit_test_canonical_grain",),
+                },
+            )(),
+        )
 
     monkeypatch.setattr(
         "kairos_ontology.core.transformation_candidates._implemented_models",

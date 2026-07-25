@@ -1,30 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Phase-level unit tests for the five-phase dbt projection pipeline (DD-102).
-
-Output parity (byte-for-byte) is covered by the scenario/golden/determinism suites.
-These tests target the *architecture* the decomposition introduces:
-
-* the intermediate models are immutable (frozen dataclasses);
-* the phases are deterministic (two runs → identical ordering & bytes);
-* the phase *boundaries* hold — bind commits source facts, normalize owns the FK +
-  binding contract, and ``render`` consumes only committed strings/metadata (it never
-  touches the RDF graph or the SKOS mappings).
-"""
+"""Architecture tests for DD-110's byte-free dbt phase boundaries."""
 
 from __future__ import annotations
 
 import dataclasses
 import inspect
+from enum import Enum
 from pathlib import Path
 
+import jinja2
 import pytest
 from rdflib import Graph
 from rdflib.namespace import OWL, RDF, RDFS
+from rdflib.term import Identifier
 
 from kairos_ontology.core.projections.dbt import (
     BoundSources,
     DbtInputs,
+    DimensionalGoldSpec,
     MaterializationPlan,
     ProjectionContract,
     ShapedProject,
@@ -34,11 +28,24 @@ from kairos_ontology.core.projections.dbt import (
     render_project,
     shape_project,
 )
+from kairos_ontology.core.projections.dbt.specs import (
+    BoundCoverage,
+    BoundSchemaModel,
+    BoundSilverModel,
+    CoverageSpec,
+    ModelPhysicalPlan,
+    NormalizedCoverage,
+    NormalizedSchemaModel,
+    NormalizedSilverModel,
+    ReleasePlan,
+    SchemaDocumentSpec,
+    SchemaModelSpec,
+    SilverModelSpec,
+    SourceCatalogSpec,
+)
 from kairos_ontology.core.projections.medallion_dbt_projector import (
-    SourceBindings,
     generate_dbt_artifacts,
 )
-from kairos_ontology.core.projections.shared import KAIROS_EXT
 from kairos_ontology.core.projections.uri_utils import extract_local_name
 
 HUB_ROOT = Path(__file__).parent / "scenarios" / "acme-hub"
@@ -53,35 +60,40 @@ TEMPLATE_DIR = (
 
 
 def _load_client() -> tuple[Graph, str, list[dict]]:
-    g = Graph()
-    g.parse(ONTOLOGIES_DIR / "client.ttl", format="turtle")
-    ext = EXTENSIONS_DIR / "client-silver-ext.ttl"
-    if ext.exists():
-        g.parse(ext, format="turtle")
-    namespace = None
-    for onto in g.subjects(RDF.type, OWL.Ontology):
-        uri = str(onto)
-        namespace = uri + "#" if "#" not in uri else uri.rsplit("#", 1)[0] + "#"
-        break
+    graph = Graph()
+    graph.parse(ONTOLOGIES_DIR / "client.ttl", format="turtle")
+    extension = EXTENSIONS_DIR / "client-silver-ext.ttl"
+    if extension.exists():
+        graph.parse(extension, format="turtle")
+    namespace = next(
+        (
+            str(ontology) + "#"
+            if "#" not in str(ontology)
+            else str(ontology).rsplit("#", 1)[0] + "#"
+        )
+        for ontology in graph.subjects(RDF.type, OWL.Ontology)
+    )
     classes = []
-    for cls in g.subjects(RDF.type, OWL.Class):
-        cls_uri = str(cls)
-        if not cls_uri.startswith(namespace):
+    for class_uri in graph.subjects(RDF.type, OWL.Class):
+        uri = str(class_uri)
+        if not uri.startswith(namespace):
             continue
-        local = extract_local_name(cls_uri)
-        classes.append({
-            "uri": cls_uri,
-            "name": local,
-            "label": str(g.value(cls, RDFS.label) or local),
-            "comment": str(g.value(cls, RDFS.comment) or f"{local} entity"),
-        })
-    return g, namespace, classes
+        local = extract_local_name(uri)
+        classes.append(
+            {
+                "uri": uri,
+                "name": local,
+                "label": str(graph.value(class_uri, RDFS.label) or local),
+                "comment": str(
+                    graph.value(class_uri, RDFS.comment) or f"{local} entity"
+                ),
+            }
+        )
+    return graph, namespace, classes
 
 
 def _client_inputs() -> DbtInputs:
     graph, namespace, classes = _load_client()
-    gold_ext = EXTENSIONS_DIR / "client-gold-ext.ttl"
-    silver_ext = EXTENSIONS_DIR / "client-silver-ext.ttl"
     return DbtInputs.from_call(
         classes=classes,
         graph=graph,
@@ -89,203 +101,228 @@ def _client_inputs() -> DbtInputs:
         namespace=namespace,
         shapes_dir=SHAPES_DIR,
         ontology_name="client",
+        ontology_metadata={
+            "iri": "https://acme.example/ontology/client",
+            "version": "1.0.0",
+            "toolkit_version": "test",
+        },
         bronze_dir=SOURCES_DIR,
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,
         target_platform="fabric",
-        gold_ext_path=gold_ext if gold_ext.exists() else None,
-        silver_ext_path=silver_ext if silver_ext.exists() else None,
+        gold_ext_path=EXTENSIONS_DIR / "client-gold-ext.ttl",
+        silver_ext_path=EXTENSIONS_DIR / "client-silver-ext.ttl",
     )
 
 
 def _run_all_phases(inputs: DbtInputs):
     bound = bind_sources(inputs)
-    contract = normalize_contract(inputs, bound)
-    shaped = shape_project(inputs, bound, contract)
-    plan = plan_materialization(inputs, bound, contract, shaped)
-    artifacts = render_project(shaped, plan)
-    return bound, contract, shaped, plan, artifacts
+    contract = normalize_contract(bound)
+    shaped = shape_project(contract)
+    plan = plan_materialization(contract, shaped)
+    return bound, contract, shaped, plan, render_project(shaped, plan)
 
 
-# ---------------------------------------------------------------------------
-# DbtInputs derivation
-# ---------------------------------------------------------------------------
-
-def test_dbtinputs_from_call_derives_env_meta_onto_name():
-    inputs = _client_inputs()
-    assert inputs.onto_name == "client"
-    assert inputs.meta == {}
-    # env is a jinja Environment able to load the silver template.
-    assert inputs.env.get_template("silver_model.sql.jinja2") is not None
-
-
-def test_dbtinputs_from_call_defaults_onto_name_to_domain():
-    graph, namespace, classes = _load_client()
-    inputs = DbtInputs.from_call(
-        classes=classes,
-        graph=graph,
-        template_dir=TEMPLATE_DIR,
-        namespace=namespace,
-        target_platform="fabric",
+def _assert_deeply_immutable(value: object, path: str = "result") -> None:
+    forbidden = (
+        Graph,
+        Identifier,
+        jinja2.Environment,
+        jinja2.BaseLoader,
+        jinja2.Template,
+        list,
+        dict,
+        set,
+        bytearray,
+        bytes,
+        Path,
     )
-    assert inputs.onto_name == "domain"
-    assert inputs.meta == {}
+    assert not isinstance(value, forbidden), f"{path} leaked {type(value).__name__}"
+    if dataclasses.is_dataclass(value):
+        assert value.__dataclass_params__.frozen is True
+        assert "__slots__" in type(value).__dict__
+        for field in dataclasses.fields(value):
+            _assert_deeply_immutable(getattr(value, field.name), f"{path}.{field.name}")
+    elif isinstance(value, tuple):
+        for index, item in enumerate(value):
+            _assert_deeply_immutable(item, f"{path}[{index}]")
+    elif isinstance(value, frozenset):
+        for item in value:
+            _assert_deeply_immutable(item, f"{path}[{item!r}]")
+    else:
+        assert value is None or isinstance(value, (str, int, float, bool, Enum))
+        if isinstance(value, str):
+            rendered_markers = (
+                "-- Silver model",
+                "-- Gold model",
+                "version: 2\nmodels:",
+                "# dbt Project",
+                "{% macro ",
+            )
+            assert not any(marker in value for marker in rendered_markers), (
+                f"{path} leaked rendered artifact content"
+            )
 
 
-# ---------------------------------------------------------------------------
-# Immutability — every intermediate model is a frozen dataclass
-# ---------------------------------------------------------------------------
+def _contains_type(value: object, expected: tuple[type, ...]) -> bool:
+    if isinstance(value, expected):
+        return True
+    if dataclasses.is_dataclass(value):
+        return any(
+            _contains_type(getattr(value, field.name), expected)
+            for field in dataclasses.fields(value)
+        )
+    if isinstance(value, (tuple, frozenset)):
+        return any(_contains_type(item, expected) for item in value)
+    return False
 
-@pytest.mark.parametrize("cls", [
-    DbtInputs, BoundSources, ProjectionContract, ShapedProject, MaterializationPlan,
-])
-def test_phase_models_are_frozen_dataclasses(cls):
-    assert dataclasses.is_dataclass(cls)
-    assert cls.__dataclass_params__.frozen is True
+
+@pytest.mark.parametrize(
+    "record_type",
+    [DbtInputs, BoundSources, ProjectionContract, ShapedProject, MaterializationPlan],
+)
+def test_phase_records_are_frozen_slotted_dataclasses(record_type):
+    assert dataclasses.is_dataclass(record_type)
+    assert record_type.__dataclass_params__.frozen is True
+    assert "__slots__" in record_type.__dict__
 
 
-def test_phase_instances_reject_mutation():
+def test_call_inputs_copy_mutable_values_without_creating_jinja():
     inputs = _client_inputs()
-    bound, contract, shaped, plan, _ = _run_all_phases(inputs)
-    for instance, field in [
-        (inputs, "namespace"),
-        (bound, "systems"),
-        (contract, "naming_conv"),
-        (shaped, "silver_artifacts"),
-        (plan, "project_config"),
-    ]:
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            setattr(instance, field, None)
+    assert inputs.ontology_name == "client"
+    assert inputs.ontology_metadata.iri == "https://acme.example/ontology/client"
+    assert isinstance(inputs.classes, tuple)
+    assert not hasattr(inputs, "env")
 
 
-# ---------------------------------------------------------------------------
-# Bind boundary — commits source-side facts (systems, mappings, SourceBindings)
-# ---------------------------------------------------------------------------
+def test_every_phase_result_is_deeply_immutable_and_authoring_free():
+    bound, contract, shaped, plan, _ = _run_all_phases(_client_inputs())
+    for result in (bound, contract, shaped, plan):
+        _assert_deeply_immutable(result)
 
-def test_bind_commits_sources_mappings_and_bindings():
-    inputs = _client_inputs()
-    bound = bind_sources(inputs)
-    assert isinstance(bound, BoundSources)
-    assert bound.has_sources is True
-    assert bound.systems, "client scenario has bronze source systems"
-    assert "table_maps" in bound.mappings
-    assert isinstance(bound.source_bindings, SourceBindings)
-    # class_to_sources is the canonical binding fact consumed downstream.
+
+def test_bind_consumes_rdf_into_domain_specific_facts():
+    bound = bind_sources(_client_inputs())
+    assert bound.has_sources
+    assert bound.systems[0].tables
+    assert bound.mappings.tables
     assert bound.source_bindings.class_to_sources
-
-
-def test_bind_merges_silver_ext_into_working_graph():
-    inputs = _client_inputs()
-    bound = bind_sources(inputs)
-    # The ext-merged graph must expose silver-ext annotations (naturalKey) that are
-    # absent from the raw domain ontology — proving the merge is committed at bind.
-    has_natural_key = any(
-        bound.graph.triples((None, KAIROS_EXT.naturalKey, None))
+    assert bound.foreign_key_facts
+    assert all(
+        isinstance(item, BoundSilverModel) for item in bound.silver_candidates
     )
-    assert has_natural_key
-
-
-# ---------------------------------------------------------------------------
-# Normalize boundary — owns the FK + binding contract grounded in the bindings
-# ---------------------------------------------------------------------------
-
-def test_normalize_grounds_binding_analysis_in_committed_bindings():
-    inputs = _client_inputs()
-    bound = bind_sources(inputs)
-    contract = normalize_contract(inputs, bound)
-    assert isinstance(contract, ProjectionContract)
-    # FK descriptors are the canonical classification.
-    assert contract.fk_classification is not None
-    # The binding analysis agrees with the committed SourceBindings: every class the
-    # bind phase bound to a source is classified BOUND by normalize (no re-derivation).
-    for cls_uri, refs in bound.source_bindings.class_to_sources.items():
-        if refs:
-            assert contract.binding_analysis.is_bound(cls_uri)
-
-
-# ---------------------------------------------------------------------------
-# Render boundary — consumes ONLY committed strings/metadata (no RDF, no policy)
-# ---------------------------------------------------------------------------
-
-def test_render_signature_takes_only_shaped_and_plan():
-    params = list(inspect.signature(render_project).parameters)
-    assert params == ["shaped", "plan"]
-
-
-def test_render_is_graph_free_pure_assembly():
-    """render_project assembles the final map from plain data — no graph needed."""
-    shaped = ShapedProject(
-        source_artifacts={"models/silver/_src__sources.yml": "version: 2\n"},
-        silver_artifacts={"models/silver/client/client.sql": "select 1 as x\n"},
-        silver_warnings=[],
-        silver_entity_meta=[],
-        schema_artifacts={"models/silver/client/_models.yml": "version: 2\n"},
-        gold_artifacts={},
-        gold_schema_artifacts={},
-        silver_name_registry={},
-        silver_columns_registry={},
-        coverage_data={"client": {"mapped": 3}},
-        macros={"macros/kairos_safe_cast.sql": "-- macro\n"},
-        generated_class_names=frozenset({"Client"}),
-        aspirational_class_names=frozenset(),
-        has_gold=False,
+    assert all(
+        isinstance(item, BoundSchemaModel) for item in bound.schema_candidates
     )
-    plan = MaterializationPlan(
-        unbound_eligible_names=("Prospect", "Lead"),
-        project_config={"dbt_project.yml": "name: p\n"},
-        known_models=frozenset(),
+    assert isinstance(bound.coverage, BoundCoverage)
+    assert not _contains_type(
+        bound,
+        (SilverModelSpec, SchemaModelSpec, CoverageSpec),
     )
+    assert not hasattr(bound, "graph")
+
+
+def test_normalize_is_the_effective_policy_boundary():
+    bound = bind_sources(_client_inputs())
+    contract = normalize_contract(bound)
+    for class_uri, sources in bound.source_bindings.class_to_sources:
+        if sources:
+            assert contract.binding_policy.is_bound(class_uri)
+    assert contract.fk_classification.descriptors
+    assert contract.naming_convention
+    assert all(
+        isinstance(item, NormalizedSilverModel)
+        for item in contract.project.silver_models
+    )
+    assert all(
+        isinstance(item, NormalizedSchemaModel)
+        for item in contract.project.schema_models
+    )
+    assert isinstance(contract.project.coverage, NormalizedCoverage)
+    assert not _contains_type(
+        contract,
+        (SilverModelSpec, SchemaModelSpec, CoverageSpec),
+    )
+
+
+def test_shape_contains_logical_specs_and_no_artifact_maps():
+    bound = bind_sources(_client_inputs())
+    contract = normalize_contract(bound)
+    shaped = shape_project(contract)
+    assert shaped.source_catalogs
+    assert all(isinstance(item, SourceCatalogSpec) for item in shaped.source_catalogs)
+    assert all(isinstance(item, SilverModelSpec) for item in shaped.silver_models)
+    assert all(
+        isinstance(item, SchemaDocumentSpec) for item in shaped.schema_documents
+    )
+    assert isinstance(shaped.gold_product, DimensionalGoldSpec)
+    assert not any(field.name.endswith("artifacts") for field in dataclasses.fields(shaped))
+    assert list(inspect.signature(shape_project).parameters) == ["contract"]
+
+
+def test_materialize_selects_physical_adapter_models_dependencies_and_release():
+    bound = bind_sources(_client_inputs())
+    contract = normalize_contract(bound)
+    shaped = shape_project(contract)
+    plan = plan_materialization(contract, shaped)
+    assert plan.adapter.platform == "fabric"
+    assert plan.models
+    assert all(isinstance(item, ModelPhysicalPlan) for item in plan.models)
+    assert all(item.template_name for item in plan.models)
+    assert len(plan.documents) == len(shaped.schema_documents)
+    assert all(item.template_name for item in plan.documents)
+    assert plan.project.emit is True
+    assert isinstance(plan.release, ReleasePlan)
+    assert list(inspect.signature(plan_materialization).parameters) == [
+        "contract",
+        "shaped",
+    ]
+
+
+def test_normalize_shape_and_materialize_cannot_read_authoring_or_templates(
+    monkeypatch,
+):
+    bound = bind_sources(_client_inputs())
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("post-bind phase attempted authoring/template I/O")
+
+    for name in ("parse", "subjects", "objects", "triples", "value"):
+        monkeypatch.setattr(Graph, name, forbidden)
+    monkeypatch.setattr(Path, "read_text", forbidden)
+    monkeypatch.setattr(jinja2.Environment, "get_template", forbidden)
+
+    contract = normalize_contract(bound)
+    shaped = shape_project(contract)
+    plan = plan_materialization(contract, shaped)
+    assert plan.models
+
+
+def test_render_imports_no_monolithic_projector():
+    source = inspect.getsource(inspect.getmodule(render_project))
+    assert "medallion_dbt_projector" not in source
+    assert list(inspect.signature(render_project).parameters) == ["shaped", "plan"]
+
+
+def test_render_needs_no_rdf(monkeypatch):
+    bound = bind_sources(_client_inputs())
+    contract = normalize_contract(bound)
+    shaped = shape_project(contract)
+    plan = plan_materialization(contract, shaped)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("render attempted RDF access")
+
+    for name in ("parse", "subjects", "objects", "triples", "value"):
+        monkeypatch.setattr(Graph, name, forbidden)
     artifacts = render_project(shaped, plan)
-    # Special sentinels are attached with the exact shapes the orchestrator expects.
-    assert artifacts["__unbound_eligible__"] == ["Prospect", "Lead"]
-    assert artifacts["__coverage_data__"] == {"client": {"mapped": 3}}
-    # Every shaped/plan artifact is present in the assembled map.
-    for key in (
-        "models/silver/_src__sources.yml",
-        "models/silver/client/client.sql",
-        "models/silver/client/_models.yml",
-        "macros/kairos_safe_cast.sql",
-        "dbt_project.yml",
-    ):
-        assert key in artifacts
+    assert any(path.endswith("/client.sql") for path in artifacts)
+    assert any(path.endswith("__gold_models.yml") for path in artifacts)
 
-
-def test_render_omits_empty_sentinels():
-    shaped = ShapedProject(
-        source_artifacts={},
-        silver_artifacts={"models/silver/client/client.sql": "select 1\n"},
-        silver_warnings=[],
-        silver_entity_meta=[],
-        schema_artifacts={},
-        gold_artifacts={},
-        gold_schema_artifacts={},
-        silver_name_registry={},
-        silver_columns_registry={},
-        coverage_data={},
-        macros={},
-        generated_class_names=None,
-        aspirational_class_names=frozenset(),
-        has_gold=False,
-    )
-    plan = MaterializationPlan(
-        unbound_eligible_names=(),
-        project_config={},
-        known_models=frozenset(),
-    )
-    artifacts = render_project(shaped, plan)
-    assert "__unbound_eligible__" not in artifacts
-    assert "__coverage_data__" not in artifacts
-
-
-# ---------------------------------------------------------------------------
-# Orchestration parity + determinism
-# ---------------------------------------------------------------------------
 
 def test_phase_pipeline_matches_public_entrypoint(monkeypatch):
     monkeypatch.setenv("KAIROS_GENERATED_AT", "2026-01-01T00:00:00Z")
     graph, namespace, classes = _load_client()
-    gold_ext = EXTENSIONS_DIR / "client-gold-ext.ttl"
-    silver_ext = EXTENSIONS_DIR / "client-silver-ext.ttl"
     public = generate_dbt_artifacts(
         classes=classes,
         graph=graph,
@@ -293,38 +330,24 @@ def test_phase_pipeline_matches_public_entrypoint(monkeypatch):
         namespace=namespace,
         shapes_dir=SHAPES_DIR,
         ontology_name="client",
+        ontology_metadata={
+            "iri": "https://acme.example/ontology/client",
+            "version": "1.0.0",
+            "toolkit_version": "test",
+        },
         bronze_dir=SOURCES_DIR,
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,
-        gold_ext_path=gold_ext if gold_ext.exists() else None,
-        silver_ext_path=silver_ext if silver_ext.exists() else None,
+        gold_ext_path=EXTENSIONS_DIR / "client-gold-ext.ttl",
+        silver_ext_path=EXTENSIONS_DIR / "client-silver-ext.ttl",
     )
-    _, _, _, _, via_phases = _run_all_phases(_client_inputs())
+    *_, via_phases = _run_all_phases(_client_inputs())
     assert via_phases == public
 
 
 def test_phases_are_deterministic(monkeypatch):
     monkeypatch.setenv("KAIROS_GENERATED_AT", "2026-01-01T00:00:00Z")
-    _, _, shaped_a, plan_a, artifacts_a = _run_all_phases(_client_inputs())
-    _, _, shaped_b, plan_b, artifacts_b = _run_all_phases(_client_inputs())
-    # Identical bytes AND identical key ordering across independent runs.
+    *_, artifacts_a = _run_all_phases(_client_inputs())
+    *_, artifacts_b = _run_all_phases(_client_inputs())
     assert artifacts_a == artifacts_b
-    assert list(artifacts_a.keys()) == list(artifacts_b.keys())
-    # Deterministic entity-metadata ordering (drives the session log / report).
-    assert [m["class_name"] for m in shaped_a.silver_entity_meta] == \
-        [m["class_name"] for m in shaped_b.silver_entity_meta]
-    # Release metadata is sorted deterministically.
-    assert plan_a.unbound_eligible_names == plan_b.unbound_eligible_names
-    assert list(plan_a.unbound_eligible_names) == sorted(plan_a.unbound_eligible_names)
-
-
-def test_materialization_plan_release_metadata():
-    inputs = _client_inputs()
-    _, _, shaped, plan, _ = _run_all_phases(inputs)
-    # unbound_eligible_names is derived purely from the shaped entity metadata.
-    expected = tuple(sorted(
-        m["class_name"] for m in shaped.silver_entity_meta
-        if m.get("aspirational") or m.get("unbound_eligible")
-    ))
-    assert plan.unbound_eligible_names == expected
-    assert plan.known_models == frozenset()
+    assert list(artifacts_a) == list(artifacts_b)

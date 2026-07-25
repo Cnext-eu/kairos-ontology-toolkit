@@ -61,7 +61,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-011](#dd-011-silver-output-inside-dbt-tree) | Silver Output Inside dbt Tree | Accepted | 2026-04-28 |
 | [DD-012](#dd-012-non-fatal-github-operations) | Non-Fatal GitHub Operations | Accepted | 2026-04-30 |
 | [DD-013](#dd-013-pre-release-publishing-via-git-tags--channel-system) | Pre-Release Publishing via Git Tags + Channel System | Accepted | 2026-05-01 |
-| [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly) | Eliminate Staging — Silver Reads Bronze Directly | Accepted | 2026-05-14 |
+| [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly) | Eliminate Staging — Silver Reads Bronze Directly | ~~Superseded by DD-106~~ | 2026-05-14 |
 | [DD-015](#dd-015-vocabulary-ttl-as-bronze-contract) | Vocabulary TTL as Bronze Contract | Accepted | 2026-05-14 |
 | [DD-016](#dd-016-stale-managed-skill-cleanup-during-update) | Stale Managed Skill Cleanup During Update | Accepted | 2026-05-14 |
 | [DD-017](#dd-017-dataplatform-integration--two-deliverable-packages--copilot-agent) | Dataplatform Integration — Two Deliverable Packages + Copilot Agent | Accepted | 2026-04-30 |
@@ -72,7 +72,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-022](#dd-022-simplified-fk-annotations-for-silver-projection) | Simplified FK Annotations for Silver Projection | Proposed | 2026-05-01 |
 | [DD-023](#dd-023-shared-extension-defaults-for-reference-models) | Shared Extension Defaults for Reference Models | Proposed | 2026-05-19 |
 | [DD-024](#dd-024-hash-tolerant-catalog-resolution) | Hash-Tolerant Catalog Resolution | Accepted | 2026-05-26 |
-| [DD-025](#dd-025-scd-type-aware-dbt-silver-models) | SCD Type-Aware dbt Silver Models | Proposed | 2026-05-26 |
+| [DD-025](#dd-025-scd-type-aware-dbt-silver-models) | SCD Type-Aware dbt Silver Models | ~~Superseded by DD-109~~ | 2026-05-26 |
 | [DD-026](#dd-026-silver-layer-accuracy--mapped-only-columns-fk-parity-and-scd2-history-preservation) | Silver Layer Accuracy — Mapped-Only Columns, FK Parity, and SCD2 History Preservation | Accepted | 2026-05-27 |
 | [DD-027](#dd-027-cross-domain-peer-extension-loading-for-fk-resolution) | Cross-Domain Peer Extension Loading for FK Resolution | Accepted | 2026-05-27 |
 | [DD-028](#dd-028-multi-table-same-source-union-model-disambiguation) | Multi-Table Same-Source Union Model Disambiguation | Accepted | 2026-05-27 |
@@ -86,7 +86,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-036](#dd-036-drop-git-submodules-for-reference-models) | Drop Git Submodules for Reference Models | Accepted | 2026-05-31 |
 | [DD-037](#dd-037-uv-as-standard-environment-manager-for-hub-repos) | uv as Standard Environment Manager for Hub Repos | Accepted | 2026-05-31 |
 | [DD-038](#dd-038-bronze-source-introspection--layered-dbt-architecture) | Bronze Source Introspection & Layered dbt Architecture | Proposed | 2026-06-01 |
-| [DD-039](#dd-039-enhanced-schema-extraction-with-json-flattening--bronze-expanded-layer) | Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer | Accepted | 2026-06-02 |
+| [DD-039](#dd-039-enhanced-schema-extraction-with-json-flattening--bronze-expanded-layer) | Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer | ~~Superseded by DD-106~~ | 2026-06-02 |
 | [DD-040](#dd-040-skill-lifecycle-architecture--design--execute-separation) | Skill Lifecycle Architecture — Design / Execute Separation | Accepted | 2026-05-30 |
 | [DD-041](#dd-041-llm-powered-source-affinity-analysis--coverage-reporting) | LLM-powered Source Affinity Analysis & Coverage Reporting | Accepted | 2026-06-04 |
 | [DD-042](#dd-042-table-centric-source-classification-with-module-class-grounding) | Table-centric source classification with module-class grounding | Accepted | 2026-06-05 |
@@ -149,10 +149,20 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-099](#dd-099-single-typed-projection-target-registry) | Single typed projection target registry | Accepted | 2026-07-21 |
 | [DD-100](#dd-100-explicit-one-shot-migration-for-retired-inventory--projection-layouts) | Explicit one-shot migration for retired inventory & projection layouts | Accepted | 2026-07-21 |
 | [DD-101](#dd-101-consolidated-deterministic-lifecycle-gate-check-release) | Consolidated deterministic lifecycle gate (`check-release`) | Accepted | 2026-07-21 |
-| [DD-102](#dd-102-dbt-projector-decomposed-into-five-deterministic-phases) | dbt projector decomposed into five deterministic phases | Accepted | 2026-07-21 |
+| [DD-102](#dd-102-dbt-projector-decomposed-into-five-deterministic-phases) | dbt projector decomposed into five deterministic phases | ~~Superseded by DD-110~~ | 2026-07-21 |
 | [DD-103](#dd-103-canonical-ontology-closure-and-versioned-semantic-index) | Canonical ontology closure and versioned semantic index | Accepted | 2026-07-21 |
 | [DD-104](#dd-104-reference-module-activation-managed-imports-and-portable-silver-contracts) | Reference-module activation, managed imports, and portable Silver contracts | Accepted | 2026-07-22 |
 | [DD-105](#dd-105-imported-dbt-evidence-is-governed-before-mapping-and-silver) | Imported dbt evidence is governed before Mapping and Silver | Accepted | 2026-07-22 |
+| [DD-106](#dd-106-immutable-bronze-and-mandatory-logical-source-preparation) | Immutable Bronze and Mandatory Logical Source Preparation | Accepted | 2026-07-25 |
+| [DD-107](#dd-107-safe-mapping-expressions-and-transformation-authority) | Safe Mapping Expressions and Transformation Authority | Accepted | 2026-07-25 |
+| [DD-108](#dd-108-identity-lineage-multi-source-conformance-and-mdm-boundary) | Identity, Lineage, Multi-Source Conformance, and MDM Boundary | Accepted | 2026-07-25 |
+| [DD-109](#dd-109-temporal-execution-canonical-hashing-and-fk-resolution) | Temporal Execution, Canonical Hashing, and FK Resolution | Accepted | 2026-07-25 |
+| [DD-110](#dd-110-typed-projection-contract-and-silver-output-parity) | Typed Projection Contract and Silver Output Parity | Accepted | 2026-07-25 |
+| [DD-111](#dd-111-adapter-capabilities-and-physical-policy) | Adapter Capabilities and Physical Policy | Accepted | 2026-07-25 |
+| [DD-112](#dd-112-gold-product-profiles-and-explicit-dimensional-design) | Gold Product Profiles and Explicit Dimensional Design | Accepted | 2026-07-25 |
+| [DD-113](#dd-113-governed-semantic-model-lifecycle) | Governed Semantic-Model Lifecycle | Accepted | 2026-07-25 |
+| [DD-114](#dd-114-policy-capability-deviation-and-versioned-release-evidence) | Policy, Capability, Deviation, and Versioned Release Evidence | Accepted | 2026-07-25 |
+| [DD-115](#dd-115-data-quality-policy-and-runtime-result-contract) | Data-Quality Policy and Runtime-Result Contract | Accepted | 2026-07-25 |
 
 ---
 
@@ -572,7 +582,7 @@ Use **git tag-based pre-releases** with a **channel system**:
 
 ## DD-014: Eliminate Staging — Silver Reads Bronze Directly
 
-**Status:** Accepted  
+**Status:** ~~Superseded by [DD-106](#dd-106-immutable-bronze-and-mandatory-logical-source-preparation)~~
 **Date:** 2026-05-14  
 **Affects:** `medallion_dbt_projector.py`, dbt templates, generated project structure  
 **Implementation:** `_gen_silver_models()` uses `{{ source() }}`, `_gen_staging_models()` removed from pipeline  
@@ -1287,7 +1297,7 @@ The normalization approach was chosen because:
 
 ## DD-025: SCD Type-Aware dbt Silver Models
 
-**Status:** Proposed  
+**Status:** ~~Superseded by [DD-109](#dd-109-temporal-execution-canonical-hashing-and-fk-resolution)~~
 **Date:** 2026-05-26  
 **Affects:** `medallion_dbt_projector.py`, `silver_model.sql.jinja2`, silver dbt output  
 **Implementation:** `src/kairos_ontology/projections/medallion_dbt_projector.py`, `src/kairos_ontology/templates/dbt/silver_model.sql.jinja2`
@@ -2133,7 +2143,7 @@ database/schema info, coupling the hub to a specific environment.
 
 ## DD-039: Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer
 
-**Status:** Accepted  
+**Status:** ~~Superseded by [DD-106](#dd-106-immutable-bronze-and-mandatory-logical-source-preparation)~~
 **Date:** 2026-06-02  
 **Affects:** `extract-schema` CLI command, `import_source.py`, `kairos-develop-dataplatform` skill, dataplatform staging models, dbt projector  
 **Implementation:** `src/kairos_ontology/extract_schema.py`, `src/kairos_ontology/generate_staging.py`, `scaffold/dataplatform/`, `medallion_dbt_projector.py`
@@ -6410,7 +6420,7 @@ cannot introduce a new way to block that a standalone `check-claims`/`project
 
 ## DD-102: dbt projector decomposed into five deterministic phases
 
-**Status:** Accepted
+**Status:** ~~Superseded by [DD-110](#dd-110-typed-projection-contract-and-silver-output-parity)~~
 **Date:** 2026-07-21
 **Affects:** `src/kairos_ontology/core/projections/medallion_dbt_projector.py`,
 `src/kairos_ontology/core/projections/dbt/` (new subpackage)
@@ -6620,16 +6630,18 @@ inherited, and projected term states in URI order. They contain references and p
 not copied ontology definitions.
 
 Accelerator defaults define semantic contracts, not source-specific SQL. Every bound Silver
-model must have a complete natural key on every source branch. SCD2 validity uses timestamp
-precision and sequences multiple source versions into contiguous validity windows; parent FK
-resolution declares `current` or `as-of` semantics, and relationship changes participate in
-child change detection unless explicitly disabled.
+model must supply the identity inputs required by its DD-108 strategy on every source branch;
+natural keys are never invented. SCD2 validity uses timestamp precision and sequences multiple
+source versions into contiguous validity windows; parent FK resolution declares `current` or
+`as-of` semantics, and relationship changes participate in child change detection unless
+explicitly disabled.
 Current joins filter the parent to its current version; as-of joins require an explicitly
 mapped parent effective-time column.
 
-Every normal final Silver row carries `_source_system`, `_source_record_id`, and
-`_loaded_at`. Source record identity uses the declared Bronze primary key and falls back to
-the generated surrogate key only when the source vocabulary declares no primary key.
+Every normal final Silver row carries `_source_system`, `_source_record_key`, and
+`_loaded_at`. Source-record identity uses source/table scope plus the declared Bronze primary
+key; a missing source primary key is blocking and never falls back to a business or generated
+Silver key.
 Generated contracts expose grain, lineage, SCD, relationship, accelerator/default-package,
 toolkit-version, and hub-override provenance. Fabric and Databricks may render different SQL
 and physical types, but must expose the same semantic columns, keys, relationships, and
@@ -6756,6 +6768,616 @@ inventory internals.
   adapter.
 - Required non-key contract columns now project as non-null in managed virtual vocabularies.
 - Ambiguous accelerator installations require explicit CLI or hub configuration.
+
+---
+
+## DD-106: Immutable Bronze and Mandatory Logical Source Preparation
+
+**Status:** Accepted
+**Date:** 2026-07-25
+**Affects:** source onboarding, dbt projection, source vocabularies, JSON expansion,
+scaffold layout, source/Silver skills
+**Implementation:** `scaffold/kairos-prep.ttl`,
+`integration/preparation/{source}-prep.ttl`, and the typed
+`core/projections/dbt/{policy_normalize,shape,materialize,prep_renderers}.py` pipeline.
+Normative companion: [`dd-106-medallion-engineering-policy-v1.md`](dd-106-medallion-engineering-policy-v1.md)
+
+### Context
+
+DD-014 removed generated staging and made Silver read Bronze directly. In practice this
+mixed physical source cleanup with semantic conformance and made repeated renames, casts,
+sentinel handling, reserved identifiers, CDC normalization, and JSON extraction part of
+Silver or mappings. DD-039 then added a special `bronze_expanded` exception rather than
+a coherent preparation boundary.
+
+### Decision
+
+Supersede DD-014 and DD-039. Bronze remains immutable raw source evidence. Every mapped
+source table has a source-owned prep contract under `integration/preparation/` and
+declares exactly one mode:
+
+- `passthrough` — no physical prep model, allowed only after fail-closed validation finds
+  no normalization rule or known risk; or
+- `normalize` — emit a physical `stg_{source}__{table}` model.
+
+Prep may normalize physical names and types, trim values, handle evidenced sentinels,
+normalize source CDC fields, create a source-scoped `_source_record_key`, and extract
+JSON. It must not join sources, aggregate, assign business meaning, perform survivorship,
+or assert cross-source entity equivalence. Parent prep preserves parent grain. Scalar
+JSON may flatten into that row; arrays become separately keyed child relations with
+declared grain. Raw payload or a replayable raw reference is retained.
+
+The domain ontology remains JSON-agnostic. Source and prep contracts retain JSON
+provenance because parsing and schema-drift behavior are physical source concerns.
+
+### Rationale
+
+A mandatory logical boundary gives every source the same review point without paying for
+empty physical models. Explicit pass-through prevents absence of configuration from
+being mistaken for safety. Technical consistency remains separate from reusable Silver
+business semantics.
+
+### Consequences
+
+- Add a new prep vocabulary, shapes, scaffold folder, status evidence, and projection
+  specs.
+- Remove the standalone JSON-only `generate-staging` path, `bronze_expanded`, and
+  ordinary-prep use of manual `silverSourceRef`.
+- DD-006 remains valid for column-level JSON detection; processing moves to prep.
+- DD-015 remains the raw Bronze authority; prep TTL becomes the technical-normalization
+  authority.
+- DD-018, DD-026, DD-038, DD-074, DD-092, DD-093, DD-104, and DD-105 are amended by this
+  boundary as summarized in the companion policy.
+- Existing hubs are not migrated; only fresh scaffold layout is supported.
+
+---
+
+## DD-107: Safe Mapping Expressions and Transformation Authority
+
+**Status:** Accepted
+**Date:** 2026-07-25
+**Affects:** `kairos-map`, mapping validation/rendering, contracted dbt transformations,
+transformation readiness and skills
+**Implementation:** `dbt/mapping_{specs,bind,normalize,renderers}.py` provides the
+immutable v2 AST, graph-only binding, fail-closed semantic validation, approved macro
+registry, Fabric/Databricks rendering, prep symbol binding, capability/release evidence,
+and approved-contract transformation routing. `kairos-map` v2 and its SHACL shapes remove
+the former raw-SQL terms; source-technical dedupe moved to `kairos-prep:TechnicalDedupe`.
+
+### Context
+
+Normal mappings currently accept free-form SQL transforms and filters. This can hide
+adapter-specific behavior, unsafe quoting, nondeterminism, joins, subqueries, row loss,
+or grain changes inside a surface intended for column alignment.
+
+### Decision
+
+Normal mapping expressions are typed, deterministic, column-bounded expressions or
+approved namespaced macros. Validators resolve every identifier, literal, output type,
+null behavior, and adapter capability. Literal values are rendered safely.
+
+Mappings must reject arbitrary SQL, comments or statement separators, subqueries, joins,
+windows, aggregation, nondeterministic functions, and undeclared row/grain changes.
+Technical cleanup belongs in prep. Relational, grain-forming, complex fallback,
+deduplication, and contribution-building logic belongs in DD-092 contracted dbt.
+
+Contracted transformation authoring is iterative: profile evidence, define and approve
+grain/identity/output contract, implement against representative fixtures or a working
+flow, execute tests, then synchronize and map the proven virtual source. The approved
+contract remains acceptance authority; working SQL alone does not establish semantics.
+
+### Rationale
+
+A constrained expression surface is portable and statically reviewable. dbt remains the
+right execution language for relational logic without turning RDF annotations into a
+second workflow engine.
+
+### Consequences
+
+- Replace free-form mapping SQL with a typed grammar; no compatibility parser is added.
+- Amend DD-092, DD-093, and DD-105 to require the iterative evidence/execution order.
+- Mapping/Silver readiness blocks unsafe expressions and unresolved transformation
+  candidates.
+
+---
+
+## DD-108: Identity, Lineage, Multi-Source Conformance, and MDM Boundary
+
+**Status:** Accepted
+**Date:** 2026-07-25
+**Affects:** Silver extensions, mappings, dbt contracts, multi-source models, lineage,
+MDM boundary and reports
+**Implementation:** `EntityIdentitySpec`, `LineageSpec`, and `MultiSourcePolicySpec`
+are normalized fail-closed from authored policy. Silver SQL/schema authority, release
+metadata, Gold inputs, optional contribution-lineage and reconciliation relations use the
+same immutable specs. Integration identity is emitted only for reviewed exact equivalence;
+externally mastered identifiers produce routing metadata only.
+
+### Context
+
+“Warehouse identity” conflated business identity, source identity, physical join keys,
+and ontology IRIs. Mandatory natural keys can force false identity, while current
+multi-source `UNION ALL` can collapse overlapping identifiers without governed
+equivalence. Composite rows retain only driving-row lineage.
+
+### Decision
+
+Every materialized entity declares grain, identity strategy, key scope, and
+change-detection strategy. Supported identity strategies are:
+
+- business key;
+- source-scoped immutable key;
+- deterministic integration key;
+- externally mastered identifier; or
+- surrogate-only identity with an explicit reconciliation limitation.
+
+Prep emits `_source_record_key` from source/table scope and declared source PK; it never
+asserts business equivalence. Silver may emit a physical surrogate/integration key only
+from approved exact-equivalence rules. Surrogate keys are join keys, not business
+identity or an incremental prerequisite.
+
+Ontology document/term IRIs, optional entity-instance IRIs, source-record identity, and
+physical SKs are separate fields. Source identity must never silently fall back to a
+business SK. `_loaded_at`, `_ingested_at`, `_source_updated_at`, and
+`_source_effective_at` remain distinct timestamps.
+
+Multi-source entities declare disjoint/overlapping branches, normalization, exact
+equivalence, source precedence, conflicts, deletion, late arrival, and reconciliation.
+Contracted transformations expose every contributing source-record fact; the normalized
+Silver contract owns the canonical contribution-lineage relation and the generated
+Silver wrapper emits it. Probabilistic/fuzzy matching, persistent enterprise IDs,
+merge/split, and survivorship remain exclusively in the MDM runtime and existing
+`kairos-mdm` policy.
+
+### Rationale
+
+Identity roles have different scopes and lifecycles. Making them explicit prevents a
+union, similar display identifier, or schema-level `skos:exactMatch` from becoming
+unreviewed row-level equivalence.
+
+### Consequences
+
+- The identity-strategy deferral in DD-034 is superseded.
+- DD-018, DD-026, DD-074, DD-092, DD-093, and DD-104 are amended.
+- Multi-source schema alignment is no longer described as semantic conformance by
+  itself.
+- Every composite transformation exposes complete contribution lineage.
+
+---
+
+## DD-109: Temporal Execution, Canonical Hashing, and FK Resolution
+
+**Status:** Accepted
+**Date:** 2026-07-25
+**Affects:** incremental dbt models, SCD, CDC, row hashes, temporal FKs, runtime
+determinism and generated tests
+**Implementation:** complete for the shared typed/dbt runtime authority: fail-closed
+`HistorySpec`/incremental/CDC policy, canonical hash codec v1 and golden vectors,
+`TemporalRelationshipSpec`, Fabric/Databricks physical plans, dedicated SCD1/SCD2
+renderers, generated dbt tests/quarantine artifacts, and release evidence. Shared
+Silver DDL parity remains DD-110 follow-on debt.
+
+### Context
+
+DD-025 defined SCD1/SCD2 but not late events, corrections, deletes, replay, backfill,
+same-time ordering, or valid time versus load time. Current row hashing conflates values
+under adapter-specific casts, and temporal FK joins do not define zero/multiple-match
+behavior.
+
+### Decision
+
+Supersede DD-025. Each incremental entity declares CDC operation, source update/effective
+time, ingestion time, total-order tie-breaker, lookback, delete, late-arrival,
+correction, replay, backfill, and schema-change behavior. SCD2 explicitly declares
+`business-valid` or `load-history`; generated run time must not be presented as business
+validity. `_loaded_at` comes from one injected run clock.
+
+Hash input uses a versioned, ordered, typed, length-delimited canonical encoding with an
+explicit null representation and SHA-256. Changes to the hash contract require a
+backfill/migration decision for generated data even though old hub configuration is not
+supported.
+
+Windows and deduplication require a complete total order. Temporal relationships declare
+interval boundaries, time-zone normalization, expected lookup cardinality, and
+missing/ambiguous/late-parent behavior: fail, quarantine, retry, or explicit unknown
+member. Multiple matches are never resolved by silently choosing one.
+
+### Rationale
+
+Incremental correctness depends on time and ordering semantics, not merely a unique key
+and row hash. Canonical serialization and explicit FK failures are required for
+cross-adapter reproducibility.
+
+### Consequences
+
+- Amend DD-019 and the Silver runtime provisions of DD-104.
+- Generate tests for replay idempotency, insert/update/no-op/delete/reinsert, late
+  correction, natural-key change, interval integrity, one current row, and temporal FK
+  ambiguity.
+- Artifact determinism and runtime determinism are reported separately.
+
+### Implemented contract
+
+- `canonical_hash.py` defines the reference bytes:
+  `KAIROS-CANONICAL-HASH|v1|` followed by ordered
+  `{type}:N:0:;` or `{type}:V:{utf8-byte-length}:{utf8-hex};` fields, prevalidated
+  NFC text,
+  exact fixed-scale decimals, UTC microsecond timestamps, canonical supported JSON,
+  binary hex, and lowercase SHA-256. Binary-float and adapter-ambiguous SQL JSON
+  inputs are rejected.
+- `SilverRuntimeAuthoritySpec` is normalized once and carried into
+  `RuntimeModelSpec` and `RuntimePhysicalPlan`. Bind retains relationship/model
+  structure only; render consumes typed plans and creates content only.
+- SCD1 uses total-order current-state merge. SCD2 recomputes affected history with
+  replay deduplication, correction ranking, explicit tombstones, separate
+  `_business_valid_from/to` and `_system_from/to`, half-open intervals, and one
+  deterministic `is_current` row. `_loaded_at` is only the injected run clock.
+- A captured normalized CDC `operation='delete'` is a hard-delete event.
+  `hardDeletePolicy='tombstone'` retains an explicit deleted row and `ignore` drops
+  that event. Physical deletion, including absence inference from snapshots, is not
+  expressible by the current source contract and fails closed rather than being
+  reported as applied. A source soft-delete flag is distinct: preparation must map it
+  to `operation='soft-delete'`; `softDeletePolicy='apply-operation'` materializes a
+  logical tombstone, while `ignore` drops it. Unsupported block/quarantine actions fail
+  before rendering.
+- SCD2 `append-correction` is rejected with
+  `history.scd2-append-correction-unsupported` until a renderer can preserve separate,
+  non-overlapping half-open valid/system intervals. It never falls through to
+  replace-by-total-order behavior.
+- Fabric canonical hashing uses UTF-8 `VARCHAR(MAX)`/`VARBINARY(MAX)` throughout,
+  including the `HASHBYTES` input, so values beyond 4 KB and 8 KB are not truncated.
+  Databricks packages pin the SQL session to UTC with `SET TIME ZONE 'UTC'`; timestamp
+  lexical formatting therefore does not depend on the caller's session time zone.
+  Frozen >8 KB text/binary vectors and macro-versus-Python renderer parity tests guard
+  both adapter implementations.
+- Byte-identical replay is collapsed. Contradictory values or operations at the exact
+  same complete event order fail closed in the Python reference and SCD2 SQL runtime
+  (adapter-native error guard); generated runtime tests also require the authored total
+  order to remain unique. Sources must add a deterministic sequence tie-breaker rather
+  than relying on arrival order.
+- Bounded lookback is mandatory. Range replay and full rebuild require their
+  respective authored approvals; unauthorized dbt variables fail at compile time.
+- Temporal joins count matches rather than choosing one. `current`, business-valid
+  `as-of`, and `none` modes generate explicit cardinality tests and fail,
+  quarantine/retry, or unknown-member behavior. As-of is UTC, microsecond,
+  closed-open and never receives a blanket current-row predicate.
+- Release data exposes effective ordering/time/hash/delete/replay/backfill/
+  correction/schema and temporal-FK actions with DD-109 rule IDs, adapter
+  dispositions, and authored/registry evidence.
+
+---
+
+## DD-110: Typed Projection Contract and Silver Output Parity
+
+**Status:** Accepted
+**Date:** 2026-07-25
+**Affects:** dbt phase architecture, Silver dbt/DDL/ERD/schema/report output, Gold
+registry and projection tests
+**Implementation:** Gates 3a and 3b introduced typed logical builders and graph-free,
+deeply immutable phase records in `core/projections/dbt/`. Gate 3c added the complete
+DD-106–DD-115 authoring facts and effective policy specifications in
+`dbt/policy_specs.py`, bind-only RDF/file extraction in `dbt/policy_bind.py`, and
+fail-closed, provenance-bearing classification in `dbt/policy_normalize.py`. The same
+authoritative `MedallionPolicySpec` now flows through `ProjectionContract`,
+`NormalizedProjectFacts`, `ShapedProject`, materialization, adapter negotiation, and the
+release plan; each shaped Silver model carries its shared column/identity/audit/history/
+FK/DQ/capability authority. The `silver-parity` gate extends that authority with exact
+ordered canonical columns, key/grain/FK contracts, adapter-mapped physical columns,
+unenforced constraint/index metadata, DQ/quarantine links, and deterministic provenance.
+The dbt renderer now emits SQL, schema YAML, Fabric/Databricks DDL, constraint metadata,
+ERD, and a field-level parity manifest from the same `SilverModelSpec`. The explicit
+`silver` target invokes the identical bind/normalize/shape/materialize/render pipeline
+and fails closed when source, preparation, mapping, or policy evidence is absent.
+`medallion_silver_projector` is a graph-free render facade only.
+
+**Remaining implementation debt:** external adapter compile evidence and the
+DD-112/DD-113 Gold renderer redesign remain later gates. Gold must consume the generated
+Silver registry and parity evidence; it must not establish a second Silver authority.
+
+### Context
+
+DD-102 created named phases but deliberately retained mutable graphs and interleaved
+shape/materialize/render behavior inside a large monolith for byte compatibility. That
+compromise cannot support prep, shared Silver dbt/DDL semantics, or strict capability
+evidence.
+
+### Decision
+
+Supersede DD-102 while retaining the ordered phase names:
+
+`bind → normalize → shape → materialize → render`
+
+Every handoff is a deeply immutable typed value. RDF and authoring inputs are read only
+inside bind. Normalize is the sole policy-classification phase and emits effective
+policy with provenance. Shape creates logical specs and no artifact bytes. Materialize
+selects physical plans through adapter capabilities. Render accepts physical plans only
+and cannot read RDF, reclassify policy, or choose deviations.
+
+`SilverModelSpec` is the sole logical contract for dbt SQL, schema YAML, DDL, ERD, Gold
+registry, quality tests, and reports. Differences between outputs are permitted only
+when an explicit adapter capability requires them and the deviation is reported.
+DDL-only operational promises are removed. Reference inlining becomes an explicit Gold
+product optimization rather than Silver behavior.
+
+### Rationale
+
+One typed contract prevents each projector from independently inventing columns, keys,
+history, or constraints. Removing byte-compatibility debt is appropriate for fresh hubs.
+
+### Consequences
+
+- Extract builders before adding feature renderers; this is the redesign's hard
+  implementation gate.
+- Remove rendered content, mutable containers, graphs, and Jinja objects from phase
+  results.
+- Amend DD-011, DD-026, DD-029, and DD-104.
+- Existing private helper imports and byte-golden compatibility are intentionally
+  unsupported.
+
+---
+
+## DD-111: Adapter Capabilities and Physical Policy
+
+**Status:** Accepted
+**Date:** 2026-07-25
+**Affects:** Fabric/Databricks rendering, types, hashes, JSON, merge, constraints,
+partitioning/clustering, adapter validation and release gates
+**Implementation:** `core/projections/dbt/capabilities.py` provides the versioned v1
+Fabric and Databricks registry for canonical types, canonical SHA-256 hashing, scalar and
+array JSON, merge/upsert/delete, constraints, deployment-owned physical layout,
+quarantine/tests, security, and TMDL. Materialization negotiates exact typed requirements
+to `supported`, approved `deviation`, or `blocking` results carrying the normative rule
+and evidence; unknown adapters and the former Spark alias fail closed. Authored capability
+and compile-evidence statements are normalized separately from registry capability.
+Successful adapter compile runs and versioned compile-evidence reporting remain a later
+implementation gate, so registry support alone is not strict-release compile proof.
+
+### Context
+
+A shared semantic contract does not make Fabric and Databricks behavior equivalent.
+Types, collation, timestamps, JSON, merge, constraints, and physical layout differ.
+Conditional code and a default platform can silently degrade unsupported behavior.
+
+### Decision
+
+Every adapter has a versioned capability record. Unknown adapters and unsupported
+feature combinations fail with structured diagnostics; no “non-Fabric means
+Databricks” fallback is allowed. Semantic types are mapped explicitly with disclosed
+lossiness.
+
+`partitionBy`, `clusterBy`, indexes, and storage layout are target deployment-profile
+policy based on measured workload, not ontology truth. “Supported/applied” requires
+successful compile evidence for every required adapter. `environment_blocked` is not a
+strict-pass result.
+
+### Rationale
+
+Capability negotiation makes portability testable without forcing identical physical
+SQL or silently lowering guarantees.
+
+### Consequences
+
+- Add Fabric and Databricks golden/compile scenarios for semantic parity.
+- Remove unsupported Silver physical annotations from the semantic extension surface.
+- Amend DD-002, DD-009, and DD-104 without changing Fabric as the default user choice.
+
+---
+
+## DD-112: Gold Product Profiles and Explicit Dimensional Design
+
+**Status:** Accepted
+**Date:** 2026-07-25
+**Affects:** Gold/dbt/Power BI projection, target registry, Gold extensions, skills and
+scenario models
+**Implementation:** `dbt/gold_specs.py`, `gold_shape.py`, `gold_materialize.py`, and
+`gold_render.py`; authoritative registry with only `dimensional-powerbi-v1`
+
+### Context
+
+Gold is currently defined as a star-schema/Power BI layer and classifies a class with two
+outgoing FKs as a fact. Gold should represent consumption-oriented data products, while
+dimensional analytics is one explicit product profile.
+
+### Decision
+
+Every Gold product declares a named, versioned profile. The first and only profile in
+this redesign is `dimensional-powerbi-v1`; future profiles require separate decisions
+and implementations.
+
+Within the dimensional profile, every materialized class explicitly declares `fact`,
+`dimension`, or `bridge`. FK counts never control materialization. Zero-dimension facts
+are valid. Facts declare grain and type: transaction, periodic snapshot, or accumulating
+snapshot. They also declare correction, late-arrival, dimension-version binding, and
+incremental policy. Dimensions state current-only, history-only, or dual exposure.
+
+DD-001 inheritance applies only inside this dimensional profile. The actual generated
+Silver registry is mandatory profile input; Gold cannot select unavailable columns.
+
+### Rationale
+
+Explicit profiles preserve dimensional guarantees while allowing other data-product
+types later without redefining Gold.
+
+### Consequences
+
+- Remove automatic fact inference and implicit default dimensions.
+- Amend DD-001 and DD-029.
+- Generic Gold orchestration is separated from Power BI profile rendering.
+- Wide tables, feature sets, API/search products, regulatory extracts, and visuals are
+  out of scope.
+
+---
+
+## DD-113: Governed Semantic-Model Lifecycle
+
+**Status:** Accepted
+**Date:** 2026-07-25
+**Affects:** DAX/TMDL, measures, calendar/time intelligence, incremental policy,
+RLS/OLS, perspectives and DirectLake readiness
+**Implementation:** typed measure/calendar/security contracts, dependency and cycle
+validation, fail-closed TMDL/security generation, and strict compile/readiness evidence
+
+### Context
+
+Current measure annotations remove their source columns, generic calendars and time
+intelligence are generated without approved business assumptions, and security roles are
+scaffolds without entitlement or deployment governance.
+
+### Decision
+
+Measures are first-class semantic resources with stable identity, business definition,
+dependencies, lifecycle state (`intent`, `provisional`, `validated`, `approved`), format,
+owner role, and tests. Measures never remove required physical input columns. Every DAX
+dependency resolves against emitted columns/measures; missing references and cycles
+block release.
+
+Production time intelligence requires an approved calendar profile covering date range,
+fiscal/week pattern, locale, holidays, time zone, period closure, and role-playing dates.
+Generic unapproved calendar defaults are non-production.
+
+RLS/OLS output requires a complete projection-time fail-closed security contract:
+entitlement source, identity mapping, role policy, filter direction, bindings, and
+positive/negative test definitions. Perspectives are discoverability metadata only and
+never security. Successful deployment and runtime enforcement remain downstream facts.
+Generated TMDL must parse/compile and DirectLake bindings/types must validate.
+
+### Rationale
+
+Semantic-model artifacts are executable contracts. Compilable DAX or a role block is not
+evidence that business semantics or access governance are correct.
+
+### Consequences
+
+- Remove property-replaces-column measure behavior, automatic calendar generation, and
+  the unpopulated `is_authorized` role assumption.
+- Replace GDPR-specific security framing with general data classification/security
+  policy.
+- Keep entitlement provisioning and runtime identity administration out of the toolkit.
+
+---
+
+## DD-114: Policy, Capability, Deviation, and Versioned Release Evidence
+
+**Status:** Accepted
+**Date:** 2026-07-25
+**Affects:** design authority, status, validation/projection/release reports, lifecycle
+gate, scaffold workflows and downstream contracts
+**Implementation:** `core/release_evaluator.py`, versioned
+`model/governance/release-baseline.yaml`, deterministic release manifest/report,
+and `project --strict`
+
+### Context
+
+The draft rules treated accepted DDs and current implementation as jointly
+authoritative. Current status/release logic often treats file presence, warnings, or
+environment-blocked validation as sufficient evidence and lacks an explicit approved
+release baseline.
+
+### Decision
+
+Authority order is:
+
+1. accepted DDs and versioned policy profiles;
+2. governed ontologies, claims, mappings, extensions, and contracts;
+3. approved scope-limited deviation records;
+4. implementation capability evidence; and
+5. generated artifacts.
+
+Implementation never overrides policy. Unsupported or partial behavior is an explicit
+capability gap/deviation, never silent degradation. Deviations record policy reference,
+scope, rationale, abstract owner role, approval, review/expiry, and evidence.
+
+Fresh hubs contain a versioned `model/governance/release-baseline.yaml`. Baseline changes
+require explicit approval and deterministic diff. Strict release blocks missing/stale/
+unknown evidence, unexpected skips or unbinding, design stubs, required-entity changes,
+contract or adapter regressions, unsupported capabilities, and warnings/errors that the
+active release profile classifies as blocking. Intentional exclusion is explicit policy,
+not absence.
+
+Status and reports are schema-versioned and fingerprint their evaluated inputs.
+Ownership/stewardship uses abstract roles, not personal identities. Classification and
+freshness SLA are required release expectations, not claims of runtime health.
+
+### Existing decision revision map
+
+This table is the normative amendment record for accepted historical DDs. Their original
+sections remain unchanged as historical context; readers must apply this map together
+with DD-106–DD-115.
+
+| Existing DD | Effect of DD-106–DD-115 |
+|---|---|
+| DD-001 | Dimensional inheritance is scoped by DD-112. |
+| DD-002 / DD-009 | Platform generation is governed by DD-111 capabilities. |
+| DD-006 / DD-015 / DD-038 | Raw source authority is retained; prep authority is added by DD-106. |
+| DD-011 | Output remains inside the dbt tree, but logical Silver content is governed by the shared DD-110 specification. |
+| DD-018 / DD-026 / DD-074 | Entity/multi-source structure remains; conformance, identity, and prep responsibilities change under DD-106/DD-108. |
+| DD-019 | FK key resolution remains; temporal failure/restatement policy comes from DD-109. |
+| DD-029 | Gold registry becomes a typed profile input under DD-110/DD-112. |
+| DD-034 | Extension authority remains; identity-strategy deferral is superseded by DD-108. |
+| DD-080 | Status becomes schema v3 and includes prep/evidence readiness. |
+| DD-092 / DD-093 / DD-105 | Contract authority remains; expression and iterative readiness rules are amended by DD-107. |
+| DD-096 | Entity outcomes are explicit; design stubs always block release. |
+| DD-101 | Strict release composes versioned baseline/capability/DQ evidence and treats unknown as blocking. |
+| DD-104 | Reference modules remain; identity, temporal, adapter, and lineage provisions are replaced by DD-108/DD-109/DD-111. |
+
+### Rationale
+
+Separating policy from capability allows implementation work to be honest without making
+temporary limitations normative. A reviewed baseline makes regressions detectable.
+
+### Consequences
+
+- Replace status/report schemas directly; no compatibility readers or migration path.
+- Source cannot be done while required prep/review/transformation evidence is pending.
+- Validate/project completion requires current versioned reports, not file presence.
+- Release workflow validates, projects, compiles required adapters, runs strict release,
+  then packages.
+
+---
+
+## DD-115: Data-Quality Policy and Runtime-Result Contract
+
+**Status:** Accepted
+**Date:** 2026-07-25
+**Affects:** SHACL/extensions, generated dbt tests, quarantine models, reports, adapter
+capabilities and release gates
+**Implementation:** typed DQ policy/runtime-result specs, closed declarative
+expressions, `kairos_dq_*` dbt macros, persistent result/test artifacts,
+row-level quarantine routing, and immutable downstream evidence import
+
+### Context
+
+Generated null, uniqueness, regex, and relationship tests cover contract shape but not
+operational fitness. A projection-time toolkit can generate checks and schemas but
+cannot claim live freshness, trend health, or alert delivery.
+
+### Decision
+
+Every DQ rule has stable ID/version, category (`contract`, `source`, `business`,
+`operational`), scope, severity, tolerance, action (`warn`, `quarantine`, `block`),
+abstract owner role, evidence, and executable test reference.
+
+The toolkit generates supported dbt tests, quarantine/reject models, and a portable
+runtime-result schema containing run/snapshot/adapter identity, rule ID/version/hash,
+status, measured value, threshold, affected/quarantined counts, reconciliation values,
+and evidence URI. Runtime observations are imported immutable evidence; the toolkit does
+not provide monitoring, alerts, or trend storage.
+
+Prefer toolkit-owned namespaced tests/macros. External packages require approved-package
+governance, compatible licensing, and adapter capability evidence. Unsupported checks
+block or become approved deviations; uncompilable tests are never emitted.
+
+### Rationale
+
+Static policy and portable results make quality governable without pretending that
+generated SQL has executed or that the toolkit operates a data platform.
+
+### Consequences
+
+- Add freshness, volume, duplicate-rate, range/distribution, reconciliation,
+  referential-coverage, and cross-field rule types where adapter capabilities permit.
+- Missing/stale runtime results block only profiles/rules that explicitly require them.
+- DD-089 offline sample audit remains evidence, not runtime telemetry.
 
 ---
 

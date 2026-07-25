@@ -285,8 +285,8 @@ kairos-ontology project --target prompt
 
 | Target           | What it generates                                    | Use case                        |
 |------------------|------------------------------------------------------|---------------------------------|
-| **silver**       | DDL, ALTER SQL, Mermaid ERD, SVG, master ERD         | Data warehouse (Snowflake/Databricks) |
-| **dbt**          | SQL models + YAML schema                             | dbt transformation layer        |
+| **silver**       | Evidence-bound SQL/YAML + adapter DDL, metadata, ERD, parity manifest | Silver physical review |
+| **dbt**          | Complete dbt project plus the same Silver physical/parity bundle | dbt transformation layer |
 | **neo4j**        | Cypher schema (constraints, relationship types)      | Graph database                  |
 | **azure-search** | JSON index definitions                               | Azure AI Search                 |
 | **a2ui**         | JSON Schema for message payloads                     | UI generation                   |
@@ -297,18 +297,16 @@ kairos-ontology project --target prompt
 
 ```
 ontology-hub/output/
-├── silver/
-│   ├── customer/
-│   │   ├── customer-ddl.sql          # CREATE TABLE statements
-│   │   ├── customer-alter.sql        # ALTER TABLE (FK constraints)
-│   │   ├── customer-erd.mmd          # Mermaid ERD source
-│   │   └── customer-erd.svg          # Rendered SVG diagram
-│   ├── master-erd.mmd                # Cross-domain ERD (all domains)
-│   └── master-erd.svg
-├── dbt/
-│   └── customer/models/silver/
-│       ├── customer.sql
-│       └── schema_customer.yml
+├── medallion/dbt/
+│   ├── models/silver/customer/       # authoritative dbt SQL + schema YAML
+│   ├── analyses/customer/
+│   │   └── customer-ddl.sql          # adapter physical DDL
+│   ├── metadata/
+│   │   ├── customer-silver-constraints.json
+│   │   └── customer-silver-parity.json
+│   └── docs/diagrams/
+│       ├── customer/customer-erd.mmd
+│       └── master-erd.mmd
 ├── neo4j/
 │   └── customer-schema.cypher
 ├── prompt/
@@ -321,17 +319,14 @@ ontology-hub/output/
 
 ## 8. Silver Layer Projection
 
-The silver target generates production-ready DDL for **MS Fabric Warehouse**
-(Delta Lake / medallion architecture). Ontology classes map to tables, properties
-map to columns, and relationships become FK references.
+The `silver` target is a thin facade over the same DD-110 pipeline as `dbt`:
+`bind → normalize → shape → materialize → render`. It cannot generate an
+ontology-only plausible schema. Imported source vocabulary, preparation policy,
+validated mappings, identity/runtime policy, and bound model evidence are required.
 
-The projection uses a **three-layer rule architecture**:
-
-- **R1–R16**: Common annotation vocabulary (`kairos-ext:`) — shared across all
-  projection targets
-- **S1–S8**: Silver Fabric Warehouse behaviours — how the projector interprets
-  annotations for MS Fabric
-- **G1–G8**: Gold Power BI rules (placeholder — future projection target)
+One immutable `SilverModelSpec` drives dbt SQL, schema YAML, Fabric or Databricks DDL,
+constraint/index metadata, quality/quarantine links, and ERD. The field-level parity
+manifest hashes every representation; strict release blocks missing or drifted parity.
 
 ### Annotating Your Ontology for Silver
 
@@ -344,21 +339,18 @@ Create a `<domain>-silver-ext.ttl` file alongside your ontology:
 # Schema-level settings (on the owl:Ontology)
 <https://mycompany.com/ontology/customer>
     kairos-ext:silverSchema "silver_customer" ;
-    kairos-ext:surrogateKeyStrategy "uuid" ;
     kairos-ext:namingConvention "camel-to-snake" .
 
-# Per-class settings
+# Per-class policy also references governed identity and DD-109 runtime resources.
 ex:Customer
-    kairos-ext:scdType "2" ;
-    kairos-ext:partitionBy "_load_date" ;
-    kairos-ext:clusterBy "is_current" .
+    kairos-ext:scdType "2" .
 
 # Inheritance — S3 always flattens in silver; annotation preserved for Gold
 ex:Client
     kairos-ext:inheritanceStrategy "discriminator" ;
     kairos-ext:discriminatorColumn "client_type" .
 
-# Reference data (SCD Type 1, ref_ prefix; small refs auto-inlined by S4)
+# Reference data (SCD Type 1; inlining is a Gold decision, never Silver)
 ex:Country
     kairos-ext:isReferenceData "true"^^xsd:boolean ;
     kairos-ext:scdType "1" .
@@ -369,59 +361,60 @@ ex:CustomerPII
     kairos-ext:scdType "2" .
 ```
 
-### Common Annotation Rules (R1–R16)
+### Physical and runtime contract
 
-| Rule | What it does |
-|------|--------------|
-| R1   | Schema name from `kairos-ext:silverSchema` or `silver_{domain}` |
-| R2   | Surrogate key strategy: `uuid` (STRING) |
-| R3   | IRI lineage column (`{table}_iri`) on every root table |
-| R4   | Naming convention: `camel-to-snake` or `as-is` |
-| R5   | SCD Type 1 (overwrite) or Type 2 (history) |
-| R6   | Inheritance: `class-per-table` or `discriminator` strategy |
-| R7   | GDPR satellite tables with PK/FK back to parent |
-| R8   | Reference data tables with `ref_` prefix, SCD Type 1 |
-| R9   | Audit envelope columns (customizable) |
-| R10  | Partitioning and clustering hints |
-| R11  | NOT NULL from SHACL `sh:minCount 1` or `kairos-ext:nullable "false"` |
-| R12  | FK column name/type overrides |
-| R13  | Junction tables for many-to-many relationships |
-| R14  | Conditional FK (polymorphic, active for specific subtypes) |
-| R15  | Separation of concerns — annotations in separate `*-silver-ext.ttl` |
-| R16  | (Superseded by S3) Empty subtype suppression |
-
-### Silver Fabric Warehouse Rules (S1–S8)
-
-These rules control how the projector generates DDL for MS Fabric Warehouse:
-
-| Rule | What it does |
-|------|--------------|
-| S1   | **Spark SQL types** — BOOLEAN, TIMESTAMP, STRING, DOUBLE (not BIT, DATETIME2, NVARCHAR, FLOAT) |
-| S2   | **Constraints as comments** — PK/FK/UNIQUE emitted as `-- PK:`, `-- FK:` DDL comments |
-| S3   | **Full flattening** — ALL subtypes merge into parent table with discriminator column |
-| S4   | **Inline small refs** — Reference tables with ≤3 columns denormalized into parent |
-| S5   | **_row_hash** — SHA-256 hash column for efficient incremental MERGE |
-| S6   | **_deleted_at** — Soft-delete timestamp for source deletions |
-| S7   | **Canonical schema** — No cross-domain table duplication |
-| S8   | **No dim_/fact_** — Plain table names in silver; prefixes reserved for Gold |
-
-### Column Ordering
-
-| Position | Column(s) |
-|----------|-----------|
-| 1 | `{table}_sk` STRING — surrogate key (PK) |
-| 2 | `{table}_iri` STRING — OWL IRI lineage (root tables only) |
-| 3 | FK columns (STRING, with comment noting target) |
-| 4 | Discriminator column (if hierarchy) |
-| 5 | Business columns (from OWL data properties + merged subtypes) |
-| 6 | `valid_from` DATE, `valid_to` DATE, `is_current` BOOLEAN (SCD2 only) |
-| 7 | `_created_at` TIMESTAMP, `_updated_at` TIMESTAMP, `_source_system` STRING, `_load_date` DATE, `_batch_id` STRING |
-| 8 | `_row_hash` BINARY |
-| 9 | `_deleted_at` TIMESTAMP NULL |
+- Canonical types are normalized once and explicitly mapped by the Fabric or
+  Databricks adapter profile.
+- `_source_record_key` is the source/table-scoped record identity; there is no legacy
+  alias.
+- Entity IRI and integration identity columns are emitted only when the normalized
+  identity strategy requires them.
+- `_row_hash`, when selected, is canonical SHA-256 v1 lowercase hexadecimal text.
+- SCD2 keeps `_business_valid_from/to` separate from `_system_from/to`; current and
+  delete semantics use the governed current flag and `_is_deleted`.
+- Temporal FKs explicitly state `current`, `as-of`, or `none`, cardinality, and
+  missing/ambiguous/late-parent behavior.
+- Constraints and index recommendations have deterministic adapter-bounded names.
+  Metadata with `enforced: false` or `applied: false` is not an enforcement claim.
+- Column order is exactly `SilverModelSpec.columns` in SQL, YAML, DDL, and metadata;
+  no renderer may independently reorder or infer fields.
 
 ---
 
-## 9. Projection Traceability
+## 9. Gold Product Profiles
+
+Gold projects consumption-oriented data products. Every Gold product names a registered
+profile; the only v1 implementation is `dimensional-powerbi-v1`. Gold is not globally
+defined as star schema, so future product shapes can be added without changing this
+profile's dimensional guarantees.
+
+The dimensional profile is fail-closed:
+
+- only explicitly authored `fact`, `dimension`, and `bridge` tables are included;
+- every table binds an exact actual Silver model and version;
+- facts declare grain, transaction/snapshot type, version binding, and complete
+  incremental/correction/late-arrival policy;
+- dimensions declare current/history/dual exposure and source-version behavior;
+- bridges declare grain, endpoints, endpoint columns, cardinality, and allocation;
+- measures are first-class resources and never remove their base columns;
+- calendars must be explicitly bounded and approved before any date/time-intelligence
+  output is generated; and
+- RLS/OLS requires a complete deny-by-default entitlement contract with positive and
+  negative test evidence. Perspectives are navigation only.
+
+The `powerbi` target runs the same Silver authority pipeline first and requires passing
+Silver parity. It then emits dimensional dbt, Fabric or Databricks DDL, Power BI TMDL,
+DAX, Mermaid ERD, and a governed product report. Fabric uses DirectLake. Databricks
+downstream-Power-BI output is generated only under approved scoped deviations.
+
+Strict release also requires approved measure state and evidence, approved calendar
+state when present, complete security when present, matching adapter/TMDL compile
+evidence, and deterministic artifact completeness. Projection never claims deployment,
+runtime security enforcement, or data validation from syntax alone.
+
+---
+
+## 10. Projection Traceability
 
 Every projection output includes **provenance metadata** linking it back to the
 source ontology:
@@ -447,7 +440,7 @@ source ontology:
 
 ---
 
-## 10. Keeping Your Hub Up to Date
+## 11. Keeping Your Hub Up to Date
 
 When a new toolkit version is released, update your hub:
 
@@ -490,8 +483,9 @@ pointing to `party:Party`), the silver projector generates a cross-schema FK:
 party_sk STRING   -- FK → silver_party.party(party_sk)
 ```
 
-The FK is tracked in ALTER SQL and ERD but the constraint is logical (not
-enforced within a single schema's DDL) since the tables live in different schemas.
+The FK is tracked in `*-silver-constraints.json` and ERD. Its metadata states the
+adapter capability/deviation and `enforced` value explicitly; generated DDL never
+claims enforcement that the adapter does not provide.
 
 ### Master ERD
 

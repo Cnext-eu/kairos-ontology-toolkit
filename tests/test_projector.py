@@ -551,6 +551,8 @@ class TestProjector:
         # Write artifacts
         dbt_dir = output_dir / 'dbt'
         for file_path, content in artifacts.items():
+            if not isinstance(content, str):
+                continue
             output_file = dbt_dir / file_path
             output_file.parent.mkdir(parents=True, exist_ok=True)
             output_file.write_text(content, encoding='utf-8')

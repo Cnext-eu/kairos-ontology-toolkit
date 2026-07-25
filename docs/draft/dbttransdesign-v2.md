@@ -252,7 +252,7 @@ models:
         supported_adapters:
           - fabric
           - databricks
-        natural_key:
+        grain_key:
           - source_system
           - canonical_shipment_id
         required_packages:

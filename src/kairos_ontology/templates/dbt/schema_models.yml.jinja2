@@ -10,8 +10,12 @@ models:
       {{ key }}: "{{ value }}"
 {%- endfor %}
 {%- endif %}
-{%- if model.grain_columns and model.grain_columns | length > 1 %}
+{%- if model.data_tests or (model.grain_columns and model.grain_columns | length > 1) %}
     data_tests:
+{%- for test in model.data_tests %}
+      - {{ test | tojson }}
+{%- endfor %}
+{%- if model.grain_columns and model.grain_columns | length > 1 %}
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:
 {%- for grain_column in model.grain_columns %}
@@ -21,6 +25,7 @@ models:
           config:
             where: {{ model.grain_where }}
 {%- endif %}
+{%- if model.source_identity_columns != model.grain_columns %}
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:
 {%- for identity_column in model.source_identity_columns %}
@@ -31,10 +36,15 @@ models:
             where: {{ model.grain_where }}
 {%- endif %}
 {%- endif %}
+{%- endif %}
+{%- endif %}
     columns:
 {%- for column in model.columns %}
       - name: {{ column.name }}
         description: {{ column.description | tojson }}
+{%- if column.data_type %}
+        data_type: {{ column.data_type }}
+{%- endif %}
 {%- if column.meta %}
         meta:
 {%- for key, value in column.meta.items() %}

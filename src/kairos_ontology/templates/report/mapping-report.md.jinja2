@@ -88,10 +88,10 @@ _Domain: {{ entity.domain_prefix }} · {{ entity.column_mappings | length }} map
 {% endif %}
 {% if entity.column_mappings %}
 
-| Source | Type | Match | Domain Property | Domain | Transform |
+| Source | Type | Match | Domain Property | Domain | Expression Contract |
 |--------|------|-------|-----------------|--------|-----------|
 {% for cm in entity.column_mappings -%}
-| `{{ cm.source_table }}.{{ cm.source_column }}` | {{ cm.source_type }} | {{ cm.match_label }} | `{{ cm.target_property }}` | {{ cm.domain_prefix }} | {% if cm.transform %}`{{ cm.transform }}`{% else %}—{% endif %} |
+| `{{ cm.source_table }}.{{ cm.source_column }}` | {{ cm.source_type }} | {{ cm.match_label }} | `{{ cm.target_property }}` | {{ cm.domain_prefix }} | {% if cm.expression_contract %}`{{ cm.expression_contract }}`{% else %}—{% endif %} |
 {% endfor %}
 {% else %}
 _Table-level mapping only — no column mappings._
@@ -110,14 +110,14 @@ _No entity mappings found._
 
 _{{ tbl.table_match_label }} · {{ tbl.mapped_count }}/{{ tbl.column_count }} columns mapped ({{ tbl.coverage_pct }}%)_
 {% if tbl.table_filter %}
-> Filter: `{{ tbl.table_filter }}`
+> Row-filter contract: `{{ tbl.table_filter }}`
 {% endif %}
 {% if tbl.columns %}
 
-| Column | Data Type | Match | Domain Property | Domain | Transform |
+| Column | Data Type | Match | Domain Property | Domain | Expression Contract |
 |--------|-----------|-------|-----------------|--------|-----------|
 {% for col in tbl.columns -%}
-| `{{ col.source_name }}` | {{ col.source_type }} | {% if col.mapped %}{{ col.match_label }}{% else %}Unmapped{% endif %} | {% if col.mapped %}`{{ col.target_name }}`{% else %}{% endif %} | {% if col.domain_prefix %}{{ col.domain_prefix }}{% endif %} | {% if col.transform %}`{{ col.transform }}`{% else %}—{% endif %} |
+| `{{ col.source_name }}` | {{ col.source_type }} | {% if col.mapped %}{{ col.match_label }}{% else %}Unmapped{% endif %} | {% if col.mapped %}`{{ col.target_name }}`{% else %}{% endif %} | {% if col.domain_prefix %}{{ col.domain_prefix }}{% endif %} | {% if col.expression_contract %}`{{ col.expression_contract }}`{% else %}—{% endif %} |
 {% endfor %}
 {% else %}
 _No columns defined in source vocabulary._

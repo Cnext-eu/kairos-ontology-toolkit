@@ -1,12 +1,17 @@
 # Feedback — Data Engineering Rules Embedded in the Kairos Medallion Projector
 
-**Status:** Feedback / open for discussion
+**Status:** Dispositioned into accepted design policy
 **Date:** 2026-07-25
 **Reviewer:** Data engineering colleagues (field practice: MPL, Qargo)
 **Reviewed document:** [`Kairos-Ontology 4.7- Medaillon projector - dataengineeringrules.md`](./Kairos-Ontology%204.7-%20Medaillon%20projector%20-%20dataengineeringrules.md)
 **Purpose:** Capture data-engineering feedback on the draft rules so the affected
 design decisions (DD-014, DD-039, DD-001/G1, DD-092, §3.4, §3.8, §6.2, §7) can be
 revisited by governance.
+
+> **Disposition:** The fleet-reviewed outcome is accepted in
+> [`DD-106–DD-115 Medallion Engineering Policy v1`](../design/dd-106-medallion-engineering-policy-v1.md).
+> This document remains the review record; where reviewer feedback and GPT advice
+> conflict, the policy baseline records the final disposition.
 
 > Convention in this doc: **Draft** quotes the reviewed document; **Feedback** is the
 > reviewer's position; **Affects** lists the DDs / sections that would need to change.
@@ -105,14 +110,14 @@ physical primary-key definition.
 
 **Draft:**
 > Generated Silver models retain: the ontology IRI; `_source_system`;
-> `_source_record_id`; `_loaded_at`; source/target IRIs in dbt metadata; ontology and
+> `_source_record_key`; `_loaded_at`; source/target IRIs in dbt metadata; ontology and
 > toolkit versions; the reference-model closure hash and applied Silver
 > defaults/overrides.
 
 **Feedback:**
 - This is **only feasible for simple entities.** For multi-source / composite entities
   you must either pick a **"base source entity"** and **omit all other contributing
-  entities**, or the single-`_source_system` / `_source_record_id` contract breaks down.
+  entities**, or the single-`_source_system` / `_source_record_key` contract breaks down.
 - **`_loaded_at` is not very useful** in a Silver entity in practice. A **`_last_updated`
   column is far better** — and it is also **required for incremental handling**.
 

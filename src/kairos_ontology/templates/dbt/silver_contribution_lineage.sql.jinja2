@@ -1,0 +1,16 @@
+-- Canonical DD-108 contribution-lineage relation for {{ parent_model }}
+-- Contains one row for every contributing source record; no matching or survivorship.
+{{ "{{" }} config(materialized='view', schema='{{ schema_name }}') {{ "}}" }}
+
+{%- for source in source_models %}
+select
+    {{ parent_key_expression }} as {{ parent_key_column }},
+    _source_system,
+    _source_record_key,
+    '{{ source.role }}' as _contribution_role,
+    '{{ source.identity_ref }}' as _source_identity_ref
+from {{ "{{" }} ref('{{ source.name }}') {{ "}}" }}
+{%- if not loop.last %}
+union all
+{%- endif %}
+{%- endfor %}

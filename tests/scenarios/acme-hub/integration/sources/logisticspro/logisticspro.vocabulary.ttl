@@ -18,7 +18,8 @@ bronze-lp:tblShipmentParty a kairos-bronze:SourceTable ;
     rdfs:label "tblShipmentParty" ;
     kairos-bronze:sourceSystem bronze-lp:LogisticsPro ;
     kairos-bronze:tableName "tblShipmentParty" ;
-    kairos-bronze:schemaName "dbo" .
+    kairos-bronze:schemaName "dbo" ;
+    kairos-bronze:primaryKeyColumns "PartyCode" .
 
 bronze-lp:tblShipmentParty_PartyCode a kairos-bronze:SourceColumn ;
     kairos-bronze:sourceTable bronze-lp:tblShipmentParty ;
@@ -39,7 +40,8 @@ bronze-lp:tblCarrier a kairos-bronze:SourceTable ;
     rdfs:label "tblCarrier" ;
     kairos-bronze:sourceSystem bronze-lp:LogisticsPro ;
     kairos-bronze:tableName "tblCarrier" ;
-    kairos-bronze:schemaName "dbo" .
+    kairos-bronze:schemaName "dbo" ;
+    kairos-bronze:primaryKeyColumns "CarrierCode" .
 
 bronze-lp:tblCarrier_CarrierCode a kairos-bronze:SourceColumn ;
     kairos-bronze:sourceTable bronze-lp:tblCarrier ;

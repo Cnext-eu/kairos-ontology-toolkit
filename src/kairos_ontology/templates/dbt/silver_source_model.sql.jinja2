@@ -24,12 +24,15 @@
 with mapped as (
 
     select
-{%- if not source_record_id_generated_after_mapping %}
-    {{ source_record_id_expression }} as _source_record_id,
-{%- endif %}
 {%- for col in columns %}
-        {{ col.expression }} as {{ col.target_name }}{% if not loop.last %},{% endif %}{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
+{%- if not col.generated_after_mapping | default(false) and not col.runtime_generated | default(false) %}
+        {{ col.expression }} as {{ col.target_name }},{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
+{%- endif %}
 {%- endfor %}
+{%- for lookup in temporal_lookups | default([]) %}
+        {{ lookup.match_count_expression }} as {{ lookup.match_count_column }},
+{%- endfor %}
+        1 as _kairos_projection_guard
 {%- if ref_model %}
     from {{"{{"}} ref('{{ ref_model }}') {{"}}"}} as {{ source_alias }}
 {%- else %}
@@ -46,13 +49,7 @@ where {{ filter_condition }}
 )
 
 select
-    '{{ source_name }}' as _source_system,
-{%- if source_record_id_generated_after_mapping %}
-    {{ source_record_id_expression }} as _source_record_id,
-{%- else %}
-    _source_record_id,
-{%- endif %}
 {%- for col in columns %}
-    {{ col.target_name }}{% if not loop.last %},{% endif %}{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
+    {% if col.generated_after_mapping | default(false) %}{{ col.expression }} as {{ col.target_name }}{% else %}{{ col.target_name }}{% endif %}{% if not loop.last %},{% endif %}{% if col.comment is defined and col.comment %}  -- {{ col.comment }}{% endif %}
 {%- endfor %}
 from mapped

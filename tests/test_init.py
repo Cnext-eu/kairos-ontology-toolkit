@@ -25,7 +25,19 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/model/ontologies").is_dir()
             assert Path("ontology-hub/model/shapes").is_dir()
             assert Path("ontology-hub/model/extensions").is_dir()
+            baseline = Path(
+                "ontology-hub/model/governance/release-baseline.yaml"
+            )
+            assert baseline.is_file()
+            assert "approval_status: draft" in baseline.read_text(encoding="utf-8")
             assert Path("ontology-hub/integration/sources").is_dir()
+            assert Path("ontology-hub/integration/preparation/README.md").is_file()
+            assert Path(
+                "ontology-hub/integration/preparation/source-prep.ttl.template"
+            ).is_file()
+            assert Path(
+                "ontology-hub/integration/preparation/source-prep.example.ttl"
+            ).is_file()
             assert Path(
                 "ontology-hub/integration/sources/custom-transformations/README.md"
             ).is_file()
@@ -71,6 +83,15 @@ def test_init_creates_hub_structure(tmp_path):
             # Check README files
             assert Path("ontology-hub/model/ontologies/README.md").is_file()
             assert Path("ontology-hub/model/shapes/README.md").is_file()
+            assert Path(
+                "ontology-hub/model/shapes/kairos-prep-shapes.shacl.ttl"
+            ).is_file()
+            assert Path(
+                "ontology-hub/model/shapes/kairos-ext-shapes.shacl.ttl"
+            ).is_file()
+            assert Path(
+                "ontology-hub/model/shapes/kairos-map-shapes.shacl.ttl"
+            ).is_file()
             assert Path("ontology-hub/model/mappings/README.md").is_file()
 
             # Check skills installed
@@ -208,9 +229,54 @@ def test_new_repo_creates_full_structure(tmp_path):
     # Hub structure
     assert (repo / "ontology-hub" / "model" / "ontologies").is_dir()
     assert (repo / "ontology-hub" / "model" / "shapes" / "README.md").is_file()
+    assert (
+        repo
+        / "ontology-hub"
+        / "model"
+        / "shapes"
+        / "kairos-prep-shapes.shacl.ttl"
+    ).is_file()
+    assert (
+        repo
+        / "ontology-hub"
+        / "model"
+        / "shapes"
+        / "kairos-ext-shapes.shacl.ttl"
+    ).is_file()
+    assert (
+        repo
+        / "ontology-hub"
+        / "model"
+        / "shapes"
+        / "kairos-map-shapes.shacl.ttl"
+    ).is_file()
     assert (repo / "ontology-hub" / "model" / "mappings" / "README.md").is_file()
+    assert (
+        repo
+        / "ontology-hub"
+        / "model"
+        / "governance"
+        / "release-baseline.yaml"
+    ).is_file()
     assert (repo / "ontology-hub" / "output" / "medallion" / "dbt").is_dir()
     assert (repo / "ontology-hub" / "integration" / "discovery").is_dir()
+    assert (
+        repo / "ontology-hub" / "integration" / "preparation" / "README.md"
+    ).is_file()
+    assert (
+        repo
+        / "ontology-hub"
+        / "integration"
+        / "preparation"
+        / "source-prep.ttl.template"
+    ).is_file()
+    assert (
+        repo
+        / "ontology-hub"
+        / "integration"
+        / "preparation"
+        / "source-prep.example.ttl"
+    ).is_file()
     assert (
         repo
         / "ontology-hub"

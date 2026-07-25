@@ -1,0 +1,55 @@
+-- DD-108 multi-source reconciliation output for {{ parent_model }}
+-- Relationship={{ branch_relationship }}; normalization={{ normalization_policy }}
+-- Conflict={{ conflict_action }}; collision={{ collision_action }}
+-- Branch deletion={{ deletion_action }}; late arrival={{ late_arrival_action }}
+-- Tests={{ reconciliation_tests | join(', ') }}
+{{ "{{" }} config(materialized='view', schema='{{ schema_name }}') {{ "}}" }}
+
+with branches as (
+{%- for source in source_models %}
+    select
+        '{{ source.name }}' as _branch_model,
+        _source_system,
+        _source_record_key,
+{%- if integration_key_expression %}
+        {{ integration_key_expression }} as {{ parent_model }}_integration_key,
+{%- endif %}
+        '{{ source.role }}' as _contribution_role,
+        '{{ source.identity_ref }}' as _source_identity_ref
+    from {{ "{{" }} ref('{{ source.name }}') {{ "}}" }}
+{%- if not loop.last %}
+    union all
+{%- endif %}
+{%- endfor %}
+),
+classified as (
+    select
+        *,
+        count(*) over (
+            partition by _source_system, _source_record_key
+        ) as _source_key_occurrences,
+{%- if integration_key_expression %}
+        count(*) over (
+            partition by {{ parent_model }}_integration_key
+        ) as _integration_key_occurrences
+{%- else %}
+        count(*) over (
+            partition by _source_system, _source_record_key
+        ) as _branch_identity_occurrences
+{%- endif %}
+    from branches
+)
+
+select
+    *,
+    case when _source_key_occurrences > 1 then 1 else 0 end as _source_key_collision,
+{%- if integration_key_expression %}
+    case when _integration_key_occurrences > 1 then 1 else 0 end as _equivalent_branch_overlap,
+{%- else %}
+    case when _branch_identity_occurrences > 1 then 1 else 0 end as _branch_identity_duplicate,
+{%- endif %}
+    '{{ conflict_action }}' as _conflict_action,
+    '{{ collision_action }}' as _collision_action,
+    '{{ deletion_action }}' as _branch_deletion_action,
+    '{{ late_arrival_action }}' as _late_arrival_action
+from classified

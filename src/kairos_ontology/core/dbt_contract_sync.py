@@ -106,17 +106,17 @@ def build_dbt_contract_graph(contract: DbtContractModel) -> Graph:
     graph.add((table, RDFS.label, Literal(contract.description)))
     graph.add((table, KAIROS_BRONZE.sourceSystem, system))
     graph.add((table, KAIROS_BRONZE.tableName, Literal(contract.name)))
-    graph.add((table, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(contract.natural_key))))
+    graph.add((table, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(contract.grain_key))))
     graph.add((table, KAIROS_DBT.sourceKind, Literal("dbt-contract")))
     graph.add((table, KAIROS_DBT.modelRef, Literal(contract.name)))
     graph.add((table, KAIROS_DBT.targetClass, URIRef(contract.target_class)))
     for replacement in contract.replaces_sources:
         graph.add((table, KAIROS_DBT.replacesSource, URIRef(replacement.table_iri)))
 
-    natural_key = set(contract.natural_key)
+    grain_key = set(contract.grain_key)
     for column in contract.columns:
         column_iri = _column_iri(contract.virtual_source_iri, column.name)
-        is_key = column.name in natural_key
+        is_key = column.name in grain_key
         nullable = not (is_key or column.not_null)
         graph.add((column_iri, RDF.type, KAIROS_BRONZE.SourceColumn))
         graph.add((column_iri, RDFS.label, Literal(column.description or column.name)))

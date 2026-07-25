@@ -1,380 +1,161 @@
 ---
 name: kairos-design-gold
 description: >
-  Expert guide for designing gold-layer extension annotations (fact/dimension
-  types, DAX measures, hierarchies, RLS) and understanding Power BI projection
-  output. Targets DirectLake on Microsoft Fabric Warehouse.
+  Expert guide for designing governed Gold data-product profiles, including the
+  dimensional Power BI v1 profile, measures, calendars, security, and release evidence.
 ---
 
-# Kairos Medallion Gold Skill
+# Kairos Gold Product Design
 
-## Design fleet mode (DD-088)
+Gold is a consumption-oriented data-product layer. It is not universally dimensional.
+Every product must name a registered profile; the only implemented profile is
+`dimensional-powerbi-v1`. Unknown or missing profiles fail closed.
 
-Default is interactive: ask the user to confirm fact/dimension choices, measures,
-hierarchies, RLS, star-schema design, and semantic-model review checkpoints. If
-the user explicitly requests design fleet mode, make those checkpoint decisions
-with AI judgment for testing speed, but mark them as **AI-approved** rather than
-user-confirmed. Record rationale, confidence, silver/source evidence, and BI
-impact in `phases/gold/<model>.md`; stop for ambiguous metric definitions,
-security/RLS risk, PII/proprietary exposure, or low-confidence business logic.
+## Interaction and state
 
-Any fleet override applies only to this skill invocation. It expires when the
-skill ends or pauses and is never inherited by another skill or a later resume.
+Default to interactive design. Confirm table roles, grains, version bindings, measures,
+calendar assumptions, and security with stakeholders. A skill-scoped fleet override may
+make and record high-confidence decisions, but it must stop for ambiguous measures,
+security policy, PII/proprietary risk, or destructive choices.
 
-## Lifecycle state (DD-080)
+Read and update `ontology-hub/.kairos-state/phases/gold/<product>.md`. Record decisions,
+evidence, confidence, unresolved questions, and whether approval was user-confirmed or
+AI-approved. Do not edit the lifecycle-wide `status.md`.
 
-> The **kairos-flow** skill is the lifecycle orchestrator and the **only** writer of
-> `ontology-hub/.kairos-state/status.md`. This skill plugs into that shared state; it
-> does not maintain the global status file.
+## Mandatory pre-flight
 
-**On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
-continuation region and this phase's log(s) at `phases/gold/<model>.md` — to resume open
-questions. Ignore `_archive/`. (`kairos-ontology status` gives the objective view.)
+1. Read accepted DD-112/DD-113 and the hub's frozen policy profile.
+2. Verify Silver projection and parity are green. Gold consumes the actual generated
+   Silver model/column registry; it cannot invent a model or select a missing column.
+3. Identify the exact Silver model name and version for every proposed Gold table.
+4. Confirm the adapter: Fabric, or Databricks with approved downstream-Power-BI
+   deviations for every deviated Gold capability.
+5. Check the phase log for unresolved governance decisions.
 
-**On pause or finish:** append a *State update proposal* to `phases/gold/<model>.md` with
-OKF frontmatter (`type: kairos-phase-log`, `phase: gold`, `instance: <model>`, `status:`,
-`last_updated:`). Record decisions made and an **Open questions** list as the resume
-anchor. Do **not** edit `status.md` directly — kairos-flow folds your proposal in.
+## Product declaration
 
-
-You are an expert at generating Power BI star-schema models from OWL ontologies
-using the Kairos gold-layer projection.
-
-> **Draft model input (DD-086):** If
-> `model/planning/draft-model/draft-model-report.md` or
-> `draft-model-erd.mmd` exists, read it during pre-flight. Use measure,
-> fact/dimension, hierarchy, and TMDL relationship entries as candidate gold-design
-> prompts only. Do not turn report measures into gold annotations without explicit
-> user confirmation.
->
-> **Data-product vertical slice:** If
-> `model/planning/data-products/<product>/data-product-plan.yaml` or
-> `gold-candidates.yaml` exists, treat it as a scoped planning view for one report
-> pack/data product. It is not projection authority. Only convert
-> `gold-annotation-needed` candidates into `goldTableType`, `measureExpression`,
-> hierarchy, or `perspective` annotations when the item is already claim-backed or
-> mapping-backed and the user confirms the decision in this skill. Prefer a gold
-> `perspective` for report-pack scoping rather than creating a competing grouping
-> mechanism.
-
-## Architecture Context
-
-The Kairos projection system uses a three-layer rule architecture:
-
-```
-R1-R16: Common Annotation Rules (kairos-ext:)
-    ├── S1-S8: Silver Fabric Warehouse (implemented)
-    └── G1-G8: Gold Power BI / DW (implemented)
-```
-
-The silver layer produces canonical, normalised tables. The gold layer reshapes
-them into a **dimensional star schema** optimised for Power BI DirectLake queries
-on Microsoft Fabric Warehouse.
-
-## Gold Rules G1-G8
-
-| Rule | Name | Description |
-|------|------|-------------|
-| G1 | Star schema classification | Auto-classify tables as fact/dimension/bridge by relationship patterns. Override via `goldTableType`. |
-| G2 | dim_/fact_/bridge_ prefixes | Gold tables use dimensional naming conventions. |
-| G3 | SCD Type 2 dimensions | Dimensions with `scdType "2"` get valid_from/valid_to/is_current. Facts never get SCD columns. |
-| G4 | GDPR row-level security | GDPR satellite → secured dimension + RLS role in TMDL. |
-| G5 | Class-per-table inheritance | OWL subclass hierarchies projected as separate tables with shared PK/FK to parent (default). Opt into discriminator flattening via `goldInheritanceStrategy "discriminator"`. |
-| G6 | Reference → shared dimension | Reference data promoted to `dim_` shared dimension. |
-| G7 | Aggregate tables | (Deferred) Pre-aggregated fact tables. |
-| G8 | Power BI optimised types | INT surrogate keys, BIT for booleans, VARCHAR instead of STRING. |
-
-## G1 — Star Schema Classification
-
-**Automatic heuristic:**
-- Classes with ≥2 outgoing FK object properties → **fact**
-- Classes referenced by other classes → **dimension**
-- `isReferenceData = true` → always **dimension** (G6)
-- `gdprSatelliteOf` set → **dimension** (G4)
-
-**Override:** Set `kairos-ext:goldTableType` to `"fact"`, `"dimension"`, or `"bridge"`.
-
-**Aggressive FK generation:** When `goldTableType "fact"` is set explicitly, the
-projector generates FK columns for **all** object properties — not just those
-marked as `owl:FunctionalProperty` or with `maxCardinality 1`. This is because
-fact tables almost always need FK columns to their related dimensions. Auto-classified
-facts (detected via the ≥2 FK heuristic) still use the standard cardinality filter.
-
-## G8 — DirectLake Optimised Types
-
-| Silver (S1) | Gold (G8) | Reason |
-|-------------|-----------|--------|
-| STRING SK (UUID) | INT SK (IDENTITY) | Better V-Order compression |
-| BOOLEAN | BIT | Power BI prefers BIT |
-| STRING | VARCHAR(256) | Bounded length for VertiPaq |
-| DOUBLE | FLOAT | Fabric Warehouse type |
-
-## Running the Projection (handoff)
-
-Once your gold extension annotations are complete, generate the artifacts by
-invoking the **kairos-execute-project** skill with target `powerbi`.
-
-> **Design/Execute separation (DD-033):** This skill handles annotation *design*.
-> The **kairos-execute-project** skill handles *generation*. If you need to
-> iterate on outputs, edit the extension file here, then invoke projection again.
-
-## Extension File
-
-Create `{domain}-gold-ext.ttl` in `model/extensions/` to annotate classes:
+The ontology resource must declare:
 
 ```turtle
-@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-@prefix domain: <https://mycompany.com/ontology/customer#> .
-@prefix owl:  <http://www.w3.org/2002/07/owl#> .
-@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
-
-<https://mycompany.com/ontology/customer-gold-ext>
-    a owl:Ontology ;
-    owl:imports <https://mycompany.com/ontology/customer> .
-
-<https://mycompany.com/ontology/customer>
-    kairos-ext:goldSchema "gold_customer" ;
-    kairos-ext:generateDateDimension "true"^^xsd:boolean .
-
-domain:Customer
-    kairos-ext:goldTableType "dimension" ;
-    kairos-ext:scdType "2" .
-
-domain:Order
-    kairos-ext:goldTableType "fact" ;
-    kairos-ext:partitionBy "_load_date" .
-
-domain:Country
-    kairos-ext:isReferenceData "true"^^xsd:boolean ;
-    kairos-ext:scdType "1" .
-
-domain:hasOrderAmount
-    kairos-ext:measureExpression "SUM([order_amount])" ;
-    kairos-ext:measureFormatString "$#,##0.00" .
+<https://example.com/ontology/sales>
+    kairos-ext:goldSchema "gold_sales" ;
+    kairos-ext:goldProductProfile "dimensional-powerbi-v1" .
 ```
 
-## Gold Annotation Reference
+Do not use a fallback profile. Adding a future profile requires its own accepted design
+decision, registry record, typed shaper, capability contract, renderers, and tests.
 
-### Ontology-level
+## Explicit table contracts
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `goldSchema` | string | `gold_{domain}` | Target schema name |
-| `goldInheritanceStrategy` | string | `class-per-table` | Subclass projection strategy: `"class-per-table"` (each subclass → own table with shared PK/FK to parent) or `"discriminator"` (flatten into parent table). Can also be set per-class. |
-| `generateDateDimension` | boolean | `true` | Auto-generate dim_date |
-| `generateTimeIntelligence` | boolean | `false` | Generate time-intelligence calculation group (YTD/QTD/MTD/PY/YoY%) |
-| `goldIncludeImports` | boolean | `false` | Bulk-claim all first-level imported classes for gold projection (DD-021) |
+Only resources with `goldTableType` are Gold tables. Never infer roles from FK counts,
+references, classifications, or defaults.
 
-### Class-level
+Every table declares:
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `goldInclude` | boolean | Claim an imported class for gold projection (DD-021) |
-| `goldTableType` | string | Override: `"fact"`, `"dimension"`, `"bridge"` |
-| `goldTableName` | string | Table name override (prefix auto-added) |
-| `goldExclude` | boolean | Exclude from gold projection |
-| `perspective` | string | Space-separated perspective names (table subsets for role-based visibility) |
-| `incrementalColumn` | string | Column for dbt incremental materialisation on gold models |
+- `goldTableType`: `fact`, `dimension`, or `bridge`;
+- `goldTableName`;
+- exact `goldSourceModel`; and
+- exact `goldSourceVersion`.
 
-### Property-level
+Facts additionally declare:
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `goldColumnName` | string | Column name override |
-| `goldDataType` | string | SQL type override |
-| `measureExpression` | string | DAX measure (property becomes measure, not column) |
-| `measureFormatString` | string | DAX format string |
-| `hierarchyName` | string | Power BI hierarchy this property belongs to |
-| `hierarchyLevel` | integer | Level in hierarchy (1 = top) |
-| `degenerateDimension` | boolean | Keep on fact table (no separate dim) |
-| `rolePlayingAs` | string | Space-separated role names for role-playing dimension |
-| `olsRestricted` | boolean | Mark column for Object-Level Security restriction |
+- `factGrain`;
+- `factType`: `transaction`, `periodic-snapshot`, or `accumulating-snapshot`;
+- `dimensionVersionBinding`;
+- `incrementalPolicy`, whose governed runtime contract contains correction and
+  late-arrival behavior.
 
-### Working with imported classes (DD-021)
+Zero-dimension facts are valid.
 
-When a domain ontology uses `owl:imports` to reference external models (e.g.,
-reference models), imported classes are **NOT projected** to gold by default.
-Hub authors must explicitly claim them.
+Dimensions additionally declare:
 
-**Per-class claiming:**
-```turtle
-@prefix ref: <https://referencemodels.kairos.cnext.eu/party#> .
-ref:TradeParty kairos-ext:goldInclude "true"^^xsd:boolean .
-```
+- `dimensionExposure`: `current-only`, `history-only`, or `dual`; and
+- explicit `dimensionVersionBinding`.
 
-**Bulk claiming (all first-level imported classes):**
-```turtle
-<https://contoso.com/ont/customer> kairos-ext:goldIncludeImports "true"^^xsd:boolean .
-```
+History and dual exposure require an SCD2 Silver authority. Gold must not manufacture
+history columns or current-row filters.
 
-**Rules:**
-- Bulk mode (`goldIncludeImports`) claims all classes from directly imported
-  ontologies (first-level `owl:imports` only).
-- Peer hub domains (other domains in the same hub) are **excluded** from bulk
-  claiming — they have their own extension files.
-- The gold schema comes from the **hub domain name** (e.g., `gold_customer`),
-  not from the reference model namespace.
-- Per-class `goldInclude` overrides bulk mode for individual classes.
+Bridges additionally declare:
 
-**Example extension file** (`customer-gold-ext.ttl`):
-```turtle
-@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
-@prefix ref: <https://referencemodels.kairos.cnext.eu/party#> .
-@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+- `bridgeGrain`;
+- exactly two `bridgeEndpoint` resources;
+- exactly two `bridgeEndpointBinding` values using `Endpoint=emitted_column`;
+- `bridgeCardinality`;
+- optional `bridgeWeightColumn`; and
+- explicit `bridgeAllocationSemantics`, including an approved no-allocation policy.
 
-# Bulk-claim all imported reference model classes
-<https://contoso.com/ont/customer>
-    kairos-ext:goldSchema "gold_customer" ;
-    kairos-ext:goldIncludeImports "true"^^xsd:boolean .
+## First-class measures
 
-# Or claim individual classes
-ref:TradeParty
-    kairos-ext:goldInclude "true"^^xsd:boolean ;
-    kairos-ext:goldTableType "dimension" .
-```
+A measure is a `kairos-ext:Measure` resource linked from the product with
+`kairos-ext:measure`. A datatype property annotated with `measureExpression` is not a
+measure and never removes its physical column.
 
-## Output Artifacts
+Each measure has a stable ID, business definition, lifecycle, declared column/measure
+dependencies, result type, format, folder, and governance metadata.
 
-```
-output/medallion/powerbi/{domain}/
-├── {domain}-gold-ddl.sql                              # Star schema CREATE TABLEs
-├── {domain}-gold-alter.sql                            # FK constraint documentation
-├── {domain}-gold-erd.mmd                              # Star schema Mermaid ERD
-├── {domain}-gold-erd.svg                              # SVG render (requires Mermaid CLI)
-├── {domain}-gold-views.sql                            # SCD2 framing views (WHERE is_current)
-├── {Domain}.SemanticModel/
-│   └── definition/
-│       ├── model.tmdl                                 # Model settings (DirectLake)
-│       ├── tables/
-│       │   ├── dim_{name}.tmdl                        # Dimension definitions
-│       │   └── fact_{name}.tmdl                       # Fact definitions
-│       ├── relationships/
-│       │   └── relationships.tmdl                     # Star schema relationships
-│       ├── roles/
-│       │   └── rls-roles.tmdl                         # RLS + OLS roles (G4, GDPR)
-│       ├── perspectives/
-│       │   └── perspectives.tmdl                      # Perspective subsets (optional)
-│       └── calculationGroups/
-│           └── time-intelligence.tmdl                 # Time-intelligence calc group (optional)
-└── measures/
-    └── {domain}-measures.dax                          # DAX measures
-```
+| Lifecycle | Required | Generated |
+|---|---|---|
+| `intent` | Stable ID + definition | Review metadata only; no DAX/TMDL measure |
+| `provisional` | Expression, dependencies, type, format, folder | DAX/TMDL scaffold |
+| `validated` | Provisional fields + tests + imported evidence | DAX/TMDL; no claim that projection performed data validation |
+| `approved` | Validated fields + abstract owner role | Release-eligible when all other gates pass |
 
-### Best-practice separation
+Missing dependencies, unavailable columns, undeclared DAX references, duplicate IDs, and
+measure cycles block projection. Base Silver/Gold columns are always retained.
 
-| Layer | Responsibility | Artifact |
-|-------|---------------|----------|
-| **dbt** | Data logic (joins, facts, dims, SCD, tests) | `models/gold/` SQL models |
-| **Semantic model** | Business metrics (DAX, relationships, hierarchies, RLS/OLS) | `{Domain}.SemanticModel/` TMDL |
-| **Reports** | Visuals only — consume measures from semantic model | (not generated) |
+## Governed calendar
 
-> **Rule:** Don't duplicate business rules in both dbt and DAX. Row-level
-> shaping lives in dbt; reusable KPIs live in the semantic model.
+No date table or time intelligence is generated without a linked calendar profile.
+Production time intelligence requires:
 
-**Automatically generated after all domains are projected:**
-- `output/medallion/powerbi/master-gold-erd.mmd` — cross-domain master gold ERD (all star schema tables + FK relationships)
-- `output/medallion/powerbi/master-gold-erd.svg` — SVG render of the master gold ERD
+- inclusive start/end bounds;
+- fiscal-year start month and week pattern;
+- locale, holiday source, and IANA time zone;
+- period-closure policy;
+- role-playing date bindings to emitted date/timestamp columns; and
+- `calendarApprovalStatus "approved"`.
 
-The master gold ERD merges every `*-gold-erd.mmd` into a single diagram with one
-section per domain. It is the primary artifact to review the full gold layer star
-schema at a glance.
+A draft calendar remains reportable but produces no date table or calculation group and
+blocks calendar release readiness.
 
-### SVG export setup
+## Fail-closed security
 
-SVG rendering requires the Mermaid CLI (`mmdc`). If not installed, `.mmd` files are
-still generated but SVG export is skipped with an info message.
+RLS/OLS output is allowed only from a complete linked `SecurityPolicy` containing:
 
-```bash
-# Install in the hub repo (one-time)
-npm install
+- governed entitlement source;
+- identity mapping;
+- roles and filter direction;
+- table/column bindings using `Table.column=Role:RLS|OLS`;
+- positive and negative tests;
+- imported test evidence; and
+- `failClosed true`.
 
-# Or install globally
-npm install -g @mermaid-js/mermaid-cli
-```
+Bindings must resolve to emitted columns. Generated RLS starts from a deny-all scaffold;
+downstream entitlement wiring and runtime enforcement remain downstream facts.
+Perspectives are navigation metadata only and are never security boundaries.
 
-Hub repos scaffolded with `kairos-ontology new-repo` already include a `package.json`
-with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
+## Adapter and release gates
 
-## Checklist
+Fabric emits DirectLake TMDL. Databricks emits downstream-Power-BI DirectQuery scaffolding
+only when approved, scoped deviations authorize TMDL and security differences.
 
-- [ ] Create `{domain}-gold-ext.ttl` in `model/extensions/`
-- [ ] Claim any imported classes with `goldInclude` or `goldIncludeImports` (DD-021)
-- [ ] Annotate each class with `goldTableType` (or rely on auto-classification)
-- [ ] Add `measureExpression` for DAX measures on numeric properties
-- [ ] Add `hierarchyName` / `hierarchyLevel` for drill-down hierarchies
-- [ ] Invoke **kairos-execute-project** with `--target powerbi`
-- [ ] Review star schema ERD in `output/medallion/powerbi/{domain}/`
-- [ ] Check SVG renders were created (requires `mmdc` — see SVG export setup)
-- [ ] Import TMDL into Power BI Desktop or deploy to Fabric workspace
-- [ ] Configure RLS roles in Power BI service (if GDPR dimensions exist)
+Strict Gold release consumes:
 
----
+- passing Silver parity;
+- exact table source/version bindings;
+- approved measure lifecycle, dependencies, tests, and evidence;
+- approved calendar state when present;
+- complete security bindings and positive/negative test evidence when present;
+- supported capabilities or approved non-expired deviations;
+- matching adapter/TMDL compile evidence; and
+- deterministic artifact completeness/hashes.
 
-## Session Management
+Projection-time syntax never proves business correctness, deployment success, data
+validation, entitlement provisioning, or runtime enforcement.
 
-> **MANDATORY:** Every gold design session MUST produce a session file that
-> captures decisions made, items deferred, and design rationale.
+## Handoff
 
-### On start — Check for existing session
-
-```
-ontology-hub/.kairos-state/phases/gold/
-  └── {domain}.md
-```
-
-If a previous session exists, ask the user whether to continue or start fresh.
-
-> **Starting fresh — archive, don't overwrite (DD-071).** When the user chooses to
-> start a new session instead of resuming, first move any existing
-> `ontology-hub/.kairos-state/phases/gold/{domain}.md` log for this domain into
-> `ontology-hub/.kairos-state/_archive/` (create it if missing; use a
-> collision-safe filename). Never delete a previous log. Then create the new phase log.
-
-### Session file format
-
-Save to `ontology-hub/.kairos-state/phases/gold/{domain}.md`:
-
-```markdown
-# Gold Design Session: {Domain}
-
-**Started:** {ISO-8601}
-**Last updated:** {ISO-8601}
-**Status:** Complete | In Progress
-**Toolkit version:** {version}
-
-## Decisions Made
-
-| Class | Gold Role | Measures | Hierarchies | RLS | Status |
-|---|---|---|---|---|---|
-| {ClassName} | fact/dimension/bridge | {count} | {list or —} | {yes/no} | ✅/⚠️ |
-
-## Deferred / TODO
-
-| # | Class | Item | Reason | Resolve via |
-|---|---|---|---|---|
-| 1 | {ClassName} | {what is missing} | {why deferred} | kairos-design-gold |
-
-## Design Rationale
-
-| # | Question | Decision | Rationale |
-|---|---|---|---|
-| 1 | {question} | {choice made} | {why} |
-```
-
-### Saving rules
-
-- **Auto-save** after each class gold annotation is confirmed
-- Record **every** deferred item with a reason
-- On pause/completion, list remaining open items and confirm with user
-
----
-
-## Related skills
-
-| When you need | Invoke |
-|---|---|
-| Design/modify domain ontology classes and properties | **kairos-design-domain** |
-| Design silver layer (DDL, SCD, FK annotations) | **kairos-design-silver** |
-| Create bronze vocabulary from source docs | **kairos-design-source** |
-| Map source columns to domain properties | **kairos-design-mapping** |
-| Run projections (generate dbt/DDL/TMDL output) | **kairos-execute-project** |
+After stakeholder review, invoke `kairos-execute-validate`, then
+`kairos-execute-project` for `powerbi` (and `dbt` when dimensional models are consumed as
+a dbt package). Review DDL, dbt, TMDL, DAX, ERD, product report, Silver parity, adapter
+deviations, and strict-release findings together.

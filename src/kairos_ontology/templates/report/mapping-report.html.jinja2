@@ -372,7 +372,7 @@
           <th>Match</th>
           <th>Domain Property</th>
           <th>Domain</th>
-          <th>Transform</th>
+          <th>Expression Contract</th>
         </tr>
       </thead>
       <tbody>
@@ -383,7 +383,7 @@
           <td><span class="badge badge-{{ cm.match_type | lower }}">{{ cm.match_label }}</span></td>
           <td><code>{{ cm.target_property }}</code></td>
           <td><span class="domain-badge">{{ cm.domain_prefix }}</span></td>
-          <td class="transform-cell">{% if cm.transform %}<code>{{ cm.transform }}</code>{% else %}—{% endif %}</td>
+          <td class="transform-cell">{% if cm.expression_contract %}<code>{{ cm.expression_contract }}</code>{% else %}—{% endif %}</td>
         </tr>
       {% endfor %}
       </tbody>
@@ -426,7 +426,7 @@
           <th>Match</th>
           <th>Domain Property</th>
           <th>Domain</th>
-          <th>Transform</th>
+          <th>Expression Contract</th>
         </tr>
       </thead>
       <tbody>
@@ -443,7 +443,7 @@
           </td>
           <td>{% if col.mapped %}<code>{{ col.target_name }}</code>{% endif %}</td>
           <td>{% if col.domain_prefix %}<span class="domain-badge">{{ col.domain_prefix }}</span>{% endif %}</td>
-          <td class="transform-cell">{% if col.transform %}<code>{{ col.transform }}</code>{% else %}—{% endif %}</td>
+          <td class="transform-cell">{% if col.expression_contract %}<code>{{ col.expression_contract }}</code>{% else %}—{% endif %}</td>
         </tr>
       {% endfor %}
       </tbody>

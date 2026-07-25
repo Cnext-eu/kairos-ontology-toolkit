@@ -88,7 +88,7 @@ kairos-ontology-toolkit/
 │   ├── projections/                  # 8 projection generators
 │   │   ├── medallion_silver_projector.py   # Silver DDL + ERD
 │   │   ├── medallion_dbt_projector.py      # dbt models (silver + gold)
-│   │   ├── medallion_gold_projector.py     # Gold star-schema definitions
+│   │   ├── medallion_gold_projector.py     # Profile-driven Gold orchestration
 │   │   └── ...                             # neo4j, azure-search, a2ui, prompt, report
 │   ├── scaffold/                     # Hub repo templates (distributed via init/update)
 │   ├── templates/                    # Jinja2 output templates per target

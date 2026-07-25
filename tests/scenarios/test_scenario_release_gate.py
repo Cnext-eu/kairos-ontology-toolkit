@@ -14,6 +14,7 @@ The synthetic hub has no external ``owl:imports`` so the claim-projection sync g
 stays in-sync — isolating the release-gate behaviour under test.
 """
 
+import json
 import textwrap
 
 import pytest
@@ -24,6 +25,7 @@ WIDGET_TTL = textwrap.dedent(
     """\
     @prefix owl: <http://www.w3.org/2002/07/owl#> .
     @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix ext: <https://kairos.cnext.eu/ext#> .
     @prefix w: <http://acme.example/widget#> .
 
     <http://acme.example/widget> a owl:Ontology ;
@@ -33,6 +35,14 @@ WIDGET_TTL = textwrap.dedent(
     w:Widget a owl:Class ;
         rdfs:label "Widget" ;
         rdfs:comment "An approved but unmapped domain entity." .
+
+    w:FabricEvidence a ext:AdapterSupport ;
+        ext:adapterName "fabric" ;
+        ext:adapterVersion "1.0" ;
+        ext:evidenceScope "*" ;
+        ext:capability "canonical-types" ;
+        ext:supportStatus "supported" ;
+        ext:compileEvidence "compile:widget-fabric" .
     """
 )
 
@@ -64,11 +74,31 @@ def _build_hub(root, *, with_claims: bool):
     hub = root / "hub"
     (hub / "model" / "ontologies").mkdir(parents=True)
     (hub / "model" / "extensions").mkdir(parents=True)
+    (hub / "model" / "governance").mkdir(parents=True)
     (hub / "model" / "shapes").mkdir(parents=True)
     (hub / "output").mkdir(parents=True)
     (hub / "model" / "ontologies" / "widget.ttl").write_text(WIDGET_TTL, encoding="utf-8")
     (hub / "model" / "extensions" / "widget-silver-ext.ttl").write_text(
         WIDGET_SILVER_EXT_TTL, encoding="utf-8"
+    )
+    (hub / "model" / "governance" / "release-baseline.yaml").write_text(
+        "\n".join(
+            (
+                'schema_version: "1.0"',
+                'policy_version: "1.0"',
+                "approval_status: approved",
+                "owner_role: Release Owner",
+                'reviewed_at: "2020-01-01"',
+                'expires_at: "2099-12-31"',
+                "required_adapters: [fabric]",
+                "required_artifacts: []",
+                "artifact_hashes: {}",
+                "block_warnings: false",
+                "require_dq_runtime_results: false",
+                "",
+            )
+        ),
+        encoding="utf-8",
     )
     if with_claims:
         (hub / "model" / "claims").mkdir(parents=True)
@@ -94,7 +124,7 @@ def test_strict_gate_blocks_unbound_approved_claim(tmp_path):
     with pytest.raises(ProjectionRunError) as exc:
         _project(hub, strict=True)
     msg = str(exc.value)
-    assert "Release gate" in msg
+    assert "Strict release" in msg
     assert "Widget" in msg
 
 
@@ -102,12 +132,26 @@ def test_non_strict_projects_unbound_claim_without_error(tmp_path):
     """Without --strict, an unbound approved claim is skipped, not fatal."""
     hub = _build_hub(tmp_path, with_claims=True)
     _project(hub, strict=False)  # must not raise
+    manifest = json.loads(
+        (hub / "output" / "release-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["mode"] == "review-only"
+    assert manifest["release_ready"] is False
+    assert any(
+        item["code"] == "release.binding-blocking"
+        for item in manifest["rules"]
+    )
 
 
 def test_strict_gate_passes_without_eligible_claims(tmp_path):
     """A hub with no claims registry has no unbound targets → strict passes."""
     hub = _build_hub(tmp_path, with_claims=False)
     _project(hub, strict=True)  # must not raise
+    manifest = json.loads(
+        (hub / "output" / "release-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["mode"] == "strict-release"
+    assert manifest["release_ready"] is True
 
 
 def test_strict_gate_env_fallback(tmp_path, monkeypatch):

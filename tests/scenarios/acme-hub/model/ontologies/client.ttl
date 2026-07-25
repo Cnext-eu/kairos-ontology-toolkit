@@ -39,7 +39,7 @@ acme:IndividualClient a owl:Class ;
     kairos-ext:naturalKey "clientId" .
 
 # ---------------------------------------------------------------------------
-# Reference data class — exercises isReferenceData, inlineRefThreshold
+# Reference data class — exercises explicit reference-data policy
 # ---------------------------------------------------------------------------
 acme:ClientType a owl:Class ;
     rdfs:label "Client Type" ;
@@ -47,7 +47,7 @@ acme:ClientType a owl:Class ;
     kairos-ext:naturalKey "typeCode" .
 
 # ---------------------------------------------------------------------------
-# GDPR satellite — exercises gdprSatelliteOf
+# Protected-data satellite — security is governed in the Gold security contract
 # ---------------------------------------------------------------------------
 acme:ClientPII a owl:Class ;
     rdfs:label "Client PII" ;
@@ -138,7 +138,7 @@ acme:nationalId a owl:DatatypeProperty ;
     rdfs:domain acme:ClientPII ;
     rdfs:range xsd:string ;
     kairos-ext:populationRequirement "conditional" ;
-    kairos-ext:derivationFormula "UPPER(TRIM(source.NationalID))" .
+    kairos-ext:derivationFormula "UPPER(source.NationalID)" .
 
 acme:dateOfBirth a owl:DatatypeProperty ;
     rdfs:label "date of birth" ;

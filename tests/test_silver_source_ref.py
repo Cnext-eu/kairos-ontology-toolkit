@@ -1,19 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Unit tests for silverSourceRef annotation (DD-039).
-
-Verifies the dbt projector emits {{ ref('model') }} instead of {{ source() }}
-when a class has kairos-ext:silverSourceRef set.
-"""
+"""DD-106 automatic prep routing and DD-093 contracted source-ref tests."""
 
 from pathlib import Path
 from textwrap import dedent
+from datetime import UTC, datetime
 
 import pytest
 from rdflib import Graph
 
 from kairos_ontology.core.dbt_contract_sync import build_dbt_contract_graph
-from kairos_ontology.core.dbt_contracts import DbtContractColumn, DbtContractModel
+from kairos_ontology.core.dbt_contracts import (
+    DbtContractColumn,
+    DbtContractDecision,
+    DbtContractModel,
+    DbtDecisionApproval,
+    DbtDecisionEvidence,
+)
 
 TEMPLATE_DIR = (
     Path(__file__).parent.parent
@@ -39,7 +42,8 @@ _SOURCE_TTL = dedent("""\
     <http://example.org/source#tblOrders> a kairos-bronze:SourceTable ;
         rdfs:label "tblOrders" ;
         kairos-bronze:sourceSystem <http://example.org/source#erp> ;
-        kairos-bronze:tableName "tblOrders" .
+        kairos-bronze:tableName "tblOrders" ;
+        kairos-bronze:primaryKeyColumns "OrderId" .
 
     <http://example.org/source#tblOrders_OrderId> a kairos-bronze:SourceColumn ;
         kairos-bronze:sourceTable <http://example.org/source#tblOrders> ;
@@ -55,18 +59,51 @@ _SOURCE_TTL = dedent("""\
 # Minimal SKOS mapping TTL
 _MAPPING_TTL = dedent("""\
     @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+    @prefix map: <http://example.org/mapping#> .
     @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 
     # Table mapping: tblOrders → Order (direct 1:1)
-    <http://example.org/source#tblOrders> skos:exactMatch <http://example.org/test#Order> ;
-        kairos-map:mappingType "direct" .
+    <http://example.org/source#tblOrders> skos:exactMatch <http://example.org/test#Order> .
 
     # Column mappings
-    <http://example.org/source#tblOrders_OrderId> skos:exactMatch <http://example.org/test#orderId> ;
-        kairos-map:transform "source.OrderId" .
+    <http://example.org/source#tblOrders_OrderId> skos:exactMatch <http://example.org/test#orderId> .
 
-    <http://example.org/source#tblOrders_Amount> skos:exactMatch <http://example.org/test#amount> ;
-        kairos-map:transform "CAST(source.Amount AS DECIMAL(18,2))" .
+    <http://example.org/source#tblOrders_Amount> skos:exactMatch <http://example.org/test#amount> .
+    map:table a kairos-map:TableMapping ;
+        kairos-map:sourceTable <http://example.org/source#tblOrders> ;
+        kairos-map:targetClass <http://example.org/test#Order> ;
+        kairos-map:mappingType "direct" ;
+        kairos-map:matchType "exactMatch" .
+    map:id a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn <http://example.org/source#tblOrders_OrderId> ;
+        kairos-map:targetProperty <http://example.org/test#orderId> ;
+        kairos-map:matchType "exactMatch" .
+    map:amount a kairos-map:ColumnMapping ;
+        kairos-map:sourceColumn <http://example.org/source#tblOrders_Amount> ;
+        kairos-map:targetProperty <http://example.org/test#amount> ;
+        kairos-map:matchType "exactMatch" .
+""")
+
+_PREP_TTL = dedent("""\
+    @prefix prep: <http://example.org/preparation#> .
+    @prefix source: <http://example.org/source#> .
+    @prefix kairos-prep: <https://kairos.cnext.eu/preparation#> .
+
+    prep:orders a kairos-prep:PreparationPolicy ;
+        kairos-prep:sourceTable source:tblOrders ;
+        kairos-prep:prepMode "passthrough" ;
+        kairos-prep:schemaChangePolicy "fail" ;
+        kairos-prep:recordKeyPolicy prep:ordersKey .
+
+    prep:ordersKey a kairos-prep:RecordKeyPolicy ;
+        kairos-prep:sourceScope "erp" ;
+        kairos-prep:tableScope "tblOrders" ;
+        kairos-prep:recordKeyComponent source:tblOrders_OrderId ;
+        kairos-prep:recordKeyOutput prep:sourceRecordKey .
+
+    prep:sourceRecordKey a kairos-prep:PreparedColumn ;
+        kairos-prep:targetColumnName "_source_record_key" ;
+        kairos-prep:targetType "string" .
 """)
 
 # Domain ontology TTL (without silverSourceRef — added via extension)
@@ -117,6 +154,12 @@ def test_hub(tmp_path):
     sources_dir = tmp_path / "integration" / "sources" / "erp"
     sources_dir.mkdir(parents=True)
     (sources_dir / "erp.vocabulary.ttl").write_text(_SOURCE_TTL, encoding="utf-8")
+    preparation_dir = tmp_path / "integration" / "preparation"
+    preparation_dir.mkdir()
+    (preparation_dir / "erp-prep.ttl").write_text(
+        _PREP_TTL,
+        encoding="utf-8",
+    )
 
     mappings_dir = tmp_path / "model" / "mappings"
     mappings_dir.mkdir(parents=True)
@@ -163,7 +206,7 @@ def _generate(test_hub: Path, source_ref: str | None = None) -> dict[str, str]:
 
 
 class TestSilverSourceRef:
-    """Tests for kairos-ext:silverSourceRef annotation (DD-039)."""
+    """Preparation is automatic; manual refs are reserved for DD-093 contracts."""
 
     def test_without_annotation_uses_source(self, test_hub):
         """Default: no silverSourceRef → {{ source() }}."""
@@ -172,18 +215,29 @@ class TestSilverSourceRef:
         assert "source('erp', 'tblOrders')" in sql
         assert "ref(" not in sql
 
-    def test_with_annotation_uses_ref(self, test_hub):
-        """With silverSourceRef → {{ ref('model_name') }}."""
+    def test_unregistered_manual_annotation_does_not_route_prep(self, test_hub):
+        """An ordinary manual source ref has no compatibility routing behavior."""
         artifacts = _generate(test_hub, source_ref="stg_erp_orders_details")
         sql = _find_model_sql(artifacts, "order")
-        assert "ref('stg_erp_orders_details')" in sql
-        assert "source(" not in sql
+        assert "source('erp', 'tblOrders')" in sql
+        assert "ref('stg_erp_orders_details')" not in sql
 
-    def test_ref_model_in_from_clause(self, test_hub):
-        """The ref() appears in a proper FROM context."""
-        artifacts = _generate(test_hub, source_ref="stg_erp_orders_payload")
+    def test_normalize_mode_routes_ref_in_from_clause(self, test_hub):
+        """A normalized policy automatically selects its generated prep ref."""
+        prep_path = (
+            test_hub
+            / "integration"
+            / "preparation"
+            / "erp-prep.ttl"
+        )
+        prep_path.write_text(
+            _PREP_TTL.replace('"passthrough"', '"normalize"'),
+            encoding="utf-8",
+        )
+        artifacts = _generate(test_hub, source_ref=None)
         sql = _find_model_sql(artifacts, "order")
-        assert "select * from {{ ref('stg_erp_orders_payload') }}" in sql
+        assert "ref('stg_erp__tbl_orders')" in sql
+        assert "source('erp', 'tblOrders')" not in sql
 
     def test_contracted_ref_uses_exclusive_virtual_source(self, test_hub):
         contract = _contract(test_hub)
@@ -198,17 +252,28 @@ class TestSilverSourceRef:
             dedent(
                 """\
                 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+                @prefix map: <https://example.com/custom/orders/mapping/> .
                 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 
                 <https://example.com/custom/orders>
-                    skos:exactMatch <http://example.org/test#Order> ;
-                    kairos-map:mappingType "direct" .
+                    skos:exactMatch <http://example.org/test#Order> .
                 <https://example.com/custom/orders/order_id>
-                    skos:exactMatch <http://example.org/test#orderId> ;
-                    kairos-map:transform "source.order_id" .
+                    skos:exactMatch <http://example.org/test#orderId> .
                 <https://example.com/custom/orders/amount>
-                    skos:exactMatch <http://example.org/test#amount> ;
-                    kairos-map:transform "source.amount" .
+                    skos:exactMatch <http://example.org/test#amount> .
+                map:table a kairos-map:TableMapping ;
+                    kairos-map:sourceTable <https://example.com/custom/orders> ;
+                    kairos-map:targetClass <http://example.org/test#Order> ;
+                    kairos-map:mappingType "direct" ;
+                    kairos-map:matchType "exactMatch" .
+                map:id a kairos-map:ColumnMapping ;
+                    kairos-map:sourceColumn <https://example.com/custom/orders/order_id> ;
+                    kairos-map:targetProperty <http://example.org/test#orderId> ;
+                    kairos-map:matchType "exactMatch" .
+                map:amount a kairos-map:ColumnMapping ;
+                    kairos-map:sourceColumn <https://example.com/custom/orders/amount> ;
+                    kairos-map:targetProperty <http://example.org/test#amount> ;
+                    kairos-map:matchType "exactMatch" .
                 """
             ),
             encoding="utf-8",
@@ -251,8 +316,8 @@ class TestSilverSourceRef:
         assert source_yamls
         assert all("int_orders" not in content for content in source_yamls)
 
-    def test_contracted_ref_requires_semantic_key_alignment(self, test_hub):
-        contract = _contract(test_hub, natural_key=("amount",))
+    def test_contracted_grain_key_does_not_claim_semantic_identity(self, test_hub):
+        contract = _contract(test_hub, grain_key=("amount",))
         custom_sources = test_hub / "integration" / "sources" / "custom-transformations"
         custom_sources.mkdir()
         build_dbt_contract_graph(contract).serialize(
@@ -263,14 +328,27 @@ class TestSilverSourceRef:
             dedent(
                 """\
                 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+                @prefix map: <https://example.com/custom/orders/misaligned/> .
                 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
                 <https://example.com/custom/orders>
-                    skos:exactMatch <http://example.org/test#Order> ;
-                    kairos-map:mappingType "direct" .
+                    skos:exactMatch <http://example.org/test#Order> .
                 <https://example.com/custom/orders/order_id>
                     skos:exactMatch <http://example.org/test#orderId> .
                 <https://example.com/custom/orders/amount>
                     skos:exactMatch <http://example.org/test#amount> .
+                map:table a kairos-map:TableMapping ;
+                    kairos-map:sourceTable <https://example.com/custom/orders> ;
+                    kairos-map:targetClass <http://example.org/test#Order> ;
+                    kairos-map:mappingType "direct" ;
+                    kairos-map:matchType "exactMatch" .
+                map:id a kairos-map:ColumnMapping ;
+                    kairos-map:sourceColumn <https://example.com/custom/orders/order_id> ;
+                    kairos-map:targetProperty <http://example.org/test#orderId> ;
+                    kairos-map:matchType "exactMatch" .
+                map:amount a kairos-map:ColumnMapping ;
+                    kairos-map:sourceColumn <https://example.com/custom/orders/amount> ;
+                    kairos-map:targetProperty <http://example.org/test#amount> ;
+                    kairos-map:matchType "exactMatch" .
                 """
             ),
             encoding="utf-8",
@@ -283,25 +361,26 @@ class TestSilverSourceRef:
             generate_dbt_artifacts,
         )
 
-        with pytest.raises(ValueError, match="does not align"):
-            generate_dbt_artifacts(
-                classes=[
-                    {
-                        "uri": NS + "Order",
-                        "name": "Order",
-                        "label": "Order",
-                        "comment": "An order",
-                    }
-                ],
-                graph=graph,
-                template_dir=TEMPLATE_DIR,
-                namespace=NS,
-                ontology_name="test",
-                sources_dir=test_hub / "integration" / "sources",
-                mappings_dir=test_hub / "model" / "mappings",
-                silver_ext_path=ext_path,
-                contract_registry={contract.name: contract},
-            )
+        artifacts = generate_dbt_artifacts(
+            classes=[
+                {
+                    "uri": NS + "Order",
+                    "name": "Order",
+                    "label": "Order",
+                    "comment": "An order",
+                }
+            ],
+            graph=graph,
+            template_dir=TEMPLATE_DIR,
+            namespace=NS,
+            ontology_name="test",
+            sources_dir=test_hub / "integration" / "sources",
+            mappings_dir=test_hub / "model" / "mappings",
+            silver_ext_path=ext_path,
+            contract_registry={contract.name: contract},
+        )
+        release = artifacts["__release_data__"]["mapping_contracts"]
+        assert release["transformation_authorities"][0]["grain_key"] == ["amount"]
 
 
 def _find_model_sql(artifacts: dict[str, str], model_name: str) -> str:
@@ -317,7 +396,7 @@ def _find_model_sql(artifacts: dict[str, str], model_name: str) -> str:
 def _contract(
     test_hub: Path,
     *,
-    natural_key: tuple[str, ...] = ("order_id",),
+    grain_key: tuple[str, ...] = ("order_id",),
 ) -> DbtContractModel:
     sql_path = test_hub / "integration" / "transforms" / "dbt" / "models" / "int_orders.sql"
     sql_path.parent.mkdir(parents=True, exist_ok=True)
@@ -330,14 +409,28 @@ def _contract(
         virtual_source_iri="https://example.com/custom/orders",
         grain="one row per order",
         supported_adapters=("fabric", "databricks"),
-        natural_key=natural_key,
+        grain_key=grain_key,
         required_packages=(),
         required_macros=(),
         columns=(
             DbtContractColumn("order_id", "string"),
             DbtContractColumn("amount", "decimal(18,2)"),
         ),
-        decisions=(),
+        decisions=(
+            DbtContractDecision(
+                id="approved-grain",
+                statement="The contracted model has reviewed output grain.",
+                evidence=(DbtDecisionEvidence("evidence.ttl"),),
+                confidence="high",
+                status="developer_approved",
+                approval=DbtDecisionApproval(
+                    "test-reviewer",
+                    datetime(2026, 7, 25, tzinfo=UTC),
+                ),
+                implemented_by_model="int_orders",
+                verified_by=("int_orders_grain",),
+            ),
+        ),
         properties_path=sql_path.with_suffix(".yml"),
         sql_path=sql_path,
     )

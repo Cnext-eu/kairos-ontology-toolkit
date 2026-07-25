@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import kairos_ontology.core.projector as projector
+import pytest
 from kairos_ontology.core.completeness_model import (
     ALIGNMENT_ALGORITHM_VERSION,
     compute_affinity_hash,
@@ -19,7 +20,7 @@ from kairos_ontology.core.claim_registry import (
     write_registry,
 )
 from kairos_ontology.core.claim_projection_sync import apply_projection_sync
-from kairos_ontology.core.projector import run_projections
+from kairos_ontology.core.projector import ProjectionRunError, run_projections
 
 
 def _write_synced_claim_domain(hub: Path, domain: str) -> tuple[Path, Path]:
@@ -92,7 +93,13 @@ def _stub_powerbi_projection(monkeypatch):
 
     def fake_run_projection(*args, **kwargs):
         ontology_name = args[6]
-        calls.append((ontology_name, kwargs["projection_ext_path"]))
+        calls.append(
+            (
+                ontology_name,
+                kwargs["projection_ext_path"],
+                kwargs["gold_ext_path"],
+            )
+        )
         return {f"{ontology_name}.json": "{}"}
 
     monkeypatch.setattr(projector, "_run_projection", fake_run_projection)
@@ -161,13 +168,14 @@ dom:Party a owl:Class ;
     )
     write_registry(registry, registry_path(claims, "party"))
 
-    run_projections(
-        ontologies_path=ontologies,
-        catalog_path=hub / "catalog-v001.xml",
-        output_path=output,
-        target="silver",
-        namespace=None,
-    )
+    with pytest.raises(ProjectionRunError, match="silver projection failed"):
+        run_projections(
+            ontologies_path=ontologies,
+            catalog_path=hub / "catalog-v001.xml",
+            output_path=output,
+            target="silver",
+            namespace=None,
+        )
 
     report_path = output / "projection-report.json"
     payload = json.loads(report_path.read_text(encoding="utf-8"))
@@ -196,7 +204,7 @@ def test_powerbi_claim_gate_uses_silver_ext_but_projection_uses_gold_ext(tmp_pat
 
     assert _projection_errors(output, target="powerbi", domain="party") == []
     assert silver_ext.exists()
-    assert calls == [("party", gold_ext)]
+    assert calls == [("party", silver_ext, gold_ext)]
 
 
 def test_powerbi_claim_gate_uses_each_domains_exact_silver_ext(tmp_path, monkeypatch):
@@ -217,8 +225,12 @@ def test_powerbi_claim_gate_uses_each_domains_exact_silver_ext(tmp_path, monkeyp
 
     assert _projection_errors(output, target="powerbi", domain="invoice") == []
     assert _projection_errors(output, target="powerbi", domain="party") == []
-    assert {domain for domain, _ in calls} == {"invoice", "party"}
-    assert all(path.name == f"{domain}-gold-ext.ttl" for domain, path in calls)
+    assert {domain for domain, _, _ in calls} == {"invoice", "party"}
+    assert all(
+        silver.name == f"{domain}-silver-ext.ttl"
+        and gold.name == f"{domain}-gold-ext.ttl"
+        for domain, silver, gold in calls
+    )
 
 
 def test_powerbi_claim_gate_does_not_borrow_peer_silver_ext(tmp_path, monkeypatch):
@@ -243,4 +255,4 @@ def test_powerbi_claim_gate_does_not_borrow_peer_silver_ext(tmp_path, monkeypatc
     assert "missing extension file" in errors[0].get("error", "")
     assert "party-silver-ext.ttl" in errors[0].get("error", "")
     assert "other-silver-ext.ttl" not in errors[0].get("error", "")
-    assert ("party", hub / "model" / "extensions" / "party-gold-ext.ttl") not in calls
+    assert not any(domain == "party" for domain, _, _ in calls)

@@ -1,9 +1,14 @@
 # Data Engineering Rules Embedded in the Kairos Medallion Projector
 
-**Status:** Draft  
+**Status:** Superseded design draft
 **Date:** 2026-07-23  
 **Scope:** Bronze-to-Silver dbt projection and the surrounding Medallion design  
 **Target platforms:** Microsoft Fabric and Azure Databricks
+
+> **Superseded on 2026-07-25.** The reviewed target architecture is frozen in
+> [`DD-106–DD-115 Medallion Engineering Policy v1`](../design/dd-106-medallion-engineering-policy-v1.md).
+> This file remains historical evidence of the pre-redesign rules and current
+> implementation claims; it is not normative policy.
 
 ## 1. Purpose
 
@@ -61,7 +66,7 @@ still has a pending governance status in the decision log.
 | DD-097 | Accepted | Multi-domain projection deterministically reconciles package-level artifacts and keeps shared Gold assets domain-neutral. |
 | DD-101 | Accepted | Release readiness composes existing claim, source, extension, binding, validation, and projection facts without re-deriving their rules. |
 | DD-102 | Accepted | dbt projection follows immutable `bind -> normalize -> shape -> materialize -> render` phases; render cannot reread RDF or reclassify policy. |
-| DD-104 | Accepted | Every bound branch has a complete natural key, timestamp-precise SCD semantics, explicit temporal FK semantics, row lineage, and platform-portable semantic contracts. |
+| DD-104 | Amended by DD-108 | Every bound branch supplies its selected identity strategy inputs; natural keys are never invented. Timestamp-precise SCD, temporal FK, row-lineage, and portable semantic contracts remain. |
 | DD-105 | Accepted | Imported SQL is non-executable evidence until transformation readiness is governed and the DD-092/DD-093 contract path is complete. |
 
 Superseded DD-003, DD-004, and DD-005 must not be used to justify recreating the old
@@ -195,7 +200,7 @@ Generated Silver models retain:
 
 - the ontology IRI for the entity;
 - `_source_system`;
-- `_source_record_id`;
+- `_source_record_key`;
 - `_loaded_at`;
 - source and target IRIs in dbt metadata;
 - ontology and toolkit versions; and
@@ -377,135 +382,64 @@ Hub-local extension values override peer/default layers. Peer Silver extensions 
 supply cross-domain target natural keys, while reference-model defaults remain the
 lowest authored fallback. Built-in inference is last.
 
-## 6. Gold dimensional and semantic-model projection
+## 6. Gold product-profile projection
 
-Gold converts reusable Silver entities into dimensional warehouse and Power BI
-artifacts. Its source is the actual generated Silver model registry, so Gold cannot
-silently select ontology properties that have no materialized Silver column.
+Gold is a consumption-oriented product registry, not a universal star-schema rule. Every
+product names a versioned profile. The sole v1 implementation is
+`dimensional-powerbi-v1`; missing, unknown, or unimplemented profiles fail closed.
 
-### 6.1 Facts, dimensions, and bridges
+### 6.1 Explicit dimensional tables
 
-G1 classifies each projected class as follows:
+Only classes with an explicit `goldTableType` are included. FK counts, references,
+reference-data flags, GDPR annotations, and defaults never infer a role. Every table also
+binds the exact actual `goldSourceModel` and `goldSourceVersion` from passing Silver
+parity. Gold cannot select an unavailable column.
 
-1. explicit `goldTableType` wins;
-2. reference data is a dimension;
-3. a GDPR satellite is a secured dimension;
-4. a class with at least two outgoing FK relationships is inferred as a fact; and
-5. remaining classes default to dimensions.
+Facts declare grain, transaction/periodic-snapshot/accumulating-snapshot type,
+dimension-version binding, and complete incremental/correction/late-arrival policy.
+Zero-dimension facts are valid. Dimensions declare current/history/dual exposure and
+explicit version binding; history requires compatible Silver SCD2 authority. Bridges
+declare grain, two endpoints and emitted key-column bindings, cardinality, optional
+weight, and explicit allocation semantics.
 
-Gold applies `fact_`, `dim_`, and `bridge_` prefixes. An explicitly declared fact
-generates FK columns for all its object properties because dimensional facts are
-expected to carry their dimension keys. Auto-classified facts retain normal FK
-qualification safeguards.
+### 6.2 First-class measures
 
-Facts do not receive SCD columns. Dimensions can inherit SCD2 policy and expose
-`valid_from`, `valid_to`, and `is_current`. Reference data becomes a shared dimension.
-Aggregate-table generation (G7) is deferred.
+Measures are `kairos-ext:Measure` resources linked from the product. A datatype property
+annotated with `measureExpression` is not a measure and never loses its physical column.
+Each measure has stable identity, business definition, column/measure dependencies,
+result type, format/folder, owner, tests, evidence, and an intent/provisional/validated/
+approved lifecycle.
 
-### 6.2 Measures
+Intent may omit DAX. Provisional and later states require expression and dependencies.
+Validated and approved states require imported tests/evidence; approved also requires an
+abstract owner role. Missing/ambiguous dependencies, unavailable columns, undeclared DAX
+references, and cycles block. Projection never treats parseable DAX as data validation.
 
-A datatype property with `measureExpression` becomes a DAX measure rather than a
-physical Gold column. `measureFormatString` controls its display format. Measures are
-emitted into the semantic model and the generated measures artifact.
+### 6.3 Calendar and time intelligence
 
-Row-level shaping, joins, and grain belong in dbt. Reusable business metrics belong in
-DAX. Reports should consume semantic-model measures instead of recreating metric logic
-inside visuals.
+No date table or time intelligence is invented. A linked calendar defines bounds,
+fiscal year, week pattern, locale, holidays, time zone, period closure, role-playing date
+bindings, and explicit approval. Only an approved calendar bound to emitted
+date/timestamp columns emits `dim_date` and calculation groups.
 
-Example:
+### 6.4 Security and perspectives
 
-```turtle
-domain:orderAmount
-    kairos-ext:measureExpression "SUM([order_amount])" ;
-    kairos-ext:measureFormatString "#,##0.00" .
-```
+RLS/OLS requires a complete fail-closed entitlement contract: governed entitlement
+source, identity mapping, roles, filter direction, table/column bindings, positive and
+negative tests, imported evidence, and `failClosed true`. Bindings resolve against
+emitted columns. Generated RLS starts deny-all; deployment identity and runtime
+enforcement remain downstream facts. Perspectives are navigation only, never security.
 
-### 6.3 Hierarchies, date, and time intelligence
+### 6.5 Adapter and release behavior
 
-`hierarchyName` and `hierarchyLevel` group ordered columns into Power BI drill paths.
-`generateDateDimension` generates a shared `dim_date` with a `YYYYMMDD` key.
-`generateTimeIntelligence` adds a calculation-group scaffold with Current, YTD, QTD,
-MTD, previous-year, and year-over-year calculations.
+The profile renders dimensional dbt, adapter DDL, TMDL, DAX, Mermaid ERD, and a governed
+product report from immutable specs/plans. Fabric uses DirectLake. Databricks emits
+downstream-Power-BI DirectQuery scaffolding only under approved scoped deviations.
 
-The generated calculation group is a reusable starting contract; measure semantics and
-calendar assumptions still require business review.
-
-### 6.4 RLS, OLS, and perspectives
-
-Gold security projection currently supports:
-
-- **GDPR RLS:** `gdprSatelliteOf` produces a secured dimension and a generated TMDL role
-  named `Restrict_{table}` with `[is_authorized] = TRUE()` as its table filter.
-- **Column OLS:** `olsRestricted true` adds the column to a `RestrictedColumns` TMDL role
-  with metadata permission removed.
-- **Perspectives:** a space-separated `perspective` annotation groups tables into named
-  TMDL perspectives for discoverability and audience-focused model views.
-
-Generated role definitions do not assign users or groups. Identity membership,
-deployment bindings, and validation of the `is_authorized` entitlement logic remain
-platform operational responsibilities. RLS is security-sensitive and must be reviewed;
-the generated role is not evidence that access governance is complete. The projector
-does not itself add or populate the `is_authorized` entitlement column, so the Gold data
-contract must supply it before this RLS scaffold is operational.
-
-`rolePlayingAs` and `degenerateDimension` are present in the extension vocabulary/design
-surface but are not currently rendered by the Gold projector. They must not be reported
-as active capabilities.
-
-### 6.5 Gold projection extension
-
-Gold policy belongs in `model/extensions/{domain}-gold-ext.ttl`.
-
-**Ontology-level annotations**
-
-| Annotation | Purpose |
-|---|---|
-| `goldSchema` | Gold warehouse schema, normally `gold_{domain}`. |
-| `goldInheritanceStrategy` | Class-per-table by default; optional discriminator flattening. |
-| `generateDateDimension` | Generates the shared date dimension. |
-| `generateTimeIntelligence` | Generates a TMDL calculation-group scaffold. |
-| `goldIncludeImports` | Bulk-claims first-level imported classes for Gold. |
-
-**Class-level annotations**
-
-| Annotation | Purpose |
-|---|---|
-| `goldInclude` | Claims an imported class for Gold. |
-| `goldExclude` | Excludes a class from Gold while leaving Silver unchanged. |
-| `goldTableType` | Overrides classification with `fact`, `dimension`, or `bridge`. |
-| `goldTableName` | Overrides the physical table name; the dimensional prefix is retained. |
-| `goldInheritanceStrategy` | Overrides inheritance strategy for one class. |
-| `perspective` | Adds the table to one or more semantic-model perspectives. |
-| `incrementalColumn` | Selects incremental loading for the generated Gold dbt model. |
-
-**Property-level annotations**
-
-| Annotation | Purpose |
-|---|---|
-| `goldColumnName` | Overrides the Gold physical/semantic column name. |
-| `goldDataType` | Overrides the Gold SQL type. |
-| `measureExpression` | Defines a DAX measure and removes the property from physical-column generation. |
-| `measureFormatString` | Defines the DAX display format. |
-| `hierarchyName` / `hierarchyLevel` | Defines ordered Power BI hierarchy levels. |
-| `olsRestricted` | Adds the column to generated Object-Level Security metadata. |
-| `degenerateDimension` | Reserved design annotation; not currently rendered. |
-| `rolePlayingAs` | Reserved design annotation; current projector code does not render role-playing dimensions. |
-
-### 6.6 Gold outputs
-
-The Power BI/Gold projection can emit:
-
-- Gold DDL, relationship documentation, views, and Mermaid ERDs;
-- generated Gold dbt models consuming actual Silver refs;
-- `dim_`, `fact_`, and `bridge_` tables;
-- DirectLake-oriented TMDL table definitions and relationships;
-- DAX measures and hierarchies;
-- optional date and time-intelligence artifacts;
-- RLS/OLS role definitions and perspectives; and
-- a deterministic cross-domain master Gold ERD.
-
-Power BI visuals are intentionally not generated. The semantic model is the governed
-consumption contract; reports remain a separate presentation concern.
+Strict release consumes passing Silver parity, table source/version bindings, approved
+measure/test/evidence state, calendar approval when present, complete security when
+present, adapter/TMDL compile evidence, deviations, and deterministic artifact
+completeness. It does not claim deployment, runtime enforcement, or data validation.
 
 ## 7. Contracted advanced dbt transformations
 
@@ -710,8 +644,8 @@ publication.
 | Canonical physical naming | Applied by dbt | Repeated naming conversion | Applies the configured naming convention and canonical Silver schema. |
 | Source-to-domain column mapping | Applied by dbt | Handwritten select lists | Projects mapped properties and applies physical aliases. |
 | Type conversion | Applied by dbt | Manual casts | Converts source/XSD types to platform-aware target types. |
-| Mapping transforms | Applied by dbt | Repetitive expression SQL | Renders approved `kairos-map:transform` expressions. |
-| Default values | Applied by dbt | Null fallback SQL | Renders `COALESCE` from `kairos-map:defaultValue`. |
+| Mapping scalar expressions | Applied by dbt | Typed deterministic AST | Renders only validated DD-107 nodes with safe identifiers/literals. |
+| Null fallback | Applied by dbt | Typed COALESCE contract | Renders `COALESCE` from a validated `FunctionExpression`. |
 | Source filters | Applied by dbt | Entity-specific `WHERE` clauses | Applies table mapping filter conditions in source CTEs. |
 | Deterministic surrogate keys | Applied by dbt | Key-generation macros and conventions | Generates warehouse keys from the declared natural-key components. |
 | Natural-key completeness | Validated | Manual key coverage review | Rejects bound models without a natural key and unsafe multi-source branches with incomplete keys. |
@@ -761,12 +695,12 @@ default table-per-concrete-class behaviour is retained.
 
 ### 10.1 Deduplication annotations
 
-`kairos-map:deduplicationKey` and `kairos-map:deduplicationOrder` are currently parsed,
-but the dbt projector does not render a `ROW_NUMBER()` or equivalent deduplication step.
-They must not yet be reported as applied rules.
+`kairos-prep:TechnicalDedupe` owns source-technical partition and total-order policy.
+The prep renderer applies it only after validating source ownership and complete
+primary-key tie-breakers.
 
-Deduplication that is essential to grain or identity should use a governed contracted
-dbt transformation until generated support is implemented.
+Deduplication that selects a business winner or changes semantic grain uses a governed
+contracted dbt transformation instead.
 
 ### 10.2 Soft-delete execution
 
@@ -800,7 +734,7 @@ For every entity, the report should expose:
 | Multi-source policy | `two normalized source views plus conformed union` |
 | Mapping logic | transforms, defaults, filters, and contracted source reference |
 | Generated tests | not-null, current-row unique, relationships, accepted values |
-| Lineage | source system, source record ID, ontology/source IRIs |
+| Lineage | source system, source-record key, ontology/source IRIs |
 | Applied design rules | stable rule identifiers with implementation evidence |
 | Non-applied annotations | recognized annotations that did not affect generated SQL |
 | Warnings and blockers | unresolved joins, incomplete keys, unbound claims |

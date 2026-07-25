@@ -1,0 +1,11 @@
+schema_version: "1.0"
+policy_version: "1.0"
+approval_status: draft
+owner_role: Data Platform Owner
+reviewed_at: "2026-07-25"
+expires_at: "2027-07-25"
+required_adapters: []
+required_artifacts: []
+artifact_hashes: {}
+block_warnings: true
+require_dq_runtime_results: false

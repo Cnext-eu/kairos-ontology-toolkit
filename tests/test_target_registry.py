@@ -25,6 +25,7 @@ BUILTIN_TARGETS = (
     "report",
     "ddd",
 )
+ALL_TARGETS = tuple(target for target in BUILTIN_TARGETS if target != "silver")
 CLI_TARGETS = (*BUILTIN_TARGETS, "mdm-profile")
 COMPATIBILITY_TARGETS = (
     "dbt",
@@ -70,7 +71,7 @@ def test_registry_derives_order_aliases_classification_and_external_metadata():
     assert tuple(projector.TARGET_REGISTRY) == CLI_TARGETS
     assert tuple(projector.VALID_TARGETS) == COMPATIBILITY_TARGETS
     assert projector.projection_target_choices() == CLI_TARGETS
-    assert projector.projection_targets_for_all() == BUILTIN_TARGETS
+    assert projector.projection_targets_for_all() == ALL_TARGETS
 
     gold = projector.get_target_spec("gold")
     assert gold is projector.get_target_spec("powerbi")
@@ -80,6 +81,7 @@ def test_registry_derives_order_aliases_classification_and_external_metadata():
 
     silver = projector.get_target_spec("silver")
     assert silver.output_path(Path("output")) == Path("output/medallion/dbt")
+    assert silver.include_in_all is False
 
     report = projector.get_target_spec("report")
     assert report.execution_phase is projector.ExecutionPhase.POST_DOMAIN

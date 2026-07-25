@@ -1,120 +1,154 @@
-# Silver-layer projection extension for the {DOMAIN} ontology
+# Silver policy extension for the {DOMAIN} ontology
 #
-# This file drives DDL + ERD generation for the MS Fabric silver layer.
-# Rules referenced: R1–R16 (common annotations) + S1–S8 (Silver Fabric rules).
-#
-# IMPORTANT: Always write every annotation explicitly, even when the value
-# matches the projector default. This ensures deterministic, reproducible
-# output across toolkit versions.
-#
-# Usage:
-#   python -m kairos_ontology project --target silver
-#
-# The generator discovers this file automatically if named {DOMAIN}-silver-ext.ttl
-# (or any *-silver-ext.ttl in the model/extensions/ folder when projecting a hub).
+# Fresh hubs author explicit v1 identity, lineage, history, relationship, and
+# data-quality policy here. Keep physical policy out of the domain ontology.
 
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
-@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 
-# Replace {DOMAIN_URI} with your domain ontology base URI, e.g.
-# <http://example.com/ont/customer#>
 @prefix domain: <{DOMAIN_URI}> .
-
-# ---------------------------------------------------------------------------
-# Link this extension to the domain ontology
-# ---------------------------------------------------------------------------
 
 <{DOMAIN_EXTENSION_URI}> a owl:Ontology ;
     rdfs:label "{DOMAIN} Silver Extension"@en ;
-    rdfs:comment "Silver-layer projection annotations for {DOMAIN}."@en ;
+    rdfs:comment "Silver identity, lineage, history, relationship, and quality policy for {DOMAIN}."@en ;
     owl:imports <{DOMAIN_ONTOLOGY_URI}> .
 
-# ---------------------------------------------------------------------------
-# Ontology-level annotations (apply to all tables in this domain)
-# ---------------------------------------------------------------------------
-
 <{DOMAIN_ONTOLOGY_URI}>
-    # R1  — Schema name (default: silver_{domain})
     kairos-ext:silverSchema "silver_{domain}" ;
-
-    # R2  — Surrogate key strategy
-    kairos-ext:surrogateKeyStrategy "uuid" ;
-
-    # R3  — Include OWL IRI lineage column ({table}_iri)
-    kairos-ext:includeNaturalKeyColumn "true"^^xsd:boolean ;
-
-    # R4  — Naming convention (camelCase → snake_case)
-    kairos-ext:namingConvention "camel-to-snake" ;
-
-    # S4  — Inline ref threshold (ref tables with ≤N business columns are inlined)
-    kairos-ext:inlineRefThreshold "3"^^xsd:integer ;
-
-    # R9  — Audit envelope appended to every non-reference table
-    kairos-ext:auditEnvelope
-        "_created_at TIMESTAMP, _updated_at TIMESTAMP, _source_system STRING, _load_date DATE, _batch_id STRING" .
+    kairos-ext:namingConvention "camel-to-snake" .
 
 # ---------------------------------------------------------------------------
-# Class-level annotations (add one block per class)
-#
-# ⚠️  Write EVERY annotation explicitly — even when using the default value.
-#     This ensures deterministic output across toolkit versions.
-#
-# Required per class:
-#   kairos-ext:scdType              "2" (history) or "1" (overwrite)
-#   kairos-ext:isReferenceData      "true"/"false"
-#
-# Conditional:
-#   kairos-ext:inheritanceStrategy  "class-per-table" or "discriminator" (if has subclasses)
-#   kairos-ext:discriminatorColumn  column name (if strategy = discriminator)
-#   kairos-ext:gdprSatelliteOf      parent class (if GDPR isolation needed)
-#   kairos-ext:partitionBy          partition column
-#   kairos-ext:clusterBy            cluster columns
+# Materialized entity authority
 # ---------------------------------------------------------------------------
+#
+# Every materialized class declares its grain, identity strategy, entity-instance
+# IRI policy, key scope, prepared source identity, change detection, and lineage.
+# An entity-instance IRI is a semantic identifier; it is not a source key or
+# physical warehouse join key.
+#
+# domain:MyEntity
+#     kairos-ext:silverTableName "my_entity" ;
+#     kairos-ext:businessGrain "one governed entity record" ;
+#     kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+#     kairos-ext:entityInstanceIriPolicy "emit" ;
+#     kairos-ext:keyScope "source-table" ;
+#     kairos-ext:sourceIdentity domain:PreparedSourceRecordKey ;
+#     kairos-ext:changeDetectionStrategy "compare-columns" ;
+#     kairos-ext:lineagePolicy "source-record-and-load" ;
+#     kairos-ext:scdType "1" ;
+#     kairos-ext:incrementalPolicy domain:MyIncrementalPolicy .
+#
+# Valid identity strategies are business-key, source-scoped-immutable-key,
+# deterministic-integration-key, externally-mastered-identifier, and
+# surrogate-only. business-key, deterministic-integration-key, and
+# externally-mastered-identifier require an explicitly mapped naturalKey.
+# surrogate-only forbids naturalKey and requires reconciliationLimitation.
+# deterministic-integration-key additionally requires multiple sourceIdentity
+# values and an approved exactly-equivalent multiSourcePolicy. Externally mastered
+# identifiers are routed to MDM; core does not match or apply survivorship.
+# entityInstanceIriPolicy is explicitly "emit" or "omit". Single-source entities
+# omit drivingSource (the effective mode is deterministically only-source);
+# multi-contributor entities declare one drivingSource from sourceIdentity.
 
-# Example: standard operational table (SCD Type 2)
-# domain:MyClass
+# ---------------------------------------------------------------------------
+# History and incremental execution authority
+# ---------------------------------------------------------------------------
+#
+# SCD2 entities declare whether history represents business-valid time or load
+# history. Incremental entities link a complete execution policy.
+#
+# domain:MyHistoricalEntity
+#     kairos-ext:silverTableName "my_historical_entity" ;
+#     kairos-ext:businessGrain "one governed entity version" ;
+#     kairos-ext:identityStrategy "business-key" ;
+#     kairos-ext:entityInstanceIriPolicy "emit" ;
+#     kairos-ext:keyScope "domain" ;
+#     kairos-ext:sourceIdentity domain:PreparedSourceRecordKey ;
+#     kairos-ext:naturalKey "businessId" ;
+#     kairos-ext:changeDetectionStrategy "canonical-hash" ;
+#     kairos-ext:hashPolicy domain:MyHashPolicy ;
+#     kairos-ext:lineagePolicy "source-record-and-load" ;
 #     kairos-ext:scdType "2" ;
-#     kairos-ext:isReferenceData "false"^^xsd:boolean ;
-#     kairos-ext:partitionBy "_load_date" .
-
-# Example: reference / code list table (SCD Type 1, ref_ prefix)
-# domain:MyCodeList
-#     kairos-ext:isReferenceData "true"^^xsd:boolean ;
-#     kairos-ext:scdType "1" .
-
-# Example: GDPR satellite (no surrogate key, PK = FK to parent)
-# domain:MySensitiveData
-#     kairos-ext:gdprSatelliteOf domain:MyParentClass .
-
-# Example: discriminator-based inheritance (explicit, even though S3 always flattens)
-# domain:MyBaseClass
-#     kairos-ext:scdType "2" ;
-#     kairos-ext:isReferenceData "false"^^xsd:boolean ;
-#     kairos-ext:inheritanceStrategy "discriminator" ;
-#     kairos-ext:discriminatorColumn "entity_type" .
-
-# ---------------------------------------------------------------------------
-# Property-level annotations (add one block per property needing override)
+#     kairos-ext:scd2TimeBasis "business-valid" ;
+#     kairos-ext:incrementalPolicy domain:MyIncrementalPolicy .
 #
-# R4  — Column name / data type overrides
-# R11 — Explicit nullability (also inferred from SHACL sh:minCount 1)
-# R12 — FK column for max-cardinality-1 object property
-# R13 — Junction table for many-to-many object property
-# R14 — Conditional FK (discriminator pattern)
+# domain:MyIncrementalPolicy a kairos-ext:IncrementalPolicy ;
+#     kairos-ext:mergeIdentity "_source_record_key" ;
+#     kairos-ext:cdcOperation "_cdc_operation" ;
+#     kairos-ext:sourceUpdateTimestamp "_source_updated_at" ;
+#     kairos-ext:sourceEffectiveTimestamp "_source_effective_at" ;
+#     kairos-ext:ingestionTimestamp "_ingested_at" ;
+#     kairos-ext:totalOrderTieBreaker "_source_record_key" ;
+#     kairos-ext:lookbackWindow "7 days" ;
+#     kairos-ext:hardDeletePolicy "tombstone" ;
+#     kairos-ext:softDeletePolicy "apply-operation" ;
+#     kairos-ext:lateArrivalPolicy "reconcile-with-lookback" ;
+#     kairos-ext:correctionPolicy "replace-by-total-order" ;
+#     kairos-ext:replayPolicy "idempotent-merge" ;
+#     kairos-ext:backfillPolicy "full-rebuild-approved" ;
+#     kairos-ext:schemaChangePolicy "fail" .
+#
+# domain:MyHashPolicy a kairos-ext:HashPolicy ;
+#     kairos-ext:hashContractVersion "1" ;
+#     kairos-ext:hashAlgorithm "SHA-256" ;
+#     kairos-ext:hashInput ( domain:propertyOne domain:propertyTwo ) ;
+#     kairos-ext:hashNullRepresentation "typed-length-delimited-null" .
+#
+# Every materialized FK declares mode, cardinality, all failure actions, and
+# change-detection participation. As-of is always UTC/microsecond and [from, to).
+#
+# domain:referencesParent
+#     kairos-ext:silverForeignKey true ;
+#     kairos-ext:silverForeignKeyTemporalMode "as-of" ;
+#     kairos-ext:silverForeignKeyAsOfColumn "_source_effective_at" ;
+#     kairos-ext:silverForeignKeyInterval "closed-open" ;
+#     kairos-ext:silverForeignKeyTimeZone "UTC" ;
+#     kairos-ext:silverForeignKeyPrecision "microsecond" ;
+#     kairos-ext:silverForeignKeyCardinality "exactly-one" ;
+#     kairos-ext:silverForeignKeyMissingPolicy "quarantine" ;
+#     kairos-ext:silverForeignKeyAmbiguousPolicy "fail" ;
+#     kairos-ext:silverForeignKeyLateParentPolicy "restate" ;
+#     kairos-ext:silverForeignKeyChangeDetection true .
+
 # ---------------------------------------------------------------------------
+# Multi-source and contribution-lineage authority
+# ---------------------------------------------------------------------------
+#
+# domain:MyCompositeEntity
+#     kairos-ext:sourceIdentity
+#         domain:PreparedSourceRecordKeyA,
+#         domain:PreparedSourceRecordKeyB ;
+#     kairos-ext:drivingSource domain:PreparedSourceRecordKeyA ;
+#     kairos-ext:contributionLineagePolicy "all-source-record-contributions" ;
+#     kairos-ext:multiSourcePolicy domain:MySourcePolicy .
+#
+# domain:MySourcePolicy a kairos-ext:MultiSourcePolicy ;
+#     kairos-ext:branchRelationship "overlapping" ;
+#     kairos-ext:normalizationPolicy "codes, units, currency, and time zones are explicit" ;
+#     kairos-ext:sourcePrecedence "none-without-approved-exact-equivalence" ;
+#     kairos-ext:attributeConflictPolicy "quarantine" ;
+#     kairos-ext:keyCollisionPolicy "retain-source-scoped-identities" ;
+#     kairos-ext:branchDeletionPolicy "retain-other-branches" ;
+#     kairos-ext:branchLateArrivalPolicy "reconcile-on-arrival" ;
+#     kairos-ext:reconciliationTest "entity-branch-and-union-reconciliation" .
 
-# Example: FK column for a many-to-one object property
-# domain:hasLegalForm
-#     kairos-ext:silverColumnName "legal_form_code" ;
-#     kairos-ext:silverDataType   "STRING" .
-
-# Example: junction table for a many-to-many object property
-# domain:hasTeamMember
-#     kairos-ext:junctionTableName "engagement_team_member" .
-
-# Example: conditional FK (only meaningful for certain discriminator subtypes)
-# domain:hasSpecialAttribute
-#     kairos-ext:conditionalOnType "SubtypeA SubtypeB" .
+# ---------------------------------------------------------------------------
+# Reusable data-quality authority
+# ---------------------------------------------------------------------------
+#
+# domain:MyEntity kairos-ext:dataQualityRule domain:RequiredIdentifierRule .
+#
+# domain:RequiredIdentifierRule a kairos-ext:DataQualityRule ;
+#     kairos-ext:dqRuleId "entity.required-identifier" ;
+#     kairos-ext:dqRuleVersion "1" ;
+#     kairos-ext:dqCategory "business" ;
+#     kairos-ext:dqScope domain:MyEntity ;
+#     kairos-ext:dqCheckType "cross-field" ;
+#     kairos-ext:dqCheckExpression "left=identifier;operator=ne;right=status" ;
+#     kairos-ext:dqSeverity "error" ;
+#     kairos-ext:dqTolerance "0" ;
+#     kairos-ext:dqAction "quarantine" ;
+#     kairos-ext:dqOwnerRole "Domain Data Owner" ;
+#     kairos-ext:dqEvidence "approved identity policy" ;
+#     kairos-ext:dqTestRef "kairos.dq.cross-field.v1" .

@@ -1,145 +1,137 @@
-# Gold-layer projection extension for the {DOMAIN} ontology
+# Gold product policy extension for the {DOMAIN} ontology
 #
-# This file drives star-schema DDL + TMDL + ERD generation for the Power BI
-# gold layer on MS Fabric Warehouse (DirectLake mode).
-# Rules referenced: R1–R16 (common annotations) + G1–G8 (Gold Power BI rules).
-#
-# IMPORTANT: Always write every annotation explicitly, even when the value
-# matches the projector default. This ensures deterministic, reproducible
-# output across toolkit versions.
-#
-# Usage:
-#   python -m kairos_ontology project --target gold
-#
-# The generator discovers this file automatically if named {DOMAIN}-gold-ext.ttl
-# (or any *-gold-ext.ttl in the model/extensions/ folder when projecting a hub).
+# Fresh hubs author an explicit v1 dimensional Power BI product profile here:
+# table roles, governed measures, calendar, incremental execution, and security.
 
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
-@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 
-# Replace {DOMAIN_URI} with your domain ontology base URI, e.g.
-# <http://example.com/ont/customer#>
 @prefix domain: <{DOMAIN_URI}> .
-
-# ---------------------------------------------------------------------------
-# Link this extension to the domain ontology
-# ---------------------------------------------------------------------------
 
 <{DOMAIN_EXTENSION_URI}> a owl:Ontology ;
     rdfs:label "{DOMAIN} Gold Extension"@en ;
-    rdfs:comment "Gold-layer (Power BI star schema) projection annotations for {DOMAIN}."@en ;
+    rdfs:comment "Governed dimensional Power BI product policy for {DOMAIN}."@en ;
     owl:imports <{DOMAIN_ONTOLOGY_URI}> .
 
-# ---------------------------------------------------------------------------
-# Ontology-level annotations (apply to the whole gold schema)
-# ---------------------------------------------------------------------------
-
 <{DOMAIN_ONTOLOGY_URI}>
-    # G1  — Gold schema name (default: gold_{domain})
     kairos-ext:goldSchema "gold_{domain}" ;
-
-    # G8  — Auto-generate a dim_date table with YYYYMMDD integer key
-    kairos-ext:generateDateDimension "true"^^xsd:boolean .
+    kairos-ext:goldProductProfile "dimensional-powerbi-v1" ;
+    kairos-ext:namingConvention "camel-to-snake" .
 
 # ---------------------------------------------------------------------------
-# Class-level annotations (add one block per class)
-#
-# ⚠️  Write EVERY annotation explicitly — even when using the default value.
-#     This ensures deterministic output across toolkit versions.
-#
-# The projector auto-classifies classes as fact or dimension (G1) based on
-# relationship patterns:
-#   - Classes with ≥2 outgoing FK  → fact
-#   - Classes referenced by others → dimension
-#   - isReferenceData = true       → shared dimension (G6)
-#
-# Use goldTableType to override the auto-classification when needed.
-#
-# Required per class:
-#   kairos-ext:goldTableType        "fact", "dimension", or "bridge"
-#
-# Optional:
-#   kairos-ext:goldTableName        explicit table name (prefix auto-added)
-#   kairos-ext:goldExclude          "true" to skip this class entirely
-#   kairos-ext:scdType              "2" (history) or "1" (overwrite) — dims only (G3)
-#   kairos-ext:isReferenceData      "true" → shared dim with dim_ prefix (G6)
-#   kairos-ext:gdprSatelliteOf      parent class → secured dim + RLS role (G4)
-#   kairos-ext:inheritanceStrategy  "discriminator" → hierarchy columns (G5)
+# Explicit table and fact/dimension roles
 # ---------------------------------------------------------------------------
-
-# Example: fact table (transactional entity with many FK relationships)
-# domain:Order
+#
+# Every included Gold class declares goldTableType. Facts also declare grain,
+# fact behavior, dimension-version binding, and a complete incremental policy.
+# Dimensions declare the history exposure presented to consumers.
+#
+# domain:MyFact
 #     kairos-ext:goldTableType "fact" ;
-#     kairos-ext:partitionBy "_load_date" .
-
-# Example: dimension table (SCD Type 2 with history tracking)
-# domain:Customer
+#     kairos-ext:goldTableName "fact_my_event" ;
+#     kairos-ext:goldSourceModel "my_event" ;
+#     kairos-ext:goldSourceVersion "1.0.0" ;
+#     kairos-ext:factGrain "one business event" ;
+#     kairos-ext:factType "transaction" ;
+#     kairos-ext:dimensionVersionBinding "as-of-event-date" ;
+#     kairos-ext:incrementalPolicy domain:MyFactIncremental .
+#
+# domain:MyDimension
 #     kairos-ext:goldTableType "dimension" ;
-#     kairos-ext:scdType "2" .
-
-# Example: shared dimension from reference data (G6)
-# domain:Country
-#     kairos-ext:goldTableType "dimension" ;
-#     kairos-ext:isReferenceData "true"^^xsd:boolean ;
-#     kairos-ext:scdType "1" .
-
-# Example: GDPR secured dimension (G4 — generates RLS role)
-# domain:CustomerPII
-#     kairos-ext:goldTableType "dimension" ;
-#     kairos-ext:gdprSatelliteOf domain:Customer .
-
-# Example: bridge table (many-to-many resolution)
-# domain:OrderProduct
-#     kairos-ext:goldTableType "bridge" .
-
-# Example: exclude class from gold layer
-# domain:AuditLog
-#     kairos-ext:goldExclude "true"^^xsd:boolean .
+#     kairos-ext:goldTableName "dim_my_entity" ;
+#     kairos-ext:goldSourceModel "my_entity" ;
+#     kairos-ext:goldSourceVersion "1.0.0" ;
+#     kairos-ext:dimensionExposure "dual" ;
+#     kairos-ext:dimensionVersionBinding "current" .
+#
+# domain:MyBridge
+#     kairos-ext:goldTableType "bridge" ;
+#     kairos-ext:goldTableName "bridge_my_relationship" ;
+#     kairos-ext:goldSourceModel "my_relationship" ;
+#     kairos-ext:goldSourceVersion "1.0.0" ;
+#     kairos-ext:bridgeGrain "one relationship allocation" ;
+#     kairos-ext:bridgeEndpoint domain:MyFact, domain:MyDimension ;
+#     kairos-ext:bridgeEndpointBinding "MyFact=my_fact_sk",
+#                                      "MyDimension=my_dimension_sk" ;
+#     kairos-ext:bridgeCardinality "many-to-many" ;
+#     kairos-ext:bridgeAllocationSemantics "no-allocation-approved" .
 
 # ---------------------------------------------------------------------------
-# Property-level annotations (add one block per property needing override)
-#
-# Column overrides:
-#   kairos-ext:goldColumnName       explicit column name
-#   kairos-ext:goldDataType         SQL type override (G8)
-#
-# Measures (property becomes DAX measure, not a physical column):
-#   kairos-ext:measureExpression    DAX expression (e.g. "SUM([amount])")
-#   kairos-ext:measureFormatString  DAX format (e.g. "$#,##0.00")
-#
-# Hierarchies (G5):
-#   kairos-ext:hierarchyName        hierarchy name (e.g. "Geography")
-#   kairos-ext:hierarchyLevel       level order (1 = top)
-#
-# Degenerate dimensions (G1):
-#   kairos-ext:degenerateDimension  "true" → keep on fact table
-#
-# Role-playing dimensions:
-#   kairos-ext:rolePlayingAs        space-separated role names
+# Complete incremental authority for facts
 # ---------------------------------------------------------------------------
+#
+# domain:MyFactIncremental a kairos-ext:IncrementalPolicy ;
+#     kairos-ext:mergeIdentity "_source_record_key" ;
+#     kairos-ext:cdcOperation "_cdc_operation" ;
+#     kairos-ext:sourceUpdateTimestamp "_source_updated_at" ;
+#     kairos-ext:sourceEffectiveTimestamp "event_date" ;
+#     kairos-ext:ingestionTimestamp "_ingested_at" ;
+#     kairos-ext:totalOrderTieBreaker "_source_record_key" ;
+#     kairos-ext:lookbackWindow "7 days" ;
+#     kairos-ext:hardDeletePolicy "tombstone" ;
+#     kairos-ext:softDeletePolicy "apply-operation" ;
+#     kairos-ext:lateArrivalPolicy "reconcile-with-lookback" ;
+#     kairos-ext:correctionPolicy "replace-by-total-order" ;
+#     kairos-ext:replayPolicy "idempotent-merge" ;
+#     kairos-ext:backfillPolicy "full-rebuild-approved" ;
+#     kairos-ext:schemaChangePolicy "fail" .
 
-# Example: DAX measure (not a physical column)
-# domain:hasOrderAmount
-#     kairos-ext:measureExpression "SUM([order_amount])" ;
-#     kairos-ext:measureFormatString "$#,##0.00" .
+# ---------------------------------------------------------------------------
+# First-class governed measures
+# ---------------------------------------------------------------------------
+#
+# Link each Measure resource from the Gold product ontology. Intent measures may
+# capture a reviewed business definition before DAX and dependencies are ready.
+# Provisional, validated, and approved measures require both.
+#
+# <{DOMAIN_ONTOLOGY_URI}> kairos-ext:measure domain:TotalAmount .
+#
+# domain:TotalAmount a kairos-ext:Measure ;
+#     kairos-ext:measureId "{domain}.total-amount" ;
+#     kairos-ext:measureDefinition "Sum of governed amounts in the active filter context." ;
+#     kairos-ext:measureExpression "SUM([amount])" ;
+#     kairos-ext:measureColumnDependency domain:amount ;
+#     kairos-ext:measureLifecycleState "approved" ;
+#     kairos-ext:measureDataType "decimal" ;
+#     kairos-ext:measureFormatString "#,##0.00" ;
+#     kairos-ext:measureFolder "Finance" ;
+#     kairos-ext:measureOwnerRole "Finance Data Owner" ;
+#     kairos-ext:measureValidationTest "total-amount-reconciliation" ;
+#     kairos-ext:measureValidationEvidence "dq-run:total-amount-v1" .
 
-# Example: hierarchy for drill-down navigation
-# domain:hasCountry
-#     kairos-ext:hierarchyName "Geography" ;
-#     kairos-ext:hierarchyLevel "1"^^xsd:integer .
-# domain:hasCity
-#     kairos-ext:hierarchyName "Geography" ;
-#     kairos-ext:hierarchyLevel "2"^^xsd:integer .
+# ---------------------------------------------------------------------------
+# Calendar profile
+# ---------------------------------------------------------------------------
+#
+# <{DOMAIN_ONTOLOGY_URI}> kairos-ext:calendarProfile domain:ReportingCalendar .
+#
+# domain:ReportingCalendar a kairos-ext:CalendarProfile ;
+#     kairos-ext:calendarStartDate "2020-01-01"^^xsd:date ;
+#     kairos-ext:calendarEndDate "2035-12-31"^^xsd:date ;
+#     kairos-ext:fiscalYearStartMonth 1 ;
+#     kairos-ext:weekPattern "iso-8601-monday" ;
+#     kairos-ext:calendarLocale "en-US" ;
+#     kairos-ext:holidaySource "none-approved" ;
+#     kairos-ext:calendarTimeZone "UTC" ;
+#     kairos-ext:periodClosurePolicy "approved-period-status" ;
+#     kairos-ext:rolePlayingDate "EventDate=MyFact.event_date" ;
+#     kairos-ext:calendarApprovalStatus "approved" .
 
-# Example: degenerate dimension (stays on fact table)
-# domain:hasOrderNumber
-#     kairos-ext:degenerateDimension "true"^^xsd:boolean .
-
-# Example: role-playing dimension (date dim used for multiple roles)
-# domain:hasOrderDate
-#     kairos-ext:rolePlayingAs "order_date" .
-# domain:hasShipDate
-#     kairos-ext:rolePlayingAs "ship_date" .
+# ---------------------------------------------------------------------------
+# Fail-closed security policy
+# ---------------------------------------------------------------------------
+#
+# <{DOMAIN_ONTOLOGY_URI}> kairos-ext:securityPolicy domain:ProductSecurity .
+#
+# domain:ProductSecurity a kairos-ext:SecurityPolicy ;
+#     kairos-ext:entitlementSource "governed-product-entitlements" ;
+#     kairos-ext:identityMapping "model-user-to-entitlement-subject" ;
+#     kairos-ext:rolePolicy "ProductReader" ;
+#     kairos-ext:filterDirection "entitlement-to-product" ;
+#     kairos-ext:securityBinding "MyDimension.entity_id=ProductReader:RLS" ;
+#     kairos-ext:positiveSecurityTest "authorized-role-can-read-allowed-rows" ;
+#     kairos-ext:negativeSecurityTest "unauthorized-role-cannot-read-restricted-rows" ;
+#     kairos-ext:securityTestEvidence "security-run:product-access-v1" ;
+#     kairos-ext:failClosed true .

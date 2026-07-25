@@ -108,7 +108,7 @@ class DbtContractModel:
     virtual_source_iri: str
     grain: str
     supported_adapters: tuple[str, ...]
-    natural_key: tuple[str, ...]
+    grain_key: tuple[str, ...]
     required_packages: tuple[str, ...]
     required_macros: tuple[str, ...]
     columns: tuple[DbtContractColumn, ...]
@@ -517,15 +517,15 @@ def _parse_contract(
         )
 
     columns = _parse_columns(model, path, name)
-    natural_key = _string_list(
-        meta.get("natural_key"),
+    grain_key = _string_list(
+        meta.get("grain_key"),
         path,
-        f"model {name!r}.meta.kairos.natural_key",
+        f"model {name!r}.meta.kairos.grain_key",
         non_empty=True,
     )
     column_names = {column.name for column in columns}
-    if len(set(natural_key)) != len(natural_key) or not set(natural_key) <= column_names:
-        raise _error(path, f"model {name!r} natural_key must contain unique contract columns")
+    if len(set(grain_key)) != len(grain_key) or not set(grain_key) <= column_names:
+        raise _error(path, f"model {name!r} grain_key must contain unique contract columns")
 
     packages = _string_list(
         meta.get("required_packages", []),
@@ -565,7 +565,7 @@ def _parse_contract(
         virtual_source_iri=virtual_source_iri,
         grain=grain,
         supported_adapters=adapters,
-        natural_key=natural_key,
+        grain_key=grain_key,
         required_packages=packages,
         required_macros=macros,
         columns=columns,

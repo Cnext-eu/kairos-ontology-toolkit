@@ -44,7 +44,7 @@ def _make_hub(tmp_path: Path) -> tuple[Path, Path]:
                                 "virtual_source_iri": "https://example.com/source#orders",
                                 "grain": "one row per order",
                                 "supported_adapters": ["fabric", "databricks"],
-                                "natural_key": ["order_id"],
+                                "grain_key": ["order_id"],
                                 "required_packages": [],
                                 "required_macros": [],
                             }

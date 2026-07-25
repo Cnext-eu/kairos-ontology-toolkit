@@ -70,6 +70,10 @@ def _project(bundle, *, emit_stubs=False, eligible=None):
         namespace=namespace,
         shapes_dir=SHAPES_DIR,
         ontology_name="client",
+        ontology_metadata={
+            "iri": "https://acme.example/ontology/client",
+            "version": "1.0.0",
+        },
         bronze_dir=SOURCES_DIR,
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,
@@ -89,8 +93,12 @@ def _silver_models(artifacts: dict) -> dict[str, str]:
 
 
 def _file_artifacts(artifacts: dict) -> dict:
-    """Drop internal ``__...__`` analysis keys (coverage, release-gate) not written."""
-    return {k: v for k, v in artifacts.items() if not k.startswith("__")}
+    """Select executable files; release review metadata intentionally records eligibility."""
+    return {
+        k: v
+        for k, v in artifacts.items()
+        if not k.startswith("__") and not k.startswith("metadata/")
+    }
 
 
 def test_feature_off_ignores_eligibility():
@@ -114,7 +122,8 @@ def test_feature_on_emits_stub_for_unmapped_eligible():
     assert "where 1 = 0" in stub
     assert "cast(null as" in stub
     assert "prospect_sk" in stub
-    assert "prospect_iri" in stub
+    # DD-108: an unbound stub has no explicit entity-instance IRI emit policy.
+    assert "prospect_iri" not in stub
     assert "lead_source" in stub
     assert "kairos_aspirational_stub" in stub
     assert "'is_aspirational': true" in stub

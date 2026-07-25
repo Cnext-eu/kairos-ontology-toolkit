@@ -1,0 +1,230 @@
+# SHACL constraints for the DD-107 structured mapping contract.
+
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/mapping/shapes> a owl:Ontology ;
+    rdfs:label "Kairos Mapping Contract SHACL Shapes"@en ;
+    rdfs:comment "Structural validation for named, typed, deterministic v2 mapping contracts."@en ;
+    owl:imports <https://kairos.cnext.eu/mapping> ;
+    owl:versionInfo "2.0.0" .
+
+kairos-map:TableMappingShape a sh:NodeShape ;
+    sh:targetClass kairos-map:TableMapping ;
+    sh:nodeKind sh:IRI ;
+    sh:property [
+        sh:path kairos-map:sourceTable ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:targetClass ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:mappingType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "direct" "split" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:matchType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "exactMatch" "closeMatch" "narrowMatch" "broadMatch" "relatedMatch" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:rowFilter ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] ;
+    sh:sparql [
+        sh:message "split requires one rowFilter; direct forbids rowFilter."@en ;
+        sh:select """
+            PREFIX kairos-map: <https://kairos.cnext.eu/mapping#>
+            SELECT $this WHERE {
+                $this kairos-map:mappingType ?kind .
+                FILTER (
+                    (?kind = "split" && NOT EXISTS { $this kairos-map:rowFilter ?filter })
+                    || (?kind = "direct" && EXISTS { $this kairos-map:rowFilter ?filter })
+                )
+            }
+        """ ;
+    ] .
+
+kairos-map:ColumnMappingShape a sh:NodeShape ;
+    sh:targetClass kairos-map:ColumnMapping ;
+    sh:nodeKind sh:IRI ;
+    sh:property [
+        sh:path kairos-map:sourceColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:targetProperty ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:matchType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "exactMatch" "closeMatch" "narrowMatch" "broadMatch" "relatedMatch" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:expression ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] .
+
+kairos-map:ScalarExpressionShape a sh:NodeShape ;
+    sh:targetClass kairos-map:SourceColumnExpression ;
+    sh:targetClass kairos-map:LiteralExpression ;
+    sh:targetClass kairos-map:NullExpression ;
+    sh:targetClass kairos-map:OperatorExpression ;
+    sh:targetClass kairos-map:FunctionExpression ;
+    sh:targetClass kairos-map:CaseExpression ;
+    sh:targetClass kairos-map:MacroExpression ;
+    sh:nodeKind sh:IRI ;
+    sh:property [
+        sh:path kairos-map:outputType ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:nullable ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:boolean ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:nullPolicy ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in (
+            "propagate" "never-null" "three-valued" "first-non-null"
+            "null-if-equal" "branch" "explicit-null"
+        ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:determinism ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:hasValue "deterministic" ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:requiresCapability ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in (
+            "source-column" "typed-literal" "scalar-operator" "scalar-function"
+            "null-handling" "case-expression" "namespaced-macro"
+        ) ;
+    ] .
+
+kairos-map:SourceColumnExpressionShape a sh:NodeShape ;
+    sh:targetClass kairos-map:SourceColumnExpression ;
+    sh:property [
+        sh:path kairos-map:sourceColumn ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] .
+
+kairos-map:LiteralExpressionShape a sh:NodeShape ;
+    sh:targetClass kairos-map:LiteralExpression ;
+    sh:property [
+        sh:path kairos-map:literalValue ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:Literal ;
+    ] .
+
+kairos-map:OperatorExpressionShape a sh:NodeShape ;
+    sh:targetClass kairos-map:OperatorExpression ;
+    sh:property [
+        sh:path kairos-map:operator ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:arguments ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:BlankNodeOrIRI ;
+    ] .
+
+kairos-map:FunctionExpressionShape a sh:NodeShape ;
+    sh:targetClass kairos-map:FunctionExpression ;
+    sh:property [
+        sh:path kairos-map:function ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:arguments ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:BlankNodeOrIRI ;
+    ] .
+
+kairos-map:CaseExpressionShape a sh:NodeShape ;
+    sh:targetClass kairos-map:CaseExpression ;
+    sh:property [
+        sh:path kairos-map:branches ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:BlankNodeOrIRI ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:elseExpression ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] .
+
+kairos-map:CaseBranchShape a sh:NodeShape ;
+    sh:targetClass kairos-map:CaseBranch ;
+    sh:nodeKind sh:IRI ;
+    sh:property [
+        sh:path kairos-map:when ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:then ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] .
+
+kairos-map:MacroExpressionShape a sh:NodeShape ;
+    sh:targetClass kairos-map:MacroExpression ;
+    sh:property [
+        sh:path kairos-map:macro ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in (
+            <https://kairos.cnext.eu/mapping/macro#concat>
+            <https://kairos.cnext.eu/mapping/macro#dayOfWeek>
+            <https://kairos.cnext.eu/mapping/macro#monthName>
+            <https://kairos.cnext.eu/mapping/macro#quarter>
+        ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:arguments ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:nodeKind sh:BlankNodeOrIRI ;
+    ] .

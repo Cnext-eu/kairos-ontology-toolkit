@@ -212,20 +212,13 @@ sources:
 
 ---
 
-### Step 3 — Generate bronze_expanded staging models (for JSON)
+### Step 3 — Author integrated preparation policy
 
-If JSON columns are detected in the extracted YAML, generate dbt models that flatten them:
-
-```bash
-kairos-ontology generate-staging \
-  --from extracted/<system_name>/ \
-  --output models/staging
-```
-
-Generated model patterns:
-- **Flat JSON** → `view` with `JSON_VALUE` column extractions
-- **Array of objects** → `table` with `CROSS APPLY OPENJSON` (child table)
-- **Nested objects** → flattened with dotted key naming
+When extraction detects technical cleanup or JSON shapes, author the mandatory
+`integration/preparation/{source}-prep.ttl` policy in the ontology hub. The normal
+dbt projection generates conditional staging models, adapter-specific scalar JSON,
+and explicit keyed array-child relations from that policy. There is no standalone
+staging command or manually routed preparation model.
 
 ---
 

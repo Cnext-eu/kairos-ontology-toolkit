@@ -313,30 +313,24 @@ This is where most "it generated wrong output" bugs originate.
 
 | Check | What to verify |
 |-------|---------------|
-| `goldSchema` present | 💡 Defaults to `gold_<domain>` if absent |
-| `goldInheritanceStrategy` is valid | Must be `"class-per-table"` or `"single-table"` |
-| `generateDateDimension` | Boolean string |
-| `generateTimeIntelligence` | Boolean string |
+| `goldProductProfile` is present and registered | v1 supports only `dimensional-powerbi-v1`; missing/unknown blocks |
+| `goldSchema` is explicit | No fallback schema is used for a profiled product |
 
 #### Class-level
 
 | Check | What to verify |
 |-------|---------------|
-| `goldTableType` is valid | Must be `"dimension"`, `"fact"`, or `"bridge"` |
-| Fact tables have FK object properties | 🐛 Fact without FKs to dimensions = isolated table |
-| `goldExclude` on utility/internal classes | 💡 Exclude base classes not meant for BI |
-| `measureExpression` on properties of fact classes | 💡 Facts without measures have no aggregatable columns |
-| `hierarchyName` + `hierarchyLevel` are paired | 🐛 One without the other is incomplete |
-| `perspective` references consistent group name | 💡 Typos create orphan perspectives |
-| `goldTableName` is snake_case (without dim_/fact_ prefix) | 💡 Prefix is auto-added by G2 — don't include it in the override |
-| `goldColumnName` is snake_case | 💡 Should follow SQL naming convention |
-| `goldDataType` is valid SQL type | 🐛 Must be a recognized Fabric Warehouse type (INT, DECIMAL, NVARCHAR, etc.) |
-| `measureFormatString` is paired with `measureExpression` | 🐛 A format string without a measure expression is meaningless — flag if orphaned |
-| `degenerateDimension` only on properties of fact classes | 💡 Only meaningful on properties whose owning class is a fact table — on dimension properties it has no effect |
-| `olsRestricted` on sensitive columns | 💡 Verify property is on a fact or dimension class — OLS only applies to columns visible in the semantic model |
-| RESERVED: `rolePlayingAs` used but not yet consumed | ⚠️ If set, warn that the gold projector does not yet render role-playing dimensions — annotation is declared but inactive |
-| RESERVED: `incrementalColumn` used but not yet consumed | ⚠️ If set, warn that the gold projector does not yet render incremental refresh policies — annotation is declared but inactive |
-| RESERVED: `surrogateKeyStrategy` used but not yet consumed | ⚠️ If set, warn that surrogate keys are currently generated unconditionally — annotation is declared but inactive |
+| `goldTableType` is explicit | Must be `"dimension"`, `"fact"`, or `"bridge"`; roles are never inferred |
+| Exact Silver binding exists | `goldSourceModel` and `goldSourceVersion` match passing Silver parity |
+| Fact contract is complete | Grain, transaction/snapshot type, version binding, and incremental/correction/late-arrival policy; zero-dimension facts are valid |
+| Dimension exposure is valid | `current-only`, `history-only`, or `dual`, with explicit version binding and compatible Silver SCD history |
+| Bridge contract is complete | Grain, two endpoints and column bindings, cardinality, weight if used, and allocation semantics |
+| Measures are first-class resources | Lifecycle requirements, column/measure dependencies, cycles, types, format/folder, owner/tests/evidence |
+| Calendar is governed | Bounds, fiscal/week/locale/holiday/time-zone/closure/role bindings and explicit approval |
+| Security is fail closed | Entitlement source, identity map, roles/direction/bindings, positive+negative tests/evidence, `failClosed true` |
+| `perspective` references consistent group name | Navigation only; never accept it as a security boundary |
+| `goldTableName` is a portable identifier | Must be explicit or deterministically derived by the profile |
+| Measure expression/format/type/folder are complete | Required from provisional state; expression references must be declared dependencies |
 
 ### Mapping file review (`kairos-map:`)
 
@@ -408,7 +402,7 @@ that was run in the "Before you start" step.
 
 | Check | What to incorporate | Severity |
 |-------|--------------------|----------|
-| GDPR/PII warnings | If the CLI reports unprotected PII properties (names, emails, addresses, phone numbers), list them with count | 💡 Flag properties that should have `gdprSatelliteOf` protection or `olsRestricted` annotation |
+| GDPR/PII warnings | If the CLI reports sensitive properties, list them with count | 💡 Require reviewed classification plus explicit RLS/OLS security bindings and tests where access restriction is needed |
 | Projection warnings | If the CLI emits projection warnings (missing NK, unsupported FK, etc.), include them in the report | 🐛 Projection warnings indicate generation issues |
 
 ### Advanced dbt contract and project validation
@@ -476,7 +470,7 @@ for each domain.  Group findings by severity:
 2. **Property name collision**: `client:status` and `order:status` both become `status` in SQL
    → Consider renaming to `clientStatus` / `orderStatus` for clarity
 3. **26 properties flagged as PII** by CLI scan — consider GDPR satellite protection
-   → Review `gdprSatelliteOf` and `olsRestricted` annotations
+   → Review classification and the complete fail-closed RLS/OLS entitlement contract
 4. **README domain table is empty** — add rows for each domain
 ```
 

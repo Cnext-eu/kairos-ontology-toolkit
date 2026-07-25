@@ -1,5 +1,7 @@
 @prefix acme-inv: <https://acme.example/ontology/invoice#> .
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix prep-bp: <https://acme.example/preparation/billingpro#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 
 # ---------------------------------------------------------------------------
@@ -8,31 +10,140 @@
 
 # Ontology-level
 <https://acme.example/ontology/invoice>
+    a owl:Ontology ;
+    rdfs:label "ACME Invoice Silver policy"@en ;
+    rdfs:comment "Explicit Silver identity, lineage, history, and relationship policy."@en ;
+    owl:versionInfo "2.0.0" ;
     kairos-ext:silverSchema "silver" ;
-    kairos-ext:auditEnvelope "true" ;
     kairos-ext:namingConvention "camel-to-snake" .
 
 # Class-level
 acme-inv:Invoice
     kairos-ext:silverTableName "invoice" ;
     kairos-ext:scdType "1" ;
-    kairos-ext:partitionBy "invoice_date" ;
-    kairos-ext:clusterBy "client_sk" .
+    kairos-ext:incrementalPolicy acme-inv:InvoiceIncremental ;
+    kairos-ext:businessGrain "one invoice or credit-note source record" ;
+    kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-bp:invoiceKey, prep-bp:creditNoteKey ;
+    kairos-ext:drivingSource prep-bp:invoiceKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
+    kairos-ext:contributionLineagePolicy "all-source-record-contributions" ;
+    kairos-ext:multiSourcePolicy acme-inv:InvoiceSources .
+
+acme-inv:InvoiceSources a kairos-ext:MultiSourcePolicy ;
+    kairos-ext:branchRelationship "disjoint" ;
+    kairos-ext:normalizationPolicy "currency and timestamps normalized per branch" ;
+    kairos-ext:sourcePrecedence "not-applicable-disjoint" ;
+    kairos-ext:attributeConflictPolicy "block" ;
+    kairos-ext:keyCollisionPolicy "retain-source-scoped-identities" ;
+    kairos-ext:branchDeletionPolicy "retain-other-branches" ;
+    kairos-ext:branchLateArrivalPolicy "reconcile-on-arrival" ;
+    kairos-ext:reconciliationTest "invoice-branch-and-union-reconciliation" .
 
 acme-inv:InvoiceLine
     kairos-ext:silverTableName "invoice_line" ;
-    kairos-ext:scdType "1" .
+    kairos-ext:businessGrain "one invoice line source record" ;
+    kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-bp:invoiceLineKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
+    kairos-ext:scdType "1" ;
+    kairos-ext:incrementalPolicy acme-inv:InvoiceLineIncremental .
 
 acme-inv:InvoiceTag
     kairos-ext:silverTableName "invoice_tag" ;
+    kairos-ext:businessGrain "one invoice tag code" ;
+    kairos-ext:identityStrategy "business-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-bp:invoiceTagKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
     kairos-ext:isReferenceData "true" ;
-    kairos-ext:scdType "1" .
+    kairos-ext:scdType "1" ;
+    kairos-ext:incrementalPolicy acme-inv:InvoiceRuntime .
 
-# DD-039: InvoiceLineTax sources from bronze_expanded staging model
+# DD-106: InvoiceLineTax maps from the explicit prep array-child contract.
 acme-inv:InvoiceLineTax
     kairos-ext:silverTableName "invoice_line_tax" ;
     kairos-ext:scdType "1" ;
-    kairos-ext:silverSourceRef "stg_billingpro_invoice_line_details" .
+    kairos-ext:incrementalPolicy acme-inv:InvoiceLineTaxRuntime ;
+    kairos-ext:businessGrain "one tax element within an invoice line JSON array" ;
+    kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table-array-element" ;
+    kairos-ext:sourceIdentity prep-bp:invoiceLineDetails ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "parent-source-record-and-element-index" .
+
+acme-inv:InvoiceRuntime a kairos-ext:IncrementalPolicy ;
+    kairos-ext:mergeIdentity "_source_record_key" ;
+    kairos-ext:cdcOperation "_cdc_operation" ;
+    kairos-ext:sourceUpdateTimestamp "_source_updated_at" ;
+    kairos-ext:sourceEffectiveTimestamp "_source_effective_at" ;
+    kairos-ext:ingestionTimestamp "_ingested_at" ;
+    kairos-ext:totalOrderTieBreaker "_cdc_sequence, _source_record_key" ;
+    kairos-ext:lookbackWindow "3 days" ;
+    kairos-ext:hardDeletePolicy "tombstone" ;
+    kairos-ext:softDeletePolicy "apply-operation" ;
+    kairos-ext:lateArrivalPolicy "reconcile-with-lookback" ;
+    kairos-ext:correctionPolicy "replace-by-total-order" ;
+    kairos-ext:replayPolicy "idempotent-merge" ;
+    kairos-ext:backfillPolicy "range-replay-approved" ;
+    kairos-ext:schemaChangePolicy "fail" .
+
+acme-inv:InvoiceLineTaxRuntime a kairos-ext:IncrementalPolicy ;
+    kairos-ext:mergeIdentity "_source_record_key, _element_index" ;
+    kairos-ext:cdcOperation "_cdc_operation" ;
+    kairos-ext:sourceUpdateTimestamp "_source_updated_at" ;
+    kairos-ext:sourceEffectiveTimestamp "_source_effective_at" ;
+    kairos-ext:ingestionTimestamp "_ingested_at" ;
+    kairos-ext:totalOrderTieBreaker "_cdc_sequence, _source_record_key, _element_index" ;
+    kairos-ext:lookbackWindow "3 days" ;
+    kairos-ext:hardDeletePolicy "tombstone" ;
+    kairos-ext:softDeletePolicy "apply-operation" ;
+    kairos-ext:lateArrivalPolicy "reconcile-with-lookback" ;
+    kairos-ext:correctionPolicy "replace-by-total-order" ;
+    kairos-ext:replayPolicy "idempotent-merge" ;
+    kairos-ext:backfillPolicy "range-replay-approved" ;
+    kairos-ext:schemaChangePolicy "fail" .
+
+acme-inv:InvoiceIncremental a kairos-ext:IncrementalPolicy ;
+    kairos-ext:mergeIdentity "_source_record_key" ;
+    kairos-ext:cdcOperation "_cdc_operation" ;
+    kairos-ext:sourceUpdateTimestamp "_source_updated_at" ;
+    kairos-ext:sourceEffectiveTimestamp "_source_effective_at" ;
+    kairos-ext:ingestionTimestamp "_ingested_at" ;
+    kairos-ext:totalOrderTieBreaker "_cdc_sequence, _source_record_key" ;
+    kairos-ext:lookbackWindow "7 days" ;
+    kairos-ext:hardDeletePolicy "tombstone" ;
+    kairos-ext:softDeletePolicy "apply-operation" ;
+    kairos-ext:lateArrivalPolicy "reconcile-with-lookback" ;
+    kairos-ext:correctionPolicy "replace-by-total-order" ;
+    kairos-ext:replayPolicy "idempotent-merge" ;
+    kairos-ext:backfillPolicy "full-rebuild-approved" ;
+    kairos-ext:schemaChangePolicy "fail" .
+
+acme-inv:InvoiceLineIncremental a kairos-ext:IncrementalPolicy ;
+    kairos-ext:mergeIdentity "_source_record_key" ;
+    kairos-ext:cdcOperation "_cdc_operation" ;
+    kairos-ext:sourceUpdateTimestamp "_source_updated_at" ;
+    kairos-ext:sourceEffectiveTimestamp "_source_effective_at" ;
+    kairos-ext:ingestionTimestamp "_ingested_at" ;
+    kairos-ext:totalOrderTieBreaker "_cdc_sequence, _source_record_key" ;
+    kairos-ext:lookbackWindow "7 days" ;
+    kairos-ext:hardDeletePolicy "tombstone" ;
+    kairos-ext:softDeletePolicy "apply-operation" ;
+    kairos-ext:lateArrivalPolicy "reconcile-with-lookback" ;
+    kairos-ext:correctionPolicy "replace-by-total-order" ;
+    kairos-ext:replayPolicy "idempotent-merge" ;
+    kairos-ext:backfillPolicy "full-rebuild-approved" ;
+    kairos-ext:schemaChangePolicy "fail" .
 
 # Property-level
 acme-inv:invoiceNumber
@@ -81,12 +192,34 @@ acme-inv:lineTotal
 acme-inv:issuedTo
     kairos-ext:silverColumnName "client_sk" ;
     kairos-ext:silverForeignKey "true" ;
-    kairos-ext:silverForeignKeyTemporalMode "current" ;
-    kairos-ext:silverForeignKeyChangeDetection "true" .
+    kairos-ext:silverForeignKeyTemporalMode "as-of" ;
+    kairos-ext:silverForeignKeyAsOfColumn "_source_effective_at" ;
+    kairos-ext:silverForeignKeyInterval "closed-open" ;
+    kairos-ext:silverForeignKeyTimeZone "UTC" ;
+    kairos-ext:silverForeignKeyPrecision "microsecond" ;
+    kairos-ext:silverForeignKeyChangeDetection "true" ;
+    kairos-ext:silverForeignKeyCardinality "exactly-one" ;
+    kairos-ext:silverForeignKeyMissingPolicy "quarantine" ;
+    kairos-ext:silverForeignKeyAmbiguousPolicy "fail" ;
+    kairos-ext:silverForeignKeyLateParentPolicy "restate" .
 
 acme-inv:belongsToInvoice
     kairos-ext:silverColumnName "invoice_sk" ;
-    kairos-ext:silverForeignKey "true" .
+    kairos-ext:silverForeignKey "true" ;
+    kairos-ext:silverForeignKeyTemporalMode "none" ;
+    kairos-ext:silverForeignKeyChangeDetection false ;
+    kairos-ext:silverForeignKeyCardinality "exactly-one" ;
+    kairos-ext:silverForeignKeyMissingPolicy "quarantine" ;
+    kairos-ext:silverForeignKeyAmbiguousPolicy "fail" ;
+    kairos-ext:silverForeignKeyLateParentPolicy "restate" .
+
+acme-inv:hasTag
+    kairos-ext:silverForeignKeyTemporalMode "none" ;
+    kairos-ext:silverForeignKeyChangeDetection false ;
+    kairos-ext:silverForeignKeyCardinality "zero-or-one" ;
+    kairos-ext:silverForeignKeyMissingPolicy "quarantine" ;
+    kairos-ext:silverForeignKeyAmbiguousPolicy "fail" ;
+    kairos-ext:silverForeignKeyLateParentPolicy "restate" .
 
 acme-inv:tagCode
     kairos-ext:silverColumnName "tag_code" ;

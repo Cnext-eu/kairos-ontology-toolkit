@@ -25,7 +25,7 @@ from kairos_ontology.core.reference_modules import (
     load_accelerator_module_config,
 )
 from kairos_ontology.core.validator import run_validation, validate_managed_imports
-from kairos_ontology.core.projector import run_projections
+from kairos_ontology.core.projector import ProjectionRunError, run_projections
 
 
 MODULE_IRI = "https://example.org/reference/orders"
@@ -825,14 +825,15 @@ def test_projector_preflight_blocks_missing_managed_import_unless_degraded(
 
     monkeypatch.setattr("kairos_ontology.core.projector._run_projection", fake_projection)
 
-    run_projections(
-        ontologies_path=ontologies,
-        catalog_path=catalog,
-        output_path=hub / "output",
-        target="silver",
-        ref_models_dir=ref_models,
-        accelerator="generic",
-    )
+    with pytest.raises(ProjectionRunError, match="silver projection failed"):
+        run_projections(
+            ontologies_path=ontologies,
+            catalog_path=catalog,
+            output_path=hub / "output",
+            target="silver",
+            ref_models_dir=ref_models,
+            accelerator="generic",
+        )
     assert projection_calls == []
     projection_report = json.loads(
         (hub / "output" / "projection-report.json").read_text(encoding="utf-8")
@@ -893,14 +894,15 @@ def test_projector_preflight_applies_to_profile_only_domain(tmp_path, monkeypatc
 
     monkeypatch.setattr("kairos_ontology.core.projector._run_projection", fake_projection)
 
-    run_projections(
-        ontologies_path=ontologies,
-        catalog_path=catalog,
-        output_path=hub / "output",
-        target="silver",
-        ref_models_dir=ref_models,
-        accelerator="generic",
-    )
+    with pytest.raises(ProjectionRunError, match="silver projection failed"):
+        run_projections(
+            ontologies_path=ontologies,
+            catalog_path=catalog,
+            output_path=hub / "output",
+            target="silver",
+            ref_models_dir=ref_models,
+            accelerator="generic",
+        )
 
     assert projection_calls == []
     projection_report = json.loads(

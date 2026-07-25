@@ -1,112 +1,302 @@
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
-@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
-@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix bronze-bp: <https://acme.example/bronze/billingpro#> .
 @prefix acme-inv: <https://acme.example/ontology/invoice#> .
-@prefix acme:     <https://acme.example/ontology/client#> .
+@prefix bronze-bp: <https://acme.example/bronze/billingpro#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix map: <https://acme.example/mapping/billingpro-to-invoice#> .
+@prefix prep-bp: <https://acme.example/preparation/billingpro#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
-# ---------------------------------------------------------------------------
-# Table-level: tblInvoice → Invoice (direct 1:1)
-# ---------------------------------------------------------------------------
-bronze-bp:tblInvoice skos:exactMatch acme-inv:Invoice ;
-    kairos-map:mappingType "direct" .
+map:column__invoiceLineDetailsDiscountPct__to__discountPct a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn prep-bp:invoiceLineDetailsDiscountPct ;
+    kairos-map:targetProperty acme-inv:discountPct .
 
-# Column-level: tblInvoice columns → Invoice properties
-bronze-bp:tblInvoice_InvoiceNumber skos:exactMatch acme-inv:invoiceNumber ;
-    kairos-map:transform "source.InvoiceNumber" .
+map:column__invoiceLineDetailsTaxCode__to__taxCode a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn prep-bp:invoiceLineDetailsTaxCode ;
+    kairos-map:targetProperty acme-inv:taxCode .
 
-bronze-bp:tblInvoice_InvoiceDate skos:exactMatch acme-inv:invoiceDate ;
-    kairos-map:transform "CAST(source.InvoiceDate AS DATE)" .
+map:column__invoiceLineDetailsTaxRate__to__taxRate a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn prep-bp:invoiceLineDetailsTaxRate ;
+    kairos-map:targetProperty acme-inv:taxRate .
 
-bronze-bp:tblInvoice_TotalAmount skos:exactMatch acme-inv:totalAmount ;
-    kairos-map:transform "CAST(source.TotalAmount AS DECIMAL(18,2))" .
+map:column__tblCreditNote_ClientRef__to__issuedTo a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblCreditNote_ClientRef ;
+    kairos-map:targetProperty acme-inv:issuedTo .
 
-# Cross-domain FK: ClientRef → issuedTo (resolves to client_sk join)
-bronze-bp:tblInvoice_ClientRef skos:exactMatch acme-inv:issuedTo ;
-    kairos-map:transform "source.ClientRef" ;
-    rdfs:comment "FK to client.client_id — resolved as cross-domain SK join." .
+map:column__tblCreditNote_Currency__to__currency a kairos-map:ColumnMapping ;
+    kairos-map:expression map:column__tblCreditNote_Currency__to__currency__coalesce ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblCreditNote_Currency ;
+    kairos-map:targetProperty acme-inv:currency .
 
-bronze-bp:tblInvoice_Currency skos:exactMatch acme-inv:currency ;
-    kairos-map:transform "source.Currency" ;
-    kairos-map:defaultValue "'EUR'" .
+map:column__tblCreditNote_InvoiceDate__to__invoiceDate a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblCreditNote_InvoiceDate ;
+    kairos-map:targetProperty acme-inv:invoiceDate .
 
-# ---------------------------------------------------------------------------
-# Table-level: tblInvoiceLine → InvoiceLine (direct 1:1)
-# ---------------------------------------------------------------------------
-bronze-bp:tblInvoiceLine skos:exactMatch acme-inv:InvoiceLine ;
-    kairos-map:mappingType "direct" .
+map:column__tblCreditNote_InvoiceNumber__to__invoiceNumber a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblCreditNote_InvoiceNumber ;
+    kairos-map:targetProperty acme-inv:invoiceNumber .
 
-# Column-level: tblInvoiceLine columns → InvoiceLine properties
-bronze-bp:tblInvoiceLine_LineID skos:exactMatch acme-inv:lineId ;
-    kairos-map:transform "CAST(source.LineID AS STRING)" .
+map:column__tblCreditNote_TotalAmount__to__totalAmount a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblCreditNote_TotalAmount ;
+    kairos-map:targetProperty acme-inv:totalAmount .
 
-bronze-bp:tblInvoiceLine_Description skos:exactMatch acme-inv:description ;
-    kairos-map:transform "source.Description" ;
-    kairos-map:defaultValue "'No description'" .
+map:column__tblInvoiceLine_DerivedLineTotal__to__lineTotal a kairos-map:ColumnMapping ;
+    kairos-map:expression map:column__tblInvoiceLine_DerivedLineTotal__to__lineTotal__multiply ;
+    kairos-map:matchType "closeMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceLine_DerivedLineTotal ;
+    kairos-map:targetProperty acme-inv:lineTotal .
 
-bronze-bp:tblInvoiceLine_Quantity skos:exactMatch acme-inv:quantity ;
-    kairos-map:transform "source.Quantity" .
+map:column__tblInvoiceLine_Description__to__description a kairos-map:ColumnMapping ;
+    kairos-map:expression map:column__tblInvoiceLine_Description__to__description__coalesce ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceLine_Description ;
+    kairos-map:targetProperty acme-inv:description .
 
-bronze-bp:tblInvoiceLine_UnitPrice skos:exactMatch acme-inv:unitPrice ;
-    kairos-map:transform "CAST(source.UnitPrice AS DECIMAL(18,2))" .
+map:column__tblInvoiceLine_InvoiceID__to__belongsToInvoice a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceLine_InvoiceID ;
+    kairos-map:targetProperty acme-inv:belongsToInvoice .
 
-# FK: InvoiceID → belongsToInvoice (intra-domain FK)
-bronze-bp:tblInvoiceLine_InvoiceID skos:exactMatch acme-inv:belongsToInvoice ;
-    kairos-map:transform "source.InvoiceID" ;
-    rdfs:comment "FK to invoice.invoice_number — resolved as intra-domain SK join." .
+map:column__tblInvoiceLine_LineID__to__lineId a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceLine_LineID ;
+    kairos-map:targetProperty acme-inv:lineId .
 
-# Derived column using sourceColumns (multi-source column mapping)
-bronze-bp:tblInvoiceLine_DerivedLineTotal skos:closeMatch acme-inv:lineTotal ;
-    kairos-map:sourceColumns "Quantity UnitPrice" ;
-    kairos-map:transform "source.Quantity * source.UnitPrice" .
+map:column__tblInvoiceLine_Quantity__to__quantity a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceLine_Quantity ;
+    kairos-map:targetProperty acme-inv:quantity .
 
-# ---------------------------------------------------------------------------
-# Table-level: tblInvoiceTag → InvoiceTag (reference/bridge)
-# ---------------------------------------------------------------------------
-bronze-bp:tblInvoiceTag skos:exactMatch acme-inv:InvoiceTag ;
-    kairos-map:mappingType "direct" .
+map:column__tblInvoiceLine_UnitPrice__to__unitPrice a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceLine_UnitPrice ;
+    kairos-map:targetProperty acme-inv:unitPrice .
 
-bronze-bp:tblInvoiceTag_TagCode skos:exactMatch acme-inv:tagCode ;
-    kairos-map:transform "source.TagCode" .
+map:column__tblInvoiceTag_Label__to__tagLabel a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceTag_Label ;
+    kairos-map:targetProperty acme-inv:tagLabel .
 
-bronze-bp:tblInvoiceTag_Label skos:exactMatch acme-inv:tagLabel ;
-    kairos-map:transform "source.Label" .
+map:column__tblInvoiceTag_TagCode__to__tagCode a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceTag_TagCode ;
+    kairos-map:targetProperty acme-inv:tagCode .
 
-# ---------------------------------------------------------------------------
-# Table-level: tblCreditNote → Invoice (same class, different source table)
-# This exercises the multi-table-same-source union disambiguation.
-# ---------------------------------------------------------------------------
-bronze-bp:tblCreditNote skos:exactMatch acme-inv:Invoice ;
-    kairos-map:mappingType "direct" .
+map:column__tblInvoice_ClientRef__to__issuedTo a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoice_ClientRef ;
+    kairos-map:targetProperty acme-inv:issuedTo .
 
-bronze-bp:tblCreditNote_InvoiceNumber skos:exactMatch acme-inv:invoiceNumber ;
-    kairos-map:transform "source.InvoiceNumber" .
+map:column__tblInvoice_Currency__to__currency a kairos-map:ColumnMapping ;
+    kairos-map:expression map:column__tblInvoice_Currency__to__currency__coalesce ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoice_Currency ;
+    kairos-map:targetProperty acme-inv:currency .
 
-bronze-bp:tblCreditNote_InvoiceDate skos:exactMatch acme-inv:invoiceDate ;
-    kairos-map:transform "CAST(source.InvoiceDate AS DATE)" .
+map:column__tblInvoice_InvoiceDate__to__invoiceDate a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoice_InvoiceDate ;
+    kairos-map:targetProperty acme-inv:invoiceDate .
 
-bronze-bp:tblCreditNote_TotalAmount skos:exactMatch acme-inv:totalAmount ;
-    kairos-map:transform "CAST(source.TotalAmount AS DECIMAL(18,2))" .
+map:column__tblInvoice_InvoiceNumber__to__invoiceNumber a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoice_InvoiceNumber ;
+    kairos-map:targetProperty acme-inv:invoiceNumber .
 
-bronze-bp:tblCreditNote_ClientRef skos:exactMatch acme-inv:issuedTo ;
-    kairos-map:transform "source.ClientRef" .
+map:column__tblInvoice_TotalAmount__to__totalAmount a kairos-map:ColumnMapping ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoice_TotalAmount ;
+    kairos-map:targetProperty acme-inv:totalAmount .
 
-bronze-bp:tblCreditNote_Currency skos:exactMatch acme-inv:currency ;
-    kairos-map:transform "source.Currency" ;
-    kairos-map:defaultValue "'EUR'" .
+map:table__invoiceLineDetails__to__InvoiceLineTax a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable prep-bp:invoiceLineDetails ;
+    kairos-map:targetClass acme-inv:InvoiceLineTax .
 
-# ---------------------------------------------------------------------------
-# Table-level: tblInvoiceLine_LineDetails → InvoiceLineTax (DD-039)
-# Maps the JSON-derived child table to a domain entity
-# ---------------------------------------------------------------------------
-bronze-bp:tblInvoiceLine_LineDetails skos:exactMatch acme-inv:InvoiceLineTax ;
-    kairos-map:mappingType "direct" .
+map:table__tblCreditNote__to__Invoice a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable bronze-bp:tblCreditNote ;
+    kairos-map:targetClass acme-inv:Invoice .
 
-bronze-bp:tblInvoiceLine_LineDetails_TaxCode skos:exactMatch acme-inv:taxCode ;
-    kairos-map:transform "source.TaxCode" .
+map:table__tblInvoiceLine__to__InvoiceLine a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable bronze-bp:tblInvoiceLine ;
+    kairos-map:targetClass acme-inv:InvoiceLine .
 
-bronze-bp:tblInvoiceLine_LineDetails_TaxRate skos:exactMatch acme-inv:taxRate ;
-    kairos-map:transform "CAST(source.TaxRate AS DECIMAL(5,2))" .
+map:table__tblInvoiceTag__to__InvoiceTag a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable bronze-bp:tblInvoiceTag ;
+    kairos-map:targetClass acme-inv:InvoiceTag .
 
-bronze-bp:tblInvoiceLine_LineDetails_DiscountPct skos:exactMatch acme-inv:discountPct ;
-    kairos-map:transform "CAST(source.DiscountPct AS DECIMAL(5,2))" .
+map:table__tblInvoice__to__Invoice a kairos-map:TableMapping ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" ;
+    kairos-map:sourceTable bronze-bp:tblInvoice ;
+    kairos-map:targetClass acme-inv:Invoice .
+
+bronze-bp:tblCreditNote skos:exactMatch acme-inv:Invoice .
+
+bronze-bp:tblCreditNote_ClientRef skos:exactMatch acme-inv:issuedTo .
+
+bronze-bp:tblCreditNote_InvoiceDate skos:exactMatch acme-inv:invoiceDate .
+
+bronze-bp:tblCreditNote_InvoiceNumber skos:exactMatch acme-inv:invoiceNumber .
+
+bronze-bp:tblCreditNote_TotalAmount skos:exactMatch acme-inv:totalAmount .
+
+bronze-bp:tblInvoice skos:exactMatch acme-inv:Invoice .
+
+bronze-bp:tblInvoiceLine skos:exactMatch acme-inv:InvoiceLine .
+
+bronze-bp:tblInvoiceLine_DerivedLineTotal skos:closeMatch acme-inv:lineTotal .
+
+bronze-bp:tblInvoiceLine_InvoiceID rdfs:comment "FK to invoice.invoice_number — resolved as intra-domain SK join." ;
+    skos:exactMatch acme-inv:belongsToInvoice .
+
+bronze-bp:tblInvoiceLine_LineID skos:exactMatch acme-inv:lineId .
+
+bronze-bp:tblInvoiceTag skos:exactMatch acme-inv:InvoiceTag .
+
+bronze-bp:tblInvoiceTag_Label skos:exactMatch acme-inv:tagLabel .
+
+bronze-bp:tblInvoiceTag_TagCode skos:exactMatch acme-inv:tagCode .
+
+bronze-bp:tblInvoice_ClientRef rdfs:comment "FK to client.client_id — resolved as cross-domain SK join." ;
+    skos:exactMatch acme-inv:issuedTo .
+
+bronze-bp:tblInvoice_InvoiceDate skos:exactMatch acme-inv:invoiceDate .
+
+bronze-bp:tblInvoice_InvoiceNumber skos:exactMatch acme-inv:invoiceNumber .
+
+bronze-bp:tblInvoice_TotalAmount skos:exactMatch acme-inv:totalAmount .
+
+map:column__tblCreditNote_Currency__to__currency__coalesce a kairos-map:FunctionExpression ;
+    kairos-map:arguments ( map:column__tblCreditNote_Currency__to__currency__coalesce_input__source map:column__tblCreditNote_Currency__to__currency__coalesce_default__literal ) ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:function "coalesce" ;
+    kairos-map:nullPolicy "first-non-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "null-handling" .
+
+map:column__tblCreditNote_Currency__to__currency__coalesce_default__literal a kairos-map:LiteralExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:literalValue "EUR"^^xsd:string ;
+    kairos-map:nullPolicy "never-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "typed-literal" .
+
+map:column__tblCreditNote_Currency__to__currency__coalesce_input__source a kairos-map:SourceColumnExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable true ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "source-column" ;
+    kairos-map:sourceColumn bronze-bp:tblCreditNote_Currency .
+
+map:column__tblInvoiceLine_DerivedLineTotal__to__lineTotal__multiply a kairos-map:OperatorExpression ;
+    kairos-map:arguments ( map:column__tblInvoiceLine_DerivedLineTotal__to__lineTotal__quantity__source map:column__tblInvoiceLine_DerivedLineTotal__to__lineTotal__unit_price__source ) ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable false ;
+    kairos-map:operator "multiply" ;
+    kairos-map:outputType "decimal(18,2)" ;
+    kairos-map:requiresCapability "scalar-operator" .
+
+map:column__tblInvoiceLine_DerivedLineTotal__to__lineTotal__quantity__source a kairos-map:SourceColumnExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "int32" ;
+    kairos-map:requiresCapability "source-column" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceLine_Quantity .
+
+map:column__tblInvoiceLine_DerivedLineTotal__to__lineTotal__unit_price__source a kairos-map:SourceColumnExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "decimal(18,2)" ;
+    kairos-map:requiresCapability "source-column" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceLine_UnitPrice .
+
+map:column__tblInvoiceLine_Description__to__description__coalesce a kairos-map:FunctionExpression ;
+    kairos-map:arguments ( map:column__tblInvoiceLine_Description__to__description__coalesce_input__source map:column__tblInvoiceLine_Description__to__description__coalesce_default__literal ) ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:function "coalesce" ;
+    kairos-map:nullPolicy "first-non-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "null-handling" .
+
+map:column__tblInvoiceLine_Description__to__description__coalesce_default__literal a kairos-map:LiteralExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:literalValue "No description"^^xsd:string ;
+    kairos-map:nullPolicy "never-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "typed-literal" .
+
+map:column__tblInvoiceLine_Description__to__description__coalesce_input__source a kairos-map:SourceColumnExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable true ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "source-column" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoiceLine_Description .
+
+map:column__tblInvoice_Currency__to__currency__coalesce a kairos-map:FunctionExpression ;
+    kairos-map:arguments ( map:column__tblInvoice_Currency__to__currency__coalesce_input__source map:column__tblInvoice_Currency__to__currency__coalesce_default__literal ) ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:function "coalesce" ;
+    kairos-map:nullPolicy "first-non-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "null-handling" .
+
+map:column__tblInvoice_Currency__to__currency__coalesce_default__literal a kairos-map:LiteralExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:literalValue "EUR"^^xsd:string ;
+    kairos-map:nullPolicy "never-null" ;
+    kairos-map:nullable false ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "typed-literal" .
+
+map:column__tblInvoice_Currency__to__currency__coalesce_input__source a kairos-map:SourceColumnExpression ;
+    kairos-map:determinism "deterministic" ;
+    kairos-map:nullPolicy "propagate" ;
+    kairos-map:nullable true ;
+    kairos-map:outputType "string" ;
+    kairos-map:requiresCapability "source-column" ;
+    kairos-map:sourceColumn bronze-bp:tblInvoice_Currency .
+
+prep-bp:invoiceLineDetails skos:exactMatch acme-inv:InvoiceLineTax .
+
+prep-bp:invoiceLineDetailsDiscountPct skos:exactMatch acme-inv:discountPct .
+
+prep-bp:invoiceLineDetailsTaxCode skos:exactMatch acme-inv:taxCode .
+
+prep-bp:invoiceLineDetailsTaxRate skos:exactMatch acme-inv:taxRate .
+
+bronze-bp:tblCreditNote_Currency skos:exactMatch acme-inv:currency .
+
+bronze-bp:tblInvoiceLine_Description skos:exactMatch acme-inv:description .
+
+bronze-bp:tblInvoiceLine_Quantity skos:exactMatch acme-inv:quantity .
+
+bronze-bp:tblInvoiceLine_UnitPrice skos:exactMatch acme-inv:unitPrice .
+
+bronze-bp:tblInvoice_Currency skos:exactMatch acme-inv:currency .

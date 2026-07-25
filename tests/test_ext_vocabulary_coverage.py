@@ -16,7 +16,7 @@ from pathlib import Path
 import rdflib
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PROJECTIONS_DIR = REPO_ROOT / "src" / "kairos_ontology" / "projections"
+PROJECTIONS_DIR = REPO_ROOT / "src" / "kairos_ontology" / "core" / "projections"
 EXT_TTL = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "kairos-ext.ttl"
 EXT_NS = "https://kairos.cnext.eu/ext#"
 
@@ -24,6 +24,28 @@ EXT_NS = "https://kairos.cnext.eu/ext#"
 _TERM_RE = re.compile(r'KAIROS_EXT\.term\(\s*["\']([A-Za-z0-9_]+)["\']\s*\)')
 # KAIROS_EXT.annotationName  (direct attribute access; excludes the .term helper)
 _ATTR_RE = re.compile(r"KAIROS_EXT\.([A-Za-z_][A-Za-z0-9_]*)")
+
+# DD-106 through DD-115 remove these terms without compatibility readers.
+RETIRED_PENDING_TYPED_PROJECTOR_REFACTOR = {
+    "clusterBy",
+    "gdprSatelliteOf",
+    "generateDateDimension",
+    "generateTimeIntelligence",
+    "goldColumnName",
+    "goldDataType",
+    "goldExclude",
+    "goldInheritanceStrategy",
+    "hierarchyLevel",
+    "hierarchyName",
+    "includeNaturalKeyColumn",
+    "incrementalColumn",
+    "inlineRefThreshold",
+    "olsRestricted",
+    "degenerateDimension",
+    "partitionBy",
+    "rolePlayingAs",
+    "silverSourceRef",
+}
 
 
 def _annotations_used_in_projectors() -> dict[str, str]:
@@ -63,9 +85,18 @@ def test_vocabulary_parses():
 def test_every_consumed_annotation_is_declared():
     used = _annotations_used_in_projectors()
     declared = _annotations_declared_in_vocabulary()
-    missing = {name: src for name, src in used.items() if name not in declared}
+    missing = {
+        name: src
+        for name, src in used.items()
+        if name not in declared and name not in RETIRED_PENDING_TYPED_PROJECTOR_REFACTOR
+    }
     assert not missing, (
         "Projectors consume kairos-ext annotations that are not declared in "
         f"kairos-ext.ttl: {missing}. Declare each one (with rdfs:label + "
         "rdfs:comment) so the vocabulary stays the single source of truth."
     )
+
+
+def test_retired_fresh_hub_annotations_are_not_declared():
+    declared = _annotations_declared_in_vocabulary()
+    assert RETIRED_PENDING_TYPED_PROJECTOR_REFACTOR.isdisjoint(declared)

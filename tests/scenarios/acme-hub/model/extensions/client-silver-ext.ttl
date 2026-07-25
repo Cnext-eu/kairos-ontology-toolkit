@@ -1,5 +1,8 @@
 @prefix acme: <https://acme.example/ontology/client#> .
 @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix prep-ap: <https://acme.example/preparation/adminpulse#> .
+@prefix prep-crm: <https://acme.example/preparation/crmsystem#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 
 # ---------------------------------------------------------------------------
@@ -8,40 +11,133 @@
 
 # Ontology-level
 <https://acme.example/ontology/client>
+    a owl:Ontology ;
+    rdfs:label "ACME Client Silver policy"@en ;
+    rdfs:comment "Explicit Silver identity, lineage, history, and relationship policy."@en ;
+    owl:versionInfo "2.0.0" ;
     kairos-ext:silverSchema "silver" ;
-    kairos-ext:namingConvention "camel-to-snake" ;
-    kairos-ext:includeNaturalKeyColumn "true" ;
-    kairos-ext:auditEnvelope "true" ;
-    kairos-ext:inlineRefThreshold "50" .
+    kairos-ext:namingConvention "camel-to-snake" .
 
 # Class-level
 acme:Client
+    kairos-ext:silverTableName "client" ;
+    kairos-ext:scdType "2" ;
+    kairos-ext:scd2TimeBasis "business-valid" ;
+    kairos-ext:incrementalPolicy acme:ClientRuntime ;
     kairos-ext:naturalKey "clientId" ;
-    kairos-ext:inheritanceStrategy "discriminator" .
+    kairos-ext:businessGrain "one governed client record" ;
+    kairos-ext:identityStrategy "business-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "domain" ;
+    kairos-ext:sourceIdentity
+        prep-ap:tblClientKey,
+        prep-ap:tblRelationKey,
+        prep-crm:customersKey ;
+    kairos-ext:drivingSource prep-ap:tblClientKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
+    kairos-ext:contributionLineagePolicy "all-source-record-contributions" ;
+    kairos-ext:multiSourcePolicy acme:CorporateClientSources ;
+    kairos-ext:inheritanceStrategy "discriminator" ;
+    kairos-ext:dataQualityRule acme:ClientTimelineRule .
+
+acme:ClientTimelineRule a kairos-ext:DataQualityRule ;
+    kairos-ext:dqRuleId "client.timeline-order" ;
+    kairos-ext:dqRuleVersion "1" ;
+    kairos-ext:dqCategory "business" ;
+    kairos-ext:dqScope acme:Client ;
+    kairos-ext:dqCheckType "cross-field" ;
+    kairos-ext:dqCheckExpression "left=created_at;operator=lte;right=last_modified_at" ;
+    kairos-ext:dqSeverity "error" ;
+    kairos-ext:dqTolerance "0" ;
+    kairos-ext:dqAction "quarantine" ;
+    kairos-ext:dqOwnerRole "Domain Data Owner" ;
+    kairos-ext:dqEvidence "client lifecycle policy" ;
+    kairos-ext:dqTestRef "kairos.dq.cross-field.v1" .
 
 acme:CorporateClient
     kairos-ext:silverTableName "corporate_client" ;
     kairos-ext:scdType "2" ;
+    kairos-ext:scd2TimeBasis "load-history" ;
+    kairos-ext:incrementalPolicy acme:ClientRuntime ;
+    kairos-ext:businessGrain "one corporate client source record" ;
+    kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-ap:tblClientKey, prep-crm:customersKey ;
+    kairos-ext:drivingSource prep-ap:tblClientKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
+    kairos-ext:contributionLineagePolicy "all-source-record-contributions" ;
+    kairos-ext:multiSourcePolicy acme:CorporateClientSources ;
     kairos-ext:discriminatorColumn "client_type" .
+
+acme:CorporateClientSources a kairos-ext:MultiSourcePolicy ;
+    kairos-ext:branchRelationship "overlapping" ;
+    kairos-ext:normalizationPolicy "codes, currency, units, and timestamps are explicit per branch" ;
+    kairos-ext:sourcePrecedence "none-without-approved-exact-equivalence" ;
+    kairos-ext:attributeConflictPolicy "quarantine" ;
+    kairos-ext:keyCollisionPolicy "retain-source-scoped-identities" ;
+    kairos-ext:branchDeletionPolicy "retain-other-branches" ;
+    kairos-ext:branchLateArrivalPolicy "reconcile-on-arrival" ;
+    kairos-ext:reconciliationTest "client-branch-and-union-reconciliation" .
 
 acme:SoleProprietorClient
     kairos-ext:silverTableName "sole_proprietor_client" ;
-    kairos-ext:scdType "1" .
+    kairos-ext:businessGrain "one sole proprietor source record" ;
+    kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-ap:tblClientKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
+    kairos-ext:scdType "1" ;
+    kairos-ext:incrementalPolicy acme:ClientRuntime .
 
 acme:IndividualClient
     kairos-ext:silverTableName "individual_client" ;
-    kairos-ext:scdType "1" .
+    kairos-ext:businessGrain "one individual client source record" ;
+    kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-ap:tblClientKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
+    kairos-ext:scdType "1" ;
+    kairos-ext:incrementalPolicy acme:ClientRuntime .
 
 acme:ClientType
     kairos-ext:silverTableName "client_type" ;
+    kairos-ext:businessGrain "one client type code" ;
+    kairos-ext:identityStrategy "business-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-ap:tblClientTypeKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
     kairos-ext:isReferenceData "true" ;
-    kairos-ext:scdType "1" .
+    kairos-ext:scdType "1" ;
+    kairos-ext:incrementalPolicy acme:ClientRuntime .
 
 acme:ClientPII
     kairos-ext:silverTableName "client_pii" ;
-    kairos-ext:gdprSatelliteOf acme:Client ;
     kairos-ext:scdType "2" ;
-    kairos-ext:partitionBy "client_id" .
+    kairos-ext:scd2TimeBasis "load-history" ;
+    kairos-ext:incrementalPolicy acme:ClientRuntime ;
+    kairos-ext:businessGrain "one protected client source record" ;
+    kairos-ext:identityStrategy "source-scoped-immutable-key" ;
+    kairos-ext:entityInstanceIriPolicy "omit" ;
+    kairos-ext:keyScope "source-table" ;
+    kairos-ext:sourceIdentity prep-ap:tblClientPIIKey ;
+    kairos-ext:changeDetectionStrategy "canonical-hash" ;
+    kairos-ext:hashPolicy acme:ClientPiiHash ;
+    kairos-ext:lineagePolicy "source-record-and-load" .
+
+acme:ClientPiiHash a kairos-ext:HashPolicy ;
+    kairos-ext:hashContractVersion "1" ;
+    kairos-ext:hashAlgorithm "SHA-256" ;
+    kairos-ext:hashInput ( acme:nationalId acme:dateOfBirth ) ;
+    kairos-ext:hashNullRepresentation "typed-length-delimited-null" .
 
 # Property-level
 acme:clientId
@@ -98,13 +194,46 @@ acme:dateOfBirth
     kairos-ext:silverColumnName "date_of_birth" ;
     kairos-ext:silverDataType "DATE" .
 
+acme:hasType
+    kairos-ext:silverForeignKeyTemporalMode "none" ;
+    kairos-ext:silverForeignKeyChangeDetection true ;
+    kairos-ext:silverForeignKeyCardinality "zero-or-one" ;
+    kairos-ext:silverForeignKeyMissingPolicy "quarantine" ;
+    kairos-ext:silverForeignKeyAmbiguousPolicy "fail" ;
+    kairos-ext:silverForeignKeyLateParentPolicy "restate" .
+
 # ---------------------------------------------------------------------------
 # Reference Model Inspired: Identifier pattern
 # ---------------------------------------------------------------------------
 acme:Identifier
     kairos-ext:silverTableName "identifier" ;
     kairos-ext:scdType "2" ;
+    kairos-ext:scd2TimeBasis "business-valid" ;
+    kairos-ext:incrementalPolicy acme:ClientRuntime ;
+    kairos-ext:businessGrain "one identifier assignment and validity interval" ;
+    kairos-ext:identityStrategy "business-key" ;
+    kairos-ext:entityInstanceIriPolicy "emit" ;
+    kairos-ext:keyScope "domain" ;
+    kairos-ext:sourceIdentity prep-ap:tblIdentifierKey ;
+    kairos-ext:changeDetectionStrategy "compare-columns" ;
+    kairos-ext:lineagePolicy "source-record-and-load" ;
     kairos-ext:naturalKey "identifierValue, identifierScheme" .
+
+acme:ClientRuntime a kairos-ext:IncrementalPolicy ;
+    kairos-ext:mergeIdentity "_source_record_key" ;
+    kairos-ext:cdcOperation "_cdc_operation" ;
+    kairos-ext:sourceUpdateTimestamp "_source_updated_at" ;
+    kairos-ext:sourceEffectiveTimestamp "_source_effective_at" ;
+    kairos-ext:ingestionTimestamp "_ingested_at" ;
+    kairos-ext:totalOrderTieBreaker "_cdc_sequence, _source_record_key" ;
+    kairos-ext:lookbackWindow "7 days" ;
+    kairos-ext:hardDeletePolicy "tombstone" ;
+    kairos-ext:softDeletePolicy "apply-operation" ;
+    kairos-ext:lateArrivalPolicy "reconcile-with-lookback" ;
+    kairos-ext:correctionPolicy "replace-by-total-order" ;
+    kairos-ext:replayPolicy "idempotent-merge" ;
+    kairos-ext:backfillPolicy "range-replay-approved" ;
+    kairos-ext:schemaChangePolicy "fail" .
 
 acme:identifierValue
     kairos-ext:silverColumnName "identifier_value" ;
@@ -122,4 +251,10 @@ acme:identifierValidFrom
 
 acme:isIdentifiedBy
     kairos-ext:silverForeignKey "true" ;
-    kairos-ext:silverForeignKeyOn "client_id" .
+    kairos-ext:silverForeignKeyOn acme:Client ;
+    kairos-ext:silverForeignKeyTemporalMode "current" ;
+    kairos-ext:silverForeignKeyChangeDetection false ;
+    kairos-ext:silverForeignKeyCardinality "zero-or-one" ;
+    kairos-ext:silverForeignKeyMissingPolicy "quarantine" ;
+    kairos-ext:silverForeignKeyAmbiguousPolicy "fail" ;
+    kairos-ext:silverForeignKeyLateParentPolicy "restate" .

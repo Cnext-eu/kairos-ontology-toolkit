@@ -45,20 +45,35 @@ app:Customer_Unsampled a kairos-bronze:SourceColumn ;
 MAPPING_TTL = """\
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix map: <https://example.com/mapping/audit#> .
 @prefix app: <https://kairos.cnext.eu/source/app#> .
 @prefix ex: <https://example.com/domain#> .
 
 app:Customer a skos:Concept ;
-    skos:exactMatch ex:Customer ;
-    kairos-map:mappingType "direct" .
+    skos:exactMatch ex:Customer .
 
 app:Customer_Name skos:exactMatch ex:customerName .
 
-app:Customer_Amount skos:exactMatch ex:amount ;
-    kairos-map:transform "CAST(source.Amount AS DECIMAL(18,2))" ;
-    kairos-map:sourceColumns "Amount" .
+app:Customer_Amount skos:exactMatch ex:amount .
 
 app:Customer_Unsampled skos:exactMatch ex:customerCode .
+map:table a kairos-map:TableMapping ;
+    kairos-map:sourceTable app:Customer ;
+    kairos-map:targetClass ex:Customer ;
+    kairos-map:mappingType "direct" ;
+    kairos-map:matchType "exactMatch" .
+map:name a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn app:Customer_Name ;
+    kairos-map:targetProperty ex:customerName ;
+    kairos-map:matchType "exactMatch" .
+map:amount a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn app:Customer_Amount ;
+    kairos-map:targetProperty ex:amount ;
+    kairos-map:matchType "exactMatch" .
+map:code a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn app:Customer_Unsampled ;
+    kairos-map:targetProperty ex:customerCode ;
+    kairos-map:matchType "exactMatch" .
 """
 
 
@@ -104,7 +119,6 @@ def test_run_silver_sample_audit_reports_warnings(tmp_path):
     assert report.mapped_columns == 3
     assert report.sampled_mapped_columns == 2
     assert "missing_mapped_samples" in codes
-    assert "cast_sample_incompatibility" in codes
     assert (out / "silver-sample-audit.yaml").is_file()
     assert (out / "silver-sample-audit.md").is_file()
 
@@ -144,11 +158,17 @@ app:Order_OrderNo a kairos-bronze:SourceColumn ;
     (mappings / "app-to-domain.ttl").write_text(
         f"""\
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+@prefix map: <https://example.com/mapping/audit-single#> .
 @prefix app: <https://kairos.cnext.eu/source/app#> .
 @prefix booking: <https://example.com/domain/booking#> .
 @prefix ex: <https://example.com/domain#> .
 
 app:Order_OrderNo skos:closeMatch {target} .
+map:order-number a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn app:Order_OrderNo ;
+    kairos-map:targetProperty {target} ;
+    kairos-map:matchType "closeMatch" .
 """,
         encoding="utf-8",
     )

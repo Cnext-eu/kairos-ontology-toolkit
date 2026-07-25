@@ -407,7 +407,7 @@ def test_authoritative_silver_first_lifecycle(tmp_path, monkeypatch):
         assert path.read_bytes() != stub_bytes[name]
         assert "kairos_aspirational_stub" not in sql
         assert "where 1 = 0" not in sql
-        assert "source(" in sql
+        assert "source(" in sql or "ref('stg_" in sql
 
     assert {path.name for path in silver_dir.glob("*.sql")} == {
         "client.sql",
