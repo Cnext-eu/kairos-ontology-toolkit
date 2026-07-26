@@ -112,8 +112,14 @@ When the hub has affinity reports (`integration/sources/_analysis/*-affinity.yam
 partial one (the gate includes the pre-silver mapping-coverage check):
 
 ```bash
-kairos-ontology check-claims
+kairos-ontology check-claims --require-mapping
 ```
+
+`--require-mapping` is required here (DD-122): by default `check-claims` reports
+mapping gaps for visibility only (they are `kairos-design-mapping`'s concern, not
+ordinary curation) and stays exit-0 on them; this projection pre-flight is the
+owning workflow that must still fail closed on an incomplete mapping, so it opts
+in explicitly rather than relying on the (now narrower) default exit code.
 
 - **Exit 0** → every affinity-assigned source table is mapped to a domain entity.
   Proceed with projection.
@@ -134,7 +140,8 @@ kairos-ontology check-claims --no-source-coverage
 ```
 
 `--no-source-coverage` skips **only** the pre-silver mapping-coverage block (the
-unmapped-affinity-table check the stub flow exists to work around). It does
+unmapped-affinity-table check the stub flow exists to work around) — `--require-mapping`
+is therefore moot here and may be omitted. It does
 **not** relax anything else: registry validity/freshness/duplicate-approved
 checks, the extension-sync gate, the MDM-anchor gate, and the ownership-boundary
 gate all still run and still block as normal (see below). This is narrower than

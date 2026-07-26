@@ -21,7 +21,7 @@ from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import SKOS
 
 from .claim_registry import Claim, ClaimRegistry, load_registry, registry_path
-from .claim_registry import validate_registry, validation_errors
+from .claim_registry import GenerationOutcome, validate_registry, validation_errors
 from .source_catalog import SourceCatalog, build_source_catalog
 
 logger = logging.getLogger(__name__)
@@ -152,6 +152,11 @@ class DomainCompleteness:
     claims: tuple[Claim, ...]
     grain_conflicts: tuple[GrainConflictFact, ...]
     freshness: FreshnessFact
+    #: Alignment-reliability — additive per-table typed generation outcomes
+    #: (empty when the registry has none, e.g. pre-feature files or a fully
+    #: successful run). Lets gates warn on incomplete semantic generation
+    #: without treating it as a structural-validity failure.
+    generation_outcomes: tuple[GenerationOutcome, ...] = ()
 
     @property
     def is_valid(self) -> bool:
@@ -518,6 +523,7 @@ def _domain_registry_fact(
             claims=tuple(registry.claims),
             grain_conflicts=_grain_conflicts(registry),
             freshness=_freshness_fact(registry, expected_pairs),
+            generation_outcomes=tuple(registry.generation_outcomes),
         ),
         _registry_coverage(registry),
     )

@@ -2379,9 +2379,23 @@ kairos-ontology check-claims --domains <target-domain> --strict
 > authority used by validation and projection preflight.
 >
 > **Fresh domains bootstrap themselves.** `claims-to-silver-ext` scaffolds a minimal
-> valid ontology + `{domain}-silver-ext.ttl` skeleton (with a provenance header and
-> inferred hub base / foundation import) when those files don't yet exist, then
-> proceeds with the sync. Pass `--no-scaffold` to require the files up front.
+> valid ontology + `{domain}-silver-ext.ttl` skeleton — with `rdfs:label`,
+> `rdfs:comment`, `owl:versionInfo`, proper prefix bindings, a provenance header, and
+> inferred hub base / foundation import — when those files don't yet exist, then
+> proceeds with the sync. The skeleton must pass the same metadata checks as a
+> hand-authored ontology before it is written; an invalid domain name or a failed
+> metadata check is recorded against that domain only and does not stop the others.
+> Pass `--no-scaffold` to require the files up front.
+>
+> **Scaffolding converges `_master.ttl` and the README domain table too**, when those
+> already exist: every ready domain's `owl:imports` entry / README row is kept in sync
+> inside their own managed regions, without touching authored content around them
+> (neither file is created by this command — only converged if already present).
+> The command prints an explicit created/updated/unchanged summary with paths and
+> counts, a managed-vs-authored explanation, and a `git status` hint for new files —
+> read it rather than assuming success or silently trusting exit code alone. On
+> partial failure the command reports precisely which domain(s) failed and does
+> **not** claim rollback: everything already written for other domains stays on disk.
 
 > **Your authored TTL is preserved.** `claims-to-silver-ext` only owns the triples
 > inside a `# >>> kairos-managed … # <<< kairos-managed` block it appends to the file

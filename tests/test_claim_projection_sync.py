@@ -6,13 +6,15 @@ import yaml
 import pytest
 from click.testing import CliRunner
 from rdflib import Graph, URIRef
-from rdflib.namespace import OWL, RDF
+from rdflib.namespace import OWL, RDF, RDFS
 
 from kairos_ontology.core.completeness_model import (
     ALIGNMENT_ALGORITHM_VERSION,
     compute_affinity_hash,
 )
 from kairos_ontology.core.claim_projection_sync import (
+    ScaffoldMetadataError,
+    ScaffoldPartialFailureError,
     _collect_hub_domain_bases,
     apply_projection_sync,
     evaluate_projection_sync,
@@ -156,6 +158,8 @@ def test_apply_projection_sync_rewrites_imports_and_includes(tmp_path):
 
 
 def test_check_claims_blocks_on_sync_drift_and_passes_after_generation(tmp_path):
+    """DD-122: sync drift is visible in ``check-claims`` but does not block it —
+    only the owning workflow (``claims-to-silver-ext --check-only``) blocks."""
     model = tmp_path / "model"
     claims_dir = model / "claims"
     _write_registry(claims_dir)
@@ -176,8 +180,9 @@ def test_check_claims_blocks_on_sync_drift_and_passes_after_generation(tmp_path)
             "--no-source-coverage",
         ],
     )
-    assert before.exit_code == 1, before.output
+    assert before.exit_code == 0, before.output
     assert "sync drift detected" in before.output
+    assert "kairos-design-domain" in before.output
 
     generate = runner.invoke(
         cli,
@@ -212,6 +217,136 @@ def test_check_claims_blocks_on_sync_drift_and_passes_after_generation(tmp_path)
         ],
     )
     assert after.exit_code == 0, after.output
+
+
+_ORDERS_MODULE_IRI = "https://example.org/reference/orders"
+_ORDERS_NS = _ORDERS_MODULE_IRI + "#"
+
+
+def _write_orders_reference_pack(tmp_path: Path) -> tuple[Path, Path]:
+    """A reference-modules pack wiring domain ``orders`` to an *unconditionally*
+    activated module (data-domains.yaml group activation), independent of any
+    claim — matches the fixture in ``test_reference_modules.py``'s deferred-only
+    regression, kept local here so this file's tests stay self-contained."""
+    ref_models = tmp_path / "reference-models"
+    blueprint = ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint"
+    blueprint.mkdir(parents=True)
+    module = ref_models / "modules" / "orders.ttl"
+    module.parent.mkdir()
+    module.write_text(
+        f"""\
+@prefix ex: <{_ORDERS_NS}> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<{_ORDERS_MODULE_IRI}> a owl:Ontology ; owl:versionInfo "1.0.0" .
+ex:Order a owl:Class .
+ex:SpecialOrder a owl:Class .
+""",
+        encoding="utf-8",
+    )
+    (blueprint / "data-domains.yaml").write_text(
+        f"""\
+schema_version: "2.0"
+module_profiles:
+  - id: orders
+    ontology_iri: {_ORDERS_MODULE_IRI}
+    catalog_uri: {_ORDERS_NS}
+    version_pin: 1.0.0
+    term_namespaces: [{_ORDERS_NS}]
+    root_classes: [{_ORDERS_NS}Order]
+    projection:
+      allowlist: [{_ORDERS_NS}Order]
+groups:
+  - id: operations
+    domains:
+      - id: orders
+        imports:
+          - profile: orders
+""",
+        encoding="utf-8",
+    )
+    catalog = ref_models / "catalog-v001.xml"
+    catalog.write_text(
+        f"""\
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="{_ORDERS_NS}" uri="modules/orders.ttl"/>
+  <uri name="{_ORDERS_MODULE_IRI}" uri="modules/orders.ttl"/>
+</catalog>
+""",
+        encoding="utf-8",
+    )
+    return ref_models, catalog
+
+
+def _write_orders_domain_files(model_dir: Path) -> None:
+    ontologies = model_dir / "ontologies"
+    extensions = model_dir / "extensions"
+    ontologies.mkdir(parents=True, exist_ok=True)
+    extensions.mkdir(parents=True, exist_ok=True)
+    (ontologies / "orders.ttl").write_text(
+        """@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://example.org/hub/orders> a owl:Ontology ;
+    rdfs:label "Orders"@en .
+""",
+        encoding="utf-8",
+    )
+    (extensions / "orders-silver-ext.ttl").write_text(
+        "@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .\n",
+        encoding="utf-8",
+    )
+
+
+def test_evaluate_projection_sync_surfaces_disputed_claims_and_owner_skill(tmp_path):
+    """DD-122: a deferred claim whose module stays active for another reason
+    (here the domain's unconditional data-domain activation) is reported as a
+    disputed claim through the full ``evaluate_projection_sync`` composition —
+    not just at the lower-level ``build_managed_import_plan`` — and the report
+    carries the ``owner_skill`` that owns enforcing sync drift."""
+    from kairos_ontology.core.claim_registry import Claim as _Claim
+
+    ref_models, catalog = _write_orders_reference_pack(tmp_path)
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    _write_orders_domain_files(model)
+
+    registry = ClaimRegistry(
+        domain="orders",
+        claims=[
+            _Claim(
+                id="order-class",
+                type="class",
+                origin="imported",
+                status="deferred",
+                disposition="claim",
+                class_uri=_ORDERS_NS + "SpecialOrder",
+            ),
+        ],
+    )
+    write_registry(registry, registry_path(claims_dir, "orders"))
+
+    report = evaluate_projection_sync(
+        claims_dir=claims_dir,
+        ontologies_dir=model / "ontologies",
+        extensions_dir=model / "extensions",
+        ref_models_dir=ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+    )
+
+    assert report.owner_skill == "kairos-design-domain"
+    assert len(report.domains) == 1
+    domain_status = report.domains[0]
+    assert domain_status.domain == "orders"
+    assert domain_status.disputed_claims, "expected the deferred claim to be disputed"
+    entry = domain_status.disputed_claims[0]
+    assert entry["claim_id"] == "order-class"
+    assert entry["claim_status"] == "deferred"
+    assert entry["domain"] == "orders"
+    assert "data-domain:orders" in entry["reasons"]
+    # The report-level property flattens every domain's disputed claims.
+    assert report.disputed_claims == domain_status.disputed_claims
 
 
 def _write_foundation(ontologies_dir: Path) -> str:
@@ -319,15 +454,18 @@ def test_scaffold_missing_surfaces_creates_valid_skeletons(tmp_path):
     # Provide a foundation base so the skeleton infers the hub namespace + import.
     _write_foundation(ontologies)
 
-    created = scaffold_missing_surfaces(
+    result = scaffold_missing_surfaces(
         claims_dir=claims_dir,
         ontologies_dir=ontologies,
         extensions_dir=extensions,
     )
     onto_file = ontologies / "party.ttl"
     ext_file = extensions / "party-silver-ext.ttl"
-    assert onto_file in created
-    assert ext_file in created
+    assert onto_file in result.created
+    assert ext_file in result.created
+    assert result.updated == ()
+    assert result.errors == ()
+    assert result.counts == {"created": 2, "updated": 0, "unchanged": 0}
 
     # Skeletons are valid TTL with an owl:Ontology subject + provenance header.
     onto_graph = Graph()
@@ -339,6 +477,18 @@ def test_scaffold_missing_surfaces_creates_valid_skeletons(tmp_path):
     imports = {str(o).rstrip("#/") for o in onto_graph.objects(onto_subj, OWL.imports)}
     assert "https://example.org/domain/_foundation" in imports
 
+    # Same baseline metadata checks required of hand-authored ontologies.
+    assert onto_graph.value(onto_subj, RDFS.label) is not None
+    assert onto_graph.value(onto_subj, RDFS.comment) is not None
+    assert onto_graph.value(onto_subj, OWL.versionInfo) is not None
+
+    ext_graph = Graph()
+    ext_graph.parse(ext_file, format="turtle")
+    ext_subj = next(ext_graph.subjects(RDF.type, OWL.Ontology))
+    assert ext_graph.value(ext_subj, RDFS.label) is not None
+    assert ext_graph.value(ext_subj, RDFS.comment) is not None
+    assert ext_graph.value(ext_subj, OWL.versionInfo) is not None
+
 
 def test_scaffold_does_not_touch_existing_files(tmp_path):
     model = tmp_path / "model"
@@ -347,13 +497,170 @@ def test_scaffold_does_not_touch_existing_files(tmp_path):
     _write_domain_files(model, with_drift=False)
     before = (model / "ontologies" / "party.ttl").read_text(encoding="utf-8")
 
-    created = scaffold_missing_surfaces(
+    result = scaffold_missing_surfaces(
         claims_dir=claims_dir,
         ontologies_dir=model / "ontologies",
         extensions_dir=model / "extensions",
     )
-    assert created == []
+    assert result.created == ()
+    assert (model / "ontologies" / "party.ttl") in result.unchanged
+    assert (model / "extensions" / "party-silver-ext.ttl") in result.unchanged
     assert (model / "ontologies" / "party.ttl").read_text(encoding="utf-8") == before
+
+
+def test_scaffold_is_idempotent_across_repeated_runs(tmp_path):
+    """Re-running the scaffold over its own output is a no-op: same set of files,
+    zero further writes, second run reports everything as unchanged."""
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    ontologies = model / "ontologies"
+    extensions = model / "extensions"
+    _write_registry(claims_dir)
+    _write_foundation(ontologies)
+
+    first = scaffold_missing_surfaces(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    onto_file = ontologies / "party.ttl"
+    ext_file = extensions / "party-silver-ext.ttl"
+    onto_before = onto_file.read_text(encoding="utf-8")
+    ext_before = ext_file.read_text(encoding="utf-8")
+
+    second = scaffold_missing_surfaces(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    assert second.created == ()
+    assert onto_file in second.unchanged
+    assert ext_file in second.unchanged
+    assert onto_file.read_text(encoding="utf-8") == onto_before
+    assert ext_file.read_text(encoding="utf-8") == ext_before
+    assert first.counts == {"created": 2, "updated": 0, "unchanged": 0}
+
+
+def test_scaffold_rejects_invalid_domain_slug_without_touching_others(tmp_path):
+    """Partial failure: an invalid domain identifier is reported precisely and
+    does not prevent sibling domains from being scaffolded, nor is anything
+    already written for them rolled back."""
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    ontologies = model / "ontologies"
+    extensions = model / "extensions"
+    _write_registry(claims_dir)  # domain "party" — valid
+    claims_dir.mkdir(parents=True, exist_ok=True)
+    (claims_dir / "Bad_Domain-claims.yaml").write_text(
+        "domain: Bad_Domain\ngenerated_at: '2026-06-15T00:00:00Z'\n"
+        "algorithm_version: 1\nfreshness: {}\ncoverage: []\nclaims: []\n",
+        encoding="utf-8",
+    )
+    _write_foundation(ontologies)
+
+    with pytest.raises(ScaffoldPartialFailureError) as excinfo:
+        scaffold_missing_surfaces(
+            claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+        )
+    result = excinfo.value.result
+    assert (ontologies / "party.ttl") in result.created
+    assert (extensions / "party-silver-ext.ttl") in result.created
+    assert len(result.errors) == 1
+    assert "Bad_Domain" in result.errors[0]
+    assert not (ontologies / "Bad_Domain.ttl").exists()
+    # No rollback: the sibling domain's files remain on disk despite the failure.
+    assert (ontologies / "party.ttl").exists()
+    assert (extensions / "party-silver-ext.ttl").exists()
+
+
+def test_scaffold_registers_domain_in_master_and_readme(tmp_path):
+    """Convergent update: an existing ``_master.ttl`` gains a managed owl:imports
+    entry, and an existing README domain table gains a row — both preserving
+    authored content outside the region this workflow owns."""
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    ontologies = model / "ontologies"
+    extensions = model / "extensions"
+    _write_registry(claims_dir)
+    _write_foundation(ontologies)
+
+    master_iri = "https://example.org/domain/master"
+    master_text = (
+        "# Hand-authored provenance header — KEEP THIS.\n"
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\n"
+        f"<{master_iri}> a owl:Ontology ;\n"
+        '    rdfs:label "Master"@en ;\n'
+        '    owl:versionInfo "0.1.0" .\n'
+    )
+    master_file = ontologies / "_master.ttl"
+    master_file.write_text(master_text, encoding="utf-8")
+
+    readme_text = (
+        "# Acme — Ontology Hub\n\n"
+        "## Domain model overview\n\n"
+        "| Domain | Description | File | Status |\n"
+        "|--------|-------------|------|--------|\n"
+        "| *(add domains here)* | | | |\n\n"
+        "## Master ontology\n\n"
+        "Keep it updated.\n"
+    )
+    readme_file = tmp_path / "README.md"
+    readme_file.write_text(readme_text, encoding="utf-8")
+
+    result = scaffold_missing_surfaces(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    assert master_file in result.updated
+    assert readme_file in result.updated
+
+    master_graph = Graph()
+    master_graph.parse(master_file, format="turtle")
+    imports = {str(o) for o in master_graph.objects(URIRef(master_iri), OWL.imports)}
+    assert "https://example.org/domain/party" in imports
+    # Authored header/content survives byte-for-byte outside the managed block.
+    assert master_text.splitlines()[0] in master_file.read_text(encoding="utf-8")
+
+    readme_after = readme_file.read_text(encoding="utf-8")
+    assert "| party | | `model/ontologies/party.ttl` | Scaffolded |" in readme_after
+    assert "*(add domains here)*" not in readme_after
+    assert "Keep it updated." in readme_after  # untouched authored content survives
+
+    # Idempotent: re-running with the files now in place changes nothing further.
+    again = scaffold_missing_surfaces(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    assert master_file in again.unchanged
+    assert readme_file in again.unchanged
+    assert master_file.read_text(encoding="utf-8") == master_file.read_text(encoding="utf-8")
+
+
+def test_scaffold_skips_master_registration_when_absent(tmp_path):
+    """No ``_master.ttl`` yet: this workflow never creates one — it only converges
+    an existing registration. Nothing is written, and no warning is raised for
+    what is a perfectly normal state (a hub that doesn't use a master ontology
+    yet, or hasn't created it)."""
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    ontologies = model / "ontologies"
+    extensions = model / "extensions"
+    _write_registry(claims_dir)
+    _write_foundation(ontologies)
+
+    result = scaffold_missing_surfaces(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+    assert not (ontologies / "_master.ttl").exists()
+    assert (ontologies / "_master.ttl") not in result.updated
+    assert (ontologies / "_master.ttl") not in result.unchanged
+
+
+def test_scaffold_metadata_error_message_names_missing_predicates():
+    """Direct unit check of the metadata gate: a candidate graph missing required
+    ontology-level metadata is rejected before anything would be written."""
+    from kairos_ontology.core.claim_projection_sync import _validate_generated_metadata
+
+    graph = Graph()
+    subj = URIRef("https://example.org/domain/incomplete")
+    graph.add((subj, RDF.type, OWL.Ontology))
+    with pytest.raises(ScaffoldMetadataError, match="rdfs:label"):
+        _validate_generated_metadata(graph, subj, path=Path("incomplete.ttl"))
 
 
 def test_apply_bootstraps_then_syncs_fresh_domain(tmp_path):
@@ -373,12 +680,103 @@ def test_apply_bootstraps_then_syncs_fresh_domain(tmp_path):
     assert not report.is_blocking, [
         (d.domain, d.error, d.missing_imports) for d in report.out_of_sync
     ]
+    assert report.scaffold_result is not None
+    assert (ontologies / "party.ttl") in report.scaffold_result.created
     # The approved imported TradeParty claim drove the external import into the skeleton.
     onto_graph = Graph()
     onto_graph.parse(ontologies / "party.ttl", format="turtle")
     onto_subj = next(onto_graph.subjects(RDF.type, OWL.Ontology))
     imports = {str(o).rstrip("#/") for o in onto_graph.objects(onto_subj, OWL.imports)}
     assert "https://example.org/ref/party" in imports
+
+
+def test_cli_claims_to_silver_ext_prints_scaffold_summary_with_git_hint(tmp_path):
+    """The CLI surfaces the explicit created/updated/unchanged accounting, the
+    managed-vs-authored explanation, and a git-status hint for new files."""
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    ontologies = model / "ontologies"
+    extensions = model / "extensions"
+    _write_registry(claims_dir)
+    _write_foundation(ontologies)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "claims-to-silver-ext",
+            "--claims-dir",
+            str(claims_dir),
+            "--ontologies",
+            str(ontologies),
+            "--extensions",
+            str(extensions),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Scaffold / convergence summary" in result.output
+    assert "Scaffold summary: " in result.output
+    assert "created" in result.output and "unchanged" in result.output
+    assert str(ontologies / "party.ttl") in result.output
+    assert "untracked in git" in result.output
+    assert "git status" in result.output
+    assert "Managed regions" in result.output
+
+    # Re-running once everything exists reports unchanged, not created.
+    again = runner.invoke(
+        cli,
+        [
+            "claims-to-silver-ext",
+            "--claims-dir",
+            str(claims_dir),
+            "--ontologies",
+            str(ontologies),
+            "--extensions",
+            str(extensions),
+        ],
+    )
+    assert again.exit_code == 0, again.output
+    assert "0 created" in again.output
+
+
+def test_cli_claims_to_silver_ext_reports_partial_failure_without_rollback(tmp_path):
+    """CLI-level partial failure: an invalid domain identifier is reported with
+    exit code 1 and an explicit no-rollback statement, while the sibling
+    domain's already-written files remain on disk."""
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    ontologies = model / "ontologies"
+    extensions = model / "extensions"
+    _write_registry(claims_dir)  # domain "party" — valid
+    claims_dir.mkdir(parents=True, exist_ok=True)
+    (claims_dir / "Bad_Domain-claims.yaml").write_text(
+        "domain: Bad_Domain\ngenerated_at: '2026-06-15T00:00:00Z'\n"
+        "algorithm_version: 1\nfreshness: {}\ncoverage: []\nclaims: []\n",
+        encoding="utf-8",
+    )
+    _write_foundation(ontologies)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "claims-to-silver-ext",
+            "--claims-dir",
+            str(claims_dir),
+            "--ontologies",
+            str(ontologies),
+            "--extensions",
+            str(extensions),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Scaffolding failed partway through" in result.output
+    assert "No rollback is performed" in result.output
+    assert "Bad_Domain" in result.output
+    # The sibling domain's files remain — no rollback happened.
+    assert (ontologies / "party.ttl").exists()
+    assert (extensions / "party-silver-ext.ttl").exists()
+
 
 
 # ---------------------------------------------------------------------------

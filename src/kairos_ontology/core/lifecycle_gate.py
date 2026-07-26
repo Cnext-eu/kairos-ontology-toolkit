@@ -169,7 +169,9 @@ def _claim_report_to_dict(report: ClaimCheckReport) -> dict:
         ],
         "passthrough_review": _list_dict(report.passthrough_review),
         "column_omissions": _list_dict(report.column_omissions),
+        "unresolved_anchor_tables": _list_dict(report.unresolved_anchor_tables),
         "grain_conflicts": _list_dict(report.grain_conflicts),
+        "incomplete_generation": _list_dict(report.incomplete_generation),
         "is_blocking": report.is_blocking,
         "has_warnings": report.has_warnings,
         "total_proposed": report.total_proposed,
@@ -187,6 +189,7 @@ def _source_coverage_to_dict(report: SourceCoverageReport) -> dict:
         "diagnostics": _list_dict(report.diagnostics),
         "is_blocking": report.is_blocking,
         "total_uncovered": report.total_uncovered,
+        "owner_skill": report.owner_skill,
     }
 
 
@@ -202,11 +205,14 @@ def _projection_sync_to_dict(report: ProjectionSyncReport) -> dict:
                 "missing_includes": list(d.missing_includes),
                 "extra_includes": list(d.extra_includes),
                 "has_bulk_include_imports": d.has_bulk_include_imports,
+                "disputed_claims": list(d.disputed_claims),
                 "error": d.error,
             }
             for d in report.domains
         ],
         "is_blocking": report.is_blocking,
+        "owner_skill": report.owner_skill,
+        "disputed_claims": list(report.disputed_claims),
     }
 
 

@@ -136,6 +136,190 @@ class TestValidator:
         payload = json.loads(report_path.read_text(encoding="utf-8"))
         assert payload["syntax"]["passed"] == 1
 
+    def test_no_markdown_written_when_markdown_report_path_omitted(
+        self, temp_dir, sample_ontology, capsys
+    ):
+        """Additive Markdown output stays off by default (preserves JSON-only contract)."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(sample_ontology, encoding="utf-8")
+
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+        )
+
+        captured = capsys.readouterr()
+        assert "Markdown report saved to" not in captured.out
+
+    def test_markdown_report_written_to_explicit_path(self, temp_dir, sample_ontology, capsys):
+        """An explicit markdown_report_path writes a deterministic Markdown report
+        containing toolkit version, effective options, catalog, accelerator,
+        scope/files, and findings — additively, alongside (or instead of) JSON."""
+        from kairos_ontology import __version__ as toolkit_version
+
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(sample_ontology, encoding="utf-8")
+
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        markdown_report_path = temp_dir / "output" / "validation-report.md"
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=True,
+            do_consistency=False,
+            accelerator="acme-core",
+            markdown_report_path=markdown_report_path,
+        )
+
+        captured = capsys.readouterr()
+        assert f"Markdown report saved to {markdown_report_path}" in captured.out
+        assert markdown_report_path.exists()
+
+        text = markdown_report_path.read_text(encoding="utf-8")
+        assert f"Toolkit version:** {toolkit_version}" in text
+        assert "## Effective command options" in text
+        assert "Catalog:" in text
+        assert "Accelerator:** acme-core" in text
+        assert "## Scope / files" in text
+        assert "customer.ttl" in text
+        assert "## Findings" in text
+        assert "| syntax |" in text
+        assert "## Suggested lifecycle state (non-writing signal)" in text
+
+    def test_markdown_report_is_deterministic(self, temp_dir, sample_ontology):
+        """Two runs over identical input produce byte-identical Markdown."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(sample_ontology, encoding="utf-8")
+
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        path_a = temp_dir / "a.md"
+        path_b = temp_dir / "b.md"
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            markdown_report_path=path_a,
+        )
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            markdown_report_path=path_b,
+        )
+
+        assert path_a.read_text(encoding="utf-8") == path_b.read_text(encoding="utf-8")
+
+    def test_json_report_includes_non_writing_state_proposal(
+        self, temp_dir, sample_ontology
+    ):
+        """The JSON report additively carries a typed, non-writing lifecycle-state
+        suggestion; run_validation itself must never touch .kairos-state/."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(sample_ontology, encoding="utf-8")
+
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        report_path = temp_dir / "output" / "validation-report.json"
+        state_dir = temp_dir / ".kairos-state"
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=True,
+            do_consistency=False,
+            report_path=report_path,
+        )
+
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        assert "state_proposal" in payload
+        assert payload["state_proposal"]["suggested_state"] == "design-valid"
+        assert isinstance(payload["state_proposal"]["achieved"], bool)
+        assert "reason" in payload["state_proposal"]
+        assert not state_dir.exists()  # non-writing: no lifecycle-state mutation
+
+
+class TestLifecycleStateProposal:
+    """Tests for the typed, non-writing DD-080 lifecycle-state suggestion."""
+
+    def test_propose_achieved_when_focused_checks_pass(self):
+        from kairos_ontology.core.validator import propose_lifecycle_state
+
+        results = {
+            "syntax": {"passed": 1, "failed": 0},
+            "imports": {"passed": 0, "failed": 0},
+            "shacl": {"passed": 1, "failed": 0},
+            "consistency": {"passed": 0, "failed": 0},
+        }
+        proposal = propose_lifecycle_state(results, do_syntax=True, do_shacl=True)
+        assert proposal.suggested_state == "design-valid"
+        assert proposal.achieved is True
+
+    def test_propose_not_achieved_on_failure(self):
+        from kairos_ontology.core.validator import propose_lifecycle_state
+
+        results = {
+            "syntax": {"passed": 0, "failed": 1},
+            "imports": {"passed": 0, "failed": 0},
+            "shacl": {"passed": 0, "failed": 0},
+            "consistency": {"passed": 0, "failed": 0},
+        }
+        proposal = propose_lifecycle_state(results, do_syntax=True, do_shacl=True)
+        assert proposal.achieved is False
+        assert "failed" in proposal.reason
+
+    def test_propose_not_achieved_on_partial_scope(self):
+        from kairos_ontology.core.validator import propose_lifecycle_state
+
+        results = {
+            "syntax": {"passed": 1, "failed": 0},
+            "imports": {"passed": 0, "failed": 0},
+            "shacl": {"passed": 0, "failed": 0},
+            "consistency": {"passed": 0, "failed": 0},
+        }
+        proposal = propose_lifecycle_state(results, do_syntax=True, do_shacl=False)
+        assert proposal.achieved is False
+
+    def test_to_dict_is_json_serializable(self):
+        from kairos_ontology.core.validator import propose_lifecycle_state
+
+        results = {
+            "syntax": {"passed": 1, "failed": 0},
+            "imports": {"passed": 0, "failed": 0},
+            "shacl": {"passed": 1, "failed": 0},
+            "consistency": {"passed": 0, "failed": 0},
+        }
+        proposal = propose_lifecycle_state(results, do_syntax=True, do_shacl=True)
+        # Must not raise — proves the value is a plain, JSON-serializable dict.
+        json.dumps(proposal.to_dict())
+
 
 # -----------------------------------------------------------------------
 # GDPR PII Validation Tests

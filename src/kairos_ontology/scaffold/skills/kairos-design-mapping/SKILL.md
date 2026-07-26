@@ -40,14 +40,16 @@ should be corrected here before dataplatform handoff.
 
 **On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
 continuation region and this phase's log(s) at `phases/mapping/<source>-to-<domain>.md`
-— to resume open questions. Ignore `_archive/`. (`kairos-ontology status` gives the
-objective view.)
+— to resume open questions. Reuse a persisted **Confirmed table scope** list (see Phase 1)
+verbatim instead of re-deriving it, unless the user reopens table alignment. Ignore
+`_archive/`. (`kairos-ontology status` gives the objective view.)
 
 **On pause or finish:** append a *State update proposal* to
 `phases/mapping/<source>-to-<domain>.md` with OKF frontmatter (`type: kairos-phase-log`,
 `phase: mapping`, `instance: <source>-to-<domain>`, `status:`, `last_updated:`). Record
-decisions made and an **Open questions** list as the resume anchor. Do **not** edit
-`status.md` directly — kairos-flow folds your proposal in.
+decisions made, the current **Confirmed table scope** list (Phase 1), and an **Open
+questions** list as the resume anchor. Do **not** edit `status.md` directly — kairos-flow
+folds your proposal in.
 
 
 You guide the user through creating SKOS mapping files that link source system
@@ -121,19 +123,31 @@ The user can override any auto-approved mapping.
 
 ### Gate 6: Transformation readiness (deterministic)
 
-Before creating or modifying mapping TTL, run:
+Before creating or modifying mapping TTL, run the check scoped to this session's
+**Confirmed table scope** (Phase 1) — a repeatable `--table` per confirmed source-table or
+virtual-source IRI:
 
 ```bash
 $env:KAIROS_SKILL_CONTEXT = "1"
-kairos-ontology check-transformation-readiness --stage mapping
+kairos-ontology check-transformation-readiness --stage mapping --table <table-iri-1> --table <table-iri-2>
 ```
 
-A non-zero result is blocking. Do not write mapping TTL; report the evaluator's reasons
-verbatim and hand off to **kairos-develop-dbt-transformation**. The planning inventory is
-not mapping authority: SQL operation signals trigger assessment, while a direct mapping is
-forbidden only when the governed candidate decision establishes overlapping replacement
-scope. A deferred candidate may coexist with a narrow direct slice only when its rationale
-and distinct-grain statement are recorded.
+Reuse the persisted scope list from the phase log rather than re-deriving it on resume (see
+Phase 1). A non-zero result is blocking for the in-scope candidates; do not write mapping TTL,
+report the evaluator's reasons verbatim, and hand off to
+**kairos-develop-dbt-transformation**. The planning inventory is not mapping authority: SQL
+operation signals trigger assessment, while a direct mapping is forbidden only when the
+governed candidate decision establishes overlapping replacement scope. A deferred candidate
+may coexist with a narrow direct slice only when its rationale and distinct-grain statement
+are recorded.
+
+Direct table/virtual-source overlap with the confirmed scope is the sole scope authority —
+never expand it by following dependency/FK relationships to other tables. A blocked contract
+or candidate outside this session's confirmed scope (e.g. another domain's in-progress work)
+still surfaces in the report for awareness but is reported non-blocking; it never gates this
+scoped check. Omitting `--table` (unscoped) is reserved for hub-wide status/release checks
+(**kairos-diagnose-status**, **kairos-flow**, `check-release`) — never drop the scope here to
+work around a blocker that belongs to unrelated tables.
 
 ---
 
@@ -206,6 +220,15 @@ resources are validation inputs but not projection authority until approved.
    - `deprecated` — known dead tables
    - `out-of-scope` — valid data, not in current domain model
    - `gap` — should be in domain → feed back to modeling skill
+7. **Derive and persist the confirmed table scope.** Collect the absolute source-table or
+   virtual-source IRI of every row confirmed to an entity in step 4 — excluding
+   `operational`, `deprecated`, `out-of-scope`, and `gap` rows — into a repeatable
+   **Confirmed table scope** list. Append it to the phase log
+   (`ontology-hub/.kairos-state/phases/mapping/{source}-to-{domain}.md`) so it survives a
+   pause/resume and is reused as-is (not re-derived) unless the user reopens table
+   alignment. This list is the `--table` scope for Gate 6 and for every later
+   `check-transformation-readiness --stage mapping` call in this session — never widen it by
+   following FK/dependency relationships to tables outside this alignment.
 
 > **If DD-045 hints are loaded:** surface any table-level `structural_hints`
 > (`split_candidate`, `dedup_candidate`, `merge_candidate`,
@@ -229,8 +252,9 @@ resources are validation inputs but not projection authority until approved.
 > mapping expression.
 >
 > When an imported candidate exists, do not re-derive this boundary from SQL in the skill.
-> Use `check-transformation-readiness --stage mapping` as the machine decision and record
-> its candidate ID in the mapping phase log.
+> Use `check-transformation-readiness --stage mapping` — scoped with the persisted
+> **Confirmed table scope** `--table` list — as the machine decision and record its
+> candidate ID in the mapping phase log.
 
 ### Phase 2 — Column-to-Property Mapping (per confirmed table)
 

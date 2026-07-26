@@ -15,8 +15,9 @@ AI-free — every input is committed, structured YAML/TTL:
 The gate buckets each affinity domain with priority
 ``missing > invalid > incomplete > stale > unverifiable > ok`` (parity with the
 retired alignment gate), and additionally surfaces cross-file duplicate
-``approved`` claims, ownership gaps vs ``data-domains.yaml``, and — under
-``--strict`` — registries that still carry undecided (``proposed``) claims.
+``approved`` claims, ownership gaps vs ``data-domains.yaml``, tables still
+awaiting a class-anchor decision (non-blocking), and — under ``--strict`` —
+registries that still carry undecided (``proposed``) claims.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from .completeness_model import (
     compute_completeness_facts,
 )
 from .claim_registry import (
+    ANCHOR_STATE_UNRESOLVED,
     Claim,
 )
 
@@ -148,14 +150,36 @@ class ClaimCheckReport:
     #: registry covers fewer columns than the affinity report recorded for the
     #: source table (i.e. columns were dropped — e.g. by prompt truncation —
     #: before reaching the registry). Blocking: a truncated registry must never
-    #: report complete.
+    #: report complete. Tables whose class anchor is deliberately unresolved
+    #: (``anchor_state == "unresolved"``) are **excluded** — their empty
+    #: coverage is intended, not a dropped column (see
+    #: :attr:`unresolved_anchor_tables`).
     column_omissions: dict[str, list[str]] = field(default_factory=dict)
+    #: uri-anchor-contract — domain → sorted
+    #: ``"system.table (class anchor unresolved — no claims emitted for N source
+    #: column(s))"`` strings for tables whose reference-model class anchor could
+    #: not be resolved from confirmed evidence. ``propose-alignment``
+    #: deliberately emits zero claims and zero covered columns for such a table
+    #: and records the open decision in ``{domain}-unresolved-anchors.yaml``, so
+    #: this is a *pending anchor decision*, never a column omission.
+    #: Non-blocking (warning). Registries written before the ``"unresolved"``
+    #: anchor state existed never carry one, so this stays empty for them.
+    unresolved_anchor_tables: dict[str, list[str]] = field(default_factory=dict)
     #: F2/F7 (toolkit-optimizations) — grain-conflict gate. domain → sorted
     #: ``"ref_class: entityA, entityB"`` strings where multiple source tables with
     #: different candidate business entities collapsed onto one reference class
     #: (merge-by-nearest-anchor). Blocking: a human must confirm the tables share a
     #: grain or split the model before the collapsed class claim can stand.
     grain_conflicts: dict[str, list[str]] = field(default_factory=dict)
+    #: Alignment-reliability — domain → sorted ``"system.table: outcome (error)"``
+    #: strings for tables whose ``propose-alignment`` run did not reach
+    #: ``semantic_success`` (``provider_failure`` / ``fallback_only``). This is a
+    #: *semantic-generation completeness* signal, distinct from the structural
+    #: validity checked elsewhere in this gate: a table can be structurally valid
+    #: (no claims to be invalid) while still lacking real semantic content.
+    #: Non-blocking (warning) — a failed/incomplete table is visible without
+    #: forcing every other domain's exit code to fail.
+    incomplete_generation: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def is_blocking(self) -> bool:
@@ -183,6 +207,8 @@ class ClaimCheckReport:
             or self.anchor_missing
             or self.shared_dimensions
             or self.passthrough_review
+            or self.incomplete_generation
+            or self.unresolved_anchor_tables
         )
 
     @property
@@ -295,6 +321,23 @@ def _run_governance_scans(
         report.passthrough_review[domain] = flagged
 
 
+def _generation_outcome_warnings(registry: DomainCompleteness) -> list[str]:
+    """Alignment-reliability — render non-``semantic_success`` outcomes.
+
+    Additive, non-blocking visibility only: this does not re-derive or
+    duplicate any structural-validity check elsewhere in this gate, it simply
+    surfaces the typed per-table generation outcomes already carried on the
+    registry (see :class:`kairos_ontology.core.claim_registry.GenerationOutcome`).
+    """
+    lines = []
+    for gen in registry.generation_outcomes:
+        if gen.outcome == "semantic_success":
+            continue
+        detail = f": {gen.error}" if gen.error else ""
+        lines.append(f"{gen.system}.{gen.table}: {gen.outcome}{detail}")
+    return sorted(lines)
+
+
 def evaluate_claims_coverage(
     facts: CompletenessFacts,
     *,
@@ -380,6 +423,12 @@ def evaluate_claims_coverage(
         if conflicts:
             report.grain_conflicts[domain] = sorted(conflicts)
 
+        # Alignment-reliability: surface incomplete/failed semantic generation
+        # (warning only — see ClaimCheckReport.incomplete_generation docstring).
+        gen_warnings = _generation_outcome_warnings(registry)
+        if gen_warnings:
+            report.incomplete_generation[domain] = gen_warnings
+
         gaps = [fact for fact in table_facts if fact.registry_coverage is None]
         if gaps:
             report.incomplete.append(domain)
@@ -392,15 +441,32 @@ def evaluate_claims_coverage(
         # registry against the trustworthy affinity source-column count. A shortfall
         # means columns were dropped before the registry (e.g. prompt truncation),
         # so the registry must not be trusted as complete.
+        # uri-anchor-contract: a table whose class anchor is deliberately
+        # unresolved emits *no* claims and *no* covered columns by design (see
+        # ``propose_alignment``/DD-124), so comparing its empty coverage against
+        # the source column count would report a truncation that never happened.
+        # Such tables are excluded here and surfaced as their own non-blocking
+        # pending-anchor-decision facet instead.
         omissions: list[str] = []
+        unresolved_tables: list[str] = []
         for fact in table_facts:
             affinity_total = fact.assignment.total_columns
-            reg_total = fact.registry_coverage.total_columns if fact.registry_coverage else 0
+            coverage = fact.registry_coverage
+            if coverage is not None and coverage.anchor_state == ANCHOR_STATE_UNRESOLVED:
+                source_total = affinity_total or coverage.source_column_count
+                unresolved_tables.append(
+                    f"{fact.system}.{fact.table} (class anchor unresolved — no "
+                    f"claims emitted for {source_total} source column(s))"
+                )
+                continue
+            reg_total = coverage.total_columns if coverage else 0
             if affinity_total and reg_total < affinity_total:
                 omissions.append(
                     f"{fact.system}.{fact.table} (registry {reg_total} of {affinity_total} "
                     "source columns)"
                 )
+        if unresolved_tables:
+            report.unresolved_anchor_tables[domain] = sorted(unresolved_tables)
         if omissions:
             report.column_omissions[domain] = omissions
             continue
@@ -429,6 +495,9 @@ def evaluate_claims_coverage(
             check_mdm_anchor=check_mdm_anchor,
             check_ownership=check_ownership,
         )
+        gen_warnings = _generation_outcome_warnings(registry)
+        if gen_warnings:
+            report.incomplete_generation[registry.domain] = gen_warnings
 
     return report
 

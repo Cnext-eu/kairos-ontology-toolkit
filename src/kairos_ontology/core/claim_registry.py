@@ -39,8 +39,32 @@ VALID_STATUSES = ("proposed", "approved", "rejected", "deferred", "deprecated")
 VALID_DISPOSITIONS = ("claim", "specialize", "passthrough", "skip", "gap")
 VALID_TYPES = ("class", "property", "relationship", "reference_data", "measure")
 VALID_ORIGINS = ("imported", "authored")
-VALID_ANCHOR_STATES = ("matched", "fallback", "rejected", "unmatched")
+#: ``confirmed`` (uri-anchor-contract) — the table's class was resolved from
+#: confirmed discovery evidence (an explicit URI), overriding any name-similarity
+#: guess. ``unresolved`` — multiple confirmed anchors were plausible and the
+#: table was deliberately left un-anchored (see ``unresolved_anchors.py``)
+#: rather than silently picking the nearest class; no property claims are
+#: generated for it until the anchor resolves.
+VALID_ANCHOR_STATES = (
+    "matched", "fallback", "rejected", "unmatched", "confirmed", "unresolved",
+)
+#: The one anchor state that means "this table deliberately emitted no claims and
+#: no covered columns". Named so consumers (e.g. the ``check-claims`` coverage
+#: gate) can tell a *deliberate* empty coverage record apart from columns that
+#: were dropped on the way to the registry.
+ANCHOR_STATE_UNRESOLVED = "unresolved"
 VALID_CHANGE_TYPES = ("additive", "breaking")
+
+#: Alignment-reliability — schema version for the additive
+#: ``ClaimRegistry.generation_outcomes`` records (independent of
+#: ``CLAIM_REGISTRY_SCHEMA_VERSION`` since it tracks its own, narrower shape).
+GENERATION_OUTCOME_SCHEMA_VERSION = 1
+VALID_GENERATION_OUTCOMES = ("semantic_success", "provider_failure", "fallback_only")
+
+#: proposal-quality — schema version for the additive
+#: ``ClaimRegistry.domain_handoffs`` records (independent of
+#: ``CLAIM_REGISTRY_SCHEMA_VERSION`` since it tracks its own, narrower shape).
+DOMAIN_HANDOFF_SCHEMA_VERSION = 1
 
 #: Allowed ``status`` transitions (schema doc §2.4). ``rejected`` and
 #: ``deprecated`` are terminal — re-opening requires a new claim id.
@@ -340,6 +364,12 @@ class CoverageTable:
     #: they reached the registry. ``0`` / ``None`` mean "not recorded" (pre-F6).
     source_column_count: int = 0
     source_column_sha256: str | None = None
+    #: uri-anchor-contract — the canonical inventory URI a confirmed discovery
+    #: alias (or explicit rename) resolved *this* table's class to, persisted
+    #: alongside the display-only ``ref_class`` name. ``None`` when the anchor
+    #: was not resolved from confirmed evidence (pre-feature registries, or a
+    #: table anchored purely by the model/lexical-similarity path).
+    likely_entity_uri: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -356,6 +386,10 @@ class CoverageTable:
             out["source_column_count"] = self.source_column_count
         if self.source_column_sha256:
             out["source_column_sha256"] = self.source_column_sha256
+        # uri-anchor-contract: emit only when resolved (pre-feature registries
+        # stay byte-identical).
+        if self.likely_entity_uri:
+            out["likely_entity_uri"] = self.likely_entity_uri
         return out
 
     @classmethod
@@ -369,6 +403,7 @@ class CoverageTable:
             ref_class=data.get("ref_class"),
             source_column_count=int(data.get("source_column_count", 0)),
             source_column_sha256=data.get("source_column_sha256"),
+            likely_entity_uri=data.get("likely_entity_uri"),
         )
 
 
@@ -414,6 +449,112 @@ class Freshness:
 
 
 @dataclass
+class GenerationOutcome:
+    """Alignment-reliability — one table's typed semantic-generation outcome.
+
+    Additive record persisted alongside (not instead of) the structural claims:
+    it says whether ``propose-alignment`` actually produced trustworthy semantic
+    output for ``(system, table)``, distinct from whether the resulting claims
+    are structurally valid. ``provider`` / ``model`` / ``error`` are only ever
+    populated for a non-``semantic_success`` outcome and ``error`` is always a
+    pre-sanitized (redacted, length-capped) message — never a raw exception.
+    """
+
+    system: str
+    table: str
+    outcome: str
+    provider: str | None = None
+    model: str | None = None
+    error: str | None = None
+    schema_version: int = GENERATION_OUTCOME_SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "system": self.system,
+            "table": self.table,
+            "outcome": self.outcome,
+            "schema_version": self.schema_version,
+        }
+        if self.provider is not None:
+            out["provider"] = self.provider
+        if self.model is not None:
+            out["model"] = self.model
+        if self.error is not None:
+            out["error"] = self.error
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GenerationOutcome:
+        return cls(
+            system=data.get("system", ""),
+            table=data.get("table", ""),
+            outcome=data.get("outcome", ""),
+            provider=data.get("provider"),
+            model=data.get("model"),
+            error=data.get("error"),
+            schema_version=int(
+                data.get("schema_version", GENERATION_OUTCOME_SCHEMA_VERSION)
+            ),
+        )
+
+
+@dataclass
+class DomainHandoff:
+    """Cross-domain evidence deliberately NOT claimed in this domain's registry.
+
+    Emitted instead of an in-domain property claim when a column's matched
+    reference class/property is owned by a *different* accelerator data-domain —
+    the ``owns`` / ``does_not_own`` boundary declared in ``data-domains.yaml`` and
+    resolved by ``propose-alignment``'s DD-070 cross-module tagging
+    (``ColumnAlignment.ref_module`` / ``belongs_to_domain(s)``). A handoff keeps
+    the source evidence (never lost) and names the owning domain(s) so the
+    finding can be routed to the correct registry, instead of silently
+    materializing a claim this domain has no right to approve (proposal-quality;
+    Booking design-session finding #7).
+    """
+
+    ref_class: str
+    ref_property: str
+    owning_domains: list[str] = field(default_factory=list)
+    ref_module: str | None = None
+    ref_module_uri: str | None = None
+    evidence_sources: list[EvidenceSource] = field(default_factory=list)
+    schema_version: int = DOMAIN_HANDOFF_SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "ref_class": self.ref_class,
+            "ref_property": self.ref_property,
+            "owning_domains": list(self.owning_domains),
+            "schema_version": self.schema_version,
+        }
+        if self.ref_module:
+            out["ref_module"] = self.ref_module
+        if self.ref_module_uri:
+            out["ref_module_uri"] = self.ref_module_uri
+        if self.evidence_sources:
+            out["evidence_sources"] = [e.to_dict() for e in self.evidence_sources]
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DomainHandoff:
+        return cls(
+            ref_class=data.get("ref_class", ""),
+            ref_property=data.get("ref_property", ""),
+            owning_domains=list(data.get("owning_domains") or []),
+            ref_module=data.get("ref_module"),
+            ref_module_uri=data.get("ref_module_uri"),
+            evidence_sources=[
+                EvidenceSource.from_dict(e)
+                for e in data.get("evidence_sources", []) or []
+            ],
+            schema_version=int(
+                data.get("schema_version", DOMAIN_HANDOFF_SCHEMA_VERSION)
+            ),
+        )
+
+
+@dataclass
 class ClaimRegistry:
     """A whole-domain Claim Registry document (schema v1)."""
 
@@ -437,6 +578,20 @@ class ClaimRegistry:
     #: (surfaced by ``check-claims``): a human must confirm the tables really share a
     #: grain or split the model. Emitted only when a conflict is detected.
     grain_conflicts: list[dict[str, Any]] = field(default_factory=list)
+    #: Alignment-reliability — per-table typed generation outcome records
+    #: (``semantic_success`` / ``provider_failure`` / ``fallback_only``), one per
+    #: ``(system, table)`` migrated from the alignment run. Additive and emitted
+    #: only when non-empty, so a registry produced before this feature (or a
+    #: fully-successful run) stays byte-identical. Lets ``check-claims`` warn on
+    #: incomplete semantic generation without conflating it with structural
+    #: validity (owned by :mod:`kairos_ontology.core.claim_coverage`).
+    generation_outcomes: list[GenerationOutcome] = field(default_factory=list)
+    #: proposal-quality — cross-domain evidence deliberately excluded from this
+    #: registry's claims because the matched property/class is owned by a
+    #: different accelerator data-domain (``owns`` / ``does_not_own`` boundary).
+    #: Additive; emitted only when non-empty, so a registry produced before this
+    #: feature (or a run with no cross-domain evidence) stays byte-identical.
+    domain_handoffs: list[DomainHandoff] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -456,6 +611,10 @@ class ClaimRegistry:
             out["relationship_candidates"] = self.relationship_candidates
         if self.grain_conflicts:
             out["grain_conflicts"] = self.grain_conflicts
+        if self.generation_outcomes:
+            out["generation_outcomes"] = [g.to_dict() for g in self.generation_outcomes]
+        if self.domain_handoffs:
+            out["domain_handoffs"] = [h.to_dict() for h in self.domain_handoffs]
         out["claims"] = [c.to_dict() for c in self.claims]
         return out
 
@@ -473,6 +632,14 @@ class ClaimRegistry:
             claims=[Claim.from_dict(c) for c in data.get("claims", [])],
             relationship_candidates=list(data.get("relationship_candidates") or []),
             grain_conflicts=list(data.get("grain_conflicts") or []),
+            generation_outcomes=[
+                GenerationOutcome.from_dict(g)
+                for g in data.get("generation_outcomes") or []
+            ],
+            domain_handoffs=[
+                DomainHandoff.from_dict(h)
+                for h in data.get("domain_handoffs") or []
+            ],
         )
 
 
@@ -654,6 +821,53 @@ def validate_registry(registry: ClaimRegistry) -> list[ValidationIssue]:
                     f"{tbl.anchor_state!r}"
                 )
 
+    # Alignment-reliability — generation-outcome enum (additive, warn-level only:
+    # an unrecognized outcome value is a forward-compat concern, not a
+    # structural-validity blocker owned by this validator).
+    for gen in registry.generation_outcomes:
+        if gen.outcome not in VALID_GENERATION_OUTCOMES:
+            warn(
+                f"generation_outcomes {gen.system}.{gen.table}: unknown outcome "
+                f"{gen.outcome!r}"
+            )
+
+    # proposal-quality — a handoff naming this registry's own domain as an
+    # "owning" domain contradicts its own reason for existing (it should have
+    # been an in-domain claim). Warning-level only: additive, non-blocking
+    # diagnostic, never a hard structural error.
+    for handoff in registry.domain_handoffs:
+        if registry.domain and registry.domain in handoff.owning_domains:
+            warn(
+                f"domain_handoffs: handoff for {handoff.ref_class}."
+                f"{handoff.ref_property} names this registry's own domain "
+                f"{registry.domain!r} as an owner"
+            )
+
+    # uri-anchor-contract — an imported claim/specialize record without a
+    # resolvable identifying URI is flagged so a table that was never really
+    # anchored to a reference-model concept never silently looks equivalent to
+    # a properly-anchored one. Warning-level only, never a hard structural
+    # error: a 'proposed' claim may legitimately await human URI curation
+    # (DD-094), and a registry written before this diagnostic existed must load
+    # exactly as it did before (backward-compatible loading/migration
+    # diagnostics).
+    for claim in registry.claims:
+        if claim.origin != "imported" or claim.disposition not in ("claim", "specialize"):
+            continue
+        cid = claim.id or "<missing-id>"
+        if claim.type in ("class", "reference_data") and not claim.class_uri:
+            warn(
+                f"imported {claim.disposition} claim has no resolvable class_uri "
+                "(uri-anchor-contract)",
+                cid,
+            )
+        elif claim.type in ("property", "measure") and not claim.property_uri:
+            warn(
+                f"imported {claim.disposition} claim has no resolvable property_uri "
+                "(uri-anchor-contract)",
+                cid,
+            )
+
     return issues
 
 
@@ -700,6 +914,59 @@ def _merge_decided_claim(candidate: Claim, previous: Claim) -> Claim:
     return replace(candidate, **curated_values, evidence_sources=evidence_sources)
 
 
+#: proposal-quality — relationship-candidate keys owned by the detector; always
+#: refreshed from the new run so a re-run *reports membership changes* (columns
+#: added/removed from a cluster). Any additional key present only on an existing
+#: cluster (e.g. a human-curated annotation) is not in this set and therefore
+#: survives the merge untouched.
+_RELATIONSHIP_CANDIDATE_DETECTOR_KEYS = frozenset({
+    "type", "source_table", "role", "suggested_relationship", "target_concept",
+    "source_columns", "address_parts", "requires_human_confirmation",
+    "rationale", "cardinality", "target_class_uri", "target_resolved",
+    "cluster_id",
+})
+
+
+def _merge_relationship_candidates(
+    new_candidates: list[dict[str, Any]],
+    existing_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge freshly-detected relationship clusters over existing ones.
+
+    Keyed on the stable, content-addressed ``cluster_id`` (source table +
+    semantic role/prefix + target class + cardinality — never the current column
+    membership; see ``propose_alignment._relationship_cluster_id``), so:
+
+    * detector-owned fields (contributing columns, rationale, cardinality, ...)
+      always refresh from the new run — a re-run reports cluster *membership*
+      changes instead of silently keeping stale evidence;
+    * any additional key a human curator added directly to an existing cluster
+      (anything outside the detector's own field set) is preserved across the
+      refresh — a decision is never replaced just because the alignment ran
+      again;
+    * a candidate with no ``cluster_id`` (pre-feature output) passes through
+      unmerged, so older registries stay compatible.
+    """
+    existing_by_id = {
+        c.get("cluster_id"): c
+        for c in existing_candidates
+        if isinstance(c, dict) and c.get("cluster_id")
+    }
+    merged: list[dict[str, Any]] = []
+    for cand in new_candidates:
+        cluster_id = cand.get("cluster_id") if isinstance(cand, dict) else None
+        prev = existing_by_id.get(cluster_id) if cluster_id else None
+        if prev is not None:
+            curated = {
+                k: v for k, v in prev.items()
+                if k not in _RELATIONSHIP_CANDIDATE_DETECTOR_KEYS
+            }
+            merged.append({**cand, **curated})
+        else:
+            merged.append(cand)
+    return merged
+
+
 def merge_preserving_decisions(
     new: ClaimRegistry, existing: ClaimRegistry
 ) -> ClaimRegistry:
@@ -722,6 +989,17 @@ def merge_preserving_decisions(
       candidate);
     * coverage / freshness / generated_at / algorithm_version always come from the
       new run.
+
+    ``generation_outcomes`` follows the same "always from the new run" rule as
+    coverage/freshness — it is per-run reliability metadata, not a decision that
+    could ever need preserving across a merge. ``domain_handoffs`` follows the
+    same rule (proposal-quality) — it is derived cross-domain evidence, not a
+    curated decision.
+
+    ``relationship_candidates`` are merged by their stable ``cluster_id`` (see
+    :func:`_merge_relationship_candidates`): detector-owned fields (membership,
+    rationale, cardinality) always refresh, while any human-added key on an
+    existing cluster survives the refresh.
 
     The result is sorted by ``id`` for byte-stable output.
     """
@@ -757,6 +1035,10 @@ def merge_preserving_decisions(
         freshness=new.freshness,
         coverage=new.coverage,
         claims=merged,
-        relationship_candidates=new.relationship_candidates,
+        relationship_candidates=_merge_relationship_candidates(
+            new.relationship_candidates, existing.relationship_candidates
+        ),
         grain_conflicts=new.grain_conflicts,
+        generation_outcomes=new.generation_outcomes,
+        domain_handoffs=new.domain_handoffs,
     )

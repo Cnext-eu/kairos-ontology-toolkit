@@ -231,6 +231,28 @@ class ManagedImportRequirement:
 
 
 @dataclass(frozen=True)
+class DisputedClaimModule:
+    """A deferred/rejected claim whose term's reference module remains an active
+    managed import for *other* reasons (another claim, or configured data-domain
+    activation) — DD-122.
+
+    Deferring or rejecting a claim never removes its module from the domain when
+    something else still requires it; this is surfaced so the curator who decided
+    against that claim is not misled into believing the module was dropped.
+    """
+
+    claim_id: str
+    claim_status: str
+    term_uri: str
+    module_id: str
+    import_iri: str
+    reasons: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class ManagedImportPlan:
     """Deterministic managed-import and projection-selection plan."""
 
@@ -239,6 +261,7 @@ class ManagedImportPlan:
     selected_class_uris: tuple[str, ...]
     diagnostics: tuple[ModuleDiagnostic, ...] = ()
     activation_inventory: dict[str, Any] = field(default_factory=dict)
+    disputed_claims: tuple[DisputedClaimModule, ...] = ()
 
     @property
     def expected_imports(self) -> tuple[str, ...]:
@@ -287,17 +310,80 @@ def available_accelerators(ref_models_dir: Path | None) -> tuple[str, ...]:
     return tuple(sorted({path.parents[1].name for path in paths}))
 
 
-def resolve_hub_accelerator(
+@dataclass(frozen=True)
+class AcceleratorResolution:
+    """Resolved accelerator plus its precedence source and registry path (diagnostics).
+
+    ``source`` is one of ``"--accelerator"`` (explicit CLI value), ``"hub configuration"``
+    (``[tool.kairos].accelerator``), ``"inferred (single installed)"`` (exactly one
+    accelerator pack is installed), ``"inferred (domain ownership)"`` (multiple packs are
+    installed but exactly one owns the hinted domain(s), per ``data-domains.yaml``), or
+    ``"none"`` (no accelerator could be resolved). ``data_domains_path`` is the concrete
+    ``data-domains.yaml`` backing the resolution, when one exists — surfaced so commands
+    can report *which* registry ownership/inventory checks were evaluated against
+    (see the "registry ownership warning disagrees with the accelerator registry" DX
+    finding).
+    """
+
+    accelerator: str | None
+    source: str
+    data_domains_path: Path | None
+
+
+def _accelerator_domain_owners(
+    ref_models_dir: Path,
+    available: tuple[str, ...],
+    domain_hint: Iterable[str],
+) -> tuple[str, ...]:
+    """Return installed accelerators whose ``data-domains.yaml`` owns a hinted domain.
+
+    Consults :func:`kairos_ontology.core.analyse_sources.load_data_domains` — the same
+    nested ``groups[].domains[]`` parser used by inventory domain-key resolution
+    (:func:`kairos_ontology.core.inventory.resolve_domain_inventory_keys`) and the
+    registry ownership check — so accelerator disambiguation never disagrees with those
+    commands about which pack owns a domain.
+    """
+    from .analyse_sources import load_data_domains
+
+    hints = [h.strip().lower() for h in domain_hint if h and h.strip()]
+    if not hints:
+        return ()
+
+    owners: list[str] = []
+    for name in available:
+        domains = load_data_domains(ref_models_dir, accelerator=name)
+        domain_ids = [d.lower() for d in domains]
+        if any(
+            hint in domain_id or domain_id in hint
+            for domain_id in domain_ids
+            for hint in hints
+        ):
+            owners.append(name)
+    return tuple(owners)
+
+
+def resolve_hub_accelerator_detailed(
     *,
     explicit: str | None,
     hub_root: Path | None,
     ref_models_dir: Path | None,
-) -> str | None:
-    """Resolve one accelerator for managed-import analysis.
+    domain_hint: Iterable[str] | None = None,
+) -> AcceleratorResolution:
+    """Resolve one accelerator for managed-import analysis, with diagnostics.
 
-    An explicit CLI value takes precedence over ``[tool.kairos].accelerator``.
-    Without either setting, a single installed accelerator is inferred; multiple
-    installed packs are ambiguous and must be selected explicitly.
+    Precedence: an explicit CLI value takes precedence over
+    ``[tool.kairos].accelerator``, which takes precedence over inference. Without
+    either setting, a single installed accelerator is inferred. When multiple packs
+    are installed, *domain_hint* (e.g. active ``--domains`` filter, or domain ids
+    inferred from ontology/claims file names) is checked against each pack's
+    ``data-domains.yaml``: if exactly one pack unambiguously owns a hinted domain, it
+    is inferred and used. Genuine ambiguity (no hint, or more than one pack owning the
+    hinted domain) is still a hard error — this never silently guesses between
+    candidates that remain plausible.
+
+    This is the single shared resolution path for ``validate``, ``project`` /
+    ``check-projection``, ``check-inventory``, and ``check-claims`` (DD-125
+    accelerator-resolution consolidation).
     """
     selected = explicit.strip() if explicit and explicit.strip() else None
     source = "--accelerator"
@@ -340,16 +426,63 @@ def resolve_hub_accelerator(
             raise ValueError(
                 f"Unknown accelerator {selected!r} from {source}. Available: {choices}"
             )
-        return selected
+        selected_path = (
+            _data_domains_path(Path(ref_models_dir), selected)
+            if ref_models_dir is not None
+            else None
+        )
+        return AcceleratorResolution(selected, source, selected_path)
 
     if len(available) > 1:
+        owners = (
+            _accelerator_domain_owners(Path(ref_models_dir), available, domain_hint or ())
+            if ref_models_dir is not None
+            else ()
+        )
+        if len(owners) == 1:
+            resolved = owners[0]
+            return AcceleratorResolution(
+                resolved,
+                "inferred (domain ownership)",
+                _data_domains_path(Path(ref_models_dir), resolved),
+            )
         choices = ", ".join(available)
         raise ValueError(
             "Accelerator selection is ambiguous. "
             f"Available: {choices}. Pass --accelerator or set "
             "[tool.kairos].accelerator in the hub pyproject.toml."
         )
-    return available[0] if available else None
+
+    if len(available) == 1:
+        resolved = available[0]
+        return AcceleratorResolution(
+            resolved,
+            "inferred (single installed)",
+            _data_domains_path(Path(ref_models_dir), resolved) if ref_models_dir else None,
+        )
+
+    return AcceleratorResolution(None, "none", None)
+
+
+def resolve_hub_accelerator(
+    *,
+    explicit: str | None,
+    hub_root: Path | None,
+    ref_models_dir: Path | None,
+    domain_hint: Iterable[str] | None = None,
+) -> str | None:
+    """Resolve one accelerator for managed-import analysis.
+
+    Backward-compatible wrapper around :func:`resolve_hub_accelerator_detailed` that
+    returns only the resolved accelerator id (or ``None``). Prefer the detailed form
+    when the resolution source or ``data-domains.yaml`` path is needed for diagnostics.
+    """
+    return resolve_hub_accelerator_detailed(
+        explicit=explicit,
+        hub_root=hub_root,
+        ref_models_dir=ref_models_dir,
+        domain_hint=domain_hint,
+    ).accelerator
 
 
 def load_accelerator_module_config(
@@ -715,6 +848,77 @@ def _is_local_term(term_uri: str, ontology_iri: str | None) -> bool:
     return term_uri.startswith((bare + "#", bare + "/"))
 
 
+def _disputed_claim_modules(
+    registry: Any,
+    *,
+    context: ReferenceModuleContext | None,
+    activated_ids: set[str],
+    local_ontology_iri: str | None,
+    requirement_data: dict[tuple[str, str], dict[str, Any]],
+) -> tuple[DisputedClaimModule, ...]:
+    """Report deferred/rejected claims whose module remains active for other reasons.
+
+    Uses :func:`binding_analysis.is_decided_non_activating` — the companion of the
+    shared :func:`binding_analysis.claim_activates_projecting_import` predicate —
+    so a claim the curator explicitly deferred/rejected never itself contributes an
+    import requirement (DD-122), while still telling the curator when the module
+    it referenced remains required anyway (another claim, or configured
+    data-domain activation), so a deferred/rejected decision is never mistaken for
+    "module removed".
+    """
+    from .binding_analysis import (
+        IMPORTED_ORIGIN,
+        MATERIALIZATION_DISPOSITIONS,
+        is_decided_non_activating,
+    )
+
+    if context is None:
+        return ()
+    active_iris = {iri for iri, _owner_iri in requirement_data} | {
+        owner_iri for _iri, owner_iri in requirement_data
+    }
+    disputed: list[DisputedClaimModule] = []
+    for claim in registry.claims:
+        if not is_decided_non_activating(claim):
+            continue
+        if claim.origin != IMPORTED_ORIGIN:
+            continue
+        if claim.disposition not in MATERIALIZATION_DISPOSITIONS:
+            continue
+        term_uri = claim.identifying_uri()
+        if not term_uri or _is_local_term(term_uri, local_ontology_iri):
+            continue
+        match = _find_term_module(term_uri, context.modules, activated_ids)
+        if match is None:
+            continue
+        module, term = match
+        owner_iri = _owner_ontology(module, term)
+        candidates = {module.ontology_iri.rstrip("#"), owner_iri.rstrip("#")}
+        if not candidates & active_iris:
+            continue
+        reasons = tuple(
+            sorted(
+                {
+                    reason
+                    for (iri, owner), data in requirement_data.items()
+                    if iri in candidates or owner in candidates
+                    for reason in data["reasons"]
+                }
+            )
+        )
+        disputed.append(
+            DisputedClaimModule(
+                claim_id=claim.id,
+                claim_status=claim.status,
+                term_uri=term_uri,
+                module_id=module.profile.id,
+                import_iri=module.ontology_iri,
+                reasons=reasons,
+            )
+        )
+    return tuple(sorted(disputed, key=lambda item: (item.claim_id, item.term_uri)))
+
+
 def build_managed_import_plan(
     registry: Any,
     *,
@@ -897,6 +1101,13 @@ def build_managed_import_plan(
         )
         for (iri, owner_iri), data in sorted(requirement_data.items())
     )
+    disputed_claims = _disputed_claim_modules(
+        registry,
+        context=context,
+        activated_ids=activated_ids,
+        local_ontology_iri=local_ontology_iri,
+        requirement_data=requirement_data,
+    )
     inventory = build_activation_inventory(
         domain=domain,
         context=context,
@@ -909,6 +1120,7 @@ def build_managed_import_plan(
         selected_class_uris=tuple(sorted(selected)),
         diagnostics=tuple(sorted(diagnostics, key=_diagnostic_key)),
         activation_inventory=inventory,
+        disputed_claims=disputed_claims,
     )
     if ontology_graph is None:
         return plan
@@ -923,6 +1135,7 @@ def build_managed_import_plan(
             )
         ),
         activation_inventory=plan.activation_inventory,
+        disputed_claims=plan.disputed_claims,
     )
 
 

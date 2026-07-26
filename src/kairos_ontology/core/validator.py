@@ -3,6 +3,7 @@
 """Ontology validation module - syntax, SHACL, consistency, GDPR PII scanning."""
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from rdflib import Graph, Namespace
@@ -270,12 +271,184 @@ def validate_managed_imports(
     return list(plan.diagnostics)
 
 
+@dataclass(frozen=True)
+class LifecycleStateProposal:
+    """A computed, non-writing suggestion of the DD-080 lifecycle boundary that
+    a validation run's results evidence.
+
+    This is informational only. ``run_validation`` never mutates
+    ``.kairos-state/`` — writing versioned lifecycle evidence (e.g.
+    ``design-validation.json``) remains exclusively the domain of the
+    interactive skills / ``kairos-flow`` orchestrator (see DD-080). A caller
+    that wants to persist this suggestion as evidence must do so itself; the
+    validator performs no filesystem side effects beyond the explicit
+    JSON/Markdown report paths it is asked to write.
+    """
+
+    suggested_state: str
+    achieved: bool
+    reason: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation."""
+        return {
+            "suggested_state": self.suggested_state,
+            "achieved": self.achieved,
+            "reason": self.reason,
+        }
+
+
+def propose_lifecycle_state(
+    results: dict,
+    *,
+    do_syntax: bool,
+    do_shacl: bool,
+) -> LifecycleStateProposal:
+    """Compute a non-writing DD-080 lifecycle-state suggestion from *results*.
+
+    Pure function: reads only the in-memory ``results`` dict produced by
+    ``run_validation`` and performs no I/O. It never reads or writes
+    ``.kairos-state/`` — see ``LifecycleStateProposal`` for why.
+    """
+    total_failed = (
+        results["syntax"]["failed"]
+        + results["imports"]["failed"]
+        + results["shacl"]["failed"]
+        + results["consistency"]["failed"]
+    )
+    if total_failed:
+        return LifecycleStateProposal(
+            suggested_state="design-valid",
+            achieved=False,
+            reason=(
+                f"{total_failed} finding(s) failed; syntax/import/SHACL/consistency "
+                "checks must pass before design-valid evidence can be claimed."
+            ),
+        )
+    if not (do_syntax and do_shacl):
+        return LifecycleStateProposal(
+            suggested_state="design-valid",
+            achieved=False,
+            reason=(
+                "Run with --all (or --syntax --shacl together) to produce evidence "
+                "covering the design-valid boundary; this run only covers a subset."
+            ),
+        )
+    return LifecycleStateProposal(
+        suggested_state="design-valid",
+        achieved=True,
+        reason=(
+            "Syntax and SHACL checks passed with no consistency failures. To have "
+            "kairos-flow recognize this boundary, record versioned evidence under "
+            ".kairos-state/reports/design-validation.json yourself — this suggestion "
+            "does not write that file."
+        ),
+    )
+
+
+def _finding_sort_key(error: object) -> str:
+    """Return a stable sort key for a findings entry (dict or plain string)."""
+    if isinstance(error, dict):
+        return json.dumps(error, sort_keys=True, default=str)
+    return str(error)
+
+
+def render_validation_markdown(
+    results: dict,
+    *,
+    toolkit_version: str,
+    ontologies_path: Path,
+    shapes_path: Path,
+    catalog_path: Optional[Path],
+    ref_models_dir: Optional[Path],
+    accelerator: Optional[str],
+    do_syntax: bool,
+    do_shacl: bool,
+    do_consistency: bool,
+    degraded: bool,
+    ontology_files: list[Path],
+    state_proposal: Optional[LifecycleStateProposal] = None,
+) -> str:
+    """Render a deterministic Markdown validation report.
+
+    Includes the toolkit version, the effective command options, catalog and
+    accelerator, the scope of scanned files, and the findings — all derived only
+    from the passed-in values, so identical input always renders byte-identical
+    Markdown regardless of dict/glob iteration order or wall-clock time.
+    """
+    lines: list[str] = []
+    lines.append("# Kairos Ontology Validation Report")
+    lines.append("")
+    lines.append(f"- **Toolkit version:** {toolkit_version}")
+    lines.append(f"- **Catalog:** {catalog_path if catalog_path else '_none resolved_'}")
+    lines.append(f"- **Accelerator:** {accelerator if accelerator else '_none_'}")
+    lines.append("")
+    lines.append("## Effective command options")
+    lines.append("")
+    lines.append("| Option | Value |")
+    lines.append("|--------|-------|")
+    options: list[tuple[str, object]] = [
+        ("ontologies", ontologies_path),
+        ("shapes", shapes_path),
+        ("catalog", catalog_path or "_(auto-detect)_"),
+        ("ref-models", ref_models_dir or "_(auto-detect)_"),
+        ("accelerator", accelerator or "_(none)_"),
+        ("syntax", do_syntax),
+        ("shacl", do_shacl),
+        ("consistency", do_consistency),
+        ("degraded", degraded),
+    ]
+    for name, value in options:
+        lines.append(f"| `{name}` | {value} |")
+    lines.append("")
+    lines.append("## Scope / files")
+    lines.append("")
+    sorted_files = sorted(str(f) for f in ontology_files)
+    if sorted_files:
+        for f in sorted_files:
+            lines.append(f"- `{f}`")
+    else:
+        lines.append("_No ontology files found in scope._")
+    lines.append("")
+    lines.append("## Findings")
+    lines.append("")
+    lines.append("| Check | Passed | Failed |")
+    lines.append("|-------|--------|--------|")
+    for section in ("syntax", "imports", "shacl", "consistency"):
+        data = results.get(section, {})
+        lines.append(f"| {section} | {data.get('passed', 0)} | {data.get('failed', 0)} |")
+    lines.append("")
+    for section in ("syntax", "imports", "shacl", "consistency"):
+        errors = results.get(section, {}).get("errors", [])
+        if not errors:
+            continue
+        lines.append(f"### {section.capitalize()} errors")
+        lines.append("")
+        for err in sorted(errors, key=_finding_sort_key):
+            if isinstance(err, dict):
+                file_ = err.get("file", "")
+                message = err.get("error") or err.get("message") or err.get("report") or ""
+                lines.append(f"- `{file_}`: {message}")
+            else:
+                lines.append(f"- {err}")
+        lines.append("")
+    if state_proposal is not None:
+        lines.append("## Suggested lifecycle state (non-writing signal)")
+        lines.append("")
+        lines.append(f"- **State:** `{state_proposal.suggested_state}`")
+        lines.append(f"- **Achieved:** {state_proposal.achieved}")
+        lines.append(f"- **Reason:** {state_proposal.reason}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
                    do_syntax: bool, do_shacl: bool, do_consistency: bool,
                    report_path: Optional[Path] = None, degraded: bool = False,
                    claims_dir: Optional[Path] = None,
                    ref_models_dir: Optional[Path] = None,
-                   accelerator: Optional[str] = None):
+                   accelerator: Optional[str] = None,
+                   markdown_report_path: Optional[Path] = None):
     """Run validation pipeline.
 
     Args:
@@ -292,6 +465,11 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
             explicit for direct library callers instead of silently guessing
             a location relative to the process's current working directory.
             CLI callers should always pass ``<hub>/output/validation-report.json``.
+        markdown_report_path: Additive: explicit path to also (or instead) write a
+            deterministic Markdown validation report (toolkit version, effective
+            command options, catalog, accelerator, scope/files, and findings — see
+            ``render_validation_markdown``). Omitted by default, which preserves the
+            pre-existing JSON-only report contract exactly.
     """
     
     print("🔍 Kairos Ontology Validation")
@@ -304,10 +482,13 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
         "consistency": {"passed": 0, "failed": 0, "errors": []}
     }
     
-    # Find all ontology files
+    # Find all ontology files. Sorted for deterministic iteration/reporting order
+    # (glob() order is filesystem-dependent), which the Markdown report relies on.
     ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
     # Skip non-domain files: silver-ext annotations, _master imports, etc.
-    ontology_files = [f for f in ontology_files if _is_domain_ontology(f)]
+    ontology_files = sorted(
+        (f for f in ontology_files if _is_domain_ontology(f)), key=str
+    )
     
     print(f"\nFound {len(ontology_files)} ontology files\n")
 
@@ -491,11 +672,43 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
         print("  Not implemented yet - future enhancement\n")
     
     # Save results (explicit destination only — see report_path docstring above)
+    # Non-writing lifecycle-state suggestion (typed, DD-080): computed here purely
+    # from in-memory `results`; never persisted to `.kairos-state/` by this function.
+    state_proposal = propose_lifecycle_state(
+        results, do_syntax=do_syntax, do_shacl=do_shacl
+    )
+    results["state_proposal"] = state_proposal.to_dict()
+
     if report_path is not None:
         report_path = Path(report_path)
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(results, indent=2), encoding='utf-8')
         print(f"📄 Results saved to {report_path}")
+
+    if markdown_report_path is not None:
+        from kairos_ontology import __version__ as _toolkit_version
+
+        markdown_report_path = Path(markdown_report_path)
+        markdown_report_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_report_path.write_text(
+            render_validation_markdown(
+                results,
+                toolkit_version=_toolkit_version,
+                ontologies_path=ontologies_path,
+                shapes_path=shapes_path,
+                catalog_path=catalog_path,
+                ref_models_dir=ref_models_dir,
+                accelerator=accelerator,
+                do_syntax=do_syntax,
+                do_shacl=do_shacl,
+                do_consistency=do_consistency,
+                degraded=degraded,
+                ontology_files=ontology_files,
+                state_proposal=state_proposal,
+            ),
+            encoding='utf-8',
+        )
+        print(f"📄 Markdown report saved to {markdown_report_path}")
     
     # Exit code
     total_failed = (

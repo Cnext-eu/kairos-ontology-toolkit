@@ -25,6 +25,7 @@ from kairos_ontology.core.claim_registry import (
     Deviation,
     EvidenceSource,
     Freshness,
+    GenerationOutcome,
     OwnershipOverride,
     ReferenceData,
     registry_path,
@@ -150,6 +151,108 @@ class TestColumnOmissionGate:
         report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
         assert not report.column_omissions
         assert report.ok == ["party"]
+
+
+class TestUnresolvedAnchorCoverage:
+    """uri-anchor-contract (DD-124): a table whose class anchor is deliberately
+    unresolved emits zero claims/columns by design, so it must never be reported
+    as a blocking F6 column omission — it gets its own non-blocking facet."""
+
+    def _registry(self, domain, system, tables):
+        """tables = [(table, covered_total, anchor_state, source_column_count)]."""
+        cov = [
+            CoverageTable(
+                table=table, total_columns=covered, mapped_columns=covered,
+                custom_columns=0, anchor_state=anchor_state,
+                source_column_count=source_count,
+            )
+            for table, covered, anchor_state, source_count in tables
+        ]
+        return ClaimRegistry(
+            domain=domain,
+            generated_at="2026-06-15T00:00:00Z",
+            algorithm_version=ALIGNMENT_ALGORITHM_VERSION,
+            freshness=Freshness(
+                affinity_sha256=compute_affinity_hash(
+                    [(system, t[0]) for t in tables]
+                )
+            ),
+            coverage=[CoverageSystem(system=system, tables=cov)],
+            claims=[],
+        )
+
+    def test_unresolved_anchor_is_not_a_column_omission(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity_with_cols(analysis, "adminpulse", [("tblA", "party", 12)])
+        write_registry(
+            self._registry("party", "adminpulse", [("tblA", 0, "unresolved", 12)]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.column_omissions == {}
+        assert not report.is_blocking
+        assert "party" in report.unresolved_anchor_tables
+        entry = report.unresolved_anchor_tables["party"][0]
+        assert entry.startswith("adminpulse.tblA")
+        assert "class anchor unresolved" in entry
+        assert "12 source column(s)" in entry
+        assert report.has_warnings
+        assert report.ok == ["party"]
+
+    def test_genuine_omission_still_blocks_alongside_unresolved_anchor(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity_with_cols(
+            analysis, "adminpulse", [("tblA", "party", 12), ("tblB", "party", 30)]
+        )
+        write_registry(
+            self._registry("party", "adminpulse", [
+                ("tblA", 0, "unresolved", 12),
+                ("tblB", 8, "matched", 30),
+            ]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        # The truncated table still blocks; the unresolved one is reported apart.
+        assert report.is_blocking
+        assert report.column_omissions["party"] == [
+            "adminpulse.tblB (registry 8 of 30 source columns)"
+        ]
+        assert len(report.unresolved_anchor_tables["party"]) == 1
+        assert "tblA" in report.unresolved_anchor_tables["party"][0]
+
+    def test_legacy_registry_without_unresolved_state_is_unchanged(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity_with_cols(analysis, "adminpulse", [("tblA", "party", 12)])
+        # Pre-DD-124 registry: the default anchor_state, zero covered columns →
+        # still a genuine, blocking omission.
+        write_registry(
+            self._registry("party", "adminpulse", [("tblA", 0, "unmatched", 0)]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.is_blocking
+        assert "party" in report.column_omissions
+        assert report.unresolved_anchor_tables == {}
+
+    def test_unresolved_anchor_surfaces_as_warning_in_cli(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity_with_cols(analysis, "adminpulse", [("tblA", "party", 12)])
+        write_registry(
+            self._registry("party", "adminpulse", [("tblA", 0, "unresolved", 12)]),
+            registry_path(claims, "party"),
+        )
+        result = CliRunner().invoke(cli, [
+            "check-claims", "--claims-dir", str(claims),
+            "--analysis-dir", str(analysis),
+            "--no-source-coverage", "--no-extension-sync",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Unresolved class anchors" in result.output
+        assert "Column omissions" not in result.output
 
 
 class TestGrainConflictGate:
@@ -683,6 +786,52 @@ class TestPassthroughReview:
         )
         report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
         assert report.passthrough_review == {}
+
+
+class TestIncompleteGeneration:
+    """Alignment-reliability: check-claims surfaces per-table generation
+    outcomes as a non-blocking warning, distinct from structural validity."""
+
+    def test_provider_failure_outcome_flagged_as_warning_not_blocking(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        reg = _registry("party", [("adminpulse", "tblA")])
+        reg.generation_outcomes = [
+            GenerationOutcome(
+                system="adminpulse", table="tblA", outcome="provider_failure",
+                error="RuntimeError: boom",
+            ),
+        ]
+        write_registry(reg, registry_path(claims, "party"))
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert "party" in report.incomplete_generation
+        assert any("provider_failure" in m for m in report.incomplete_generation["party"])
+        assert report.has_warnings
+        assert not report.is_blocking
+
+    def test_fallback_only_outcome_flagged(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        reg = _registry("party", [("adminpulse", "tblA")])
+        reg.generation_outcomes = [
+            GenerationOutcome(system="adminpulse", table="tblA", outcome="fallback_only"),
+        ]
+        write_registry(reg, registry_path(claims, "party"))
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert any("fallback_only" in m for m in report.incomplete_generation["party"])
+
+    def test_no_generation_outcomes_means_no_incomplete_generation(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        claims = tmp_path / "claims"
+        _write_affinity(analysis, "adminpulse", [("tblA", "party")])
+        write_registry(
+            _registry("party", [("adminpulse", "tblA")]),
+            registry_path(claims, "party"),
+        )
+        report = check_claims_coverage(claims_dir=claims, analysis_dir=analysis)
+        assert report.incomplete_generation == {}
 
 
 class TestSlice4CLI:

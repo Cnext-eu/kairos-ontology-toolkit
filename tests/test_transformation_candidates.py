@@ -289,18 +289,24 @@ def test_implemented_candidate_can_reference_renamed_contract(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("inventory_exists", [False, True])
-def test_scoped_readiness_ignores_unrelated_noninventoried_contract(
+def test_scoped_readiness_surfaces_unrelated_contract_as_nonblocking_diagnostic(
     tmp_path,
     monkeypatch,
     inventory_exists,
 ):
+    """A contract outside the requested ``--table`` scope stays visible for awareness
+    (no dependency closure is added — direct table/virtual-source overlap remains the
+    sole scope authority) but never blocks this scoped gate.
+    """
     hub = _hub(tmp_path)
     if inventory_exists:
         write_candidate_inventory(hub, CandidateInventory())
     contract = _ReadyContract(
         replaces_sources=(_Replacement("https://example.test/bronze#orders"),),
     )
-    contract.identity_verified = False
+    # A genuine authored/policy error (no decision evidence at all), unrelated to
+    # contract-output identity, so scope inclusion/exclusion stays the only variable.
+    contract.decisions = ()
     monkeypatch.setattr(
         "kairos_ontology.core.transformation_candidates._implemented_models",
         lambda _hub: ({"int_orders": contract}, None),
@@ -326,12 +332,54 @@ def test_scoped_readiness_ignores_unrelated_noninventoried_contract(
         table_scope=("https://example.test/virtual#orders",),
     )
 
-    assert unrelated.candidates == ()
+    assert [item.id for item in unrelated.candidates] == ["contract:int_orders"]
+    assert unrelated.candidates[0].is_blocking is False
+    assert unrelated.candidates[0].reasons  # still visible for review, not suppressed
     assert unrelated.is_blocking is False
     assert [item.id for item in replacement.candidates] == ["contract:int_orders"]
     assert replacement.is_blocking is True
     assert [item.id for item in virtual.candidates] == ["contract:int_orders"]
     assert virtual.is_blocking is True
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected_blocking"),
+    [("mapping", False), ("release", True)],
+)
+def test_in_scope_unverified_contract_identity_is_release_only(
+    tmp_path,
+    monkeypatch,
+    stage,
+    expected_blocking,
+):
+    """DD-119: an in-scope contract whose only issue is unverified identity must not
+    pass mapping readiness merely because table scoping excluded it — it is genuinely
+    in scope here and is evaluated, but the finding only blocks ``release``.
+    """
+    hub = _hub(tmp_path)
+    # No replaces_sources: keeps the scope check isolated to the virtual-source IRI and
+    # avoids the unrelated replacement-completion check that silver/release also run.
+    contract = _ReadyContract()
+    contract.identity_verified = False
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates._implemented_models",
+        lambda _hub: ({"int_orders": contract}, None),
+    )
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates.sync_dbt_contracts",
+        lambda _hub, check: type("_SyncReport", (), {"has_drift": False})(),
+    )
+
+    report = evaluate_transformation_readiness(
+        hub,
+        stage=stage,
+        table_scope=("https://example.test/virtual#orders",),
+    )
+
+    assert [item.id for item in report.candidates] == ["contract:int_orders"]
+    assert "identity.contract-unverified" in report.candidates[0].reasons[0]
+    assert report.is_blocking is expected_blocking
+    assert report.candidates[0].is_blocking is expected_blocking
 
 
 @pytest.mark.parametrize("contract_is_inventoried", [False, True])
@@ -427,9 +475,85 @@ def test_unscoped_readiness_checks_existing_contract_without_candidate(
 
     report = evaluate_transformation_readiness(hub, stage="mapping")
 
-    assert report.is_blocking
+    # DD-119: unverified contract-output identity alone is release-only evidence and
+    # never blocks mapping readiness, but the contract must still be checked and the
+    # finding must still be visible for review.
+    assert report.is_blocking is False
     assert report.candidates[0].id == "contract:int_orders"
+    assert report.candidates[0].is_blocking is False
     assert "identity.contract-unverified" in report.candidates[0].reasons[0]
+
+
+@pytest.mark.parametrize(
+    ("stage", "invoices_blocking", "overall_blocking"),
+    [("mapping", False, False), ("release", True, True)],
+)
+def test_two_domain_scope_isolates_blocked_domain_from_ready_domain(
+    tmp_path,
+    monkeypatch,
+    stage,
+    invoices_blocking,
+    overall_blocking,
+):
+    """Generic two-domain regression (mapping-scope).
+
+    ``clients`` has a blocked contract (missing decision evidence) while ``invoices``
+    is a direct, contract-clean source-table scope whose only finding is unverified
+    contract-output identity. Restricting ``--table`` to the ``invoices`` scope must
+    keep the mapping-ready domain ungated: the unrelated ``clients`` blocker stays
+    visible only as a non-blocking diagnostic (no dependency closure — direct
+    table/virtual-source overlap remains the sole scope authority), and the in-scope
+    unverified identity finding follows the DD-119 release-only semantics already
+    implemented, verified here in a multi-domain context.
+    """
+    hub = _hub(tmp_path)
+    clients_contract = _ReadyContract(
+        virtual_source_iri="https://example.test/virtual#clients",
+        replaces_sources=(_Replacement("https://example.test/bronze#clients_raw"),),
+    )
+    clients_contract.decisions = ()  # blocked: no approved decision evidence at all
+    invoices_contract = _ReadyContract(
+        virtual_source_iri="https://example.test/virtual#invoices",
+        replaces_sources=(_Replacement("https://example.test/bronze#invoices_raw"),),
+    )
+    invoices_contract.identity_verified = False  # only finding: unverified identity
+
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates._implemented_models",
+        lambda _hub: (
+            {"int_clients": clients_contract, "int_invoices": invoices_contract},
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates.sync_dbt_contracts",
+        lambda _hub, check: type("_SyncReport", (), {"has_drift": False})(),
+    )
+
+    report = evaluate_transformation_readiness(
+        hub,
+        stage=stage,
+        table_scope=("https://example.test/bronze#invoices_raw",),
+    )
+
+    by_id = {item.id: item for item in report.candidates}
+    assert set(by_id) == {"contract:int_clients", "contract:int_invoices"}
+
+    # Unrelated blocked domain: visible for review, never blocks this scoped gate.
+    clients_result = by_id["contract:int_clients"]
+    assert clients_result.is_blocking is False
+    assert any(
+        "transformation.evidence-missing" in reason for reason in clients_result.reasons
+    )
+
+    # In-scope domain: unverified identity alone follows release-only semantics.
+    invoices_result = by_id["contract:int_invoices"]
+    assert any(
+        "identity.contract-unverified" in reason for reason in invoices_result.reasons
+    )
+    assert invoices_result.is_blocking is invoices_blocking
+
+    assert report.is_blocking is overall_blocking
 
 
 def test_every_assessed_status_requires_checksum(tmp_path):

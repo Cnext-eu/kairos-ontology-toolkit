@@ -79,3 +79,90 @@ def test_status_recognizes_cli_written_report(tmp_path, monkeypatch):
     validate_phase = status.phase("validate")
     assert validate_phase is not None
     assert validate_phase.state == STATE_DONE
+
+
+# ---------------------------------------------------------------------------
+# Additive JSON/Markdown report-format selection (validation-operations)
+# ---------------------------------------------------------------------------
+
+
+def test_report_format_defaults_preserve_json_only_contract(tmp_path, monkeypatch):
+    """Omitting --report-format/--report-path keeps the exact pre-existing
+    JSON-only contract: only validation-report.json is written."""
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, ["validate", "--syntax"])
+    assert result.exit_code == 0, result.output
+
+    assert (hub / "output" / "validation-report.json").exists()
+    assert not (hub / "output" / "validation-report.md").exists()
+
+
+def test_report_format_markdown_writes_only_markdown_by_default_path(tmp_path, monkeypatch):
+    """--report-format markdown writes only the default Markdown path, no JSON."""
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, ["validate", "--syntax", "--report-format", "markdown"])
+    assert result.exit_code == 0, result.output
+
+    assert (hub / "output" / "validation-report.md").exists()
+    assert not (hub / "output" / "validation-report.json").exists()
+
+
+def test_report_format_both_writes_json_and_markdown(tmp_path, monkeypatch):
+    """--report-format both writes both default report paths."""
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, ["validate", "--syntax", "--report-format", "both"])
+    assert result.exit_code == 0, result.output
+
+    assert (hub / "output" / "validation-report.json").exists()
+    assert (hub / "output" / "validation-report.md").exists()
+
+
+def test_report_path_overrides_markdown_destination(tmp_path, monkeypatch):
+    """--report-path with --report-format markdown honors the explicit path."""
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    explicit_path = tmp_path / "custom" / "report.md"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "validate",
+            "--syntax",
+            "--report-format",
+            "markdown",
+            "--report-path",
+            str(explicit_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    assert explicit_path.exists()
+    assert not (hub / "output" / "validation-report.md").exists()
+    assert not (hub / "output" / "validation-report.json").exists()
+
+
+def test_report_path_with_both_format_rejected(tmp_path, monkeypatch):
+    """--report-path combined with --report-format both is an explicit, clear error
+    (ambiguous single path for two report files) rather than silently guessing."""
+    _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "validate",
+            "--syntax",
+            "--report-format",
+            "both",
+            "--report-path",
+            str(tmp_path / "report.out"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "both" in result.output

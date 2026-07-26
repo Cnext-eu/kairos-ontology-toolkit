@@ -14,6 +14,10 @@ from kairos_ontology.core.propose_alignment import (
     ColumnAlignment,
     DomainAlignment,
     TableAlignment,
+    AlignmentTotalFailureError,
+    OUTCOME_FALLBACK_ONLY,
+    OUTCOME_PROVIDER_FAILURE,
+    OUTCOME_SEMANTIC_SUCCESS,
     _build_class_meta_index,
     _build_custom_column,
     _build_object_property_candidate,
@@ -21,7 +25,15 @@ from kairos_ontology.core.propose_alignment import (
     _build_property_label_index,
     _build_reconciled_passthrough,
     _build_reference_rollup,
+    _cluster_object_property_candidates,
+    _detect_address_relationship_candidates,
     _downgrade_catch_all_suggestions,
+    _has_typed_role_evidence,
+    _is_location_object_property,
+    _is_technical_actor_column,
+    _location_role_token,
+    _looks_like_identifier_column,
+    _object_relationship_downgrade_reason,
     _read_claims_affinity_hash,
     _read_claims_params_hash,
     _clamp_confidence,
@@ -31,6 +43,7 @@ from kairos_ontology.core.propose_alignment import (
     _module_tag,
     _normalize_property_token,
     _parses_as,
+    _relationship_cluster_id,
     _resolve_column_module,
     _resolve_object_property_target,
     _review_column_alignment,
@@ -380,6 +393,53 @@ class TestAlignTable:
                              [{"name": "X", "data_type": "string"}], sample_ref_classes)
         assert result["ref_class_status"] == "unmatched"
 
+    def test_anchor_override_wins_over_model_class_pick(self, sample_ref_classes):
+        # uri-anchor-contract: a confirmed anchor always wins, even when the
+        # model proposes a different, otherwise-valid class.
+        response = {"ref_class": "TradeTerms", "ref_class_confidence": 0.6,
+                    "column_alignments": []}
+        client = self._mock_client(response)
+        result = align_table(client, "gpt-5.4-mini", "t",
+                             [{"name": "X", "data_type": "string"}], sample_ref_classes,
+                             anchor_override="SalesContract")
+        assert result["ref_class"] == "SalesContract"
+        assert result["ref_class_status"] == "confirmed"
+        assert result["ref_class_confidence"] == 1.0
+        assert result["rejected_ref_class"] is None
+
+    def test_anchor_override_wins_even_when_model_returns_no_class(self, sample_ref_classes):
+        response = {"ref_class": "", "ref_class_confidence": 0.0, "column_alignments": []}
+        client = self._mock_client(response)
+        result = align_table(client, "gpt-5.4-mini", "t",
+                             [{"name": "X", "data_type": "string"}], sample_ref_classes,
+                             anchor_override="SalesContract")
+        assert result["ref_class"] == "SalesContract"
+        assert result["ref_class_status"] == "confirmed"
+
+    def test_anchor_override_becomes_column_default_ref_class(self, sample_ref_classes):
+        response = {
+            "ref_class": "TradeTerms", "ref_class_confidence": 0.5,
+            "column_alignments": [
+                {"column": "X", "ref_property": "contractIdentifier",
+                 "alignment": "semantic", "confidence": 0.8},
+            ],
+        }
+        client = self._mock_client(response)
+        result = align_table(client, "gpt-5.4-mini", "t",
+                             [{"name": "X", "data_type": "string"}], sample_ref_classes,
+                             anchor_override="SalesContract")
+        # The column had no explicit ref_class of its own, so it inherits the
+        # *overridden* (confirmed) class, not the model's own pick.
+        assert result["column_alignments"][0]["ref_class"] == "SalesContract"
+
+    def test_no_anchor_override_keeps_existing_behavior(self, sample_ref_classes):
+        response = {"ref_class": "SalesContract", "ref_class_confidence": 0.95,
+                    "column_alignments": []}
+        client = self._mock_client(response)
+        result = align_table(client, "gpt-5.4-mini", "t",
+                             [{"name": "X", "data_type": "string"}], sample_ref_classes)
+        assert result["ref_class_status"] == "matched"
+
     def test_unknown_column_filtered(self, sample_ref_classes):
         response = {
             "ref_class": "SalesContract",
@@ -399,6 +459,10 @@ class TestAlignTable:
         result = align_table(client, "gpt-5.4-mini", "tbl", columns, [])
         assert result["ref_class"] == ""
         assert result["column_alignments"] == []
+        # Alignment-reliability: no LLM call was made (no ref classes to align
+        # against) — this is fallback_only, distinct from an actual failure.
+        assert result["generation_outcome"] == OUTCOME_FALLBACK_ONLY
+        client.chat.completions.create.assert_not_called()
 
     def test_llm_failure_returns_empty(self, sample_ref_classes):
         client = mock.MagicMock()
@@ -407,6 +471,20 @@ class TestAlignTable:
         result = align_table(client, "gpt-5.4-mini", "tbl", columns, sample_ref_classes)
         assert result["ref_class"] == ""
         assert result["column_alignments"] == []
+        # Alignment-reliability: a real LLM call was attempted and failed — typed
+        # as provider_failure (not the same as a genuine "no match" result), with
+        # a safe (sanitized) error message attached.
+        assert result["generation_outcome"] == OUTCOME_PROVIDER_FAILURE
+        assert "API down" in result["generation_error"]
+
+    def test_successful_call_is_semantic_success(self, sample_ref_classes):
+        response = {"ref_class": "SalesContract", "ref_class_confidence": 0.9,
+                    "column_alignments": []}
+        client = self._mock_client(response)
+        result = align_table(client, "gpt-5.4-mini", "t",
+                             [{"name": "X", "data_type": "string"}], sample_ref_classes)
+        assert result["generation_outcome"] == OUTCOME_SEMANTIC_SUCCESS
+        assert result.get("generation_error") is None
 
 
 class TestPromptClassShortlist:
@@ -1126,6 +1204,11 @@ class TestRunProposeAlignment:
                 catalog_path=None,
                 output_dir=tmp_path,
                 domains_filter=["commercial"],
+                # Alignment-reliability: every table here is fallback_only (no ref
+                # classes at all, via the mocked empty inventory) — this test is
+                # about --domains filtering, not fallback-registry gating, so opt in
+                # explicitly to keep asserting on the written file.
+                allow_fallback_registry=True,
             )
 
         assert len(files) == 1
@@ -1346,7 +1429,979 @@ class TestAlignmentConcurrencyAndCaching:
             assert s_claims == p_claims
 
 
+class TestAlignmentReliability:
+    """Alignment-reliability: typed generation outcomes, total/partial failure,
+    fallback-only gating, and no-cache-on-failure for the run-level pipeline."""
+
+    REF_CLASSES = [
+        {"name": "SalesContract", "label": "Sales Contract", "comment": "",
+         "properties": [
+             {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+         ]},
+    ]
+
+    def _failing_client(self):
+        client = mock.MagicMock()
+        client.chat.completions.create.side_effect = RuntimeError("provider outage")
+        return client
+
+    def _success_client(self):
+        def create_completion(**kwargs):
+            prompt = kwargs["messages"][1]["content"]
+            ref_class = "SalesContract" if "tblContracts" in prompt else "TradeParty"
+            payload = {
+                "ref_class": ref_class, "ref_class_confidence": 0.9,
+                "column_alignments": [
+                    {"column": "ContractNo", "ref_class": ref_class,
+                     "ref_property": "contractIdentifier", "alignment": "semantic",
+                     "confidence": 0.9, "rationale": "id"},
+                ],
+            }
+            return mock.MagicMock(
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        return client
+
+    def _partial_failure_client(self):
+        """Succeeds for tblContracts (commercial), fails for tblParties (party)."""
+        def create_completion(**kwargs):
+            prompt = kwargs["messages"][1]["content"]
+            if "tblParties" in prompt:
+                raise RuntimeError("provider outage")
+            payload = {
+                "ref_class": "SalesContract", "ref_class_confidence": 0.9,
+                "column_alignments": [
+                    {"column": "ContractNo", "ref_class": "SalesContract",
+                     "ref_property": "contractIdentifier", "alignment": "semantic",
+                     "confidence": 0.9, "rationale": "id"},
+                ],
+            }
+            return mock.MagicMock(
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        return client
+
+    def test_total_failure_raises_and_writes_nothing(self, analysis_dir, sources_dir, tmp_path):
+        out = tmp_path / "out"
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client",
+            return_value=self._failing_client(),
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            with pytest.raises(AlignmentTotalFailureError):
+                run_propose_alignment(
+                    analysis_dir=analysis_dir, sources_dir=sources_dir,
+                    catalog_path=None, output_dir=out,
+                )
+        # Nothing on disk — a total failure must never be reported (or persisted)
+        # as if it were a real, if empty, result.
+        assert not out.exists() or list(out.glob("*-claims.yaml")) == []
+
+    def test_partial_failure_writes_success_skips_failed_domain(
+        self, analysis_dir, sources_dir, tmp_path
+    ):
+        out = tmp_path / "out"
+        messages: list[str] = []
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client",
+            return_value=self._partial_failure_client(),
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            files = run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, output_dir=out,
+                report=lambda msg, **kw: messages.append(msg),
+            )
+        names = {f.name for f in files}
+        assert names == {"commercial-claims.yaml"}
+        assert not (out / "party-claims.yaml").exists()
+        # The failed table's outcome is visible, not hidden behind --verbose.
+        assert any("FAILED" in m or "party" in m.lower() for m in messages)
+
+    def test_fallback_only_domain_skipped_by_default(self, analysis_dir, sources_dir, tmp_path):
+        out = tmp_path / "out"
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client",
+            return_value=mock.MagicMock(),
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=[],
+        ):
+            files = run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, output_dir=out,
+            )
+        # No reference classes at all → every table is fallback_only; without the
+        # explicit opt-in, an incomplete/placeholder-only registry is never written.
+        assert files == []
+        assert list(out.glob("*-claims.yaml")) == [] if out.exists() else True
+
+    def test_allow_fallback_registry_writes_incomplete_domain(
+        self, analysis_dir, sources_dir, tmp_path
+    ):
+        out = tmp_path / "out"
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client",
+            return_value=mock.MagicMock(),
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=[],
+        ):
+            files = run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, output_dir=out,
+                allow_fallback_registry=True,
+            )
+        assert {f.name for f in files} == {"commercial-claims.yaml", "party-claims.yaml"}
+        registry = load_registry(out / "commercial-claims.yaml")
+        assert registry.generation_outcomes
+        assert all(g.outcome == OUTCOME_FALLBACK_ONLY for g in registry.generation_outcomes)
+
+    def test_provider_failure_is_not_cached(self, analysis_dir, sources_dir, tmp_path):
+        out1 = tmp_path / "out1"
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client",
+            return_value=self._failing_client(),
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            with pytest.raises(AlignmentTotalFailureError):
+                run_propose_alignment(
+                    analysis_dir=analysis_dir, sources_dir=sources_dir,
+                    catalog_path=None, output_dir=out1,
+                )
+
+        # A second run (fresh output dir, same analysis/sources — same sidecar
+        # cache) with a working client must still call the LLM for real: the
+        # earlier provider_failure must not have been cached as a permanent result.
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client",
+            return_value=self._success_client(),
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            files = run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, output_dir=tmp_path / "out2",
+            )
+        assert {f.name for f in files} == {"commercial-claims.yaml", "party-claims.yaml"}
+        registry = load_registry(tmp_path / "out2" / "commercial-claims.yaml")
+        assert registry.claims  # real semantic content was produced, not empty
+
+    def test_generation_stats_populated(self, analysis_dir, sources_dir, tmp_path):
+        from kairos_ontology.core.propose_alignment import _propose_alignments
+
+        stats: dict[str, int] = {}
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client",
+            return_value=self._success_client(),
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            _propose_alignments(
+                analysis_dir, sources_dir, None, tmp_path / "out",
+                generation_stats=stats,
+            )
+        assert stats == {"attempted": 2, "semantic_success": 2, "provider_failure": 0}
+
+
+class TestUriAnchorContractIntegration:
+    """uri-anchor-contract end-to-end: confirmed anchors override the model's own
+    class pick, ambiguous confirmed anchors never silently pick the nearest
+    class (zero property claims + a separate unresolved_anchors record), and
+    a human 'resolved' decision on that record is honored on the next run."""
+
+    REF_CLASSES = [
+        {"name": "SalesContract", "label": "Sales Contract", "comment": "",
+         "uri": "https://example.com/ont/commercial#SalesContract",
+         "properties": [
+             {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+         ]},
+        {"name": "TradeTerms", "label": "Trade Terms", "comment": "",
+         "uri": "https://example.com/ont/commercial#TradeTerms",
+         "properties": [
+             {"name": "incoterm", "label": "Incoterm", "range": "string"},
+         ]},
+    ]
+
+    def _model_prefers_trade_terms_client(self, call_log: list[str] | None = None):
+        def create_completion(**kwargs):
+            if call_log is not None:
+                call_log.append(kwargs["messages"][1]["content"])
+            payload = {
+                "ref_class": "TradeTerms", "ref_class_confidence": 0.8,
+                "column_alignments": [
+                    {"column": "ContractNo",
+                     "ref_property": "incoterm", "alignment": "semantic",
+                     "confidence": 0.7, "rationale": "model's own guess"},
+                ],
+            }
+            return mock.MagicMock(
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        return client
+
+    def _write_conformance(self, tmp_path, *concepts, name="core-concepts-conformance.yaml"):
+        path = tmp_path / name
+        path.write_text(yaml.safe_dump({
+            "schema_version": 1,
+            "core_concepts": list(concepts),
+        }), encoding="utf-8")
+        return path
+
+    def test_confirmed_anchor_overrides_model_pick(
+        self, analysis_dir, sources_dir, tmp_path,
+    ):
+        conformance = self._write_conformance(tmp_path, {
+            "uri": "https://example.com/ont/commercial#SalesContract",
+            "label": "SalesContract", "outcome": "conforms",
+        })
+        client = self._model_prefers_trade_terms_client()
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            alignments = build_domain_alignments(
+                analysis_dir=analysis_dir, sources_dir=sources_dir, catalog_path=None,
+                domains_filter=["commercial"], conformance_artifact_path=conformance,
+            )
+        commercial = next(a for a in alignments if a.domain == "commercial")
+        ta = next(t for t in commercial.tables if t.table == "tblContracts")
+        assert ta.ref_class == "SalesContract"
+        assert ta.ref_class_status == "confirmed"
+        assert ta.likely_entity_uri == "https://example.com/ont/commercial#SalesContract"
+        # The column the model aligned inherits the *confirmed* class, not the
+        # model's own ("TradeTerms") class pick.
+        contract_no = next(c for c in ta.columns if c.column == "ContractNo")
+        assert contract_no.ref_class == "SalesContract"
+        assert ta.anchor_candidate_uris == []
+        assert commercial.unresolved_anchors == []
+
+    def test_no_conformance_artifact_keeps_existing_behavior(
+        self, analysis_dir, sources_dir, tmp_path,
+    ):
+        # Default (no confirmed evidence at all) — the model's own pick stands,
+        # exactly as before this feature.
+        client = self._model_prefers_trade_terms_client()
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            alignments = build_domain_alignments(
+                analysis_dir=analysis_dir, sources_dir=sources_dir, catalog_path=None,
+                domains_filter=["commercial"],
+            )
+        ta = next(
+            t for t in alignments[0].tables if t.table == "tblContracts"
+        )
+        assert ta.ref_class == "TradeTerms"
+        assert ta.ref_class_status == "matched"
+        assert ta.likely_entity_uri == ""
+
+    def test_ambiguous_confirmed_anchor_blocks_property_claims(
+        self, analysis_dir, sources_dir, tmp_path,
+    ):
+        conformance = self._write_conformance(
+            tmp_path,
+            {"uri": "https://example.com/ont/commercial#SalesContract",
+             "label": "SalesContract", "outcome": "conforms"},
+            {"uri": "https://example.com/ont/commercial#TradeTerms",
+             "label": "SalesContract", "outcome": "conforms"},
+        )
+        call_log: list[str] = []
+        client = self._model_prefers_trade_terms_client(call_log)
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            alignments = build_domain_alignments(
+                analysis_dir=analysis_dir, sources_dir=sources_dir, catalog_path=None,
+                domains_filter=["commercial"], conformance_artifact_path=conformance,
+            )
+
+        # No LLM call was ever made for the ambiguous table (cost + correctness).
+        assert call_log == []
+
+        commercial = next(a for a in alignments if a.domain == "commercial")
+        ta = next(t for t in commercial.tables if t.table == "tblContracts")
+        assert ta.ref_class == ""
+        assert ta.ref_class_status == "unresolved"
+        assert ta.columns == []
+        assert ta.custom_columns == []  # no passthrough claims materialized either
+        assert set(ta.anchor_candidate_uris) == {
+            "https://example.com/ont/commercial#SalesContract",
+            "https://example.com/ont/commercial#TradeTerms",
+        }
+        assert len(commercial.unresolved_anchors) == 1
+        record = commercial.unresolved_anchors[0]
+        assert record["table"] == "tblContracts"
+        assert record["system"] == "adminpulse"
+        assert record["status"] == "open"
+        assert set(record["candidate_uris"]) == set(ta.anchor_candidate_uris)
+
+    def test_ambiguous_anchor_writes_no_claims_and_a_separate_anchors_file(
+        self, analysis_dir, sources_dir, tmp_path,
+    ):
+        conformance = self._write_conformance(
+            tmp_path,
+            {"uri": "https://example.com/ont/commercial#SalesContract",
+             "label": "SalesContract", "outcome": "conforms"},
+            {"uri": "https://example.com/ont/commercial#TradeTerms",
+             "label": "SalesContract", "outcome": "conforms"},
+        )
+        client = self._model_prefers_trade_terms_client()
+        out = tmp_path / "out"
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, output_dir=out,
+                domains_filter=["commercial"], conformance_artifact_path=conformance,
+                # This domain's only table is unresolved (fallback_only) —
+                # writing a placeholder registry requires the explicit opt-in,
+                # same as any other all-fallback domain (alignment-reliability).
+                allow_fallback_registry=True,
+            )
+
+        registry = load_registry(out / "commercial-claims.yaml")
+        assert not any(
+            c.evidence_sources and c.evidence_sources[0].table == "tblContracts"
+            for c in registry.claims
+        )
+        anchors_path = out / "commercial-unresolved-anchors.yaml"
+        assert anchors_path.is_file()
+        doc = yaml.safe_load(anchors_path.read_text(encoding="utf-8"))
+        assert doc["domain"] == "commercial"
+        assert len(doc["anchors"]) == 1
+        assert doc["anchors"][0]["status"] == "open"
+
+    def test_human_resolved_decision_is_honored_on_next_run(
+        self, analysis_dir, sources_dir, tmp_path,
+    ):
+        conformance = self._write_conformance(
+            tmp_path,
+            {"uri": "https://example.com/ont/commercial#SalesContract",
+             "label": "SalesContract", "outcome": "conforms"},
+            {"uri": "https://example.com/ont/commercial#TradeTerms",
+             "label": "SalesContract", "outcome": "conforms"},
+        )
+        out = tmp_path / "out"
+        client = self._model_prefers_trade_terms_client()
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, output_dir=out,
+                domains_filter=["commercial"], conformance_artifact_path=conformance,
+                allow_fallback_registry=True,
+            )
+
+        # A human resolves the ambiguity by hand, choosing TradeTerms.
+        anchors_path = out / "commercial-unresolved-anchors.yaml"
+        doc = yaml.safe_load(anchors_path.read_text(encoding="utf-8"))
+        doc["anchors"][0]["status"] = "resolved"
+        doc["anchors"][0]["resolved_uri"] = (
+            "https://example.com/ont/commercial#TradeTerms"
+        )
+        doc["anchors"][0]["resolved_by"] = "a-human"
+        anchors_path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+        # Re-running (force=True to bypass the domain/table caches) must now
+        # honor the human's resolution: the anchor is no longer ambiguous, the
+        # LLM is called for the table again, and it aligns against TradeTerms.
+        call_log: list[str] = []
+        client2 = self._model_prefers_trade_terms_client(call_log)
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client2
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, output_dir=out,
+                domains_filter=["commercial"], conformance_artifact_path=conformance,
+                force=True,
+            )
+
+        assert any("tblContracts" in prompt for prompt in call_log)
+        registry = load_registry(out / "commercial-claims.yaml")
+        cls = next(c for c in registry.claims if c.type == "class")
+        assert cls.id == "commercial-tradeterms"
+
+        doc_after = yaml.safe_load(anchors_path.read_text(encoding="utf-8"))
+        assert doc_after["anchors"][0]["status"] == "resolved"
+        assert (
+            doc_after["anchors"][0]["resolved_uri"]
+            == "https://example.com/ont/commercial#TradeTerms"
+        )
+
+
+class TestProposeAlignmentCLIReliability:
+    """Alignment-reliability wiring through the `propose-alignment` CLI command:
+    --allow-fallback-registry passthrough and AlignmentTotalFailureError → exit 1."""
+
+    def _cli_setup(self, tmp_path):
+        analysis = tmp_path / "_analysis"
+        sources = tmp_path / "sources"
+        analysis.mkdir()
+        sources.mkdir()
+        (analysis / "crm-affinity.yaml").write_text(
+            yaml.safe_dump({"system": "crm", "schema_version": 2, "tables": []}),
+            encoding="utf-8",
+        )
+        return analysis, sources
+
+    def test_total_failure_exits_nonzero_and_prints_no_success(self, tmp_path):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+        from kairos_ontology.core.propose_alignment import AlignmentTotalFailureError
+
+        analysis, sources = self._cli_setup(tmp_path)
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.run_propose_alignment",
+            side_effect=AlignmentTotalFailureError("all 2 attempted table(s) failed"),
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["propose-alignment", "--analysis", str(analysis),
+                 "--sources", str(sources), "--output", str(tmp_path / "out")],
+            )
+        assert result.exit_code == 1
+        assert "✅" not in result.output
+        assert "Proposal complete" not in result.output
+        assert "all 2 attempted table(s) failed" in result.output
+
+    def test_allow_fallback_registry_flag_is_passed_through(self, tmp_path):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        analysis, sources = self._cli_setup(tmp_path)
+        captured_kwargs: dict = {}
+
+        def fake_run(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return []
+
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.run_propose_alignment",
+            side_effect=fake_run,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["propose-alignment", "--analysis", str(analysis),
+                 "--sources", str(sources), "--output", str(tmp_path / "out"),
+                 "--allow-fallback-registry"],
+            )
+        assert result.exit_code == 0, result.output
+        assert captured_kwargs.get("allow_fallback_registry") is True
+
+    def test_allow_fallback_registry_defaults_to_false(self, tmp_path):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        analysis, sources = self._cli_setup(tmp_path)
+        captured_kwargs: dict = {}
+
+        def fake_run(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return []
+
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.run_propose_alignment",
+            side_effect=fake_run,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["propose-alignment", "--analysis", str(analysis),
+                 "--sources", str(sources), "--output", str(tmp_path / "out")],
+            )
+        assert result.exit_code == 0, result.output
+        assert captured_kwargs.get("allow_fallback_registry") is False
+
+    def test_provider_failure_summary_line_shown(self, tmp_path):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        analysis, sources = self._cli_setup(tmp_path)
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.run_propose_alignment",
+            return_value=[],
+        ) as run_mock:
+            def side_effect(*args, **kwargs):
+                stats = kwargs.get("generation_stats")
+                if stats is not None:
+                    stats.update({"attempted": 3, "semantic_success": 2,
+                                  "provider_failure": 1})
+                return []
+            run_mock.side_effect = side_effect
+            result = CliRunner().invoke(
+                cli,
+                ["propose-alignment", "--analysis", str(analysis),
+                 "--sources", str(sources), "--output", str(tmp_path / "out")],
+            )
+        assert result.exit_code == 0, result.output
+        assert "1 of 3 attempted table(s) had a semantic generation failure" in result.output
+
+
 # placeholder-marker-for-append
+
+
+class TestTotalFailureNoWriteGuarantee:
+    """AlignmentTotalFailureError promises that *nothing* was written by the run.
+
+    Writes are staged and committed only once the run-wide semantic verdict is
+    known, so the promise also holds for the two cases a per-domain gate cannot
+    catch on its own: a domain that mixes ``provider_failure`` with
+    ``fallback_only`` tables (neither group covers the whole domain), and a
+    fallback-only domain explicitly opted in via ``--allow-fallback-registry``.
+    """
+
+    REF_CLASSES = [
+        {"name": "SalesContract", "label": "Sales Contract", "comment": "",
+         "uri": "https://example.com/ont/commercial#SalesContract",
+         "properties": [
+             {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+         ]},
+        {"name": "TradeTerms", "label": "Trade Terms", "comment": "",
+         "uri": "https://example.com/ont/commercial#TradeTerms",
+         "properties": [
+             {"name": "incoterm", "label": "Incoterm", "range": "string"},
+         ]},
+    ]
+
+    @pytest.fixture
+    def mixed_analysis_dir(self, tmp_path):
+        """One domain, two tables: one becomes fallback_only (ambiguous anchor),
+        the other is attempted and fails at the provider."""
+        analysis = tmp_path / "_analysis"
+        analysis.mkdir()
+        affinity = {
+            "system": "adminpulse",
+            "analysed_at": "2026-06-05T10:00:00Z",
+            "model_used": "gpt-5.4-mini",
+            "schema_version": 2,
+            "tables": [
+                {"table": "tblContracts", "total_columns": 1, "domain": "commercial",
+                 "domain_uris": ["https://example.com/ont/commercial#"],
+                 "confidence": 0.9, "likely_entity": "SalesContract",
+                 "indicative_columns": ["ContractNo"]},
+                {"table": "tblOrders", "total_columns": 1, "domain": "commercial",
+                 "domain_uris": ["https://example.com/ont/commercial#"],
+                 "confidence": 0.8, "likely_entity": "PurchaseOrder",
+                 "indicative_columns": ["OrderNo"]},
+            ],
+        }
+        (analysis / "adminpulse-affinity.yaml").write_text(
+            yaml.safe_dump(affinity), encoding="utf-8"
+        )
+        return analysis
+
+    @pytest.fixture
+    def mixed_sources_dir(self, tmp_path):
+        sources = tmp_path / "sources"
+        admin_dir = sources / "adminpulse"
+        admin_dir.mkdir(parents=True)
+        (admin_dir / "adminpulse.vocabulary.ttl").write_text("""\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+
+<#tblContracts> a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "tblContracts" .
+
+<#tblContracts_ContractNo> a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "ContractNo" ;
+    kairos-bronze:dataType "nvarchar(50)" ;
+    kairos-bronze:belongsToTable <#tblContracts> .
+
+<#tblOrders> a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "tblOrders" .
+
+<#tblOrders_OrderNo> a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "OrderNo" ;
+    kairos-bronze:dataType "nvarchar(50)" ;
+    kairos-bronze:belongsToTable <#tblOrders> .
+""", encoding="utf-8")
+        return sources
+
+    def _ambiguous_conformance(self, tmp_path):
+        path = tmp_path / "core-concepts-conformance.yaml"
+        path.write_text(yaml.safe_dump({
+            "schema_version": 1,
+            "core_concepts": [
+                {"uri": "https://example.com/ont/commercial#SalesContract",
+                 "label": "SalesContract", "outcome": "conforms"},
+                {"uri": "https://example.com/ont/commercial#TradeTerms",
+                 "label": "SalesContract", "outcome": "conforms"},
+            ],
+        }), encoding="utf-8")
+        return path
+
+    def _failing_client(self):
+        client = mock.MagicMock()
+        client.chat.completions.create.side_effect = RuntimeError("provider outage")
+        return client
+
+    def test_mixed_provider_failure_and_fallback_only_domain_writes_nothing(
+        self, mixed_analysis_dir, mixed_sources_dir, tmp_path,
+    ):
+        out = tmp_path / "out"
+        out.mkdir()
+        # A previously-good registry must survive the failed run untouched.
+        existing = out / "commercial-claims.yaml"
+        existing.write_text("domain: commercial\n# curated by a human\n", encoding="utf-8")
+        before = existing.read_text(encoding="utf-8")
+        conformance = self._ambiguous_conformance(tmp_path)
+        stats: dict[str, int] = {}
+
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client",
+            return_value=self._failing_client(),
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            with pytest.raises(AlignmentTotalFailureError) as exc:
+                run_propose_alignment(
+                    analysis_dir=mixed_analysis_dir, sources_dir=mixed_sources_dir,
+                    catalog_path=None, output_dir=out,
+                    conformance_artifact_path=conformance,
+                    generation_stats=stats,
+                )
+
+        # Exactly one of the domain's two tables was attempted (and failed); the
+        # other never called the provider — the mixed shape no per-domain gate
+        # covers.
+        assert stats == {"attempted": 1, "semantic_success": 0, "provider_failure": 1}
+        assert "No claim registries were written" in str(exc.value)
+        # The domain mixes fallback_only + provider_failure, so neither
+        # per-domain gate fires — only the staged-write guarantee protects it.
+        assert existing.read_text(encoding="utf-8") == before
+        assert list(out.glob("*-unresolved-anchors.yaml")) == []
+
+    def test_opted_in_fallback_only_domain_not_written_on_total_failure(
+        self, analysis_dir, sources_dir, tmp_path,
+    ):
+        out = tmp_path / "out"
+
+        def inventory(domain_uris, *args, **kwargs):
+            # commercial resolves a reference model (its table is attempted and
+            # fails); party resolves none at all (fallback_only).
+            if any("commercial" in str(u) for u in domain_uris):
+                return self.REF_CLASSES
+            return []
+
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client",
+            return_value=self._failing_client(),
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            side_effect=inventory,
+        ):
+            with pytest.raises(AlignmentTotalFailureError):
+                run_propose_alignment(
+                    analysis_dir=analysis_dir, sources_dir=sources_dir,
+                    catalog_path=None, output_dir=out,
+                    allow_fallback_registry=True,
+                )
+
+        # Even the explicitly opted-in fallback-only domain stays uncommitted:
+        # the error states nothing was written, so nothing may be written.
+        assert list(out.glob("*-claims.yaml")) == []
+
+    def test_partial_success_still_commits_staged_writes(
+        self, analysis_dir, sources_dir, tmp_path,
+    ):
+        """Staging must not change the happy/partial path: a run with at least
+        one semantic success still writes every eligible domain."""
+        out = tmp_path / "out"
+
+        def create_completion(**kwargs):
+            prompt = kwargs["messages"][1]["content"]
+            if "tblParties" in prompt:
+                raise RuntimeError("provider outage")
+            payload = {
+                "ref_class": "SalesContract", "ref_class_confidence": 0.9,
+                "column_alignments": [
+                    {"column": "ContractNo", "ref_class": "SalesContract",
+                     "ref_property": "contractIdentifier", "alignment": "semantic",
+                     "confidence": 0.9, "rationale": "id"},
+                ],
+            }
+            return mock.MagicMock(
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        messages: list[str] = []
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client,
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            files = run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, output_dir=out,
+                report=lambda msg, **kw: messages.append(msg),
+            )
+        assert {f.name for f in files} == {"commercial-claims.yaml"}
+        assert (out / "commercial-claims.yaml").is_file()
+        assert any("Written" in m for m in messages)
+
+    def test_cached_domain_skip_still_returned_in_order(
+        self, analysis_dir, sources_dir, tmp_path,
+    ):
+        """A freshness-cached domain is reported once, in domain order, next to
+        a newly committed one."""
+        out = tmp_path / "out"
+
+        def create_completion(**kwargs):
+            prompt = kwargs["messages"][1]["content"]
+            ref_class = "SalesContract" if "tblContracts" in prompt else "TradeTerms"
+            payload = {
+                "ref_class": ref_class, "ref_class_confidence": 0.9,
+                "column_alignments": [],
+            }
+            return mock.MagicMock(
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        with mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client,
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            first = run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, output_dir=out,
+            )
+            second = run_propose_alignment(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, output_dir=out,
+            )
+        assert [f.name for f in second] == [f.name for f in first]
+        assert [f.name for f in second] == sorted(f.name for f in second)
+
+
+class TestModelPrecedence:
+    """The caller/CLI-resolved model is authoritative; the per-role provider
+    config (``KAIROS_AI_ALIGNMENT_MODEL``) is endpoint/auth/preflight metadata
+    and must never override an explicitly pinned ``--model``/``--high-accuracy``.
+    """
+
+    REF_CLASSES = [
+        {"name": "SalesContract", "label": "Sales Contract", "comment": "",
+         "properties": [
+             {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+         ]},
+    ]
+
+    def _recording_client(self, seen: list[str]):
+        def create_completion(**kwargs):
+            seen.append(kwargs["model"])
+            payload = {"ref_class": "SalesContract", "ref_class_confidence": 0.9,
+                       "column_alignments": []}
+            return mock.MagicMock(
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        return client
+
+    def _run(self, analysis_dir, sources_dir, model, env):
+        import os
+
+        seen: list[str] = []
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client",
+            return_value=self._recording_client(seen),
+        ), mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=self.REF_CLASSES,
+        ):
+            alignments = build_domain_alignments(
+                analysis_dir=analysis_dir, sources_dir=sources_dir,
+                catalog_path=None, model=model, domains_filter=["commercial"],
+            )
+        return seen, alignments
+
+    def test_explicit_model_wins_over_role_env_override(self, analysis_dir, sources_dir):
+        seen, alignments = self._run(
+            analysis_dir, sources_dir, "gpt-explicit",
+            {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override"},
+        )
+        assert seen and set(seen) == {"gpt-explicit"}
+        assert alignments[0].model_used == "gpt-explicit"
+
+    def test_high_accuracy_model_wins_over_role_env_override(
+        self, analysis_dir, sources_dir
+    ):
+        from kairos_ontology.core.propose_alignment import HIGH_ACCURACY_MODEL
+
+        seen, alignments = self._run(
+            analysis_dir, sources_dir, HIGH_ACCURACY_MODEL,
+            {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override"},
+        )
+        assert set(seen) == {HIGH_ACCURACY_MODEL}
+        assert alignments[0].model_used == HIGH_ACCURACY_MODEL
+
+    def test_role_endpoint_does_not_change_the_model_either(
+        self, analysis_dir, sources_dir
+    ):
+        # A dedicated per-role endpoint may change provider/auth, never the model.
+        seen, _ = self._run(
+            analysis_dir, sources_dir, "gpt-explicit",
+            {
+                "GITHUB_TOKEN": "tok",
+                "KAIROS_AI_ALIGNMENT_ENDPOINT": "https://strong.example.com/v1",
+                "KAIROS_AI_ALIGNMENT_KEY": "align-key",
+                "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override",
+            },
+        )
+        assert set(seen) == {"gpt-explicit"}
+
+    def test_no_role_override_uses_caller_model_unchanged(self, analysis_dir, sources_dir):
+        seen, _ = self._run(
+            analysis_dir, sources_dir, "gpt-explicit", {"GITHUB_TOKEN": "tok"},
+        )
+        assert set(seen) == {"gpt-explicit"}
+
+    def test_cli_precedence_explicit_model_beats_role_env(self, tmp_path):
+        import os
+
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        analysis = tmp_path / "_analysis"
+        sources = tmp_path / "sources"
+        analysis.mkdir()
+        sources.mkdir()
+        (analysis / "crm-affinity.yaml").write_text(
+            yaml.safe_dump({"system": "crm", "schema_version": 2, "tables": []}),
+            encoding="utf-8",
+        )
+        captured: dict = {}
+
+        def fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        env = {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch(
+            "kairos_ontology.core.propose_alignment.run_propose_alignment",
+            side_effect=fake_run,
+        ):
+            result = CliRunner().invoke(cli, [
+                "propose-alignment", "--analysis", str(analysis),
+                "--sources", str(sources), "--output", str(tmp_path / "out"),
+                "--model", "gpt-explicit",
+            ])
+        assert result.exit_code == 0, result.output
+        assert captured["model"] == "gpt-explicit"
+
+    def test_cli_precedence_high_accuracy_beats_role_env(self, tmp_path):
+        import os
+
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+        from kairos_ontology.core.propose_alignment import HIGH_ACCURACY_MODEL
+
+        analysis = tmp_path / "_analysis"
+        sources = tmp_path / "sources"
+        analysis.mkdir()
+        sources.mkdir()
+        (analysis / "crm-affinity.yaml").write_text(
+            yaml.safe_dump({"system": "crm", "schema_version": 2, "tables": []}),
+            encoding="utf-8",
+        )
+        captured: dict = {}
+
+        def fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        env = {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch(
+            "kairos_ontology.core.propose_alignment.run_propose_alignment",
+            side_effect=fake_run,
+        ):
+            result = CliRunner().invoke(cli, [
+                "propose-alignment", "--analysis", str(analysis),
+                "--sources", str(sources), "--output", str(tmp_path / "out"),
+                "--high-accuracy",
+            ])
+        assert result.exit_code == 0, result.output
+        assert captured["model"] == HIGH_ACCURACY_MODEL
+
+    def test_cli_role_env_is_still_the_default_when_nothing_is_pinned(self, tmp_path):
+        import os
+
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        analysis = tmp_path / "_analysis"
+        sources = tmp_path / "sources"
+        analysis.mkdir()
+        sources.mkdir()
+        (analysis / "crm-affinity.yaml").write_text(
+            yaml.safe_dump({"system": "crm", "schema_version": 2, "tables": []}),
+            encoding="utf-8",
+        )
+        captured: dict = {}
+
+        def fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        env = {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch(
+            "kairos_ontology.core.propose_alignment.run_propose_alignment",
+            side_effect=fake_run,
+        ):
+            result = CliRunner().invoke(cli, [
+                "propose-alignment", "--analysis", str(analysis),
+                "--sources", str(sources), "--output", str(tmp_path / "out"),
+            ])
+        assert result.exit_code == 0, result.output
+        assert captured["model"] == "gpt-role-override"
 
 
 # ---------------------------------------------------------------------------
@@ -2163,5 +3218,216 @@ class TestObjectPropertyBuilders:
         assert cand["requires_human_confirmation"] is True
 
 
+# ---------------------------------------------------------------------------
+# proposal-quality — generic object-relationship safeguards
+# ---------------------------------------------------------------------------
 
 
+class TestTechnicalActorSafeguard:
+    """Finding #9 — created_by_*/updated_by_* default to audit/passthrough."""
+
+    @pytest.mark.parametrize("column", [
+        "created_by", "createdBy", "created_by_user", "updated_by_id",
+        "modified_by", "deleted_by", "approved_by", "reviewed_by",
+        "authorized_by", "changed_by",
+    ])
+    def test_technical_actor_names_detected(self, column):
+        assert _is_technical_actor_column(column) is True
+
+    @pytest.mark.parametrize("column", [
+        "customer_name", "billing_city", "shipment_reference", "party_id",
+    ])
+    def test_ordinary_columns_not_flagged(self, column):
+        assert _is_technical_actor_column(column) is False
+
+    def test_downgrade_reason_is_technical_actor_and_wins_over_others(self):
+        # Even a technical-actor column that also looks like a location
+        # property name must be flagged as technical_actor first.
+        reason = _object_relationship_downgrade_reason(
+            column="updated_by", data_type="varchar",
+            ref_property="hasPlaceOfReceipt", target_resolved=True,
+        )
+        assert reason == "technical_actor"
+
+    def test_technical_actor_never_gets_relationship_candidate(self):
+        # A technical-actor object-property column downgrades to passthrough
+        # ONLY — never a relationship candidate (finding #9: audit evidence,
+        # not an in-domain relationship).
+        target = {"target_name": "Party", "target_class_uri": "https://ex.org#Party",
+                  "target_resolved": True, "cardinality": "n:1"}
+        reason = _object_relationship_downgrade_reason(
+            column="updated_by", data_type="varchar",
+            ref_property="hasResponsibleParty", target_resolved=True,
+        )
+        assert reason == "technical_actor"
+        passthrough = _build_object_property_passthrough(
+            "updated_by", "varchar", "hasResponsibleParty", target, reason=reason)
+        assert passthrough["object_property_passthrough"] is True
+        assert "audit" in passthrough["rationale"].lower()
+
+
+class TestIdentifierEvidenceSafeguard:
+    """Finding #9 — object relationships require target/entity identifier evidence."""
+
+    def test_id_suffix_name_is_identifier(self):
+        assert _looks_like_identifier_column("customer_id", "varchar") is True
+
+    def test_reference_token_is_identifier(self):
+        assert _looks_like_identifier_column("party_reference", "varchar") is True
+
+    def test_integer_data_type_is_identifier(self):
+        assert _looks_like_identifier_column("customer", "int") is True
+
+    def test_descriptive_scalar_is_not_identifier(self):
+        assert _looks_like_identifier_column("customer_name", "varchar") is False
+
+    def test_point_does_not_false_positive_on_int_token(self):
+        # 'point' contains the substring 'int' but must not tokenize as one.
+        assert _looks_like_identifier_column("delivery_point", "varchar") is False
+
+    def test_downgrade_reason_missing_identifier_evidence(self):
+        reason = _object_relationship_downgrade_reason(
+            column="customer_name", data_type="varchar",
+            ref_property="hasCustomer", target_resolved=True,
+        )
+        assert reason == "missing_identifier_evidence"
+
+    def test_identifier_evidence_present_keeps_mapping(self):
+        reason = _object_relationship_downgrade_reason(
+            column="customer_id", data_type="int",
+            ref_property="hasCustomer", target_resolved=True,
+        )
+        assert reason is None
+
+
+class TestTypedLocationEvidenceSafeguard:
+    """Finding #9 — specialized location properties need explicit role evidence."""
+
+    def test_role_token_derivation(self):
+        assert _location_role_token("hasPlaceOfReceipt") == "receipt"
+        assert _location_role_token("hasPlaceOfDelivery") == "delivery"
+        assert _location_role_token("hasOrigin") == "origin"
+        assert _location_role_token("hasDestination") == "destination"
+
+    def test_generic_location_properties_have_no_role(self):
+        assert _location_role_token("hasLocation") is None
+        assert _location_role_token("hasAddress") is None
+
+    def test_is_location_object_property(self):
+        assert _is_location_object_property("hasPlaceOfReceipt") is True
+        assert _is_location_object_property("hasCustomer") is False
+
+    def test_matching_column_has_typed_role_evidence(self):
+        assert _has_typed_role_evidence("PlaceOfReceipt", "receipt") is True
+        assert _has_typed_role_evidence("receipt_location", "receipt") is True
+
+    def test_bare_location_column_lacks_typed_role_evidence(self):
+        assert _has_typed_role_evidence("location", "receipt") is False
+
+    def test_downgrade_reason_missing_typed_role_evidence(self):
+        # A generic "location" column force-fit onto a specific port property
+        # must be downgraded — no explicit evidence for that specific role.
+        reason = _object_relationship_downgrade_reason(
+            column="location", data_type="varchar",
+            ref_property="hasPlaceOfDischarge", target_resolved=True,
+        )
+        assert reason == "missing_typed_role_evidence"
+
+    def test_typed_evidence_present_keeps_mapping(self):
+        reason = _object_relationship_downgrade_reason(
+            column="discharge_location", data_type="varchar",
+            ref_property="hasPlaceOfDischarge", target_resolved=True,
+        )
+        assert reason is None
+
+    def test_generic_location_property_exempt_from_typed_role_check(self):
+        # hasLocation/hasAddress carry no specific role → identifier-evidence
+        # style checks don't apply to them either (location branch, role=None).
+        reason = _object_relationship_downgrade_reason(
+            column="site", data_type="varchar",
+            ref_property="hasLocation", target_resolved=True,
+        )
+        assert reason is None
+
+
+# ---------------------------------------------------------------------------
+# proposal-quality — generalized relationship-candidate clustering
+# ---------------------------------------------------------------------------
+
+
+class TestRelationshipClusterId:
+    def test_stable_and_deterministic(self):
+        a = _relationship_cluster_id("booking", "shipment", "receipt", "Location", "n:1")
+        b = _relationship_cluster_id("booking", "shipment", "receipt", "Location", "n:1")
+        assert a == b
+
+    def test_differs_by_domain(self):
+        a = _relationship_cluster_id("booking", "t", "default", "Address", "1:n")
+        b = _relationship_cluster_id("customs", "t", "default", "Address", "1:n")
+        assert a != b
+
+    def test_address_candidates_carry_cluster_id(self):
+        out = _detect_address_relationship_candidates(
+            "companies",
+            [{"name": n} for n in
+             ("billing_street", "billing_city", "billing_postal_code")],
+            domain="party",
+        )
+        assert len(out) == 1
+        assert "cluster_id" in out[0]
+        assert out[0]["cluster_id"] == _relationship_cluster_id(
+            "party", "companies", "billing", "Address", "1:n",
+        )
+
+
+class TestClusterObjectPropertyCandidates:
+    """proposal-quality finding #8 — one cluster per relationship, all
+    contributing columns carried together, stable cluster_id."""
+
+    def _candidate(self, table, column, ref_property, target_concept="Location"):
+        target = {"target_name": target_concept, "target_class_uri": None,
+                  "target_resolved": False, "cardinality": "n:1"}
+        return _build_object_property_candidate(table, column, ref_property, target)
+
+    def test_multiple_columns_same_relationship_collapse_into_one_cluster(self):
+        candidates = [
+            self._candidate("shipment", "receipt_location", "hasPlaceOfReceipt"),
+            self._candidate("shipment", "receipt_terminal", "hasPlaceOfReceipt"),
+        ]
+        merged = _cluster_object_property_candidates(candidates, domain="logistics")
+        assert len(merged) == 1
+        assert merged[0]["source_columns"] == ["receipt_location", "receipt_terminal"]
+        assert "cluster_id" in merged[0]
+
+    def test_different_relationships_stay_separate(self):
+        candidates = [
+            self._candidate("shipment", "receipt_location", "hasPlaceOfReceipt"),
+            self._candidate("shipment", "delivery_location", "hasPlaceOfDelivery"),
+        ]
+        merged = _cluster_object_property_candidates(candidates, domain="logistics")
+        assert len(merged) == 2
+        rels = {c["suggested_relationship"] for c in merged}
+        assert rels == {"hasPlaceOfReceipt", "hasPlaceOfDelivery"}
+
+    def test_single_column_cluster_unchanged_besides_cluster_id(self):
+        candidates = [self._candidate("shipment", "receipt_location", "hasPlaceOfReceipt")]
+        merged = _cluster_object_property_candidates(candidates, domain="logistics")
+        assert merged[0]["source_columns"] == ["receipt_location"]
+        assert merged[0]["target_resolved"] is False
+
+    def test_cluster_id_stable_when_membership_changes(self):
+        # Same relationship, different contributing columns → same cluster_id
+        # (stable dimensions only: table, relationship, target, cardinality).
+        first = _cluster_object_property_candidates(
+            [self._candidate("shipment", "receipt_location", "hasPlaceOfReceipt")],
+            domain="logistics",
+        )
+        second = _cluster_object_property_candidates(
+            [self._candidate("shipment", "receipt_location", "hasPlaceOfReceipt"),
+             self._candidate("shipment", "receipt_terminal", "hasPlaceOfReceipt")],
+            domain="logistics",
+        )
+        assert first[0]["cluster_id"] == second[0]["cluster_id"]
+
+    def test_empty_input_returns_empty(self):
+        assert _cluster_object_property_candidates([], domain="logistics") == []

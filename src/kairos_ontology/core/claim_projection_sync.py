@@ -18,12 +18,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 
-from rdflib import Graph, Literal, URIRef
-from rdflib.namespace import OWL, RDF, XSD
+from rdflib import Graph, Literal, Namespace, URIRef
+from rdflib.namespace import OWL, RDF, RDFS, XSD
 from rdflib.plugins.parsers.notation3 import BadSyntax
 
 from .binding_analysis import approved_imported_class_uris, approved_imported_term_refs
 from .claim_registry import ClaimRegistry, load_registry
+from .managed_text_block import (
+    ManagedBlockError,
+    compose_managed_file,
+    replace_managed_block,
+    split_managed_block,
+)
 from .projections.shared import KAIROS_EXT
 from .reference_modules import (
     ModuleDiagnostic,
@@ -162,6 +168,7 @@ class DomainProjectionSync:
     extra_includes: list[str] = field(default_factory=list)
     import_diagnostics: list[ModuleDiagnostic] = field(default_factory=list)
     activation_inventory: dict = field(default_factory=dict)
+    disputed_claims: list = field(default_factory=list)
     has_bulk_include_imports: bool = False
     error: str | None = None
 
@@ -181,6 +188,15 @@ class DomainProjectionSync:
 @dataclass
 class ProjectionSyncReport:
     domains: list[DomainProjectionSync] = field(default_factory=list)
+    #: The skill that owns enforcing this report's blocking behaviour (DD-122).
+    #: ``check-claims`` surfaces sync drift for visibility but does not block on
+    #: it by default; ``claims-to-silver-ext --check-only`` remains the owning
+    #: workflow that blocks.
+    owner_skill: str = "kairos-design-domain"
+    #: Set by :func:`apply_projection_sync` (``None`` for ``evaluate_projection_sync``
+    #: / ``--check-only``, which never write anything) to the explicit
+    #: created/updated/unchanged accounting from :func:`scaffold_missing_surfaces`.
+    scaffold_result: "ScaffoldSurfacesResult | None" = None
 
     @property
     def out_of_sync(self) -> list[DomainProjectionSync]:
@@ -189,6 +205,11 @@ class ProjectionSyncReport:
     @property
     def is_blocking(self) -> bool:
         return bool(self.out_of_sync)
+
+    @property
+    def disputed_claims(self) -> list:
+        """All disputed-claim entries across every evaluated domain (DD-122)."""
+        return [item for d in self.domains for item in d.disputed_claims]
 
 
 def evaluate_domain_projection_sync(
@@ -257,6 +278,9 @@ def evaluate_domain_projection_sync(
     )
     status.import_diagnostics = list(plan.diagnostics)
     status.activation_inventory = plan.activation_inventory
+    status.disputed_claims = [
+        {**item.to_dict(), "domain": domain} for item in plan.disputed_claims
+    ]
     configuration_errors = [
         item for item in plan.diagnostics if item.level == "error"
     ]
@@ -455,30 +479,24 @@ def _line_ending(text: str) -> str:
     return "\r\n" if "\r\n" in text else "\n"
 
 
-def _managed_end_after(text: str, end: int) -> int:
-    """Include the generated block's terminating newline in its owned span."""
-    end_after = end + len(_MANAGED_END)
-    if text.startswith("\r\n", end_after):
-        return end_after + 2
-    if text.startswith("\n", end_after):
-        return end_after + 1
-    return end_after
-
-
 def _split_managed_block(text: str, *, path: Path | None = None) -> tuple[str, bool]:
-    """Return all authored text and whether it contains one well-formed block."""
+    """Return all authored text and whether it contains one well-formed block.
+
+    Delegates the splice mechanics to the shared
+    :mod:`kairos_ontology.core.managed_text_block` implementation (one algorithm,
+    no second copy) and translates its generic :class:`ManagedBlockError` into
+    this module's actionable :class:`ProjectionMigrationRequiredError`, which
+    names the ``migrate`` remediation the Claim Registry workflow needs.
+    """
     label = str(path) if path is not None else "<projection surface>"
-    begins = [match.start() for match in re.finditer(re.escape(_MANAGED_BEGIN), text)]
-    ends = [match.start() for match in re.finditer(re.escape(_MANAGED_END), text)]
-    if not begins and not ends:
-        return text, False
-    if len(begins) != 1 or len(ends) != 1 or ends[0] < begins[0]:
+    try:
+        return split_managed_block(
+            text, begin_marker=_MANAGED_BEGIN, end_marker=_MANAGED_END, label=label
+        )
+    except ManagedBlockError as exc:
         raise ProjectionMigrationRequiredError(
             projection_migration_error(path or Path(label), "malformed managed-block markers")
-        )
-
-    end_after = _managed_end_after(text, ends[0])
-    return text[:begins[0]] + text[end_after:], True
+        ) from exc
 
 
 def _strip_managed_block(text: str, *, path: Path | None = None) -> str:
@@ -502,49 +520,26 @@ def _turtle_statement(subject: URIRef, predicate: URIRef, obj: object) -> str:
 
 def _compose_managed_file(authored_text: str, managed_lines: list[str]) -> str:
     """Append a deterministic block without reformatting authored Turtle."""
-    if not managed_lines:
-        return authored_text
-
-    newline = _line_ending(authored_text)
-    block = (
-        _MANAGED_BEGIN
-        + newline
-        + newline.join(managed_lines)
-        + newline
-        + _MANAGED_END
-        + newline
+    return compose_managed_file(
+        authored_text,
+        managed_lines,
+        begin_marker=_MANAGED_BEGIN,
+        end_marker=_MANAGED_END,
     )
-    if not authored_text:
-        return block
-
-    separator = "" if authored_text.endswith(("\n", "\r")) else newline
-    return authored_text + separator + block
 
 
 def _replace_managed_block(text: str, managed_lines: list[str], *, path: Path) -> str:
     """Replace only the managed span, preserving authored bytes on both sides."""
-    begins = [match.start() for match in re.finditer(re.escape(_MANAGED_BEGIN), text)]
-    ends = [match.start() for match in re.finditer(re.escape(_MANAGED_END), text)]
-    if not begins and not ends:
-        return _compose_managed_file(text, managed_lines)
-
-    # Reuse the canonical validation and keep the original prefix/suffix byte-for-byte.
+    # Validate first so a malformed surface raises this module's migration error
+    # rather than the generic ManagedBlockError.
     _split_managed_block(text, path=path)
-    begin = begins[0]
-    end_after = _managed_end_after(text, ends[0])
-    if not managed_lines:
-        return text[:begin] + text[end_after:]
-
-    newline = _line_ending(text)
-    block = (
-        _MANAGED_BEGIN
-        + newline
-        + newline.join(managed_lines)
-        + newline
-        + _MANAGED_END
-        + newline
+    return replace_managed_block(
+        text,
+        managed_lines,
+        begin_marker=_MANAGED_BEGIN,
+        end_marker=_MANAGED_END,
+        label=str(path),
     )
-    return text[:begin] + block + text[end_after:]
 
 
 def _inspect_managed_surface(path: Path, is_managed_authored) -> ManagedSurfaceInspection:
@@ -1024,22 +1019,84 @@ def _write_with_header(graph: Graph, destination: Path) -> None:
     destination.write_text(_SCAFFOLD_HEADER + "\n" + body, encoding="utf-8")
 
 
+class ScaffoldMetadataError(ValueError):
+    """Raised when generated skeleton content would fail the baseline ontology
+    metadata checks required of hand-authored ontologies (see
+    ``kairos-execute-validate`` Level 3: ``owl:Ontology`` + ``rdfs:label`` +
+    ``rdfs:comment`` + ``owl:versionInfo``)."""
+
+
+#: Lowercase-hyphen domain identifiers only (matches the documented hub
+#: convention: "Filename = domain identifier (lowercase, hyphens for
+#: multi-word)"). Rejecting anything else here — rather than writing an
+#: ontology with an unusable IRI/filename — is cheap, deterministic, up-front
+#: validation of candidate content before any write is attempted.
+_DOMAIN_SLUG_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
+
+
+def _validate_domain_slug(domain: str) -> None:
+    """Validate candidate content before writing: reject an unusable domain name."""
+    if not _DOMAIN_SLUG_RE.match(domain):
+        raise ValueError(
+            f"invalid domain identifier {domain!r}: expected lowercase letters, "
+            "digits and hyphens only (e.g. 'customer', 'order-line')."
+        )
+
+
+def _validate_generated_metadata(graph: Graph, subject: URIRef, *, path: Path) -> None:
+    """Enforce, on the in-memory candidate graph, the same ontology-level metadata
+    baseline required of hand-authored files: exactly the given ``owl:Ontology``
+    subject with an ``https://`` IRI, ``rdfs:label``, ``rdfs:comment`` and
+    ``owl:versionInfo``. Raised *before* anything is written to disk.
+    """
+    if not str(subject).startswith("https://"):
+        raise ScaffoldMetadataError(f"{path}: ontology IRI must use https:// — got {subject}")
+    missing = [
+        name
+        for name, predicate in (
+            ("rdfs:label", RDFS.label),
+            ("rdfs:comment", RDFS.comment),
+            ("owl:versionInfo", OWL.versionInfo),
+        )
+        if graph.value(subject, predicate) is None
+    ]
+    if missing:
+        raise ScaffoldMetadataError(
+            f"{path}: generated skeleton is missing required metadata: {', '.join(missing)}"
+        )
+    # Round-trip through Turtle before writing — a cheap, generic syntax check
+    # that also catches any accidental non-Turtle-safe literal content.
+    Graph().parse(data=graph.serialize(format="turtle"), format="turtle")
+
+
 def _scaffold_ontology_skeleton(
     *, domain: str, ontology_file: Path, ontologies_dir: Path
 ) -> str:
-    """Create a minimal valid domain ontology skeleton and return its IRI."""
-    from rdflib.namespace import RDFS
+    """Create a minimal valid domain ontology skeleton and return its IRI.
 
+    Meets the same baseline metadata checks required of hand-authored ontologies
+    (``owl:Ontology`` + ``rdfs:label`` + ``rdfs:comment`` + ``owl:versionInfo``),
+    plus the hub's foundation import when one is available. Validated before
+    the file is written (see :func:`_validate_generated_metadata`).
+    """
+    _validate_domain_slug(domain)
     domain_iri = _domain_iri_for(domain, ontologies_dir)
-    graph = Graph()
+    label = domain.replace("-", " ").replace("_", " ").title()
     subj = URIRef(domain_iri)
+    graph = Graph()
+    graph.bind("", Namespace(domain_iri.rstrip("#/") + "#"))
+    graph.bind("owl", OWL)
+    graph.bind("rdfs", RDFS)
     graph.add((subj, RDF.type, OWL.Ontology))
-    graph.add((subj, RDFS.label, Literal(domain.replace("-", " ").title(), lang="en")))
-    # Share the hub foundation base when one is present (scaffold convention).
+    graph.add((subj, RDFS.label, Literal(label, lang="en")))
+    graph.add((subj, RDFS.comment, Literal(f"Ontology for the {label} domain.", lang="en")))
+    graph.add((subj, OWL.versionInfo, Literal("0.1.0")))
+    # Share the hub foundation base when one is present (required-import convention).
     for base in _collect_hub_domain_bases(ontologies_dir):
         if base.rstrip("#/").rsplit("/", 1)[-1].startswith("_foundation"):
             graph.add((subj, OWL.imports, URIRef(base)))
             break
+    _validate_generated_metadata(graph, subj, path=ontology_file)
     _write_with_header(graph, ontology_file)
     return domain_iri
 
@@ -1047,10 +1104,254 @@ def _scaffold_ontology_skeleton(
 def _scaffold_extension_skeleton(
     *, domain: str, extension_file: Path, domain_iri: str
 ) -> None:
-    """Create a minimal valid silver-extension skeleton for *domain*."""
+    """Create a minimal valid silver-extension skeleton for *domain*.
+
+    Meets the same ontology-level metadata baseline as the domain skeleton
+    itself, so a freshly scaffolded extension file passes the same checks a
+    hand-authored one would. Validated before the file is written.
+    """
+    label = domain.replace("-", " ").replace("_", " ").title()
+    ext_iri = domain_iri.rstrip("#/") + "-ext"
+    subj = URIRef(ext_iri)
     graph = Graph()
-    graph.add((URIRef(domain_iri.rstrip("#/") + "-ext"), RDF.type, OWL.Ontology))
+    graph.bind("", Namespace(domain_iri.rstrip("#/") + "#"))
+    graph.bind("kairos-ext", KAIROS_EXT)
+    graph.bind("owl", OWL)
+    graph.bind("rdfs", RDFS)
+    graph.add((subj, RDF.type, OWL.Ontology))
+    graph.add((subj, RDFS.label, Literal(f"{label} Silver Extension", lang="en")))
+    graph.add(
+        (
+            subj,
+            RDFS.comment,
+            Literal(f"Silver-layer projection annotations for the {label} domain.", lang="en"),
+        )
+    )
+    graph.add((subj, OWL.versionInfo, Literal("0.1.0")))
+    _validate_generated_metadata(graph, subj, path=extension_file)
     _write_with_header(graph, extension_file)
+
+
+#: Managed-block markers for the master ontology's domain registration (distinct
+#: sentinel text from the Claim Registry import/include markers above — a
+#: separate file, a separate managed concern). Same DD-083 mechanics: the block
+#: is regenerated wholesale from every domain this workflow knows about, so
+#: registration self-heals/converges on every run without ever touching
+#: authored content outside it.
+_MASTER_IMPORT_BEGIN = "# >>> kairos-managed (generated domain registration — do not edit)"
+_MASTER_IMPORT_END = "# <<< kairos-managed"
+
+#: Markdown table header this workflow recognizes as the README's domain table
+#: (see ``ontology-hub/README.md.template``'s "Domain model overview" section).
+_README_TABLE_HEADER = re.compile(
+    r"^\|\s*Domain\s*\|\s*Description\s*\|\s*File\s*\|\s*Status\s*\|\s*$"
+)
+_README_PLACEHOLDER_CELL = "*(add domains here)*"
+
+
+def _sync_master_registration(
+    *, master_file: Path, ready_domains: list[tuple[str, str]]
+) -> tuple[str, list[str]]:
+    """Converge ``_master.ttl``'s managed ``owl:imports`` block with every domain
+    this run knows about. Returns ``(status, warnings)`` where ``status`` is one
+    of ``"updated"``, ``"unchanged"``, or ``"skipped"``.
+
+    Registration is only this workflow's to converge when ``_master.ttl``
+    already exists and is well-formed: a hub that never created one (or whose
+    markers are malformed) is left entirely alone, with a warning explaining
+    why — this workflow never creates or repairs ``_master.ttl`` itself.
+    """
+    if not ready_domains or not master_file.exists():
+        return "skipped", []
+    try:
+        text = master_file.read_bytes().decode("utf-8")
+        graph = Graph()
+        graph.parse(master_file, format="turtle")
+    except Exception as exc:  # noqa: BLE001 - report and skip, never crash the run
+        return "skipped", [
+            f"{master_file}: could not parse — domain registration skipped ({exc})."
+        ]
+    master_subj = _ontology_subject(graph)
+    if master_subj is None:
+        return "skipped", [
+            f"{master_file}: no owl:Ontology subject found — domain registration skipped."
+        ]
+
+    managed_lines = [
+        _turtle_statement(master_subj, OWL.imports, URIRef(domain_iri))
+        for _domain, domain_iri in sorted(ready_domains)
+    ]
+    try:
+        new_text = replace_managed_block(
+            text,
+            managed_lines,
+            begin_marker=_MASTER_IMPORT_BEGIN,
+            end_marker=_MASTER_IMPORT_END,
+            label=str(master_file),
+        )
+    except ManagedBlockError as exc:
+        return "skipped", [
+            f"{exc} Fix the markers by hand before domain registration can converge."
+        ]
+    if new_text == text:
+        return "unchanged", []
+    master_file.write_bytes(new_text.encode("utf-8"))
+    return "updated", []
+
+
+def _update_readme_domain_table_row(
+    text: str, *, domain: str, relative_ontology_path: str
+) -> tuple[str, str]:
+    """Ensure a domain-table row exists for *domain*; return ``(new_text, status)``.
+
+    ``status`` is ``"updated"`` (a row was inserted), ``"unchanged"`` (a row
+    already exists, or no such table was found in *text*). An existing row is
+    never rewritten — authored Description/Status edits are preserved verbatim
+    — and everything outside the table body is untouched byte-for-byte.
+    """
+    lines = text.splitlines(keepends=True)
+    header_idx = next(
+        (i for i, line in enumerate(lines) if _README_TABLE_HEADER.match(line.rstrip("\r\n"))),
+        None,
+    )
+    if header_idx is None or header_idx + 1 >= len(lines):
+        return text, "unchanged"
+    separator_idx = header_idx + 1
+    if not lines[separator_idx].lstrip().startswith("|"):
+        return text, "unchanged"
+
+    rows_start = separator_idx + 1
+    rows_end = rows_start
+    while rows_end < len(lines) and lines[rows_end].lstrip().startswith("|"):
+        rows_end += 1
+    row_lines = lines[rows_start:rows_end]
+
+    file_marker = f"`{relative_ontology_path}`"
+    for row in row_lines:
+        cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        if cells[2] in (file_marker, relative_ontology_path):
+            return text, "unchanged"
+        if cells[0].strip("`* ").casefold() == domain.casefold():
+            return text, "unchanged"
+
+    # Drop the sole scaffold placeholder row when adding the first real domain.
+    filtered_rows = [row for row in row_lines if _README_PLACEHOLDER_CELL not in row]
+
+    newline = _line_ending(text)
+    new_row = f"| {domain} | | {file_marker} | Scaffolded |{newline}"
+    filtered_rows.append(new_row)
+
+    new_text = "".join(lines[:rows_start] + filtered_rows + lines[rows_end:])
+    return new_text, "updated"
+
+
+def _sync_readme_domain_table(
+    *, readme_file: Path, ready_domains: list[tuple[str, str]]
+) -> tuple[str, list[str]]:
+    """Ensure the README's "Domain model overview" table lists every domain this
+    run knows about. Returns ``(status, warnings)``; never creates the README
+    or the table itself — only converges rows within an existing table.
+    """
+    if not ready_domains or not readme_file.exists():
+        return "skipped", []
+    try:
+        text = readme_file.read_bytes().decode("utf-8")
+    except OSError as exc:
+        return "skipped", [f"{readme_file}: could not read — domain table update skipped ({exc})."]
+
+    changed = False
+    for domain, _domain_iri in sorted(ready_domains):
+        relative_path = f"model/ontologies/{domain}.ttl"
+        new_text, status = _update_readme_domain_table_row(
+            text, domain=domain, relative_ontology_path=relative_path
+        )
+        if status == "updated":
+            text = new_text
+            changed = True
+
+    if not changed:
+        header_present = any(
+            _README_TABLE_HEADER.match(line.rstrip("\r\n")) for line in text.splitlines()
+        )
+        if not header_present:
+            return "skipped", [
+                f"{readme_file}: no 'Domain model overview' table found — "
+                "README convergence skipped for this run."
+            ]
+        return "unchanged", []
+    readme_file.write_bytes(text.encode("utf-8"))
+    return "updated", []
+
+
+@dataclass(frozen=True)
+class ScaffoldSurfacesResult:
+    """Explicit, auditable accounting of one :func:`scaffold_missing_surfaces` run.
+
+    No step here claims rollback atomicity: every path already written before a
+    later failure remains on disk exactly as written. ``errors`` names the
+    domains that did not complete; ``created`` / ``updated`` / ``unchanged``
+    reflect real, current on-disk state for everything this run considered.
+    """
+
+    created: tuple[Path, ...] = ()
+    updated: tuple[Path, ...] = ()
+    unchanged: tuple[Path, ...] = ()
+    warnings: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+    @property
+    def counts(self) -> dict[str, int]:
+        return {
+            "created": len(self.created),
+            "updated": len(self.updated),
+            "unchanged": len(self.unchanged),
+        }
+
+    def describe(self) -> list[str]:
+        """Human-readable lines: paths by bucket, a managed-vs-authored
+        explanation, and a git-status hint for newly created (untracked) paths.
+        """
+        lines = [
+            f"Scaffold summary: {len(self.created)} created, "
+            f"{len(self.updated)} updated, {len(self.unchanged)} unchanged."
+        ]
+        for bucket, paths in (
+            ("created", self.created),
+            ("updated", self.updated),
+            ("unchanged", self.unchanged),
+        ):
+            for path in paths:
+                lines.append(f"  [{bucket}] {path}")
+        if self.created:
+            lines.append(
+                "New files are untracked in git — run `git status` "
+                "(or `git add <path>`) before committing."
+            )
+        lines.append(
+            "Managed regions (delimited by `# >>> kairos-managed ... # <<< kairos-managed`) "
+            "are regenerated wholesale and are safe to overwrite; everything else in every "
+            "file listed above is authored content and is preserved verbatim."
+        )
+        for warning in self.warnings:
+            lines.append(f"  ⚠ {warning}")
+        for error in self.errors:
+            lines.append(f"  ❌ {error}")
+        return lines
+
+
+class ScaffoldPartialFailureError(RuntimeError):
+    """Raised when one or more domains failed to scaffold.
+
+    No rollback is performed: ``result`` reflects exactly what was created,
+    updated, or left unchanged — including for domains that succeeded — around
+    the failure(s) named in ``result.errors``.
+    """
+
+    def __init__(self, message: str, result: ScaffoldSurfacesResult):
+        super().__init__(message)
+        self.result = result
 
 
 def scaffold_missing_surfaces(
@@ -1060,15 +1361,30 @@ def scaffold_missing_surfaces(
     extensions_dir: Path,
     domains_filter: list[str] | None = None,
     module_context: ReferenceModuleContext | None = None,
-) -> list[Path]:
-    """Create skeleton ``{domain}.ttl`` / ``{domain}-silver-ext.ttl`` files when absent.
+) -> ScaffoldSurfacesResult:
+    """Create skeleton ``{domain}.ttl`` / ``{domain}-silver-ext.ttl`` files when
+    absent, then convergently update ``_master.ttl``'s domain registration and
+    the README domain table for every domain this run knows about.
 
     ``claims-to-silver-ext`` is a generator: rather than silently skipping a domain
     whose authored surfaces don't exist yet (issue #190 item 5), bootstrap a minimal,
-    valid skeleton so the sync can proceed. Existing files are never touched.
-    Returns the list of files created.
+    valid skeleton so the sync can proceed. Existing ``{domain}.ttl`` /
+    ``*-silver-ext.ttl`` files are never touched.
+
+    Each domain is scaffolded independently: an invalid domain name or a write
+    failure for one domain is recorded in the returned result's ``errors`` and
+    does not prevent the others from being scaffolded, nor does it undo files
+    already written for them (no rollback atomicity). If any domain failed,
+    :class:`ScaffoldPartialFailureError` is raised at the end carrying the full
+    :class:`ScaffoldSurfacesResult` computed so far. The ``_master.ttl`` /
+    README convergence steps are best-effort and non-fatal — any issue there is
+    reported as a warning rather than blocking the run.
     """
     created: list[Path] = []
+    updated: list[Path] = []
+    unchanged: list[Path] = []
+    warnings: list[str] = []
+    errors: list[str] = []
 
     lowers = [d.lower() for d in domains_filter] if domains_filter else None
 
@@ -1084,24 +1400,67 @@ def scaffold_missing_surfaces(
     if module_context:
         domains.update(item.domain for item in module_context.config.domains)
 
+    ready_domains: list[tuple[str, str]] = []
     for domain in sorted(domains):
         if not _in_scope(domain):
             continue
         ontology_file = ontologies_dir / f"{domain}.ttl"
         extension_file = extensions_dir / f"{domain}-silver-ext.ttl"
-        if not ontology_file.exists():
-            domain_iri = _scaffold_ontology_skeleton(
-                domain=domain, ontology_file=ontology_file, ontologies_dir=ontologies_dir
-            )
-            created.append(ontology_file)
-        else:
-            domain_iri = _domain_iri_for(domain, ontologies_dir)
-        if not extension_file.exists():
-            _scaffold_extension_skeleton(
-                domain=domain, extension_file=extension_file, domain_iri=domain_iri
-            )
-            created.append(extension_file)
-    return created
+        try:
+            if not ontology_file.exists():
+                domain_iri = _scaffold_ontology_skeleton(
+                    domain=domain, ontology_file=ontology_file, ontologies_dir=ontologies_dir
+                )
+                created.append(ontology_file)
+            else:
+                domain_iri = _domain_iri_for(domain, ontologies_dir)
+                unchanged.append(ontology_file)
+            if not extension_file.exists():
+                _scaffold_extension_skeleton(
+                    domain=domain, extension_file=extension_file, domain_iri=domain_iri
+                )
+                created.append(extension_file)
+            else:
+                unchanged.append(extension_file)
+        except (ValueError, OSError) as exc:
+            errors.append(f"{domain}: {exc}")
+            continue
+        ready_domains.append((domain, domain_iri))
+
+    master_file = ontologies_dir / "_master.ttl"
+    master_status, master_warnings = _sync_master_registration(
+        master_file=master_file, ready_domains=ready_domains
+    )
+    warnings.extend(master_warnings)
+    if master_status == "updated":
+        updated.append(master_file)
+    elif master_status == "unchanged":
+        unchanged.append(master_file)
+
+    readme_file = ontologies_dir.parent.parent / "README.md"
+    readme_status, readme_warnings = _sync_readme_domain_table(
+        readme_file=readme_file, ready_domains=ready_domains
+    )
+    warnings.extend(readme_warnings)
+    if readme_status == "updated":
+        updated.append(readme_file)
+    elif readme_status == "unchanged":
+        unchanged.append(readme_file)
+
+    result = ScaffoldSurfacesResult(
+        created=tuple(created),
+        updated=tuple(updated),
+        unchanged=tuple(unchanged),
+        warnings=tuple(warnings),
+        errors=tuple(errors),
+    )
+    if errors:
+        raise ScaffoldPartialFailureError(
+            f"{len(errors)} of {len(ready_domains) + len(errors)} domain(s) failed to "
+            "scaffold; files already written for other domains were not rolled back.",
+            result,
+        )
+    return result
 
 
 def apply_projection_sync(
@@ -1130,8 +1489,9 @@ def apply_projection_sync(
             claimed_term_uris=claimed_terms,
             imported_ontology_iris=imported_iris,
         )
+    scaffold_result = None
     if scaffold_missing:
-        scaffold_missing_surfaces(
+        scaffold_result = scaffold_missing_surfaces(
             claims_dir=claims_dir,
             ontologies_dir=ontologies_dir,
             extensions_dir=extensions_dir,
@@ -1157,10 +1517,12 @@ def apply_projection_sync(
             hub_domain_bases=hub_domain_bases,
             module_context=module_context,
         )
-    return evaluate_projection_sync(
+    final_report = evaluate_projection_sync(
         claims_dir=claims_dir,
         ontologies_dir=ontologies_dir,
         extensions_dir=extensions_dir,
         domains_filter=domains_filter,
         module_context=module_context,
     )
+    final_report.scaffold_result = scaffold_result
+    return final_report

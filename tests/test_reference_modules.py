@@ -584,6 +584,88 @@ def test_activation_inventory_is_deterministic_and_does_not_copy_definitions(tmp
     assert "definitions" not in payload
 
 
+def test_deferred_only_claim_does_not_activate_import_but_disputes_active_module(
+    tmp_path,
+):
+    """DD-122 regression: a deferred claim never itself activates a projecting
+    import, but is reported as ``disputed`` when its module stays active for
+    another reason (here the domain's unconditional data-domain activation) —
+    reproducing the deferred-only managed-import disagreement."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    context = build_reference_module_context(
+        ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+    )
+    registry = ClaimRegistry(
+        domain="orders",
+        claims=[
+            Claim(
+                id="order-class",
+                type="class",
+                origin="imported",
+                status="deferred",
+                disposition="claim",
+                class_uri=TERM_NS + "SpecialOrder",
+            ),
+        ],
+    )
+
+    plan = build_managed_import_plan(registry, domain="orders", context=context)
+
+    # The deferred claim itself never contributes an import requirement...
+    assert not any("claim:order-class" in item.reasons for item in plan.requirements)
+    # ...and it is not itself selected as a claimed class URI.
+    assert TERM_NS + "SpecialOrder" not in plan.selected_class_uris
+
+    disputed = {item.claim_id: item for item in plan.disputed_claims}
+    assert "order-class" in disputed
+    entry = disputed["order-class"]
+    assert entry.claim_status == "deferred"
+    assert entry.term_uri == TERM_NS + "SpecialOrder"
+    assert entry.module_id == "orders"
+    assert "data-domain:orders" in entry.reasons
+
+
+def test_deferred_only_claims_in_unaffiliated_domain_activate_nothing(tmp_path):
+    """A domain whose only claims are deferred/rejected, and whose module is not
+    otherwise activated, never activates the projecting import and carries no
+    disputed entries — nothing else keeps the module active (DD-122)."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    context = build_reference_module_context(
+        ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+    )
+    registry = ClaimRegistry(
+        domain="unaffiliated",
+        claims=[
+            Claim(
+                id="order-class",
+                type="class",
+                origin="imported",
+                status="deferred",
+                disposition="claim",
+                class_uri=TERM_NS + "SpecialOrder",
+            ),
+            Claim(
+                id="order-number",
+                type="property",
+                origin="imported",
+                status="rejected",
+                disposition="claim",
+                property_uri=TERM_NS + "orderNumber",
+            ),
+        ],
+    )
+
+    plan = build_managed_import_plan(registry, domain="unaffiliated", context=context)
+
+    assert plan.requirements == ()
+    assert plan.selected_class_uris == ()
+    assert plan.disputed_claims == ()
+
+
 def test_invalid_profile_default_annotations_are_blocking(tmp_path):
     ref_models, catalog = _write_reference_pack(tmp_path)
     defaults = (

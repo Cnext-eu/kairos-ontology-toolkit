@@ -63,7 +63,13 @@ mapping best practices.
    python -m kairos_ontology validate
    ```
    **Important**: Capture the full CLI output — it includes GDPR/PII scan
-   results that feed into the Level 4 report.
+   results that feed into the Level 4 report. The CLI's own JSON report at
+   `<hub>/output/validation-report.json` stays the default; pass
+   `--report-format markdown` (or `both`) and optionally `--report-path` for an
+   additive, deterministic native Markdown report (toolkit version, effective
+   command options, catalog, accelerator, scope/files, findings). That native
+   report is distinct from — and does not replace — the timestamped chat review
+   report this skill authors and persists below.
 
 4. For **Quick** mode: report Level 1 + 2 results and stop.
    For **Detailed** mode: continue through all 4 levels below.
@@ -439,7 +445,8 @@ For hubs with `integration/transforms/dbt/`:
 2. Check synchronization without writing:
    `kairos-ontology sync-dbt-contracts --check`. Drift is blocking; regenerate through
    the transformation skill. A `ContractIdentity` must also have current hash-bound passing
-   warehouse evidence; declared tests alone are `identity.contract-unverified`.
+   warehouse evidence; declared tests alone surface a review-only `identity.contract-unverified`
+   diagnostic (blocking only for `project --strict` and release eligibility).
    the development skill, never edit
    `integration/sources/custom-transformations/*.vocabulary.ttl`.
 3. After `project --target dbt --platform <fabric|databricks>`, run:

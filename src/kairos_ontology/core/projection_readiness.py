@@ -232,6 +232,9 @@ def check_projection(
                 break
     if blocker is None:
         for item in projection.projections:
+            supplied = item.get("diagnostics", ())
+            if supplied:
+                diagnostic_items.extend(supplied)
             if item.get("status") == "error":
                 if blocker is None:
                     blocker = ReadinessBlocker(
@@ -240,10 +243,7 @@ def check_projection(
                         target=str(item.get("target", "")),
                         message=str(item.get("error", "projection planning failed")),
                     )
-                supplied = item.get("diagnostics", ())
-                if supplied:
-                    diagnostic_items.extend(supplied)
-                else:
+                if not supplied:
                     diagnostic = diagnostic_from_exception(
                         ValueError(str(item.get("error", "projection planning failed"))),
                         stage="normalization",

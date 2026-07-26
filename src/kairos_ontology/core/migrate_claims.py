@@ -21,6 +21,21 @@ Field mapping (schema doc §3.2):
 * ``algorithm_version`` / ``generated_at`` → top-level fields.
 * per-table column counts + ``ref_class_status`` → ``coverage``.
 
+uri-anchor-contract: a table left ``"unresolved"`` by ``propose-alignment``
+(ambiguous confirmed anchors — see ``anchor_resolution.py`` /
+``unresolved_anchors.py``) never carries a ``ref_class`` and therefore
+produces neither a class claim nor any property claims here; a table's
+``likely_entity_uri`` (confirmed-anchor URI), when present, is preferred over
+this module's own name-based inventory lookup for ``class_uri``.
+
+proposal-quality: a column DD-070 cross-module-tagged with ``ref_module`` (i.e.
+its matched class/property is NOT in this domain's own reference model —
+``ColumnAlignment.belongs_to_domain(s)``) never becomes an in-domain property
+claim here. It is instead accumulated into a :class:`~.claim_registry.DomainHandoff`
+record carrying the source evidence and the owning domain(s), so the accelerator's
+``owns`` / ``does_not_own`` boundary is enforced *before* claim emission and the
+evidence is never lost nor mis-attributed to this domain.
+
 All migrated claims land as ``status: proposed`` — migration never fabricates an
 approval. URIs stay unresolved (``class_uri`` / ``property_uri`` = null) until a
 human approves the claim; coverage retains the ref-class name for context.
@@ -42,12 +57,15 @@ import yaml
 
 from .claim_registry import (
     TRIAGE_TO_DISPOSITION,
+    VALID_ANCHOR_STATES,
     Claim,
     ClaimRegistry,
     CoverageSystem,
     CoverageTable,
+    DomainHandoff,
     EvidenceSource,
     Freshness,
+    GenerationOutcome,
 )
 
 logger = logging.getLogger(__name__)
@@ -174,6 +192,13 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
     class_table_entities: dict[str, list[dict[str, str]]] = {}
     property_claims: dict[tuple[str, str], Claim] = {}  # key: (ref_class, ref_property)
     custom_claims: dict[tuple[str, str], Claim] = {}    # key: (system, table, column) flattened
+    # Alignment-reliability: one typed record per table, migrated from the
+    # per-table ``generation_outcome`` alignment output.
+    generation_outcomes: list[GenerationOutcome] = []
+    # proposal-quality: cross-domain evidence (DD-070 ``ref_module`` tag) kept
+    # out of ``property_claims`` and accumulated here instead — one handoff per
+    # distinct (ref_class, ref_property, owning_domains).
+    domain_handoffs: dict[tuple[str, str, tuple[str, ...]], DomainHandoff] = {}
 
     for table in data.get("tables", []) or []:
         system = str(table.get("system", "") or "")
@@ -182,6 +207,21 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
         columns = table.get("columns", []) or []
         custom_columns = table.get("custom_columns", []) or []
         anchor_state = str(table.get("ref_class_status", "") or "matched")
+        # uri-anchor-contract: the canonical inventory URI a confirmed discovery
+        # alias resolved this table's class to (propose_alignment.anchor_resolution),
+        # carried alongside the display-only ref_class name.
+        likely_entity_uri = str(table.get("likely_entity_uri", "") or "")
+
+        outcome = str(table.get("generation_outcome", "") or "")
+        if outcome:
+            generation_outcomes.append(GenerationOutcome(
+                system=system,
+                table=tname,
+                outcome=outcome,
+                provider=table.get("generation_provider"),
+                model=table.get("generation_model"),
+                error=table.get("generation_error"),
+            ))
 
         for cand in table.get("relationship_candidates", []) or []:
             if isinstance(cand, dict):
@@ -192,15 +232,18 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
             total_columns=len(columns) + len(custom_columns),
             mapped_columns=len(columns),
             custom_columns=len(custom_columns),
-            anchor_state=anchor_state if anchor_state in (
-                "matched", "fallback", "rejected", "unmatched") else "matched",
+            anchor_state=anchor_state if anchor_state in VALID_ANCHOR_STATES else "matched",
             ref_class=ref_class or None,
             source_column_count=int(table.get("source_column_count", 0) or 0),
             source_column_sha256=table.get("source_column_sha256"),
+            likely_entity_uri=likely_entity_uri or None,
         )
 
-        # Class claim (one per distinct ref class).
-        if ref_class:
+        # Class claim (one per distinct ref class). uri-anchor-contract: an
+        # "unresolved" anchor never carries a ref_class (propose_alignment
+        # deliberately leaves it "" rather than guessing), so this already
+        # excludes it; the explicit check documents the invariant.
+        if ref_class and anchor_state != "unresolved":
             likely_entity = str(table.get("likely_entity", "") or "")
             class_table_entities.setdefault(ref_class, []).append({
                 "system": system,
@@ -220,16 +263,62 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
                               f"reference class '{ref_class}'.",
                 )
                 class_claims[ref_class] = claim
+            if likely_entity_uri:
+                # uri-anchor-contract: an explicit, human-confirmed URI always
+                # wins over the name-based inventory lookup above (which can
+                # only ever guess from the class *name*, and drops the guess
+                # entirely when the name is ambiguous across modules).
+                claim.class_uri = likely_entity_uri
             claim.evidence_sources.append(
                 EvidenceSource(type="source_table", system=system, table=tname)
             )
 
         # Property claims (one per distinct ref_class + ref_property).
+        # uri-anchor-contract: a column with no resolvable class anchor
+        # (col_ref_class == "") is never turned into a claim — it would
+        # reference a non-existent concept and could never gain a
+        # structurally-valid property_uri.
         for col in columns:
             ref_prop = str(col.get("ref_property", "") or "")
             if not ref_prop:
                 continue  # unmatched column — no concept to claim
             col_ref_class = str(col.get("ref_class", "") or ref_class)
+            if not col_ref_class:
+                continue  # table class anchor not resolved — no claim yet
+            col_name = str(col.get("column", "") or "")
+
+            # proposal-quality: apply the accelerator owns/does_not_own boundary
+            # BEFORE claim emission. ``ref_module`` is only ever set (DD-070) when
+            # the column's matched class/property resolved to a sibling/shared
+            # module OUTSIDE this domain's own reference model — i.e. it is never
+            # home. Route that evidence to a typed handoff instead of an
+            # in-domain claim, so a Cargo/Customs-owned concept discovered while
+            # aligning Booking (for example) is never silently claimed here.
+            ref_module = str(col.get("ref_module", "") or "")
+            if ref_module:
+                owning_domains = list(col.get("belongs_to_domains") or [])
+                single_owner = str(col.get("belongs_to_domain", "") or "")
+                if single_owner and single_owner not in owning_domains:
+                    owning_domains = [single_owner] + owning_domains
+                hkey = (col_ref_class, ref_prop, tuple(sorted(owning_domains)))
+                handoff = domain_handoffs.get(hkey)
+                if handoff is None:
+                    handoff = DomainHandoff(
+                        ref_class=col_ref_class,
+                        ref_property=ref_prop,
+                        owning_domains=sorted(owning_domains),
+                        ref_module=ref_module or None,
+                        ref_module_uri=str(col.get("ref_module_uri", "") or "") or None,
+                    )
+                    domain_handoffs[hkey] = handoff
+                handoff.evidence_sources.append(
+                    EvidenceSource(
+                        type="source_column", system=system, table=tname,
+                        column=col_name,
+                    )
+                )
+                continue  # never an in-domain claim
+
             key = (col_ref_class, ref_prop)
             pclaim = property_claims.get(key)
             if pclaim is None:
@@ -247,7 +336,7 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
             pclaim.evidence_sources.append(
                 EvidenceSource(
                     type="source_column", system=system, table=tname,
-                    column=str(col.get("column", "") or ""),
+                    column=col_name,
                 )
             )
 
@@ -336,6 +425,13 @@ def alignment_to_registry(data: dict[str, Any], *, uri_index: UriIndex | None = 
         claims=all_claims,
         relationship_candidates=relationship_candidates,
         grain_conflicts=grain_conflicts,
+        generation_outcomes=sorted(
+            generation_outcomes, key=lambda g: (g.system, g.table)
+        ),
+        domain_handoffs=sorted(
+            domain_handoffs.values(),
+            key=lambda h: (h.ref_class, h.ref_property, tuple(h.owning_domains)),
+        ),
     )
 
 

@@ -623,6 +623,14 @@ def build_draft_model_report(
             candidate.setdefault("evidence", ["source-backed"])
             candidate.setdefault("status", "advisory")
 
+        # proposal-quality (finding #7): cross-domain evidence is surfaced
+        # SEPARATELY from in-domain claim candidates — it was deliberately
+        # excluded from this domain's claims because the matched
+        # property/class is owned by a different accelerator data-domain, so
+        # it must never be conflated with this domain's own relationship
+        # questions.
+        cross_domain_handoffs = [h.to_dict() for h in registry.domain_handoffs]
+
         report_domains[domain] = {
             "domain": domain,
             "lifecycle_inputs": {
@@ -634,6 +642,7 @@ def build_draft_model_report(
             },
             "candidate_entities": list(deduped_nodes.values()),
             "relationship_questions": domain_relationships + advisory_candidates,
+            "cross_domain_handoffs": cross_domain_handoffs,
             "gold_candidates": domain_measures,
             "mapping_gaps": "not_available_yet" if not skos_links else [],
             "next_action": _next_action(domain in registries, bool(skos_links), bool(domain_measures)),

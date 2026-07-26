@@ -7,7 +7,13 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
-from kairos_ontology.core.claim_registry import Claim, ClaimRegistry, EvidenceSource, write_registry
+from kairos_ontology.core.claim_registry import (
+    Claim,
+    ClaimRegistry,
+    DomainHandoff,
+    EvidenceSource,
+    write_registry,
+)
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.draft_model_report import (
     build_draft_model_report,
@@ -298,3 +304,52 @@ def test_draft_model_report_cli_writes_data_product_artifacts(tmp_path):
     assert (contract.parent / "data-product-report.md").exists()
     assert (contract.parent / "data-product-erd.mmd").exists()
     assert "Data-product vertical-slice plan" in result.output
+
+
+def test_domain_handoffs_surfaced_separately_from_relationship_questions(tmp_path):
+    # proposal-quality (finding #7): a cross-domain handoff must be visible in
+    # the report, but NEVER mixed into this domain's own relationship
+    # questions/claim candidates.
+    claims_dir = tmp_path / "model" / "claims"
+    claims_dir.mkdir(parents=True)
+    registry = ClaimRegistry(
+        domain="party",
+        claims=[
+            Claim(
+                id="party-tradeparty", type="class", status="approved",
+                disposition="claim", origin="imported",
+                class_uri="https://example.com/ref/party#TradeParty",
+                evidence_sources=[EvidenceSource(type="source_table", system="crm",
+                                                  table="account")],
+            )
+        ],
+        domain_handoffs=[
+            DomainHandoff(
+                ref_class="Address", ref_property="city",
+                owning_domains=["logistics"], ref_module="reference-data",
+                evidence_sources=[EvidenceSource(type="source_column", system="crm",
+                                                  table="account", column="City")],
+            )
+        ],
+    )
+    write_registry(registry, claims_dir / "party-claims.yaml")
+
+    report = build_draft_model_report(claims_dir=claims_dir)
+
+    handoffs = report["domains"]["party"]["cross_domain_handoffs"]
+    assert len(handoffs) == 1
+    assert handoffs[0]["ref_class"] == "Address"
+    assert handoffs[0]["ref_property"] == "city"
+    assert handoffs[0]["owning_domains"] == ["logistics"]
+    # Never conflated with this domain's own relationship questions.
+    assert all(
+        rel.get("ref_class") != "Address" for rel in report["domains"]["party"]["relationship_questions"]
+    )
+
+
+def test_no_domain_handoffs_yields_empty_list(tmp_path):
+    claims_dir = tmp_path / "model" / "claims"
+    claims_dir.mkdir(parents=True)
+    write_registry(ClaimRegistry(domain="party"), claims_dir / "party-claims.yaml")
+    report = build_draft_model_report(claims_dir=claims_dir)
+    assert report["domains"]["party"]["cross_domain_handoffs"] == []
