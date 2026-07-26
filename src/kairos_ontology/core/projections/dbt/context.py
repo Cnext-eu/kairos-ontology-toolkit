@@ -166,6 +166,38 @@ class DbtInputs:
 
 
 @dataclass(frozen=True, slots=True)
+class ActiveSourceTable:
+    """One source table selected for the current ontology projection."""
+
+    table_uri: str
+    source_kind: str
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveSourceScope:
+    """The explainable source-table authority shared by every dbt stage."""
+
+    tables: tuple[ActiveSourceTable, ...] = ()
+
+    @property
+    def table_uris(self) -> frozenset[str]:
+        return frozenset(item.table_uri for item in self.tables)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "tables": [
+                {
+                    "table_uri": item.table_uri,
+                    "source_kind": item.source_kind,
+                    "reasons": list(item.reasons),
+                }
+                for item in self.tables
+            ]
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class BoundSources:
     """Graph-free result of bind: immutable authored and extracted facts only."""
 
@@ -194,6 +226,7 @@ class BoundSources:
     macro_names: tuple[str, ...]
     warnings: tuple[str, ...]
     policy_facts: MedallionPolicyFacts
+    active_source_scope: ActiveSourceScope = ActiveSourceScope()
 
     @property
     def has_sources(self) -> bool:
@@ -223,6 +256,7 @@ class NormalizedProjectFacts:
     macro_names: tuple[str, ...]
     warnings: tuple[str, ...]
     policy: MedallionPolicySpec
+    active_source_scope: ActiveSourceScope = ActiveSourceScope()
 
     @property
     def target_platform(self) -> str:

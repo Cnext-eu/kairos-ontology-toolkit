@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from rdflib import Graph, OWL, RDF, RDFS, URIRef
 
 from ...ontology_loader import load_ontology
-from .context import BoundSources
+from .context import ActiveSourceScope, ActiveSourceTable, BoundSources
 from .mapping_bind import bind_mapping_documents, mapping_context
 from .mapping_specs import SourceMappings
 from .specs import (
@@ -63,6 +63,123 @@ def _classes_context(
         }
         for item in classes
     ]
+
+
+def _active_source_inputs(
+    *,
+    systems: list[dict],
+    mappings: SourceMappings,
+    contracts: dict,
+    class_uris: set[str],
+    graph: Graph,
+    policy_facts=None,
+) -> tuple[list[dict], SourceMappings, dict, ActiveSourceScope]:
+    """Scope loaded source authorities once for every downstream dbt stage."""
+
+    active_contracts = {
+        name: contract
+        for name, contract in contracts.items()
+        if contract.target_class in class_uris
+    }
+    reasons: dict[str, set[str]] = {}
+    active_table_mappings = []
+    for mapping in mappings.tables:
+        if mapping.target_class_uri not in class_uris:
+            continue
+        active_table_mappings.append(mapping)
+        reasons.setdefault(mapping.source_table_uri, set()).add(
+            f"domain-table-mapping:{mapping.resource_uri}"
+        )
+
+    for name, contract in active_contracts.items():
+        reasons.setdefault(contract.virtual_source_iri, set()).add(
+            f"contract-virtual-source:{name}"
+        )
+        for replacement in contract.replaces_sources:
+            reasons.setdefault(replacement.table_iri, set()).add(
+                f"contract-replacement-input:{name}"
+            )
+    if policy_facts is not None:
+        identity_ref_to_table = {
+            identity_ref: str(preparation.source_table.values[0])
+            for preparation in policy_facts.preparations
+            if preparation.source_table.values
+            for identity_ref in (
+                *(item.resource_uri for item in preparation.record_keys),
+                *(item.resource_uri for item in preparation.array_json),
+            )
+        }
+        for identity in policy_facts.identities:
+            if identity.source_identities is None:
+                continue
+            for identity_ref in identity.source_identities.values:
+                table_uri = identity_ref_to_table.get(identity_ref)
+                if table_uri is not None:
+                    reasons.setdefault(table_uri, set()).add(
+                        f"identity-dependency:{identity.resource_uri}"
+                    )
+
+    active_table_uris = set(reasons)
+    column_to_table = {
+        column["uri"]: table["uri"]
+        for system in systems
+        for table in system["tables"]
+        for column in table["columns"]
+    }
+    class_scope = set(class_uris)
+    frontier = [URIRef(uri) for uri in class_uris]
+    while frontier:
+        current = frontier.pop()
+        for parent in graph.objects(current, RDFS.subClassOf):
+            if not isinstance(parent, URIRef) or str(parent) in class_scope:
+                continue
+            class_scope.add(str(parent))
+            frontier.append(parent)
+    active_properties = {
+        str(prop)
+        for prop in graph.subjects(RDFS.domain, None)
+        if any(str(domain) in class_scope for domain in graph.objects(prop, RDFS.domain))
+    }
+    active_columns = tuple(
+        mapping
+        for mapping in mappings.columns
+        if (
+            column_to_table.get(mapping.source_column_uri) in active_table_uris
+            or (
+                column_to_table.get(mapping.source_column_uri) is None
+                and mapping.target_property_uri in active_properties
+            )
+        )
+    )
+    scoped_mappings = SourceMappings(
+        tables=tuple(active_table_mappings),
+        columns=active_columns,
+        namespaces=mappings.namespaces,
+    )
+
+    scoped_systems: list[dict] = []
+    source_kinds: dict[str, str] = {}
+    for system in systems:
+        tables = [
+            table for table in system["tables"] if table["uri"] in active_table_uris
+        ]
+        if not tables:
+            continue
+        scoped_systems.append({**system, "tables": tables})
+        for table in tables:
+            source_kinds[table["uri"]] = table.get("relation_kind", "physical")
+
+    scope = ActiveSourceScope(
+        tables=tuple(
+            ActiveSourceTable(
+                table_uri=table_uri,
+                source_kind=source_kinds.get(table_uri, "unregistered"),
+                reasons=tuple(sorted(table_reasons)),
+            )
+            for table_uri, table_reasons in sorted(reasons.items())
+        )
+    )
+    return scoped_systems, scoped_mappings, active_contracts, scope
 
 
 def _contract_fact(contract) -> ContractFact:
@@ -596,7 +713,19 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
     mapping_facts = bind_mapping_documents(
         Path(inputs.mappings_root) if inputs.mappings_root else None
     )
-    mappings, mapping_ns = mapping_context(mapping_facts)
+    contracts = dict(inputs.contracts)
+    virtual_contract_tables = {
+        contract.virtual_source_iri for contract in contracts.values()
+    }
+    for system in systems:
+        for table in system["tables"]:
+            if table["uri"] in virtual_contract_tables:
+                table["relation_kind"] = "contracted-virtual"
+                table["ref_model"] = next(
+                    contract.name
+                    for contract in contracts.values()
+                    if contract.virtual_source_iri == table["uri"]
+                )
     foreign_key_facts = extract_foreign_key_facts(graph)
     policy_entity_uris = {
         item.uri for item in bound_classes
@@ -618,20 +747,38 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         entity_uris=frozenset(policy_entity_uris),
         dq_entity_uris=frozenset(item.uri for item in bound_classes),
     )
-    _augment_prepared_relations(systems, policy_facts)
-    contracts = dict(inputs.contracts)
-    virtual_contract_tables = {
-        contract.virtual_source_iri for contract in contracts.values()
+    ontology_base = str(ontology_uri).rstrip("#/")
+    scoped_class_uris = {
+        item.uri for item in bound_classes
+    } | {
+        str(resource)
+        for resource in graph.subjects(RDF.type, OWL.Class)
+        if str(resource).startswith((ontology_base + "#", ontology_base + "/"))
     }
-    for system in systems:
-        for table in system["tables"]:
-            if table["uri"] in virtual_contract_tables:
-                table["relation_kind"] = "contracted-virtual"
-                table["ref_model"] = next(
-                    contract.name
-                    for contract in contracts.values()
-                    if contract.virtual_source_iri == table["uri"]
-                )
+    systems, mapping_facts, contracts, active_source_scope = _active_source_inputs(
+        systems=systems,
+        mappings=mapping_facts,
+        contracts=contracts,
+        class_uris=scoped_class_uris,
+        graph=graph,
+        policy_facts=policy_facts,
+    )
+    mappings, mapping_ns = mapping_context(mapping_facts)
+    physical_table_uris = {
+        table["uri"]
+        for system in systems
+        for table in system["tables"]
+        if table.get("relation_kind", "physical") == "physical"
+    }
+    policy_facts = replace(
+        policy_facts,
+        preparations=tuple(
+            item
+            for item in policy_facts.preparations
+            if any(str(value) in physical_table_uris for value in item.source_table.values)
+        ),
+    )
+    _augment_prepared_relations(systems, policy_facts)
     _validate_contract_boundaries(
         contracts,
         classes,
@@ -786,4 +933,5 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         macro_names=macro_names,
         warnings=tuple(warnings),
         policy_facts=policy_facts,
+        active_source_scope=active_source_scope,
     )

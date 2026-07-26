@@ -221,6 +221,8 @@ def test_check_claims_blocks_on_sync_drift_and_passes_after_generation(tmp_path)
 
 _ORDERS_MODULE_IRI = "https://example.org/reference/orders"
 _ORDERS_NS = _ORDERS_MODULE_IRI + "#"
+_AUDIT_MODULE_IRI = "https://example.org/reference/audit"
+_AUDIT_NS = _AUDIT_MODULE_IRI + "#"
 
 
 def _write_orders_reference_pack(tmp_path: Path) -> tuple[Path, Path]:
@@ -243,6 +245,15 @@ ex:SpecialOrder a owl:Class .
 """,
         encoding="utf-8",
     )
+    (module.parent / "audit.ttl").write_text(
+        f"""\
+@prefix ex: <{_AUDIT_NS}> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<{_AUDIT_MODULE_IRI}> a owl:Ontology ; owl:versionInfo "1.0.0" .
+ex:AuditRecord a owl:Class .
+""",
+        encoding="utf-8",
+    )
     (blueprint / "data-domains.yaml").write_text(
         f"""\
 schema_version: "2.0"
@@ -255,6 +266,12 @@ module_profiles:
     root_classes: [{_ORDERS_NS}Order]
     projection:
       allowlist: [{_ORDERS_NS}Order]
+  - id: audit
+    ontology_iri: {_AUDIT_MODULE_IRI}
+    catalog_uri: {_AUDIT_NS}
+    version_pin: 1.0.0
+    term_namespaces: [{_AUDIT_NS}]
+    root_classes: [{_AUDIT_NS}AuditRecord]
 groups:
   - id: operations
     domains:
@@ -271,6 +288,8 @@ groups:
 <catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
   <uri name="{_ORDERS_NS}" uri="modules/orders.ttl"/>
   <uri name="{_ORDERS_MODULE_IRI}" uri="modules/orders.ttl"/>
+  <uri name="{_AUDIT_NS}" uri="modules/audit.ttl"/>
+  <uri name="{_AUDIT_MODULE_IRI}" uri="modules/audit.ttl"/>
 </catalog>
 """,
         encoding="utf-8",
@@ -347,6 +366,112 @@ def test_evaluate_projection_sync_surfaces_disputed_claims_and_owner_skill(tmp_p
     assert "data-domain:orders" in entry["reasons"]
     # The report-level property flattens every domain's disputed claims.
     assert report.disputed_claims == domain_status.disputed_claims
+
+
+def test_retained_managed_module_is_extra_then_apply_converges(tmp_path):
+    ref_models, catalog = _write_orders_reference_pack(tmp_path)
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    _write_orders_domain_files(model)
+    ontology = model / "ontologies" / "orders.ttl"
+    ontology.write_text(
+        ontology.read_text(encoding="utf-8")
+        + f"""
+# >>> kairos-managed (generated from the Claim Registry — do not edit)
+<https://example.org/hub/orders> <http://www.w3.org/2002/07/owl#imports> <{_ORDERS_MODULE_IRI}> .
+<https://example.org/hub/orders> <http://www.w3.org/2002/07/owl#imports> <{_AUDIT_MODULE_IRI}> .
+# <<< kairos-managed
+""",
+        encoding="utf-8",
+    )
+
+    before = evaluate_projection_sync(
+        claims_dir=claims_dir,
+        ontologies_dir=model / "ontologies",
+        extensions_dir=model / "extensions",
+        domains_filter=["orders"],
+        ref_models_dir=ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+    )
+
+    assert before.domains[0].extra_imports == [_AUDIT_MODULE_IRI]
+
+    applied = apply_projection_sync(
+        claims_dir=claims_dir,
+        ontologies_dir=model / "ontologies",
+        extensions_dir=model / "extensions",
+        domains_filter=["orders"],
+        ref_models_dir=ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+    )
+    assert not applied.is_blocking
+
+    after = evaluate_projection_sync(
+        claims_dir=claims_dir,
+        ontologies_dir=model / "ontologies",
+        extensions_dir=model / "extensions",
+        domains_filter=["orders"],
+        ref_models_dir=ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+    )
+    assert after.domains[0].in_sync
+
+
+def test_authored_local_dependency_becomes_managed_requirement(tmp_path):
+    ref_models, catalog = _write_orders_reference_pack(tmp_path)
+    model = tmp_path / "model"
+    claims_dir = model / "claims"
+    _write_orders_domain_files(model)
+    (model / "ontologies" / "orders.ttl").write_text(
+        f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix audit: <{_AUDIT_NS}> .
+
+<https://example.org/hub/orders> a owl:Ontology .
+<https://example.org/hub/orders#LocalAudit> a owl:Class ;
+    rdfs:subClassOf audit:AuditRecord .
+
+# >>> kairos-managed (generated from the Claim Registry — do not edit)
+<https://example.org/hub/orders> owl:imports <{_ORDERS_MODULE_IRI}> .
+# <<< kairos-managed
+""",
+        encoding="utf-8",
+    )
+    (model / "extensions" / "orders-silver-ext.ttl").write_text(
+        f"""\
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+# >>> kairos-managed (generated from the Claim Registry — do not edit)
+<{_ORDERS_NS}Order> kairos-ext:silverInclude true .
+# <<< kairos-managed
+""",
+        encoding="utf-8",
+    )
+
+    before = evaluate_projection_sync(
+        claims_dir=claims_dir,
+        ontologies_dir=model / "ontologies",
+        extensions_dir=model / "extensions",
+        domains_filter=["orders"],
+        ref_models_dir=ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+    )
+    assert before.domains[0].missing_imports == [_AUDIT_MODULE_IRI]
+
+    applied = apply_projection_sync(
+        claims_dir=claims_dir,
+        ontologies_dir=model / "ontologies",
+        extensions_dir=model / "extensions",
+        domains_filter=["orders"],
+        ref_models_dir=ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+    )
+    assert not applied.is_blocking
 
 
 def _write_foundation(ontologies_dir: Path) -> str:

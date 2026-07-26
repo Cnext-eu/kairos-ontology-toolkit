@@ -925,6 +925,7 @@ def build_managed_import_plan(
     domain: str,
     context: ReferenceModuleContext | None = None,
     ontology_graph: Graph | None = None,
+    authored_ontology_graph: Graph | None = None,
     projected_uris: Iterable[str] | None = None,
     local_ontology_iri: str | None = None,
 ) -> ManagedImportPlan:
@@ -1032,11 +1033,25 @@ def build_managed_import_plan(
             term_uri=term_uri,
             accepted_transitive=accepted,
         )
+        if accepted:
+            require(
+                module.ontology_iri,
+                owner_iri=owner_iri,
+                source=module.profile.id,
+                reason=f"accepted-transitive:{module.profile.id}",
+                term_uri=term_uri,
+                accepted_transitive=True,
+            )
 
-    if context and ontology_graph is not None:
+    dependency_graph = (
+        authored_ontology_graph
+        if authored_ontology_graph is not None
+        else ontology_graph
+    )
+    if context and dependency_graph is not None:
         authored_term_uris = {
             str(node)
-            for triple in ontology_graph
+            for triple in dependency_graph
             for node in triple
             if isinstance(node, URIRef)
             and not str(node).startswith(
@@ -1077,10 +1092,19 @@ def build_managed_import_plan(
                 module.ontology_iri if accepted else owner_iri,
                 owner_iri=owner_iri,
                 source=module.profile.id,
-                reason="authored-ontology",
+                reason="authored-local-dependency",
                 term_uri=term_uri,
                 accepted_transitive=accepted,
             )
+            if accepted:
+                require(
+                    module.ontology_iri,
+                    owner_iri=owner_iri,
+                    source=module.profile.id,
+                    reason=f"accepted-transitive:{module.profile.id}",
+                    term_uri=term_uri,
+                    accepted_transitive=True,
+                )
 
     profile_allowlist: set[str] = set()
     if context:

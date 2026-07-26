@@ -82,6 +82,12 @@ def _module_scope_evidence(
             except Exception:  # syntax/load diagnostics are owned by the caller
                 continue
             imported_iris.update(str(value) for value in graph.objects(predicate=OWL.imports))
+            claimed_terms.update(
+                str(node)
+                for triple in graph
+                for node in triple
+                if isinstance(node, URIRef)
+            )
     return domains, claimed_terms, imported_iris
 
 
@@ -268,11 +274,18 @@ def evaluate_domain_projection_sync(
         if not _is_local_class_uri(str(subj), ontology_iri)
         and _truthy(ext_graph.value(subj, KAIROS_EXT.silverInclude))
     }
+    authored_text, _has_block = _split_managed_block(
+        _read_turtle_text(ontology_file),
+        path=ontology_file,
+    )
+    authored_graph = Graph()
+    authored_graph.parse(data=authored_text, format="turtle")
 
     plan = build_managed_import_plan(
         registry,
         domain=domain,
         context=module_context,
+        authored_ontology_graph=authored_graph,
         projected_uris=actual_includes,
         local_ontology_iri=ontology_iri,
     )
@@ -293,10 +306,6 @@ def evaluate_domain_projection_sync(
         if not _is_local_class_uri(uri, ontology_iri)
     }
     expected_imports = set(plan.expected_imports)
-    managed_profile_imports = {
-        module.ontology_iri
-        for module in module_context.modules
-    } if module_context else set()
 
     def _is_managed_import(triple) -> bool:
         _s, predicate, obj = triple
@@ -304,7 +313,7 @@ def evaluate_domain_projection_sync(
         return (
             predicate == OWL.imports
             and iri.rstrip("/") not in hub_domain_bases
-            and iri in expected_imports | managed_profile_imports
+            and iri in expected_imports
         )
 
     def _is_managed_include(triple) -> bool:
@@ -322,12 +331,6 @@ def evaluate_domain_projection_sync(
         status.error = str(exc)
         return status
 
-    authored_text, _has_block = _split_managed_block(
-        _read_turtle_text(ontology_file),
-        path=ontology_file,
-    )
-    authored_graph = Graph()
-    authored_graph.parse(data=authored_text, format="turtle")
     authored_imports = {
         str(obj).rstrip("#")
         for obj in authored_graph.objects(ontology_subj, OWL.imports)
@@ -909,10 +912,17 @@ def _rewrite_domain_projection_surfaces(
     if ontology_subj is None:
         raise ValueError(f"{ontology_file}: no owl:Ontology declaration found")
     ontology_iri = str(ontology_subj)
+    authored_text, _has_block = _split_managed_block(
+        _read_turtle_text(ontology_file),
+        path=ontology_file,
+    )
+    authored_graph = Graph()
+    authored_graph.parse(data=authored_text, format="turtle")
     plan = build_managed_import_plan(
         registry,
         domain=domain,
         context=module_context,
+        authored_ontology_graph=authored_graph,
         local_ontology_iri=ontology_iri,
     )
     expected_includes = {
@@ -921,19 +931,9 @@ def _rewrite_domain_projection_surfaces(
         if not _is_local_class_uri(uri, ontology_iri)
     }
     expected_imports = set(plan.expected_imports)
-    managed_profile_imports = {
-        module.ontology_iri
-        for module in module_context.modules
-    } if module_context else set()
 
     # Ontology owl:imports (A1): managed = external (non-hub-base) imports driven by
     # approved imported claims. Intra-hub bases (_foundation/_master) stay authored.
-    authored_text, _has_block = _split_managed_block(
-        _read_turtle_text(ontology_file),
-        path=ontology_file,
-    )
-    authored_graph = Graph()
-    authored_graph.parse(data=authored_text, format="turtle")
     authored_imports = {
         str(value).rstrip("#")
         for value in authored_graph.objects(ontology_subj, OWL.imports)
@@ -949,7 +949,7 @@ def _rewrite_domain_projection_surfaces(
         return (
             p == OWL.imports
             and iri.rstrip("/") not in hub_domain_bases
-            and iri in expected_imports | managed_profile_imports
+            and iri in expected_imports
         )
 
     _sync_managed_surface(

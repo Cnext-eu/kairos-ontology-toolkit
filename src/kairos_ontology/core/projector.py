@@ -410,6 +410,7 @@ class ProjectionReport:
         traceback_str: Optional[str] = None,
         reason: Optional[str] = None,
         diagnostics: Optional[List[Dict[str, Any]]] = None,
+        details: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record the outcome of a single target × domain projection."""
         entry: Dict[str, Any] = {
@@ -430,6 +431,8 @@ class ProjectionReport:
             entry["reason"] = reason
         if diagnostics:
             entry["diagnostics"] = diagnostics
+        if details:
+            entry["details"] = details
         if status == "skipped":
             self._skipped += 1
         self.projections.append(entry)
@@ -1721,6 +1724,19 @@ def run_projections(
                     projection_blocking_rules = tuple(
                         getattr(release, "projection_blocking_rules", blocking_rules)
                     )
+                    active_sources = [
+                        {
+                            "table_uri": table_uri,
+                            "source_kind": source_kind,
+                            "reasons": list(reasons),
+                        }
+                        for table_uri, source_kind, reasons in getattr(
+                            release, "active_sources", ()
+                        )
+                    ]
+                    projection_details = (
+                        {"active_sources": active_sources} if active_sources else None
+                    )
                     diagnostics = _collected_blocker_diagnostics(
                         blocking_rules,
                         target=target_name,
@@ -1735,6 +1751,7 @@ def run_projections(
                             status="error",
                             error=f"{first_rule}: {first_reason}",
                             diagnostics=diagnostics,
+                            details=projection_details,
                         )
                         target_failed = True
                     else:
@@ -1743,6 +1760,7 @@ def run_projections(
                             onto_name,
                             status="ready",
                             diagnostics=diagnostics,
+                            details=projection_details,
                         )
                     continue
                 if artifacts:

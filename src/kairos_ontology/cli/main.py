@@ -811,7 +811,7 @@ _CATALOG_CANDIDATES = [
 
 
 def _resolve_catalog(
-    explicit: str | None,
+    explicit: str | Path | None,
     hub_root: Path | None = None,
     cwd: Path | None = None,
     ref_models_dir: Path | None = None,
@@ -821,8 +821,8 @@ def _resolve_catalog(
     If *explicit* is given (user passed ``--catalog``), use it directly.
     Otherwise search, in order:
 
-    1. an explicitly resolved reference-models directory,
-    2. ``hub_root/catalog-v001.xml`` (the hub-local catalog),
+    1. ``hub_root/catalog-v001.xml`` (the hub-local catalog),
+    2. an explicitly resolved reference-models directory,
     3. the auto-detected reference-models catalog,
     4. the legacy cwd-relative ``_CATALOG_CANDIDATES`` (repo-root invocation).
 
@@ -837,10 +837,10 @@ def _resolve_catalog(
         cwd = Path.cwd()
 
     candidates: list[Path] = []
-    if ref_models_dir is not None:
-        candidates.append(ref_models_dir / _CATALOG_FILENAME)
     if hub_root is not None:
         candidates.append(hub_root / _CATALOG_FILENAME)
+    if ref_models_dir is not None:
+        candidates.append(ref_models_dir / _CATALOG_FILENAME)
     detected_ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
     if detected_ref_models_dir is not None:
         candidates.append(detected_ref_models_dir / _CATALOG_FILENAME)
@@ -1962,20 +1962,31 @@ def validate_mapping_cmd(domain, mappings, catalog):
 
 @cli.command(name="validate-silver-ext")
 @click.option("--domain", required=True)
-@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option(
+    "--catalog",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+)
 def validate_silver_ext_cmd(domain, catalog):
     """Run syntax and DD-108/DD-109 SHACL checks on one Silver extension."""
     from ..core.design_validation import validate_silver_extension
     from ..core.hub_utils import find_hub_root
 
-    hub = find_hub_root(Path.cwd(), require_model=True)
+    cwd = Path.cwd()
+    hub = find_hub_root(cwd, require_model=True)
     if hub is None:
         raise click.ClickException("Cannot locate an ontology hub.")
+    catalog_path = _resolve_catalog(
+        catalog,
+        hub_root=hub,
+        cwd=cwd,
+        ref_models_dir=_resolve_ref_models_dir(cwd, hub),
+    )
     result = validate_silver_extension(
         extension_path=hub / "model" / "extensions" / f"{domain}-silver-ext.ttl",
         ontology_path=hub / "model" / "ontologies" / f"{domain}.ttl",
         shapes_path=hub / "model" / "shapes" / "kairos-ext-shapes.shacl.ttl",
-        catalog_path=Path(catalog) if catalog else None,
+        catalog_path=catalog_path,
     )
     click.echo(json.dumps(result, indent=2, sort_keys=True))
     if not result["passed"]:

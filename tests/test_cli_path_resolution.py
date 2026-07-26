@@ -208,7 +208,7 @@ def test_project_catalog_autodetect_from_inside_hub(tmp_path, monkeypatch):
     assert calls["projection"]["catalog_path"] == hub / "catalog-v001.xml"
 
 
-def test_project_explicit_ref_models_resolves_its_catalog(tmp_path, monkeypatch):
+def test_project_prefers_hub_catalog_over_explicit_ref_models(tmp_path, monkeypatch):
     hub = _make_hub(tmp_path, with_catalog=True)
     calls = _patch_projections(monkeypatch)
     ref_models = tmp_path / "custom-reference-models"
@@ -223,7 +223,7 @@ def test_project_explicit_ref_models_resolves_its_catalog(tmp_path, monkeypatch)
     )
 
     assert result.exit_code == 0, result.output
-    assert calls["projection"]["catalog_path"] == catalog
+    assert calls["projection"]["catalog_path"] == hub / "catalog-v001.xml"
 
 
 def test_project_explicit_accelerator_overrides_hub_configuration(tmp_path, monkeypatch):

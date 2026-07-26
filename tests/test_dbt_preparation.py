@@ -14,7 +14,6 @@ from click.testing import CliRunner
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.projections.dbt import (
     PolicyNormalizationError,
-    PrepArrayChildModelSpec,
     PrepModelSpec,
     bind_sources,
     normalize_contract,
@@ -169,12 +168,11 @@ def test_passthrough_validation_fails_closed(column_change, expected):
         normalize_contract(dataclasses.replace(bound, systems=tuple(systems)))
 
 
-def test_shape_emits_immutable_prep_specs_and_verified_routes():
+def test_shape_emits_only_domain_scoped_prep_specs_and_verified_routes():
     shaped = shape_project(normalize_contract(bind_sources(_client_inputs())))
     assert shaped.prep_models
-    assert shaped.prep_children
+    assert not shaped.prep_children
     assert all(isinstance(item, PrepModelSpec) for item in shaped.prep_models)
-    assert all(isinstance(item, PrepArrayChildModelSpec) for item in shaped.prep_children)
     assert dataclasses.is_dataclass(PrepModelSpec)
     assert PrepModelSpec.__dataclass_params__.frozen
 
