@@ -697,3 +697,36 @@ def test_missing_target_semantic_key_is_one_task_for_all_impacted_fks():
     assert len(plan) == 1
     assert plan[0].diagnostic_ids == ("fk-0", "fk-1")
     assert plan[0].impacted_resources == ("urn:fk:customer", "urn:fk:supplier")
+
+
+def test_silver_sync_diagnostics_threads_accelerator_context(monkeypatch, tmp_path):
+    """Regression for #239: the silver_sync gate must forward accelerator/catalog/
+    ref-models context into ``evaluate_projection_sync`` so data-domain-activated
+    reference imports are not false-flagged as ``extra import``.
+    """
+    from kairos_ontology.core import claim_projection_sync
+    from kairos_ontology.core.projection_readiness import _silver_sync_diagnostics
+
+    captured: dict[str, object] = {}
+
+    def _fake_evaluate(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(domains=[])
+
+    monkeypatch.setattr(claim_projection_sync, "evaluate_projection_sync", _fake_evaluate)
+
+    catalog = tmp_path / "catalog.ttl"
+    ref_models = tmp_path / "refmodels"
+
+    diagnostics = _silver_sync_diagnostics(
+        tmp_path,
+        accelerator="logistics",
+        catalog_path=catalog,
+        ref_models_dir=ref_models,
+    )
+
+    assert diagnostics == []
+    assert captured["accelerator"] == "logistics"
+    assert captured["catalog_path"] == catalog
+    assert captured["ref_models_dir"] == ref_models
+

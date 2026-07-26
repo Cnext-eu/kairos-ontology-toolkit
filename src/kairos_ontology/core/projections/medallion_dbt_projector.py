@@ -41,6 +41,7 @@ from .shared import (
     ForeignKeyClassification,
     KAIROS_EXT,
     classify_foreign_keys,
+    effective_domain_classes,
     str_val,
     detect_ontology_uri,
     silver_naming_convention,
@@ -1090,8 +1091,8 @@ def _stub_columns(
     domain_classes = _get_class_and_parents(graph, cls_uri)
     seen: set[str] = {c["name"] for c in cols}
     for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
-        domain = graph.value(prop, RDFS.domain)
-        if not (domain and str(domain) in domain_classes):
+        prop_domains = {str(cls) for cls in effective_domain_classes(graph, prop)}
+        if not (prop_domains & domain_classes):
             continue
         col_name = _resolve_column_name(graph, str(prop))
         if col_name in seen:
@@ -1882,8 +1883,8 @@ def _build_column_type_map(
     type_map: dict[str, str] = {}
     domain_classes = _get_class_and_parents(graph, class_uri)
     for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
-        domain = graph.value(prop, RDFS.domain)
-        if domain and str(domain) in domain_classes:
+        prop_domains = {str(cls) for cls in effective_domain_classes(graph, prop)}
+        if prop_domains & domain_classes:
             col_name = _resolve_column_name(graph, str(prop))
             range_uri = graph.value(prop, RDFS.range)
             type_map[col_name] = _xsd_to_target(range_uri, platform)
@@ -2140,8 +2141,8 @@ def _resolve_mapped_columns(
     # Datatype properties (including inherited from parent classes)
     seen_col_names: set[str] = set()
     for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
-        domain = graph.value(prop, RDFS.domain)
-        if domain and str(domain) in domain_classes:
+        prop_domains = {str(cls) for cls in effective_domain_classes(graph, prop)}
+        if prop_domains & domain_classes:
             col_name = _resolve_column_name(graph, str(prop))
             # Deduplicate: skip if column already added (child overrides parent)
             if col_name in seen_col_names:
@@ -3236,8 +3237,8 @@ def _extract_schema_model_facts(
             )
             seen_schema_cols.add(disc_col)
         for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
-            domain = graph.value(prop, RDFS.domain)
-            if domain and str(domain) in domain_classes:
+            prop_domains = {str(cls) for cls in effective_domain_classes(graph, prop)}
+            if prop_domains & domain_classes:
                 prop_name = extract_local_name(str(prop))
                 col_name = _resolve_column_name(graph, str(prop))
                 if col_name in seen_schema_cols:
@@ -3760,8 +3761,8 @@ def generate_coverage_data(
         missing_required = []
 
         for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
-            domain = graph.value(prop, RDFS.domain)
-            if domain and str(domain) in domain_classes:
+            prop_domains = {str(cls) for cls in effective_domain_classes(graph, prop)}
+            if prop_domains & domain_classes:
                 total += 1
                 prop_str = str(prop)
                 col_name = _resolve_column_name(graph, prop_str)

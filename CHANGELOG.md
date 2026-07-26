@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc10] — 2026-07-26
+
+### Fixed
+- **Silver bound-confirmation gate ignored accelerator context (#239, DD-131):**
+  `check-projection --scope silver` computed `expected_imports` without the
+  accelerator / catalog / ref-models context, so every data-domain-activated
+  `owl:imports` was false-flagged as an `extra import` and the Silver
+  bound-confirmation gate could never go green. `_silver_sync_diagnostics` now
+  threads `accelerator`, `catalog_path`, and `ref_models_dir` into
+  `evaluate_projection_sync`, matching `claims-to-silver-ext --check-only`.
+
+### Added
+- **Multi-class property domains (#240, DD-131):** a shared
+  `effective_domain_classes()` resolver now honours `owl:unionOf` domains,
+  `schema:domainIncludes`, and repeated `rdfs:domain` (treated as union) in exactly
+  one place, consumed by the semantic index (`validate-mapping`), dbt `bind`, and
+  the medallion dbt projector. A property whose domain spans classes with no common
+  local parent is recognised on every member class, so `validate-mapping` accepts a
+  column mapped to it from any member class's table. Scope is limited to Silver /
+  dbt / `validate-mapping`; the single-`rdfs:domain` case is behaviour-preserving.
+
 ## [4.7.0rc9] — 2026-07-26
 
 ### Fixed
