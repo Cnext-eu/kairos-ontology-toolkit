@@ -1,0 +1,342 @@
+...............................F...........................FFFFFFFFFFFF. [ 43%]
+F........................................F.......................FF..... [ 86%]
+..F...................                                                   [100%]
+================================== FAILURES ===================================
+__________ test_authoritative_policy_is_carried_through_every_phase ___________
+tests\test_dbt_policy_specs.py:790: in test_authoritative_policy_is_carried_through_every_phase
+    bound = bind_sources(_client_inputs())
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+------------------------------ Captured log call ------------------------------
+WARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:957 Table mapping \u2192 'CorporateClient' targets an S3-folded subtype; routing source 'tblClient' to projected discriminator parent 'Client'.\nWARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:957 Table mapping \u2192 'IndividualClient' targets an S3-folded subtype; routing source 'tblClient' to projected discriminator parent 'Client'.\nWARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:957 Table mapping \u2192 'SoleProprietorClient' targets an S3-folded subtype; routing source 'tblClient' to projected discriminator parent 'Client'.\nWARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:957 Table mapping \u2192 'CorporateClient' targets an S3-folded subtype; routing source 'Customers' to projected discriminator parent 'Client'.
+________________ TestGoldDbtModels.test_gold_models_generated _________________
+tests\test_dbt_projector.py:1355: in test_gold_models_generated
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+________________ TestGoldDbtModels.test_gold_model_refs_silver ________________
+tests\test_dbt_projector.py:1374: in test_gold_model_refs_silver
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+_______________ TestGoldDbtModels.test_gold_fact_model_content ________________
+tests\test_dbt_projector.py:1391: in test_gold_fact_model_content
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+_____________ TestGoldDbtModels.test_gold_dimension_scd2_framing ______________
+tests\test_dbt_projector.py:1411: in test_gold_dimension_scd2_framing
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+___________________ TestGoldDbtModels.test_gold_schema_yaml ___________________
+tests\test_dbt_projector.py:1427: in test_gold_schema_yaml
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+_______________ TestGoldDbtModels.test_dbt_project_yml_has_gold _______________
+tests\test_dbt_projector.py:1457: in test_dbt_project_yml_has_gold
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+_________________ TestGoldDbtModels.test_gold_dim_date_model __________________
+tests\test_dbt_projector.py:1475: in test_gold_dim_date_model
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+_________________ TestCrossDomainFK.test_fk_column_generated __________________
+tests\test_dbt_projector.py:1658: in test_fk_column_generated
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+------------------------------ Captured log call ------------------------------
+WARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:1222 No bronze mapping for class 'Party' � skipping silver model. Resolve via: kairos-design-mapping
+__________________ TestCrossDomainFK.test_fk_join_condition ___________________
+tests\test_dbt_projector.py:1686: in test_fk_join_condition
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+------------------------------ Captured log call ------------------------------
+WARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:1222 No bronze mapping for class 'Party' � skipping silver model. Resolve via: kairos-design-mapping
+__ TestCrossDomainFK.test_fk_change_never_creates_an_implicit_hash_contract ___
+tests\test_dbt_projector.py:1710: in test_fk_change_never_creates_an_implicit_hash_contract
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+------------------------------ Captured log call ------------------------------
+WARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:1222 No bronze mapping for class 'Party' � skipping silver model. Resolve via: kairos-design-mapping
+__________ TestCrossDomainFK.test_fk_can_use_as_of_parent_resolution __________
+tests\test_dbt_projector.py:1776: in test_fk_can_use_as_of_parent_resolution
+    generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+------------------------------ Captured log call ------------------------------
+WARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:1222 No bronze mapping for class 'Party' � skipping silver model. Resolve via: kairos-design-mapping
+_______ TestCrossDomainFK.test_fk_change_can_be_excluded_from_scd2_hash _______
+tests\test_dbt_projector.py:1800: in test_fk_change_can_be_excluded_from_scd2_hash
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+------------------------------ Captured log call ------------------------------
+WARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:1222 No bronze mapping for class 'Party' � skipping silver model. Resolve via: kairos-design-mapping
+_______________ TestCrossDomainFK.test_fk_column_in_schema_yaml _______________
+tests\test_dbt_projector.py:1843: in test_fk_column_in_schema_yaml
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+------------------------------ Captured log call ------------------------------
+WARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:1222 No bronze mapping for class 'Party' � skipping silver model. Resolve via: kairos-design-mapping
+___ TestSilverForeignKeyAnnotation.test_silver_fk_annotation_generates_join ___
+tests\test_dbt_projector.py:4207: in test_silver_fk_annotation_generates_join
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+------------------------------ Captured log call ------------------------------
+WARNING  kairos_ontology.core.projections.medallion_dbt_projector:medallion_dbt_projector.py:1222 No bronze mapping for class 'Customer' � skipping silver model. Resolve via: kairos-design-mapping
+____________ TestDimDateNoDuplicateCte.test_no_duplicate_cte_label ____________
+tests\test_dbt_projector.py:4683: in test_no_duplicate_cte_label
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+_________ TestDimDateNoDuplicateCte.test_dim_date_select_is_top_level _________
+tests\test_dbt_projector.py:4703: in test_dim_date_select_is_top_level
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+_ TestIssue194Scd2InheritedFkScope.test_inherited_fk_lookup_is_selected_in_mapped_cte _
+tests\test_dbt_projector.py:5266: in test_inherited_fk_lookup_is_selected_in_mapped_cte
+    sql = self._get_sql(template_dir, sources_dir, mappings_dir, silver_ext_path)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_dbt_projector.py:5250: in _get_sql
+    artifacts = generate_dbt_artifacts(
+tests\test_dbt_projector.py:519: in generate_dbt_artifacts
+    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3380: in generate_dbt_artifacts
+    shaped, plan = plan_dbt_projection(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3471: in plan_dbt_projection
+    bound = bind_sources(inputs)
+            ^^^^^^^^^^^^^^^^^^^^
+src\kairos_ontology\core\projections\dbt\bind.py:851: in bind_sources
+    schema_models = _extract_schema_model_facts(
+src\kairos_ontology\core\projections\medallion_dbt_projector.py:3199: in _extract_schema_model_facts
+    and fk.qualifies_silver(cls_uri)
+                            ^^^^^^^
+E   NameError: name 'cls_uri' is not defined
+=========================== short test summary info ===========================
+FAILED tests/test_dbt_policy_specs.py::test_authoritative_policy_is_carried_through_every_phase
+FAILED tests/test_dbt_projector.py::TestGoldDbtModels::test_gold_models_generated
+FAILED tests/test_dbt_projector.py::TestGoldDbtModels::test_gold_model_refs_silver
+FAILED tests/test_dbt_projector.py::TestGoldDbtModels::test_gold_fact_model_content
+FAILED tests/test_dbt_projector.py::TestGoldDbtModels::test_gold_dimension_scd2_framing
+FAILED tests/test_dbt_projector.py::TestGoldDbtModels::test_gold_schema_yaml
+FAILED tests/test_dbt_projector.py::TestGoldDbtModels::test_dbt_project_yml_has_gold
+FAILED tests/test_dbt_projector.py::TestGoldDbtModels::test_gold_dim_date_model
+FAILED tests/test_dbt_projector.py::TestCrossDomainFK::test_fk_column_generated
+FAILED tests/test_dbt_projector.py::TestCrossDomainFK::test_fk_join_condition
+FAILED tests/test_dbt_projector.py::TestCrossDomainFK::test_fk_change_never_creates_an_implicit_hash_contract
+FAILED tests/test_dbt_projector.py::TestCrossDomainFK::test_fk_can_use_as_of_parent_resolution
+FAILED tests/test_dbt_projector.py::TestCrossDomainFK::test_fk_change_can_be_excluded_from_scd2_hash
+FAILED tests/test_dbt_projector.py::TestCrossDomainFK::test_fk_column_in_schema_yaml
+FAILED tests/test_dbt_projector.py::TestSilverForeignKeyAnnotation::test_silver_fk_annotation_generates_join
+FAILED tests/test_dbt_projector.py::TestDimDateNoDuplicateCte::test_no_duplicate_cte_label
+FAILED tests/test_dbt_projector.py::TestDimDateNoDuplicateCte::test_dim_date_select_is_top_level
+FAILED tests/test_dbt_projector.py::TestIssue194Scd2InheritedFkScope::test_inherited_fk_lookup_is_selected_in_mapped_cte
+18 failed, 148 passed in 32.68s

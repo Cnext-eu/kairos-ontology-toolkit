@@ -247,11 +247,7 @@ class BindingPolicy:
 
     def reason(self, class_uri: str) -> str:
         return next(
-            (
-                reason
-                for uri, reason in self.reasons
-                if uri == class_uri
-            ),
+            (reason for uri, reason in self.reasons if uri == class_uri),
             "no bronze mapping and no approving claim",
         )
 
@@ -295,6 +291,23 @@ class ForeignKeyDescriptorSpec:
     junction_table_name: str | None
     nullable: bool | None
     conditional_on_type: str
+    silver_applicable_classes: frozenset[str] = frozenset()
+
+    def qualifies_silver(self, class_uri: str | None = None) -> bool:
+        """Return whether the canonical Silver FK signals apply to a class."""
+        if class_uri is not None and self.silver_applicable_classes:
+            return class_uri in self.silver_applicable_classes
+        property_signal = (
+            self.redirected
+            or self.silver_foreign_key
+            or self.silver_column_name is not None
+            or self.is_functional
+        )
+        if property_signal:
+            return True
+        if class_uri is None:
+            return bool(self.max_cardinality_classes)
+        return class_uri in self.max_cardinality_classes
 
 
 @dataclass(frozen=True, slots=True)

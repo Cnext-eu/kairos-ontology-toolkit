@@ -5648,6 +5648,10 @@ Introduce a contracted custom dbt boundary:
 - Custom models, schema/unit-test YAML, singular tests, and namespaced macros
   are bundled. Paths, names, collisions, references, and a toolkit-owned package
   allow-list are validated before dbt target files are written.
+- Domain-scoped projection assembles only active contracts for the selected
+  ontology plus their transitive custom-model `ref()` dependency closure. Model
+  properties, verifying tests, required macro files, and governed packages follow
+  that closure; unreachable contracts from another domain are not copied.
 - `project --platform fabric|databricks` generates one adapter-specific package
   per invocation at the backward-compatible `output/medallion/dbt/` path.
   Dual-adapter CI uses separate temporary output roots.
@@ -5676,6 +5680,8 @@ second hand-authored physical schema.
 - Advanced transformation authoring is optional; hubs without custom contracts
   retain existing output and Fabric defaults.
 - A contract change requires `sync-dbt-contracts` before projection.
+- Full-hub projection assembles the union of every active domain contract, while
+  `project --ontology` produces a self-contained package without unrelated models.
 - Runtime data/grain guarantees still require warehouse-backed tests before
   production publication; toolkit CI supplies hooks but no live credentials.
 - Atomic directory replacement and verified internal SQL column lineage remain
@@ -6634,6 +6640,11 @@ resolution and the ontology's declared
 managed imports. Claims remain the governed materialization authority, while module
 profiles may provide an explicit source-neutral default allow-list.
 
+Module-selection evidence is collected from selected hub ontology files and Claim
+Registries before recursive ontology loading. Imports discovered only inside a
+loaded reference-module closure are transitive implementation facts, not authored
+direct-import evidence, and never force a duplicate direct import into the hub.
+
 Managed synchronization owns only its final generated block and preserves authored Turtle
 outside it. Validation and projection preflight report the external term, owning ontology
 IRI, managed source, and claim where available. Missing required imports fail semantic
@@ -6674,6 +6685,9 @@ import rules.
   compatibility.
 - Ambiguous ownership, profile term drift, ontology-IRI mismatch, and version mismatch are
   blocking structured diagnostics.
+- Claim synchronization and projection preflight share the same direct,
+  domain-scoped evidence collector, so closure loading cannot make their import
+  expectations diverge.
 - Imported definitions remain in their source modules. Self-contained deployment bundles,
   if ever required, must be separate derived output.
 - Activation inventory output is deterministic and omits timestamps.
@@ -6996,6 +7010,13 @@ interval boundaries, time-zone normalization, expected lookup cardinality, and
 missing/ambiguous/late-parent behavior: fail, quarantine, retry, or explicit unknown
 member. Multiple matches are never resolved by silently choosing one.
 
+The normalized relationship inventory remains complete for Gold analysis. Silver
+temporal policy applies only to relationships that canonically qualify for Silver
+on the materialized source class: explicit `silverForeignKeyOn`,
+`silverForeignKey`, or `silverColumnName`, `owl:FunctionalProperty`, or an
+applicable max-cardinality-one restriction. A complete domain/range-only object
+property is not a materialized Silver FK.
+
 ### Rationale
 
 Incremental correctness depends on time and ordering semantics, not merely a unique key
@@ -7009,6 +7030,9 @@ cross-adapter reproducibility.
   correction, natural-key change, interval integrity, one current row, and temporal FK
   ambiguity.
 - Artifact determinism and runtime determinism are reported separately.
+- Silver temporal completeness, capability, DQ scope, and authority generation
+  consume the Silver-qualified relationship view; Gold retains the unfiltered
+  descriptor inventory.
 
 ### Implemented contract
 
@@ -8695,6 +8719,8 @@ Every inclusion carries a deterministic reason.
 The scoped systems, mappings, contracts, and preparation policies are the only source
 authorities passed to normalization, identity, coverage, and physical planning. Contracted
 virtual sources are registered relations but do not acquire physical preparation obligations.
+Final custom dbt package assembly uses the union of those active contracts and their declared
+custom-model dependency closure rather than re-scanning every hub transformation as selected.
 
 ### Rationale
 
@@ -8712,6 +8738,8 @@ are active and makes readiness diagnostics explainable.
 - Readiness JSON includes the active source inventory by domain.
 - Preparation output is domain-scoped; unrelated array-child preparation models are no longer
   emitted for another domain's projection.
+- Domain-scoped dbt output excludes unreachable contracted transformations owned by another
+  ontology, while full-hub output remains the union of all selected domain closures.
 
 ---
 
