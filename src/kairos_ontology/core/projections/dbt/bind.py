@@ -107,6 +107,11 @@ def _contract_fact(contract) -> ContractFact:
             and bool(decision.verified_by)
             for decision in decisions
         ),
+        identity_resource_uri=f"{contract.virtual_source_iri}/contract-identity",
+        content_hash=contract.content_hash,
+        identity_requirements=contract.identity_requirements,
+        identity_verified=contract.identity_verified,
+        canonical_cdc_bindings=contract.canonical_cdc_bindings,
     )
 
 

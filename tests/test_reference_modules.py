@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
 from click.testing import CliRunner
 from rdflib import Graph
 
@@ -107,6 +108,33 @@ ex:Order kairos-ext:scdType "2" .
     return ref_models, catalog
 
 
+def _add_unrelated_broken_module(ref_models):
+    config_path = (
+        ref_models
+        / "accelerator-packs"
+        / "generic"
+        / "client-hub-blueprint"
+        / "data-domains.yaml"
+    )
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["module_profiles"].append(
+        {
+            "id": "broken",
+            "ontology_iri": "https://example.org/reference/broken",
+            "catalog_uri": "https://example.org/reference/broken",
+            "version_pin": "1.0",
+            "term_namespaces": ["https://example.org/reference/broken#"],
+        }
+    )
+    data["groups"].append(
+        {
+            "id": "unrelated",
+            "domains": [{"id": "billing", "imports": [{"profile": "broken"}]}],
+        }
+    )
+    config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
 def _registry() -> ClaimRegistry:
     return ClaimRegistry(
         domain="orders",
@@ -172,6 +200,110 @@ def test_typed_profile_resolves_document_iri_and_version(tmp_path):
     assert context.modules[0].ontology_iri == MODULE_IRI
     assert context.modules[0].ontology_version == "2.1.0"
     assert context.diagnostics == ()
+
+
+def test_domain_scoped_context_ignores_unrelated_broken_module(tmp_path):
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _add_unrelated_broken_module(ref_models)
+
+    context = build_reference_module_context(
+        ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+        requested_domains=["orders"],
+    )
+
+    assert [module.profile.id for module in context.modules] == ["orders"]
+    assert context.diagnostics == ()
+
+
+@pytest.mark.parametrize(
+    ("requested_domains", "claimed_term_uris", "imported_ontology_iris"),
+    [
+        (["billing"], (), ()),
+        ([], ("https://example.org/reference/broken#Invoice",), ()),
+        ([], (), ("https://example.org/reference/broken",)),
+    ],
+)
+def test_unresolved_module_in_requested_scope_remains_blocking(
+    tmp_path,
+    requested_domains,
+    claimed_term_uris,
+    imported_ontology_iris,
+):
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _add_unrelated_broken_module(ref_models)
+
+    context = build_reference_module_context(
+        ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+        requested_domains=requested_domains,
+        claimed_term_uris=claimed_term_uris,
+        imported_ontology_iris=imported_ontology_iris,
+    )
+    plan = build_managed_import_plan(
+        ClaimRegistry(domain="billing"),
+        domain="billing",
+        context=context,
+    )
+
+    assert context.modules == ()
+    assert [item.code for item in context.diagnostics] == ["module_unresolved"]
+    assert [item.code for item in plan.blocking_diagnostics] == ["module_unresolved"]
+
+
+def test_scoped_projection_exit_ignores_unrelated_broken_module(tmp_path, monkeypatch):
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _add_unrelated_broken_module(ref_models)
+    model = tmp_path / "hub" / "model"
+    claims = model / "claims"
+    ontologies = model / "ontologies"
+    extensions = model / "extensions"
+    claims.mkdir(parents=True)
+    ontologies.mkdir()
+    extensions.mkdir()
+    write_registry(_registry(), claims / "orders-claims.yaml")
+    (ontologies / "orders.ttl").write_text(
+        """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<https://example.org/hub/orders> a owl:Ontology .
+""",
+        encoding="utf-8",
+    )
+    (extensions / "orders-silver-ext.ttl").write_text("", encoding="utf-8")
+
+    report = apply_projection_sync(
+        claims_dir=claims,
+        ontologies_dir=ontologies,
+        extensions_dir=extensions,
+        domains_filter=["orders"],
+        scaffold_missing=False,
+        ref_models_dir=ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+    )
+
+    assert not report.is_blocking
+    assert [item["id"] for item in report.domains[0].activation_inventory["modules"]] == [
+        "orders"
+    ]
+    projection_calls = []
+    monkeypatch.setattr(
+        "kairos_ontology.core.projector._run_projection",
+        lambda *args, **kwargs: projection_calls.append(kwargs) or {},
+    )
+
+    run_projections(
+        ontologies_path=ontologies / "orders.ttl",
+        catalog_path=catalog,
+        output_path=tmp_path / "hub" / "output",
+        target="silver",
+        ref_models_dir=ref_models,
+        accelerator="generic",
+    )
+
+    assert len(projection_calls) == 1
 
 
 def test_profile_rejects_term_namespace_as_ontology_iri(tmp_path):

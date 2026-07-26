@@ -25,6 +25,31 @@ from kairos_ontology.core.transformation_candidates import (
 )
 
 
+class _ReadyDecision:
+    id = "canonical-grain"
+    status = "developer_approved"
+    evidence = ("reviewed-evidence",)
+    verified_by = ("unit_test_canonical_grain",)
+
+
+class _Replacement:
+    def __init__(self, table_iri: str) -> None:
+        self.table_iri = table_iri
+
+
+class _ReadyContract:
+    def __init__(
+        self,
+        *,
+        virtual_source_iri: str = "https://example.test/virtual#orders",
+        replaces_sources: tuple[_Replacement, ...] = (),
+    ) -> None:
+        self.virtual_source_iri = virtual_source_iri
+        self.replaces_sources = replaces_sources
+        self.decisions = (_ReadyDecision(),)
+        self.identity_verified = True
+
+
 def _hub(root: Path) -> Path:
     hub = root / "ontology-hub"
     (hub / "model" / "ontologies").mkdir(parents=True)
@@ -263,6 +288,150 @@ def test_implemented_candidate_can_reference_renamed_contract(tmp_path, monkeypa
     assert report.is_blocking is False
 
 
+@pytest.mark.parametrize("inventory_exists", [False, True])
+def test_scoped_readiness_ignores_unrelated_noninventoried_contract(
+    tmp_path,
+    monkeypatch,
+    inventory_exists,
+):
+    hub = _hub(tmp_path)
+    if inventory_exists:
+        write_candidate_inventory(hub, CandidateInventory())
+    contract = _ReadyContract(
+        replaces_sources=(_Replacement("https://example.test/bronze#orders"),),
+    )
+    contract.identity_verified = False
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates._implemented_models",
+        lambda _hub: ({"int_orders": contract}, None),
+    )
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates.sync_dbt_contracts",
+        lambda _hub, check: type("_SyncReport", (), {"has_drift": False})(),
+    )
+
+    unrelated = evaluate_transformation_readiness(
+        hub,
+        stage="mapping",
+        table_scope=("https://example.test/bronze#customers",),
+    )
+    replacement = evaluate_transformation_readiness(
+        hub,
+        stage="mapping",
+        table_scope=("https://example.test/bronze#orders",),
+    )
+    virtual = evaluate_transformation_readiness(
+        hub,
+        stage="mapping",
+        table_scope=("https://example.test/virtual#orders",),
+    )
+
+    assert unrelated.candidates == ()
+    assert unrelated.is_blocking is False
+    assert [item.id for item in replacement.candidates] == ["contract:int_orders"]
+    assert replacement.is_blocking is True
+    assert [item.id for item in virtual.candidates] == ["contract:int_orders"]
+    assert virtual.is_blocking is True
+
+
+@pytest.mark.parametrize("contract_is_inventoried", [False, True])
+@pytest.mark.parametrize(
+    ("stage", "expected_blocking"),
+    [("mapping", False), ("silver", True), ("release", True)],
+)
+def test_noninventoried_replacement_completion_uses_stage_semantics(
+    tmp_path,
+    monkeypatch,
+    contract_is_inventoried,
+    stage,
+    expected_blocking,
+):
+    hub = _hub(tmp_path)
+    contract = _ReadyContract(
+        replaces_sources=(_Replacement("https://example.test/bronze#orders"),),
+    )
+    expected_id = "contract:int_orders"
+    if contract_is_inventoried:
+        models = hub / "evidence"
+        models.mkdir()
+        (models / "orders.sql").write_text("select 1", encoding="utf-8")
+        inventory = inventory_transformation_candidates(hub, [models])
+        candidate = inventory.candidates[0]
+        assessment = CandidateAssessment(
+            status="implemented",
+            semantic_target="https://example.test/ontology#Order",
+            authority_classification="operational-source",
+            replacement_scope=("https://example.test/bronze#orders",),
+            rationale="Implemented as a governed replacement.",
+            confidence="high",
+            evidence=("Reviewed contract and source grain.",),
+            approval=AssessmentApproval("reviewer", "2026-07-22T20:00:00Z"),
+            assessed_sha256=candidate.facts.sha256,
+            implemented_model_name="int_orders",
+        )
+        write_candidate_inventory(
+            hub,
+            CandidateInventory(
+                roots=inventory.roots,
+                candidates=(
+                    TransformationCandidate(candidate.id, candidate.facts, assessment),
+                ),
+            ),
+        )
+        expected_id = candidate.id
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates._implemented_models",
+        lambda _hub: ({"int_orders": contract}, None),
+    )
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates.sync_dbt_contracts",
+        lambda _hub, check: type("_SyncReport", (), {"has_drift": False})(),
+    )
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates._replacement_scope_completion_reasons",
+        lambda _hub, _scope: ("replacement incomplete",),
+    )
+
+    report = evaluate_transformation_readiness(
+        hub,
+        stage=stage,
+        table_scope=("https://example.test/bronze#orders",),
+    )
+
+    assert report.is_blocking is expected_blocking
+    assert report.candidates[0].id == expected_id
+    assert report.candidates[0].reasons == (
+        ("replacement incomplete",) if expected_blocking else ()
+    )
+
+
+@pytest.mark.parametrize("inventory_exists", [False, True])
+def test_unscoped_readiness_checks_existing_contract_without_candidate(
+    tmp_path,
+    monkeypatch,
+    inventory_exists,
+):
+    hub = _hub(tmp_path)
+    if inventory_exists:
+        write_candidate_inventory(hub, CandidateInventory())
+    contract = _ReadyContract()
+    contract.identity_verified = False
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates._implemented_models",
+        lambda _hub: ({"int_orders": contract}, None),
+    )
+    monkeypatch.setattr(
+        "kairos_ontology.core.transformation_candidates.sync_dbt_contracts",
+        lambda _hub, check: type("_SyncReport", (), {"has_drift": False})(),
+    )
+
+    report = evaluate_transformation_readiness(hub, stage="mapping")
+
+    assert report.is_blocking
+    assert report.candidates[0].id == "contract:int_orders"
+    assert "identity.contract-unverified" in report.candidates[0].reasons[0]
+
+
 def test_every_assessed_status_requires_checksum(tmp_path):
     hub = _hub(tmp_path)
     path = hub / "model" / "planning" / "dbt-transformations" / "candidates.yaml"
@@ -348,6 +517,11 @@ def test_readiness_cli_is_non_writing_and_returns_blocking_exit(tmp_path):
         ),
     )
     before = path.read_bytes()
+    before_files = {
+        item.relative_to(hub).as_posix(): item.read_bytes()
+        for item in hub.rglob("*")
+        if item.is_file()
+    }
 
     result = CliRunner().invoke(
         cli,
@@ -366,8 +540,20 @@ def test_readiness_cli_is_non_writing_and_returns_blocking_exit(tmp_path):
     )
 
     assert result.exit_code == 1
-    assert json.loads(result.output)["is_blocking"] is True
+    payload = json.loads(result.output)
+    assert payload["is_blocking"] is True
+    assert payload["owner_skill"] == "kairos-develop-dbt-transformation"
+    assert payload["prerequisites"] == ["source", "mapping"]
+    assert payload["shared_readiness"]["scope"] == "transformation"
+    assert payload["shared_readiness"]["phase_details"]["transformation_readiness"][
+        "candidates"
+    ] == payload["candidates"]
     assert path.read_bytes() == before
+    assert {
+        item.relative_to(hub).as_posix(): item.read_bytes()
+        for item in hub.rglob("*")
+        if item.is_file()
+    } == before_files
     assert load_candidate_inventory(hub) is not None
 
 

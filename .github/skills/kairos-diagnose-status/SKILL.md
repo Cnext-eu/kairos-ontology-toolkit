@@ -23,11 +23,13 @@ kairos-ontology status              # human summary
 kairos-ontology status --format json   # machine-readable, per-phase/per-instance
 ```
 
-The scanner reports, deterministically and AI-free, a `not-started | in-progress |
-done` state for every lifecycle phase (`discovery, source, domain, mapping, claims,
-silver, gold, validate, project`) and its instances. Use this as the backbone of
-your report; the deep-dive sections below only **explain and enrich** that result
-(quality of vocabularies, reference-model strategy, version drift, etc.).
+The scanner preserves the legacy `not-started | in-progress | done` phase view
+and also reports the monotonic lifecycle:
+`authored → design-valid → bound-valid → projection-ready → generated →
+compile-valid → runtime-valid → release-eligible`. Use `lifecycle.states` as the
+readiness backbone. Legacy `done` is legacy/unknown input, never a failed gate or
+proof of readiness. Missing, stale, or unknown-schema evidence is an `unknown`
+warning until the owning deterministic check is explicitly rerun.
 
 > **For "start / where are we / continue / resume", use the `kairos-flow` skill**
 > instead — it owns the `.kairos-state/` continuation state (open questions,
@@ -47,6 +49,11 @@ your report; the deep-dive sections below only **explain and enrich** that resul
    `.kairos-state` or `.sessions-projection` for the last/most-recent session
    log, do not descend into the `_archive/` subfolder. Archived logs are
    historical and must be ignored when determining current progress.
+
+3. **Report lifecycle drift** — consume `lifecycle_drift` from
+   `status --format json`. Missing phase-log xrefs/deliverables and disagreement
+   between a log and deterministic filesystem state are findings; never repair,
+   regenerate, or promote lifecycle state during this read-only diagnostic.
 
 ---
 
@@ -301,8 +308,8 @@ Produce a structured Markdown report:
 ```markdown
 # 🏗️ Ontology Hub Status — {hub-name}
 
-**Reviewed:** {date}  
-**Toolkit version:** {version}  
+**Reviewed:** {date}
+**Toolkit version:** {version}
 **Hub path:** {path}
 
 ## 1. Context & Inputs

@@ -146,6 +146,10 @@ and distinct-grain statement are recorded.
      `integration/sources/custom-transformations/`.
    - Never edit those generated vocabularies. If missing or stale, hand off to
      **kairos-develop-dbt-transformation** to run `sync-dbt-contracts`.
+   - New virtual columns use prefixable `table__column` local names. Legacy
+     `#table/column` references remain resolvable; do not rewrite them by hand. Use the
+     transformation skill's previewable `migrate-column-iris` workflow when migration
+     is intentionally requested.
    - When a contract declares `meta.kairos.replaces_sources`, map its virtual table to
      `target_class` with table-level `skos:exactMatch`. Do not add a direct mapping from
      the replaced Bronze table to the same domain merely to satisfy source coverage; that
@@ -171,6 +175,19 @@ and distinct-grain statement are recorded.
    file exists, proceed exactly as before (hints are optional).
 
 ### Phase 1 — Table-to-Entity Alignment
+
+For an evidence-grounded starting point, preview a non-authoritative v2 scaffold:
+
+```bash
+KAIROS_SKILL_CONTEXT=1 kairos-ontology scaffold-mapping \
+  --domain <domain> --source-table <absolute-table-iri> --target-class <absolute-class-iri>
+```
+
+Add `--output model/mappings/<source>-to-<domain>.ttl` to write it. Existing files are
+never replaced unless `--overwrite` is explicit. Every generated mapping is a named
+`TableMapping`/`ColumnMapping` with `reviewState "proposed"`; unmatched columns and likely
+denormalized columns owned by another mapped entity remain explicit review items. Proposed
+resources are validation inputs but not projection authority until approved.
 
 1. Read the bronze vocabulary for the selected source
 2. Read the target domain ontology (classes + properties)
@@ -275,6 +292,34 @@ For each confirmed table→entity pair:
 
 ### Phase 3 — Validation & Report
 
+Run the focused, read-only domain validator before declaring mapping design complete:
+
+```bash
+KAIROS_SKILL_CONTEXT=1 kairos-ontology validate-mapping --domain <domain>
+```
+
+It validates named mapping structure, scoped source/target IRI resolution, inherited
+class-property ownership, and typed structured expressions without loading unrelated domains.
+That is **local mapping-design validity**, not proof that the mappings bind to the complete
+source/transformation/Silver contract.
+
+Run the separate bound-readiness gate before declaring mapping complete:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+kairos-ontology check-projection --target dbt --scope mapping
+```
+
+This is a mapping-scoped view of projection's shared evaluator. It reports source/target IRI
+resolution, expression type compatibility, required and identity mappings, FK components,
+replacement authority, and synchronized virtual-contract bindings. It suppresses later Silver
+and adapter findings, exposes the owning skill and prerequisites, writes no artifacts, and must
+be green before mapping completion is claimed.
+
+Mapping completion is `design-valid`/phase-scoped evidence, not
+`projection-ready`. After it is green, return to **kairos-design-silver** for the
+bound-confirmation pass. Do not route directly to projection.
+
 1. Present coverage summary:
    - Source columns mapped: X/Y (Z%)
    - Domain properties covered: A/B (C%)
@@ -287,7 +332,7 @@ For each confirmed table→entity pair:
    - Generate mapping report (`--target report`) for full HTML view
    - Map another table from same source
    - Start new mapping session for different source
-   - Proceed to projection (`kairos-execute-project`)
+   - Proceed to bound Silver confirmation (`kairos-design-silver`)
 
 ---
 

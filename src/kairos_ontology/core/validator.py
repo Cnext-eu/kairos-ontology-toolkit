@@ -316,10 +316,34 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
     # the canonical loader cannot discover an import edge that was never authored.
     if do_shacl or do_consistency:
         resolved_claims_dir = claims_dir or ontologies_path.parent / "claims"
+        from .claim_registry import load_registry
+        from .reference_modules import _claim_term_refs
+
+        claimed_term_uris: set[str] = set()
+        imported_ontology_iris: set[str] = set()
+        for ontology_file in ontology_files:
+            claims_file = resolved_claims_dir / f"{ontology_file.stem}-claims.yaml"
+            if claims_file.is_file():
+                claimed_term_uris.update(
+                    term_uri
+                    for _claim_id, term_uri, _claim_type in _claim_term_refs(
+                        load_registry(claims_file)
+                    )
+                )
+            try:
+                scope_graph = Graph().parse(ontology_file)
+            except Exception:  # syntax diagnostics below retain ownership of parse failures
+                continue
+            imported_ontology_iris.update(
+                str(imported) for imported in scope_graph.objects(predicate=OWL.imports)
+            )
         module_context = build_reference_module_context(
             ref_models_dir,
             catalog_path=catalog_path,
             accelerator=accelerator,
+            requested_domains=(path.stem for path in ontology_files),
+            claimed_term_uris=claimed_term_uris,
+            imported_ontology_iris=imported_ontology_iris,
         )
         print("🔗 Managed Import Completeness")
         print("-" * 50)

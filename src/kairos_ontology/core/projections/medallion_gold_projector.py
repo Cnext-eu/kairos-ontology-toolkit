@@ -12,6 +12,7 @@ from rdflib import Graph
 from .dbt import (
     DbtInputs,
     bind_sources,
+    collect_materialization,
     normalize_contract,
     plan_materialization,
     render_project,
@@ -75,7 +76,7 @@ def generate_gold_artifacts(
     eligible_class_uris: set[str] | None = None,
 ) -> dict[str, str]:
     """Generate one registered Gold product from typed Silver and Gold plans."""
-    inputs = DbtInputs.from_call(
+    shaped, plan = plan_gold_projection(
         classes=classes,
         graph=graph,
         template_dir=template_dir,
@@ -87,25 +88,14 @@ def generate_gold_artifacts(
         preparation_dir=preparation_dir,
         mappings_dir=mappings_dir,
         gold_ext_path=gold_ext_path,
-        target_platform=target_platform,
         silver_ext_path=silver_ext_path,
         ref_model_defaults=ref_model_defaults,
         peer_ext_paths=peer_ext_paths,
         peer_ontology_paths=peer_ontology_paths,
+        target_platform=target_platform,
         contract_registry=contract_registry,
         eligible_class_uris=eligible_class_uris,
     )
-    bound = bind_sources(inputs)
-    contract = normalize_contract(bound)
-    if contract.policy.gold.profile is None:
-        raise GoldContractError(
-            "gold.profile-missing",
-            "Gold projection requires goldProductProfile",
-            rule_id="DD-112-profile",
-        )
-    shaped = shape_project(contract)
-    _require_silver_authority(bound, contract, shaped)
-    plan = plan_materialization(contract, shaped)
     rendered = render_project(shaped, plan)
     release_data = rendered.pop("__release_data__")
     rendered.pop("__coverage_data__", None)
@@ -130,6 +120,43 @@ def generate_gold_artifacts(
     )
     artifacts["__release_data__"] = release_data
     return artifacts
+
+
+def plan_gold_projection(
+    classes: list[dict],
+    graph: Graph,
+    template_dir: Path,
+    namespace: str,
+    **kwargs,
+):
+    """Run the exact Gold bind-to-materialization path without rendering."""
+
+    from .dbt import ExecutionMode
+
+    diagnostic_mode = kwargs.pop("diagnostic_mode", ExecutionMode.FAIL_FAST)
+    inputs = DbtInputs.from_call(
+        classes=classes,
+        graph=graph,
+        template_dir=template_dir,
+        namespace=namespace,
+        **kwargs,
+    )
+    bound = bind_sources(inputs)
+    contract = normalize_contract(bound, mode=diagnostic_mode)
+    if contract.policy.gold.profile is None:
+        raise GoldContractError(
+            "gold.profile-missing",
+            "Gold projection requires goldProductProfile",
+            rule_id="DD-112-profile",
+        )
+    shaped = shape_project(contract)
+    _require_silver_authority(bound, contract, shaped)
+    plan = (
+        collect_materialization(contract, shaped)
+        if diagnostic_mode is ExecutionMode.COLLECT
+        else plan_materialization(contract, shaped)
+    )
+    return shaped, plan
 
 
 def generate_master_gold_erd(

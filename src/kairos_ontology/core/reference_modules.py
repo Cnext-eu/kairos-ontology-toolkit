@@ -437,13 +437,29 @@ def resolve_reference_modules(
     config: AcceleratorModuleConfig,
     *,
     catalog_path: Path | None,
+    requested_domains: Iterable[str] | None = None,
+    claimed_term_uris: Iterable[str] = (),
+    imported_ontology_iris: Iterable[str] = (),
 ) -> ReferenceModuleContext:
-    """Resolve every profile and enforce its document IRI and version pin."""
+    """Resolve the requested module closure and enforce document/version contracts.
+
+    ``requested_domains=None`` preserves the registry-wide behavior required by
+    unscoped maintenance operations.  A supplied scope resolves only profiles
+    activated by those domains or identified by claimed terms/authored imports.
+    """
     resolver = CatalogResolver(Path(catalog_path)) if catalog_path else None
     modules: list[ResolvedReferenceModule] = []
     diagnostics: list[ModuleDiagnostic] = []
+    selected_ids = resolve_reference_module_ids(
+        config,
+        requested_domains=requested_domains,
+        claimed_term_uris=claimed_term_uris,
+        imported_ontology_iris=imported_ontology_iris,
+    )
 
     for profile in config.profiles:
+        if profile.id not in selected_ids:
+            continue
         missing_defaults = [
             path for path in default_annotation_paths(config, profile) if not path.is_file()
         ]
@@ -569,18 +585,69 @@ def resolve_reference_modules(
     )
 
 
+def resolve_reference_module_ids(
+    config: AcceleratorModuleConfig,
+    *,
+    requested_domains: Iterable[str] | None = None,
+    claimed_term_uris: Iterable[str] = (),
+    imported_ontology_iris: Iterable[str] = (),
+) -> frozenset[str]:
+    """Return module profile IDs reachable from domain, claim, and import scope."""
+    if requested_domains is None:
+        return frozenset(profile.id for profile in config.profiles)
+
+    domains = {str(domain).strip().lower() for domain in requested_domains if str(domain).strip()}
+    terms = {str(uri).strip() for uri in claimed_term_uris if str(uri).strip()}
+    imports = {
+        str(uri).strip().rstrip("#/")
+        for uri in imported_ontology_iris
+        if str(uri).strip()
+    }
+    selected = {
+        module_id
+        for activation in config.domains
+        if any(domain in activation.domain.lower() for domain in domains)
+        for module_id in activation.module_ids
+    }
+    for profile in config.profiles:
+        document_iris = {
+            profile.ontology_iri.rstrip("#/"),
+            (profile.catalog_uri or profile.ontology_iri).rstrip("#/"),
+            *(uri.rstrip("#/") for uri in profile.accepted_transitive_dependencies),
+        }
+        namespaces = (
+            *profile.term_namespaces,
+            profile.ontology_iri.rstrip("#/") + "#",
+            profile.ontology_iri.rstrip("#/") + "/",
+        )
+        if imports.intersection(document_iris) or any(
+            term.startswith(namespace) for term in terms for namespace in namespaces
+        ):
+            selected.add(profile.id)
+    return frozenset(selected)
+
+
 def build_reference_module_context(
     ref_models_dir: Path | None,
     *,
     catalog_path: Path | None,
     accelerator: str | None = None,
+    requested_domains: Iterable[str] | None = None,
+    claimed_term_uris: Iterable[str] = (),
+    imported_ontology_iris: Iterable[str] = (),
 ) -> ReferenceModuleContext | None:
-    """Convenience loader used by CLI and semantic preflights."""
+    """Load a reusable module context bounded by explicit semantic scope."""
     if ref_models_dir is None or not Path(ref_models_dir).is_dir():
         return None
     config = load_accelerator_module_config(Path(ref_models_dir), accelerator)
     return (
-        resolve_reference_modules(config, catalog_path=catalog_path)
+        resolve_reference_modules(
+            config,
+            catalog_path=catalog_path,
+            requested_domains=requested_domains,
+            claimed_term_uris=claimed_term_uris,
+            imported_ontology_iris=imported_ontology_iris,
+        )
         if config is not None
         else None
     )

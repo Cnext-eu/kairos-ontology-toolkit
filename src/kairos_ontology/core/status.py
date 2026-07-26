@@ -11,9 +11,9 @@ intent) on top in ``ontology-hub/.kairos-state/``.
 
 Design split (see DD-080):
 
-  - **scan (this module)** decides ``not-started | in-progress | done`` from
-    artifact presence/coverage.  It never emits ``open-questions`` or
-    ``blocked`` — those are continuation states owned by the markdown layer.
+  - **scan (this module)** retains the legacy ``not-started | in-progress |
+    done`` phase view and additionally derives the monotonic lifecycle contract
+    from versioned reports. It never trusts phase-log checkboxes.
   - **markdown layer** (``.kairos-state/``) owns intent and resume context.
 
 The scan is intentionally heuristic-but-deterministic: given the same hub on
@@ -27,18 +27,62 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 # Scan-derived state values (the markdown layer adds open-questions / blocked).
 STATE_NOT_STARTED = "not-started"
 STATE_IN_PROGRESS = "in-progress"
 STATE_DONE = "done"
 
-# Schema version of the `to_dict()` machine-readable payload (DD-080/DD-100).
+# Schema version of the `to_dict()` machine-readable payload (DD-080/DD-100/DD-116).
 # Bump only on a breaking change (removed/renamed key or changed meaning of an
 # existing key); additive new keys do not require a bump. v1 had no explicit
 # version and no per-instance `facts`. v2 adds `schema_version` plus per-instance
 # `facts` (e.g. claims proposed/approved counts, silver bound/aspirational
 # classes + release_eligible, validate data_valid) — every v1 key is unchanged.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+LIFECYCLE_STATE_ORDER = (
+    "authored",
+    "design-valid",
+    "bound-valid",
+    "projection-ready",
+    "generated",
+    "compile-valid",
+    "runtime-valid",
+    "release-eligible",
+)
+LIFECYCLE_ACHIEVED = "achieved"
+LIFECYCLE_BLOCKED = "blocked"
+LIFECYCLE_UNKNOWN = "unknown"
+LIFECYCLE_REPORT_SCHEMA_VERSION = 1
+
+_LIFECYCLE_REPORTS = {
+    "design-valid": (
+        "design-validation.json",
+        frozenset({"1", "1.0"}),
+    ),
+    "bound-valid": (
+        "silver-bound-readiness.json",
+        frozenset({"1.0", "1.1"}),
+    ),
+    "projection-ready": (
+        "projection-readiness.json",
+        frozenset({"1.0", "1.1"}),
+    ),
+    "compile-valid": (
+        "compile-validation.json",
+        frozenset({"1", "1.0"}),
+    ),
+    "runtime-valid": (
+        "runtime-validation.json",
+        frozenset({"1", "1.0"}),
+    ),
+    "release-eligible": (
+        "release-readiness.json",
+        frozenset({"1", "2", "3"}),
+    ),
+}
 
 # Lifecycle phase order (methodology section 4 / kairos-help section 2).
 PHASE_ORDER = (
@@ -131,6 +175,114 @@ class PhaseStatus:
         }
 
 
+@dataclass(frozen=True)
+class LifecycleDrift:
+    """Disagreement between a structured phase log and filesystem-derived status."""
+
+    code: str
+    log_path: str
+    phase: str = ""
+    instance: str = ""
+    declared_status: str = ""
+    scanned_status: str = ""
+    xref: str = ""
+    detail: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "code": self.code,
+            "log_path": self.log_path,
+            "phase": self.phase,
+            "instance": self.instance,
+            "declared_status": self.declared_status,
+            "scanned_status": self.scanned_status,
+            "xref": self.xref,
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
+class LifecycleStateFact:
+    """One effective state in the monotonic lifecycle chain."""
+
+    name: str
+    status: str
+    evidence: tuple[str, ...] = ()
+    detail: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "status": self.status,
+            "evidence": list(self.evidence),
+            "detail": self.detail,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> LifecycleStateFact:
+        return cls(
+            name=str(payload.get("name", "")),
+            status=str(payload.get("status", LIFECYCLE_UNKNOWN)),
+            evidence=tuple(str(item) for item in payload.get("evidence", ())),
+            detail=str(payload.get("detail", "")),
+        )
+
+
+@dataclass(frozen=True)
+class LifecycleStateReport:
+    """Versioned, compatibility-safe view of deterministic lifecycle evidence."""
+
+    schema_version: int = LIFECYCLE_REPORT_SCHEMA_VERSION
+    states: tuple[LifecycleStateFact, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def current_state(self) -> str | None:
+        achieved = [item.name for item in self.states if item.status == LIFECYCLE_ACHIEVED]
+        return achieved[-1] if achieved else None
+
+    @property
+    def next_state(self) -> str | None:
+        achieved = {
+            item.name for item in self.states if item.status == LIFECYCLE_ACHIEVED
+        }
+        return next((name for name in LIFECYCLE_STATE_ORDER if name not in achieved), None)
+
+    @property
+    def has_blockers(self) -> bool:
+        return any(item.status == LIFECYCLE_BLOCKED for item in self.states)
+
+    def state(self, name: str) -> LifecycleStateFact | None:
+        return next((item for item in self.states if item.name == name), None)
+
+    def to_dict(self) -> dict:
+        return {
+            "schema_version": self.schema_version,
+            "current_state": self.current_state,
+            "next_state": self.next_state,
+            "has_blockers": self.has_blockers,
+            "states": [item.to_dict() for item in self.states],
+            "warnings": list(self.warnings),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> LifecycleStateReport:
+        version = payload.get("schema_version")
+        if version != LIFECYCLE_REPORT_SCHEMA_VERSION:
+            return _legacy_lifecycle_report(
+                f"unknown lifecycle-state schema {version!r}; deterministic rescan required"
+            )
+        return cls(
+            schema_version=LIFECYCLE_REPORT_SCHEMA_VERSION,
+            states=tuple(
+                LifecycleStateFact.from_dict(item)
+                for item in payload.get("states", ())
+                if isinstance(item, dict)
+            ),
+            warnings=tuple(str(item) for item in payload.get("warnings", ())),
+        )
+
+
 @dataclass
 class HubStatus:
     """Deterministic objective status of an ontology hub.
@@ -143,6 +295,8 @@ class HubStatus:
     toolkit_version: str
     phases: list[PhaseStatus] = field(default_factory=list)
     transformation_candidates: dict | None = None
+    lifecycle_drift: list[LifecycleDrift] = field(default_factory=list)
+    lifecycle: LifecycleStateReport = field(default_factory=LifecycleStateReport)
 
     def phase(self, name: str) -> PhaseStatus | None:
         for p in self.phases:
@@ -165,10 +319,62 @@ class HubStatus:
             "toolkit_version": self.toolkit_version,
             "next_phase": self.next_phase,
             "phases": [p.to_dict() for p in self.phases],
+            "lifecycle_drift": [item.to_dict() for item in self.lifecycle_drift],
+            "lifecycle": self.lifecycle.to_dict(),
         }
         if self.transformation_candidates is not None:
             result["transformation_candidates"] = self.transformation_candidates
         return result
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> HubStatus:
+        """Read v1-v3 status payloads without treating legacy ``done`` as failure."""
+
+        phases = []
+        legacy_done = False
+        for raw_phase in payload.get("phases", ()):
+            if not isinstance(raw_phase, dict):
+                continue
+            instances = [
+                InstanceStatus(
+                    name=str(item.get("name", "")),
+                    state=str(item.get("state", STATE_NOT_STARTED)),
+                    evidence=[str(value) for value in item.get("evidence", ())],
+                    detail=str(item.get("detail", "")),
+                    facts=dict(item.get("facts", {})),
+                )
+                for item in raw_phase.get("instances", ())
+                if isinstance(item, dict)
+            ]
+            phase_state = str(raw_phase.get("state", STATE_NOT_STARTED))
+            legacy_done = legacy_done or phase_state == STATE_DONE or any(
+                item.state == STATE_DONE for item in instances
+            )
+            phases.append(
+                PhaseStatus(
+                    phase=str(raw_phase.get("phase", "")),
+                    title=str(raw_phase.get("title", "")),
+                    state=phase_state,
+                    instances=instances,
+                    detail=str(raw_phase.get("detail", "")),
+                )
+            )
+        raw_lifecycle = payload.get("lifecycle")
+        if isinstance(raw_lifecycle, dict):
+            lifecycle = LifecycleStateReport.from_dict(raw_lifecycle)
+        else:
+            detail = "legacy status payload has no lifecycle evidence"
+            if legacy_done:
+                detail += "; legacy done is preserved as unknown, not a failed gate"
+            lifecycle = _legacy_lifecycle_report(detail)
+        return cls(
+            hub_root=str(payload.get("hub_root", "")),
+            toolkit_version=str(payload.get("toolkit_version", "")),
+            phases=phases,
+            transformation_candidates=payload.get("transformation_candidates"),
+            lifecycle_drift=[],
+            lifecycle=lifecycle,
+        )
 
 
 def _rel(path: Path, hub_root: Path) -> str:
@@ -189,6 +395,108 @@ def _aggregate(instances: list[InstanceStatus]) -> str:
     if states == {STATE_NOT_STARTED}:
         return STATE_NOT_STARTED
     return STATE_IN_PROGRESS
+
+
+def _phase_log_frontmatter(path: Path) -> dict:
+    """Load only the structured YAML frontmatter from an OKF phase log."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("missing YAML frontmatter")
+    try:
+        end = next(index for index, line in enumerate(lines[1:], 1) if line.strip() == "---")
+    except StopIteration as exc:
+        raise ValueError("unterminated YAML frontmatter") from exc
+    payload = yaml.safe_load("\n".join(lines[1:end])) or {}
+    if not isinstance(payload, dict):
+        raise ValueError("YAML frontmatter is not a mapping")
+    return payload
+
+
+def _scan_phase_log_drift(
+    hub_root: Path, phases: list[PhaseStatus]
+) -> list[LifecycleDrift]:
+    """Validate current OKF phase-log xrefs and objective status declarations."""
+    phases_dir = hub_root / ".kairos-state" / "phases"
+    if not phases_dir.is_dir():
+        return []
+
+    phase_by_name = {phase.phase: phase for phase in phases}
+    drift: list[LifecycleDrift] = []
+    for log_path in sorted(phases_dir.rglob("*.md")):
+        relative_log = _rel(log_path, hub_root)
+        try:
+            data = _phase_log_frontmatter(log_path)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            drift.append(
+                LifecycleDrift(
+                    code="phase-log.invalid-frontmatter",
+                    log_path=relative_log,
+                    detail=str(exc),
+                )
+            )
+            continue
+        if data.get("type") != "kairos-phase-log":
+            continue
+
+        phase_name = str(data.get("phase") or "")
+        instance_name = str(data.get("instance") or "")
+        declared_status = str(data.get("status") or "")
+        phase = phase_by_name.get(phase_name)
+        scanned_status = STATE_NOT_STARTED
+        if phase is not None:
+            instance = next(
+                (item for item in phase.instances if item.name == instance_name),
+                None,
+            )
+            if instance is not None:
+                scanned_status = instance.state
+
+        if (
+            declared_status in {STATE_NOT_STARTED, STATE_IN_PROGRESS, STATE_DONE}
+            and declared_status != scanned_status
+        ):
+            drift.append(
+                LifecycleDrift(
+                    code="phase-log.status-disagreement",
+                    log_path=relative_log,
+                    phase=phase_name,
+                    instance=instance_name,
+                    declared_status=declared_status,
+                    scanned_status=scanned_status,
+                    detail=(
+                        f"phase log declares {declared_status}, but the deterministic "
+                        f"filesystem scan reports {scanned_status}"
+                    ),
+                )
+            )
+
+        xrefs = data.get("xrefs") or []
+        if not isinstance(xrefs, list):
+            xrefs = [xrefs]
+        for raw_xref in sorted(str(item) for item in xrefs if item):
+            target = hub_root / Path(raw_xref)
+            try:
+                within_hub = target.resolve().is_relative_to(hub_root.resolve())
+            except OSError:
+                within_hub = False
+            if within_hub and target.exists():
+                continue
+            drift.append(
+                LifecycleDrift(
+                    code="phase-log.missing-xref",
+                    log_path=relative_log,
+                    phase=phase_name,
+                    instance=instance_name,
+                    declared_status=declared_status,
+                    scanned_status=scanned_status,
+                    xref=raw_xref,
+                    detail=f"declared phase-log deliverable does not exist: {raw_xref}",
+                )
+            )
+    return sorted(
+        drift,
+        key=lambda item: (item.log_path, item.code, item.xref, item.detail),
+    )
 
 
 def _ttl_files(directory: Path) -> list[Path]:
@@ -480,6 +788,199 @@ def _scan_project(hub_root: Path) -> PhaseStatus:
                        detail=f"{len(instances)} target(s) generated")
 
 
+def _legacy_lifecycle_report(detail: str) -> LifecycleStateReport:
+    """Represent an old/unknown state contract without manufacturing failures."""
+
+    return LifecycleStateReport(
+        states=tuple(
+            LifecycleStateFact(name, LIFECYCLE_UNKNOWN, detail=detail)
+            for name in LIFECYCLE_STATE_ORDER
+        ),
+        warnings=(detail,),
+    )
+
+
+def _report_candidates(hub_root: Path, filename: str) -> tuple[Path, ...]:
+    return (
+        hub_root / ".kairos-state" / "reports" / filename,
+        hub_root / "output" / "reports" / filename,
+        hub_root / "output" / filename,
+    )
+
+
+def _latest_input_mtime(hub_root: Path) -> float:
+    """Newest authored/input artifact mtime used for conservative report freshness."""
+
+    roots = (
+        hub_root / "businessdiscovery",
+        hub_root / "integration" / "sources",
+        hub_root / "integration" / "transforms",
+        hub_root / "model",
+    )
+    mtimes = [
+        path.stat().st_mtime
+        for root in roots
+        if root.is_dir()
+        for path in root.rglob("*")
+        if path.is_file() and ".kairos-state" not in path.parts
+    ]
+    return max(mtimes, default=0.0)
+
+
+def _load_lifecycle_report(
+    hub_root: Path,
+    state: str,
+    latest_input_mtime: float,
+) -> tuple[dict | None, Path | None, str]:
+    """Load one known report schema; absent/stale/unknown is explicitly unknown."""
+
+    filename, schemas = _LIFECYCLE_REPORTS[state]
+    path = next((item for item in _report_candidates(hub_root, filename) if item.is_file()), None)
+    if path is None:
+        return None, None, f"{state} report absent; run its deterministic check explicitly"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, path, f"{state} report unreadable: {exc}"
+    if not isinstance(payload, dict):
+        return None, path, f"{state} report is not a JSON object"
+    schema = str(payload.get("schema_version", ""))
+    if schema not in schemas:
+        return None, path, f"{state} report schema {schema or '(absent)'} is unknown"
+    if path.stat().st_mtime < latest_input_mtime:
+        return None, path, f"{state} report is stale relative to authored inputs"
+    if payload.get("stale") is True:
+        return None, path, f"{state} report declares itself stale"
+    return payload, path, ""
+
+
+def _report_outcome(state: str, payload: dict) -> tuple[str, str]:
+    """Interpret only stable report fields; never infer success from mere presence."""
+
+    if state in {"bound-valid", "projection-ready"}:
+        required_scope = "silver" if state == "bound-valid" else "projection"
+        scope = str(payload.get("scope", "projection"))
+        if scope != required_scope:
+            return LIFECYCLE_UNKNOWN, f"report scope is {scope!r}, expected {required_scope!r}"
+        value = payload.get("status")
+        if value == "ready":
+            return LIFECYCLE_ACHIEVED, "shared non-writing readiness evaluator passed"
+        if value == "blocked":
+            return LIFECYCLE_BLOCKED, "shared non-writing readiness evaluator has blockers"
+    elif state == "design-valid":
+        value = payload.get("passed")
+        if isinstance(value, bool):
+            return (
+                (LIFECYCLE_ACHIEVED, "deterministic design validation passed")
+                if value
+                else (LIFECYCLE_BLOCKED, "deterministic design validation failed")
+            )
+    elif state == "compile-valid":
+        value = payload.get("compile_status", payload.get("status"))
+        if value == "passed" or payload.get("passed") is True:
+            return LIFECYCLE_ACHIEVED, "generated artifacts compiled successfully"
+        if value in {"failed", "error", "blocked"} or payload.get("passed") is False:
+            return LIFECYCLE_BLOCKED, "generated artifact compilation failed"
+    elif state == "runtime-valid":
+        value = payload.get("runtime_status", payload.get("status"))
+        if value == "passed" or payload.get("passed") is True:
+            return LIFECYCLE_ACHIEVED, "runtime validation passed"
+        if value in {"failed", "error", "blocked"} or payload.get("passed") is False:
+            return LIFECYCLE_BLOCKED, "runtime validation failed"
+    elif state == "release-eligible":
+        blocking = payload.get("is_blocking")
+        eligible = payload.get("release_eligible")
+        if blocking is False or eligible is True:
+            return LIFECYCLE_ACHIEVED, "deterministic release gate passed"
+        if blocking is True or eligible is False:
+            return LIFECYCLE_BLOCKED, "deterministic release gate has blockers"
+    return LIFECYCLE_UNKNOWN, f"{state} report has no recognizable outcome"
+
+
+def _derive_lifecycle_state(
+    hub_root: Path,
+    phases: list[PhaseStatus],
+) -> LifecycleStateReport:
+    """Derive the monotonic chain from artifacts and known versioned reports."""
+
+    authored_paths = sorted(
+        {
+            path
+            for root in (
+                hub_root / "businessdiscovery",
+                hub_root / "integration" / "sources",
+                hub_root / "model",
+            )
+            if root.is_dir()
+            for path in root.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in {".ttl", ".yaml", ".yml"}
+            and not path.name.startswith(".")
+        }
+    )
+    direct: dict[str, LifecycleStateFact] = {}
+    if authored_paths:
+        direct["authored"] = LifecycleStateFact(
+            "authored",
+            LIFECYCLE_ACHIEVED,
+            tuple(_rel(path, hub_root) for path in authored_paths),
+            "authored source/model artifacts present",
+        )
+    else:
+        direct["authored"] = LifecycleStateFact(
+            "authored", LIFECYCLE_UNKNOWN, detail="no authored lifecycle artifact found"
+        )
+
+    latest_input_mtime = _latest_input_mtime(hub_root)
+    warnings: list[str] = []
+    for state in _LIFECYCLE_REPORTS:
+        payload, path, warning = _load_lifecycle_report(
+            hub_root, state, latest_input_mtime
+        )
+        if payload is None:
+            evidence = (_rel(path, hub_root),) if path is not None else ()
+            direct[state] = LifecycleStateFact(
+                state, LIFECYCLE_UNKNOWN, evidence, warning
+            )
+            warnings.append(warning)
+            continue
+        outcome, detail = _report_outcome(state, payload)
+        direct[state] = LifecycleStateFact(
+            state, outcome, (_rel(path, hub_root),), detail
+        )
+        if outcome == LIFECYCLE_UNKNOWN:
+            warnings.append(detail)
+
+    project = next((phase for phase in phases if phase.phase == "project"), None)
+    generated_evidence = tuple(
+        evidence
+        for instance in (project.instances if project else ())
+        for evidence in instance.evidence
+    )
+    direct["generated"] = LifecycleStateFact(
+        "generated",
+        LIFECYCLE_ACHIEVED if generated_evidence else LIFECYCLE_UNKNOWN,
+        generated_evidence,
+        "projection artifacts present" if generated_evidence else "no generated output found",
+    )
+
+    effective: list[LifecycleStateFact] = []
+    predecessor_achieved = True
+    for name in LIFECYCLE_STATE_ORDER:
+        fact = direct[name]
+        if fact.status == LIFECYCLE_ACHIEVED and not predecessor_achieved:
+            fact = LifecycleStateFact(
+                name,
+                LIFECYCLE_UNKNOWN,
+                fact.evidence,
+                f"{fact.detail}; predecessor state is not achieved",
+            )
+            warnings.append(f"{name} evidence exists but its predecessor is unknown or blocked")
+        effective.append(fact)
+        predecessor_achieved = fact.status == LIFECYCLE_ACHIEVED
+    return LifecycleStateReport(states=tuple(effective), warnings=tuple(warnings))
+
+
 def scan_hub_status(hub_root: Path, *, toolkit_version: str = "") -> HubStatus:
     """Deterministically scan *hub_root* and return its objective lifecycle status.
 
@@ -539,11 +1040,15 @@ def scan_hub_status(hub_root: Path, *, toolkit_version: str = "") -> HubStatus:
             "assessment_status_counts": dict(sorted(status_counts.items())),
             **candidate_inventory.to_dict(),
         }
+    lifecycle_drift = _scan_phase_log_drift(hub_root, phases)
+    lifecycle = _derive_lifecycle_state(hub_root, phases)
     return HubStatus(
         str(hub_root),
         toolkit_version,
         phases,
         transformation_candidates=candidate_facts,
+        lifecycle_drift=lifecycle_drift,
+        lifecycle=lifecycle,
     )
 
 
@@ -579,7 +1084,25 @@ def render_markdown(status: HubStatus, *, last_scanned_at: str = "") -> str:
     lines.append("")
     nxt = status.next_phase
     lines.append(f"**Next phase:** `{nxt}`" if nxt else "**All phases complete.**")
+    lines.append("")
+    lines.append("### Monotonic lifecycle state")
+    lines.append("")
+    lines.append("| State | Evidence status | Detail |")
+    lines.append("|-------|-----------------|--------|")
+    for item in status.lifecycle.states:
+        lines.append(f"| {item.name} | {item.status} | {item.detail} |")
+    current = status.lifecycle.current_state or "unknown"
+    following = status.lifecycle.next_state or "complete"
+    lines.append("")
+    lines.append(f"**Lifecycle:** `{current}` → next `{following}`")
+    for warning in status.lifecycle.warnings:
+        lines.append(f"- ⚠ {warning}")
     if last_scanned_at:
         lines.append("")
         lines.append(f"_Scanned at {last_scanned_at} · toolkit {status.toolkit_version}_")
+    if status.lifecycle_drift:
+        lines.append("")
+        lines.append("### Phase-log drift")
+        for item in status.lifecycle_drift:
+            lines.append(f"- **{item.code}** `{item.log_path}`: {item.detail}")
     return "\n".join(lines) + "\n"

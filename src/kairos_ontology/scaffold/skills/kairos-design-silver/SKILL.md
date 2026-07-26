@@ -2,9 +2,9 @@
 name: kairos-design-silver
 description: >
   Expert guide for designing silver-layer extension annotations (SCD types,
-  natural keys, FK declarations, schema names) and understanding silver
-  projection output. Covers R1-R16 annotation vocabulary and S1-S8 Silver
-  Fabric Warehouse behaviours.
+  natural keys, FK declarations, schema names) and confirming the bound design
+  contract without generating output. Covers R1-R16 annotation vocabulary and
+  S1-S8 Silver behaviours.
 ---
 
 # Kairos Medallion Silver Skill
@@ -71,15 +71,16 @@ resume anchor. Do **not** edit `status.md` directly — kairos-flow folds your p
 
 
 You are helping the user **design** the silver layer of the medallion architecture.
-This skill covers annotation design and output interpretation:
+This skill has two explicit, non-generating passes:
 
-1. **Schema design** — Create and configure `kairos-ext:` annotations in
-   `*-silver-ext.ttl` extension files that control silver DDL generation.
-2. **Output interpretation** — Understand the DDL, ERD, and dbt model outputs
-   produced when the **kairos-execute-project** skill runs the silver/dbt targets.
+1. **Logical intent** — author SCD choice, desired identity/grain semantics,
+   FK/temporal policy, PII and DQ intent in `*-silver-ext.ttl`.
+2. **Bound confirmation** — after the final transformation and mappings exist,
+   consume only `check-projection --scope silver` to confirm that intent binds.
 
 > **Design/Execute separation (DD-033):** This skill creates annotation files.
-> To generate output, invoke the **kairos-execute-project** skill.
+> It never runs `project`, renders output, or reviews generated artifacts as a
+> completion phase. Generation belongs exclusively to **kairos-execute-project**.
 
 > **Draft model input (DD-086):** If
 > `model/planning/draft-model/draft-model-report.md` or
@@ -117,22 +118,33 @@ downstream Silver/Gold can be designed against a stable contract before mappings
 
 See the **kairos-execute-project** skill for the `--emit-aspirational-stubs` flag.
 
-## Transformation readiness gate (BLOCKING)
+## Choose the pass before starting
 
-Before creating or modifying Silver extension TTL, run:
+- **Logical-intent pass:** do not require final mappings or a completed custom
+  transformation. Capture the intended SCD, identity/grain, FK, PII, and DQ
+  contract, run the focused design validator, record `design-valid`, then stop.
+  If advanced SQL is needed, hand off to **kairos-develop-dbt-transformation**;
+  otherwise hand off directly to **kairos-design-mapping**.
+- **Bound-confirmation pass:** requires the final physical or contracted source
+  and final mapping. It is read-only and runs only the scoped shared evaluator.
+
+## Transformation readiness gate (bound-confirmation pass only)
+
+Before bound confirmation, run:
 
 ```bash
 $env:KAIROS_SKILL_CONTEXT = "1"
 kairos-ontology check-transformation-readiness --stage silver
 ```
 
-A non-zero result is blocking. Report its reasons verbatim and hand off to
+A non-zero result is blocking for bound confirmation. Report its reasons verbatim and hand off to
 **kairos-develop-dbt-transformation**. For every accepted candidate, the deterministic
 gate must confirm the contracted model and synchronized virtual source; the existing
 mapping/source coverage gates remain authoritative for virtual-table exact matches,
 column mappings, `silverSourceRef`, and direct/replacement conflicts. Deferred candidates
 must retain a rationale and distinct-grain statement. `status` is observational and does
-not replace this command.
+not replace this command. Do not use this gate to prevent the earlier
+logical-intent pass.
 
 ## Part A — Silver Schema Design
 
@@ -159,6 +171,18 @@ ls ontology-hub/model/extensions/*-silver-ext.ttl
 - If missing: create it using the template (Step 1b).
 
 ### 1b — Create from template
+
+Prefer the evidence-grounded preview when source mappings already exist:
+
+```bash
+KAIROS_SKILL_CONTEXT=1 kairos-ontology scaffold-silver-ext --domain <domain>
+```
+
+Use `--output model/extensions/<domain>-silver-ext.ttl` to write and `--overwrite` only
+after reviewing an existing file. The scaffold copies only reliable source/mapping/domain
+facts such as source references and mapped physical columns. DD-108/DD-109 governance
+choices (grain, identity, SCD/runtime, and FK policy) remain named review items; the command
+does not invent defaults or imply approval. Its output passes the focused Silver validator.
 
 Copy the scaffold template for each domain ontology that should be projected:
 
@@ -333,7 +357,7 @@ class in the domain MUST have at minimum:
 Run a structured semantic scan, then validate the authored extension:
 ```bash
 kairos-ontology show-class-inventory --domain {DOMAIN} --profile kairos-design
-kairos-ontology validate --syntax
+KAIROS_SKILL_CONTEXT=1 kairos-ontology validate-silver-ext --domain <domain>
 ```
 Use the full-URI class list as the annotation checklist. Do not count Turtle text:
 imports, alternate serialization, and blank-node expressions make text counts
@@ -569,7 +593,23 @@ ref:occurredAt
 
 ---
 
-## Phase 4 — Generate output (handoff to projection skill)
+## Phase 4 — Close the design contract or confirm its binding
+
+### 4a — Logical-intent completion
+
+After `validate-silver-ext` passes, record the authored logical choices and
+`design-valid` evidence in the Silver phase log. **Stop this pass here.** Do not
+run projection and do not claim `bound-valid`.
+
+- Complex relational evidence → hand off to
+  **kairos-develop-dbt-transformation**, then **kairos-design-mapping**.
+- Simple direct/scalar mappings → hand off directly to
+  **kairos-design-mapping**.
+
+This keeps the simple path comprehensible while preserving the complex path:
+logical Silver → dbt transformation → mapping → bound Silver confirmation.
+
+### 4b — Bound-confirmation completion
 
 > **Pre-silver claims gate (MANDATORY — DD-094).** Before generating the
 > silver layer, verify that the ontology + mappings actually cover every source
@@ -584,7 +624,7 @@ ref:occurredAt
 > ```
 >
 > - **Exit 0** → every affinity-assigned source table is mapped to a domain entity.
->   Proceed to projection.
+>   Proceed to the non-writing bound confirmation below.
 > - **Exit 1** → STOP. The listed `(system.table)` pairs have domain affinity but
 >   no source-to-domain mapping (no SKOS match on the bronze table or its columns).
 >   Complete the mappings via the **kairos-design-mapping** skill (and, if classes
@@ -593,31 +633,41 @@ ref:occurredAt
 > `check-claims` is read-only and deterministic (no AI). Use `--warn-only`
 > only as a deliberate, documented override (e.g. a domain you intentionally defer).
 
-Once your Silver extension annotations are complete **and the claims gate is green**,
-invoke **kairos-execute-project** with target `dbt` (complete bundle) or `silver`
-(the same evidence-bound Silver pipeline). Both targets consume identical
-bind/normalize output. Neither can infer plausible DDL from ontology classes alone:
-source vocabulary, preparation policy, mappings, identity/runtime policy, and bound
-models are required.
+Local Turtle/SHACL and annotation checks establish **Silver design validity** only. Before
+claiming Silver completion, run the separate, non-writing bound gate:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+kairos-ontology check-projection --target silver --scope silver
+```
+
+This Silver-scoped view of projection's shared evaluator reports source identity authority,
+incremental runtime fields, semantic key versus record identity, FK resolution and
+temporal/failure policy, data-quality policy, claim/include synchronization reached by binding,
+and the same bound normalization results projection consumes. It suppresses source/mapping and
+adapter findings, exposes owner/prerequisite information, and must be green before Silver
+completion is claimed.
+
+Once the claims gate and scoped evaluator are green, record `bound-valid` and
+return control to **kairos-flow**. The flow must run full `check-projection` next;
+only a green result may hand off to **kairos-execute-project**.
 
 For a contracted custom intermediate, first hand off to
 **kairos-develop-dbt-transformation**. After `sync-dbt-contracts` and virtual-source
 mapping, this skill remains authoritative for semantic natural-key properties, SK/IRI,
 SCD/FK policy, and `kairos-ext:silverSourceRef`. The dbt contract owns physical output
 columns/types and key columns; custom SQL owns relational logic. Confirm
-`silverSourceRef` names the contracted model, then project separately for each required
-adapter with `project --target dbt --platform <fabric|databricks>`.
+`silverSourceRef` names the contracted model, then return to the bound-confirmation pass.
 For `meta.kairos.replaces_sources`, this annotation is a blocking part of governed
 replacement coverage: it must be on the approved target class and equal the declaring
 contract model name.
 
-> **Design/Execute separation (DD-033):** This skill handles annotation *design*.
-> The **kairos-execute-project** skill handles *generation*. If you need to
-> iterate on outputs, edit the extension file here, then invoke projection again.
+> **Design/Execute separation (DD-033):** This skill stops at its design contract
+> and bound confirmation. It never invokes generation.
 
 > **Next design step (optional):** if this domain also feeds a Power BI semantic
 > model, design the gold annotations next via the **kairos-design-gold** skill
-> before projecting the `powerbi` target.
+> before the projection-readiness check for the `powerbi` target.
 
 Artifacts are written to the dbt project tree under `output/medallion/dbt/`:
 
@@ -658,7 +708,11 @@ with `@mermaid-js/mermaid-cli` as a dev dependency — just run `npm install`.
 
 ---
 
-## Phase 5 — Review outputs
+## Reference only — interpreting output from a separate projection invocation
+
+This is not a Silver skill phase and cannot establish design or bound completion.
+Use it only when the user returns with artifacts generated separately by
+**kairos-execute-project**.
 
 ### Check per-domain DDL
 
@@ -690,8 +744,8 @@ an explicit FK/temporal contract; fix the source mapping or Silver policy and re
 
 ### Fix and iterate
 
-If adjustments are needed, edit `{DOMAIN}-silver-ext.ttl` and re-run the projection
-via the **kairos-execute-project** skill (target `silver` or `dbt`).
+If adjustments are needed, edit `{DOMAIN}-silver-ext.ttl`, repeat focused design
+validation and bound confirmation, then return control to **kairos-flow**.
 The master ERD is regenerated automatically on every run.
 
 ---
@@ -929,7 +983,7 @@ automatically.
 
 ---
 
-## Part B — dbt Silver Model Generation
+## Reference only — dbt Silver generation contract
 
 This section covers generating a **dbt Core project** that transforms bronze
 (source system) data into silver (domain-conformed) tables. The transformation
@@ -986,15 +1040,11 @@ Bronze (source systems)          Silver (domain model)
                                  dbt schema + tests
 ```
 
-### Running the projection
+### Generation boundary
 
-```bash
-# Generate dbt project for all domains
-python -m kairos_ontology project --target dbt --platform <fabric|databricks>
-
-# Generate for a specific ontology
-python -m kairos_ontology project --ontology ontology-hub/model/ontologies/client.ttl --target dbt
-```
+Never run projection from this skill. After `bound-valid`, return to
+**kairos-flow**, which obtains full `projection-ready` evidence before handing
+off to **kairos-execute-project**.
 
 ### Output structure
 

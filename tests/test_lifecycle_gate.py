@@ -468,8 +468,39 @@ class TestComposedReportShape:
         for key in (
             "claims", "source_coverage", "projection_sync", "release",
             "validation", "project", "hub_root", "transformation_candidates",
+            "lifecycle",
         ):
             assert key in payload
+
+    def test_absent_lifecycle_reports_are_warnings_not_migration_blockers(self, tmp_path):
+        hub = _build_hub(tmp_path, claim_status=None)
+
+        report = _evaluate(hub)
+
+        assert report.lifecycle.current_state == "authored"
+        assert report.lifecycle.has_blockers is False
+        assert any("report absent" in warning for warning in report.lifecycle.warnings)
+        assert report.is_blocking is False
+
+    def test_explicit_readiness_blocker_participates_in_release_gate(self, tmp_path):
+        hub = _build_hub(tmp_path, claim_status=None)
+        reports = hub / ".kairos-state" / "reports"
+        reports.mkdir(parents=True)
+        (reports / "projection-readiness.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.1",
+                    "scope": "projection",
+                    "status": "blocked",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        report = _evaluate(hub)
+
+        assert report.lifecycle.state("projection-ready").status == "blocked"
+        assert report.is_blocking is True
 
     def test_is_blocking_is_a_union_of_every_section(self, tmp_path):
         """Release-eligible but failed validation still blocks (pure OR)."""

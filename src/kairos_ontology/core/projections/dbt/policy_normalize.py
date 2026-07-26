@@ -7,12 +7,21 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import TypeVar
 
 from ..uri_utils import camel_to_snake
+from .diagnostics import (
+    Diagnostic,
+    DiagnosticCollector,
+    EvaluationResult,
+    EvaluationStatus,
+    ExecutionMode,
+    Prerequisite,
+)
 from .policy_specs import (
     AdapterCapability,
     AdapterEvidenceSpec,
@@ -155,6 +164,7 @@ from .mapping_specs import SourceMappings
 from .specs import (
     BoundSilverModel,
     ColumnSpec,
+    ContractFact,
     ForeignKeyPolicy,
     ModelOutcome,
     SilverModelKind,
@@ -207,9 +217,117 @@ class PolicyNormalizationError(ValueError):
         self.rule_id = rule_id
         self.resource_uri = resource_uri
         self.predicate_uri = predicate_uri
+        stage = (
+            "preparation"
+            if code.startswith("prep.")
+            else "identity"
+            if code.startswith(("identity.", "lineage."))
+            else "runtime"
+            if code.startswith(("incremental.", "runtime.", "hash."))
+            else "temporal_fk"
+            if code.startswith(("temporal.", "fk.", "foreign-key."))
+            else "adapter"
+            if code.startswith(("adapter.", "capability."))
+            else "quality"
+            if code.startswith(("dq.", "quality."))
+            else "gold"
+            if code.startswith("gold.")
+            else "normalization"
+        )
+        owner_skill = {
+            "preparation": "kairos-design-source",
+            "identity": "kairos-design-silver",
+            "runtime": "kairos-design-silver",
+            "temporal_fk": "kairos-design-silver",
+            "adapter": "kairos-execute-validate",
+            "quality": "kairos-design-silver",
+            "gold": "kairos-design-gold",
+        }.get(stage, "kairos-execute-validate")
+        self.diagnostic = Diagnostic(
+            code=code,
+            message=message,
+            rule_id=rule_id,
+            resource_uri=resource_uri,
+            predicate_uri=predicate_uri,
+            stage=stage,
+            owner_skill=owner_skill,
+            evidence=tuple(
+                item
+                for item in (
+                    f"resource:{resource_uri}" if resource_uri else "",
+                    f"predicate:{predicate_uri}" if predicate_uri else "",
+                    f"rule:{rule_id}",
+                )
+                if item
+            ),
+            remediation=f"Resolve {code} with {owner_skill}.",
+        )
         location = resource_uri or "<project>"
         predicate = f" ({predicate_uri})" if predicate_uri else ""
         super().__init__(f"{code}: {message} at {location}{predicate} [{rule_id}]")
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyNormalizationStages:
+    """Partial stage results produced by preparation/identity collection."""
+
+    preparation: EvaluationResult[tuple[PreparationSpec, ...]]
+    identity: EvaluationResult[tuple[EntityIdentitySpec, ...]]
+    runtime: EvaluationResult[object]
+    foreign_keys: EvaluationResult[object]
+    mapping: EvaluationResult[object] = field(
+        default_factory=lambda: EvaluationResult(status=EvaluationStatus.PASSED)
+    )
+    adapter: EvaluationResult[object] = field(
+        default_factory=lambda: EvaluationResult(status=EvaluationStatus.PASSED)
+    )
+    quality: EvaluationResult[object] = field(
+        default_factory=lambda: EvaluationResult(status=EvaluationStatus.PASSED)
+    )
+    gold: EvaluationResult[object] = field(
+        default_factory=lambda: EvaluationResult(status=EvaluationStatus.PASSED)
+    )
+
+    @property
+    def diagnostics(self) -> tuple[Diagnostic, ...]:
+        return tuple(
+            sorted(
+                (
+                    *self.preparation.diagnostics,
+                    *self.identity.diagnostics,
+                    *self.runtime.diagnostics,
+                    *self.foreign_keys.diagnostics,
+                    *self.mapping.diagnostics,
+                    *self.adapter.diagnostics,
+                    *self.quality.diagnostics,
+                    *self.gold.diagnostics,
+                ),
+                key=lambda item: item.sort_key,
+            )
+        )
+
+
+class PolicyCollectionError(ValueError):
+    """Collected preparation/identity blockers with typed stage availability."""
+
+    def __init__(
+        self,
+        stages: PolicyNormalizationStages,
+        partial_value: MedallionPolicySpec | None = None,
+    ) -> None:
+        self.stages = stages
+        self.partial_value = partial_value
+        self.diagnostics = stages.diagnostics
+        first = self.diagnostics[0]
+        self.code = first.code
+        self.rule_id = first.rule_id
+        self.resource_uri = first.resource_uri
+        self.predicate_uri = first.predicate_uri
+        location = first.resource_uri or "<project>"
+        predicate = f" ({first.predicate_uri})" if first.predicate_uri else ""
+        super().__init__(
+            f"{first.code}: {first.message} at {location}{predicate} [{first.rule_id}]"
+        )
 
 
 def _error(
@@ -2302,6 +2420,7 @@ def _timestamp_semantics(
     preparations: tuple[PreparationSpec, ...] = (),
     incremental: IncrementalPolicySpec | None = None,
     available_columns_by_source: dict[str, frozenset[str]] | None = None,
+    contract_cdc_by_source: dict[str, dict[str, str]] | None = None,
 ) -> tuple[TimestampSemanticSpec, ...]:
     prep_by_source: dict[str, PreparationSpec] = {}
     for preparation in preparations:
@@ -2360,6 +2479,9 @@ def _timestamp_semantics(
                 if preparation is not None and preparation.cdc is not None
                 else None
             )
+            contract_column = (contract_cdc_by_source or {}).get(source_ref, {}).get(
+                cdc_attribute
+            )
             source_column = (
                 cdc_field.normalized_fields[0].name.value
                 if cdc_field is not None
@@ -2372,6 +2494,8 @@ def _timestamp_semantics(
                 )
                 else None
             )
+            if source_column is None and contract_column is not None:
+                source_column = contract_column
             source_values.append(
                 TimestampSourceSpec(
                     source_identity_ref=source_ref,
@@ -2429,6 +2553,7 @@ def _normalize_identities(
     incremental: tuple[IncrementalPolicySpec, ...],
     candidates: tuple[BoundSilverModel, ...],
     issues: list[PolicyIssue],
+    contracts: tuple[tuple[str, ContractFact], ...] = (),
 ) -> tuple[EntityIdentitySpec, ...]:
     multi_by_ref = {item.resource_uri: item for item in multi_source}
     hash_refs = {item.resource_uri for item in hashes}
@@ -2441,6 +2566,12 @@ def _normalize_identities(
             *(child.resource_uri for child in preparation.array_children),
         )
     }
+    contract_by_identity = {
+        contract.identity_resource_uri: contract
+        for _, contract in contracts
+        if contract.identity_resource_uri
+    }
+    governed_identity_refs = prepared_identity_refs | set(contract_by_identity)
     source_ref_by_relation = {
         relation_uri: identity_ref
         for preparation in preparations
@@ -2455,6 +2586,12 @@ def _normalize_identities(
             ),
         )
     }
+    source_ref_by_relation.update(
+        {
+            contract.virtual_source_iri: contract.identity_resource_uri
+            for contract in contract_by_identity.values()
+        }
+    )
     available_columns: dict[tuple[str, str], set[str]] = {}
     contributor_refs: dict[str, set[str]] = {}
     for candidate in candidates:
@@ -2509,18 +2646,64 @@ def _normalize_identities(
         unknown_source_refs = tuple(
             source_ref
             for source_ref in source_refs.value
-            if source_ref not in prepared_identity_refs
+            if source_ref not in governed_identity_refs
         )
         if unknown_source_refs:
             raise PolicyNormalizationError(
                 "identity.unknown-source-identity",
                 (
-                    "sourceIdentity must reference a governed prep RecordKeyPolicy or "
-                    f"ArrayChildContract; unknown: {', '.join(unknown_source_refs)}"
+                    "sourceIdentity must reference a governed prep RecordKeyPolicy, "
+                    "ArrayChildContract, or dbt ContractIdentity; unknown: "
+                    f"{', '.join(unknown_source_refs)}"
                 ),
                 rule_id="DD-108-source-identity",
                 resource_uri=fact.resource_uri,
             )
+        unverified_contracts = tuple(
+            source_ref
+            for source_ref in source_refs.value
+            if source_ref in contract_by_identity
+            and not contract_by_identity[source_ref].identity_verified
+        )
+        if unverified_contracts:
+            raise PolicyNormalizationError(
+                "identity.contract-unverified",
+                (
+                    "contract-output identity requires actual passing uniqueness and "
+                    "non-null evidence tied to the current contract content hash; "
+                    f"unverified: {', '.join(unverified_contracts)}"
+                ),
+                rule_id="DD-108-contract-identity",
+                resource_uri=fact.resource_uri,
+            )
+        contract_sources = tuple(
+            contract_by_identity[source_ref]
+            for source_ref in source_refs.value
+            if source_ref in contract_by_identity
+        )
+        if fact.scd_type is not None:
+            required_cdc = {
+                "operation",
+                "source_updated_at",
+                "source_effective_at",
+                "ingested_at",
+            }
+            incomplete = tuple(
+                contract.identity_resource_uri
+                for contract in contract_sources
+                if not required_cdc.issubset(dict(contract.canonical_cdc_bindings))
+            )
+            if incomplete:
+                raise PolicyNormalizationError(
+                    "identity.contract-cdc-incomplete",
+                    (
+                        "SCD1/SCD2 contract identity requires canonical operation, "
+                        "source-update, business-effective, and ingestion output bindings; "
+                        f"incomplete: {', '.join(incomplete)}"
+                    ),
+                    rule_id="DD-109-contract-cdc",
+                    resource_uri=fact.resource_uri,
+                )
         actual_contributors = contributor_refs.get(fact.resource_uri, set())
         if actual_contributors and actual_contributors != set(source_refs.value):
             raise PolicyNormalizationError(
@@ -2980,6 +3163,11 @@ def _normalize_identities(
                                 )
                             )
                             for source_ref in source_refs.value
+                        },
+                        {
+                            source_ref: dict(contract_by_identity[source_ref].canonical_cdc_bindings)
+                            for source_ref in source_refs.value
+                            if source_ref in contract_by_identity
                         },
                     ),
                 ),
@@ -5314,6 +5502,298 @@ def _gold_registry() -> GoldProductProfileRegistry:
     )
 
 
+def _collect_preparations(
+    facts: MedallionPolicyFacts,
+    systems: tuple[SourceSystemFact, ...],
+    mappings: SourceMappings,
+    adapter: AdapterName,
+    collector: DiagnosticCollector,
+) -> EvaluationResult[tuple[PreparationSpec, ...]]:
+    """Normalize independent preparation roots without retrying a failed root."""
+
+    table_index = {
+        table.uri: (system, table)
+        for system in systems
+        for table in system.tables
+        if table.relation_kind == "physical"
+    }
+    by_table: dict[str, list[PreparationPolicyFact]] = {}
+    for fact in facts.preparations:
+        try:
+            table_uri = _single(fact.source_table, "prepared source table", "DD-106-prep")
+        except PolicyNormalizationError as exc:
+            collector.add(exc.diagnostic)
+            continue
+        by_table.setdefault(table_uri, []).append(fact)
+
+    invalid_tables: set[str] = set()
+    for table_uri, policies in sorted(by_table.items()):
+        if len(policies) != 1:
+            error = PolicyNormalizationError(
+                "prep.duplicate-policy",
+                f"source table {table_uri!r} has {len(policies)} preparation policies",
+                rule_id="DD-106-prep-coverage",
+                resource_uri=policies[0].resource_uri,
+            )
+            collector.add(error.diagnostic)
+            invalid_tables.add(table_uri)
+        elif table_uri not in table_index:
+            error = PolicyNormalizationError(
+                "prep.unknown-source-table",
+                f"preparation policy references unknown source table {table_uri!r}",
+                rule_id="DD-106-prep",
+                resource_uri=policies[0].resource_uri,
+            )
+            collector.add(error.diagnostic)
+            invalid_tables.add(table_uri)
+
+    mapped_tables = {
+        mapping.source_table_uri
+        for mapping in mappings.tables
+        if mapping.source_table_uri in table_index
+    }
+    for table_uri in sorted(mapped_tables - set(by_table)):
+        error = PolicyNormalizationError(
+            "prep.missing-policy",
+            f"mapped source table {table_uri!r} has no preparation policy",
+            rule_id="DD-106-prep-coverage",
+            resource_uri=table_uri,
+        )
+        collector.add(error.diagnostic)
+        invalid_tables.add(table_uri)
+
+    result: list[PreparationSpec] = []
+    for table_uri, policy_facts in sorted(by_table.items()):
+        if table_uri in invalid_tables:
+            continue
+        system, table = table_index[table_uri]
+        column_uris = {column.uri for column in table.columns}
+        scoped_system = replace(system, tables=(table,))
+        scoped_mappings = replace(
+            mappings,
+            tables=tuple(
+                item for item in mappings.tables if item.source_table_uri == table_uri
+            ),
+            columns=tuple(
+                item for item in mappings.columns if item.source_column_uri in column_uris
+            ),
+        )
+        scoped_facts = replace(facts, preparations=(policy_facts[0],))
+        try:
+            result.extend(
+                _normalize_prep(
+                    scoped_facts,
+                    (scoped_system,),
+                    scoped_mappings,
+                    adapter,
+                )
+            )
+        except PolicyNormalizationError as exc:
+            collector.add(exc.diagnostic)
+
+    diagnostics = collector.diagnostics
+    return EvaluationResult(
+        status=EvaluationStatus.FAILED if diagnostics else EvaluationStatus.PASSED,
+        value=tuple(result),
+        diagnostics=diagnostics,
+    )
+
+
+def _not_evaluated_stage(
+    stage: str,
+    prerequisite: Prerequisite,
+    *,
+    code_stage: str | None = None,
+) -> EvaluationResult[object]:
+    owner = {
+        "identity": "kairos-design-silver",
+        "runtime": "kairos-design-silver",
+        "temporal_fk": "kairos-design-silver",
+    }.get(stage, "kairos-execute-validate")
+    diagnostic = Diagnostic(
+        code=f"{code_stage or stage}.not-evaluated",
+        message=f"{stage.replace('_', ' ')} checks require available normalization inputs",
+        rule_id="DD-108-prerequisite" if stage == "identity" else "DD-109-prerequisite",
+        stage=stage,
+        owner_skill=owner,
+        blocking=False,
+        depends_on=prerequisite.diagnostic_ids,
+        evidence=tuple(f"prerequisite:{item}" for item in prerequisite.diagnostic_ids),
+        remediation=f"Resolve prerequisite blockers before {owner} reevaluates this stage.",
+        evaluation_status=EvaluationStatus.NOT_EVALUATED,
+    )
+    return EvaluationResult.not_evaluated((prerequisite,), (diagnostic,))
+
+
+def _collect_identities(
+    facts: tuple[EntityIdentityFact, ...],
+    preparations: EvaluationResult[tuple[PreparationSpec, ...]],
+    multi_source: tuple[MultiSourcePolicySpec, ...],
+    hashes: tuple[CanonicalHashPolicySpec, ...],
+    incremental: tuple[IncrementalPolicySpec, ...],
+    candidates: tuple[BoundSilverModel, ...],
+    issues: list[PolicyIssue],
+    collector: DiagnosticCollector,
+    contracts: tuple[tuple[str, ContractFact], ...] = (),
+    incremental_result: EvaluationResult[tuple[IncrementalPolicySpec, ...]] | None = None,
+) -> EvaluationResult[tuple[EntityIdentitySpec, ...]]:
+    """Normalize each independent DD-108 identity root once."""
+
+    available_preparations = preparations.value or ()
+    available_refs = {
+        identity_ref
+        for preparation in available_preparations
+        for identity_ref in (
+            preparation.source_record_key.resource_uri,
+            *(child.resource_uri for child in preparation.array_children),
+        )
+    }
+    available_refs.update(
+        contract.identity_resource_uri
+        for _, contract in contracts
+        if contract.identity_resource_uri
+    )
+    prep_diagnostic_ids = tuple(item.id for item in preparations.diagnostics)
+    prep_prerequisite = Prerequisite(
+        id="preparation",
+        status=preparations.status,
+        diagnostic_ids=prep_diagnostic_ids,
+    )
+    runtime_prerequisite = Prerequisite(
+        id="runtime",
+        status=(
+            incremental_result.status
+            if incremental_result is not None
+            else EvaluationStatus.PASSED
+        ),
+        diagnostic_ids=tuple(
+            item.id
+            for item in (
+                incremental_result.diagnostics if incremental_result is not None else ()
+            )
+        ),
+    )
+    incremental_refs = {item.resource_uri for item in incremental}
+    result: list[EntityIdentitySpec] = []
+    skipped_prerequisites: list[Prerequisite] = []
+    own_diagnostics: list[Diagnostic] = []
+    for fact in sorted(facts, key=lambda item: item.resource_uri):
+        source_refs = {
+            value.strip()
+            for value in (fact.source_identities.values if fact.source_identities else ())
+            if value.strip()
+        }
+        if (
+            preparations.status is not EvaluationStatus.PASSED
+            and source_refs
+            and not source_refs.issubset(available_refs)
+        ):
+            skipped_prerequisites.append(prep_prerequisite)
+            continue
+        authored_incremental_refs = {
+            value
+            for value in (
+                fact.incremental_policy_refs.values
+                if fact.incremental_policy_refs is not None
+                else ()
+            )
+            if value
+        }
+        if (
+            not runtime_prerequisite.available
+            and not authored_incremental_refs.issubset(incremental_refs)
+        ):
+            skipped_prerequisites.append(runtime_prerequisite)
+            continue
+        before = set(item.id for item in collector.diagnostics)
+        try:
+            result.extend(
+                _normalize_identities(
+                    (fact,),
+                    available_preparations,
+                    multi_source,
+                    hashes,
+                    incremental,
+                    candidates,
+                    issues,
+                    contracts,
+                )
+            )
+        except PolicyNormalizationError as exc:
+            collector.add(exc.diagnostic)
+        own_diagnostics.extend(
+            item for item in collector.diagnostics if item.id not in before
+        )
+
+    if skipped_prerequisites:
+        combined = Prerequisite(
+            id="+".join(sorted({item.id for item in skipped_prerequisites})),
+            status=EvaluationStatus.FAILED,
+            diagnostic_ids=tuple(
+                sorted(
+                    {
+                        diagnostic_id
+                        for item in skipped_prerequisites
+                        for diagnostic_id in item.diagnostic_ids
+                    }
+                )
+            ),
+        )
+        skipped = _not_evaluated_stage("identity", combined)
+        own_diagnostics.extend(skipped.diagnostics)
+    status = (
+        EvaluationStatus.FAILED
+        if any(item.evaluation_status is EvaluationStatus.FAILED for item in own_diagnostics)
+        else EvaluationStatus.NOT_EVALUATED
+        if skipped_prerequisites
+        else EvaluationStatus.PASSED
+    )
+    return EvaluationResult(
+        status=status,
+        value=tuple(result) if result else None,
+        diagnostics=tuple(own_diagnostics),
+        prerequisites=tuple(dict.fromkeys(skipped_prerequisites)),
+    )
+
+
+def _collect_policy_values(
+    authored: tuple,
+    normalize,
+    collector: DiagnosticCollector,
+    *,
+    stage: str,
+) -> EvaluationResult[tuple]:
+    """Evaluate independently-authored roots once and retain successful partial values."""
+
+    values: list[object] = []
+    diagnostics: list[Diagnostic] = []
+    for fact in sorted(authored, key=lambda item: getattr(item, "resource_uri", "")):
+        before = {item.id for item in collector.diagnostics}
+        try:
+            values.extend(normalize((fact,)))
+        except PolicyNormalizationError as exc:
+            owner = {
+                "runtime": "kairos-design-silver",
+                "temporal_fk": "kairos-design-silver",
+                "quality": "kairos-design-silver",
+                "gold": "kairos-design-gold",
+            }.get(stage, exc.diagnostic.owner_skill)
+            collector.add(
+                replace(
+                    exc.diagnostic,
+                    stage=stage,
+                    owner_skill=owner,
+                    remediation=f"Resolve {exc.code} with {owner}.",
+                )
+            )
+        diagnostics.extend(item for item in collector.diagnostics if item.id not in before)
+    return EvaluationResult(
+        status=EvaluationStatus.FAILED if diagnostics else EvaluationStatus.PASSED,
+        value=tuple(values),
+        diagnostics=tuple(diagnostics),
+    )
+
+
 def normalize_medallion_policy(
     facts: MedallionPolicyFacts,
     *,
@@ -5323,6 +5803,8 @@ def normalize_medallion_policy(
     fk_policy: ForeignKeyPolicy,
     target_adapter: str = "fabric",
     target_source: PolicySource = PolicySource.DEFAULT,
+    mode: ExecutionMode = ExecutionMode.FAIL_FAST,
+    contracts: tuple[tuple[str, ContractFact], ...] = (),
 ) -> MedallionPolicySpec:
     """Classify all effective policy; this function performs no RDF or file I/O."""
     issues: list[PolicyIssue] = []
@@ -5357,21 +5839,111 @@ def normalize_medallion_policy(
             "Medallion policy v1 naming default.",
         )
     )
-    preparations = _normalize_prep(facts, systems, mappings, adapter)
-    multi_source = _normalize_multi_source(facts.multi_source)
-    incremental = _normalize_incremental(facts.incremental)
-    hashes = _normalize_hashes(facts.hashes)
-    temporal = _normalize_temporal(facts.temporal_relationships)
-    quality = _normalize_dq(facts.data_quality)
-    identities = _normalize_identities(
-        facts.identities,
-        preparations,
-        multi_source,
-        hashes,
-        incremental,
-        silver_candidates,
-        issues,
+    collector = DiagnosticCollector(mode)
+    preparation_result = (
+        _collect_preparations(facts, systems, mappings, adapter, collector)
+        if mode is ExecutionMode.COLLECT
+        else EvaluationResult(
+            status=EvaluationStatus.PASSED,
+            value=_normalize_prep(facts, systems, mappings, adapter),
+        )
     )
+    preparations = preparation_result.value or ()
+    multi_source = _normalize_multi_source(facts.multi_source)
+    incremental_result = (
+        _collect_policy_values(
+            facts.incremental, _normalize_incremental, collector, stage="runtime"
+        )
+        if mode is ExecutionMode.COLLECT
+        else EvaluationResult(
+            status=EvaluationStatus.PASSED,
+            value=_normalize_incremental(facts.incremental),
+        )
+    )
+    incremental = incremental_result.value or ()
+    hashes = _normalize_hashes(facts.hashes)
+    temporal_result = (
+        _collect_policy_values(
+            facts.temporal_relationships,
+            _normalize_temporal,
+            collector,
+            stage="temporal_fk",
+        )
+        if mode is ExecutionMode.COLLECT
+        else EvaluationResult(
+            status=EvaluationStatus.PASSED,
+            value=_normalize_temporal(facts.temporal_relationships),
+        )
+    )
+    temporal = temporal_result.value or ()
+    quality_result = (
+        _collect_policy_values(
+            facts.data_quality, _normalize_dq, collector, stage="quality"
+        )
+        if mode is ExecutionMode.COLLECT
+        else EvaluationResult(
+            status=EvaluationStatus.PASSED,
+            value=_normalize_dq(facts.data_quality),
+        )
+    )
+    quality = quality_result.value or ()
+    identity_result = (
+        _collect_identities(
+            facts.identities,
+            preparation_result,
+            multi_source,
+            hashes,
+            incremental,
+            silver_candidates,
+            issues,
+            collector,
+            contracts,
+            incremental_result,
+        )
+        if mode is ExecutionMode.COLLECT
+        else EvaluationResult(
+            status=EvaluationStatus.PASSED,
+            value=_normalize_identities(
+                facts.identities,
+                preparations,
+                multi_source,
+                hashes,
+                incremental,
+                silver_candidates,
+                issues,
+                contracts,
+            ),
+        )
+    )
+    identities = identity_result.value or ()
+    identity_prerequisite = Prerequisite(
+        id="identity",
+        status=identity_result.status,
+        diagnostic_ids=tuple(item.id for item in identity_result.diagnostics),
+    )
+    prep_prerequisite = Prerequisite(
+        id="preparation",
+        status=preparation_result.status,
+        diagnostic_ids=tuple(item.id for item in preparation_result.diagnostics),
+    )
+    runtime_result: EvaluationResult[object] = incremental_result
+    fk_result: EvaluationResult[object] = temporal_result
+    if (
+        mode is ExecutionMode.COLLECT
+        and not prep_prerequisite.available
+        and incremental_result.status is EvaluationStatus.PASSED
+    ):
+        runtime_result = _not_evaluated_stage("runtime", prep_prerequisite)
+    if (
+        mode is ExecutionMode.COLLECT
+        and not identity_prerequisite.available
+        and temporal_result.status is EvaluationStatus.PASSED
+    ):
+        fk_result = _not_evaluated_stage(
+            "temporal_fk",
+            identity_prerequisite,
+            code_stage="foreign_keys",
+        )
     identity_uris = {item.entity_uri for item in identities}
     for class_uri in sorted(
         {
@@ -5395,7 +5967,29 @@ def normalize_medallion_policy(
         )
     deviations = _normalize_deviations(facts.deviations, issues)
     adapter_evidence = _validate_adapter_evidence(facts.adapter_support, issues)
-    gold = _normalize_gold(facts.gold, incremental, issues)
+    try:
+        gold = _normalize_gold(facts.gold, incremental, issues)
+        gold_result: EvaluationResult[object] = EvaluationResult(
+            status=EvaluationStatus.PASSED,
+            value=gold,
+        )
+    except PolicyNormalizationError as exc:
+        if mode is ExecutionMode.FAIL_FAST:
+            raise
+        collector.add(exc.diagnostic)
+        gold = GoldProductSpec(
+            profile=None,
+            schema=None,
+            tables=(),
+            measures=(),
+            calendar=None,
+            security=None,
+            perspectives=(),
+        )
+        gold_result = EvaluationResult(
+            status=EvaluationStatus.FAILED,
+            diagnostics=(exc.diagnostic,),
+        )
     requirements = _capability_requirements(
         preparations,
         hashes,
@@ -5412,21 +6006,64 @@ def normalize_medallion_policy(
         mappings,
         fk_policy,
     )
-    silver = _silver_authorities(
-        silver_candidates,
-        preparations,
-        identities,
-        facts.identities,
-        multi_source,
-        incremental,
-        hashes,
-        temporal,
-        quality,
-        fk_policy,
-        requirements,
-        deviations,
-        quality_scope_targets,
-    )
+    if mode is ExecutionMode.COLLECT:
+        silver_items: list[SilverModelAuthoritySpec] = []
+        normalized_identity_uris = {item.entity_uri for item in identities}
+        authored_identity_uris = {item.resource_uri for item in facts.identities}
+        before_silver = {item.id for item in collector.diagnostics}
+        for candidate in silver_candidates:
+            if (
+                candidate.identity.class_uri in authored_identity_uris
+                and candidate.identity.class_uri not in normalized_identity_uris
+            ):
+                continue
+            try:
+                silver_items.extend(
+                    _silver_authorities(
+                        (candidate,),
+                        preparations,
+                        identities,
+                        facts.identities,
+                        multi_source,
+                        incremental,
+                        hashes,
+                        temporal,
+                        quality,
+                        fk_policy,
+                        requirements,
+                        deviations,
+                        quality_scope_targets,
+                    )
+                )
+            except PolicyNormalizationError as exc:
+                collector.add(exc.diagnostic)
+        silver = tuple(silver_items)
+        silver_diagnostics = tuple(
+            item for item in collector.diagnostics if item.id not in before_silver
+        )
+        if silver_diagnostics:
+            fk_result = EvaluationResult(
+                status=EvaluationStatus.FAILED,
+                value=fk_result.value,
+                diagnostics=(*fk_result.diagnostics, *silver_diagnostics),
+                prerequisites=fk_result.prerequisites,
+            )
+    else:
+        silver = _silver_authorities(
+            silver_candidates,
+            preparations,
+            identities,
+            facts.identities,
+            multi_source,
+            incremental,
+            hashes,
+            temporal,
+            quality,
+            fk_policy,
+            requirements,
+            deviations,
+            quality_scope_targets,
+        )
     mdm_routing = tuple(
         MdmRoutingSpec(
             entity_uri=item.entity_uri,
@@ -5444,7 +6081,7 @@ def normalize_medallion_policy(
         for item in identities
         if item.mastered.routed_to_mdm
     )
-    return MedallionPolicySpec(
+    result = MedallionPolicySpec(
         version="1.0",
         target_adapter=EffectiveValue(
             adapter,
@@ -5582,3 +6219,16 @@ def normalize_medallion_policy(
             )
         ),
     )
+    if mode is ExecutionMode.COLLECT and collector.diagnostics:
+        raise PolicyCollectionError(
+            PolicyNormalizationStages(
+                preparation=preparation_result,
+                identity=identity_result,
+                runtime=runtime_result,
+                foreign_keys=fk_result,
+                quality=quality_result,
+                gold=gold_result,
+            ),
+            partial_value=result,
+        )
+    return result

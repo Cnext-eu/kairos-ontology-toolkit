@@ -25,6 +25,17 @@ def _silver_instance(hub, domain="widget"):
     return silver, next((i for i in silver.instances if i.name == domain), None)
 
 
+def test_existing_scenario_is_authored_without_false_readiness_failure(tmp_path):
+    hub = _build_hub(tmp_path, with_claims=True)
+
+    lifecycle = scan_hub_status(hub).lifecycle
+
+    assert lifecycle.current_state == "authored"
+    assert lifecycle.next_state == "design-valid"
+    assert lifecycle.has_blockers is False
+    assert any("report absent" in warning for warning in lifecycle.warnings)
+
+
 def test_helper_reports_unbound_eligible_class(tmp_path):
     hub = _build_hub(tmp_path, with_claims=True)
     assert _domain_aspirational_stubs(hub, "widget") == ["Widget"]

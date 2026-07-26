@@ -3377,14 +3377,69 @@ def generate_dbt_artifacts(
     Returns:
         Dictionary of ``{file_path: content}`` for all generated artifacts.
     """
-    # DD-110: thin orchestration over graph-consuming bind, pure normalize/shape/
-    # materialize phases, and the sole artifact-producing render phase.
+    shaped, plan = plan_dbt_projection(
+        classes=classes,
+        graph=graph,
+        template_dir=template_dir,
+        namespace=namespace,
+        shapes_dir=shapes_dir,
+        ontology_name=ontology_name,
+        ontology_metadata=ontology_metadata,
+        bronze_dir=bronze_dir,
+        sources_dir=sources_dir,
+        preparation_dir=preparation_dir,
+        mappings_dir=mappings_dir,
+        gold_ext_path=gold_ext_path,
+        target_platform=target_platform,
+        silver_ext_path=silver_ext_path,
+        ref_model_defaults=ref_model_defaults,
+        peer_ext_paths=peer_ext_paths,
+        peer_ontology_paths=peer_ontology_paths,
+        logical_sources_only=logical_sources_only,
+        contract_registry=contract_registry,
+        emit_aspirational_stubs=emit_aspirational_stubs,
+        eligible_class_uris=eligible_class_uris,
+        require_silver_evidence=require_silver_evidence,
+    )
+    from .dbt import render_project
+
+    return render_project(shaped, plan)
+
+
+def plan_dbt_projection(
+    classes: list,
+    graph: Graph,
+    template_dir,
+    namespace: str,
+    shapes_dir: Path = None,
+    ontology_name: str = None,
+    ontology_metadata: dict = None,
+    bronze_dir: Path = None,
+    sources_dir: Path = None,
+    preparation_dir: Path = None,
+    mappings_dir: Path = None,
+    gold_ext_path: Path = None,
+    target_platform: str = DEFAULT_PLATFORM,
+    silver_ext_path: Path = None,
+    ref_model_defaults: list = None,
+    peer_ext_paths: list = None,
+    peer_ontology_paths: list = None,
+    logical_sources_only: bool = False,
+    contract_registry: Mapping[str, "DbtContractModel"] | None = None,
+    emit_aspirational_stubs: bool = False,
+    eligible_class_uris: set[str] | None = None,
+    require_silver_evidence: bool = False,
+    diagnostic_mode=None,
+):
+    """Run the exact dbt bind-to-materialization path without rendering artifacts."""
+
     from .dbt import (
         DbtInputs,
+        ExecutionMode,
         bind_sources,
+        collect_materialization,
         normalize_contract,
         plan_materialization,
-        render_project,
         shape_project,
     )
 
@@ -3418,7 +3473,10 @@ def generate_dbt_artifacts(
         logger.info("No source systems found — no evidence-bound Silver models available")
 
     # Phase 2 — normalize: derive the FK + binding projection contract.
-    contract = normalize_contract(bound)
+    contract = normalize_contract(
+        bound,
+        mode=diagnostic_mode or ExecutionMode.FAIL_FAST,
+    )
 
     # Phase 3 — shape: build ordered logical specs; no artifact content exists yet.
     shaped = shape_project(contract)
@@ -3482,10 +3540,13 @@ def generate_dbt_artifacts(
     ]
 
     # Phase 4 — materialize: choose adapter and physical/release plans.
-    plan = plan_materialization(contract, shaped)
+    plan = (
+        collect_materialization(contract, shaped)
+        if diagnostic_mode is ExecutionMode.COLLECT
+        else plan_materialization(contract, shaped)
+    )
 
-    # Phase 5 — render: create and validate all artifact content.
-    return render_project(shaped, plan)
+    return shaped, plan
 
 
 def generate_dbt_project_config(

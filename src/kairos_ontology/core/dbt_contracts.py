@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -58,6 +58,7 @@ class DbtContractColumn:
     data_type: str
     description: str | None = None
     not_null: bool = False
+    tests: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,11 @@ class DbtContractModel:
     properties_path: Path
     sql_path: Path
     replaces_sources: tuple[DbtSourceReplacement, ...] = ()
+    canonical_cdc_bindings: tuple[tuple[str, str], ...] = ()
+    content_hash: str = ""
+    identity_requirements: tuple[str, ...] = ()
+    identity_verified: bool = False
+    evidence_invocation_id: str = ""
 
 
 def _error(path: Path, message: str) -> DbtContractError:
@@ -181,6 +187,7 @@ def _validate_bundle_paths(transforms_dir: Path, hub_root: Path) -> tuple[Path, 
         "models": frozenset({".sql", ".yml", ".yaml"}),
         "macros": frozenset({".sql"}),
         "tests": frozenset({".sql"}),
+        "evidence": frozenset({".json"}),
     }
     for path in transforms_dir.rglob("*"):
         relative = path.relative_to(transforms_dir)
@@ -269,6 +276,15 @@ def _parse_columns(model: dict[str, Any], path: Path, name: str) -> tuple[DbtCon
             test == "not_null" or (isinstance(test, dict) and "not_null" in test)
             for test in tests
         )
+        normalized_tests = tuple(
+            sorted(
+                test
+                if isinstance(test, str)
+                else next(iter(test))
+                for test in tests
+                if isinstance(test, str) or (isinstance(test, dict) and test)
+            )
+        )
 
         constraints = raw.get("constraints", [])
         if not isinstance(constraints, list):
@@ -286,6 +302,7 @@ def _parse_columns(model: dict[str, Any], path: Path, name: str) -> tuple[DbtCon
                 data_type,
                 description,
                 not_null=has_not_null_test or has_not_null_constraint,
+                tests=normalized_tests,
             )
         )
     return tuple(columns)
@@ -557,6 +574,18 @@ def _parse_contract(
         meta.get("decisions"), path, name, hub_root, resource_names, test_names
     )
     replaces_sources = _parse_source_replacements(meta.get("replaces_sources"), path, name)
+    raw_cdc = meta.get("canonical_cdc_bindings", {})
+    if not isinstance(raw_cdc, dict) or any(
+        key not in {"operation", "source_updated_at", "source_effective_at", "ingested_at"}
+        or not isinstance(value, str)
+        or value not in column_names
+        for key, value in raw_cdc.items()
+    ):
+        raise _error(
+            path,
+            f"model {name!r}.meta.kairos.canonical_cdc_bindings must map canonical roles "
+            "to declared output columns",
+        )
     return DbtContractModel(
         name=name,
         description=description,
@@ -573,6 +602,7 @@ def _parse_contract(
         properties_path=path,
         sql_path=matches[0],
         replaces_sources=replaces_sources,
+        canonical_cdc_bindings=tuple(sorted(raw_cdc.items())),
     )
 
 
@@ -615,4 +645,32 @@ def discover_dbt_contracts(transforms_dir: Path, hub_root: Path) -> tuple[DbtCon
         _parse_contract(model, path, sql_paths, hub_root, set(resources), tests)
         for model, path in selected
     ]
-    return tuple(sorted(contracts, key=lambda item: item.name))
+    from .dbt_contract_identity import (
+        artifact_content_fingerprint,
+        contract_content_hash,
+        identity_requirements,
+        load_evidence,
+    )
+
+    evidence = {item.model: item for item in load_evidence(hub_root)}
+    enriched = []
+    for contract in contracts:
+        digest = contract_content_hash(contract)
+        requirements = identity_requirements(contract)
+        result = evidence.get(contract.name)
+        verified = (
+            result is not None
+            and result.contract_content_hash == digest
+            and result.artifact_content_fingerprint == artifact_content_fingerprint(contract)
+            and set(requirements).issubset(result.passed_requirements)
+        )
+        enriched.append(
+            replace(
+                contract,
+                content_hash=digest,
+                identity_requirements=requirements,
+                identity_verified=verified,
+                evidence_invocation_id=result.invocation_id if verified else "",
+            )
+        )
+    return tuple(sorted(enriched, key=lambda item: item.name))

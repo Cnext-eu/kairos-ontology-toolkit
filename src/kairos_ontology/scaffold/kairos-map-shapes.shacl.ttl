@@ -41,6 +41,11 @@ kairos-map:TableMappingShape a sh:NodeShape ;
         sh:in ( "exactMatch" "closeMatch" "narrowMatch" "broadMatch" "relatedMatch" ) ;
     ] ;
     sh:property [
+        sh:path kairos-map:reviewState ;
+        sh:maxCount 1 ;
+        sh:in ( "proposed" "approved" "out-of-scope" ) ;
+    ] ;
+    sh:property [
         sh:path kairos-map:rowFilter ;
         sh:maxCount 1 ;
         sh:nodeKind sh:IRI ;
@@ -79,6 +84,11 @@ kairos-map:ColumnMappingShape a sh:NodeShape ;
         sh:minCount 1 ;
         sh:maxCount 1 ;
         sh:in ( "exactMatch" "closeMatch" "narrowMatch" "broadMatch" "relatedMatch" ) ;
+    ] ;
+    sh:property [
+        sh:path kairos-map:reviewState ;
+        sh:maxCount 1 ;
+        sh:in ( "proposed" "approved" "out-of-scope" ) ;
     ] ;
     sh:property [
         sh:path kairos-map:expression ;

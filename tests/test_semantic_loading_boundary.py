@@ -12,15 +12,20 @@ CORE = ROOT / "src" / "kairos_ontology" / "core"
 # ontology semantics are absent from this allow-list except ontology_loader itself.
 ALLOWED_DIRECT_PARSE_SITES = {
     "analyse_sources.py": "source vocabularies and ontology-package discovery",
+    "authoring_scaffolds.py": (
+        "source vocabularies, SKOS mapping overlays, and synchronized dbt vocabularies"
+    ),
     "binding_analysis.py": "Silver extension overlay",
     "catalog_utils.py": "XML catalog parsing",
     "claim_projection_sync.py": "authored managed-block mutation and validation",
+    "column_iri_migration.py": "source-vocabulary and mapping-overlay migration targets",
     "completeness_model.py": "source and SKOS mapping vocabularies",
     "coverage_report.py": "SKOS mappings",
     "dbt_contract_sync.py": "generated dbt contract vocabulary",
     "dbt_contracts.py": "dbt YAML artifact parsing",
     "ddd.py": "DDD vocabulary, overlay, and SHACL shapes",
     "derive_claims.py": "SKOS mappings",
+    "design_validation.py": "source vocabularies, mapping and extension overlays, and SHACL shapes",
     "draft_model_report.py": "business glossary",
     "import_source.py": "authored source-vocabulary mutation",
     "ontology_loader.py": "canonical domain/reference ontology loader",

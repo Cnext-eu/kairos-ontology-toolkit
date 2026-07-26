@@ -76,9 +76,17 @@ mapping/silver/gold on later as needed.
 
 ### Canonical order
 
+```text
+discovery → source → domain → logical Silver
+→ [advanced dbt when needed] → mapping → bound Silver confirmation
+→ gold → validate → check-projection → project
+→ compile/runtime validation → release → diagnose → consume
 ```
-discovery → source → domain → mapping → silver → gold → validate → project → diagnose → consume
-```
+
+For simple direct/scalar mappings, omit only advanced dbt. The objective state
+chain is `authored → design-valid → bound-valid → projection-ready → generated
+→ compile-valid → runtime-valid → release-eligible`. Legacy phase `done` means
+legacy/unknown input, not readiness and not failure.
 
 ### Step-by-step
 
@@ -91,14 +99,15 @@ discovery → source → domain → mapping → silver → gold → validate →
 | 4 | **Design — discovery** | `kairos-design-discovery` | Company context (`.kairos-state/phases/discovery.md`) + business glossary (`businessdiscovery/`) | — (recommended first) |
 | 5 | **Design — source** | `kairos-design-source` | Bronze vocabulary (`*.vocabulary.ttl`) | Needed for `dbt` |
 | 6 | **Design — domain** | `kairos-design-domain` | OWL classes + properties (`*.ttl`) | ✅ |
-| 7 | **Design — mapping** | `kairos-design-mapping` | SKOS source→domain mappings (uses the glossary) | Needed for `dbt` |
+| 7 | **Design — logical Silver** | `kairos-design-silver` | SCD, identity/grain, FK, PII/DQ intent | Needed for `silver`/`dbt` |
 | 7b | **Develop — advanced dbt** (optional) | `kairos-develop-dbt-transformation` | Contracted intermediate SQL/YAML/tests + generated virtual source | Only for complex relational logic |
-| 7c | **Design — virtual mapping** (conditional) | `kairos-design-mapping` | Generated virtual-source→domain mappings | Required after 7b |
-| 8 | **Design — silver** | `kairos-design-silver` | `*-silver-ext.ttl` annotations | Needed for `silver`/`dbt` |
+| 7c | **Design — final mapping** | `kairos-design-mapping` | Physical/virtual source→domain mappings | Needed for `dbt` |
+| 8 | **Confirm — bound Silver** | `kairos-design-silver` | Non-writing shared-evaluator evidence | Needed for `silver`/`dbt` |
 | 9 | **Design — gold** | `kairos-design-gold` | `*-gold-ext.ttl` annotations | Needed for `powerbi` |
 | 9b | **Design — MDM** (optional) | `kairos-design-mdm` | `*-mdm-ext.ttl` policy | Needed for `mdm-profile` |
 | 10 | **Execute — validate** | `kairos-execute-validate` | Syntax + SHACL pass/fail | ✅ |
-| 11 | **Execute — project** | `kairos-execute-project` | All output artifacts | ✅ |
+| 10b | **Check — projection readiness** | `kairos-execute-project` | Non-writing blocker/readiness report | ✅ before generation |
+| 11 | **Execute — project** | `kairos-execute-project` | All output artifacts | ✅; only when projection-ready |
 | 12 | **Diagnose** | `kairos-diagnose-status` | Completeness / gap report (deep dive on `kairos-ontology status`) | — |
 | 13 | **Consume** | `kairos-package-dataplatform` | Downstream dbt consumption | — |
 
@@ -298,6 +307,19 @@ kairos-ontology validate [--ontologies PATH] [--shapes PATH]
 kairos-ontology project [--ontologies PATH] [--target TARGET] \
   [--platform fabric|databricks]
 
+# Check the same projection scope through artifact planning without rendering/writing
+kairos-ontology check-projection [--ontologies PATH | --ontology FILE] \
+  [--catalog FILE] [--ref-models PATH] [--accelerator NAME] [--target TARGET] \
+  [--platform fabric|databricks] [--namespace IRI] \
+  [--scope projection|source|mapping|transformation|silver] [--json-output]
+
+# Focused, read-only design validation and proposed-only authoring previews
+kairos-ontology validate-mapping --domain DOMAIN [--mapping FILE] [--catalog FILE]
+kairos-ontology validate-silver-ext --domain DOMAIN [--catalog FILE]
+kairos-ontology scaffold-mapping --domain DOMAIN --source-table IRI --target-class IRI
+kairos-ontology scaffold-silver-ext --domain DOMAIN [--mapping FILE]
+kairos-ontology reconstruct-dbt-transformation --vocabulary FILE [--output DIRECTORY]
+
 # Synchronize custom dbt contracts to managed virtual-source RDF
 kairos-ontology sync-dbt-contracts [--check] [--transforms PATH] [--sources PATH] \
   [--bronze-sources PATH]
@@ -372,6 +394,14 @@ kairos-ontology suggest-shapes [--source PATH] [--out PATH] \
 kairos-ontology build-glossary [--company-specific-only] [--company-domain acme.com] \
   [--glossary-namespace IRI] [--output PATH]
 ```
+
+Contracted outputs may provide DD-108 source identity through a generated
+`kairos-dbt:ContractIdentity`. This remains contract-output scoped and requires actual
+passing uniqueness/non-null evidence captured with `capture-dbt-contract-evidence`; declared
+tests alone block as `identity.contract-unverified`. See `docs/dbt-contract-identity.md`.
+Capture rejects artifacts without matching invocation metadata and cryptographic SQL/YAML
+provenance. Ordinary standard manifest v12 and run-results artifacts work without custom
+fields; evidence is never synthesized from current files plus stale test statuses.
 
 Default paths:
 - `--ontologies` → `ontology-hub/model/ontologies`

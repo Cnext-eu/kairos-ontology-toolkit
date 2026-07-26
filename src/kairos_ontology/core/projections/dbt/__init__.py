@@ -22,7 +22,18 @@ from .context import (
     ProjectionContract,
     ShapedProject,
 )
-from .materialize import plan_materialization
+from .diagnostics import (
+    Diagnostic,
+    DiagnosticCollector,
+    DiagnosticFailure,
+    DiagnosticSeverity,
+    EvaluationResult,
+    EvaluationStatus,
+    ExecutionMode,
+    Prerequisite,
+    order_diagnostics,
+)
+from .materialize import collect_materialization, plan_materialization
 from .mapping_normalize import normalize_mapping_expression
 from .mapping_specs import (
     CaseExpression,
@@ -79,7 +90,12 @@ from .gold_specs import (
     GoldSecuritySpec,
     GoldTableSpec,
 )
-from .policy_normalize import PolicyNormalizationError, normalize_medallion_policy
+from .policy_normalize import (
+    PolicyCollectionError,
+    PolicyNormalizationError,
+    PolicyNormalizationStages,
+    normalize_medallion_policy,
+)
 from .policy_specs import (
     AdapterCapability,
     AdapterCapabilityRegistry,
@@ -104,6 +120,7 @@ from .policy_specs import (
     MedallionPolicyFacts,
     MedallionPolicySpec,
     MultiSourcePolicySpec,
+    PolicyIssue,
     PreparationSpec,
     SilverModelAuthoritySpec,
     SilverRuntimeAuthoritySpec,
@@ -173,12 +190,19 @@ __all__ = [
     "DqRulePhysicalPlan",
     "DqRuntimeResultContractSpec",
     "EntityIdentitySpec",
+    "EvaluationResult",
+    "EvaluationStatus",
+    "ExecutionMode",
     "IdentityRoleSpec",
     "IdentityStrategy",
     "ForeignKeyPolicy",
     "FunctionExpression",
     "GoldProductSpec",
     "DimensionalGoldSpec",
+    "Diagnostic",
+    "DiagnosticCollector",
+    "DiagnosticFailure",
+    "DiagnosticSeverity",
     "GoldCalendarRoleSpec",
     "GoldCalendarSpec",
     "GoldColumnSpec",
@@ -217,6 +241,10 @@ __all__ = [
     "MedallionPolicySpec",
     "MultiSourcePolicySpec",
     "PolicyNormalizationError",
+    "PolicyCollectionError",
+    "PolicyNormalizationStages",
+    "PolicyIssue",
+    "Prerequisite",
     "PreparationSpec",
     "ProjectionContract",
     "SchemaDocumentSpec",
@@ -228,6 +256,7 @@ __all__ = [
     "SilverModelPhysicalPlan",
     "SilverModelSpec",
     "SilverPhysicalPlan",
+    "order_diagnostics",
     "SilverModelAuthoritySpec",
     "SilverRuntimeAuthoritySpec",
     "SilverRegistry",
@@ -252,6 +281,7 @@ __all__ = [
     "normalize_medallion_policy",
     "negotiate_capabilities",
     "plan_materialization",
+    "collect_materialization",
     "render_project",
     "render_gold_dbt_artifacts",
     "render_powerbi_artifacts",

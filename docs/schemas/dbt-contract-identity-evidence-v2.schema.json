@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kairos.cnext.eu/schemas/dbt-contract-identity-evidence/v2",
+  "title": "Kairos dbt contract identity evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "results"],
+  "properties": {
+    "$schema": {
+      "const": "https://kairos.cnext.eu/schemas/dbt-contract-identity-evidence/v2"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model",
+          "contract_content_hash",
+          "artifact_content_fingerprint",
+          "passed_requirements",
+          "invocation_id",
+          "generated_at",
+          "dbt_version"
+        ],
+        "properties": {
+          "model": {"type": "string", "minLength": 1},
+          "contract_content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "artifact_content_fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "passed_requirements": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^(unique|not_null):[A-Za-z_][A-Za-z0-9_]*(,[A-Za-z_][A-Za-z0-9_]*)*$"
+            }
+          },
+          "invocation_id": {"type": "string", "minLength": 1},
+          "generated_at": {"type": "string"},
+          "dbt_version": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

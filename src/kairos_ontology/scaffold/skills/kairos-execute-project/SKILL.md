@@ -47,15 +47,30 @@ You help users generate and understand projection artifacts.
 ## Before you start
 
 0. **Quick toolkit version check** — run `python -m kairos_ontology update --check` once
-   at the start of the session.  If it reports outdated files, run
-   `python -m kairos_ontology update` and commit the refresh before doing any other work.
-   See the kairos-toolkit-ops skill for full upgrade steps.
+   at the start of the session. If it reports outdated files, note the drift and route
+   any explicitly approved refresh through **kairos-toolkit-ops**; never update silently.
 
 ## Pre-flight checks (medallion targets)
 
-Before running a **medallion target** (`silver`, `dbt`, or `powerbi`), you MUST check
-that prerequisite files exist. Non-medallion targets (`prompt`, `neo4j`, `azure-search`,
-`a2ui`, `report`) need no pre-flight — run them immediately.
+### Projection-readiness gate (MANDATORY for every target)
+
+Before invoking `project`, run `check-projection` with the **same ontology/domain,
+target, platform, accelerator, catalog, and namespace options**. This shared
+non-writing evaluator must return `status: ready` with no blocking diagnostic.
+
+- Blocked → stop and route every remediation to its `owner_skill`.
+- Missing/stale/unknown-schema saved evidence → `projection-ready` is unknown;
+  rerun the check. Unknown is a warning for legacy hubs, never implicit success.
+- Ready → generation may begin. Save/capture the exact schema-versioned JSON as
+  `.kairos-state/reports/projection-readiness.json` when lifecycle evidence is
+  persisted; do not synthesize or edit it.
+
+Never generate merely because legacy phase status says `done`, validation
+passed, output already exists, or a scoped Silver check is green.
+
+Before running a **medallion target** (`silver`, `dbt`, or `powerbi`), also check that
+its prerequisite design files exist. Non-medallion targets do not need these additional
+file-presence checks, but they still require the shared full readiness gate above.
 
 ### Check matrix
 
@@ -207,6 +222,8 @@ You:
   under `integration/transforms/dbt/`; their generated Bronze-compatible vocabularies live
   under `integration/sources/custom-transformations/`. Before projection, invoke
   **kairos-develop-dbt-transformation** and require `sync-dbt-contracts --check` to pass.
+  If Silver binds a contracted output as `sourceIdentity`, require current captured
+  uniqueness/non-null evidence for its exact content hash; never infer enterprise identity.
   Map the generated virtual source with **kairos-design-mapping** and route Silver with
   `silverSourceRef`; never hand-edit the generated vocabulary or projected dbt output.
 - **neo4j**: When building a knowledge graph. Generates `CREATE CONSTRAINT` statements and relationship patterns.
@@ -223,6 +240,12 @@ You:
 ## CLI commands
 
 ```bash
+# Read-only fail-fast readiness through scope, closure, contract sync, binding,
+# normalization, adapter negotiation, and artifact planning. Writes no files.
+python -m kairos_ontology check-projection --target dbt --platform fabric
+python -m kairos_ontology check-projection --ontology model/ontologies/party.ttl \
+  --target silver --json-output
+
 # Generate all projections for all domains
 python -m kairos_ontology project
 
@@ -241,6 +264,11 @@ python -m kairos_ontology project --ontology model/ontologies/party.ttl --target
 
 # Available targets: dbt, neo4j, azure-search, a2ui, prompt, silver, powerbi, report, mdm-profile
 ```
+
+`check-projection` never renders or writes source/output files. Its versioned
+report is returned on stdout. Lifecycle tooling may preserve that exact report
+under `.kairos-state/reports/`; absent, stale, or unknown-schema evidence remains
+an `unknown` warning until explicitly checked.
 
 ## Target-first aspirational Silver stubs (DD-096)
 

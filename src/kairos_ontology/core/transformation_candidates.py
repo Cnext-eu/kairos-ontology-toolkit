@@ -696,7 +696,17 @@ def _replacement_completion_reasons(
     contract: DbtContractModel,
 ) -> tuple[str, ...]:
     """Reuse canonical completeness facts for an implemented replacement."""
-    expected_scope = set(candidate.assessment.replacement_scope)
+    return _replacement_scope_completion_reasons(
+        hub_root,
+        set(candidate.assessment.replacement_scope),
+    )
+
+
+def _replacement_scope_completion_reasons(
+    hub_root: Path,
+    expected_scope: set[str],
+) -> tuple[str, ...]:
+    """Read canonical completeness results for a contract replacement scope."""
     reasons: list[str] = []
     if not expected_scope:
         return ()
@@ -730,6 +740,20 @@ def _replacement_completion_reasons(
     return tuple(reasons)
 
 
+def _contract_overlaps_table_scope(
+    contract: DbtContractModel,
+    scoped_tables: set[str],
+) -> bool:
+    """Return whether a discovered contract participates in the requested table scope."""
+    if not scoped_tables:
+        return True
+    contract_tables = {
+        replacement.table_iri for replacement in contract.replaces_sources
+    }
+    contract_tables.add(contract.virtual_source_iri)
+    return bool(contract_tables & scoped_tables)
+
+
 def evaluate_transformation_readiness(
     hub_root: Path,
     *,
@@ -741,8 +765,6 @@ def evaluate_transformation_readiness(
         raise TransformationCandidateError("stage must be mapping, silver, or release")
     hub_root = Path(hub_root).resolve()
     inventory = load_candidate_inventory(hub_root)
-    if inventory is None:
-        return TransformationReadinessReport(stage=stage, inventory_exists=False)
     implemented_models, contract_error = _implemented_models(hub_root)
     sync_error = None
     try:
@@ -753,7 +775,66 @@ def evaluate_transformation_readiness(
         sync_error = str(exc)
     scoped_tables = set(table_scope)
     results: list[CandidateReadiness] = []
-    for candidate in inventory.candidates:
+    inventoried_models = {
+        candidate.assessment.implemented_model_name
+        for candidate in (inventory.candidates if inventory else ())
+        if candidate.assessment.implemented_model_name
+    }
+    for model_name, contract in sorted(implemented_models.items()):
+        if model_name in inventoried_models:
+            continue
+        if not _contract_overlaps_table_scope(contract, scoped_tables):
+            continue
+        reasons: list[str] = []
+        if not contract.identity_verified:
+            reasons.append(
+                "identity.contract-unverified: no actual passing uniqueness/non-null "
+                "evidence matches the current canonical contract content hash"
+            )
+        if not contract.decisions:
+            reasons.append(
+                "transformation.evidence-missing: contracted transformation requires at "
+                "least one approved decision with accepted evidence and executable tests"
+            )
+        elif any(
+            decision.status not in APPROVED_DECISION_STATUSES
+            or not decision.evidence
+            or not decision.verified_by
+            for decision in contract.decisions
+        ):
+            reasons.append(
+                "transformation.evidence-incomplete: contract decisions require approval, "
+                "accepted evidence, and executable verifying tests"
+            )
+        if sync_error is not None:
+            reasons.append(f"transformation.contract-sync: {sync_error}")
+        if stage in {"silver", "release"}:
+            reasons.extend(
+                _replacement_scope_completion_reasons(
+                    hub_root,
+                    {replacement.table_iri for replacement in contract.replaces_sources},
+                )
+            )
+        results.append(
+            CandidateReadiness(
+                id=f"contract:{model_name}",
+                status="contracted",
+                is_blocking=bool(reasons),
+                requires_assessment=False,
+                reasons=tuple(reasons),
+            )
+        )
+    if contract_error is not None and not implemented_models:
+        results.append(
+            CandidateReadiness(
+                id="contracts",
+                status="invalid",
+                is_blocking=True,
+                requires_assessment=False,
+                reasons=(f"transformation.contract-invalid: {contract_error}",),
+            )
+        )
+    for candidate in inventory.candidates if inventory else ():
         assessment = candidate.assessment
         overlapping = not scoped_tables or bool(scoped_tables & set(assessment.replacement_scope))
         stale = (
@@ -853,6 +934,6 @@ def evaluate_transformation_readiness(
         )
     return TransformationReadinessReport(
         stage=stage,
-        inventory_exists=True,
+        inventory_exists=inventory is not None,
         candidates=tuple(results),
     )

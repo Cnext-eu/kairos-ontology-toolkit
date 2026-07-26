@@ -53,6 +53,21 @@ before generating TTL files.
 These rules are **non-negotiable enforcement constraints**. Violating any of
 them means the modeling process has failed, regardless of output quality.
 
+### Gate 0: Scoped reference-inventory freshness
+
+> **Before proposing or editing any class/property, you MUST run
+> `uv run kairos-ontology check-inventory --domains <active-domain>
+> --explain-scope`.**
+
+This existing scoped command is the **only freshness authority**. Missing or stale
+inventories selected for the active domain are blocking; **STOP** before design.
+Unrelated repository-wide failures may remain visible, but are non-blocking when
+the scoped command exits 0. Report the installed/current local reference-model
+version from `ontology-reference-models/VERSION` (or report it as unknown when the
+file is absent). Never silently update reference models or regenerate inventories.
+Route a requested reference-model update through **kairos-toolkit-ops**, then re-run
+the same scoped check after the explicitly approved update/regeneration.
+
 ### Gate 1: Session file prerequisite
 
 > **You MUST create `ontology-hub/.kairos-state/phases/domain/{domain}.md` BEFORE
@@ -323,6 +338,31 @@ and Gate 3 — these are non-negotiable.
 > It is **data-first**: classes/properties must be grounded in imported, analysed
 > source evidence (Gate 6 / Step 0c). "Start modeling" = **begin the modeling
 > lifecycle**. Before anything else, run **P1** then the matching branch.
+
+**P0 — Scoped reference-inventory gate (ALWAYS, before P1 and before design):**
+
+Resolve the single active domain ID for this invocation, then run:
+
+```bash
+uv run kairos-ontology check-inventory \
+  --domains <active-domain-id> --explain-scope
+cat ontology-reference-models/VERSION 2>/dev/null \
+  || echo "(VERSION file absent — installed local reference-model version unknown)"
+```
+
+Report both the scoped result and installed/current local reference-model version.
+The command intentionally reports repository-wide problems for visibility while
+scoping its exit code: stale or missing inventories unrelated to the active domain
+do **not** block this design pass. Any missing/stale in-scope inventory blocks all
+class/property proposals and TTL edits. Do not substitute an unscoped check or
+duplicate its hash/freshness logic.
+
+Do not update anything automatically. Explain whether the user needs to regenerate
+an inventory for the currently installed sources or wants to upgrade the reference
+models. Route reference-model upgrades through **kairos-toolkit-ops**. Only after an
+explicitly approved remediation may the owning skill run `generate-inventory`;
+re-run the exact scoped `check-inventory --domains` command and continue only when
+it exits 0.
 
 **P1 — Detect lifecycle position:**
 
@@ -961,17 +1001,19 @@ After identifying the target domain from the affinity report, resolve the
 `domain_uris` to their local reference model TTL files via the OASIS XML catalog
 and **read those TTLs** to extract the reference model vocabulary into your context.
 
-> **🚦 Pre-flight gate (DD-047) — run BEFORE building the inventory.** Execute:
+> **🚦 Pre-flight gate (DD-047) — confirm the P0 result before reading the inventory.**
+> The only freshness authority is the exact active-domain check already run in P0:
 > ```bash
-> kairos-ontology check-inventory
+> uv run kairos-ontology check-inventory \
+>   --domains <active-domain-id> --explain-scope
 > ```
-> This deterministically verifies that `referencemodels-unpacked/*-inventory.yaml` exists
-> for every source TTL **and** is up to date (the stored `source_sha256` matches
-> the current file). **If the command exits non-zero (missing or stale), STOP** —
-> do not propose any class or property. Run `kairos-ontology generate-inventory`,
-> commit the refreshed inventory, then re-run `check-inventory` until it passes.
-> Only continue past this point when the check is green. This guarantees the
-> specialization tree you reason over below reflects the current reference models.
+> This deterministically verifies that the in-scope
+> `referencemodels-unpacked/*-inventory.yaml` files exist and match their current
+> source hashes. **If it exits non-zero, STOP** — do not propose any class or
+> property. With explicit approval, run `generate-inventory` for the installed
+> local sources; route any reference-model upgrade through **kairos-toolkit-ops**.
+> Re-run the scoped check until it passes. Unrelated stale inventories shown by the
+> repository-wide report remain non-blocking for this active domain.
 
 > **Prefer materialized inventories (DD-046 / DD-044 / DD-054).** Once the pre-flight
 > gate is green, read `referencemodels-unpacked/*.yaml` **first** — they already unpack the full

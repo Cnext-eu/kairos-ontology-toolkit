@@ -45,6 +45,12 @@ from .policy_specs import (
     SilverColumnRole,
     TechnicalDedupeMode,
 )
+from .diagnostics import (
+    Diagnostic,
+    ExecutionMode,
+    diagnostic_from_exception,
+    order_diagnostics,
+)
 
 
 _REF_NAME = re.compile(r"""ref\(\s*['"]([^'"]+)['"]\s*\)""")
@@ -79,6 +85,14 @@ class SilverMaterializationBlocked(ValueError):
             f"{rule_id}: {message}" for rule_id, message in blocking_rules
         )
         super().__init__(f"Silver physical materialization blocked: {detail}")
+
+
+class MaterializationCollectionError(ValueError):
+    """Independent physical-planning blockers collected without rendering."""
+
+    def __init__(self, diagnostics: tuple[Diagnostic, ...], first_error: Exception) -> None:
+        self.diagnostics = order_diagnostics(diagnostics)
+        super().__init__(str(first_error))
 
 
 def _dependency_name(value: str) -> str:
@@ -1017,9 +1031,10 @@ def _silver_physical_plan(
     )
 
 
-def plan_materialization(
+def _plan_materialization(
     contract: ProjectionContract,
     shaped: ShapedProject,
+    mode: ExecutionMode = ExecutionMode.FAIL_FAST,
 ) -> MaterializationPlan:
     """Select adapter, materialization, dependencies, and release facts."""
     from .capabilities import adapter_spec, negotiate_capabilities
@@ -1102,25 +1117,64 @@ def plan_materialization(
         )
         )
     model_plans = tuple(silver_plans)
-    quality_plans = _quality_physical_plans(shaped)
+    collected: list[Diagnostic] = []
+    first_error: Exception | None = None
+    try:
+        quality_plans = _quality_physical_plans(shaped)
+    except QualityMaterializationBlocked as exc:
+        if mode is ExecutionMode.FAIL_FAST:
+            raise
+        first_error = first_error or exc
+        quality_plans = ()
+        collected.extend(
+            Diagnostic(
+                code="quality.materialization-blocked",
+                message=message,
+                rule_id=rule_id,
+                resource_uri=rule_id,
+                stage="quality",
+                owner_skill="kairos-design-silver",
+                evidence=(f"rule:{rule_id}",),
+                remediation=(
+                    "Correct the data-quality rule with kairos-design-silver."
+                ),
+            )
+            for rule_id, message in exc.blocking_rules
+        )
     adapter_version = adapter_spec(adapter_name).version
-    gold_physical = (
-        materialize_gold_product(
-            shaped.gold_product,
+    try:
+        gold_physical = (
+            materialize_gold_product(
+                shaped.gold_product,
+                adapter_version=adapter_version,
+                capability_results=capability_results,
+            )
+            if shaped.gold_product is not None
+            else None
+        )
+    except Exception as exc:
+        if mode is ExecutionMode.FAIL_FAST:
+            raise
+        first_error = first_error or exc
+        gold_physical = None
+        collected.append(diagnostic_from_exception(exc, stage="gold"))
+    try:
+        silver_physical = _silver_physical_plan(
+            shaped,
+            model_plans,
+            quality_plans,
+            adapter_name=adapter_name,
             adapter_version=adapter_version,
             capability_results=capability_results,
         )
-        if shaped.gold_product is not None
-        else None
-    )
-    silver_physical = _silver_physical_plan(
-        shaped,
-        model_plans,
-        quality_plans,
-        adapter_name=adapter_name,
-        adapter_version=adapter_version,
-        capability_results=capability_results,
-    )
+    except SilverMaterializationBlocked as exc:
+        if mode is ExecutionMode.FAIL_FAST:
+            raise
+        first_error = first_error or exc
+        silver_physical = None
+        collected.append(diagnostic_from_exception(exc, stage="adapter"))
+    if collected:
+        raise MaterializationCollectionError(tuple(collected), first_error or ValueError())
     runtime_blockers = {
         reason
         for model_plan in model_plans
@@ -1229,3 +1283,21 @@ def plan_materialization(
         gold=gold_physical,
         policy=contract.policy,
     )
+
+
+def plan_materialization(
+    contract: ProjectionContract,
+    shaped: ShapedProject,
+) -> MaterializationPlan:
+    """Preserve the two-argument fail-fast physical-planning contract."""
+
+    return _plan_materialization(contract, shaped)
+
+
+def collect_materialization(
+    contract: ProjectionContract,
+    shaped: ShapedProject,
+) -> MaterializationPlan:
+    """Collect independent physical-planning blockers without rendering."""
+
+    return _plan_materialization(contract, shaped, ExecutionMode.COLLECT)

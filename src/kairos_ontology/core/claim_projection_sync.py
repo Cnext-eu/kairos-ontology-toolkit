@@ -22,7 +22,7 @@ from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import OWL, RDF, XSD
 from rdflib.plugins.parsers.notation3 import BadSyntax
 
-from .binding_analysis import approved_imported_class_uris
+from .binding_analysis import approved_imported_class_uris, approved_imported_term_refs
 from .claim_registry import ClaimRegistry, load_registry
 from .projections.shared import KAIROS_EXT
 from .reference_modules import (
@@ -38,6 +38,45 @@ def _truthy(value: object) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"true", "1", "yes"}
+
+
+def _module_scope_evidence(
+    *,
+    claims_dir: Path,
+    ontologies_dir: Path,
+    domains_filter: list[str] | None,
+) -> tuple[set[str], set[str], set[str]]:
+    """Collect module-selection evidence without loading any module closures."""
+    lowers = [item.lower() for item in domains_filter] if domains_filter else None
+
+    def in_scope(domain: str) -> bool:
+        return lowers is None or any(token in domain.lower() for token in lowers)
+
+    domains = set(domains_filter or ())
+    claimed_terms: set[str] = set()
+    imported_iris: set[str] = set()
+    if claims_dir.is_dir():
+        for path in claims_dir.glob("*-claims.yaml"):
+            domain = path.name.removesuffix("-claims.yaml")
+            if not in_scope(domain):
+                continue
+            domains.add(domain)
+            registry = load_registry(path)
+            claimed_terms.update(
+                term_uri
+                for _claim_id, term_uri, _claim_type in approved_imported_term_refs(registry)
+            )
+    if ontologies_dir.is_dir():
+        for path in (*ontologies_dir.glob("*.ttl"), *ontologies_dir.glob("*.rdf")):
+            if not in_scope(path.stem):
+                continue
+            domains.add(path.stem)
+            try:
+                graph = Graph().parse(path)
+            except Exception:  # syntax/load diagnostics are owned by the caller
+                continue
+            imported_iris.update(str(value) for value in graph.objects(predicate=OWL.imports))
+    return domains, claimed_terms, imported_iris
 
 
 def _class_uri_to_import_uri(class_uri: str) -> str:
@@ -170,7 +209,11 @@ def evaluate_domain_projection_sync(
 
     activation = module_context.config.activation(domain) if module_context else None
     if not claims_file.exists() and activation is None:
-        status.error = f"missing claims file: {claims_file}"
+        status.error = (
+            f"missing Claim Registry for domain {domain!r}: {claims_file}. "
+            "Use kairos-design-source to create the domain Claim Registry, then rerun "
+            "check-claims."
+        )
         return status
     if not ontology_file.exists():
         status.error = f"missing ontology file: {ontology_file}"
@@ -316,13 +359,21 @@ def evaluate_projection_sync(
             return True
         return any(token in name.lower() for token in lowers)
 
-    hub_domain_bases = _collect_hub_domain_bases(ontologies_dir)
     if module_context is None:
+        scoped_domains, claimed_terms, imported_iris = _module_scope_evidence(
+            claims_dir=claims_dir,
+            ontologies_dir=ontologies_dir,
+            domains_filter=domains_filter,
+        )
         module_context = build_reference_module_context(
             ref_models_dir,
             catalog_path=catalog_path,
             accelerator=accelerator,
+            requested_domains=scoped_domains if domains_filter else None,
+            claimed_term_uris=claimed_terms,
+            imported_ontology_iris=imported_iris,
         )
+    hub_domain_bases = _collect_hub_domain_bases(ontologies_dir)
 
     domains = {
         path.name.replace("-claims.yaml", "")
@@ -388,6 +439,13 @@ def projection_migration_error(path: Path, reason: str) -> str:
     )
 
 
+def _stray_resources(triples: tuple[tuple[object, object, object], ...]) -> str:
+    """Name controlled resources so managed-block diagnostics are actionable."""
+    return ", ".join(
+        sorted({f"<{subject}> via <{predicate}>" for subject, predicate, _ in triples})
+    )
+
+
 def _read_turtle_text(path: Path) -> str:
     """Read UTF-8 Turtle without normalizing user-authored line endings."""
     return path.read_bytes().decode("utf-8")
@@ -397,8 +455,18 @@ def _line_ending(text: str) -> str:
     return "\r\n" if "\r\n" in text else "\n"
 
 
+def _managed_end_after(text: str, end: int) -> int:
+    """Include the generated block's terminating newline in its owned span."""
+    end_after = end + len(_MANAGED_END)
+    if text.startswith("\r\n", end_after):
+        return end_after + 2
+    if text.startswith("\n", end_after):
+        return end_after + 1
+    return end_after
+
+
 def _split_managed_block(text: str, *, path: Path | None = None) -> tuple[str, bool]:
-    """Return authored text and whether it contains one well-formed final block."""
+    """Return all authored text and whether it contains one well-formed block."""
     label = str(path) if path is not None else "<projection surface>"
     begins = [match.start() for match in re.finditer(re.escape(_MANAGED_BEGIN), text)]
     ends = [match.start() for match in re.finditer(re.escape(_MANAGED_END), text)]
@@ -409,19 +477,8 @@ def _split_managed_block(text: str, *, path: Path | None = None) -> tuple[str, b
             projection_migration_error(path or Path(label), "malformed managed-block markers")
         )
 
-    end_after = ends[0] + len(_MANAGED_END)
-    if text.startswith("\r\n", end_after):
-        end_after += 2
-    elif text.startswith("\n", end_after):
-        end_after += 1
-    if text[end_after:].strip():
-        raise ProjectionMigrationRequiredError(
-            projection_migration_error(
-                path or Path(label),
-                "content after the managed block cannot be preserved safely",
-            )
-        )
-    return text[:begins[0]], True
+    end_after = _managed_end_after(text, ends[0])
+    return text[:begins[0]] + text[end_after:], True
 
 
 def _strip_managed_block(text: str, *, path: Path | None = None) -> str:
@@ -464,6 +521,32 @@ def _compose_managed_file(authored_text: str, managed_lines: list[str]) -> str:
     return authored_text + separator + block
 
 
+def _replace_managed_block(text: str, managed_lines: list[str], *, path: Path) -> str:
+    """Replace only the managed span, preserving authored bytes on both sides."""
+    begins = [match.start() for match in re.finditer(re.escape(_MANAGED_BEGIN), text)]
+    ends = [match.start() for match in re.finditer(re.escape(_MANAGED_END), text)]
+    if not begins and not ends:
+        return _compose_managed_file(text, managed_lines)
+
+    # Reuse the canonical validation and keep the original prefix/suffix byte-for-byte.
+    _split_managed_block(text, path=path)
+    begin = begins[0]
+    end_after = _managed_end_after(text, ends[0])
+    if not managed_lines:
+        return text[:begin] + text[end_after:]
+
+    newline = _line_ending(text)
+    block = (
+        _MANAGED_BEGIN
+        + newline
+        + newline.join(managed_lines)
+        + newline
+        + _MANAGED_END
+        + newline
+    )
+    return text[:begin] + block + text[end_after:]
+
+
 def _inspect_managed_surface(path: Path, is_managed_authored) -> ManagedSurfaceInspection:
     """Identify controlled triples that remain outside the managed block."""
     text = _read_turtle_text(path)
@@ -485,7 +568,8 @@ def _require_current_managed_surface(path: Path, is_managed_authored) -> None:
         raise ProjectionMigrationRequiredError(
             projection_migration_error(
                 path,
-                "Claim Registry-controlled triples appear outside the managed block",
+                "Claim Registry-controlled triples appear outside the managed block: "
+                + _stray_resources(inspection.stray_managed_triples),
             )
         )
 
@@ -508,17 +592,26 @@ def _sync_managed_surface(
     authored_graph = Graph()
     authored_graph.parse(data=authored_text, format="turtle")
     if any(is_managed_authored(triple) for triple in authored_graph):
+        stray = tuple(
+            sorted(
+                (triple for triple in authored_graph if is_managed_authored(triple)),
+                key=str,
+            )
+        )
         raise ProjectionMigrationRequiredError(
             projection_migration_error(
                 path,
-                "Claim Registry-controlled triples appear outside the managed block",
+                "Claim Registry-controlled triples appear outside the managed block: "
+                + _stray_resources(stray),
             )
         )
 
     managed_lines = sorted(
         _turtle_statement(s, p, o) for (s, p, o) in managed_triples
     )
-    path.write_bytes(_compose_managed_file(authored_text, managed_lines).encode("utf-8"))
+    path.write_bytes(
+        _replace_managed_block(text, managed_lines, path=path).encode("utf-8")
+    )
 
 
 _PREFIX_DECLARATION = re.compile(
@@ -1024,10 +1117,18 @@ def apply_projection_sync(
     module_context: ReferenceModuleContext | None = None,
 ) -> ProjectionSyncReport:
     if module_context is None:
+        scoped_domains, claimed_terms, imported_iris = _module_scope_evidence(
+            claims_dir=claims_dir,
+            ontologies_dir=ontologies_dir,
+            domains_filter=domains_filter,
+        )
         module_context = build_reference_module_context(
             ref_models_dir,
             catalog_path=catalog_path,
             accelerator=accelerator,
+            requested_domains=scoped_domains if domains_filter else None,
+            claimed_term_uris=claimed_terms,
+            imported_ontology_iris=imported_iris,
         )
     if scaffold_missing:
         scaffold_missing_surfaces(

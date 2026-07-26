@@ -125,6 +125,33 @@ class SemanticIndex:
             or next((item for item in self.individuals if item.uri == uri), None)
         )
 
+    def class_properties(self, class_uri: str) -> list[dict[str, Any]]:
+        """Return direct and inherited properties with effective ranges."""
+        cls = self.class_by_uri(class_uri)
+        if cls is None:
+            return []
+        direct = {item.uri: item for item in cls.direct_properties}
+        inherited = {
+            item.uri: item
+            for item in cls.inherited_properties
+            if item.uri not in direct
+        }
+        rows = []
+        for origin, links in (("direct", direct), ("inherited", inherited)):
+            for uri, link in sorted(links.items()):
+                prop = self.property_by_uri(uri)
+                rows.append(
+                    {
+                        "property_uri": uri,
+                        "name": prop.name if prop else _local_name(uri),
+                        "property_type": prop.property_type if prop else "rdf",
+                        "ranges": [item.uri for item in prop.ranges] if prop else [],
+                        "origin": origin,
+                        "distance": link.distance,
+                    }
+                )
+        return rows
+
     def to_dict(self) -> dict[str, Any]:
         """Return deterministic JSON/YAML-compatible index data."""
         return {

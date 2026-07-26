@@ -23,11 +23,20 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
     ],
     ids=["github", "scaffold"],
 )
-def test_source_skill_requires_provider_choice_at_every_start(path):
+def test_source_skill_defers_provider_choice_until_phase_four(path):
     text = path.read_text(encoding="utf-8")
 
-    assert "Phase 0a — Select AI provider and authentication (mandatory)" in text
-    assert "every source-design invocation" in text
+    protocol = "AI provider selection protocol — execute only in Phase 4"
+    phase_four = "Phase 4 — Analyse sources (`analyse-sources`)"
+    phase_four_selection = "4a — Select provider, obtain consent, and run pre-flight"
+
+    assert protocol in text
+    assert "Do **not** ask the user to select an AI provider at source-design startup" in text
+    assert "deterministic Phases 1-3" in text
+    assert phase_four in text
+    assert phase_four_selection in text
+    assert "Run the mandatory **AI provider selection protocol** now" in text
+    assert "every source-design invocation" not in text
     assert "**Use detected `.env` settings (Recommended)**" in text
     assert "first and default choice" in text
     assert "**GitHub Models**" in text
@@ -36,6 +45,7 @@ def test_source_skill_requires_provider_choice_at_every_start(path):
     assert "**Microsoft Foundry with Azure identity**" in text
     assert "**Skip AI analysis for this invocation**" in text
     assert "never silently fall back" in text
+    assert "Not selected | Skipped" in text
 
 
 @pytest.mark.parametrize(

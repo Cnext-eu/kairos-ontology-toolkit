@@ -75,6 +75,11 @@ Every expression node declares output type, nullability/null policy, determinist
 behavior, and one adapter capability. Source references are column IRIs, never
 identifier strings.
 
+Synchronized dbt virtual sources mint new columns with the Turtle-prefixable
+`table__column` local-name convention. Legacy `#table/column` full IRIs remain valid;
+use `migrate-column-iris` to preview and explicitly migrate them rather than editing
+mapping references by hand.
+
 Allowed operations are deterministic scalar operators/functions, CASE, COALESCE,
 typed NULL/literals, and the approved `https://kairos.cnext.eu/mapping/macro#`
 macros.

@@ -116,6 +116,12 @@ kairos-map:matchType a owl:DatatypeProperty ;
     rdfs:label "SKOS match type" ;
     rdfs:comment "exactMatch, closeMatch, narrowMatch, broadMatch, or relatedMatch." .
 
+kairos-map:reviewState a owl:DatatypeProperty ;
+    rdfs:domain kairos-map:MappingContract ;
+    rdfs:range xsd:string ;
+    rdfs:label "authoring review state" ;
+    rdfs:comment "Optional authoring state. Proposed and out-of-scope contracts are not projection authority; absent state preserves legacy approved behavior." .
+
 kairos-map:expression a owl:ObjectProperty ;
     rdfs:domain kairos-map:ColumnMapping ;
     rdfs:range kairos-map:ScalarExpression ;
