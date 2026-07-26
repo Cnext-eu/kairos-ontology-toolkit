@@ -63,6 +63,7 @@ class PolicyIssue:
     rule_id: str
     resource_uri: str
     blocking: bool = True
+    projection_blocking: bool = True
 
     @property
     def diagnostic(self) -> Diagnostic:

@@ -783,43 +783,58 @@ def evaluate_transformation_readiness(
     for model_name, contract in sorted(implemented_models.items()):
         if model_name in inventoried_models:
             continue
-        if not _contract_overlaps_table_scope(contract, scoped_tables):
-            continue
+        # Direct table/virtual-source overlap is the sole scope authority (no dependency
+        # closure). A contract outside the requested scope still surfaces here so unrelated
+        # blockers stay visible for awareness, but it never blocks this scoped gate.
+        in_scope = _contract_overlaps_table_scope(contract, scoped_tables)
         reasons: list[str] = []
+        blocking_reasons: list[str] = []
         if not contract.identity_verified:
-            reasons.append(
+            # DD-119: unverified contract-output identity is a review-only diagnostic
+            # for mapping/silver readiness — it only blocks the release stage, matching
+            # non-strict dbt generation/check-projection semantics.
+            identity_reason = (
                 "identity.contract-unverified: no actual passing uniqueness/non-null "
                 "evidence matches the current canonical contract content hash"
             )
+            reasons.append(identity_reason)
+            if stage == "release":
+                blocking_reasons.append(identity_reason)
         if not contract.decisions:
-            reasons.append(
+            evidence_reason = (
                 "transformation.evidence-missing: contracted transformation requires at "
                 "least one approved decision with accepted evidence and executable tests"
             )
+            reasons.append(evidence_reason)
+            blocking_reasons.append(evidence_reason)
         elif any(
             decision.status not in APPROVED_DECISION_STATUSES
             or not decision.evidence
             or not decision.verified_by
             for decision in contract.decisions
         ):
-            reasons.append(
+            evidence_reason = (
                 "transformation.evidence-incomplete: contract decisions require approval, "
                 "accepted evidence, and executable verifying tests"
             )
+            reasons.append(evidence_reason)
+            blocking_reasons.append(evidence_reason)
         if sync_error is not None:
-            reasons.append(f"transformation.contract-sync: {sync_error}")
+            sync_reason = f"transformation.contract-sync: {sync_error}"
+            reasons.append(sync_reason)
+            blocking_reasons.append(sync_reason)
         if stage in {"silver", "release"}:
-            reasons.extend(
-                _replacement_scope_completion_reasons(
-                    hub_root,
-                    {replacement.table_iri for replacement in contract.replaces_sources},
-                )
+            completion_reasons = _replacement_scope_completion_reasons(
+                hub_root,
+                {replacement.table_iri for replacement in contract.replaces_sources},
             )
+            reasons.extend(completion_reasons)
+            blocking_reasons.extend(completion_reasons)
         results.append(
             CandidateReadiness(
                 id=f"contract:{model_name}",
                 status="contracted",
-                is_blocking=bool(reasons),
+                is_blocking=in_scope and bool(blocking_reasons),
                 requires_assessment=False,
                 reasons=tuple(reasons),
             )

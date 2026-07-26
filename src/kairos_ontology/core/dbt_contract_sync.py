@@ -15,7 +15,7 @@ from rdflib.collection import Collection
 from rdflib.compare import isomorphic
 from rdflib.namespace import RDF, RDFS, XSD
 
-from ._provenance import prepend_provenance
+from ._provenance import prepend_provenance, read_provenance_version, running_toolkit_version
 from .dbt_contracts import DbtContractModel, discover_dbt_contracts
 from .dbt_contract_identity import (
     ContractIdentityEvidence,
@@ -44,6 +44,7 @@ class DbtContractSyncItem:
     output_path: Path
     state: SyncState
     action: SyncAction
+    prior_generator_version: str | None = None
 
     @property
     def has_drift(self) -> bool:
@@ -66,6 +67,7 @@ class DbtContractSyncReport:
     sources_dir: Path
     check: bool
     items: tuple[DbtContractSyncItem, ...] = ()
+    running_toolkit_version: str = ""
 
     @property
     def has_drift(self) -> bool:
@@ -323,6 +325,7 @@ def sync_dbt_contracts(
         sources_dir or root / "integration" / "sources" / "custom-transformations"
     ).resolve()
     bronze_sources = Path(bronze_sources_dir or root / "integration" / "sources").resolve()
+    toolkit_version = running_toolkit_version()
     if not transforms.is_relative_to(root):
         raise DbtContractSyncError(f"Transforms directory must be inside hub root {root}")
     if not sources.is_relative_to(root):
@@ -330,7 +333,7 @@ def sync_dbt_contracts(
     if not bronze_sources.is_relative_to(root):
         raise DbtContractSyncError(f"Bronze sources directory must be inside hub root {root}")
     if not transforms.is_dir():
-        return DbtContractSyncReport(transforms, sources, check)
+        return DbtContractSyncReport(transforms, sources, check, running_toolkit_version=toolkit_version)
 
     contracts = discover_dbt_contracts(transforms, root)
     evidence_by_model = {item.model: item for item in load_evidence(root)}
@@ -338,6 +341,14 @@ def sync_dbt_contracts(
     items: list[DbtContractSyncItem] = []
     for contract in contracts:
         output_path = sources / f"{contract.name}.vocabulary.ttl"
+        # Read the prior artifact's own provenance stamp (if any) *before* it is
+        # potentially overwritten below, so drift reporting can show what actually
+        # generated the existing file without inventing provenance it never had.
+        prior_generator_version = (
+            read_provenance_version(output_path.read_text(encoding="utf-8"))
+            if output_path.is_file()
+            else None
+        )
         current = _load_graph(output_path)
         expected = build_dbt_contract_graph(
             contract,
@@ -348,7 +359,12 @@ def sync_dbt_contracts(
             evidence=evidence_by_model.get(contract.name),
         )
         if current is not None and isomorphic(current, expected):
-            items.append(DbtContractSyncItem(contract.name, output_path, "unchanged", "none"))
+            items.append(
+                DbtContractSyncItem(
+                    contract.name, output_path, "unchanged", "none",
+                    prior_generator_version=prior_generator_version,
+                )
+            )
             continue
 
         state: SyncState = "missing" if not output_path.exists() else "stale"
@@ -358,6 +374,13 @@ def sync_dbt_contracts(
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(_serialize_graph(expected, contract.name), encoding="utf-8")
             action = "created" if state == "missing" else "updated"
-        items.append(DbtContractSyncItem(contract.name, output_path, state, action))
+        items.append(
+            DbtContractSyncItem(
+                contract.name, output_path, state, action,
+                prior_generator_version=prior_generator_version,
+            )
+        )
 
-    return DbtContractSyncReport(transforms, sources, check, tuple(items))
+    return DbtContractSyncReport(
+        transforms, sources, check, tuple(items), running_toolkit_version=toolkit_version
+    )

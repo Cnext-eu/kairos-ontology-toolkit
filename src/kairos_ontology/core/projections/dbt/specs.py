@@ -1052,6 +1052,7 @@ class ReleasePlan:
     capability_results: tuple["CapabilityResultSpec", ...] = ()
     blocking_reasons: tuple[str, ...] = ()
     blocking_rules: tuple[tuple[str, str], ...] = ()
+    projection_blocking_rules: tuple[tuple[str, str], ...] = ()
     prep_routes: tuple[PrepRouteSpec, ...] = ()
     mapping_contract: "MappingContractSpec | None" = None
     mapping_capability_results: tuple["MappingCapabilityResult", ...] = ()

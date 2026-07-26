@@ -21,8 +21,11 @@ kairos-ontology sync-dbt-contracts
 Evidence is written to
 `integration/transforms/dbt/evidence/contract-identity.json`. Only passing dbt `unique`,
 `not_null`, or `dbt_utils.unique_combination_of_columns` results are accepted. Missing or
-stale evidence blocks with `identity.contract-unverified`. Changes to contract fields, SQL,
-grain key, tests, CDC bindings, decisions, or source replacements change the content hash.
+stale evidence surfaces a review-only `identity.contract-unverified` diagnostic: ordinary
+(non-strict) dbt generation, `check-projection`, and mapping/silver readiness proceed with
+that diagnostic reported, but `project --strict` and release eligibility remain blocked
+until current, passing evidence is captured. Changes to contract fields, SQL, grain key,
+tests, CDC bindings, decisions, or source replacements change the content hash.
 
 Capture requires `run_results.json` and `manifest.json` from the same dbt invocation:
 both must provide equal, non-empty `metadata.invocation_id` and `metadata.dbt_version`.

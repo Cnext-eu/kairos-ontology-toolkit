@@ -265,7 +265,10 @@ Show the proposed diff and update the phase log.
    enterprise identity. Declared key tests leave it unverified. After real warehouse tests
    pass, run `capture-dbt-contract-evidence --run-results target/run_results.json
    --manifest target/manifest.json`, then synchronize again. Contract/SQL/key/test changes
-   invalidate the hash-bound evidence and block with `identity.contract-unverified`.
+   invalidate the hash-bound evidence and surface a review-only `identity.contract-unverified`
+   diagnostic — ordinary generation and `check-transformation-readiness --stage mapping|silver`
+   proceed, but `project --strict` and release eligibility remain blocked until current
+   passing evidence is captured.
    Capture accepts ordinary standard v12 artifacts with matching invocation IDs/dbt versions.
    It verifies current SQL through the model node's path, raw code, and dbt SHA-256 checksum,
    and verifies current contract fields and exact generic/singular/unit-test definitions from

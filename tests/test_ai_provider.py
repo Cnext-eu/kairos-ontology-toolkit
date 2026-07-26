@@ -496,3 +496,127 @@ class TestDefaultModel:
 
     def test_default_model_value(self):
         assert DEFAULT_MODEL == "gpt-5.4-mini"
+
+
+class TestSanitizeProviderError:
+    """Alignment-reliability: redacted, length-capped, safe-to-persist errors."""
+
+    def test_redacts_api_key_like_content(self):
+        from kairos_ontology.core.ai_provider import sanitize_provider_error
+
+        exc = RuntimeError("failed: api_key=sk-abcdefgh12345678 rejected")
+        msg = sanitize_provider_error(exc)
+        assert "sk-abcdefgh12345678" not in msg
+        assert "[redacted]" in msg
+        assert msg.startswith("RuntimeError:")
+
+    def test_redacts_bearer_token(self):
+        from kairos_ontology.core.ai_provider import sanitize_provider_error
+
+        exc = RuntimeError("Authorization: Bearer ghp_1234567890abcdefghij denied")
+        msg = sanitize_provider_error(exc)
+        assert "ghp_1234567890abcdefghij" not in msg
+
+    def test_caps_length(self):
+        from kairos_ontology.core.ai_provider import (
+            MAX_SAFE_ERROR_CHARS,
+            sanitize_provider_error,
+        )
+
+        exc = RuntimeError("x" * 5000)
+        msg = sanitize_provider_error(exc)
+        assert len(msg) <= MAX_SAFE_ERROR_CHARS
+        assert msg.endswith("…")
+
+    def test_plain_message_passthrough(self):
+        from kairos_ontology.core.ai_provider import sanitize_provider_error
+
+        exc = ValueError("simple message, no secrets")
+        msg = sanitize_provider_error(exc)
+        assert msg == "ValueError: simple message, no secrets"
+
+
+class TestCreateChatCompletion:
+    """Alignment-reliability: capability-aware, narrowly-guarded single retry."""
+
+    def _client(self, side_effect=None, return_value=None):
+        client = MagicMock()
+        if side_effect is not None:
+            client.chat.completions.create.side_effect = side_effect
+        else:
+            client.chat.completions.create.return_value = return_value
+        return client
+
+    def test_success_passthrough(self):
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        client = self._client(return_value="ok")
+        result = create_chat_completion(
+            client, model="m", messages=[{"role": "user", "content": "hi"}],
+            temperature=0.1,
+        )
+        assert result == "ok"
+        client.chat.completions.create.assert_called_once_with(
+            model="m", messages=[{"role": "user", "content": "hi"}], temperature=0.1
+        )
+
+    def test_retries_once_dropping_unsupported_param(self):
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        client = self._client(
+            side_effect=[
+                RuntimeError("Unsupported parameter: 'temperature' is not supported"),
+                "ok-without-temperature",
+            ]
+        )
+        result = create_chat_completion(
+            client, model="m", messages=[{"role": "user", "content": "hi"}],
+            temperature=0.1, response_format={"type": "json_object"},
+        )
+        assert result == "ok-without-temperature"
+        assert client.chat.completions.create.call_count == 2
+        second_call_kwargs = client.chat.completions.create.call_args_list[1].kwargs
+        assert "temperature" not in second_call_kwargs
+        assert second_call_kwargs["response_format"] == {"type": "json_object"}
+
+    def test_unrelated_error_propagates_unchanged(self):
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        client = self._client(side_effect=RuntimeError("network timeout"))
+        with pytest.raises(RuntimeError, match="network timeout"):
+            create_chat_completion(
+                client, model="m", messages=[{"role": "user", "content": "hi"}],
+                temperature=0.1,
+            )
+        client.chat.completions.create.assert_called_once()
+
+    def test_unsupported_param_not_actually_sent_propagates(self):
+        """A rejection naming a param we never sent must not trigger a retry."""
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        client = self._client(
+            side_effect=RuntimeError("Unsupported parameter: 'top_p' is not supported")
+        )
+        with pytest.raises(RuntimeError, match="top_p"):
+            create_chat_completion(
+                client, model="m", messages=[{"role": "user", "content": "hi"}],
+                temperature=0.1,
+            )
+        client.chat.completions.create.assert_called_once()
+
+    def test_second_failure_after_retry_propagates(self):
+        """The retry is attempted exactly once — a second failure is not retried again."""
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        client = self._client(
+            side_effect=[
+                RuntimeError("Unsupported parameter: 'temperature' is not supported"),
+                RuntimeError("Unsupported parameter: 'temperature' is not supported"),
+            ]
+        )
+        with pytest.raises(RuntimeError):
+            create_chat_completion(
+                client, model="m", messages=[{"role": "user", "content": "hi"}],
+                temperature=0.1,
+            )
+        assert client.chat.completions.create.call_count == 2

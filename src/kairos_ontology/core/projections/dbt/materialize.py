@@ -1269,6 +1269,27 @@ def _plan_materialization(
                     | runtime_blockers
                 )
             ),
+            projection_blocking_rules=tuple(
+                sorted(
+                    {
+                        (issue.rule_id, issue.message)
+                        for issue in contract.policy.issues
+                        if issue.blocking and issue.projection_blocking
+                    }
+                    | {
+                        (result.rule_id, result.message)
+                        for result in capability_results
+                        if result.disposition is CapabilityDisposition.BLOCKING
+                    }
+                    | {
+                        reason
+                        for prep_plan in prep_plans
+                        for reason in prep_plan.blocking_reasons
+                    }
+                    | mapping_blockers
+                    | runtime_blockers
+                )
+            ),
             prep_routes=shaped.prep_routes,
             mapping_contract=contract.mapping_contract,
             mapping_capability_results=mapping_capability_results,

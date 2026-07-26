@@ -138,6 +138,76 @@ class TestConversion:
         assert systems["erp"].tables[0].anchor_state == "fallback"
 
 
+class TestGenerationOutcomeConversion:
+    """Alignment-reliability: alignment_to_registry() carries per-table
+    generation-outcome metadata (from propose_alignment) into the registry."""
+
+    def _alignment_with_outcome(self, **table_overrides) -> dict:
+        alignment = {
+            **SAMPLE_ALIGNMENT,
+            "tables": [
+                {
+                    "system": "crm",
+                    "table": "account",
+                    "ref_class": "TradeParty",
+                    "ref_class_confidence": 0.9,
+                    "columns": [],
+                    "custom_columns": [],
+                    **table_overrides,
+                },
+            ],
+        }
+        return alignment
+
+    def test_success_table_produces_no_generation_outcome(self):
+        # A semantic-success table never carries a generation_outcome key at
+        # all (byte-identical happy path), so no GenerationOutcome is emitted.
+        reg = alignment_to_registry(self._alignment_with_outcome())
+        assert reg.generation_outcomes == []
+
+    def test_provider_failure_table_produces_generation_outcome(self):
+        reg = alignment_to_registry(self._alignment_with_outcome(
+            generation_outcome="provider_failure",
+            generation_provider="github",
+            generation_model="gpt-5.4-mini",
+            generation_error="RuntimeError: boom",
+        ))
+        assert len(reg.generation_outcomes) == 1
+        gen = reg.generation_outcomes[0]
+        assert gen.system == "crm"
+        assert gen.table == "account"
+        assert gen.outcome == "provider_failure"
+        assert gen.provider == "github"
+        assert gen.model == "gpt-5.4-mini"
+        assert gen.error == "RuntimeError: boom"
+
+    def test_fallback_only_table_produces_generation_outcome(self):
+        reg = alignment_to_registry(self._alignment_with_outcome(
+            generation_outcome="fallback_only",
+        ))
+        assert [g.outcome for g in reg.generation_outcomes] == ["fallback_only"]
+
+    def test_outcomes_sorted_by_system_then_table(self):
+        alignment = {
+            **SAMPLE_ALIGNMENT,
+            "tables": [
+                {"system": "z-sys", "table": "b", "ref_class": "", "columns": [],
+                 "custom_columns": [], "generation_outcome": "provider_failure"},
+                {"system": "a-sys", "table": "b", "ref_class": "", "columns": [],
+                 "custom_columns": [], "generation_outcome": "provider_failure"},
+            ],
+        }
+        reg = alignment_to_registry(alignment)
+        assert [g.system for g in reg.generation_outcomes] == ["a-sys", "z-sys"]
+
+    def test_resulting_registry_is_still_structurally_valid(self):
+        reg = alignment_to_registry(self._alignment_with_outcome(
+            generation_outcome="provider_failure", generation_error="boom",
+        ))
+        assert validation_errors(validate_registry(reg)) == []
+
+
+
 class TestDeterminism:
     def test_byte_stable_output(self):
         a = dump_registry(alignment_to_registry(SAMPLE_ALIGNMENT))
@@ -397,3 +467,194 @@ class TestGrainConflicts:
         reg = alignment_to_registry(SAMPLE_ALIGNMENT)
         assert reg.grain_conflicts == []
 
+
+class TestUriAnchorContract:
+    """uri-anchor-contract: gated property claims + confirmed likely_entity_uri."""
+
+    def _unresolved_alignment(self) -> dict:
+        # A table whose class anchor never resolved (propose_alignment leaves
+        # ref_class == "" and ref_class_status == "unresolved" for an
+        # ambiguous confirmed anchor) must not produce any property claims,
+        # even if a column carries a stale/inconsistent per-column ref_class.
+        return {
+            "schema_version": 2,
+            "algorithm_version": 2,
+            "domain": "generic",
+            "generated_at": "2026-06-15T10:00:00Z",
+            "tables": [
+                {
+                    "system": "sys1",
+                    "table": "tablea",
+                    "ref_class": "",
+                    "ref_class_confidence": 0.0,
+                    "ref_class_status": "unresolved",
+                    "columns": [
+                        # Would previously produce a property claim keyed on
+                        # ("", "propA") since only ref_property was guarded.
+                        {"column": "col_a", "data_type": "str", "ref_class": "",
+                         "ref_property": "propA", "alignment": "exact",
+                         "confidence": 0.9, "rationale": ""},
+                    ],
+                    "custom_columns": [],
+                }
+            ],
+        }
+
+    def test_no_property_claim_when_table_anchor_unresolved(self):
+        reg = alignment_to_registry(self._unresolved_alignment())
+        assert reg.claims == []
+
+    def test_no_class_claim_when_ref_class_empty(self):
+        reg = alignment_to_registry(self._unresolved_alignment())
+        assert not any(c.type == "class" for c in reg.claims)
+
+    def test_unresolved_anchor_state_persisted_on_coverage(self):
+        reg = alignment_to_registry(self._unresolved_alignment())
+        table = reg.coverage[0].tables[0]
+        assert table.anchor_state == "unresolved"
+
+    def test_confirmed_anchor_state_persisted_on_coverage(self):
+        align = self._unresolved_alignment()
+        align["tables"][0]["ref_class_status"] = "confirmed"
+        align["tables"][0]["ref_class"] = "ClassA"
+        reg = alignment_to_registry(align)
+        table = reg.coverage[0].tables[0]
+        assert table.anchor_state == "confirmed"
+
+    def test_likely_entity_uri_persisted_on_coverage(self):
+        align = self._unresolved_alignment()
+        align["tables"][0]["ref_class_status"] = "confirmed"
+        align["tables"][0]["ref_class"] = "ClassA"
+        align["tables"][0]["likely_entity_uri"] = "https://ex.org/ont/module#ClassA"
+        reg = alignment_to_registry(align)
+        table = reg.coverage[0].tables[0]
+        assert table.likely_entity_uri == "https://ex.org/ont/module#ClassA"
+
+    def test_likely_entity_uri_preferred_over_name_based_uri_index(self):
+        # The name-based inventory lookup would resolve "ClassA" to a
+        # *different* URI than the confirmed anchor — the confirmed URI must
+        # win (prefer explicit confirmed URIs over name similarity).
+        align = self._unresolved_alignment()
+        align["tables"][0]["ref_class_status"] = "confirmed"
+        align["tables"][0]["ref_class"] = "ClassA"
+        align["tables"][0]["likely_entity_uri"] = "https://ex.org/ont/confirmed#ClassA"
+        align["tables"][0]["columns"] = []
+        index = ({"ClassA": "https://ex.org/ont/guessed#ClassA"}, {})
+        reg = alignment_to_registry(align, uri_index=index)
+        cls = next(c for c in reg.claims if c.type == "class")
+        assert cls.class_uri == "https://ex.org/ont/confirmed#ClassA"
+
+    def test_no_likely_entity_uri_falls_back_to_name_based_uri_index(self):
+        # Backward-compatible: a table with no confirmed URI still gets the
+        # existing name-based backfill (unchanged pre-feature behavior).
+        align = self._unresolved_alignment()
+        align["tables"][0]["ref_class_status"] = "confirmed"
+        align["tables"][0]["ref_class"] = "ClassA"
+        align["tables"][0]["columns"] = []
+        index = ({"ClassA": "https://ex.org/ont/guessed#ClassA"}, {})
+        reg = alignment_to_registry(align, uri_index=index)
+        cls = next(c for c in reg.claims if c.type == "class")
+        assert cls.class_uri == "https://ex.org/ont/guessed#ClassA"
+
+    def test_column_with_its_own_ref_class_still_gated_when_empty(self):
+        # A column explicitly carrying an empty ref_class (rather than
+        # inheriting the table's) must also be gated, not just the table-level
+        # default case.
+        align = self._unresolved_alignment()
+        align["tables"][0]["columns"][0]["ref_class"] = ""
+        reg = alignment_to_registry(align)
+        assert not any(c.type == "property" for c in reg.claims)
+
+    def test_resolved_table_with_matching_column_still_produces_claims(self):
+        # Regression guard: the anchor-gating fix must not affect the ordinary
+        # matched/resolved path.
+        align = self._unresolved_alignment()
+        align["tables"][0]["ref_class"] = "ClassA"
+        align["tables"][0]["ref_class_status"] = "matched"
+        align["tables"][0]["columns"][0]["ref_class"] = "ClassA"
+        reg = alignment_to_registry(align)
+        assert any(c.type == "class" for c in reg.claims)
+        assert any(c.type == "property" for c in reg.claims)
+
+    def test_backward_compatible_legacy_registry_still_loads(self):
+        # A pre-feature registry (anchor_state predates "confirmed"/
+        # "unresolved") must still load without error via the tolerant
+        # migrate_claims path — no behavior change for an ordinary "matched"
+        # table.
+        reg = alignment_to_registry(SAMPLE_ALIGNMENT)
+        assert validation_errors(validate_registry(reg)) == []
+
+
+class TestDomainHandoffMigration:
+    """proposal-quality — accelerator owns/does_not_own boundary applied
+    BEFORE claim emission: a DD-070 cross-module (``ref_module``) column
+    becomes a typed :class:`DomainHandoff`, never an in-domain property claim.
+    """
+
+    def _alignment(self, *, ref_module: str = "logistics-core",
+                    belongs_to_domains: list | None = None,
+                    belongs_to_domain: str | None = None) -> dict:
+        col: dict = {
+            "column": "carrier_name", "data_type": "str",
+            "ref_class": "TransportOrder", "ref_property": "carrierLegalName",
+            "alignment": "semantic", "confidence": 0.8, "rationale": "",
+            "ref_module": ref_module,
+            "ref_module_uri": "https://ex.org/ont/logistics#",
+        }
+        if belongs_to_domains is not None:
+            col["belongs_to_domains"] = belongs_to_domains
+        if belongs_to_domain is not None:
+            col["belongs_to_domain"] = belongs_to_domain
+        return {
+            "schema_version": 2, "algorithm_version": 2, "domain": "booking",
+            "generated_at": "2026-06-15T10:00:00Z",
+            "tables": [{
+                "system": "tms", "table": "shipment", "ref_class": "TransportOrder",
+                "ref_class_confidence": 0.9, "columns": [col], "custom_columns": [],
+            }],
+        }
+
+    def test_cross_domain_column_becomes_handoff_not_claim(self):
+        align = self._alignment(belongs_to_domain="logistics")
+        reg = alignment_to_registry(align)
+        assert not any(
+            c.type == "property" and c.id and "carrier" in c.id
+            for c in reg.claims
+        )
+        assert len(reg.domain_handoffs) == 1
+        handoff = reg.domain_handoffs[0]
+        assert handoff.ref_class == "TransportOrder"
+        assert handoff.ref_property == "carrierLegalName"
+        assert handoff.owning_domains == ["logistics"]
+        assert handoff.ref_module == "logistics-core"
+        assert handoff.ref_module_uri == "https://ex.org/ont/logistics#"
+
+    def test_handoff_carries_source_evidence(self):
+        align = self._alignment(belongs_to_domain="logistics")
+        reg = alignment_to_registry(align)
+        handoff = reg.domain_handoffs[0]
+        ev = handoff.evidence_sources[0]
+        assert ev.type == "source_column"
+        assert ev.system == "tms"
+        assert ev.table == "shipment"
+        assert ev.column == "carrier_name"
+
+    def test_multi_domain_ownership_collected_and_sorted(self):
+        align = self._alignment(belongs_to_domains=["logistics", "customs"])
+        reg = alignment_to_registry(align)
+        assert reg.domain_handoffs[0].owning_domains == ["customs", "logistics"]
+
+    def test_home_column_without_ref_module_still_becomes_claim(self):
+        # Backward-compatible / control case: no ref_module → ordinary
+        # in-domain property claim (unaffected by this feature).
+        align = self._alignment(ref_module="")
+        del align["tables"][0]["columns"][0]["ref_module"]
+        del align["tables"][0]["columns"][0]["ref_module_uri"]
+        reg = alignment_to_registry(align)
+        assert reg.domain_handoffs == []
+        assert any(c.type == "property" for c in reg.claims)
+
+    def test_registry_still_valid_with_handoffs(self):
+        align = self._alignment(belongs_to_domain="logistics")
+        reg = alignment_to_registry(align)
+        assert validation_errors(validate_registry(reg)) == []

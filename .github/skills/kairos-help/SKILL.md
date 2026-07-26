@@ -301,7 +301,8 @@ kairos-ontology explain-term https://example.org/ont/client#Client \
 
 ```bash
 # Validate syntax + SHACL shapes
-kairos-ontology validate [--ontologies PATH] [--shapes PATH]
+kairos-ontology validate [--ontologies PATH] [--shapes PATH] \
+  [--report-format json|markdown|both] [--report-path PATH]
 
 # Generate projections (`--platform` applies to dbt/all; default fabric)
 kairos-ontology project [--ontologies PATH] [--target TARGET] \
@@ -337,13 +338,13 @@ kairos-ontology init [--name NAME]
 # Create a new hub repository
 kairos-ontology new-repo [--name NAME]
 
-# Update managed files to installed toolkit version
+# Refresh managed files to the installed toolkit version
 kairos-ontology update
 
 # Upgrade toolkit to channel's latest version (stable/preview)
 kairos-ontology update --upgrade
 
-# Preview what update would change
+# Preview what the managed-file refresh would change
 kairos-ontology update --check
 
 # Migrate flat layout → grouped layout
@@ -368,11 +369,18 @@ kairos-ontology analyse-sources [--sources PATH] [--ref-models PATH] [--output P
 # Propose source→domain column alignment (LLM-powered, pre-modeling)
 # Embedded primarily in the kairos-design-domain skill (Step 0a.2 alignment gate);
 # there is no separate alignment skill — run it via kairos-design-domain.
-# Concurrent (--max-workers) + cached; anchors on affinity likely_entity; cost banner.
+# Concurrent (--max-workers) + cached; anchors on affinity likely_entity, preferring a
+# confirmed kairos-design-discovery Core Concepts Conformance URI when present; an
+# anchor ambiguous even in that confirmed evidence is never guessed — it is left
+# unresolved (zero property claims) and recorded in {domain}-unresolved-anchors.yaml.
+# check-claims reports such a table as a non-blocking "Unresolved class anchors"
+# warning — never as a blocking column omission (its empty coverage is intended).
+# Cost banner.
 kairos-ontology propose-alignment [--domains "Domain1,Domain2"] [--ref-models PATH] \
   [--max-workers 8] [--force] [--max-prompt-classes 12] \
   [--retry-min-confidence 0.6] [--retry-min-mapped-ratio 0.4]
-kairos-ontology check-claims [--domains "Domain1,Domain2"] [--strict] [--warn-only]
+kairos-ontology check-claims [--domains "Domain1,Domain2"] [--strict] [--warn-only] \
+  [--require-mapping] [--format text|json]
 
 # Check overall lifecycle status (deterministic, AI-free — DD-080/DD-101)
 kairos-ontology status [--format text|json|markdown]
@@ -398,7 +406,9 @@ kairos-ontology build-glossary [--company-specific-only] [--company-domain acme.
 Contracted outputs may provide DD-108 source identity through a generated
 `kairos-dbt:ContractIdentity`. This remains contract-output scoped and requires actual
 passing uniqueness/non-null evidence captured with `capture-dbt-contract-evidence`; declared
-tests alone block as `identity.contract-unverified`. See `docs/dbt-contract-identity.md`.
+tests alone surface a review-only `identity.contract-unverified` diagnostic — it blocks
+`project --strict` and release eligibility, but not ordinary generation, `check-projection`,
+or mapping/silver readiness. See `docs/dbt-contract-identity.md`.
 Capture rejects artifacts without matching invocation metadata and cryptographic SQL/YAML
 provenance. Ordinary standard manifest v12 and run-results artifacts work without custom
 fields; evidence is never synthesized from current files plus stale test statuses.
@@ -436,8 +446,14 @@ Default paths:
 
 ### Adding a new domain
 
-1. Create `model/ontologies/new-domain.ttl` (OWL classes + properties)
-2. Add `owl:imports` in `_master.ttl`
+1. Create `model/ontologies/new-domain.ttl` (OWL classes + properties) — or, once
+   an approved `model/claims/new-domain-claims.yaml` exists, run
+   `kairos-ontology claims-to-silver-ext` and let it scaffold a metadata-complete
+   skeleton (`rdfs:label`/`rdfs:comment`/`owl:versionInfo`/imports) for you.
+2. Add `owl:imports` in `_master.ttl` — `claims-to-silver-ext` converges this
+   registration (and the README domain table) automatically for every ready
+   domain when `_master.ttl` already exists; it reports created/updated/unchanged
+   paths explicitly so you can confirm what changed.
 3. Create `model/shapes/new-domain-shapes.ttl` (SHACL constraints)
 4. Run `kairos-ontology validate` → fix any issues
 5. Run `kairos-ontology project --target all` → generates all outputs

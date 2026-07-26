@@ -432,6 +432,47 @@ def test_check_projection_green_collected_plan_remains_ready(
     assert report.diagnostics == ()
 
 
+def test_check_projection_reports_release_only_identity_blocker_without_blocking(
+    temp_dir, ontology_files, monkeypatch
+):
+    release_only = (
+        (
+            "DD-108-contract-identity",
+            "Contract-output identity is unverified and review-only.",
+        ),
+    )
+
+    def review_only_plan(*_args, **_kwargs):
+        return None, SimpleNamespace(
+            release=SimpleNamespace(
+                blocking_rules=release_only,
+                projection_blocking_rules=(),
+            )
+        )
+
+    monkeypatch.setattr(
+        "kairos_ontology.core.projections.medallion_dbt_projector.plan_dbt_projection",
+        review_only_plan,
+    )
+    report = check_projection(
+        ontologies_path=ontology_files["customer"],
+        catalog_path=None,
+        output_path=temp_dir / "check-output",
+        target="dbt",
+        namespace=None,
+        platform="fabric",
+        emit_aspirational_stubs=False,
+        degraded=False,
+        ref_models_dir=None,
+        accelerator=None,
+    )
+
+    assert report.ready
+    assert report.diagnostics[0]["rule_id"] == "DD-108-contract-identity"
+    assert report.diagnostics[0]["severity"] == "warning"
+    assert report.diagnostics[0]["blocking"] is False
+
+
 def test_phase_scope_is_a_view_of_shared_diagnostic_ids(tmp_path, monkeypatch):
     diagnostics = [
         {

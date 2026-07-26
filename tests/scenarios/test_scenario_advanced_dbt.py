@@ -27,11 +27,12 @@ from kairos_ontology.core.dbt_contract_identity import (
     capture_dbt_run_results,
 )
 from kairos_ontology.core.dbt_contracts import discover_dbt_contracts
+from kairos_ontology.core.projection_readiness import check_projection
+from kairos_ontology.core.projector import ProjectionRunError, run_projections
+from kairos_ontology.core.source_coverage import check_source_coverage
 from kairos_ontology.core.transformation_candidates import (
     evaluate_transformation_readiness,
 )
-from kairos_ontology.core.projector import ProjectionRunError, run_projections
-from kairos_ontology.core.source_coverage import check_source_coverage
 
 BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 EXT = Namespace("https://kairos.cnext.eu/ext#")
@@ -460,9 +461,7 @@ def _capture_passing_identity_evidence(hub: Path) -> None:
     sync_dbt_contracts(hub)
 
 
-def test_contract_identity_requires_actual_current_passing_evidence(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_contract_identity_requires_actual_current_passing_evidence(tmp_path: Path) -> None:
     hub = _create_hub(tmp_path)
     identity = _bind_contract_identity(hub)
     vocabulary = (
@@ -475,15 +474,56 @@ def test_contract_identity_requires_actual_current_passing_evidence(
     graph = Graph().parse(vocabulary, format="turtle")
     assert (identity, RDF.type, Namespace("https://kairos.cnext.eu/dbt-contract#").ContractIdentity) in graph
 
-    with pytest.raises(ProjectionRunError, match="dbt projection failed"):
+    readiness = check_projection(
+        ontologies_path=hub / "model" / "ontologies",
+        catalog_path=hub / "missing-catalog.xml",
+        output_path=tmp_path / "check-only",
+        target="dbt",
+        namespace=None,
+        platform="fabric",
+        emit_aspirational_stubs=False,
+        degraded=False,
+        ref_models_dir=None,
+        accelerator=None,
+    )
+    assert readiness.ready
+    assert any(
+        item["rule_id"] == "DD-108-contract-identity"
+        and item["blocking"] is False
+        for item in readiness.diagnostics
+    )
+
+    run_projections(
+        ontologies_path=hub / "model" / "ontologies",
+        catalog_path=hub / "missing-catalog.xml",
+        output_path=tmp_path / "declared-only",
+        target="dbt",
+        platform="fabric",
+    )
+    release_review = json.loads(
+        (
+            tmp_path
+            / "declared-only"
+            / "medallion"
+            / "dbt"
+            / "metadata"
+            / "shipment-release-review.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert release_review["mode"] == "review-only"
+    assert any(
+        issue["code"] == "identity.contract-unverified"
+        for issue in release_review["policy_issues"]
+    )
+    with pytest.raises(ProjectionRunError, match="Strict release blocked"):
         run_projections(
             ontologies_path=hub / "model" / "ontologies",
             catalog_path=hub / "missing-catalog.xml",
-            output_path=tmp_path / "declared-only",
+            output_path=tmp_path / "declared-only-strict",
             target="dbt",
             platform="fabric",
+            strict=True,
         )
-    assert "identity.contract-unverified" in capsys.readouterr().err
 
     _capture_passing_identity_evidence(hub)
     verified_graph = Graph().parse(vocabulary, format="turtle")
@@ -515,15 +555,13 @@ def test_contract_identity_requires_actual_current_passing_evidence(
     stale_graph = Graph().parse(vocabulary, format="turtle")
     assert stale_graph.value(identity, dbt.verificationStatus) == Literal("unverified")
     assert stale_graph.value(identity, dbt.evidenceContentHash) is None
-    with pytest.raises(ProjectionRunError, match="dbt projection failed"):
-        run_projections(
-            ontologies_path=hub / "model" / "ontologies",
-            catalog_path=hub / "missing-catalog.xml",
-            output_path=tmp_path / "stale",
-            target="dbt",
-            platform="fabric",
-        )
-    assert "identity.contract-unverified" in capsys.readouterr().err
+    run_projections(
+        ontologies_path=hub / "model" / "ontologies",
+        catalog_path=hub / "missing-catalog.xml",
+        output_path=tmp_path / "stale",
+        target="dbt",
+        platform="fabric",
+    )
 
 
 def test_contract_identity_rejects_stale_sql_artifacts(tmp_path: Path) -> None:
@@ -672,9 +710,15 @@ def test_existing_contract_is_checked_with_empty_candidate_inventory(tmp_path: P
 
     report = evaluate_transformation_readiness(hub, stage="mapping")
 
-    assert report.is_blocking
+    # DD-119: unverified contract-output identity alone is release-only evidence; it
+    # never blocks mapping readiness, though it must remain visible for review.
+    assert report.is_blocking is False
     assert report.candidates[0].id == "contract:int_shipment_conformed"
     assert "identity.contract-unverified" in report.candidates[0].reasons[0]
+
+    release_report = evaluate_transformation_readiness(hub, stage="release")
+    assert release_report.is_blocking
+    assert "identity.contract-unverified" in release_report.candidates[0].reasons[0]
 
 
 def test_wrong_grain_sources_are_covered_only_by_governed_replacement(

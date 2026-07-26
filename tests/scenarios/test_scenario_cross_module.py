@@ -197,3 +197,43 @@ class TestCrossModuleScenario:
         assert data["alignment_params_sha256"]
         for col in data["tables"][0]["columns"]:
             assert "ref_module" not in col
+
+
+class TestCrossModuleOwnershipHandoff:
+    """proposal-quality — a DD-070 cross-module column becomes a typed
+    :class:`DomainHandoff` in the Claim Registry, never an in-domain claim for
+    the 'client' domain (the accelerator ``owns``/``does_not_own`` boundary
+    applied before claim emission)."""
+
+    def test_city_becomes_handoff_not_property_claim(self, tmp_path):
+        from kairos_ontology.core.migrate_claims import alignment_to_registry
+
+        data = _run(tmp_path, cross_module=True)
+        registry = alignment_to_registry(data)
+
+        # No in-domain property claim for Address.city in the 'client' registry.
+        assert not any(
+            c.type == "property" and c.id and c.id.endswith("-city")
+            for c in registry.claims
+        )
+        assert len(registry.domain_handoffs) == 1
+        handoff = registry.domain_handoffs[0]
+        assert handoff.ref_class == "Address"
+        assert handoff.ref_property == "city"
+        assert handoff.owning_domains == ["client", "invoice"]
+        assert handoff.ref_module == "reference-data"
+        ev = handoff.evidence_sources[0]
+        assert ev.system == "adminpulse"
+        assert ev.table == "tblClient"
+        assert ev.column == "City"
+
+    def test_home_property_claims_unaffected(self, tmp_path):
+        from kairos_ontology.core.migrate_claims import alignment_to_registry
+
+        data = _run(tmp_path, cross_module=True)
+        registry = alignment_to_registry(data)
+        # partyName / email / country stay ordinary in-domain property claims.
+        prop_ids = {c.id for c in registry.claims if c.type == "property"}
+        assert any("party-name" in pid for pid in prop_ids) or any(
+            "partyname" in pid for pid in prop_ids
+        )

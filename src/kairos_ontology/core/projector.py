@@ -630,8 +630,9 @@ def _collected_blocker_diagnostics(
     *,
     target: str,
     domain: str,
+    projection_blocking_rules: Iterable[tuple[str, str]] | None = None,
 ) -> List[Dict[str, Any]]:
-    """Convert collect-mode release blockers into stable readiness diagnostics."""
+    """Convert release blockers into stable projection-readiness diagnostics."""
 
     stage_contracts = {
         "preparation": (
@@ -692,10 +693,16 @@ def _collected_blocker_diagnostics(
             return "gold"
         return "normalization"
 
+    projection_blockers = (
+        set(blocking_rules)
+        if projection_blocking_rules is None
+        else set(projection_blocking_rules)
+    )
     diagnostics: List[Dict[str, Any]] = []
     for rule_id, message in blocking_rules:
         rule_id = str(rule_id)
         message = str(message)
+        blocks_projection = (rule_id, message) in projection_blockers
         stage = classify(rule_id, message)
         owner_skill, remediation = stage_contracts[stage]
         identity = "\x1f".join((target, domain, stage, rule_id, message))
@@ -709,8 +716,8 @@ def _collected_blocker_diagnostics(
                 "id": diagnostic_id,
                 "code": f"release.blocking-rule.{code_suffix or 'unknown'}",
                 "rule_id": rule_id,
-                "severity": "error",
-                "blocking": True,
+                "severity": "error" if blocks_projection else "warning",
+                "blocking": blocks_projection,
                 "stage": stage,
                 "resource_uri": f"{target}:{domain}",
                 "predicate_uri": "",
@@ -1711,22 +1718,32 @@ def run_projections(
                     plan = artifacts.get("__plan__") if isinstance(artifacts, Mapping) else None
                     release = getattr(plan, "release", None)
                     blocking_rules = tuple(getattr(release, "blocking_rules", ()))
-                    if blocking_rules:
-                        first_rule, first_reason = blocking_rules[0]
+                    projection_blocking_rules = tuple(
+                        getattr(release, "projection_blocking_rules", blocking_rules)
+                    )
+                    diagnostics = _collected_blocker_diagnostics(
+                        blocking_rules,
+                        target=target_name,
+                        domain=onto_name,
+                        projection_blocking_rules=projection_blocking_rules,
+                    )
+                    if projection_blocking_rules:
+                        first_rule, first_reason = projection_blocking_rules[0]
                         report.record_projection(
                             target_name,
                             onto_name,
                             status="error",
                             error=f"{first_rule}: {first_reason}",
-                            diagnostics=_collected_blocker_diagnostics(
-                                blocking_rules,
-                                target=target_name,
-                                domain=onto_name,
-                            ),
+                            diagnostics=diagnostics,
                         )
                         target_failed = True
                     else:
-                        report.record_projection(target_name, onto_name, status="ready")
+                        report.record_projection(
+                            target_name,
+                            onto_name,
+                            status="ready",
+                            diagnostics=diagnostics,
+                        )
                     continue
                 if artifacts:
                     # Extract coverage data before writing (not a real file artifact)

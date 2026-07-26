@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
@@ -147,6 +149,12 @@ def resolve_provider_config(
     endpoint wins, letting the two pre-modeling steps use independent endpoints/
     models (issue #182). Otherwise the global provider is resolved and, if set, the
     per-role model override (``KAIROS_AI_{ROLE}_MODEL``) is applied.
+
+    ``config.model`` is the per-role *default*, not an authority: a caller that
+    already resolved its own model precedence (e.g. ``propose-alignment``, where
+    an explicit ``--model``/``--high-accuracy`` must beat the env override — see
+    DD-128) must keep its own model and use this config for provider/endpoint/
+    auth only.
 
     Detection order (global fallback):
     1. KAIROS_AI_PROVIDER env var (explicit: "github", "azure", or "foundry")
@@ -395,3 +403,94 @@ def _create_foundry_client(config: AIProviderConfig):
             "Install with: pip install kairos-ontology-toolkit[foundry]"
         )
     return _openai_from_credential(token_credential)
+
+
+# ---------------------------------------------------------------------------
+# Safe error metadata (alignment-reliability)
+# ---------------------------------------------------------------------------
+
+#: Redacted in place of anything that looks like a credential/token in a
+#: provider error message before it is persisted (e.g. into a Claim Registry)
+#: or printed to the console.
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)\b(api[_-]?key|authorization|bearer|secret)\b\s*[:=]?\s*\S+"),
+    re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"(?i)\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+)
+
+#: Cap on the persisted/printed error message so a verbose SDK/HTTP error body
+#: cannot bloat generated YAML or terminal output.
+MAX_SAFE_ERROR_CHARS = 300
+
+
+def sanitize_provider_error(exc: BaseException) -> str:
+    """Return a redacted, length-capped, safe-to-persist description of *exc*.
+
+    Used to annotate a per-table ``provider_failure`` alignment outcome (issue
+    alignment-reliability): the raw exception message may embed request
+    metadata (endpoint URLs, occasionally an echoed header) so it is never
+    written to a Claim Registry or echoed to the console unredacted.
+    """
+    message = f"{type(exc).__name__}: {exc}"
+    for pattern in _SECRET_PATTERNS:
+        message = pattern.sub("[redacted]", message)
+    message = " ".join(message.split())
+    if len(message) > MAX_SAFE_ERROR_CHARS:
+        message = message[: MAX_SAFE_ERROR_CHARS - 1] + "…"
+    return message
+
+
+# ---------------------------------------------------------------------------
+# Capability-aware chat completion (alignment-reliability)
+# ---------------------------------------------------------------------------
+
+#: Matches a provider's own rejection of one request parameter, e.g.
+#: "Unsupported parameter: 'temperature' is not supported with this model."
+#: Deliberately generic (no per-model table): different providers/models phrase
+#: this differently, but all name the offending parameter.
+_UNSUPPORTED_PARAM_RE = re.compile(
+    r"[Uu]nsupported (?:parameter|value)[^'\"]*['\"]([A-Za-z_][A-Za-z0-9_.\[\]]*)['\"]"
+)
+
+
+def _unsupported_request_param(message: str) -> str | None:
+    """Best-effort extraction of a rejected top-level request-parameter name."""
+    match = _UNSUPPORTED_PARAM_RE.search(message or "")
+    if not match:
+        return None
+    # A dotted/indexed name (e.g. "response_format.type") still means the
+    # top-level kwarg is the one to drop.
+    return match.group(1).split(".")[0].split("[")[0]
+
+
+def create_chat_completion(
+    client,
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    **request_kwargs: Any,
+):
+    """Create a chat completion, capability-aware for per-model parameter support.
+
+    Some models reject specific optional request parameters (e.g. a fixed
+    ``temperature`` on certain reasoning-tier models, or ``response_format``).
+    Rather than hard-coding a model-name → capability table — which goes stale
+    the moment a new model ships — this detects *the provider's own rejection
+    message*, drops exactly the named parameter, and retries the call exactly
+    once without it. Any other failure (auth, network, rate limit, or a
+    rejection that does not name one of the parameters actually sent)
+    propagates unchanged; this is a single narrowly-guarded retry, not a
+    general error-suppression path.
+    """
+    try:
+        return client.chat.completions.create(model=model, messages=messages, **request_kwargs)
+    except Exception as exc:  # noqa: BLE001 — inspected below, re-raised if not a match
+        param = _unsupported_request_param(str(exc))
+        if not param or param not in request_kwargs:
+            raise
+        logger.info(
+            "Model %s rejected request parameter '%s'; retrying once without it.",
+            model, param,
+        )
+        retry_kwargs = {k: v for k, v in request_kwargs.items() if k != param}
+        return client.chat.completions.create(model=model, messages=messages, **retry_kwargs)

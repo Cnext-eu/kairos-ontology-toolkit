@@ -2666,15 +2666,20 @@ def _normalize_identities(
             and not contract_by_identity[source_ref].identity_verified
         )
         if unverified_contracts:
-            raise PolicyNormalizationError(
-                "identity.contract-unverified",
-                (
-                    "contract-output identity requires actual passing uniqueness and "
-                    "non-null evidence tied to the current contract content hash; "
-                    f"unverified: {', '.join(unverified_contracts)}"
-                ),
-                rule_id="DD-108-contract-identity",
-                resource_uri=fact.resource_uri,
+            issues.append(
+                PolicyIssue(
+                    code="identity.contract-unverified",
+                    message=(
+                        "Contract-output identity is unverified and review-only until "
+                        "actual passing uniqueness and non-null evidence is tied to the "
+                        "current contract content hash; "
+                        f"unverified: {', '.join(unverified_contracts)}"
+                    ),
+                    rule_id="DD-108-contract-identity",
+                    resource_uri=fact.resource_uri,
+                    blocking=True,
+                    projection_blocking=False,
+                )
             )
         contract_sources = tuple(
             contract_by_identity[source_ref]

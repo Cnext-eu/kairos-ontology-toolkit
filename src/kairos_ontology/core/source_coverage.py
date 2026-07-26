@@ -62,6 +62,11 @@ class SourceCoverageReport:
     replacement_evidence: dict[str, list[ReplacementCoverageEvidence]] = field(
         default_factory=dict
     )
+    #: The skill that owns enforcing this report's blocking behaviour (DD-122).
+    #: ``check-claims`` surfaces mapping gaps for visibility but does not block on
+    #: them by default; mapping workflows (e.g. ``kairos-design-mapping``) remain
+    #: the owning enforcement point.
+    owner_skill: str = "kairos-design-mapping"
 
     @property
     def is_blocking(self) -> bool:

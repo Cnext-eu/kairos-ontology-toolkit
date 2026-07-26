@@ -2,7 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
 
-__version__ = "4.7.0rc6"
+__version__ = "4.7.0rc7"
 
 from kairos_ontology.core.catalog_utils import (
     CatalogLoadResult,
@@ -26,6 +26,7 @@ from kairos_ontology.core.semantic_index import (
 )
 from kairos_ontology.core.reference_modules import (
     AcceleratorModuleConfig,
+    DisputedClaimModule,
     ManagedImportPlan,
     ReferenceModuleContext,
     ReferenceModuleProfile,
@@ -66,6 +67,7 @@ __all__ = [
     "SemanticIndex",
     "build_semantic_index",
     "AcceleratorModuleConfig",
+    "DisputedClaimModule",
     "ManagedImportPlan",
     "ReferenceModuleContext",
     "ReferenceModuleProfile",

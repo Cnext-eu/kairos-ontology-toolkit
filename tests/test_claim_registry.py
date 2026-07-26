@@ -10,15 +10,20 @@ import pytest
 
 from kairos_ontology.core.claim_registry import (
     CLAIM_REGISTRY_SCHEMA_VERSION,
+    DOMAIN_HANDOFF_SCHEMA_VERSION,
+    GENERATION_OUTCOME_SCHEMA_VERSION,
     HUMAN_CURATED_FIELDS,
     TRIAGE_TO_DISPOSITION,
+    VALID_ANCHOR_STATES,
     Claim,
     ClaimRegistry,
     CoverageSystem,
     CoverageTable,
     Deviation,
+    DomainHandoff,
     EvidenceSource,
     Freshness,
+    GenerationOutcome,
     OwnershipOverride,
     ReferenceData,
     SilverImpact,
@@ -118,6 +123,47 @@ class TestRoundTrip:
     def test_dump_preserves_key_order(self):
         text = dump_registry(_good_registry())
         assert text.index("schema_version") < text.index("domain") < text.index("claims")
+
+
+class TestGenerationOutcome:
+    """Alignment-reliability: the additive per-table generation-outcome record."""
+
+    def test_default_schema_version(self):
+        gen = GenerationOutcome(system="s", table="t", outcome="provider_failure")
+        assert gen.schema_version == GENERATION_OUTCOME_SCHEMA_VERSION
+
+    def test_to_from_dict_round_trip(self):
+        gen = GenerationOutcome(
+            system="crm", table="account", outcome="provider_failure",
+            provider="github", model="gpt-5.4-mini", error="RuntimeError: boom",
+        )
+        again = GenerationOutcome.from_dict(gen.to_dict())
+        assert again == gen
+
+    def test_optional_fields_omitted_when_none(self):
+        gen = GenerationOutcome(system="crm", table="account", outcome="fallback_only")
+        d = gen.to_dict()
+        assert "provider" not in d
+        assert "model" not in d
+        assert "error" not in d
+
+    def test_registry_omits_empty_generation_outcomes(self):
+        # Byte-identical happy path: a registry with no generation_outcomes never
+        # emits the key at all.
+        reg = _good_registry()
+        assert "generation_outcomes" not in reg.to_dict()
+        assert "generation_outcomes" not in dump_registry(reg)
+
+    def test_registry_round_trips_generation_outcomes(self):
+        reg = _good_registry()
+        reg.generation_outcomes = [
+            GenerationOutcome(system="crm", table="account", outcome="provider_failure",
+                               error="boom"),
+        ]
+        again = ClaimRegistry.from_dict(reg.to_dict())
+        assert again.generation_outcomes == reg.generation_outcomes
+        assert again.to_dict() == reg.to_dict()
+
 
 
 class TestValidation:
@@ -239,6 +285,114 @@ class TestValidation:
         reg.claims[0].silver_impact.change_type = "huge"
         msgs = [i.message for i in validation_errors(validate_registry(reg))]
         assert any("change_type" in m for m in msgs)
+
+    def test_unknown_generation_outcome_warns_not_errors(self):
+        # Alignment-reliability: an unrecognized outcome is additive/forward-
+        # compat only — warning-level, never a structural-validity error.
+        reg = _good_registry()
+        reg.generation_outcomes = [
+            GenerationOutcome(system="crm", table="account", outcome="bogus"),
+        ]
+        issues = validate_registry(reg)
+        assert any(
+            i.level == "warning" and "unknown outcome" in i.message for i in issues
+        )
+        assert validation_errors(issues) == []
+
+    def test_known_generation_outcomes_produce_no_issues(self):
+        reg = _good_registry()
+        reg.generation_outcomes = [
+            GenerationOutcome(system="crm", table="account", outcome="provider_failure",
+                               error="boom"),
+        ]
+        assert validate_registry(reg) == []
+
+
+class TestUriAnchorContract:
+    """uri-anchor-contract: confirmed/unresolved anchor states + URI diagnostics."""
+
+    def test_confirmed_and_unresolved_are_valid_anchor_states(self):
+        assert "confirmed" in VALID_ANCHOR_STATES
+        assert "unresolved" in VALID_ANCHOR_STATES
+
+    def test_confirmed_anchor_state_passes_validation(self):
+        reg = _good_registry()
+        reg.coverage[0].tables[0].anchor_state = "confirmed"
+        assert validation_errors(validate_registry(reg)) == []
+
+    def test_unresolved_anchor_state_passes_validation(self):
+        reg = _good_registry()
+        reg.coverage[0].tables[0].anchor_state = "unresolved"
+        assert validation_errors(validate_registry(reg)) == []
+
+    def test_coverage_table_likely_entity_uri_round_trips(self):
+        table = CoverageTable(
+            table="account", total_columns=1, mapped_columns=1, custom_columns=0,
+            anchor_state="confirmed", ref_class="TradeParty",
+            likely_entity_uri="https://ex.org/acc#TradeParty",
+        )
+        again = CoverageTable.from_dict(table.to_dict())
+        assert again.likely_entity_uri == "https://ex.org/acc#TradeParty"
+
+    def test_coverage_table_likely_entity_uri_omitted_when_empty(self):
+        table = CoverageTable(
+            table="account", total_columns=1, mapped_columns=1, custom_columns=0,
+        )
+        assert "likely_entity_uri" not in table.to_dict()
+
+    def test_imported_claim_without_class_uri_warns_not_errors(self):
+        reg = ClaimRegistry(domain="d", claims=[
+            Claim(id="d-1", type="class", status="proposed", disposition="claim",
+                  origin="imported", class_uri=None)
+        ])
+        issues = validate_registry(reg)
+        assert any(
+            i.level == "warning" and "no resolvable class_uri" in i.message
+            for i in issues
+        )
+        assert validation_errors(issues) == []
+
+    def test_imported_specialize_without_property_uri_warns(self):
+        reg = ClaimRegistry(domain="d", claims=[
+            Claim(id="d-1", type="property", status="proposed", disposition="specialize",
+                  origin="imported", property_uri=None)
+        ])
+        issues = validate_registry(reg)
+        assert any(
+            i.level == "warning" and "no resolvable property_uri" in i.message
+            for i in issues
+        )
+        assert validation_errors(issues) == []
+
+    def test_authored_claim_without_uri_does_not_warn(self):
+        # The diagnostic is scoped to *imported* claims only — an authored
+        # claim legitimately has no source-derived URI to resolve.
+        reg = ClaimRegistry(domain="d", claims=[
+            Claim(id="d-1", type="class", status="proposed", disposition="claim",
+                  origin="authored", class_uri=None)
+        ])
+        assert validate_registry(reg) == []
+
+    def test_passthrough_disposition_without_uri_does_not_warn(self):
+        reg = ClaimRegistry(domain="d", claims=[
+            Claim(id="d-1", type="property", status="proposed", disposition="passthrough",
+                  origin="imported", property_uri=None)
+        ])
+        assert validate_registry(reg) == []
+
+    def test_imported_claim_with_resolved_uri_does_not_warn(self):
+        reg = ClaimRegistry(domain="d", claims=[
+            Claim(id="d-1", type="class", status="proposed", disposition="claim",
+                  origin="imported", class_uri="https://ex.org/acc#TradeParty")
+        ])
+        assert validate_registry(reg) == []
+
+    def test_good_registry_from_existing_fixture_has_no_new_warnings(self):
+        # Backward compatibility: a pre-feature registry with populated URIs
+        # (the shared _good_registry fixture) must not pick up any new
+        # diagnostics from this feature.
+        issues = validate_registry(_good_registry())
+        assert not any("uri-anchor-contract" in i.message for i in issues)
 
 
 class TestTransitions:
@@ -368,6 +522,23 @@ class TestMergePreservingDecisions:
         assert merged.generated_at == "2026-06-15T20:00:00Z"
         assert merged.freshness == new.freshness
         assert merged.coverage[0].system == "erp"
+
+    def test_generation_outcomes_always_from_new(self):
+        # Alignment-reliability: generation_outcomes is per-run reliability
+        # metadata (like coverage/freshness), never a curated decision — it must
+        # always come from the new run, even when the existing registry had its
+        # own (now stale) outcomes.
+        new = self._new_proposed()
+        new.generation_outcomes = [
+            GenerationOutcome(system="erp", table="customer", outcome="provider_failure",
+                               error="boom"),
+        ]
+        existing = self._existing()
+        existing.generation_outcomes = [
+            GenerationOutcome(system="crm", table="account", outcome="fallback_only"),
+        ]
+        merged = merge_preserving_decisions(new, existing)
+        assert merged.generation_outcomes == new.generation_outcomes
 
     def test_vanished_decided_claim_retained(self):
         existing = ClaimRegistry(domain="party", claims=[
@@ -613,3 +784,104 @@ class TestSlice4Schema:
         assert c.passthrough_reviewed is True
         # evidence still refreshed from the new run
         assert {e.type for e in c.evidence_sources} == {"affinity"}
+
+
+class TestDomainHandoff:
+    """proposal-quality — cross-domain evidence kept out of in-domain claims."""
+
+    def test_round_trip(self):
+        handoff = DomainHandoff(
+            ref_class="Party",
+            ref_property="legalName",
+            owning_domains=["party"],
+            ref_module="party-core",
+            ref_module_uri="https://ex.org/ont/party#",
+            evidence_sources=[
+                EvidenceSource(type="source_column", system="tms", table="booking",
+                                column="shipper_name"),
+            ],
+        )
+        again = DomainHandoff.from_dict(handoff.to_dict())
+        assert again == handoff
+        assert again.schema_version == DOMAIN_HANDOFF_SCHEMA_VERSION
+
+    def test_to_dict_omits_empty_optional_fields(self):
+        handoff = DomainHandoff(ref_class="Party", ref_property="legalName")
+        out = handoff.to_dict()
+        assert "ref_module" not in out
+        assert "ref_module_uri" not in out
+        assert "evidence_sources" not in out
+        assert out["owning_domains"] == []
+
+    def test_registry_omits_empty_domain_handoffs(self):
+        reg = ClaimRegistry(domain="booking")
+        assert "domain_handoffs" not in reg.to_dict()
+
+    def test_registry_round_trips_domain_handoffs(self):
+        reg = ClaimRegistry(domain="booking", domain_handoffs=[
+            DomainHandoff(ref_class="Party", ref_property="legalName",
+                          owning_domains=["party"]),
+        ])
+        restored = ClaimRegistry.from_dict(reg.to_dict())
+        assert restored.domain_handoffs == reg.domain_handoffs
+
+    def test_validate_warns_when_handoff_names_own_domain(self):
+        reg = ClaimRegistry(domain="booking", domain_handoffs=[
+            DomainHandoff(ref_class="Party", ref_property="legalName",
+                          owning_domains=["booking"]),
+        ])
+        issues = validate_registry(reg)
+        assert any(
+            i.level == "warning" and "domain_handoffs" in i.message for i in issues
+        )
+        assert validation_errors(issues) == []
+
+    def test_merge_always_takes_new_domain_handoffs(self):
+        existing = ClaimRegistry(domain="booking", domain_handoffs=[
+            DomainHandoff(ref_class="Stale", ref_property="stale", owning_domains=["x"]),
+        ])
+        new = ClaimRegistry(domain="booking", domain_handoffs=[
+            DomainHandoff(ref_class="Party", ref_property="legalName",
+                          owning_domains=["party"]),
+        ])
+        merged = merge_preserving_decisions(new, existing)
+        assert merged.domain_handoffs == new.domain_handoffs
+
+
+class TestRelationshipCandidateClusterMerge:
+    """proposal-quality — stable cluster_id survives membership refresh."""
+
+    def test_membership_refreshes_curated_field_survives(self):
+        existing = ClaimRegistry(domain="booking", relationship_candidates=[
+            {"type": "address_relationship_candidate", "source_table": "companies",
+             "role": None, "suggested_relationship": "hasAddress",
+             "target_concept": "Address", "source_columns": ["street", "city"],
+             "address_parts": ["city", "street"], "cardinality": "1:n",
+             "cluster_id": "abc123", "requires_human_confirmation": True,
+             "rationale": "old", "curator_note": "confirmed by Jane"},
+        ])
+        new = ClaimRegistry(domain="booking", relationship_candidates=[
+            {"type": "address_relationship_candidate", "source_table": "companies",
+             "role": None, "suggested_relationship": "hasAddress",
+             "target_concept": "Address",
+             "source_columns": ["street", "city", "postal_code"],
+             "address_parts": ["city", "postal", "street"], "cardinality": "1:n",
+             "cluster_id": "abc123", "requires_human_confirmation": True,
+             "rationale": "new"},
+        ])
+        merged = merge_preserving_decisions(new, existing)
+        cand = merged.relationship_candidates[0]
+        # detector-owned fields refresh (membership change is reported)
+        assert cand["source_columns"] == ["street", "city", "postal_code"]
+        assert cand["rationale"] == "new"
+        # human-curated field (not detector-owned) survives the refresh
+        assert cand["curator_note"] == "confirmed by Jane"
+
+    def test_no_cluster_id_passes_through_unmerged(self):
+        existing = ClaimRegistry(domain="booking", relationship_candidates=[])
+        new = ClaimRegistry(domain="booking", relationship_candidates=[
+            {"type": "address_relationship_candidate", "source_table": "t",
+             "source_columns": ["a"]},
+        ])
+        merged = merge_preserving_decisions(new, existing)
+        assert merged.relationship_candidates == new.relationship_candidates

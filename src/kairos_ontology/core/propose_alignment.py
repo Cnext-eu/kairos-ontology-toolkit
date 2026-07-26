@@ -34,12 +34,33 @@ from .claim_registry import (
     registry_path,
     write_registry,
 )
+from .anchor_resolution import (
+    AnchorResolution,
+    load_confirmed_alias_index,
+    resolve_table_anchor,
+)
+from .unresolved_anchors import (
+    REASON_AMBIGUOUS_CONFIRMED_ALIAS,
+    UnresolvedAnchor,
+    load_unresolved_anchors_doc,
+    merge_preserving_anchor_resolutions,
+    unresolved_anchor_id,
+    unresolved_anchors_path,
+    write_unresolved_anchors_doc,
+)
 from .analyse_sources import (
     DEFAULT_MODEL,
     parse_source_vocabulary,
     parse_reference_model,
 )
-from .ai_provider import ROLE_ALIGNMENT, get_ai_client
+from .ai_provider import (
+    ROLE_ALIGNMENT,
+    AIProviderConfig,
+    create_chat_completion,
+    get_ai_client,
+    resolve_provider_config,
+    sanitize_provider_error,
+)
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import compute_entry_hash, open_cache
 from ._samples import example_values as _render_example_values
@@ -77,6 +98,37 @@ CATCH_ALL_MIN_COLUMNS = 3
 #: reasoning model (gpt-5.5+) adds latency/cost without benefit.
 #: ``analyse-sources`` stays on the mini tier.
 HIGH_ACCURACY_MODEL = "gpt-5.4"
+
+# ---------------------------------------------------------------------------
+# Alignment-reliability — typed per-table generation outcomes
+# ---------------------------------------------------------------------------
+#: A real LLM call was made and returned a structured (possibly empty/no-match)
+#: result. The only outcome ``propose-alignment`` persists to the Claim
+#: Registry (see :mod:`kairos_ontology.core.claim_registry`).
+OUTCOME_SEMANTIC_SUCCESS = "semantic_success"
+#: The LLM call itself failed (network, auth, rate-limit exhaustion, malformed
+#: response, ...). The table has no real semantic content; it must never be
+#: written or reported as if the model had genuinely returned "no match".
+OUTCOME_PROVIDER_FAILURE = "provider_failure"
+#: No LLM call was even attempted because there was no reference-model class to
+#: align against (e.g. the domain's reference model did not resolve). Every
+#: column for the table falls back to a passthrough/custom disposition.
+OUTCOME_FALLBACK_ONLY = "fallback_only"
+
+
+class AlignmentTotalFailureError(RuntimeError):
+    """Raised when every attempted table's semantic generation failed.
+
+    "Attempted" excludes tables skipped via the per-domain freshness cache and
+    ``fallback_only`` tables (no reference model to align against — a separate,
+    opt-in concern gated by ``--allow-fallback-registry``). When raised, **no**
+    registry was written by the run at all: every write is staged and committed
+    only after the run-wide semantic verdict is known, so a mixed domain (some
+    tables ``provider_failure``, some ``fallback_only``) and an opted-in
+    ``fallback_only``-only domain are equally left uncommitted, and whatever
+    existed on disk is untouched. Callers must exit non-zero and never report
+    success.
+    """
 
 # Completeness metadata lives in ``completeness_model``.  The narrow column-triage
 # heuristics below belong to proposal generation rather than the coverage model.
@@ -214,6 +266,27 @@ class TableAlignment:
     #: candidate entities collapse onto one ``ref_class`` (a possible grain merge).
     #: Empty when no candidate entity was inferred.
     likely_entity: str = ""
+    #: Alignment-reliability — typed per-table generation outcome. Default
+    #: ``OUTCOME_SEMANTIC_SUCCESS`` keeps the happy-path output unchanged; the
+    #: producer only ever sets ``provider_failure`` / ``fallback_only`` (see
+    #: module docstring constants). ``generation_provider`` / ``generation_model``
+    #: / ``generation_error`` are populated only alongside a non-success outcome
+    #: and ``generation_error`` is always pre-sanitized (no secrets).
+    generation_outcome: str = OUTCOME_SEMANTIC_SUCCESS
+    generation_provider: str | None = None
+    generation_model: str | None = None
+    generation_error: str | None = None
+    #: uri-anchor-contract — the canonical inventory URI a confirmed discovery
+    #: alias (``core-concepts-conformance.yaml`` ``conforms``/
+    #: ``conforms-with-rename`` outcome) resolved this table's anchor to.
+    #: Populated only when ``ref_class_status == "confirmed"``; empty otherwise
+    #: (byte-identical output when no conformance artifact is supplied).
+    likely_entity_uri: str = ""
+    #: uri-anchor-contract — the candidate URIs that made a confirmed anchor
+    #: ambiguous (``ref_class_status == "unresolved"``), kept for transparency/
+    #: evidence on the table itself in addition to the dedicated
+    #: ``DomainAlignment.unresolved_anchors`` record. Empty otherwise.
+    anchor_candidate_uris: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -238,6 +311,12 @@ class DomainAlignment:
     #: Issue #182 — algorithm/prompt-contract version this output was produced with.
     #: Lets the canonical completeness gate flag pre-hardening output as unverifiable.
     algorithm_version: int = ALIGNMENT_ALGORITHM_VERSION
+    #: uri-anchor-contract — tables whose anchor could not be resolved because
+    #: more than one confirmed alias/URI was plausible for the same table.
+    #: These are also persisted as a separate versioned record (see
+    #: ``unresolved_anchors.py``) so the decision survives re-runs and isn't
+    #: silently overwritten by a "nearest class" guess.
+    unresolved_anchors: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -944,6 +1023,7 @@ def align_table(
     likely_entity: str = "",
     *,
     table_ref_classes: list[dict[str, Any]] | None = None,
+    anchor_override: str | None = None,
 ) -> dict[str, Any]:
     """Run LLM alignment for one source table against reference model classes.
 
@@ -953,12 +1033,20 @@ def align_table(
     ``ref_class`` is validated against those home classes while each column's
     ``ref_class`` may be any class in *ref_classes* (the widened pool); a per-column
     ``ref_module`` is captured when the model supplies one.
+
+    uri-anchor-contract: when *anchor_override* is given (a class name resolved
+    from a confirmed discovery alias/URI — see ``anchor_resolution.py``), it wins
+    over whatever class name the model proposes: the table's anchor is human-
+    confirmed evidence, not a similarity guess, so it is never re-litigated by
+    the LLM's own (possibly different) opinion. The LLM call still runs so
+    columns are aligned to properties of the confirmed class.
     """
     if not ref_classes:
         return {
             "ref_class": "",
             "ref_class_confidence": 0.0,
             "column_alignments": [],
+            "generation_outcome": OUTCOME_FALLBACK_ONLY,
         }
 
     prompt = build_alignment_prompt(
@@ -968,8 +1056,11 @@ def align_table(
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
     valid_classes = {c["name"] for c in table_classes}
 
+    generation_outcome = OUTCOME_SEMANTIC_SUCCESS
+    generation_error: str | None = None
     try:
-        response = call_with_backoff(lambda: client.chat.completions.create(
+        response = call_with_backoff(lambda: create_chat_completion(
+            client,
             model=model,
             messages=[
                 {"role": "system", "content": (
@@ -986,6 +1077,8 @@ def align_table(
     except Exception as e:
         logger.warning("LLM alignment failed for table %s: %s", table_name, e)
         result = {}
+        generation_outcome = OUTCOME_PROVIDER_FAILURE
+        generation_error = sanitize_provider_error(e)
 
     if not isinstance(result, dict):
         result = {}
@@ -997,8 +1090,18 @@ def align_table(
     # reported rather than silently blanked.
     ref_class_status = "matched"
     rejected_ref_class = None
-    if not proposed_ref_class:
+    if anchor_override:
+        # uri-anchor-contract: a confirmed URI/alias anchor always wins — the
+        # model's own class pick (matched/fallback/rejected/unmatched) is
+        # simply not consulted for the *anchor* decision once confirmed
+        # evidence exists (it is still used for column-level property
+        # alignment below).
+        ref_class = anchor_override
+        ref_class_status = "confirmed"
+        ref_class_confidence = 1.0
+    elif not proposed_ref_class:
         ref_class_status = "unmatched"
+        ref_class_confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
     elif proposed_ref_class not in valid_classes:
         # CR-2: fall back to the affinity-derived entity when it is a valid class,
         # rather than blanking it — we trust the prior analysis as a strong default.
@@ -1010,7 +1113,9 @@ def align_table(
         ref_class = likely_match
         rejected_ref_class = proposed_ref_class
         ref_class_status = "fallback" if likely_match else "rejected"
-    ref_class_confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
+        ref_class_confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
+    else:
+        ref_class_confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
 
     # Validate column alignments
     alignments = []
@@ -1063,6 +1168,8 @@ def align_table(
         "ref_class_status": ref_class_status,
         "rejected_ref_class": rejected_ref_class,
         "column_alignments": alignments,
+        "generation_outcome": generation_outcome,
+        "generation_error": generation_error,
     }
 
 
@@ -1130,6 +1237,8 @@ def _build_object_property_passthrough(
     data_type: str,
     ref_property: str,
     target: dict[str, Any],
+    *,
+    reason: str = "unresolved_target",
 ) -> dict[str, Any]:
     """Build a passthrough custom column for a downgraded object-property map (F3).
 
@@ -1137,17 +1246,43 @@ def _build_object_property_passthrough(
     resolvable governed target is retained here as passthrough *evidence* (never
     lost) while its governed disposition moves to the relationship candidate — so
     the column is counted exactly once.
+
+    ``reason`` (proposal-quality) documents *why* the map was downgraded —
+    ``"unresolved_target"`` (default, pre-existing F3 behaviour, byte-identical
+    rationale), ``"technical_actor"``, ``"missing_identifier_evidence"``, or
+    ``"missing_typed_role_evidence"``.
     """
+    rationale = (
+        f"Scalar column was mapped to object property '{ref_property}' whose "
+        "target entity does not resolve to a governed class; retained as "
+        "passthrough evidence while the relationship is modelled separately."
+    )
+    if reason == "technical_actor":
+        rationale = (
+            f"Column looks like a technical/audit actor reference (e.g. "
+            f"created_by/updated_by) rather than a business-entity identity; "
+            f"object property '{ref_property}' is downgraded to audit/"
+            "passthrough evidence by default (proposal-quality)."
+        )
+    elif reason == "missing_identifier_evidence":
+        rationale = (
+            f"Column was mapped to object property '{ref_property}' but shows "
+            "no target/entity identifier evidence (name or data type); retained "
+            "as passthrough evidence pending confirmation (proposal-quality)."
+        )
+    elif reason == "missing_typed_role_evidence":
+        rationale = (
+            f"Column was mapped to specialized location property "
+            f"'{ref_property}' without explicit typed-role evidence in the "
+            "column name; retained as passthrough evidence pending confirmation "
+            "(proposal-quality)."
+        )
     return {
         "column": column,
         "data_type": data_type or "unknown",
         "suggested_property": None,
         "confidence": 0.0,
-        "rationale": (
-            f"Scalar column was mapped to object property '{ref_property}' whose "
-            "target entity does not resolve to a governed class; retained as "
-            "passthrough evidence while the relationship is modelled separately."
-        ),
+        "rationale": rationale,
         "recommended_disposition": recommend_disposition(column),
         "disposition": None,
         "disposition_source": "",
@@ -1161,10 +1296,34 @@ def _build_object_property_candidate(
     column: str,
     ref_property: str,
     target: dict[str, Any],
+    *,
+    reason: str = "unresolved_target",
 ) -> dict[str, Any]:
     """Build a relationship candidate for an unresolved object-property map (F3)."""
     target_name = target.get("target_name") or ""
     target_phrase = f" to a '{target_name}'" if target_name else ""
+    rationale = (
+        f"Scalar column '{column}' was aligned to object property "
+        f"'{ref_property}'{target_phrase}, but no governed target class "
+        "resolves. Model the relationship to a governed target node and keep "
+        "the scalar column as passthrough evidence."
+    )
+    if reason == "missing_identifier_evidence":
+        rationale = (
+            f"Scalar column '{column}' was aligned to object property "
+            f"'{ref_property}'{target_phrase}, but shows no target/entity "
+            "identifier evidence. Confirm the source column actually "
+            "references another entity before modelling the relationship "
+            "(proposal-quality)."
+        )
+    elif reason == "missing_typed_role_evidence":
+        rationale = (
+            f"Scalar column '{column}' was aligned to specialized location "
+            f"property '{ref_property}'{target_phrase}, but the column name "
+            "gives no explicit typed-role evidence for that role. Confirm the "
+            "role before modelling a specialized location relationship "
+            "(proposal-quality)."
+        )
     return {
         "type": "object_property_relationship_candidate",
         "source_table": table_name,
@@ -1175,12 +1334,7 @@ def _build_object_property_candidate(
         "target_resolved": bool(target.get("target_resolved")),
         "cardinality": target.get("cardinality", "n:1"),
         "requires_human_confirmation": True,
-        "rationale": (
-            f"Scalar column '{column}' was aligned to object property "
-            f"'{ref_property}'{target_phrase}, but no governed target class "
-            "resolves. Model the relationship to a governed target node and keep "
-            "the scalar column as passthrough evidence."
-        ),
+        "rationale": rationale,
     }
 
 
@@ -1631,6 +1785,161 @@ def _resolve_object_property_target(
 
 
 # ---------------------------------------------------------------------------
+# Generic object-relationship safeguards (proposal-quality)
+# ---------------------------------------------------------------------------
+#
+# Deterministic, accelerator-agnostic guards that decide whether a scalar
+# column aligned to an *object* property should keep its object-property
+# mapping, or be downgraded to passthrough evidence + a relationship candidate
+# (same F3 mechanism as an unresolved target). Kept generic on purpose — no
+# accelerator/DCSA/logistics-specific vocabulary is introduced here; the only
+# domain-flavoured names this module already knows about
+# (``_OBJECT_PROPERTY_NAME_HINTS``) predate this change and stay untouched.
+# Findings #7/#9 (proposal-quality): technical/audit actor columns must never
+# become an in-domain relationship claim; any other object-property mapping
+# needs identifier evidence (a plain descriptive scalar is not an entity
+# reference); a *location*-flavoured object property additionally needs
+# typed-role evidence (the column must actually look like the role the
+# property names, e.g. "receipt"/"delivery") before a specialized property is
+# trusted over a generic one.
+
+#: Compact substrings that mark a column as a technical/audit actor reference
+#: (who created/changed the record) rather than a business-entity identity.
+#: Generic across accelerators; deliberately narrow to the "<verb>by" shape so
+#: legitimate business-party columns are not swept up.
+_TECHNICAL_ACTOR_PATTERNS: tuple[str, ...] = (
+    "createdby", "updatedby", "modifiedby", "deletedby", "approvedby",
+    "reviewedby", "authorizedby", "changedby", "lasteditedby", "enteredby",
+)
+
+
+def _is_technical_actor_column(column_name: str) -> bool:
+    """Return True when *column_name* is a technical/audit actor reference.
+
+    Generic safeguard (proposal-quality finding #9): ``created_by_*`` /
+    ``updated_by_*`` and analogous technical-actor columns default to
+    audit/passthrough evidence unless there is explicit business-entity
+    identity evidence — which this deterministic pass cannot itself confirm,
+    so it always downgrades. A human can still restore the object-property
+    mapping if the column really does carry business-party identity.
+    """
+    compact = _compact_name(column_name)
+    return any(pat in compact for pat in _TECHNICAL_ACTOR_PATTERNS)
+
+
+#: Name tokens that mark a column as identifier-like (points at another row /
+#: entity rather than describing it). Generic across accelerators.
+_IDENTIFIER_NAME_TOKENS = frozenset({
+    "id", "identifier", "code", "reference", "ref", "key", "number", "no",
+    "uuid", "guid", "num",
+})
+
+#: Data-type tokens that mark a column as identifier-like by storage shape
+#: (surrogate keys are typically integral or UUID, never free text).
+_IDENTIFIER_DATA_TYPE_TOKENS = frozenset({
+    "int", "bigint", "smallint", "tinyint", "integer", "uuid", "guid",
+    "uniqueidentifier",
+})
+
+
+def _looks_like_identifier_column(column_name: str, data_type: str) -> bool:
+    """Return True when *column_name*/*data_type* look like an entity identifier.
+
+    Generic safeguard (proposal-quality finding #9): an object-property
+    relationship must be backed by target/entity identifier evidence — a
+    descriptive scalar (a name, a free-text note) is not itself evidence that
+    the source system holds a reference to another entity. Tokenized (not
+    substring) matching avoids false positives such as "point" containing
+    "int" (see :func:`_tokenize_text`).
+    """
+    if _tokenize_text(column_name) & _IDENTIFIER_NAME_TOKENS:
+        return True
+    if _tokenize_text(data_type) & _IDENTIFIER_DATA_TYPE_TOKENS:
+        return True
+    return False
+
+
+#: The two fully-generic location object properties. They carry no specific
+#: role of their own (unlike ``hasPlaceOfReceipt`` → "receipt"), so they are
+#: exempt from the typed-role-evidence check below.
+_GENERIC_LOCATION_PROPERTIES = frozenset({"haslocation", "hasaddress"})
+
+#: Prefixes stripped (longest first) from a compacted object-property name to
+#: derive its location role token, e.g. ``hasPlaceOfReceipt`` → ``receipt``.
+_LOCATION_ROLE_PREFIXES: tuple[str, ...] = ("hasplaceof", "hasportof", "has")
+
+
+def _is_location_object_property(ref_property: str) -> bool:
+    """Return True when *ref_property* is one of the curated location hints."""
+    return _compact_name(ref_property) in _OBJECT_PROPERTY_NAME_HINTS
+
+
+def _location_role_token(ref_property: str) -> str | None:
+    """Derive the typed role token a location property expects evidence for.
+
+    Returns ``None`` for the fully-generic ``hasLocation`` / ``hasAddress``
+    (no specific role to require evidence for) and for any name this
+    conservative prefix-stripping cannot reduce to a non-empty token.
+    """
+    compact = _compact_name(ref_property)
+    if compact in _GENERIC_LOCATION_PROPERTIES:
+        return None
+    for prefix in _LOCATION_ROLE_PREFIXES:
+        if compact.startswith(prefix) and len(compact) > len(prefix):
+            return compact[len(prefix):]
+    return None
+
+
+def _has_typed_role_evidence(column_name: str, role_token: str) -> bool:
+    """Return True when *column_name* itself carries the expected role token.
+
+    Generic safeguard (proposal-quality finding #9): a specialized location
+    property (origin/receipt/delivery/discharge/...) must only be selected
+    when the source column's own name gives explicit evidence of that role —
+    e.g. a column literally named "PlaceOfReceipt" or "receipt_location", not
+    a bare "location"/"place" column force-fit onto the most specific-sounding
+    property the model happened to pick.
+    """
+    return role_token in _compact_name(column_name)
+
+
+def _object_relationship_downgrade_reason(
+    *,
+    column: str,
+    data_type: str,
+    ref_property: str,
+    target_resolved: bool,
+) -> str | None:
+    """Decide whether an object-property column map should be downgraded.
+
+    Returns ``None`` to keep the mapping unchanged, or one of:
+
+    * ``"technical_actor"`` — a ``created_by_*`` / ``updated_by_*`` style
+      technical-actor column (finding #9) — audit/passthrough only, never a
+      relationship candidate;
+    * ``"missing_typed_role_evidence"`` — a specialized location property
+      (e.g. ``hasPlaceOfReceipt``) selected without the column itself naming
+      that role;
+    * ``"missing_identifier_evidence"`` — a non-location object property
+      selected without identifier-like evidence on the source column;
+    * ``"unresolved_target"`` — the pre-existing F3 check: no governed target
+      class resolves (preserved as the last check so the default behaviour
+      for an already-safe mapping is unchanged).
+    """
+    if _is_technical_actor_column(column):
+        return "technical_actor"
+    if _is_location_object_property(ref_property):
+        role_token = _location_role_token(ref_property)
+        if role_token and not _has_typed_role_evidence(column, role_token):
+            return "missing_typed_role_evidence"
+    elif not _looks_like_identifier_column(column, data_type):
+        return "missing_identifier_evidence"
+    if not target_resolved:
+        return "unresolved_target"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Plausibility / address review pass (DD-069, issues #167/#168)
 # ---------------------------------------------------------------------------
 #
@@ -1733,7 +2042,8 @@ def _is_address_property(ref_property: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Relationship-candidate detection (issue #192, Phase A1)
+# Relationship-candidate detection (issue #192, Phase A1; generalized —
+# proposal-quality)
 # ---------------------------------------------------------------------------
 #
 # Deterministic, no-LLM, no-cross-module-widening detector that PROMOTES the
@@ -1746,6 +2056,14 @@ def _is_address_property(ref_property: str) -> bool:
 # deliberately omit a target URI — naming/binding to a concrete shared ``Address``
 # class is deferred (issue #192 Phase A2). Emitted only when a cluster is found,
 # so tables without an address cluster keep byte-identical output.
+#
+# proposal-quality generalizes the *cluster identity* beyond address parts: each
+# candidate now carries a stable, content-addressed ``cluster_id`` derived only
+# from (domain, source table, semantic role/prefix, target concept, cardinality)
+# — never from column membership. That is what lets a re-run refresh which
+# columns contribute to a cluster (membership can change) while the cluster's
+# identity — and any human decision recorded against it — survives (see
+# ``claim_registry._merge_relationship_candidates``).
 
 #: Address-part KINDS keyed on exact source tokens (safe; no substring matching).
 #: Ordered most-specific first so a column lands on a single kind.
@@ -1800,14 +2118,40 @@ def _address_relationship_name(role: str) -> str:
     return f"has{role[:1].upper()}{role[1:]}Address"
 
 
+def _relationship_cluster_id(
+    domain: str, source_table: str, role: str, target_concept: str, cardinality: str,
+) -> str:
+    """Stable, content-addressed relationship-cluster id (proposal-quality).
+
+    Derived ONLY from the cluster's stable dimensions — source table, semantic
+    role/prefix, target class/concept, and cardinality (qualified by domain to
+    avoid collisions across domains sharing a table name) — and deliberately
+    NEVER from which columns currently contribute. That is what lets a refresh
+    report membership changes (columns added/removed) while the cluster keeps
+    the same identity, so a human decision recorded against it is never
+    silently orphaned by a re-run (see ``claim_registry.DomainHandoff`` sibling
+    concept and ``_merge_relationship_candidates``).
+    """
+    basis = "|".join([
+        domain or "", source_table or "", role or "default",
+        target_concept or "", cardinality or "",
+    ])
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
 def _detect_address_relationship_candidates(
     table_name: str,
     columns: list[dict[str, Any]],
+    *,
+    domain: str = "",
 ) -> list[dict[str, Any]]:
     """Detect clustered address columns and emit relationship candidates.
 
     Deterministic and additive (issue #192 Phase A1). Groups address-part columns
     by role, and emits one candidate per role that has >=2 distinct part kinds.
+    ``domain`` (proposal-quality, optional/backward-compatible) qualifies the
+    stable ``cluster_id`` so identically-named tables in different domains never
+    collide.
     """
     by_role: dict[str, dict[str, list[str]]] = {}
     for col in columns:
@@ -1828,6 +2172,7 @@ def _detect_address_relationship_candidates(
         part_kinds = sorted(kinds)
         rel = _address_relationship_name(role)
         role_phrase = "" if role == "default" else f" under role '{role}'"
+        cardinality = "1:n"
         candidates.append({
             "type": "address_relationship_candidate",
             "source_table": table_name,
@@ -1836,6 +2181,10 @@ def _detect_address_relationship_candidates(
             "target_concept": "Address",
             "source_columns": source_columns,
             "address_parts": part_kinds,
+            "cardinality": cardinality,
+            "cluster_id": _relationship_cluster_id(
+                domain, table_name, role, "Address", cardinality,
+            ),
             "requires_human_confirmation": True,
             "rationale": (
                 f"{len(part_kinds)} complementary address parts "
@@ -1846,6 +2195,63 @@ def _detect_address_relationship_candidates(
             ),
         })
     return candidates
+
+
+def _cluster_object_property_candidates(
+    candidates: list[dict[str, Any]], *, domain: str = "",
+) -> list[dict[str, Any]]:
+    """Cluster per-column object-property candidates into one-per-relationship.
+
+    proposal-quality: ``_build_object_property_candidate`` emits one candidate
+    per downgraded column; several columns on the same table can legitimately
+    contribute to the *same* relationship (e.g. two columns both evidencing a
+    receipt location). This groups them by the stable dimensions — source
+    table, suggested relationship (the semantic role/prefix for an object
+    property), target concept, and cardinality — into a single cluster that
+    carries all contributing columns, mirroring the address-cluster shape and
+    giving the group the same stable, refresh-safe ``cluster_id``.
+    """
+    groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str, str, str]] = []
+    for cand in candidates:
+        key = (
+            str(cand.get("source_table", "") or ""),
+            str(cand.get("suggested_relationship", "") or ""),
+            str(cand.get("target_concept", "") or ""),
+            str(cand.get("cardinality", "") or ""),
+        )
+        group = groups.get(key)
+        if group is None:
+            group = dict(cand)
+            group["source_columns"] = list(cand.get("source_columns", []) or [])
+            groups[key] = group
+            order.append(key)
+        else:
+            for col in cand.get("source_columns", []) or []:
+                if col not in group["source_columns"]:
+                    group["source_columns"].append(col)
+            # target_resolved/target_class_uri are deterministic functions of
+            # (ref_property, inventory), so identical across a group; keep the
+            # first-seen value.
+
+    merged: list[dict[str, Any]] = []
+    for key in sorted(order):
+        source_table, suggested_relationship, target_concept, cardinality = key
+        group = groups[key]
+        group["source_columns"] = sorted(group["source_columns"])
+        group["cluster_id"] = _relationship_cluster_id(
+            domain, source_table, suggested_relationship, target_concept, cardinality,
+        )
+        if len(group["source_columns"]) > 1:
+            group["rationale"] = (
+                f"{len(group['source_columns'])} scalar columns "
+                f"({', '.join(group['source_columns'])}) were aligned to object "
+                f"property '{suggested_relationship}'; modelled as a single "
+                "relationship candidate carrying all contributing columns "
+                "(proposal-quality)."
+            )
+        merged.append(group)
+    return merged
 
 
 def _review_column_alignment(
@@ -1937,6 +2343,9 @@ def _propose_alignments(
     inventory_dir: Path | None = None,
     custom_confidence_floor: float = CUSTOM_CONFIDENCE_FLOOR,
     emit_claims: bool = True,
+    allow_fallback_registry: bool = False,
+    generation_stats: dict[str, int] | None = None,
+    conformance_artifact_path: Path | None = None,
 ) -> tuple[list[Path], list[DomainAlignment]]:
     """Run alignment for all domains found in affinity reports.
 
@@ -1945,7 +2354,10 @@ def _propose_alignments(
         sources_dir: Directory containing source system subdirs with *.vocabulary.ttl.
         catalog_path: Path to the hub's catalog-v001.xml.
         output_dir: Where to write *-alignment.yaml files.
-        model: LLM model name.
+        model: LLM model name. Authoritative for this run: the caller (the CLI)
+            owns model precedence (explicit ``--model`` > ``--high-accuracy``
+            preset > ``KAIROS_AI_{ROLE}_MODEL`` > default), and the per-role
+            provider config is never allowed to override it here.
         domains_filter: Optional list of domain ids to include.
         report: Progress reporter callable.
         include_mapping_hints: DD-045 — when True, enrich each column with a
@@ -1972,11 +2384,35 @@ def _propose_alignments(
             (``referencemodels-unpacked/``). When present, newly written claims get
             deterministic ``class_uri`` / ``property_uri`` backfilled from the
             inventory (toolkit-optimizations F4). Default ``None`` leaves URIs null.
+        allow_fallback_registry: Alignment-reliability — a domain where *every*
+            table produced ``fallback_only`` (no reference model to align
+            against — the LLM was never even called) is skipped by default so a
+            placeholder-only registry never masquerades as a real proposal.
+            Pass True to explicitly opt into writing it anyway.
+        generation_stats: Alignment-reliability — optional out-param populated
+            with run-wide ``{"attempted", "semantic_success", "provider_failure"}``
+            counts, for callers (the CLI) that want a summary without changing
+            this function's return type.
+        conformance_artifact_path: uri-anchor-contract — path to the hub's
+            ``core-concepts-conformance.yaml`` (DD-090). When it resolves a
+            table's affinity-derived ``likely_entity`` to exactly one confirmed
+            concept URI, that URI wins over the model's own class pick/name
+            similarity; when it names more than one, the table's anchor is
+            deliberately left unresolved (a versioned ``unresolved_anchors``
+            record is written instead of guessing — see
+            ``unresolved_anchors.py``) and no property/custom-column claims are
+            generated for it. Default ``None`` (or a missing/unreadable file)
+            leaves this run's output byte-identical to before this feature.
 
     Returns ``(written_paths, built_alignments)``. When *emit_claims* is False the
     pipeline only builds and returns the in-memory :class:`DomainAlignment` objects
     (no domain-level skip, no files written); this is the testable/introspection
     path used by :func:`build_domain_alignments`.
+
+    Raises:
+        AlignmentTotalFailureError: every attempted table's semantic generation
+            failed (100% ``provider_failure``) — nothing was written by the run
+            (all writes are staged until the run-wide verdict is known).
     """
     if report is None:
         report = lambda msg, **kw: None  # noqa: E731
@@ -2045,9 +2481,51 @@ def _propose_alignments(
                 parsed_vocabs[system] = {}
         return parsed_vocabs[system].get(table, [])
 
-    # Create LLM client lazily (after validation). Uses the ``alignment`` role so a
-    # dedicated (typically stronger) endpoint/model override applies (issue #182).
-    client = get_ai_client(role=ROLE_ALIGNMENT)
+    # Preflight (alignment-reliability): resolve the provider/endpoint/auth for
+    # this role *before* any cost/fan-out, so a bad provider config surfaces
+    # immediately instead of mid-run on the first table.
+    #
+    # Model precedence: the *caller-resolved* ``model`` is authoritative and is
+    # never re-derived here. The CLI already applies the full precedence chain
+    # (explicit ``--model`` > ``--high-accuracy`` preset > ``KAIROS_AI_
+    # {ROLE}_MODEL`` > ``DEFAULT_MODEL`` — see ``propose_alignment_cmd``), so
+    # reading the model back off the provider config would let the per-role env
+    # override silently win over an explicitly pinned model. The provider config
+    # is therefore consumed as endpoint/auth/preflight metadata only.
+    #
+    # ``get_ai_client`` (mocked directly in unit tests) performs the same
+    # provider resolution internally and remains the source of truth for
+    # constructing the client; if the standalone preflight resolution itself
+    # cannot run (e.g. a test double patches ``get_ai_client`` without
+    # configuring real provider env vars), fall through silently —
+    # ``get_ai_client`` still raises the same error in a real environment, so no
+    # real misconfiguration is masked.
+    try:
+        provider_config = resolve_provider_config(model, role=ROLE_ALIGNMENT)
+        if provider_config.model != model:
+            report(
+                f"  ℹ Per-role model override '{provider_config.model}' not "
+                f"applied — the caller-resolved model '{model}' is "
+                "authoritative.",
+                level="verbose",
+            )
+    except EnvironmentError:
+        provider_config = AIProviderConfig(
+            provider="unknown", endpoint="", api_key="", model=model
+        )
+    client = get_ai_client(model, role=ROLE_ALIGNMENT)
+    report(f"  🔌 Provider: {provider_config.provider} — effective model: {model}")
+
+    # uri-anchor-contract: built once for the whole run (the conformance
+    # artifact is hub-wide, not per-domain). Missing/unreadable path -> empty
+    # index -> every table falls through to the existing LLM/lexical path
+    # unchanged.
+    alias_index = load_confirmed_alias_index(conformance_artifact_path)
+    if alias_index:
+        report(
+            f"  🔗 Confirmed anchors: {len(alias_index)} alias(es) from "
+            f"{conformance_artifact_path}"
+        )
 
     if cost_warning:
         from ._cost import print_cost_warning
@@ -2066,9 +2544,29 @@ def _propose_alignments(
 
     output_files: list[Path] = []
     alignments: list[DomainAlignment] = []
+    # Alignment-reliability: every filesystem effect of this run is *staged* here
+    # in domain order and only committed once the run-wide semantic verdict is
+    # known (see the total-failure check after the loop). Nothing may be written
+    # while it is still possible that the run failed semantically end-to-end —
+    # otherwise a domain that mixes ``provider_failure`` with ``fallback_only``
+    # tables (neither group covering the whole domain, so no per-domain gate
+    # fires) would be persisted just before ``AlignmentTotalFailureError``
+    # states that nothing was written. Entries are either
+    # ``{"kind": "cached", "path": ...}`` (a domain skipped by the freshness
+    # cache — already on disk, untouched by this run) or
+    # ``{"kind": "write", ...}`` (a pending registry + unresolved-anchors write).
+    staged_outputs: list[dict[str, Any]] = []
     if emit_claims:
         assert output_dir is not None
         output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Alignment-reliability — run-wide tallies. "Attempted" counts only tables
+    # where a real LLM call path was taken (semantic_success or
+    # provider_failure); fallback_only tables never called the LLM at all, so
+    # they neither count as an attempt nor as a success.
+    run_attempted = 0
+    run_semantic_success = 0
+    run_provider_failures = 0
 
     for domain_id, tables in sorted(domain_tables.items()):
         report(f"  📐 Domain: {domain_id} ({len(tables)} table(s))")
@@ -2112,7 +2610,7 @@ def _propose_alignments(
                             f"     ⏭  Up to date (affinity unchanged) — "
                             f"skipped {out_path.name}"
                         )
-                        output_files.append(out_path)
+                        staged_outputs.append({"kind": "cached", "path": out_path})
                         continue
 
         # Resolve reference model inventory (home domain — STEP 1 + rollup + hints)
@@ -2192,6 +2690,27 @@ def _propose_alignments(
             alignment_params_sha256=params_hash or None,
         )
 
+        # uri-anchor-contract: a previously-persisted "resolved" unresolved_anchor
+        # decision (a human choosing a URI among what were once contradictory
+        # confirmed aliases) must be honored on this and future runs — merge
+        # tolerantly loads it (a missing/legacy/malformed file is never fatal;
+        # backward-compatible loading diagnostics only).
+        existing_anchors: list[UnresolvedAnchor] = []
+        anchor_doc_path: Path | None = None
+        if emit_claims and output_dir is not None:
+            anchor_doc_path = unresolved_anchors_path(output_dir, domain_id)
+            existing_anchors, anchor_load_diagnostics = load_unresolved_anchors_doc(
+                anchor_doc_path
+            )
+            for diag in anchor_load_diagnostics:
+                report(f"     ⚠ {diag}", level="verbose")
+        resolved_anchor_overrides: dict[str, str] = {
+            a.id: a.resolved_uri
+            for a in existing_anchors
+            if a.status == "resolved" and a.resolved_uri
+        }
+        unresolved_records: list[UnresolvedAnchor] = []
+
         def _process_table(tbl_info: dict[str, Any]) -> dict[str, Any] | None:
             """Compute (or reuse) the normalized alignment result for one table.
 
@@ -2211,6 +2730,57 @@ def _propose_alignments(
             likely_entity = tbl_info.get("likely_entity", "")
             indicative_columns = tbl_info.get("indicative_columns", [])
 
+            # uri-anchor-contract: resolve the table's anchor from confirmed
+            # discovery evidence *before* any name-similarity/LLM class
+            # selection runs, so an explicit confirmed URI always wins.
+            anchor_res = resolve_table_anchor(likely_entity, alias_index, ref_classes)
+            anchor_id = unresolved_anchor_id(domain_id, system, table)
+            if anchor_res.status == "ambiguous":
+                # A human may have already resolved this exact ambiguity in a
+                # prior run (see the "resolved" unresolved_anchor merge above)
+                # — honor that decision rather than re-raising the same
+                # ambiguity forever.
+                prior_uri = resolved_anchor_overrides.get(anchor_id)
+                if prior_uri and prior_uri in anchor_res.candidate_uris:
+                    resolved_cls = next(
+                        (c for c in ref_classes if str(c.get("uri", "")) == prior_uri),
+                        None,
+                    )
+                    if resolved_cls is not None:
+                        anchor_res = AnchorResolution(
+                            status="confirmed",
+                            resolved_uri=prior_uri,
+                            resolved_name=str(resolved_cls.get("name", "")),
+                            candidate_uris=(prior_uri,),
+                            evidence=(
+                                f"human-resolved unresolved_anchor {anchor_id} -> "
+                                f"{prior_uri}",
+                            ),
+                        )
+
+            if anchor_res.status == "ambiguous":
+                # uri-anchor-contract: never silently pick the "nearest" class
+                # here — no LLM call, no columns, so a table this evidently
+                # ambiguous never produces a property claim. Not cached (like
+                # provider_failure): must re-resolve fresh every run in case
+                # the conformance artifact is corrected.
+                return {
+                    "system": system, "table": table, "columns": columns,
+                    "result": {
+                        "ref_class": "", "ref_class_confidence": 0.0,
+                        "ref_class_status": "unresolved",
+                        "column_alignments": [],
+                        "generation_outcome": OUTCOME_FALLBACK_ONLY,
+                    },
+                    "cache_key": None, "from_cache": False,
+                    "likely_entity": likely_entity,
+                    "anchor_resolution": anchor_res,
+                }
+
+            anchor_override = (
+                anchor_res.resolved_name if anchor_res.status == "confirmed" else None
+            )
+
             cache_key = compute_entry_hash({
                 "system": system,
                 "table": table,
@@ -2221,12 +2791,15 @@ def _propose_alignments(
                     for c in columns
                 ],
                 "params": align_params,
+                # uri-anchor-contract: a confirmed-anchor status change (evidence
+                # added/changed) must invalidate the per-table cache entry.
+                "anchor_override": anchor_override or "",
             })
             cached = cache.get(cache_key)
             if cached is not None:
                 return {"system": system, "table": table, "columns": columns,
                         "result": cached, "cache_key": cache_key, "from_cache": True,
-                        "likely_entity": likely_entity}
+                        "likely_entity": likely_entity, "anchor_resolution": anchor_res}
 
             shortlist_classes = _select_ref_classes_for_table(
                 table, columns, ref_classes,
@@ -2246,11 +2819,13 @@ def _propose_alignments(
                         client, model, table, columns, prop_pool,
                         likely_entity=likely_entity,
                         table_ref_classes=shortlist_classes,
+                        anchor_override=anchor_override,
                     )
                 else:
                     result = align_table(
                         client, model, table, columns, shortlist_classes,
                         likely_entity=likely_entity,
+                        anchor_override=anchor_override,
                     )
                     if (
                         len(shortlist_classes) < len(ref_classes)
@@ -2263,6 +2838,7 @@ def _propose_alignments(
                         full_result = align_table(
                             client, model, table, columns, ref_classes,
                             likely_entity=likely_entity,
+                            anchor_override=anchor_override,
                         )
                         if _alignment_result_score(
                             full_result, len(columns)
@@ -2270,11 +2846,15 @@ def _propose_alignments(
                             result = full_result
             except Exception as exc:  # noqa: BLE001 — isolate a single table failure
                 logger.warning("Alignment failed for %s.%s: %s", system, table, exc)
-                result = {"ref_class": "", "ref_class_confidence": 0.0,
-                          "column_alignments": []}
+                result = {
+                    "ref_class": "", "ref_class_confidence": 0.0,
+                    "column_alignments": [],
+                    "generation_outcome": OUTCOME_PROVIDER_FAILURE,
+                    "generation_error": sanitize_provider_error(exc),
+                }
             return {"system": system, "table": table, "columns": columns,
                     "result": result, "cache_key": cache_key, "from_cache": False,
-                    "likely_entity": likely_entity}
+                    "likely_entity": likely_entity, "anchor_resolution": anchor_res}
 
         processed = map_concurrent(_process_table, tables, max_workers=max_workers)
 
@@ -2292,7 +2872,14 @@ def _propose_alignments(
                 report(f"     ⚠ No columns found for {system}.{table}", level="verbose")
                 continue
 
-            if not entry.get("from_cache") and entry.get("cache_key"):
+            if (
+                not entry.get("from_cache")
+                and entry.get("cache_key")
+                # Alignment-reliability: never persist a provider_failure result —
+                # caching it would silently freeze a transient outage as
+                # permanent "no match" output and suppress all future retries.
+                and result.get("generation_outcome") != OUTCOME_PROVIDER_FAILURE
+            ):
                 cache.put(entry["cache_key"], result)
 
             # Build TableAlignment (deterministic; no LLM)
@@ -2407,27 +2994,40 @@ def _propose_alignments(
                             acc["source_columns"].append(
                                 f"{system}.{table}.{ca['column']}"
                             )
-                    # F3 (toolkit-optimizations): a scalar column mapped to an
-                    # object property whose target entity does NOT resolve to a
-                    # governed class must not count as a resolved scalar mapping
-                    # (the registry would look covered without a target node).
-                    # Downgrade it to a passthrough custom column and emit a
-                    # relationship candidate so the column keeps exactly one
-                    # governed disposition (no double count). When the target
-                    # resolves, the mapping is kept unchanged (byte-identical).
+                    # F3 (toolkit-optimizations), generalized by proposal-quality:
+                    # a scalar column mapped to an object property must not count
+                    # as a resolved scalar mapping when (a) the target entity does
+                    # NOT resolve to a governed class (original F3 check), (b) the
+                    # column is a technical/audit actor reference, (c) a
+                    # specialized location property is selected without typed-role
+                    # evidence, or (d) a non-location object property is selected
+                    # without target/entity identifier evidence. Downgrade to a
+                    # passthrough custom column and — except for the audit-actor
+                    # case, which is passthrough-only per finding #9 — emit a
+                    # relationship candidate, so the column keeps exactly one
+                    # governed disposition (no double count). When none of these
+                    # fire, the mapping is kept unchanged (byte-identical).
                     obj_target = _resolve_object_property_target(
                         ca["ref_property"], ref_class_name,
                         range_index, class_uri_by_name,
                     )
-                    if obj_target is not None and not obj_target["target_resolved"]:
-                        custom_cols.append(_build_object_property_passthrough(
-                            ca["column"], col_data_type, ca["ref_property"],
-                            obj_target,
-                        ))
-                        objprop_candidates.append(_build_object_property_candidate(
-                            table, ca["column"], ca["ref_property"], obj_target,
-                        ))
-                        continue
+                    if obj_target is not None:
+                        downgrade_reason = _object_relationship_downgrade_reason(
+                            column=ca["column"], data_type=col_data_type,
+                            ref_property=ca["ref_property"],
+                            target_resolved=bool(obj_target["target_resolved"]),
+                        )
+                        if downgrade_reason is not None:
+                            custom_cols.append(_build_object_property_passthrough(
+                                ca["column"], col_data_type, ca["ref_property"],
+                                obj_target, reason=downgrade_reason,
+                            ))
+                            if downgrade_reason != "technical_actor":
+                                objprop_candidates.append(_build_object_property_candidate(
+                                    table, ca["column"], ca["ref_property"], obj_target,
+                                    reason=downgrade_reason,
+                                ))
+                            continue
                     col_alignments.append(column_alignment)
 
             # F6: reconcile every source column against what the model returned.
@@ -2435,13 +3035,19 @@ def _propose_alignments(
             # drop columns before they reach the registry; materialize any
             # unaccounted column as a passthrough candidate so the governance gate
             # never reports a truncated registry as complete.
-            accounted = {ca.column for ca in col_alignments}
-            accounted |= {str(cc.get("column", "") or "") for cc in custom_cols}
-            for col in columns:
-                cname = str(col.get("name", "") or "")
-                if cname and cname not in accounted:
-                    custom_cols.append(_build_reconciled_passthrough(col))
-                    accounted.add(cname)
+            # uri-anchor-contract: skipped entirely for an "unresolved" table —
+            # there is no LLM result to reconcile against (the call never ran)
+            # and every column would otherwise be materialized as a passthrough
+            # claim against a table that has no resolved class anchor yet.
+            is_unresolved_anchor = result.get("ref_class_status") == "unresolved"
+            if not is_unresolved_anchor:
+                accounted = {ca.column for ca in col_alignments}
+                accounted |= {str(cc.get("column", "") or "") for cc in custom_cols}
+                for col in columns:
+                    cname = str(col.get("name", "") or "")
+                    if cname and cname not in accounted:
+                        custom_cols.append(_build_reconciled_passthrough(col))
+                        accounted.add(cname)
             src_count, src_hash = _source_column_digest(columns)
 
             ta = TableAlignment(
@@ -2456,16 +3062,58 @@ def _propose_alignments(
                 source_column_count=src_count,
                 source_column_sha256=src_hash,
                 likely_entity=str(entry.get("likely_entity", "") or ""),
+                generation_outcome=result.get(
+                    "generation_outcome", OUTCOME_SEMANTIC_SUCCESS
+                ),
+                generation_error=result.get("generation_error"),
             )
+            if ta.generation_outcome != OUTCOME_SEMANTIC_SUCCESS:
+                ta.generation_provider = provider_config.provider
+                ta.generation_model = model
+
+            # uri-anchor-contract: attach the resolved/ambiguous anchor evidence
+            # to the table, and — for "unresolved" — record a separate versioned
+            # unresolved_anchor (never a claim) so the decision survives future
+            # re-runs instead of being silently guessed away.
+            anchor_res_entry: AnchorResolution | None = entry.get("anchor_resolution")
+            if anchor_res_entry is not None and anchor_res_entry.status == "confirmed":
+                ta.likely_entity_uri = anchor_res_entry.resolved_uri or ""
+            elif anchor_res_entry is not None and anchor_res_entry.status == "ambiguous":
+                ta.anchor_candidate_uris = list(anchor_res_entry.candidate_uris)
+                unresolved_records.append(UnresolvedAnchor(
+                    id=unresolved_anchor_id(domain_id, system, table),
+                    domain=domain_id,
+                    system=system,
+                    table=table,
+                    likely_entity=str(entry.get("likely_entity", "") or ""),
+                    candidate_uris=list(anchor_res_entry.candidate_uris),
+                    reason=REASON_AMBIGUOUS_CONFIRMED_ALIAS,
+                    evidence=list(anchor_res_entry.evidence),
+                ))
+
             if include_mapping_hints:
                 ta.structural_hints = _detect_structural_hints(
                     table, columns, ref_classes
                 ) + address_hints
             # Issue #192 (Phase A1): deterministic, always-on, additive
             # relationship-candidate detection (no LLM, no cross-module widening).
-            rel_candidates = _detect_address_relationship_candidates(table, columns)
-            # F3: append object-property relationship candidates (unresolved target).
-            rel_candidates = rel_candidates + objprop_candidates
+            # uri-anchor-contract / proposal-quality: an "unresolved" table has no
+            # resolved class anchor — it must emit neither claims (already the
+            # case above) nor relationship clusters, so URI-first resolution
+            # always wins over a name-based guess at a relationship target.
+            if is_unresolved_anchor:
+                rel_candidates: list[dict[str, Any]] = []
+            else:
+                rel_candidates = _detect_address_relationship_candidates(
+                    table, columns, domain=domain_id,
+                )
+                # F3, generalized (proposal-quality): cluster object-property
+                # candidates by (source table, relationship, target, cardinality)
+                # so several contributing columns collapse into one candidate
+                # instead of one-per-column.
+                rel_candidates = rel_candidates + _cluster_object_property_candidates(
+                    objprop_candidates, domain=domain_id,
+                )
             if rel_candidates:
                 ta.relationship_candidates = rel_candidates
             alignment.tables.append(ta)
@@ -2473,6 +3121,21 @@ def _propose_alignments(
             matched = len(col_alignments)
             custom = len(custom_cols)
             cache_marker = " (cached)" if entry.get("from_cache") else ""
+
+            # Alignment-reliability: tally run-wide outcomes and keep a failed
+            # table *visible* (not just in --verbose) rather than letting it
+            # masquerade as an ordinary (if empty) semantic result.
+            if ta.generation_outcome == OUTCOME_PROVIDER_FAILURE:
+                run_attempted += 1
+                run_provider_failures += 1
+                report(
+                    f"     ⚠ {system}.{table} → semantic generation FAILED: "
+                    f"{ta.generation_error}"
+                )
+            elif ta.generation_outcome == OUTCOME_SEMANTIC_SUCCESS:
+                run_attempted += 1
+                run_semantic_success += 1
+
             report(
                 f"     ├─ {system}.{table} → {ta.ref_class} "
                 f"({matched} matched, {custom} custom){cache_marker}",
@@ -2514,16 +3177,104 @@ def _propose_alignments(
                 "class(es)"
             )
 
-        # Write output (Claim Registry — DD-094)
+        # Stage output (Claim Registry — DD-094); committed after the loop.
+        merged_anchors = merge_preserving_anchor_resolutions(
+            unresolved_records, existing_anchors
+        )
+        alignment.unresolved_anchors = [a.to_dict() for a in merged_anchors]
         alignments.append(alignment)
+
+        # Alignment-reliability — per-domain write gate. A domain where *every*
+        # table failed the provider call has no trustworthy semantic content at
+        # all: never overwrite an existing (possibly good) registry with it.
+        # A domain where every table is fallback_only (no reference model to
+        # align against — the LLM was never called) is a distinct, deliberate
+        # "incomplete" case gated behind an explicit opt-in flag rather than a
+        # hard block, since it may still be a useful placeholder once approved.
+        domain_outcomes = [ta.generation_outcome for ta in alignment.tables]
+        domain_total = len(domain_outcomes)
+        domain_provider_failures = domain_outcomes.count(OUTCOME_PROVIDER_FAILURE)
+        domain_fallback_only = domain_outcomes.count(OUTCOME_FALLBACK_ONLY)
+
         if emit_claims:
-            out_path = write_claims_output(
-                alignment, output_dir, inventory_dir=inventory_dir
-            )
-            output_files.append(out_path)
-            report(f"     ✓ Written: {out_path.name}")
+            if domain_total and domain_provider_failures == domain_total:
+                report(
+                    f"     ⛔ Skipped writing {domain_id}: semantic generation "
+                    f"failed for all {domain_total} table(s); any existing "
+                    "claims file was left untouched."
+                )
+            elif (
+                domain_total
+                and domain_fallback_only == domain_total
+                and not allow_fallback_registry
+            ):
+                report(
+                    f"     ⛔ Skipped writing {domain_id}: no reference model "
+                    f"resolved for any of its {domain_total} table(s) "
+                    "(fallback-only, incomplete). Pass --allow-fallback-registry "
+                    "to write it anyway."
+                )
+            else:
+                staged_outputs.append({
+                    "kind": "write",
+                    "domain": domain_id,
+                    "alignment": alignment,
+                    "anchors": merged_anchors,
+                    "anchor_path": anchor_doc_path,
+                })
+
+    if generation_stats is not None:
+        generation_stats["attempted"] = run_attempted
+        generation_stats["semantic_success"] = run_semantic_success
+        generation_stats["provider_failure"] = run_provider_failures
 
     cache.flush()
+
+    # Alignment-reliability: a total run failure must never be reported as
+    # success — and must never leave a registry behind while claiming it wrote
+    # nothing. Every write of this run is staged above and committed only below,
+    # so raising here guarantees the on-disk state is exactly what it was before
+    # the run (including for a domain that mixes provider_failure and
+    # fallback_only tables, and for a fallback-only domain opted in via
+    # --allow-fallback-registry).
+    if run_attempted and not run_semantic_success:
+        raise AlignmentTotalFailureError(
+            f"Semantic alignment failed for all {run_attempted} attempted "
+            "table(s) — no provider call succeeded across the run. No claim "
+            "registries were written; existing files (if any) were left "
+            "untouched. See the per-table errors above."
+        )
+
+    # Commit the staged writes, in domain order, now that the run is known to
+    # carry at least some real semantic content (or to have attempted nothing).
+    for staged in staged_outputs:
+        if staged["kind"] == "cached":
+            output_files.append(staged["path"])
+            continue
+        out_path = write_claims_output(
+            staged["alignment"], output_dir, inventory_dir=inventory_dir
+        )
+        output_files.append(out_path)
+        report(f"     ✓ Written: {out_path.name}")
+
+        # uri-anchor-contract: write the versioned unresolved-anchors record
+        # alongside the claims registry, only when there is something to say
+        # (either this run found ambiguous anchors, or a prior run's file
+        # already exists and must be preserved/updated rather than silently
+        # orphaned).
+        merged_anchors = staged["anchors"]
+        anchor_doc_path = staged["anchor_path"]
+        if merged_anchors and anchor_doc_path is not None:
+            write_unresolved_anchors_doc(
+                anchor_doc_path, staged["domain"], merged_anchors
+            )
+            open_count = sum(1 for a in merged_anchors if a.status == "open")
+            report(
+                f"     🧭 Unresolved anchors: {open_count} open, "
+                f"{len(merged_anchors) - open_count} resolved "
+                f"— {anchor_doc_path.name}"
+            )
+
     return output_files, alignments
 
 
@@ -2743,6 +3494,25 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
         # in alignment_to_registry can flag distinct-grain collapses onto one class.
         if ta.likely_entity:
             table_dict["likely_entity"] = ta.likely_entity
+        # uri-anchor-contract: persist the confirmed-anchor URI (only when the
+        # anchor was actually resolved from confirmed evidence) alongside the
+        # display-only likely_entity, and the candidate URIs that made an
+        # anchor ambiguous (only when it was).
+        if ta.likely_entity_uri:
+            table_dict["likely_entity_uri"] = ta.likely_entity_uri
+        if ta.anchor_candidate_uris:
+            table_dict["anchor_candidate_uris"] = list(ta.anchor_candidate_uris)
+        # Alignment-reliability: emit the generation outcome + safe metadata only
+        # when it is not the happy path, so a fully-successful run's output stays
+        # byte-identical to before. ``generation_error`` is already sanitized.
+        if ta.generation_outcome != OUTCOME_SEMANTIC_SUCCESS:
+            table_dict["generation_outcome"] = ta.generation_outcome
+            if ta.generation_provider:
+                table_dict["generation_provider"] = ta.generation_provider
+            if ta.generation_model:
+                table_dict["generation_model"] = ta.generation_model
+            if ta.generation_error:
+                table_dict["generation_error"] = ta.generation_error
         for ca in ta.columns:
             col_dict: dict[str, Any] = {
                 "column": ca.column,

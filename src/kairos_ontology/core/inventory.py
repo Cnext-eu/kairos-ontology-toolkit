@@ -673,3 +673,48 @@ def scope_inventory_report(
             merged.extend(uris)
         scope.unresolved = sorted(set(merged))
     return scope
+
+
+#: Explicit scoped-inventory status labels (never the ambiguous "(none matched)").
+DIRECT_PROFILE = "direct-profile"
+ACCELERATOR_PROFILE = "accelerator-profile"
+NO_PROFILE = "no-profile"
+
+
+def classify_domain_scope(
+    domain: str,
+    keys_by_domain: dict[str, set[str]],
+    report: "InventoryCheckReport",
+) -> tuple[str, set[str]]:
+    """Classify one requested ``--domains`` token's scoped-inventory readiness.
+
+    A scoped ``check-inventory`` result must never claim a domain is ready via the
+    ambiguous ``"(none matched)"`` wording (toolkit-optimizations DX finding
+    "check-inventory reports (none matched) and then says the domain is ready").
+    Returns ``(status, keys)`` where *status* is one of:
+
+    - :data:`ACCELERATOR_PROFILE`: the domain matched an accelerator
+      ``data-domains.yaml`` entry (via :func:`resolve_domain_inventory_keys`) that
+      resolved to one or more inventory keys.
+    - :data:`DIRECT_PROFILE`: no accelerator registry entry resolved keys, but the
+      domain name directly matches one or more materialized inventory stems already
+      present in the repository-wide *report* — the inventory set that makes this
+      scoped result ready even without accelerator ownership metadata.
+    - :data:`NO_PROFILE`: neither an accelerator registry entry nor a direct
+      inventory-stem match was found for *domain* — the scoped result cannot be
+      evaluated for it (surfaced explicitly rather than silently dropped).
+    """
+    lower = domain.lower()
+    keys: set[str] = set()
+    for domain_id, domain_keys in keys_by_domain.items():
+        if lower in domain_id.lower() or domain_id.lower() in lower:
+            keys |= domain_keys
+    if keys:
+        return ACCELERATOR_PROFILE, keys
+
+    all_keys = set(report.ok) | set(report.missing) | set(report.stale) | set(report.unverifiable)
+    direct = {k for k in all_keys if lower in k.lower() or k.lower() in lower}
+    if direct:
+        return DIRECT_PROFILE, direct
+
+    return NO_PROFILE, set()

@@ -573,6 +573,26 @@ _LIFECYCLE_TABLE = """\
 └──────────┴──────────────────────────────────────────────────────────────┘"""
 
 
+def _ontology_domain_hints(ontologies_path: Path | None) -> list[str]:
+    """Derive candidate domain ids from the resolved ontology input (accelerator
+    resolution fallback hint — the domain(s) actually being validated/projected).
+
+    A single ``--ontology`` file or a ``model/ontologies/`` directory of per-domain
+    TTLs both name-match the ``data-domains.yaml`` ``groups[].domains[].id`` values
+    used elsewhere, so file stems are a reasonable, best-effort hint. Returns an
+    empty list when nothing can be inferred (no domain-ownership inference is then
+    attempted, and genuine ambiguity across multiple installed accelerators still
+    errors).
+    """
+    if ontologies_path is None:
+        return []
+    if ontologies_path.is_file():
+        return [ontologies_path.stem]
+    if ontologies_path.is_dir():
+        return sorted({p.stem for p in ontologies_path.glob("*.ttl")})
+    return []
+
+
 def _resolve_projection_cli_scope(
     ontologies, ontology, catalog, ref_models, accelerator
 ) -> tuple[Path, Path | None, Path | None, Path | None, str | None]:
@@ -610,6 +630,7 @@ def _resolve_projection_cli_scope(
             explicit=accelerator,
             hub_root=hub_root,
             ref_models_dir=ref_models_path,
+            domain_hint=_ontology_domain_hints(ontologies_path),
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -648,7 +669,7 @@ def lifecycle():
 )
 @click.option("--check", is_flag=True, help="Report drift without writing files.")
 def sync_dbt_contracts_cmd(transforms, sources, bronze_sources, check):
-    """Synchronize custom dbt contracts to Bronze-compatible RDF vocabularies."""
+    """Run contract synchronization: sync custom dbt contracts to Bronze-compatible RDF."""
     from ..core.dbt_contract_sync import sync_dbt_contracts
     from ..core.hub_utils import find_hub_root
 
@@ -672,15 +693,23 @@ def sync_dbt_contracts_cmd(transforms, sources, bronze_sources, check):
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
+    click.echo(f"Contract synchronization — running toolkit v{report.running_toolkit_version}")
     if not report.items:
         click.echo("No custom dbt contracts found; nothing to synchronize.")
         return
     for item in report.items:
-        click.echo(f"{item.action}: {item.model} -> {item.output_path}")
+        # Show the prior artifact's own generator version only when the existing
+        # file actually carries that provenance stamp — never inferred or guessed.
+        prior = (
+            f" (prior generator: v{item.prior_generator_version})"
+            if item.prior_generator_version
+            else ""
+        )
+        click.echo(f"{item.action}: {item.model} -> {item.output_path}{prior}")
     if check and report.has_drift:
         raise click.exceptions.Exit(1)
     click.echo(
-        f"dbt contract sync complete: {report.written_count} written, "
+        f"Contract synchronization complete: {report.written_count} written, "
         f"{report.unchanged_count} unchanged."
     )
 
@@ -853,6 +882,23 @@ def _resolve_catalog(
     help='Explicitly allow incomplete ontology imports for semantic validation; '
          'results are marked import_complete=false.',
 )
+@click.option(
+    '--report-format',
+    type=click.Choice(['json', 'markdown', 'both']),
+    default='json',
+    show_default=True,
+    help='Validation report format(s) to write. Additive: the default preserves '
+         'the pre-existing JSON-only report contract at '
+         '<hub>/output/validation-report.json unchanged.',
+)
+@click.option(
+    '--report-path',
+    type=click.Path(path_type=Path),
+    default=None,
+    help='Explicit report output path. Only valid with a single --report-format '
+         '(json or markdown) — --report-format both always writes the default '
+         'validation-report.json and validation-report.md under <hub>/output/.',
+)
 def validate(
     ontologies,
     shapes,
@@ -866,6 +912,8 @@ def validate(
     gdpr,
     ddd,
     degraded,
+    report_format,
+    report_path,
 ):
     """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan, DDD overlays)."""
     from ..core.hub_utils import find_hub_root
@@ -901,21 +949,49 @@ def validate(
         else _resolve_ref_models_dir(cwd, hub_root)
     )
     catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
-    from ..core.reference_modules import resolve_hub_accelerator
+    from ..core.reference_modules import resolve_hub_accelerator_detailed
 
     try:
-        accelerator = resolve_hub_accelerator(
+        accelerator_resolution = resolve_hub_accelerator_detailed(
             explicit=accelerator,
             hub_root=hub_root,
             ref_models_dir=ref_models_path,
+            domain_hint=_ontology_domain_hints(ontologies_path),
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    accelerator = accelerator_resolution.accelerator
+    if ref_models_path is not None:
+        click.echo(
+            f"   Accelerator:  {accelerator or '(none)'} (source: {accelerator_resolution.source})"
+        )
+        if accelerator_resolution.data_domains_path is not None:
+            click.echo(f"   Data domains: {accelerator_resolution.data_domains_path}")
+
+    if report_path is not None and report_format == 'both':
+        raise click.ClickException(
+            "--report-path requires --report-format json or markdown (not 'both'); "
+            "'both' always writes validation-report.json and validation-report.md "
+            "under <hub>/output/."
+        )
 
     # Report destination: always the hub's output/ dir, never the process CWD
     # (mirrors the `project` command's output_path resolution below).
     output_dir = hub_root / "output" if hub_root is not None else cwd / "ontology-hub" / "output"
-    report_path = output_dir / "validation-report.json"
+    json_report_path = None
+    markdown_report_path = None
+    if report_format in ('json', 'both'):
+        json_report_path = (
+            Path(report_path)
+            if (report_path is not None and report_format == 'json')
+            else output_dir / "validation-report.json"
+        )
+    if report_format in ('markdown', 'both'):
+        markdown_report_path = (
+            Path(report_path)
+            if (report_path is not None and report_format == 'markdown')
+            else output_dir / "validation-report.md"
+        )
 
     # Default to all if nothing specified
     if not any([validate_all, syntax, shacl, consistency, gdpr, ddd]):
@@ -952,11 +1028,12 @@ def validate(
         do_syntax=validate_all or syntax,
         do_shacl=validate_all or shacl,
         do_consistency=validate_all or consistency,
-        report_path=report_path,
+        report_path=json_report_path,
         degraded=degraded,
         claims_dir=ontologies_path.parent / "claims",
         ref_models_dir=ref_models_path,
         accelerator=accelerator,
+        markdown_report_path=markdown_report_path,
     )
 
     # run_validation() exits non-zero on its own failures; if it fell through
@@ -2898,12 +2975,19 @@ def audit_silver_samples_cmd(sources, mappings, dbt_output, output, fail_on):
                    '(gpt-5.4) for this accuracy-sensitive alignment step '
                    '(overrides the default model unless --model was set '
                    'explicitly). Costs more per run than the mini default.')
+@click.option('--allow-fallback-registry', 'allow_fallback_registry',
+              is_flag=True, default=False,
+              help='Alignment-reliability: write a domain claims file even when '
+                   'every one of its tables is fallback-only (no reference model '
+                   'to align against — the LLM was never called). Without this '
+                   'flag such a domain is skipped as incomplete so a placeholder '
+                   'never masquerades as a real proposal.')
 def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
                           domains_filter, verbose, quiet, include_mapping_hints,
                           no_sample_values,
                           max_prompt_classes, retry_min_confidence, retry_min_mapped_ratio,
                           max_workers, force, cross_module, accelerator,
-                          custom_confidence_floor, high_accuracy):
+                          custom_confidence_floor, high_accuracy, allow_fallback_registry):
     """Propose source-column → reference-model-property alignment (LLM-powered).
 
     Pre-modeling step that analyses how source columns map to reference model
@@ -2919,8 +3003,13 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
       kairos-ontology propose-alignment --domains "commercial,party" --verbose
       kairos-ontology propose-alignment --analysis path/to/_analysis/
     """
-    from ..core.propose_alignment import HIGH_ACCURACY_MODEL, run_propose_alignment
+    from ..core.propose_alignment import (
+        HIGH_ACCURACY_MODEL,
+        AlignmentTotalFailureError,
+        run_propose_alignment,
+    )
     from ..core.ai_provider import DEFAULT_MODEL, ROLE_ALIGNMENT, resolve_role_model
+    from ..core.conformance_artifact import ARTIFACT_RELPATH
     from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
@@ -3012,6 +3101,18 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             )
             raise SystemExit(1)
 
+    # uri-anchor-contract: auto-detect the confirmed discovery conformance
+    # artifact (DD-090) so a table's affinity-derived likely_entity that was
+    # explicitly confirmed (``conforms``/``conforms-with-rename``, including a
+    # human rename via ``rename_to``) resolves straight to its canonical
+    # inventory URI, ahead of any name-similarity/LLM class guess. A missing
+    # artifact is not an error — output stays exactly as before this feature.
+    conformance_artifact_path = (
+        (hub_root / ARTIFACT_RELPATH) if hub_root else (cwd / ARTIFACT_RELPATH)
+    )
+    if not conformance_artifact_path.is_file():
+        conformance_artifact_path = None
+
     if not quiet:
         click.echo("📐 Proposing column→property alignment")
         click.echo(f"   Analysis: {analysis_path}")
@@ -3024,6 +3125,8 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             click.echo("   Mapping hints: enabled (DD-045)")
         if cross_module:
             click.echo(f"   Cross-module: enabled (accelerator: {accelerator}) [DD-070]")
+        if conformance_artifact_path:
+            click.echo(f"   Confirmed anchors: {conformance_artifact_path}")
         click.echo()
 
     filter_list = None
@@ -3038,6 +3141,7 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
         click.echo(msg)
 
     try:
+        generation_stats: dict[str, int] = {}
         output_files = run_propose_alignment(
             analysis_dir=analysis_path,
             sources_dir=sources_path,
@@ -3059,6 +3163,9 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             ref_models_dir=ref_models_dir,
             inventory_dir=inventory_path,
             custom_confidence_floor=custom_confidence_floor,
+            allow_fallback_registry=allow_fallback_registry,
+            generation_stats=generation_stats,
+            conformance_artifact_path=conformance_artifact_path,
         )
         if not quiet:
             click.echo(
@@ -3067,6 +3174,17 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
             )
             for f in output_files:
                 click.echo(f"   📄 {f.name}")
+            if generation_stats.get("provider_failure"):
+                click.echo(
+                    f"   ⚠ {generation_stats['provider_failure']} of "
+                    f"{generation_stats.get('attempted', 0)} attempted table(s) "
+                    "had a semantic generation failure — see per-table warnings above."
+                )
+    except AlignmentTotalFailureError as e:
+        # Alignment-reliability: total failure must never print success and must
+        # exit non-zero. Nothing was written by the pipeline in this case.
+        click.echo(f"\n⛔ {e}", err=True)
+        raise SystemExit(1)
     except EnvironmentError as e:
         click.echo(f"\n❌ {e}", err=True)
         raise SystemExit(1)
@@ -3441,6 +3559,9 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
               help='Path to ontology-reference-models/ directory (default: auto-detect).')
 @click.option('--inventory-dir', type=click.Path(), default=None,
               help='Path to referencemodels-unpacked/ directory (default: auto-detect).')
+@click.option('--accelerator', default=None,
+              help='Accelerator pack whose data-domains.yaml resolves --domains to '
+                   'inventory keys (default: [tool.kairos].accelerator, else inferred).')
 @click.option('--domains', 'domains_filter', default=None,
               help='F5: comma-separated data-domains to scope readiness to '
                    '(case-insensitive substring). Repository-wide check still runs and '
@@ -3454,8 +3575,8 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
               help='Also fail when an inventory cannot be verified (no stored hash).')
 @click.option('--warn-only', is_flag=True, default=False,
               help='Report problems but always exit 0 (never block).')
-def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, domains_filter,
-                        explain_scope, strict, warn_only):
+def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, accelerator,
+                        domains_filter, explain_scope, strict, warn_only):
     """Verify that materialized inventories exist and are up to date (DD-047).
 
     Deterministic pre-flight gate for ``design-domain``: confirms that every source
@@ -3479,11 +3600,15 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, domains_fil
       kairos-ontology check-inventory --domains booking --explain-scope
     """
     from ..core.inventory import (
+        ACCELERATOR_PROFILE,
+        DIRECT_PROFILE,
+        classify_domain_scope,
         check_inventories,
         resolve_domain_inventory_keys,
         scope_inventory_report,
     )
     from ..core.hub_utils import find_hub_root
+    from ..core.reference_modules import resolve_hub_accelerator_detailed
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=True)
@@ -3551,15 +3676,44 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, domains_fil
             candidate_cat = hub_root / "catalog-v001.xml"
             if candidate_cat.exists():
                 catalog_path = candidate_cat
+
+        try:
+            accelerator_resolution = resolve_hub_accelerator_detailed(
+                explicit=accelerator,
+                hub_root=hub_root,
+                ref_models_dir=ref_path,
+                domain_hint=filter_list,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        if ref_path is not None:
+            click.echo(
+                f"   Accelerator:  {accelerator_resolution.accelerator or '(none)'} "
+                f"(source: {accelerator_resolution.source})"
+            )
+            if accelerator_resolution.data_domains_path is not None:
+                click.echo(f"   Data domains: {accelerator_resolution.data_domains_path}")
+
         keys_by_domain, unresolved_by_domain = resolve_domain_inventory_keys(
             filter_list,
             ref_models_dir=ref_path,
             catalog_path=catalog_path,
-            accelerator=None,
+            accelerator=accelerator_resolution.accelerator,
         )
         scope = scope_inventory_report(report, keys_by_domain, unresolved_by_domain)
 
-        click.echo(f"\n🎯 Active-domain readiness: {', '.join(scope.domains) or '(none matched)'}")
+        click.echo("\n🎯 Active-domain readiness:")
+        for domain in filter_list:
+            status, keys = classify_domain_scope(domain, keys_by_domain, report)
+            if status == ACCELERATOR_PROFILE:
+                label = "matched accelerator profile"
+            elif status == DIRECT_PROFILE:
+                label = "matched direct inventory"
+            else:
+                label = "no profile found"
+            key_list = ", ".join(sorted(keys)) if keys else "(none)"
+            click.echo(f"   • {domain}: {label} — inventories: {key_list}")
         if explain_scope:
             for domain in scope.domains:
                 keys = sorted(keys_by_domain.get(domain, set()))
@@ -3626,6 +3780,25 @@ def _resolve_claims_dir(cwd: Path, hub_root: Path | None) -> Path:
     """Resolve the ``model/claims/`` directory (created on demand by callers)."""
     base = hub_root if hub_root else cwd
     return base / "model" / "claims"
+
+
+def _claims_domain_hint(claims_path: Path) -> list[str]:
+    """Derive domain-id hints from existing ``{domain}-claims.yaml`` registries.
+
+    Accelerator-resolution fallback used when ``--domains`` is not given: lets
+    ``check-claims`` infer the owning accelerator from whichever domains already
+    have a Claim Registry, instead of only from an explicit ``--domains`` filter.
+    """
+    if not claims_path.is_dir():
+        return []
+    suffix = "-claims"
+    return sorted(
+        {
+            p.stem[: -len(suffix)]
+            for p in claims_path.glob("*-claims.yaml")
+            if p.stem.endswith(suffix)
+        }
+    )
 
 
 def _resolve_model_path(
@@ -3976,11 +4149,18 @@ def decide_claims_cmd(claims_dir, domains, status_filter, disposition_filter, ty
 @click.option('--strict', is_flag=True, default=False,
               help='Also block when any registry still carries an undecided '
                    '(proposed) claim — i.e. require a fully curated registry.')
+@click.option('--require-mapping', is_flag=True, default=False,
+              help='Also block on pre-silver mapping-coverage gaps. Opt-in for the '
+                   'owning silver/dbt projection pre-flight (DD-094) — not part of '
+                   'ordinary curation, so it never affects the default exit code.')
 @click.option('--warn-only', is_flag=True, default=False,
               help='Report problems but always exit 0 (never block).')
+@click.option('--format', 'output_format', type=click.Choice(['text', 'json']),
+              default='text', help='Output format.')
 def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
                      domains_filter, no_source_coverage, no_extension_sync,
-                     no_mdm_anchor, no_ownership, strict, warn_only):
+                     no_mdm_anchor, no_ownership, strict, require_mapping, warn_only,
+                     output_format):
     """Verify every domain's Claim Registry is valid, complete, and fresh (DD-094).
 
     The single governance gate (replaces the retired ``check-alignment`` and
@@ -3991,30 +4171,40 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
     ``model/claims/{domain}-claims.yaml`` exists, is structurally valid, covers
     **all** of the domain's affinity tables, and is still fresh (its stored
     ``freshness.affinity_sha256`` matches the current affinity table set).  It
-    also blocks on cross-file duplicate ``approved`` claims, and — unless
-    ``--no-source-coverage`` — on any affinity table not yet mapped (the
-    pre-silver check).
+    also blocks on cross-file duplicate ``approved`` claims.
+
+    \\b
+    Curation blocking scope (DD-122): only registry validity/freshness and
+    governance policy (MDM-anchor/deviation/ownership/passthrough/
+    duplicate-approved) block here — plus undecided (proposed) claims under
+    --strict. Semantic-generation completeness (DD-121), source-mapping
+    coverage, and claim/projection sync are still checked and reported (with
+    the skill that owns enforcing them), but never block this command by
+    default; run `kairos-design-mapping` / `claims-to-silver-ext
+    --check-only` (or `check-release`) to enforce those, or pass
+    --require-mapping for the DD-094 projection pre-flight's own mapping gate.
 
     \\b
     Flag precedence:
-      (default)             missing/invalid/incomplete/stale/duplicate/unmapped block
+      (default)             missing/invalid/incomplete/stale/duplicate block
       --strict              the above, plus undecided (proposed) claims block
-      --no-source-coverage  skip the mapping-coverage portion
+      --require-mapping     the above, plus pre-silver mapping-coverage gaps block
+      --no-source-coverage  skip the mapping-coverage report (registry checks only)
       --warn-only           report everything but always exit 0 (overrides --strict)
+      --format json         emit a versioned ClaimCheckResult (see docs/design DD-122)
 
     \\b
     Examples:
       kairos-ontology check-claims
       kairos-ontology check-claims --domains party,commercial
       kairos-ontology check-claims --strict
+      kairos-ontology check-claims --require-mapping
       kairos-ontology check-claims --warn-only
+      kairos-ontology check-claims --format json
     """
     from ..core.analyse_sources import load_data_domains
-    from ..core.claim_coverage import check_claims_coverage
-    from ..core.completeness_model import compute_completeness_facts
     from ..core.hub_utils import find_hub_root
     from ..core.migrate_claims import find_legacy_alignment_files, legacy_alignment_error
-    from ..core.source_coverage import check_source_coverage
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -4089,42 +4279,74 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
 
     # Domain ownership baseline (data-domains.yaml). Best-effort: when no
-    # reference models are resolvable, ownership is simply not checked.
+    # reference models are resolvable, ownership is simply not checked. Routed
+    # through the shared accelerator resolver (explicit --accelerator >
+    # [tool.kairos].accelerator > unambiguous domain-ownership inference) so this
+    # never disagrees with inventory/managed-import planning about which pack's
+    # registry is authoritative (DX finding "registry ownership warning disagrees
+    # with the accelerator registry").
     data_domains: dict[str, object] | None = None
     ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
+    accelerator_resolution = None
     if ref_models_dir:
-        loaded = load_data_domains(ref_models_dir, accelerator=accelerator)
+        from ..core.reference_modules import resolve_hub_accelerator_detailed
+
+        domain_hint = filter_list or _claims_domain_hint(claims_path)
+        try:
+            accelerator_resolution = resolve_hub_accelerator_detailed(
+                explicit=accelerator,
+                hub_root=hub_root,
+                ref_models_dir=ref_models_dir,
+                domain_hint=domain_hint,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        loaded = load_data_domains(ref_models_dir, accelerator=accelerator_resolution.accelerator)
         if loaded:
             data_domains = dict(loaded)
 
     coverage_hub_root = hub_root or cwd
-    facts = compute_completeness_facts(
-        analysis_dir=analysis_path,
+    from ..core.claim_check_result import build_claim_check_result
+
+    result = build_claim_check_result(
+        hub_root=coverage_hub_root,
         claims_dir=claims_path,
+        analysis_dir=analysis_path,
         sources_dir=sources_path,
-        mappings_dir=None if no_source_coverage else mappings_path,
+        mappings_dir=mappings_path,
+        ontologies_dir=ontologies_path,
+        extensions_dir=extensions_path,
         domains_filter=filter_list,
-        extensions_dir=None if no_source_coverage else extensions_path,
-        hub_root=None if no_source_coverage else coverage_hub_root,
-        transforms_dir=(
-            None
-            if no_source_coverage
-            else coverage_hub_root / "integration" / "transforms" / "dbt"
-        ),
-    )
-    report = check_claims_coverage(
-        claims_dir=claims_path,
-        analysis_dir=analysis_path,
         data_domains=data_domains,
-        domains_filter=filter_list,
         check_mdm_anchor=not no_mdm_anchor,
         check_ownership=not no_ownership,
-        facts=facts,
+        no_source_coverage=no_source_coverage,
+        no_extension_sync=no_extension_sync or not ontologies_path.is_dir(),
+        strict=strict,
     )
+
+    if output_format == 'json':
+        click.echo(json.dumps(result.to_dict(), indent=2))
+        mapping_block = (
+            require_mapping and result.mapping is not None and result.mapping.is_blocking
+        )
+        should_block = (not result.curation_complete or mapping_block) and not warn_only
+        if should_block:
+            raise SystemExit(1)
+        return
+
+    report = result.registry
 
     click.echo("🔎 Checking Claim Registry coverage")
     click.echo(f"   Claims dir:   {claims_path}")
     click.echo(f"   Analysis dir: {analysis_path}")
+    if accelerator_resolution is not None:
+        click.echo(
+            f"   Accelerator:  {accelerator_resolution.accelerator or '(none)'} "
+            f"(source: {accelerator_resolution.source})"
+        )
+        if accelerator_resolution.data_domains_path is not None:
+            click.echo(f"   Data domains: {accelerator_resolution.data_domains_path}")
     for domain in report.ok:
         click.echo(f"   ✓ {domain}: valid, complete, and up to date")
     for domain in report.missing:
@@ -4154,8 +4376,13 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
     for name in report.orphan:
         click.echo(f"   ⚠ {name}: orphan registry (no matching affinity domain)")
     for name in report.unowned:
-        click.echo(f"   ⚠ {name}: registry domain not found in data-domains.yaml "
-                   "(ownership unverified)")
+        registry_note = (
+            f" (checked {accelerator_resolution.data_domains_path})"
+            if accelerator_resolution is not None and accelerator_resolution.data_domains_path
+            else ""
+        )
+        click.echo(f"   ⚠ {name}: registry domain not found in data-domains.yaml"
+                   f"{registry_note} (ownership unverified)")
 
     if report.duplicate_approved:
         click.echo(
@@ -4266,6 +4493,28 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             "reconciled into the registry.", err=True,
         )
 
+    if report.unresolved_anchor_tables:
+        total = sum(len(v) for v in report.unresolved_anchor_tables.values())
+        click.echo(
+            f"\n⚠ Unresolved class anchors ({total} table(s)) — no claims were "
+            "emitted for these tables by design:"
+        )
+        for domain in sorted(report.unresolved_anchor_tables):
+            entries = report.unresolved_anchor_tables[domain]
+            click.echo(f"   • {domain}: {len(entries)} table(s)")
+            for entry in entries[:10]:
+                click.echo(f"        - {entry}")
+            if len(entries) > 10:
+                click.echo(f"        … and {len(entries) - 10} more")
+        click.echo(
+            "   → Confirmed discovery evidence named more than one reference "
+            "concept for the table's business term. Resolve the record in "
+            "{domain}-unresolved-anchors.yaml (set status: resolved + "
+            "resolved_uri), or correct the Core Concepts Conformance artifact, "
+            "then re-run propose-alignment. These columns are not missing from "
+            "the registry — they are awaiting an anchor decision."
+        )
+
     if report.anchor_missing:
         click.echo(
             f"\n⚠ MDM anchors not declared ({len(report.anchor_missing)} domain(s)):"
@@ -4314,6 +4563,22 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             "passthrough_reviewed: true (§11.2)."
         )
 
+    if report.incomplete_generation:
+        total = sum(len(v) for v in report.incomplete_generation.values())
+        click.echo(
+            f"\n⚠ Incomplete semantic generation ({total} table(s)) — structurally "
+            "valid but not fully generated by propose-alignment:"
+        )
+        for domain in sorted(report.incomplete_generation):
+            click.echo(f"   • {domain}:")
+            for line in report.incomplete_generation[domain][:10]:
+                click.echo(f"        - {line}")
+        click.echo(
+            "   → Re-run propose-alignment for these tables (provider_failure), "
+            "or pass --allow-fallback-registry once you've confirmed a "
+            "fallback-only registry is acceptable."
+        )
+
     if report.proposed_counts:
         click.echo(
             f"\n🧩 Undecided claims ({report.total_proposed}) — awaiting human "
@@ -4327,21 +4592,13 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         )
 
     # Pre-silver mapping coverage (former check-source-coverage). Reuses the same
-    # backend; no double path.
+    # backend; no double path. Visible here but owned/enforced by
+    # kairos-design-mapping — does not block check-claims (DD-122).
     source_blocking = False
     if not no_source_coverage:
-        src_report = check_source_coverage(
-            analysis_dir=analysis_path,
-            sources_dir=sources_path,
-            mappings_dir=mappings_path,
-            domains_filter=filter_list,
-            claims_dir=claims_path,
-            extensions_dir=extensions_path,
-            hub_root=coverage_hub_root,
-            transforms_dir=coverage_hub_root / "integration" / "transforms" / "dbt",
-            facts=facts,
-        )
-        click.echo("\n🔎 Checking source-to-domain mapping coverage")
+        src_report = result.mapping
+        click.echo("\n🔎 Checking source-to-domain mapping coverage "
+                   f"(owner: {src_report.owner_skill})")
         click.echo(f"   Sources:  {sources_path}")
         click.echo(f"   Mappings: {mappings_path}")
         for domain in sorted(src_report.domain_counts):
@@ -4371,58 +4628,55 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             for diagnostic in src_report.diagnostics.get(domain, []):
                 click.echo(f"        ⛔ {diagnostic}", err=True)
         source_blocking = src_report.is_blocking
-        if source_blocking and not warn_only:
+        if source_blocking:
             click.echo(
-                f"\n❌ Source-coverage check failed: {src_report.total_uncovered} "
+                f"\n⚠ Source-coverage check found gaps: {src_report.total_uncovered} "
                 "affinity table(s) are uncovered or have conflicting source authority. "
-                "Complete mappings and governed source-replacement evidence before "
-                "running silver.",
-                err=True,
+                f"Enforced by {src_report.owner_skill}, and by check-claims itself only "
+                "when --require-mapping is passed (DD-122). Complete mappings and "
+                "governed source-replacement evidence before running silver.",
             )
 
     sync_blocking = False
     if not no_extension_sync and ontologies_path.is_dir():
-        from ..core.claim_projection_sync import evaluate_projection_sync
-
-        sync_report = evaluate_projection_sync(
-            claims_dir=claims_path,
-            ontologies_dir=ontologies_path,
-            extensions_dir=extensions_path,
-            domains_filter=filter_list,
-        )
-        click.echo("\n🔎 Checking claim↔projection sync")
+        sync_report = result.projection_sync
+        click.echo(f"\n🔎 Checking claim↔projection sync (owner: {sync_report.owner_skill})")
         click.echo(f"   Ontologies: {ontologies_path}")
         click.echo(f"   Extensions: {extensions_path}")
         for domain_sync in sync_report.domains:
             if domain_sync.in_sync:
                 click.echo(f"   ✓ {domain_sync.domain}: claims/imports/includes in sync")
-                continue
-            click.echo(f"   ❌ {domain_sync.domain}: sync drift detected", err=True)
-            if domain_sync.error:
-                click.echo(f"      - {domain_sync.error}", err=True)
-            for iri in domain_sync.missing_imports[:10]:
-                click.echo(f"      - missing owl:imports: {iri}", err=True)
-            for iri in domain_sync.extra_imports[:10]:
-                click.echo(f"      - extra owl:imports: {iri}", err=True)
-            for iri in domain_sync.missing_includes[:10]:
-                click.echo(f"      - missing silverInclude: {iri}", err=True)
-            for iri in domain_sync.extra_includes[:10]:
-                click.echo(f"      - extra silverInclude: {iri}", err=True)
-            if domain_sync.has_bulk_include_imports:
-                click.echo("      - silverIncludeImports bulk flag must be removed", err=True)
+            else:
+                click.echo(f"   ❌ {domain_sync.domain}: sync drift detected", err=True)
+                if domain_sync.error:
+                    click.echo(f"      - {domain_sync.error}", err=True)
+                for iri in domain_sync.missing_imports[:10]:
+                    click.echo(f"      - missing owl:imports: {iri}", err=True)
+                for iri in domain_sync.extra_imports[:10]:
+                    click.echo(f"      - extra owl:imports: {iri}", err=True)
+                for iri in domain_sync.missing_includes[:10]:
+                    click.echo(f"      - missing silverInclude: {iri}", err=True)
+                for iri in domain_sync.extra_includes[:10]:
+                    click.echo(f"      - extra silverInclude: {iri}", err=True)
+                if domain_sync.has_bulk_include_imports:
+                    click.echo("      - silverIncludeImports bulk flag must be removed", err=True)
+            for disputed in domain_sync.disputed_claims:
+                click.echo(
+                    f"      ⚠ claim {disputed['claim_id']} ({disputed['claim_status']}) "
+                    f"disputes module {disputed['module_id']} — still active via "
+                    f"{', '.join(disputed['reasons']) or 'another claim'}"
+                )
         sync_blocking = sync_report.is_blocking
-        if sync_blocking and not warn_only:
+        if sync_blocking:
             click.echo(
-                "\n❌ Claim/projection sync check failed. Run "
-                "`kairos-ontology claims-to-silver-ext` and commit the generated "
-                "ontology/extension changes before projecting.",
-                err=True,
+                "\n⚠ Claim/projection sync drift found. Visible only — enforced by "
+                f"{sync_report.owner_skill} (run `kairos-ontology "
+                "claims-to-silver-ext --check-only`), not check-claims (DD-122).",
             )
 
     strict_block = strict and report.has_undecided_claims()
-    should_block = (
-        report.is_blocking or source_blocking or sync_blocking or strict_block
-    ) and not warn_only
+    mapping_block = require_mapping and source_blocking
+    should_block = (report.is_blocking or strict_block or mapping_block) and not warn_only
 
     if report.is_blocking and not warn_only:
         click.echo(
@@ -4435,6 +4689,12 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         click.echo(
             "\n❌ Strict check failed: undecided (proposed) claims remain. Approve, "
             "reject, or defer every claim before completing the domain.",
+            err=True,
+        )
+    if mapping_block and not warn_only:
+        click.echo(
+            "\n❌ --require-mapping: pre-silver mapping-coverage gaps remain (see "
+            "above). Close them (kairos-design-mapping) before proceeding.",
             err=True,
         )
     if should_block:
@@ -4718,6 +4978,7 @@ def claims_to_silver_ext_cmd(
     (issue #190).
     """
     from ..core.claim_projection_sync import (
+        ScaffoldPartialFailureError,
         apply_projection_sync,
         evaluate_projection_sync,
     )
@@ -4762,16 +5023,27 @@ def claims_to_silver_ext_cmd(
             accelerator=accelerator,
         )
     else:
-        report = apply_projection_sync(
-            claims_dir=claims_path,
-            ontologies_dir=ontologies_path,
-            extensions_dir=extensions_path,
-            domains_filter=filter_list,
-            scaffold_missing=not no_scaffold,
-            ref_models_dir=ref_models_path,
-            catalog_path=catalog_path,
-            accelerator=accelerator,
-        )
+        try:
+            report = apply_projection_sync(
+                claims_dir=claims_path,
+                ontologies_dir=ontologies_path,
+                extensions_dir=extensions_path,
+                domains_filter=filter_list,
+                scaffold_missing=not no_scaffold,
+                ref_models_dir=ref_models_path,
+                catalog_path=catalog_path,
+                accelerator=accelerator,
+            )
+        except ScaffoldPartialFailureError as exc:
+            click.echo(f"   ❌ Scaffolding failed partway through: {exc}", err=True)
+            click.echo(
+                "   No rollback is performed — files already written remain on disk "
+                "exactly as written; the report below reflects real, current state.",
+                err=True,
+            )
+            for line in exc.result.describe():
+                click.echo(f"   {line}", err=True)
+            raise SystemExit(1) from exc
 
     if not report.domains:
         click.echo("   ⏭ No claims registries found in scope.")
@@ -4780,28 +5052,37 @@ def claims_to_silver_ext_cmd(
     for domain_sync in report.domains:
         if domain_sync.in_sync:
             click.echo(f"   ✓ {domain_sync.domain}: in sync")
-            continue
-        click.echo(f"   ❌ {domain_sync.domain}: drift remains", err=True)
-        if domain_sync.error:
-            click.echo(f"      - {domain_sync.error}", err=True)
-        for diagnostic in domain_sync.import_diagnostics[:10]:
+        else:
+            click.echo(f"   ❌ {domain_sync.domain}: drift remains", err=True)
+            if domain_sync.error:
+                click.echo(f"      - {domain_sync.error}", err=True)
+            for diagnostic in domain_sync.import_diagnostics[:10]:
+                click.echo(
+                    f"      - {diagnostic.code}: {diagnostic.message}",
+                    err=diagnostic.level == "error",
+                )
+            for iri in domain_sync.missing_imports[:10]:
+                click.echo(f"      - missing owl:imports: {iri}", err=True)
+            for iri in domain_sync.extra_imports[:10]:
+                click.echo(f"      - extra owl:imports: {iri}", err=True)
+            for iri in domain_sync.missing_includes[:10]:
+                click.echo(f"      - missing silverInclude: {iri}", err=True)
+            for iri in domain_sync.extra_includes[:10]:
+                click.echo(f"      - extra silverInclude: {iri}", err=True)
+            if domain_sync.has_bulk_include_imports:
+                click.echo("      - silverIncludeImports bulk flag must be removed", err=True)
+        for disputed in domain_sync.disputed_claims:
             click.echo(
-                f"      - {diagnostic.code}: {diagnostic.message}",
-                err=diagnostic.level == "error",
+                f"      ⚠ claim {disputed['claim_id']} ({disputed['claim_status']}) "
+                f"disputes module {disputed['module_id']} — still active via "
+                f"{', '.join(disputed['reasons']) or 'another claim'}"
             )
-        for iri in domain_sync.missing_imports[:10]:
-            click.echo(f"      - missing owl:imports: {iri}", err=True)
-        for iri in domain_sync.extra_imports[:10]:
-            click.echo(f"      - extra owl:imports: {iri}", err=True)
-        for iri in domain_sync.missing_includes[:10]:
-            click.echo(f"      - missing silverInclude: {iri}", err=True)
-        for iri in domain_sync.extra_includes[:10]:
-            click.echo(f"      - extra silverInclude: {iri}", err=True)
-        if domain_sync.has_bulk_include_imports:
-            click.echo("      - silverIncludeImports bulk flag must be removed", err=True)
 
     if report.is_blocking:
         raise SystemExit(1)
+    inventory_created: list[Path] = []
+    inventory_updated: list[Path] = []
+    inventory_unchanged: list[Path] = []
     if not check_only:
         inventory_root = (
             Path(activation_inventory_dir)
@@ -4816,11 +5097,32 @@ def claims_to_silver_ext_cmd(
                 continue
             inventory_root.mkdir(parents=True, exist_ok=True)
             inventory_path = inventory_root / f"{domain_sync.domain}-activation.json"
-            inventory_path.write_text(
-                dump_activation_inventory(inventory),
-                encoding="utf-8",
-            )
+            new_text = dump_activation_inventory(inventory)
+            existed_before = inventory_path.exists()
+            previous_text = inventory_path.read_text(encoding="utf-8") if existed_before else None
+            if previous_text == new_text:
+                inventory_unchanged.append(inventory_path)
+            else:
+                inventory_path.write_text(new_text, encoding="utf-8")
+                (inventory_updated if existed_before else inventory_created).append(inventory_path)
             click.echo(f"   ✓ activation inventory: {inventory_path}")
+
+    if report.scaffold_result is not None or inventory_created or inventory_updated:
+        click.echo("")
+        click.echo("📋 Scaffold / convergence summary")
+        if report.scaffold_result is not None:
+            for line in report.scaffold_result.describe():
+                click.echo(f"   {line}")
+        if inventory_created or inventory_updated or inventory_unchanged:
+            click.echo(
+                f"   Activation inventories: {len(inventory_created)} created, "
+                f"{len(inventory_updated)} updated, {len(inventory_unchanged)} unchanged."
+            )
+            if inventory_created:
+                click.echo(
+                    "   New activation inventory files are untracked in git — "
+                    "run `git status` (or `git add <path>`) before committing."
+                )
     click.echo("✅ Claim-driven projection surfaces are in sync.")
 
 

@@ -166,6 +166,16 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-116](#dd-116-non-writing-projection-readiness) | Non-Writing Projection Readiness | Accepted | 2026-07-26 |
 | [DD-117](#dd-117-prefixable-virtual-column-iris-and-explicit-migration) | Prefixable Virtual-Column IRIs and Explicit Migration | Accepted | 2026-07-26 |
 | [DD-118](#dd-118-contracted-dbt-output-as-verified-source-identity) | Contracted dbt Output as Verified Source Identity | Accepted | 2026-07-26 |
+| [DD-119](#dd-119-unverified-contract-identity-is-review-only-outside-strict-release) | Unverified Contract Identity Is Review-Only Outside Strict Release | Accepted | 2026-07-26 |
+| [DD-120](#dd-120-additive-validation-reports-and-non-writing-lifecycle-state-suggestion) | Additive Validation Reports and Non-Writing Lifecycle-State Suggestion | Accepted | 2026-07-26 |
+| [DD-121](#dd-121-failure-safe-alignment-generation-with-typed-per-table-outcomes) | Failure-Safe Alignment Generation with Typed Per-Table Outcomes | Accepted | 2026-07-27 |
+| [DD-122](#dd-122-unified-claim-activation-predicate-and-a-versioned-claim-check-result) | Unified Claim-Activation Predicate and a Versioned Claim-Check Result | Accepted | 2026-07-27 |
+| [DD-123](#dd-123-mapping-skill-derived-table-scope-and-visible-out-of-scope-diagnostics) | Mapping-Skill-Derived Table Scope and Visible Out-of-Scope Diagnostics | Accepted | 2026-07-26 |
+| [DD-124](#dd-124-uri-first-confirmed-anchor-resolution-and-a-versioned-unresolved-anchor-record) | URI-First Confirmed-Anchor Resolution and a Versioned Unresolved-Anchor Record | Accepted | 2026-07-26 |
+| [DD-125](#dd-125-domain-ownership-inferred-accelerator-resolution-with-diagnostics) | Domain-Ownership-Inferred Accelerator Resolution with Diagnostics | Accepted | 2026-07-26 |
+| [DD-126](#dd-126-metadata-complete-convergent-scaffolding-with-explicit-createdupdatedunchanged-reporting) | Metadata-Complete, Convergent Scaffolding with Explicit Created/Updated/Unchanged Reporting | Accepted | 2026-08-02 |
+| [DD-127](#dd-127-domain-ownership-handoffs-and-generalized-stable-cluster-relationship-candidates) | Domain-Ownership Handoffs and Generalized, Stable-Cluster Relationship Candidates | Accepted | 2026-08-09 |
+| [DD-128](#dd-128-intent-preserving-coverage-classification-run-atomic-registry-writes-and-authoritative-model-precedence) | Intent-Preserving Coverage Classification, Run-Atomic Registry Writes, and Authoritative Model Precedence | Accepted | 2026-07-26 |
 
 ---
 
@@ -7551,7 +7561,8 @@ authority: the model path, raw code, and dbt SHA-256 checksum bind current SQL, 
 model, column, config/contract, constraint, generic-test, singular-test, and unit-test fields
 bind current YAML semantics. Custom manifest fields and post-run current-file attestations are
 not accepted. Unbound v1 evidence is rejected rather than upgraded or synthesized.
-Missing, incomplete, or hash-stale evidence blocks as `identity.contract-unverified`.
+Missing, incomplete, or hash-stale evidence surfaces `identity.contract-unverified`
+(amended by DD-119: review-only outside `--strict`/release evaluation).
 Readiness evaluates discovered contracts even with no transformation candidates.
 The transformation-scoped readiness view also reuses contract discovery, synchronization,
 candidate governance, completeness, and projection normalization to report grain, decision
@@ -7568,7 +7579,1095 @@ Canonical `__` and legacy slash virtual-column IRIs remain supported.
 
 ---
 
-## Template for New Decisions
+## DD-119: Unverified Contract Identity Is Review-Only Outside Strict Release
+
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** `core/projections/dbt/policy_normalize.py`, `core/projections/dbt/policy_specs.py`,
+`core/projections/dbt/materialize.py`, `core/projector.py`, `core/projection_readiness.py`,
+`core/transformation_candidates.py`
+**Implementation:** `PolicyIssue.projection_blocking`, `ReleasePlan.projection_blocking_rules`,
+`evaluate_transformation_readiness`
+
+### Context
+
+DD-118's `identity.contract-unverified` finding raised `PolicyNormalizationError` directly
+during normalization, which unconditionally aborted dbt generation — including ordinary,
+non-strict `project` runs and `check-projection` — long before any release or strict
+evaluation occurred. `evaluate_transformation_readiness` carried the same finding as an
+unconditional blocker for every stage, including `mapping`, even though a contracted
+transformation's output identity is release/strict-release evidence, not a generation
+prerequisite. This made bootstrap generation and everyday mapping/silver readiness checks
+fail for a condition (no warehouse evidence yet) that is expected and normal before a
+contract has ever been run against a real warehouse.
+
+### Decision
+
+`identity.contract-unverified` is now raised as a `PolicyIssue` (`blocking=True`,
+`projection_blocking=False`) instead of a hard `PolicyNormalizationError`. `PolicyIssue`
+gains a `projection_blocking` field (default `True`, preserving existing blocker semantics
+for every other rule). `ReleasePlan` gains `projection_blocking_rules` — the subset of
+`blocking_rules` where `projection_blocking` is true — computed alongside the existing,
+unchanged `blocking_rules`/`blocking_reasons` used for DD-114/DD-115 strict-release
+evaluation. `_collected_blocker_diagnostics` and `run_projections`'s `check_only` path use
+`projection_blocking_rules` to decide pass/fail and diagnostic severity
+(`error`/`blocking=True` vs `warning`/`blocking=False`), so ordinary generation and
+`check-projection` proceed and surface the finding as a non-blocking diagnostic, while
+`project --strict` and release evaluation still fail on it exactly as before (`blocking_rules`
+and the `__release_data__.policy_issues` feed into `evaluate_release` unchanged).
+`check_projection` in `projection_readiness.py` now always collects a plan's supplied
+diagnostics, not only when the plan's status is `"error"`, so review-only diagnostics from a
+`"ready"` plan are still reported.
+
+`evaluate_transformation_readiness` mirrors this split for contracted-transformation
+readiness: identity-unverified is included in the human-readable `reasons` for every stage,
+but only added to the internal blocking-reasons set (and therefore `is_blocking`) when
+`stage == "release"`. `mapping`/`silver` readiness — including an otherwise fully in-scope
+contract matched by `table_scope` — passes on this reason alone; genuine authored/policy
+problems (missing/incomplete decision evidence, contract-sync drift, and, for
+`silver`/`release`, incomplete replacement-scope completion) remain blocking at every stage,
+unchanged. No evidence is synthesized, waived, or hash-matched incorrectly by this change —
+only the failure's blocking scope narrows.
+
+### Rationale
+
+Release/strict-release evaluation (DD-114/DD-115) is the correct, single place to enforce
+"no unverified contract identity ships" — it already consumes `blocking_rules` untouched. Any
+other consumer that unconditionally blocks on `identity.contract-unverified` duplicates that
+gate in a way that stops ordinary, iterative generation before a warehouse has ever run the
+contract's tests, which is the normal bootstrap state, not an error.
+
+### Consequences
+
+- Ordinary `project` (non-strict) and `check-projection` succeed with unverified contract
+  identity and report it as a `warning`/non-blocking diagnostic; `project --strict` and
+  release evaluation remain blocked until current, passing evidence is captured.
+- `check-transformation-readiness --stage mapping` (and `silver`, for this reason alone)
+  passes for a contract with unverified identity; `--stage release` still blocks.
+- Every other `PolicyIssue` and transformation-readiness reason keeps its prior blocking
+  behavior; only `identity.contract-unverified` changes scope.
+
+---
+
+## DD-120: Additive Validation Reports and Non-Writing Lifecycle-State Suggestion
+
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** `core/validator.py`, `cli/main.py`, `core/_provenance.py`,
+`core/dbt_contract_sync.py`
+**Implementation:** `run_validation(markdown_report_path=...)`,
+`render_validation_markdown`, `propose_lifecycle_state`, `LifecycleStateProposal`,
+`validate --report-format`/`--report-path`, `sync_dbt_contracts`
+(`prior_generator_version`, `running_toolkit_version`)
+
+### Context
+
+`kairos-ontology validate` only ever wrote a fixed JSON report
+(`<hub>/output/validation-report.json`), with no way to select a human-readable
+format or an explicit destination — unlike `status --format text|json|markdown`,
+which already established this pattern. Separately, `sync-dbt-contracts` output gave
+no indication of which toolkit version regenerated a drifted artifact, and
+terminology for the toolkit-update/refresh/sync operations was inconsistent
+(`update`, `refresh`, and `sync` were used interchangeably for distinct operations).
+
+### Decision
+
+`run_validation` gains an additive `markdown_report_path` parameter (default `None`,
+preserving the exact pre-existing JSON-only contract) that renders a deterministic
+Markdown report via `render_validation_markdown`: toolkit version, effective command
+options, catalog, accelerator, scope/files, and findings, sorted for byte-identical
+output across runs on identical input (`ontology_files` is now gathered pre-sorted).
+`validate` gains `--report-format json|markdown|both` (default `json`) and
+`--report-path PATH` (rejected in combination with `both`, which always uses the two
+default paths) to select format and destination without touching existing behavior
+when omitted.
+
+A typed `LifecycleStateProposal` (`suggested_state`, `achieved`, `reason`) is computed
+by the pure function `propose_lifecycle_state` and embedded as `results["state_proposal"]`
+in the JSON report and as a Markdown section. It performs no I/O and never reads or
+writes `.kairos-state/` — persisting versioned lifecycle evidence (e.g.
+`design-validation.json`) remains exclusively the domain of the interactive skills /
+`kairos-flow` orchestrator (DD-080). The validator stays free of lifecycle-state
+mutation.
+
+`sync_dbt_contracts` now returns `running_toolkit_version` on the report and
+`prior_generator_version` per item, read only from an existing artifact's own
+`# Generated by kairos-ontology-toolkit vX.Y.Z` provenance comment
+(`read_provenance_version`, added to `_provenance.py`) — `None` when no such stamp
+exists, never inferred or fabricated. CLI output for `sync-dbt-contracts` now reads
+"Contract synchronization" throughout (was "dbt contract sync"), and `kairos-help`/
+`kairos-execute-validate` standardize on **toolkit upgrade**, **managed-file refresh**,
+and **contract synchronization** as the three canonical operation names.
+
+### Rationale
+
+Mirroring the `status --format` precedent keeps the new option additive and familiar.
+Sorting glob results and embedding only in-memory, JSON-serializable values keeps the
+Markdown report reproducible without adding any new I/O or timing dependency. Keeping
+the lifecycle-state suggestion typed and non-writing preserves the DD-080 invariant
+that only `kairos-flow`/interactive skills persist lifecycle evidence, while still
+giving a human or a skill a computed starting point. Reporting only a *previously
+recorded* provenance stamp — never guessing — keeps the provenance policy honest.
+
+### Consequences
+
+- `validate` with no new flags behaves exactly as before (JSON only, same path).
+- `validate --report-format markdown` opts out of the JSON report entirely, writing
+  only the Markdown report — an explicit choice, not a silent addition.
+- `run_validation`'s JSON report gains one additive `state_proposal` key; existing
+  consumers that read specific known keys are unaffected.
+- `sync-dbt-contracts` output text changed (`"Contract synchronization complete"`
+  instead of `"dbt contract sync complete"`); any external tooling that greps the
+  older exact string must update.
+
+---
+
+## DD-121: Failure-Safe Alignment Generation with Typed Per-Table Outcomes
+
+**Status:** Accepted
+**Date:** 2026-07-27
+**Affects:** `core/propose_alignment.py`, `core/ai_provider.py`,
+`core/claim_registry.py`, `core/migrate_claims.py`, `core/completeness_model.py`,
+`core/claim_coverage.py`, `cli/main.py`
+**Implementation:** `TableAlignment.generation_outcome`/`generation_provider`/
+`generation_model`/`generation_error`, `OUTCOME_SEMANTIC_SUCCESS` /
+`OUTCOME_PROVIDER_FAILURE` / `OUTCOME_FALLBACK_ONLY`, `AlignmentTotalFailureError`,
+`ClaimRegistry.generation_outcomes` (`GenerationOutcome`), `ClaimCheckReport
+.incomplete_generation`, `propose-alignment --allow-fallback-registry`,
+`ai_provider.create_chat_completion`/`sanitize_provider_error`
+
+### Context
+
+`propose-alignment`'s LLM call for a table could fail (provider outage, timeout,
+malformed response) or run with zero reference classes to align against (fallback
+only, no LLM call at all), and both cases previously looked identical to a genuine
+semantic result: the domain claims file was written unconditionally, with no signal
+that a table's alignment was incomplete or never actually generated. A total
+provider outage across every table in a run still exited 0 and reported success.
+There was also no capability-aware handling for a provider rejecting an unsupported
+request parameter — any such rejection surfaced as a raw exception.
+
+### Decision
+
+`align_table()` and the per-table pipeline now classify every table into one of
+three typed outcomes — `semantic_success`, `provider_failure` (LLM call raised),
+or `fallback_only` (no reference classes were available, so the LLM was never
+called) — carried on `TableAlignment` plus sanitized `generation_provider`/
+`generation_model`/`generation_error` (via `ai_provider.sanitize_provider_error`,
+which redacts API keys/bearer tokens and caps message length). `alignment_to_dict`
+only emits these fields when the outcome is not `semantic_success`, preserving a
+byte-identical happy-path serialization.
+
+A run-level tally (`run_attempted`, `run_semantic_success`, `run_provider_failures`)
+drives three behaviors: (1) a failed table's per-table dict is never cached, so a
+transient provider outage is retried on the next run instead of being persisted as
+a permanent result; (2) a domain where every table came back `provider_failure` is
+never written, and failed tables are always reported (not gated behind `--verbose`);
+(3) when every attempted table across the whole run fails, `_propose_alignments`
+raises `AlignmentTotalFailureError` after flushing the cache — the CLI catches this
+distinctly from `EnvironmentError`/`ValueError`, prints no success line, and exits
+1. A domain whose tables are 100% `fallback_only` is skipped by default (an
+all-placeholder registry must never masquerade as a real proposal); the new
+`--allow-fallback-registry` flag opts into writing it anyway, with its
+`generation_outcomes` recording the incomplete status.
+
+`ClaimRegistry` gains an additive `generation_outcomes: list[GenerationOutcome]`
+field (empty list omitted from serialization, matching the schema's existing
+sparse-optional convention), populated by `migrate_claims.alignment_to_registry`
+from each table's non-success `generation_outcome` key, and threaded through
+`merge_preserving_decisions` as fresh per-run reliability metadata (never a curated
+decision, so it is always taken from the new run like `coverage`/`freshness`).
+`claim_coverage.evaluate_claims_coverage` renders any non-success outcome as a
+`ClaimCheckReport.incomplete_generation` warning — included in `has_warnings` but
+deliberately excluded from `is_blocking`, since this is a *semantic-generation
+completeness* signal distinct from the structural claim validity the gate already
+enforces (a table can be structurally valid while still lacking real semantic
+content). This is additive to, and does not rewrite, the gate's existing blocking
+composition or the separate ontology-binding/release-eligibility notion of
+"semantic generation completeness" introduced by the concurrent claim-gates work
+(`claim_check_result.py`).
+
+`ai_provider.create_chat_completion` centralizes unsupported-request-parameter
+handling: on a provider error that names a specific unsupported parameter, it drops
+that one parameter and retries exactly once (no hard-coded per-model capability
+table); any other error, or a second failure after the retry, propagates unchanged.
+`propose-alignment` preflights the effective role model via
+`resolve_provider_config`/`resolve_role_model` before per-table fan-out and reports
+it up front, so a misconfiguration is visible before cost is incurred rather than
+discovered mid-run on the first table.
+
+### Rationale
+
+Treating "the LLM call did not happen" and "the LLM call happened and produced a
+real semantic result" as distinguishable, typed outcomes — rather than both
+collapsing into "here is a claims file" — is the only way to prevent an incomplete
+or failed run from being indistinguishable from a trustworthy one downstream. Not
+caching failures keeps transient provider issues self-healing on retry. Making
+total failure a distinct, loud, non-zero-exit condition (never printing success)
+follows the same never-invent-success discipline as the rest of the toolkit's
+typed-report conventions (DD-106–DD-115, DD-120). Keeping the new fields additive
+(sparse, non-empty-only) and the new gate signal warning-only avoids destabilizing
+any existing registry, gate, or the concurrent claim-gates work's own composition.
+
+### Consequences
+
+- Existing `propose-alignment` runs where every table succeeds are byte-identical
+  (no new keys emitted, no new CLI output beyond the model preflight line).
+- A domain with all tables `fallback_only` is no longer written by default — a
+  behavioral change from writing an all-placeholder registry unconditionally;
+  `--allow-fallback-registry` restores the old file-producing behavior explicitly.
+- A total-failure run now exits 1 instead of 0; callers/scripts relying on the old
+  silent-success behavior on total outage must handle the new exit code.
+- `check-claims` output gains a non-blocking `incomplete_generation` warning
+  section; existing blocking behavior (`is_blocking`, exit code) is unchanged.
+- **Superseded in part by DD-128:** the per-domain write gate alone did not cover a
+  domain mixing `provider_failure` with `fallback_only` tables, nor an opted-in
+  fallback-only domain. Writes are now staged and committed only after the run-wide
+  verdict, so `AlignmentTotalFailureError` guarantees *no* registry was written by
+  the run. DD-128 also makes the preflight's provider config endpoint/auth-only —
+  the caller-resolved model is authoritative and is never re-derived from
+  `KAIROS_AI_{ROLE}_MODEL` here.
+
+---
+
+## DD-122: Unified Claim-Activation Predicate and a Versioned Claim-Check Result
+
+**Status:** Accepted
+**Date:** 2026-07-27
+**Affects:** `core/binding_analysis.py`, `core/reference_modules.py`,
+`core/claim_projection_sync.py`, `core/source_coverage.py`,
+`core/lifecycle_gate.py`, `core/claim_check_result.py` (new), `cli/main.py`
+**Implementation:** `claim_activates_projecting_import`,
+`is_decided_non_activating`, `DECIDED_NON_ACTIVATING_STATUSES`,
+`DisputedClaimModule`, `ManagedImportPlan.disputed_claims`,
+`DomainProjectionSync.disputed_claims`, `ProjectionSyncReport.disputed_claims`/
+`.owner_skill`, `SourceCoverageReport.owner_skill`,
+`ClaimCheckResult`/`SemanticGenerationSummary`/`SemanticGenerationFact`,
+`build_claim_check_result`, `check-claims --format json`, `check-claims --require-mapping`
+
+### Context
+
+Whether a decided claim (`approved`/`deferred`/`rejected`) activates a projecting
+reference-module import was checked three separate times — in managed-import
+planning (`approved_imported_class_uris`/`approved_imported_term_refs`), in
+claims↔projection sync, and in activation-inventory reporting — each re-deriving
+the same `status == "approved" and origin == "imported" and disposition in
+{"claim", "gap"}`-shaped condition independently. A `deferred` or `rejected`
+claim was correctly excluded from *activating* an import everywhere it was
+checked, but nothing recorded when the same module stayed active anyway for an
+unrelated reason (another claim, or an unconditional data-domain group
+activation): a curator who deferred/rejected a claim had no signal that its
+module was still present, which reads as a disagreement between the decision
+and the generated projection surface.
+
+Separately, `check-claims --strict` blocked on an OR of registry validity,
+mapping coverage, and projection-sync drift, conflating three independently
+owned concerns into one exit code: mapping gaps are `kairos-design-mapping`'s
+concern and sync drift is `kairos-design-domain`'s (enforced by
+`claims-to-silver-ext --check-only`), neither of which should fail the
+curation-focused `check-claims` gate. There was also no single, versioned,
+machine-readable result a skill or CI step could parse — only ad hoc text and
+three separately-invoked evaluators.
+
+### Decision
+
+`binding_analysis.py` gains one shared predicate,
+`claim_activates_projecting_import(claim) -> bool`, plus its complement
+`is_decided_non_activating(claim)` (true for `DECIDED_NON_ACTIVATING_STATUSES =
+{"deferred", "rejected"}`). `approved_imported_class_uris` and
+`approved_imported_term_refs` now call this predicate instead of repeating the
+status/origin/disposition check inline — behavior-preserving, but there is now
+exactly one place that answers "does this claim activate a projecting import".
+
+`reference_modules.py` adds `DisputedClaimModule` (`claim_id`, `claim_status`,
+`term_uri`, `module_id`, `import_iri`, `reasons`) and a
+`ManagedImportPlan.disputed_claims` tuple, populated by scanning the registry
+for `is_decided_non_activating` claims whose term resolves to a module that
+remains active for another reason (i.e. its import IRI is still present in the
+plan's requirement data). `claim_projection_sync.py` threads this through
+`DomainProjectionSync.disputed_claims` (each entry tagged with its `domain`)
+and exposes a flattened `ProjectionSyncReport.disputed_claims` property, plus an
+`owner_skill: str = "kairos-design-domain"` field. `source_coverage.py` gains
+the analogous `SourceCoverageReport.owner_skill: str = "kairos-design-mapping"`.
+Both `owner_skill` additions and the new `disputed_claims` fields are purely
+additive dataclass fields; `lifecycle_gate.py`'s existing `_projection_sync_to_dict`/
+`_source_coverage_to_dict` helpers gain the corresponding keys without a schema
+version bump (additive-only, per that module's own versioning convention).
+
+A new `core/claim_check_result.py` composes the existing, independently
+governed evaluators into one versioned (`CLAIM_CHECK_RESULT_SCHEMA_VERSION = 1`)
+`ClaimCheckResult`, with five facets each reported on its own: `registry`
+(`ClaimCheckReport`, unchanged), `semantic_generation`
+(`SemanticGenerationSummary`/`SemanticGenerationFact`, one per domain), `mapping`
+(`SourceCoverageReport | None`), `projection_sync` (`ProjectionSyncReport`), and
+the flattened `disputed_claims` list. `semantic_generation` deliberately
+consumes DD-121's additive `ClaimCheckReport.incomplete_generation` metadata
+(itself sourced from `ClaimRegistry.generation_outcomes`) rather than inventing
+a second notion of "generated": a domain with no incomplete-generation entries
+— because every table reached `semantic_success`, or because its registry
+predates the `generation_outcomes` feature entirely (a legacy artifact) — is
+vacuously complete for this facet, so old registries are never penalized.
+`curation_complete` is the **only** composite/blocking signal this module
+introduces, computed from the registry facet alone: `False` if
+`registry.is_blocking`, or (only under `strict=True`) if
+`registry.has_undecided_claims()`; otherwise `True`. `semantic_generation`,
+`mapping`, and `projection_sync` never gate it — they stay independently
+visible (mapping/sync additionally carry `owner_skill`) and block only within
+their owning workflow.
+
+`check-claims` (`cli/main.py`) now builds this one `ClaimCheckResult` instead of
+invoking the registry/mapping/sync evaluators separately, gains `--format
+json|text` (default `text`) to emit `result.to_dict()` verbatim, and its
+`should_block` computation drops the previous `source_blocking`/`sync_blocking`
+OR — the exit code is now `(report.is_blocking or strict_block or
+mapping_block) and not warn_only`, where `mapping_block` is `False` unless the
+caller passes the new, opt-in `--require-mapping` flag (see Consequences).
+Mapping-gap and sync-drift text
+sections remain printed (now with an explicit `owner_skill` line and non-error
+`⚠` styling instead of `❌`/`err=True` when not required), and any `disputed_claims` entries are
+printed per domain in both `check-claims` and `claims-to-silver-ext`'s existing
+sync-reporting loop, so a curator sees exactly which claim IDs retain a
+disputed module and why.
+
+### Rationale
+
+A single shared predicate is the only way to guarantee managed-import planning,
+projection sync, and activation-inventory reporting can never silently diverge
+on what "a decided claim activates an import" means — the original three
+independent implementations happened to agree, but nothing enforced that.
+Reporting disputes rather than silently dropping them keeps a
+deferred/rejected decision from reading as ignored when the module is
+legitimately still needed for another reason. Scoping `curation_complete` to
+registry/freshness/semantic-policy/undecided-claims — and no further — keeps
+each skill's enforcement boundary intact (DD-094's mapping ownership, this
+document's projection-sync ownership) instead of one gate silently absorbing
+every other gate's blocking behavior. Consuming DD-121's `generation_outcomes`
+rather than re-deriving a second "semantic completeness" concept keeps exactly
+one authority for that signal.
+
+### Consequences
+
+- `check-claims` (non-`--strict` and `--strict`) no longer exits non-zero on
+  mapping gaps or projection-sync drift alone — only `claims-to-silver-ext
+  --check-only` (sync) and mapping-owning workflows still block on those.
+  Existing CI invocations that relied on `check-claims --strict` catching sync
+  drift must instead run `claims-to-silver-ext --check-only`.
+  `test_check_claims_blocks_on_sync_drift_and_passes_after_generation` was
+  updated to assert the new exit-0 behavior.
+- **`--require-mapping` (opt-in, added post-review)**: `kairos-execute-project`'s
+  DD-094 pre-silver/dbt mapping gate had no standalone `check-source-coverage`
+  command to fall back on — it depended entirely on `check-claims`'s own exit
+  code to fail closed on unmapped affinity tables, which this DD's narrowing
+  silently broke. Rather than re-widening the default `curation_complete`/exit
+  code (which would reintroduce the original conflation), `check-claims` gained
+  an explicit `--require-mapping` flag: when passed, `mapping_block =
+  result.mapping.is_blocking` is folded into the exit-code OR (both `--format
+  text` and `--format json`), without changing `curation_complete` itself or
+  the default (no-flag) exit code. `kairos-execute-project`'s SKILL.md now
+  documents `check-claims --require-mapping` for this gate; `kairos-design-mapping`
+  (the mapping-authoring skill) can use the same flag, or its own review flow,
+  as it prefers. `--strict` remains scoped to undecided-claims only, per this
+  DD's original intent — `--require-mapping` is the dedicated, separately-named
+  escape hatch for the one owning workflow that still needs `check-claims`
+  itself to fail closed on mapping.
+- `check-claims --format json` is new, additive CLI surface; the default text
+  output keeps its existing structure with two additions: an `owner_skill` line
+  on the mapping/sync sections and any `disputed_claims` entries.
+- Old Claim Registries (no `generation_outcomes` key) and old callers of
+  `approved_imported_class_uris`/`approved_imported_term_refs` are unaffected —
+  both changes are read-only refactors/additive fields, not schema changes.
+
+---
+
+## DD-123: Mapping-Skill-Derived Table Scope and Visible Out-of-Scope Diagnostics
+
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** `.github/skills/kairos-design-mapping/SKILL.md` (and its scaffold copy),
+`core/transformation_candidates.py`
+**Implementation:** `evaluate_transformation_readiness`'s implemented-contract loop
+
+### Context
+
+Gate 6 of **kairos-design-mapping** invoked `check-transformation-readiness --stage
+mapping` with no `--table` scope, even though the command already accepted a repeatable
+`--table` option and `evaluate_transformation_readiness` already treated direct
+table/virtual-source overlap as the sole scope authority (DD-107/DD-118/DD-119). Every
+Gate 6 run therefore evaluated the whole hub's contracts, so an unrelated domain's blocked
+transformation (e.g. missing decision evidence) could be confused for a blocker on the
+table this mapping session actually confirmed, and there was no persisted place to reuse a
+derived scope across a pause/resume.
+
+Separately, `evaluate_transformation_readiness`'s loop over discovered (non-inventoried)
+dbt contracts skipped a contract entirely (`continue`) when it did not overlap the
+requested `table_scope`, rather than surfacing it as a non-blocking diagnostic the way an
+out-of-scope inventoried candidate already did. A blocked contract for another domain
+simply vanished from a scoped report instead of remaining visible for awareness.
+
+### Decision
+
+**Skill:** Phase 1 (Table-to-Entity Alignment) of `kairos-design-mapping` now derives a
+**Confirmed table scope** list — the absolute source-table/virtual-source IRI of every row
+confirmed to an entity, excluding `operational`/`deprecated`/`out-of-scope`/`gap` rows —
+and persists it in the phase log (`phases/mapping/<source>-to-<domain>.md`) so a resumed
+session reuses it verbatim instead of re-deriving it. Gate 6 now passes this list as a
+repeatable `--table` per confirmed IRI to `check-transformation-readiness --stage
+mapping`. The scope is never widened by following FK/dependency relationships to other
+tables — direct table/virtual-source overlap remains the sole authority, matching the
+existing evaluator. Unscoped invocation (no `--table`) remains reserved for hub-wide
+status/release checks (**kairos-diagnose-status**, **kairos-flow**, `check-release`); the
+mapping skill never drops its scope to route around an unrelated blocker.
+
+**Evaluator:** the implemented-contract loop in `evaluate_transformation_readiness` no
+longer skips a non-overlapping contract outright. It now evaluates the contract's reasons
+exactly as before but records `is_blocking = in_scope and bool(blocking_reasons)`, where
+`in_scope` is the existing `_contract_overlaps_table_scope` result. An out-of-scope
+contract's blocking reasons (evidence, sync, identity, replacement completion) stay in its
+`reasons` tuple for review; only its contribution to `is_blocking`/`report.is_blocking` is
+suppressed. When `table_scope` is empty (the unscoped hub-status/release path),
+`_contract_overlaps_table_scope` still returns `True` for every contract, so unscoped
+behavior is unchanged byte-for-byte.
+
+### Rationale
+
+Deriving the `--table` scope from the same Table Alignment Proposal the user already
+confirmed avoids inventing a second, hand-maintained scope list, and persisting it keeps a
+resumed session from silently re-scoping mid-flow. Making out-of-scope blockers visible
+but non-blocking mirrors the treatment inventory candidates already receive for the
+`accepted` status (DD-119's own precedent), so scoped and inventoried findings behave
+consistently instead of one path silently dropping information the other already surfaces.
+
+### Consequences
+
+- `test_scoped_readiness_ignores_unrelated_noninventoried_contract` is renamed to
+  `test_scoped_readiness_surfaces_unrelated_contract_as_nonblocking_diagnostic` and now
+  asserts the unrelated contract is present with `is_blocking is False` and non-empty
+  `reasons`, instead of an empty `candidates` tuple.
+- A new two-domain regression
+  (`test_two_domain_scope_isolates_blocked_domain_from_ready_domain`) confirms one domain's
+  blocked contract stays a non-blocking diagnostic while a second domain's scoped,
+  contract-clean tables remain mapping-ready, and that an in-scope contract whose only
+  issue is unverified identity still follows the DD-119 release-only semantics in this
+  multi-domain setting.
+- No change to `--stage silver`/`--stage release` blocking semantics for in-scope
+  contracts, to candidate-based (inventoried) readiness, or to any consumer that already
+  passes an empty/no `table_scope`.
+
+---
+
+## DD-124: URI-First Confirmed-Anchor Resolution and a Versioned Unresolved-Anchor Record
+
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** `core/anchor_resolution.py` (new), `core/unresolved_anchors.py` (new),
+`core/propose_alignment.py`, `core/migrate_claims.py`, `core/claim_registry.py`,
+`cli/main.py` (`propose-alignment`)
+**Implementation:** `resolve_table_anchor`, `align_table(anchor_override=...)`,
+`_process_table`'s anchor-resolution wiring in `_propose_alignments`
+
+### Context
+
+`propose-alignment` chose a table's reference-model class anchor purely from the LLM's
+semantic guess (with a lexical name-similarity fallback when that guess was invalid), even
+when the business had already **confirmed** — via the `kairos-design-discovery` Core
+Concepts Conformance artifact (DD-090; `outcome: conforms` / `conforms-with-rename` +
+`rename_to`) — exactly which reference-model concept a business term identifies. Both the
+LLM path and the similarity fallback could silently converge on the "nearest" class even
+when that confirmed evidence was itself ambiguous (e.g. two archetypes' concepts sharing
+one business alias), permanently masking the disagreement instead of surfacing it for
+resolution. Property/custom claims were also generated per-column independent of whether
+the table's own class anchor was trustworthy, so an unreliable anchor still produced
+concrete property claims downstream.
+
+### Decision
+
+A new pure module, `anchor_resolution.py`, builds a **confirmed alias index** from the
+conformance artifact (the only input treated as authoritative here — the discovery
+glossary remains "inspirational only, not reconciled" and is never consulted for anchor
+resolution) and resolves a table's affinity-derived `likely_entity` against it *before* any
+class selection runs, with three outcomes: `"confirmed"` (exactly one confirmed URI, present
+in the table's candidate class pool — wins over any LLM/lexical guess),
+`"ambiguous"` (the confirmed evidence itself names more than one distinct concept URI for
+the same alias — never collapsed to the nearest one), or `"none"` (falls through to the
+existing, unchanged LLM/lexical path).
+
+`align_table` gained an `anchor_override: str | None` parameter: when the anchor resolves
+to `"confirmed"`, `_process_table` passes the resolved class name through, forcing
+`ref_class`/`ref_class_status="confirmed"`/`ref_class_confidence=1.0` regardless of what the
+model itself proposes (columns without their own LLM-proposed `ref_class` still inherit
+this confirmed class as their default). When the anchor is `"ambiguous"`, the table is
+short-circuited *before* any LLM call or cache lookup: it is written with
+`ref_class_status="unresolved"`, empty `column_alignments`, and the existing F6
+column-reconciliation passthrough loop is skipped for it — so an unresolved anchor produces
+**zero** property or custom-column claims, never a silent guess. The ambiguous result is
+never cached, so a later conformance-artifact correction re-resolves fresh.
+
+A second new pure module, `unresolved_anchors.py`, defines a versioned `UnresolvedAnchor`
+record (stable `id` derived from domain/system/table, `status` of `"open"` or `"resolved"`,
+`candidate_uris`, human-readable `evidence`, and an optional `resolved_uri`/`resolved_by`)
+kept in a separate `{domain}-unresolved-anchors.yaml` file alongside (never inside) the
+Claim Registry — decisions about an anchor's identity are provenance/evidence, not claims.
+Existing records merge with each run's fresh ones (`merge_preserving_anchor_resolutions`),
+so a human resolution recorded in this file is read back and honored by
+`_process_table` on the next run (converting the ambiguity to a synthetic `"confirmed"`
+result), without needing to touch the alignment source or wait for the conformance artifact
+itself to be corrected. The file is written only when non-empty and only alongside an
+actual claims-registry write, so hubs that never trigger the feature see no new file.
+
+`CoverageTable` (Claim Registry) gained a sparse `likely_entity_uri` field, populated from
+the anchor resolution and preferred over the existing name-based `uri_index` lookup in
+`migrate_claims.py` when present. `VALID_ANCHOR_STATES` grew `"confirmed"`/`"unresolved"`.
+A new **warning-level** (never error-level) `validate_registry()` check flags imported
+`claim`/`specialize` records missing a resolvable `class_uri`/`property_uri` for their type,
+without breaking existing error-level-only consumers. `propose_alignment_cmd` auto-detects
+the hub's conformance artifact path (mirroring the existing `conformance_validate` command)
+and passes it through; a hub with no artifact sees fully unchanged behavior.
+
+### Rationale
+
+Anchoring on the confirmed Core Concepts Conformance artifact — rather than glossary
+aliases or model confidence — keeps exactly one human-governed source of truth for "this
+business term is this concept," consistent with DD-090's own authority boundary. Treating
+ambiguous confirmed evidence as a *first-class, versioned, out-of-band record* rather than
+either an error or a silent pick preserves the human decision's provenance and lets it be
+resolved once and reused, instead of forcing the same disambiguation choice on every run.
+Blocking property-claim generation on an unresolved table anchor prevents a large volume of
+claims from being built against a foundation (`ref_class`) the pipeline itself doesn't trust
+yet. Keeping the new record in its own file (not inside the Claim Registry) preserves the
+Registry's existing contract — every record in it is either a claim or its
+generation-outcome telemetry — rather than overloading it with a third, structurally
+different kind of open question.
+
+### Consequences
+
+- New files: `src/kairos_ontology/core/anchor_resolution.py`,
+  `src/kairos_ontology/core/unresolved_anchors.py`, and a new
+  `{domain}-unresolved-anchors.yaml` artifact per domain (written only when at least one
+  anchor is or was ambiguous).
+- `TableAlignment` gained `likely_entity_uri`/`anchor_candidate_uris`; `DomainAlignment`
+  gained `unresolved_anchors`; both are sparse/backward-compatible in
+  `alignment_to_dict()` output.
+- `CoverageTable.likely_entity_uri` and the `"confirmed"`/`"unresolved"` anchor states are
+  additive to the Claim Registry schema; existing registries without them continue to load
+  unchanged (tolerant loading verified against the pre-existing "good registry" fixture).
+- A domain whose *only* tables are unresolved-anchor tables is gated behind
+  `--allow-fallback-registry` exactly like any other all-fallback domain
+  (DD-121) — an unresolved anchor's synthetic outcome is `fallback_only`, not a distinct
+  gate.
+- Out of scope for this change: surfacing `unresolved_anchors` in `check-claims`/
+  `claim_check_result.py` output. This was deliberately deferred to avoid colliding with
+  concurrent claim-gates work (DD-122/DD-123) on that same surface. **Followed up in
+  DD-128**, which classifies an unresolved-anchor table's deliberate zero coverage as its
+  own non-blocking `check-claims` facet instead of a blocking F6 column omission.
+- New tests: `tests/test_anchor_resolution.py`, `tests/test_unresolved_anchors.py`, and
+  `TestUriAnchorContract`/`TestUriAnchorContractIntegration` classes added to
+  `tests/test_claim_registry.py`, `tests/test_migrate_claims.py`, and
+  `tests/test_propose_alignment.py`. All new fixtures use generic accelerator-style class
+  names, not Booking/TransportOrder/DCSA-specific ones.
+
+---
+
+## DD-125: Domain-Ownership-Inferred Accelerator Resolution with Diagnostics
+
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** `core/reference_modules.py`, `core/inventory.py`, `cli/main.py`
+(`validate`, `project`/`check-projection`, `check-inventory`, `check-claims`)
+**Implementation:** `resolve_hub_accelerator_detailed`, `AcceleratorResolution`,
+`_accelerator_domain_owners`, `classify_domain_scope`
+
+### Context
+
+Four CLI surfaces each needed to pick one installed accelerator pack (a
+`data-domains.yaml`-bearing `accelerator-packs/<name>/client-hub-blueprint/`) for a hub with
+multiple packs installed, but only `validate` and `project`/`check-projection` actually
+routed through the shared `resolve_hub_accelerator` helper. `check-inventory` had no
+`--accelerator` option at all and hardcoded `accelerator=None` into
+`resolve_domain_inventory_keys`, silently scoping against whichever pack
+`analyse_sources.load_data_domains` happened to glob first (alphabetical). `check-claims`
+had a `--accelerator` option but never consulted `[tool.kairos].accelerator` or inference —
+it passed the raw CLI value (or `None`) straight into `load_data_domains`, so a hub with
+`[tool.kairos].accelerator` configured, or with only one pack unambiguously owning the
+claimed domain, could still have `check-claims` silently check a *different* pack's registry
+than the one every other command resolved — producing a spurious "registry domain not found
+in data-domains.yaml" warning that disagreed with the actual accelerator registry.
+Separately, whenever two or more packs were installed and neither `--accelerator` nor
+`[tool.kairos].accelerator` was set, `resolve_hub_accelerator` always raised the ambiguity
+error, even when the active domain(s) in scope mapped unambiguously to exactly one pack's
+`data-domains.yaml` (including domains nested two levels deep under `groups[].domains[]`) —
+forcing an unnecessary `--accelerator` flag on every invocation for hubs where the answer was
+already inferable from context. Finally, `check-inventory`'s scoped summary printed a bare
+`"(none matched)"` for a requested `--domains` token and then still reported the domain
+ready, without saying whether readiness came from an accelerator profile, a directly-matched
+inventory stem, or neither.
+
+### Decision
+
+`resolve_hub_accelerator` gained a detailed sibling, `resolve_hub_accelerator_detailed`,
+returning a frozen `AcceleratorResolution(accelerator, source, data_domains_path)`. The
+precedence is unchanged and preserved exactly (explicit `--accelerator` >
+`[tool.kairos].accelerator` > inference > ambiguity error; the original error strings —
+`"Unknown accelerator {selected!r} from {source}. Available: {choices}"` and "Accelerator
+selection is ambiguous. ..." — are byte-for-byte preserved so existing CLI/test assertions
+keep working). No new config key was introduced. What's new is a `domain_hint` parameter:
+when multiple packs are installed and neither an explicit value nor hub configuration
+selects one, `_accelerator_domain_owners` loads each candidate pack's `data-domains.yaml`
+via the *same* `analyse_sources.load_data_domains` parser used by
+`resolve_domain_inventory_keys` (inventory) and managed-import planning — reusing one nested
+`groups[].domains[]` registry parser everywhere so accelerator disambiguation, inventory
+scoping, and claim-registry ownership checks never disagree about which pack owns a domain.
+If exactly one installed pack owns a hinted domain, it is inferred (`source: "inferred
+(domain ownership)"`); if the hint matches zero or more-than-one pack, or no hint is
+available, the original hard ambiguity error is still raised — this never silently guesses
+among genuinely plausible candidates. `resolve_hub_accelerator` is kept as a thin
+backward-compatible wrapper returning only `.accelerator`.
+
+Each of the four CLI commands now supplies a domain hint appropriate to its own scope
+(`validate`/`project`/`check-projection`: `--ontology` file stem or all `model/ontologies/
+*.ttl` stems; `check-inventory`: the active `--domains` filter; `check-claims`: the active
+`--domains` filter, falling back to `model/claims/*-claims.yaml` stems when no filter is
+given) and prints the resolved accelerator, its source, and the resolved
+`data-domains.yaml` path as text-mode diagnostics (never added to any JSON `to_dict()`
+output, so DD-122's versioned claim-check result and other JSON contracts are untouched).
+`check-inventory` gained the previously-missing `--accelerator` option.
+
+`core/inventory.py` gained `classify_domain_scope` (plus `DIRECT_PROFILE` /
+`ACCELERATOR_PROFILE` / `NO_PROFILE` status constants), replacing the misleading
+`"(none matched)"` scoped-inventory line with one of three explicit states per requested
+`--domains` token: matched an accelerator `data-domains.yaml` entry that itself resolved
+inventory keys (`ACCELERATOR_PROFILE`), matched no accelerator entry but did directly match
+one or more already-materialized inventory stems in the report (`DIRECT_PROFILE` — and the
+matching key set is now shown, identifying which inventory set makes the scoped result
+ready), or matched neither (`NO_PROFILE`).
+
+`check-claims`'s existing `report.unowned` computation in `claim_coverage.py` (and its
+result semantics) were **not modified** — the fix is entirely upstream, in *which*
+`data_domains` dict gets passed in; the command's `unowned` warning message was only
+extended to also print the checked `data-domains.yaml` path for diagnosability.
+
+### Rationale
+
+Consolidating all four commands on one resolver — rather than four independent
+call-sites — guarantees cross-command parity by construction: the same explicit
+value, the same `[tool.kairos].accelerator`, and the same domain-ownership registry are
+consulted everywhere, so a warning from one command can never disagree with another
+command's view of which pack is active. Reusing `analyse_sources.load_data_domains` (rather
+than a second nested-groups parser) for domain-ownership disambiguation is what makes the
+"nested `groups[].domains[]` ownership" fix a single-parser guarantee instead of a
+best-effort approximation. Restricting inference to the *unambiguous* case — and still
+raising the original hard error otherwise — avoids trading a loud, correct ambiguity error
+for a silent wrong guess; a hub whose domains never map unambiguously to one pack sees
+exactly the same behavior as before. Keeping the new diagnostics text-only (never JSON) and
+leaving `claim_coverage.py`'s result computation untouched avoids colliding with concurrent
+claim-gates work on that same JSON surface (DD-122).
+
+### Consequences
+
+- `core/reference_modules.py`: new `AcceleratorResolution` dataclass,
+  `_accelerator_domain_owners`, and `resolve_hub_accelerator_detailed`;
+  `resolve_hub_accelerator` gained an optional `domain_hint` parameter (default `None`,
+  fully backward compatible).
+- `core/inventory.py`: new `classify_domain_scope` plus `DIRECT_PROFILE` /
+  `ACCELERATOR_PROFILE` / `NO_PROFILE` constants.
+- `cli/main.py`: `check-inventory` gained a new `--accelerator` option; `validate`,
+  `check-inventory`, and `check-claims` gained text-mode "Accelerator: ... (source: ...)" /
+  "Data domains: ..." diagnostic lines; `check-inventory`'s scoped summary no longer prints
+  `"(none matched)"`.
+- No new configuration key; precedence and existing ambiguity/unknown-accelerator error
+  strings are unchanged, preserving CLI compatibility for existing scripts/tests.
+- New tests: `tests/test_accelerator_resolution.py` — resolver precedence/inference/
+  ambiguity unit tests, nested `groups[].domains[]` registry-parity tests, `check-inventory`
+  scoped-wording tests, `check-claims` registry-ownership diagnostics tests, and
+  cross-command (`validate`/`project`/`check-inventory`/`check-claims`) resolver-parity
+  tests.
+
+---
+
+## DD-126: Metadata-Complete, Convergent Scaffolding with Explicit Created/Updated/Unchanged Reporting
+
+**Status:** Accepted
+**Date:** 2026-08-02
+**Affects:** `core/claim_projection_sync.py`, `core/managed_text_block.py` (new),
+`cli/main.py` (`claims-to-silver-ext`)
+**Implementation:** `scaffold_missing_surfaces`, `ScaffoldSurfacesResult`,
+`ScaffoldPartialFailureError`, `_validate_generated_metadata`,
+`_sync_master_registration`, `_sync_readme_domain_table`,
+`managed_text_block.split_managed_block` / `compose_managed_file` / `replace_managed_block`
+
+### Context
+
+DD-072 (`claims-to-silver-ext` bootstraps fresh domains) only ever wrote a bare
+`rdf:type owl:Ontology` plus `rdfs:label` into a scaffolded `{domain}.ttl`, and an
+even sparser `owl:Ontology` triple into `{domain}-silver-ext.ttl` — missing the
+`rdfs:comment` and `owl:versionInfo` that `kairos-execute-validate`'s Level 3 checks
+(and every hand-authored ontology) require, so a freshly scaffolded domain could
+fail the same metadata gate a hand-authored one passes. The workflow also silently
+left `_master.ttl`'s `owl:imports` registration and the scaffold README's "Domain
+model overview" table unregistered for newly scaffolded domains, requiring a manual
+follow-up step (documented in `kairos-help`'s "Adding a new domain" workflow) that
+was easy to forget. Finally, the command reported success or failure only via exit
+code and per-domain sync status — there was no explicit accounting of which paths
+were created, updated, or left untouched, no git-status guidance for the new
+untracked files, and no defined behavior (nor test coverage) for what happens when
+one domain among several fails to scaffold.
+
+### Decision
+
+`_scaffold_ontology_skeleton` / `_scaffold_extension_skeleton` now emit
+`rdfs:label`, `rdfs:comment`, `owl:versionInfo`, and correct `:`/`owl:`/`rdfs:`
+(and `kairos-ext:` for extensions) prefix bindings, and every generated candidate
+graph is validated by `_validate_generated_metadata` (required predicates present,
+`https://` IRI, Turtle round-trip) **before** anything is written to disk — a
+generated skeleton is held to the identical metadata bar as a hand-authored one.
+Domain identifiers are validated against `_DOMAIN_SLUG_RE` up front.
+
+`scaffold_missing_surfaces` now returns a frozen `ScaffoldSurfacesResult`
+(`created` / `updated` / `unchanged` / `warnings` / `errors` path/str tuples, a
+`.counts` property, and a `.describe()` method producing human-readable summary
+lines: per-path buckets, a managed-vs-authored explanation, and a `git status`
+hint for newly created — hence untracked — files). Each domain is scaffolded
+independently inside a try/except: an invalid slug or a failed metadata check is
+recorded in `errors` for that domain only and does **not** stop the others, nor
+does it undo files already written for domains that succeeded — no rollback is
+ever attempted or claimed. If any domain failed, `scaffold_missing_surfaces`
+raises `ScaffoldPartialFailureError(message, result)` (mirroring the existing
+`OntologyLoadError(message, result)` convention in `ontology_loader.py`) carrying
+the full partial `ScaffoldSurfacesResult` so callers can report exactly what
+happened.
+
+After the per-domain loop, two best-effort convergence steps run for every
+currently-ready domain (freshly scaffolded or pre-existing): `_sync_master_registration`
+regenerates a new, generic sentinel-delimited managed block
+(`# >>> kairos-managed (generated domain registration — do not edit)` /
+`# <<< kairos-managed` — deliberately distinct marker text from the existing
+Claim-Registry managed block so the two never collide) inside `_master.ttl`'s
+`owl:imports`, and `_sync_readme_domain_table` inserts a row into the README's
+"Domain model overview" table for any domain missing one, removing the sole
+`*(add domains here)*` placeholder row on first real insertion. Both steps are
+**convergence-only**: neither file is ever created by this workflow, only updated
+if it already exists (a missing `_master.ttl` or README table is skipped with a
+warning, not an error), and all authored content outside the owned region is
+preserved untouched. A new generic module, `managed_text_block.py`
+(`split_managed_block` / `compose_managed_file` / `replace_managed_block` /
+`ManagedBlockError`), implements the same DD-083 splicing algorithm as the
+existing private Claim-Registry implementation but is parametrized on marker text,
+so the new master-registration feature reuses proven logic without touching or
+risking regression of the well-tested, tightly-coupled original.
+
+`ProjectionSyncReport` gained an optional `scaffold_result` field, populated by
+`apply_projection_sync`. The `claims-to-silver-ext` CLI command prints
+`scaffold_result.describe()` on success and, on `ScaffoldPartialFailureError`,
+prints the same `describe()` output for the partial result plus an explicit
+"No rollback is performed" statement, then exits non-zero. The CLI's
+activation-inventory JSON write (previously unconditional) now compares existing
+content before writing and folds into the same created/updated/unchanged summary.
+
+### Rationale
+
+Holding generated skeletons to the same validation function used to gate
+hand-authored ontologies is the only way to guarantee they are indistinguishable
+from authored ones for every downstream consumer (`kairos-execute-validate`,
+projection, mapping). Per-domain isolation with no rollback was chosen over an
+all-or-nothing transaction because file-system operations across independently
+named domains have no natural transactional boundary in this codebase, and
+silently discarding successfully-written sibling domains on one domain's failure
+would be more surprising and harmful than reporting the failure precisely and
+leaving good work in place — this mirrors the project's broader "never claim
+atomicity you don't have" principle. A parallel generic managed-block module
+(rather than generalizing the existing private one) was chosen to avoid
+destabilizing the Claim-Registry sync path, which has broad existing test
+coverage and different semantics (it drives a fully bulk-replaceable block from
+claim data, not a registration list keyed by "currently known domains").
+Wholesale convergence of *every* ready domain on each run (not just newly
+scaffolded ones) avoids a subtler bug where a later run would inadvertently drop
+a previously-registered domain from the managed block.
+
+### Consequences
+
+- `core/claim_projection_sync.py`: new `ScaffoldMetadataError`,
+  `_validate_domain_slug` / `_DOMAIN_SLUG_RE`, `_validate_generated_metadata`,
+  `_MASTER_IMPORT_BEGIN` / `_MASTER_IMPORT_END`, `_sync_master_registration`,
+  `_README_TABLE_HEADER`, `_update_readme_domain_table_row`,
+  `_sync_readme_domain_table`, `ScaffoldSurfacesResult`,
+  `ScaffoldPartialFailureError`; `scaffold_missing_surfaces`'s return type changed
+  from `None` to `ScaffoldSurfacesResult` (breaking change for any direct caller —
+  none exist outside this module and its tests); `ProjectionSyncReport` gained
+  `scaffold_result: ScaffoldSurfacesResult | None = None`.
+- `core/managed_text_block.py` (new): generic, domain-agnostic managed-block
+  splicing module, independent of the pre-existing Claim-Registry implementation.
+- `cli/main.py`: `claims-to-silver-ext` catches `ScaffoldPartialFailureError`,
+  prints the partial result and a no-rollback statement, and exits non-zero;
+  prints `scaffold_result.describe()` on success; activation-inventory writes are
+  now compared before writing and reported as created/updated/unchanged.
+- `.github/skills/kairos-design-domain/SKILL.md` and `.github/skills/kairos-help/SKILL.md`
+  (+ their `src/kairos_ontology/scaffold/skills/...` copies via
+  `scripts/sync_dev_skills.py`) updated to describe the hardened metadata,
+  master/README convergence, explicit reporting, and partial-failure behavior.
+- New tests in `tests/test_claim_projection_sync.py`: metadata completeness on
+  scaffolded skeletons, idempotence across repeated runs, partial-failure
+  isolation (invalid domain slug does not block/rollback siblings), master/README
+  convergence (including idempotence and graceful skip when absent), a direct
+  `_validate_generated_metadata` error-message unit test, and CLI-level tests for
+  the printed created/updated/unchanged summary (with git-status hint) and the
+  partial-failure exit path.
+
+---
+
+## DD-127: Domain-Ownership Handoffs and Generalized, Stable-Cluster Relationship Candidates
+
+**Status:** Accepted
+**Date:** 2026-08-09
+**Affects:** `core/claim_registry.py`, `core/migrate_claims.py`,
+`core/propose_alignment.py`, `core/draft_model_report.py`
+**Implementation:** `DomainHandoff`, `ClaimRegistry.domain_handoffs`,
+`_merge_relationship_candidates`, `_RELATIONSHIP_CANDIDATE_DETECTOR_KEYS`,
+`_object_relationship_downgrade_reason`, `_is_technical_actor_column`,
+`_looks_like_identifier_column`, `_location_role_token` /
+`_has_typed_role_evidence`, `_relationship_cluster_id`,
+`_cluster_object_property_candidates`
+
+### Context
+
+A design-session review of `propose-alignment` output (`docs/draft/bookingsession.md`,
+findings #7–#9) identified three related quality gaps. First, a column whose match
+resolved to a sibling/shared reference-model module outside the current domain
+(DD-070's `ref_module` tag) was still turned into an ordinary in-domain property
+claim by `migrate_claims.alignment_to_registry` — the accelerator's `owns` /
+`does_not_own` boundary (`data-domains.yaml`) was enforced only *after* the fact,
+downstream, by `claim_coverage.py`'s governance gate, never *before* claim
+emission. Second, issue #192's relationship-candidate detector only ever clustered
+address-part columns; every other object-property downgrade (F3) emitted one
+relationship candidate per column, so several columns evidencing the same
+relationship on the same table fragmented into separate, unmergeable candidates,
+and a re-run of the detector fully replaced `relationship_candidates` with no
+concept of a stable identity a human decision could be recorded against. Third,
+the F3 object-property downgrade only ever checked whether a *target class*
+resolved — a `created_by_*`/`updated_by_*` technical-actor column, a plain
+descriptive scalar with no identifier evidence, or a specialized location
+property (e.g. `hasPlaceOfDischarge`) picked without the column itself naming
+that role could all still resolve into a governed-looking object-property mapping
+or relationship candidate with no generic safeguard against the false positive.
+
+### Decision
+
+`migrate_claims.alignment_to_registry` now checks each column's `ref_module`
+(DD-070) **before** building a property claim: a truthy `ref_module` routes the
+column into a `DomainHandoff` (new, versioned — `DOMAIN_HANDOFF_SCHEMA_VERSION =
+1` — dataclass carrying `ref_class`, `ref_property`, `owning_domains`,
+`ref_module`/`ref_module_uri`, and the source `evidence_sources`) instead of a
+claim, and `continue`s the loop — the source evidence is never lost, but it can
+never be mis-attributed to a domain that does not own it. `ClaimRegistry` gained
+an additive `domain_handoffs: list[DomainHandoff]` field (omitted from
+serialization when empty, so a pre-feature registry round-trips byte-identical);
+`merge_preserving_decisions` always takes `domain_handoffs` from the new run
+(derived evidence, not a curated decision, same rule as `generation_outcomes`).
+`draft_model_report.py` surfaces `registry.domain_handoffs` as a new
+`cross_domain_handoffs` report key, kept separate from `relationship_questions`
+so cross-domain recommendations are never conflated with in-domain claim
+candidates.
+
+Every relationship-candidate dict (address clusters and, newly, object-property
+clusters) now carries a `cluster_id` — a stable SHA-256-derived id computed ONLY
+from `(domain, source_table, role/suggested_relationship, target_concept,
+cardinality)`, never from which columns currently contribute. A new
+`_cluster_object_property_candidates` groups the previously one-per-column F3
+candidates by that same stable key, merging `source_columns` (so one cluster
+carries all contributing columns) and regenerating the rationale when more than
+one column contributes; `_detect_address_relationship_candidates` gained a
+backward-compatible optional `domain` keyword to qualify its own `cluster_id` the
+same way. On the registry side, `merge_preserving_decisions` now merges
+`relationship_candidates` by `cluster_id` via `_merge_relationship_candidates`:
+fields owned by the detector (`_RELATIONSHIP_CANDIDATE_DETECTOR_KEYS` —
+membership, rationale, cardinality, ...) always refresh from the new run so a
+re-run *reports* membership changes, while any additional key a human curator
+attached directly to an existing cluster (anything outside that set) survives
+the refresh untouched; a candidate without a `cluster_id` (pre-feature output)
+passes through unmerged.
+
+A new, deliberately generic (no accelerator/DCSA-specific vocabulary added)
+`_object_relationship_downgrade_reason` dispatcher runs before an F3
+object-property column is accepted as a resolved mapping: (1) a
+technical/audit-actor column (`_is_technical_actor_column` — `created_by_*` /
+`updated_by_*` / `approved_by_*` and analogous "&lt;verb&gt;by" shapes) always
+downgrades to passthrough evidence and, uniquely, **never** produces a
+relationship candidate (audit evidence is not an in-domain relationship); (2) a
+specialized location property (one of the existing, pre-dating
+`_OBJECT_PROPERTY_NAME_HINTS`, e.g. `hasPlaceOfReceipt`) requires the column's
+own name to carry the property's derived role token (`_location_role_token`
+strips a `hasPlaceOf`/`hasPortOf`/`has` prefix, e.g. → `receipt`) via
+`_has_typed_role_evidence`, else downgrades with reason
+`missing_typed_role_evidence`; the two fully-generic `hasLocation`/`hasAddress`
+properties are exempt (no specific role to require evidence for); (3) every
+other (non-location) object property requires `_looks_like_identifier_column`
+evidence (tokenized name — `id`/`code`/`reference`/`key`/... — or data-type
+shape — `int`/`uuid`/...) before being trusted as an entity reference, else
+downgrades with reason `missing_identifier_evidence`; (4) only after all of the
+above passes is the pre-existing F3 `target_resolved` check applied
+(`unresolved_target`), preserving byte-identical behavior for every previously
+passing case. `_build_object_property_passthrough` /
+`_build_object_property_candidate` gained an optional keyword-only `reason`
+parameter (default `"unresolved_target"`) that only changes the rationale text
+for a non-default reason, so every existing direct-call test keeps its exact
+default rationale.
+
+Finally, `uri-anchor-contract`'s existing "no LLM call / no columns" invariant
+for an `"unresolved"` table anchor is now also applied to relationship-cluster
+detection: `rel_candidates` computation is skipped entirely
+(`is_unresolved_anchor`) so an unresolved table emits neither claims (already
+true) nor relationship clusters — a name-based address-part cluster naming an
+unresolved class could otherwise smuggle a guess back in through the
+relationship-candidate side channel.
+
+### Rationale
+
+Enforcing the ownership boundary at emission time (inside `alignment_to_registry`)
+rather than only downstream (the existing post-hoc `claim_coverage.py` gate)
+means a domain's registry can never even transiently contain a claim it has no
+right to approve — the downstream gate remains as defense-in-depth, not the only
+line of defense. A content-addressed `cluster_id` (never derived from column
+membership) is the only way to let a re-run *refresh* which columns belong to a
+cluster while a human decision recorded against that cluster survives — mirroring
+the existing claim-`id`-keyed decision-preservation contract
+(`HUMAN_CURATED_FIELDS`) at the relationship-candidate granularity. The
+audit-actor / identifier-evidence / typed-role-evidence checks were kept
+deliberately generic and ordered so each is scoped to exactly the case it targets
+(verified against `tests/scenarios/test_scenario_object_property_target.py`'s
+existing `PlaceOfReceipt → hasPlaceOfReceipt` regression case, which continues to
+resolve normally because the column name itself supplies the "receipt" role
+token) — no new accelerator-specific (DCSA/logistics/Booking) name or heuristic
+was introduced; the pre-existing `_OBJECT_PROPERTY_NAME_HINTS` list is reused
+unchanged.
+
+### Consequences
+
+- `core/claim_registry.py`: new `DomainHandoff` dataclass +
+  `DOMAIN_HANDOFF_SCHEMA_VERSION`; `ClaimRegistry.domain_handoffs` field (additive,
+  omitted when empty); `_RELATIONSHIP_CANDIDATE_DETECTOR_KEYS` +
+  `_merge_relationship_candidates`; `merge_preserving_decisions` merges
+  `relationship_candidates` by `cluster_id` and always carries `domain_handoffs`
+  forward from the new run; `validate_registry` gained a warning-level check for
+  a handoff naming its own registry's domain as an owner.
+- `core/migrate_claims.py`: `alignment_to_registry` routes `ref_module`-tagged
+  columns into `DomainHandoff` records instead of property claims.
+- `core/propose_alignment.py`: new generic safeguards
+  (`_is_technical_actor_column`, `_looks_like_identifier_column`,
+  `_location_role_token` / `_has_typed_role_evidence` /
+  `_is_location_object_property`, `_object_relationship_downgrade_reason`);
+  `_relationship_cluster_id` + `cluster_id`/`cardinality` on address candidates;
+  `_cluster_object_property_candidates`; `_detect_address_relationship_candidates`
+  gained a backward-compatible `domain` keyword; relationship-cluster detection is
+  now skipped for an `"unresolved"` table anchor.
+- `core/draft_model_report.py`: new `cross_domain_handoffs` report key per domain,
+  kept separate from `relationship_questions`.
+- New/updated tests: `tests/test_claim_registry.py` (`TestDomainHandoff`,
+  `TestRelationshipCandidateClusterMerge`), `tests/test_migrate_claims.py`
+  (`TestDomainHandoffMigration`), `tests/test_propose_alignment.py`
+  (`TestTechnicalActorSafeguard`, `TestIdentifierEvidenceSafeguard`,
+  `TestTypedLocationEvidenceSafeguard`, `TestRelationshipClusterId`,
+  `TestClusterObjectPropertyCandidates`), `tests/test_draft_model_report.py`,
+  and new scenario coverage
+  (`tests/scenarios/test_scenario_cross_module.py::TestCrossModuleOwnershipHandoff`,
+  `tests/scenarios/test_scenario_unresolved_relationship_clusters.py`).
+
+---
+
+## DD-128: Intent-Preserving Coverage Classification, Run-Atomic Registry Writes, and Authoritative Model Precedence
+
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** `core/claim_coverage.py`, `core/claim_registry.py`, `core/lifecycle_gate.py`,
+`core/propose_alignment.py`, `cli/main.py` (`check-claims`, `propose-alignment`)
+**Implementation:** `ClaimCheckReport.unresolved_anchor_tables`,
+`claim_registry.ANCHOR_STATE_UNRESOLVED`, the staged-write commit phase in
+`_propose_alignments`, the provider preflight in `_propose_alignments`
+
+### Context
+
+Three defects surfaced in review of the RC7 lifecycle work (DD-121, DD-122, DD-124):
+
+1. **Intent lost in the coverage gate.** DD-124 makes an unresolved-anchor table emit
+   *zero* claims and *zero* covered columns on purpose. DD-121/F6's column-omission gate
+   compares registry-covered columns against the affinity `total_columns` and therefore
+   read that deliberate emptiness as a **blocking** truncation ("columns were dropped
+   before the Claim Registry"), telling the operator to re-run `propose-alignment` for a
+   condition re-running can never fix.
+2. **A write that contradicted the failure contract.** `AlignmentTotalFailureError` states
+   that no registry was written. The per-domain write gate only skipped a domain that was
+   *entirely* `provider_failure` or *entirely* `fallback_only`, so a domain **mixing** the
+   two (e.g. one table with an ambiguous anchor, one whose provider call failed) — and an
+   opted-in `--allow-fallback-registry` domain — was written inside the loop, before the
+   run-wide verdict existed. The error then claimed nothing had been written.
+3. **Model precedence inverted.** `propose_alignment_cmd` resolves model precedence
+   (explicit `--model` > `--high-accuracy` preset > `KAIROS_AI_ALIGNMENT_MODEL` >
+   default), but `_propose_alignments`' provider preflight reassigned
+   `model = provider_config.model`, re-applying `resolve_role_model` and letting the env
+   override silently beat an explicitly pinned model — for the real LLM calls, the cache
+   params hash, and the recorded `model_used`.
+
+### Decision
+
+**(1) Deliberate emptiness is classified as its own fact.** `claim_registry` names the
+state (`ANCHOR_STATE_UNRESOLVED`), and the F6 comparison in
+`claim_coverage.evaluate_claims_coverage` skips any table whose registry coverage carries
+it. Such tables are reported in a new, **non-blocking**
+`ClaimCheckReport.unresolved_anchor_tables` facet (domain → `"system.table (class anchor
+unresolved — no claims emitted for N source column(s))"`), included in `has_warnings`,
+excluded from `is_blocking`, projected additively into `_claim_report_to_dict` (hence
+`check-claims --format json`), and rendered by `check-claims` with remediation that points
+at the anchor decision (`{domain}-unresolved-anchors.yaml` / the conformance artifact) —
+not at a re-run. Genuine omissions still block, including for a domain that has both.
+
+**(2) Registry writes are run-atomic.** `_propose_alignments` no longer writes inside the
+per-domain loop. Each eligible domain is *staged* (registry + unresolved-anchors document,
+in domain order, alongside freshness-cache-skipped domains so the returned path order is
+unchanged) and committed only **after** the run-wide tally is known and the total-failure
+check has passed. The no-write guarantee therefore holds for every total-semantic-failure
+run — mixed domains and opted-in fallback-only domains included — and pre-existing files
+are never touched by a failed run. The per-domain gates are retained: they still skip
+all-`provider_failure` and (without opt-in) all-`fallback_only` domains, and still report
+why.
+
+**(3) The caller-resolved model is authoritative.** The preflight keeps
+`resolve_provider_config` for provider/endpoint/auth discovery and reporting, but never
+reassigns `model`. When the per-role override differs from the caller's model, a verbose
+note says it was not applied. `KAIROS_AI_ALIGNMENT_MODEL` keeps its documented role as the
+*default* — the CLI still applies it when neither `--model` nor `--high-accuracy` pins one.
+
+### Rationale
+
+A governance gate that cannot distinguish "intentionally empty" from "silently truncated"
+trains operators to ignore it; naming the intent (rather than widening the blocking rule)
+keeps truncation integrity strict while making the pending anchor decision actionable.
+Staging writes is the only way to make the error message and the filesystem agree without
+either weakening the message or inventing a rollback of files already written — the run
+simply has no side effect until its verdict is known. And precedence must be decided in
+exactly one place: the caller that knows whether the operator pinned a model, since an
+environment default silently overriding an explicit flag is indistinguishable from a bug
+at the point of use.
+
+### Consequences
+
+- `check-claims` gains a non-blocking `⚠ Unresolved class anchors` section and an additive
+  `registry.unresolved_anchor_tables` JSON key (additive → no
+  `CLAIM_CHECK_RESULT_SCHEMA_VERSION` bump). Registries written before the `"unresolved"`
+  anchor state existed never carry one, so their classification is unchanged.
+- A domain whose only shortfall was an unresolved anchor no longer blocks `check-claims`;
+  it now reaches the ordinary freshness bucketing (`ok`/`stale`/`unverifiable`).
+- `propose-alignment`'s `✓ Written` / `🧭 Unresolved anchors` lines are now printed after
+  all domains are processed (the commit phase), not interleaved with per-domain analysis.
+  Returned paths, file contents, and per-domain skip reporting are unchanged.
+- On total semantic failure, an opted-in (`--allow-fallback-registry`) fallback-only domain
+  is no longer written — a deliberate narrowing of DD-121's stated behavior, in favor of the
+  stronger, uniform no-write guarantee.
+- `KAIROS_AI_ALIGNMENT_MODEL` no longer overrides `--model`/`--high-accuracy`; a hub that
+  relied on it winning must drop the explicit flag (its default behavior is unchanged).
+- New tests: `tests/test_claim_coverage.py::TestUnresolvedAnchorCoverage`,
+  `tests/test_propose_alignment.py::TestTotalFailureNoWriteGuarantee`, and
+  `tests/test_propose_alignment.py::TestModelPrecedence`.
+
+---
+
+
 
 ```markdown
 ## DD-NNN: Title

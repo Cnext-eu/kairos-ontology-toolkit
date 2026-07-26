@@ -35,6 +35,11 @@ The registry-fact helpers (:func:`materialization_eligible_class_uris`,
 :func:`approved_imported_class_uris`) are the canonical claim filters; the Claim
 Registry remains the sole governed eligibility authority (DD-094) and these
 helpers never relax its ``status``/``disposition``/``type`` rules.
+:func:`claim_activates_projecting_import` (DD-122) is the single predicate behind
+the imported-claim filters, shared by managed-import planning, claims-to-silver-
+ext/projection sync, and reference-module activation-inventory selection, so a
+``deferred``/``rejected`` claim can never activate a projecting import in one
+consumer while another still treats it as active.
 """
 
 from __future__ import annotations
@@ -49,7 +54,7 @@ from rdflib import Graph, RDFS, URIRef
 from .projections.shared import KAIROS_EXT
 
 if TYPE_CHECKING:
-    from .claim_registry import ClaimRegistry
+    from .claim_registry import Claim, ClaimRegistry
     from .projections.medallion_dbt_projector import SourceBindings
 
 # Binding states -------------------------------------------------------------
@@ -66,6 +71,37 @@ MATERIALIZATION_TYPES = frozenset({"class", "reference_data"})
 #: An imported claim's ``origin`` — the marker for a class pulled in from a
 #: reference model (drives ``owl:imports`` / ``silverInclude`` sync, A1).
 IMPORTED_ORIGIN = "imported"
+#: Claim statuses that represent an explicit, decided *rejection* of activation
+#: (as distinct from ``proposed``, which is simply undecided). A claim in one of
+#: these statuses was looked at and deliberately not (yet) approved — it must
+#: never activate a projecting reference-module import (DD-122).
+DECIDED_NON_ACTIVATING_STATUSES = frozenset({"deferred", "rejected"})
+
+
+def claim_activates_projecting_import(claim: "Claim") -> bool:
+    """True iff *claim*'s current decision activates a projecting reference-module
+    ``owl:imports``/``silverInclude`` requirement.
+
+    This is the **single** predicate shared by managed-import planning
+    (:mod:`reference_modules`), claims-to-silver-ext/projection sync
+    (:mod:`claim_projection_sync`), and reference-module activation-inventory
+    selection, so none of them can independently diverge on which claims count
+    (DD-122). Only an ``approved`` claim with ``origin == imported`` and a
+    materializing disposition (claim/specialize) activates; ``proposed``,
+    ``deferred``, and ``rejected`` claims never do — the Claim Registry stays the
+    sole eligibility authority (DD-094).
+    """
+    return (
+        claim.status == "approved"
+        and claim.origin == IMPORTED_ORIGIN
+        and claim.disposition in MATERIALIZATION_DISPOSITIONS
+    )
+
+
+def is_decided_non_activating(claim: "Claim") -> bool:
+    """True when *claim* was explicitly decided against activation (``deferred``/
+    ``rejected``), as opposed to still ``proposed`` (undecided)."""
+    return claim.status in DECIDED_NON_ACTIVATING_STATUSES
 
 
 def materialization_eligible_class_uris(registry: "ClaimRegistry") -> set[str]:
@@ -93,21 +129,17 @@ def materialization_eligible_class_uris(registry: "ClaimRegistry") -> set[str]:
 def approved_imported_class_uris(registry: "ClaimRegistry") -> set[str]:
     """Return class URIs of approved, imported class claims (projection sync).
 
-    A claim drives ``owl:imports`` / ``silverInclude`` sync iff ``status ==
-    approved``, ``origin == imported`` and its ``disposition`` is claim/specialize
-    with a ``class_uri``. This is the canonical filter consumed by
-    :mod:`claim_projection_sync` (which additionally drops classes local to the
-    importing domain), so import sync and materialization never diverge on which
-    claims count. The Claim Registry stays the sole eligibility authority (DD-094);
-    proposed/rejected/deferred claims are excluded here.
+    A claim drives ``owl:imports`` / ``silverInclude`` sync iff
+    :func:`claim_activates_projecting_import` is true and it has a ``class_uri``.
+    This is the canonical filter consumed by :mod:`claim_projection_sync` (which
+    additionally drops classes local to the importing domain), so import sync and
+    materialization never diverge on which claims count. The Claim Registry stays
+    the sole eligibility authority (DD-094); proposed/rejected/deferred claims are
+    excluded here.
     """
     uris: set[str] = set()
     for claim in registry.claims:
-        if claim.status != "approved":
-            continue
-        if claim.origin != IMPORTED_ORIGIN:
-            continue
-        if claim.disposition not in MATERIALIZATION_DISPOSITIONS:
+        if not claim_activates_projecting_import(claim):
             continue
         if not claim.class_uri:
             continue
@@ -122,15 +154,13 @@ def approved_imported_term_refs(
 
     Unlike :func:`approved_imported_class_uris`, this includes properties and
     relationships. Projection selection remains class-only; ontology import
-    completeness must cover every externally governed semantic term.
+    completeness must cover every externally governed semantic term. Uses the
+    same :func:`claim_activates_projecting_import` predicate, so it never
+    diverges from the class-only filter above.
     """
     refs: list[tuple[str, str, str]] = []
     for claim in registry.claims:
-        if claim.status != "approved":
-            continue
-        if claim.origin != IMPORTED_ORIGIN:
-            continue
-        if claim.disposition not in MATERIALIZATION_DISPOSITIONS:
+        if not claim_activates_projecting_import(claim):
             continue
         uri = claim.identifying_uri()
         if not uri:
