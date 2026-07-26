@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, TypeVar
 
+from .diagnostics import Diagnostic, DiagnosticSeverity, EvaluationStatus
 from .specs import ColumnSpec, ModelIdentity
 
 
@@ -62,6 +63,22 @@ class PolicyIssue:
     rule_id: str
     resource_uri: str
     blocking: bool = True
+
+    @property
+    def diagnostic(self) -> Diagnostic:
+        """Expose this legacy issue through the versioned diagnostic contract."""
+
+        return Diagnostic(
+            code=self.code,
+            message=self.message,
+            rule_id=self.rule_id,
+            resource_uri=self.resource_uri,
+            severity=(
+                DiagnosticSeverity.ERROR if self.blocking else DiagnosticSeverity.WARNING
+            ),
+            blocking=self.blocking,
+            evaluation_status=EvaluationStatus.FAILED,
+        )
 
 
 class NamingConvention(str, Enum):

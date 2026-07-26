@@ -474,8 +474,8 @@ def _mapping_resources(graph: Graph, class_uri: URIRef) -> tuple[URIRef, ...]:
     return tuple(sorted((item for item in subjects if isinstance(item, URIRef)), key=str))
 
 
-def bind_mapping_graph(graph: Graph) -> SourceMappings:
-    """Copy a mapping graph into immutable v2 facts without classifying policy."""
+def bind_mapping_graph(graph: Graph, *, include_proposals: bool = False) -> SourceMappings:
+    """Copy approved/legacy mapping facts, optionally including authoring proposals."""
 
     _reject_legacy_authority(graph)
     table_facts: list[TableMappingFact] = []
@@ -488,13 +488,26 @@ def bind_mapping_graph(graph: Graph) -> SourceMappings:
         assert source is not None and target is not None
         match_type = _match_type(graph, resource, source, target)
         represented_alignments.add((source, _MATCH_PREDICATES[match_type], target))
+        review_state = _one_text(
+            graph,
+            resource,
+            KAIROS_MAP.reviewState,
+            required=False,
+        )
+        if review_state and review_state not in {"proposed", "approved", "out-of-scope"}:
+            raise _error(
+                "mapping.invalid-review-state",
+                "reviewState must be proposed, approved, or out-of-scope",
+                resource=resource,
+                predicate=KAIROS_MAP.reviewState,
+            )
         filter_resource = _one_resource(
             graph,
             resource,
             KAIROS_MAP.rowFilter,
             required=False,
         )
-        table_facts.append(
+        fact = (
             TableMappingFact(
                 resource_uri=str(resource),
                 source_table_uri=str(source),
@@ -508,6 +521,8 @@ def bind_mapping_graph(graph: Graph) -> SourceMappings:
                 ),
             )
         )
+        if include_proposals or review_state in {"", "approved"}:
+            table_facts.append(fact)
 
     for resource in _mapping_resources(graph, KAIROS_MAP.ColumnMapping):
         source = _one_resource(graph, resource, KAIROS_MAP.sourceColumn)
@@ -515,13 +530,26 @@ def bind_mapping_graph(graph: Graph) -> SourceMappings:
         assert source is not None and target is not None
         match_type = _match_type(graph, resource, source, target)
         represented_alignments.add((source, _MATCH_PREDICATES[match_type], target))
+        review_state = _one_text(
+            graph,
+            resource,
+            KAIROS_MAP.reviewState,
+            required=False,
+        )
+        if review_state and review_state not in {"proposed", "approved", "out-of-scope"}:
+            raise _error(
+                "mapping.invalid-review-state",
+                "reviewState must be proposed, approved, or out-of-scope",
+                resource=resource,
+                predicate=KAIROS_MAP.reviewState,
+            )
         expression_resource = _one_resource(
             graph,
             resource,
             KAIROS_MAP.expression,
             required=False,
         )
-        column_facts.append(
+        fact = (
             ColumnMappingFact(
                 resource_uri=str(resource),
                 source_column_uri=str(source),
@@ -534,6 +562,8 @@ def bind_mapping_graph(graph: Graph) -> SourceMappings:
                 ),
             )
         )
+        if include_proposals or review_state in {"", "approved"}:
+            column_facts.append(fact)
 
     all_alignments = {
         (subject, predicate, target)

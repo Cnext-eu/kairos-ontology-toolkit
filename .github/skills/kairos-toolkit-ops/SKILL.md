@@ -310,6 +310,19 @@ can pull the latest versions from the upstream
 [kairos-ontology-referencemodels](https://github.com/Cnext-eu/kairos-ontology-referencemodels)
 repository.
 
+### Pre-design freshness hand-off
+
+`kairos-flow` and `kairos-design-domain` use
+`uv run kairos-ontology check-inventory --domains <active-domain>
+--explain-scope` as the **only freshness authority**. When they hand off here,
+first report the installed/current local version from
+`ontology-reference-models/VERSION` (or `unknown` when absent). Do not reinterpret
+inventory hashes, and do not update automatically. Explain and obtain explicit
+approval for the requested reference-model update; after updating, regenerate the
+affected inventory and return control so the owning lifecycle/design skill can
+re-run its scoped blocking check. Unrelated stale inventories remain non-blocking
+for that active domain.
+
 ### When to update
 
 - After the reference models repo publishes a new release/tag

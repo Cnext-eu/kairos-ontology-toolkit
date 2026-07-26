@@ -7,8 +7,9 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .context import BoundSources, NormalizedProjectFacts, ProjectionContract
+from .diagnostics import ExecutionMode
 from .mapping_normalize import normalize_mapping_contract
-from .mapping_specs import MappingContractError
+from .mapping_specs import MappingContractError, MappingContractSpec
 from .specs import (
     BindingPolicy,
     ForeignKeyDescriptorSpec,
@@ -99,28 +100,109 @@ def _foreign_key_policy(bound: BoundSources) -> ForeignKeyPolicy:
     )
 
 
-def normalize_contract(bound: BoundSources) -> ProjectionContract:
+def normalize_contract(
+    bound: BoundSources,
+    mode: ExecutionMode = ExecutionMode.FAIL_FAST,
+) -> ProjectionContract:
     """Classify effective policy without RDF, files, or templates."""
     from .policy_normalize import _target_type, normalize_medallion_policy
 
     binding_policy = _binding_policy(bound)
     foreign_key_policy = _foreign_key_policy(bound)
-    policy = normalize_medallion_policy(
-        bound.policy_facts,
-        systems=bound.systems,
-        mappings=bound.mappings,
-        silver_candidates=bound.silver_candidates,
-        fk_policy=foreign_key_policy,
-        target_adapter=bound.target_platform,
-        target_source=PolicySource.OVERRIDE,
-    )
-    mapping_contract = normalize_mapping_contract(
-        bound.mappings,
-        systems=bound.systems,
-        policy=policy,
-        contracts=bound.contracts,
-        replacement_input_uris=bound.replacement_input_uris,
-    )
+    from .diagnostics import EvaluationResult, EvaluationStatus
+    from .policy_normalize import PolicyCollectionError
+
+    collection_error = None
+    try:
+        policy = normalize_medallion_policy(
+            bound.policy_facts,
+            systems=bound.systems,
+            mappings=bound.mappings,
+            silver_candidates=bound.silver_candidates,
+            fk_policy=foreign_key_policy,
+            target_adapter=bound.target_platform,
+            target_source=PolicySource.OVERRIDE,
+            mode=mode,
+            contracts=bound.contracts,
+        )
+    except PolicyCollectionError as exc:
+        if mode is ExecutionMode.FAIL_FAST or exc.partial_value is None:
+            raise
+        collection_error = exc
+        policy = exc.partial_value
+    try:
+        mapping_contract = normalize_mapping_contract(
+            bound.mappings,
+            systems=bound.systems,
+            policy=policy,
+            contracts=bound.contracts,
+            replacement_input_uris=bound.replacement_input_uris,
+        )
+        mapping_result = EvaluationResult(
+            status=EvaluationStatus.PASSED,
+            value=mapping_contract,
+        )
+    except MappingContractError as exc:
+        if mode is ExecutionMode.FAIL_FAST:
+            raise
+        preparation = collection_error.stages.preparation if collection_error else None
+        prep_dependent = exc.code in {
+            "mapping.target-output-type-mismatch",
+            "mapping.prepared-output-missing",
+            "mapping.prepared-route-missing",
+        }
+        if (
+            preparation is not None
+            and preparation.status is not EvaluationStatus.PASSED
+            and prep_dependent
+        ):
+            from .diagnostics import Diagnostic
+
+            dependencies = tuple(
+                item.id for item in preparation.diagnostics if item.blocking
+            )
+            mapping_result = EvaluationResult.not_evaluated(
+                preparation.prerequisites,
+                (
+                    Diagnostic(
+                        code="mapping.not-evaluated",
+                        message="mapping checks require available preparation outputs",
+                        rule_id="DD-116-prerequisite",
+                        stage="mapping",
+                        owner_skill="kairos-design-mapping",
+                        blocking=False,
+                        depends_on=dependencies,
+                        evidence=tuple(
+                            f"prerequisite:{item}" for item in dependencies
+                        ),
+                        remediation=(
+                            "Resolve preparation blockers, then rerun "
+                            "kairos-design-mapping readiness."
+                        ),
+                        evaluation_status=EvaluationStatus.NOT_EVALUATED,
+                    ),
+                ),
+            )
+        else:
+            mapping_result = EvaluationResult(
+                status=EvaluationStatus.FAILED,
+                diagnostics=(exc.diagnostic,),
+            )
+        mapping_contract = MappingContractSpec((), (), bound.mappings.namespaces, ())
+    if collection_error is not None or mapping_result.status is EvaluationStatus.FAILED:
+        if collection_error is None:
+            from .policy_normalize import PolicyNormalizationStages
+
+            stages = PolicyNormalizationStages(
+                preparation=EvaluationResult(status=EvaluationStatus.PASSED),
+                identity=EvaluationResult(status=EvaluationStatus.PASSED),
+                runtime=EvaluationResult(status=EvaluationStatus.PASSED),
+                foreign_keys=EvaluationResult(status=EvaluationStatus.PASSED),
+                mapping=mapping_result,
+            )
+        else:
+            stages = replace(collection_error.stages, mapping=mapping_result)
+        raise PolicyCollectionError(stages)
     mapping_inputs = {
         item.source_column_uri: item
         for mapping in mapping_contract.columns

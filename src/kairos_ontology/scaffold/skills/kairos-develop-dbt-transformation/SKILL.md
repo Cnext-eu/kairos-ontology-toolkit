@@ -10,6 +10,22 @@ description: >
 
 # Develop Contracted dbt Transformation
 
+## Recovery from synchronized virtual vocabulary
+
+When the governed SQL/schema/test bundle is lost but its synchronized virtual vocabulary
+survives, preview a deterministic recovery skeleton:
+
+```bash
+KAIROS_SKILL_CONTEXT=1 kairos-ontology reconstruct-dbt-transformation \
+  --vocabulary integration/sources/custom-transformations/<model>.vocabulary.ttl
+```
+
+Add `--output integration/transforms/dbt` to write it. Existing files are never replaced
+without `--overwrite`. The recovered output columns, types, target class, virtual IRI, and
+grain key come from RDF evidence. SQL dependencies, transformation logic, materialization,
+adapters, business grain, decisions, approvals, and passing test evidence remain explicit
+`REVIEW_REQUIRED` items and must pass this skill's normal gates before synchronization.
+
 Create or update a handwritten dbt intermediate model while preserving the Kairos
 semantic boundary:
 
@@ -245,6 +261,15 @@ Show the proposed diff and update the phase log.
 
 3. Inspect the generated managed vocabulary under
    `integration/sources/custom-transformations/`.
+   It includes a source-scoped `kairos-dbt:ContractIdentity`; never treat this as
+   enterprise identity. Declared key tests leave it unverified. After real warehouse tests
+   pass, run `capture-dbt-contract-evidence --run-results target/run_results.json
+   --manifest target/manifest.json`, then synchronize again. Contract/SQL/key/test changes
+   invalidate the hash-bound evidence and block with `identity.contract-unverified`.
+   Capture accepts ordinary standard v12 artifacts with matching invocation IDs/dbt versions.
+   It verifies current SQL through the model node's path, raw code, and dbt SHA-256 checksum,
+   and verifies current contract fields and exact generic/singular/unit-test definitions from
+   standard manifest fields. Never mutate artifacts or add provenance after the invocation.
 4. Invoke `kairos-design-mapping` to author named v2 `TableMapping` / `ColumnMapping`
    resources for the virtual table and columns through SKOS.
    A governed replacement requires table-level `skos:exactMatch` from the virtual table to
@@ -259,31 +284,34 @@ Show the proposed diff and update the phase log.
 
 Never hand-edit the managed virtual vocabulary.
 
-## Phase 6 — Project and validate
+Newly created vocabularies use the Turtle `PN_LOCAL`-safe
+`{virtual_source_iri}__{column_name}` convention. Existing slash-delimited column IRIs
+remain valid and ordinary synchronization preserves them. To upgrade an existing hub,
+first preview `kairos-ontology migrate-column-iris`; apply only after reviewing every
+old/new IRI with `--apply --backup-dir <new-directory>`. The migration updates source
+and mapping RDF references together and refuses collisions or backup overwrite.
+
+## Phase 6 — Validate the authored transformation contract
 
 For each required platform:
 
-1. Invoke `kairos-execute-project` or run the skill-managed projection flow with:
-
-   ```text
-   kairos-ontology project --target dbt --platform <fabric|databricks>
-   ```
-
-2. Validate:
+1. Validate the authored custom dbt project:
 
    ```text
    kairos-ontology validate-dbt --platform <fabric|databricks>
    ```
 
-3. Distinguish:
+2. Distinguish:
    - contract, SQL, Jinja, dependency, manifest, and reference failures: fix and rerun;
    - credential, driver, network, or warehouse-introspection failures: record as
      environment-blocked;
    - runtime grain/data failures: require a configured warehouse and do not claim
      production readiness without them.
-4. Confirm the generated Silver wrapper references the custom model and owns only the
-   approved SK/IRI/SCD/FK behavior.
-5. Update decision/test references and repeat synchronization if the contract changed.
+3. Update decision/test references and repeat synchronization if the contract changed.
+
+Do not invoke projection from this skill. After transformation readiness is
+green, hand off to **kairos-design-mapping** for the final virtual-source
+mapping, then to **kairos-design-silver** for bound confirmation.
 
 ## Completion gate
 
@@ -309,6 +337,17 @@ $env:KAIROS_SKILL_CONTEXT = "1"
 kairos-ontology check-transformation-readiness --stage mapping
 kairos-ontology check-transformation-readiness --stage silver
 ```
+
+`check-transformation-readiness` extends (rather than replaces) the candidate assessment gate
+with the `transformation` scope of the shared projection-readiness evaluator. It evaluates every
+discovered synchronized contract even when the candidate inventory is absent or empty, covering
+grain, decision evidence, replacement lineage, canonical CDC outputs, allowed dependencies,
+implementation/test references, contract identity evidence, and synchronization. Its JSON
+includes owner-skill and prerequisite information and it writes no artifacts.
+
+Contract/schema parsing and focused dbt validation establish **local contract validity** only.
+Do not claim transformation completion until this bound transformation readiness is also green
+at the applicable mapping and Silver checkpoints.
 
 Do not mark the candidate `implemented` until `implemented_model_name` identifies a
 discoverable contract and the managed virtual vocabulary is synchronized. The Silver gate may

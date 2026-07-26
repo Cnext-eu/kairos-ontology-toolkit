@@ -498,7 +498,7 @@ def test_passthrough_with_operations_is_rejected_actionably(tmp_path: Path):
     with pytest.raises(
         PolicyNormalizationError,
         match="prep.passthrough-blocked.*DD-106-prep-passthrough",
-    ):
+    ) as caught:
         normalize_medallion_policy(
             contradictory,
             systems=_source_facts(),
@@ -506,6 +506,11 @@ def test_passthrough_with_operations_is_rejected_actionably(tmp_path: Path):
             silver_candidates=(_silver_candidate(),),
             fk_policy=ForeignKeyPolicy((), (), ()),
         )
+    assert caught.value.code == "prep.passthrough-blocked"
+    assert caught.value.diagnostic.code == caught.value.code
+    assert caught.value.diagnostic.rule_id == caught.value.rule_id
+    assert caught.value.diagnostic.resource_uri == caught.value.resource_uri
+    assert caught.value.diagnostic.predicate_uri == caught.value.predicate_uri
 
 
 def test_unsupported_and_contradictory_values_never_fall_back(tmp_path: Path):

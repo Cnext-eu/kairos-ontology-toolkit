@@ -79,6 +79,7 @@ _SCAFFOLD_DIR = Path(__file__).resolve().parent.parent / "scaffold"
 _SKILL_COVERED_COMMANDS = {
     "validate": "kairos-execute-validate",
     "project": "kairos-execute-project",
+    "check-projection": "kairos-execute-project",
     "init": "kairos-setup-config",
     "new-repo": "kairos-setup-init",
     "migrate": "kairos-setup-migrate",
@@ -98,7 +99,14 @@ _SKILL_COVERED_COMMANDS = {
     "suggest-shapes": "kairos-execute-validate",
     "mdm-validate": "kairos-design-mdm",
     "sync-dbt-contracts": "kairos-develop-dbt-transformation",
+    "capture-dbt-contract-evidence": "kairos-develop-dbt-transformation",
+    "migrate-column-iris": "kairos-develop-dbt-transformation",
     "validate-dbt": "kairos-execute-validate",
+    "validate-mapping": "kairos-design-mapping",
+    "validate-silver-ext": "kairos-design-silver",
+    "scaffold-mapping": "kairos-design-mapping",
+    "scaffold-silver-ext": "kairos-design-silver",
+    "reconstruct-dbt-transformation": "kairos-develop-dbt-transformation",
 }
 # Env vars that signal the command was launched from within a skill context.
 _SKILL_CONTEXT_ENV_VARS = ("KAIROS_SKILL_CONTEXT", "KAIROS_VIA_SKILL")
@@ -565,6 +573,49 @@ _LIFECYCLE_TABLE = """\
 └──────────┴──────────────────────────────────────────────────────────────┘"""
 
 
+def _resolve_projection_cli_scope(
+    ontologies, ontology, catalog, ref_models, accelerator
+) -> tuple[Path, Path | None, Path | None, Path | None, str | None]:
+    """Resolve the shared project/check-projection input scope."""
+
+    from ..core.hub_utils import find_hub_root
+    from ..core.reference_modules import resolve_hub_accelerator
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    if ontology is not None and ontologies is not None:
+        raise click.UsageError(
+            "Use either --ontology for one file or --ontologies for a directory, not both."
+        )
+    if ontology is not None:
+        ontologies_path = Path(ontology)
+    elif ontologies is not None:
+        ontologies_path = Path(ontologies)
+    elif hub_root is not None:
+        ontologies_path = hub_root / "model" / "ontologies"
+    else:
+        ontologies_path = cwd / "ontology-hub" / "model" / "ontologies"
+    if not ontologies_path.is_dir() and not ontologies_path.is_file():
+        raise click.ClickException(
+            f"Cannot find ontology input at {ontologies_path}. Run from the hub root "
+            "(or inside ontology-hub/), pass --ontologies for a directory, or pass "
+            "--ontology for one file."
+        )
+    ref_models_path = (
+        Path(ref_models) if ref_models else _resolve_ref_models_dir(cwd, hub_root)
+    )
+    catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
+    try:
+        resolved_accelerator = resolve_hub_accelerator(
+            explicit=accelerator,
+            hub_root=hub_root,
+            ref_models_dir=ref_models_path,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return ontologies_path, catalog_path, ref_models_path, hub_root, resolved_accelerator
+
+
 @cli.command()
 def lifecycle():
     """Display the ontology hub lifecycle phases and available Copilot skills."""
@@ -632,6 +683,44 @@ def sync_dbt_contracts_cmd(transforms, sources, bronze_sources, check):
         f"dbt contract sync complete: {report.written_count} written, "
         f"{report.unchanged_count} unchanged."
     )
+
+
+@cli.command(name="capture-dbt-contract-evidence")
+@click.option(
+    "--run-results",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    required=True,
+    help="Actual dbt run_results.json produced by an executed test invocation.",
+)
+@click.option(
+    "--manifest",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    required=True,
+    help="Matching dbt manifest.json used to interpret executed test nodes.",
+)
+@click.option(
+    "--hub",
+    "hub_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Ontology-hub root (default: auto-detect).",
+)
+def capture_dbt_contract_evidence_cmd(run_results, manifest, hub_path):
+    """Capture passing identity tests tied to the current canonical contract hash."""
+    from ..core.dbt_contract_identity import (
+        ContractIdentityEvidenceError,
+        capture_dbt_run_results,
+    )
+    from ..core.hub_utils import find_hub_root
+
+    root = Path(hub_path).resolve() if hub_path else find_hub_root(Path.cwd(), require_model=False)
+    if root is None:
+        raise click.ClickException("Could not locate an ontology-hub root; pass --hub.")
+    try:
+        output = capture_dbt_run_results(root, run_results, manifest)
+    except ContractIdentityEvidenceError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"✓ Captured actual dbt contract-identity evidence: {output}")
 
 
 @cli.command(name="validate-dbt")
@@ -899,7 +988,7 @@ def validate(
     help='Projection target',
 )
 @click.option(
-    '--platform',
+    '--platform', '--adapter',
     type=click.Choice(['fabric', 'databricks']),
     default='fabric',
     show_default=True,
@@ -946,10 +1035,7 @@ def project(
     degraded,
 ):
     """Generate projections from ontologies."""
-    from ..core.hub_utils import find_hub_root
-
     cwd = Path.cwd()
-    hub_root = find_hub_root(cwd, require_model=False)
     if platform != 'fabric' and target not in {'dbt', 'all'}:
         raise click.UsageError("--platform applies only to --target dbt or --target all")
     if emit_aspirational_stubs and target not in {'dbt', 'all'}:
@@ -961,43 +1047,15 @@ def project(
             "--strict applies only to --target dbt or --target all"
         )
 
-    if ontology is not None and ontologies is not None:
-        raise click.UsageError("Use either --ontology for one file or --ontologies for a directory, not both.")
-
-    if ontology is not None:
-        ontologies_path = Path(ontology)
-    elif ontologies is not None:
-        ontologies_path = Path(ontologies)
-    elif hub_root is not None:
-        ontologies_path = hub_root / "model" / "ontologies"
-    else:
-        ontologies_path = cwd / "ontology-hub" / "model" / "ontologies"
-
-    if not ontologies_path.is_dir() and not ontologies_path.is_file():
-        click.echo(
-            f"❌ Cannot find ontology input at {ontologies_path}. "
-            "Run from the hub root (or inside ontology-hub/), pass --ontologies "
-            "for a directory, or pass --ontology for one file.",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    ref_models_path = (
-        Path(ref_models)
-        if ref_models
-        else _resolve_ref_models_dir(cwd, hub_root)
+    (
+        ontologies_path,
+        catalog_path,
+        ref_models_path,
+        hub_root,
+        accelerator,
+    ) = _resolve_projection_cli_scope(
+        ontologies, ontology, catalog, ref_models, accelerator
     )
-    catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
-    from ..core.reference_modules import resolve_hub_accelerator
-
-    try:
-        accelerator = resolve_hub_accelerator(
-            explicit=accelerator,
-            hub_root=hub_root,
-            ref_models_dir=ref_models_path,
-        )
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
 
     if output is not None:
         output_path = Path(output)
@@ -1022,6 +1080,94 @@ def project(
         )
     except ProjectionRunError as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+@cli.command(name="check-projection")
+@click.option("--ontologies", type=click.Path(exists=True), default=None)
+@click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--catalog", type=click.Path(exists=True), default=None)
+@click.option("--ref-models", type=click.Path(), default=None)
+@click.option("--accelerator", default=None)
+@click.option(
+    "--target",
+    type=click.Choice(("all", *projection_target_choices())),
+    default="all",
+    show_default=True,
+)
+@click.option(
+    "--platform",
+    "--adapter",
+    type=click.Choice(["fabric", "databricks"]),
+    default="fabric",
+    show_default=True,
+)
+@click.option("--namespace", type=str, default=None)
+@click.option("--emit-aspirational-stubs", is_flag=True, default=False)
+@click.option("--degraded", is_flag=True, default=False)
+@click.option(
+    "--scope",
+    type=click.Choice(["projection", "source", "mapping", "transformation", "silver"]),
+    default="projection",
+    show_default=True,
+    help="Return a phase-scoped view of the shared readiness evaluation.",
+)
+@click.option("--json-output", "--json", "as_json", is_flag=True, default=False)
+def check_projection_cmd(
+    ontologies,
+    ontology,
+    catalog,
+    ref_models,
+    accelerator,
+    target,
+    platform,
+    namespace,
+    emit_aspirational_stubs,
+    degraded,
+    scope,
+    as_json,
+):
+    """Check projection readiness through planning without rendering or writing."""
+
+    if platform != "fabric" and target not in {"dbt", "all"}:
+        raise click.UsageError("--platform applies only to --target dbt or --target all")
+    if emit_aspirational_stubs and target not in {"dbt", "all"}:
+        raise click.UsageError(
+            "--emit-aspirational-stubs applies only to --target dbt or --target all"
+        )
+    (
+        ontologies_path,
+        catalog_path,
+        ref_models_path,
+        hub_root,
+        accelerator,
+    ) = _resolve_projection_cli_scope(
+        ontologies, ontology, catalog, ref_models, accelerator
+    )
+    cwd = Path.cwd()
+    output_path = (
+        hub_root / "output"
+        if hub_root is not None
+        else cwd / "ontology-hub" / "output"
+    )
+    from ..core.projection_readiness import check_projection
+
+    report = check_projection(
+        ontologies_path=ontologies_path,
+        catalog_path=catalog_path,
+        output_path=output_path,
+        target=target,
+        namespace=namespace,
+        platform=platform,
+        emit_aspirational_stubs=emit_aspirational_stubs,
+        degraded=degraded,
+        ref_models_dir=ref_models_path,
+        accelerator=accelerator,
+        scope=scope,
+        hub_root=hub_root,
+    )
+    click.echo(report.to_json() if as_json else report.to_text(), nl=not as_json)
+    if not report.ready:
+        raise SystemExit(1)
 
 
 @cli.command(name='mdm-validate')
@@ -1116,7 +1262,7 @@ def catalog_test_cmd(catalog, ontology):
     """Test catalog resolution for imports."""
     catalog_path = Path(catalog)
     ontology_path = Path(ontology) if ontology else None
-    
+
     test_catalog_resolution(catalog_path, ontology_path)
 
 
@@ -1656,6 +1802,246 @@ def show_class_inventory_cmd(ontology, domain, catalog, profile, max_classes):
             sort_keys=True,
         )
     )
+
+
+@cli.command(name="list-class-properties")
+@click.argument("class_iri")
+@click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--domain", default=None, help="Hub domain name when --ontology is omitted.")
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+def list_class_properties_cmd(class_iri, ontology, domain, catalog):
+    """List direct and inherited class properties, including effective ranges."""
+    from ..core.hub_utils import find_hub_root
+    from ..core.ontology_loader import load_ontology
+
+    if ontology:
+        path = Path(ontology)
+    elif domain:
+        hub = find_hub_root(Path.cwd(), require_model=True)
+        if hub is None:
+            raise click.ClickException("Cannot locate a hub for --domain.")
+        path = hub / "model" / "ontologies" / f"{domain}.ttl"
+    else:
+        raise click.UsageError("Provide --ontology or --domain.")
+    loaded = load_ontology(
+        path,
+        catalog_path=Path(catalog) if catalog else None,
+        profile="kairos-design",
+    )
+    cls = loaded.semantic_index.class_by_uri(class_iri)
+    if cls is None:
+        raise click.ClickException(
+            f"Class does not resolve in the scoped domain closure: {class_iri}"
+        )
+    click.echo(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "class_uri": class_iri,
+                "properties": loaded.semantic_index.class_properties(class_iri),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+@cli.command(name="validate-mapping")
+@click.option("--domain", required=True)
+@click.option(
+    "--mapping",
+    "mappings",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False),
+)
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+def validate_mapping_cmd(domain, mappings, catalog):
+    """Validate one domain's named mapping contracts and IRI resolution."""
+    from ..core.design_validation import validate_mapping_design
+    from ..core.hub_utils import find_hub_root
+
+    hub = find_hub_root(Path.cwd(), require_model=True)
+    if hub is None:
+        raise click.ClickException("Cannot locate an ontology hub.")
+    if mappings:
+        paths = tuple(Path(item) for item in mappings)
+    else:
+        mapping_dir = hub / "model" / "mappings"
+        paths = tuple(sorted(mapping_dir.glob(f"*{domain}*.ttl")))
+    if not paths:
+        raise click.ClickException(
+            f"No scoped mapping files found for domain {domain!r}; pass --mapping explicitly."
+        )
+    result = validate_mapping_design(
+        mapping_paths=paths,
+        source_root=hub / "integration" / "sources",
+        ontology_path=hub / "model" / "ontologies" / f"{domain}.ttl",
+        catalog_path=Path(catalog) if catalog else None,
+    )
+    click.echo(json.dumps(result, indent=2, sort_keys=True))
+    if not result["passed"]:
+        raise click.exceptions.Exit(1)
+
+
+@cli.command(name="validate-silver-ext")
+@click.option("--domain", required=True)
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+def validate_silver_ext_cmd(domain, catalog):
+    """Run syntax and DD-108/DD-109 SHACL checks on one Silver extension."""
+    from ..core.design_validation import validate_silver_extension
+    from ..core.hub_utils import find_hub_root
+
+    hub = find_hub_root(Path.cwd(), require_model=True)
+    if hub is None:
+        raise click.ClickException("Cannot locate an ontology hub.")
+    result = validate_silver_extension(
+        extension_path=hub / "model" / "extensions" / f"{domain}-silver-ext.ttl",
+        ontology_path=hub / "model" / "ontologies" / f"{domain}.ttl",
+        shapes_path=hub / "model" / "shapes" / "kairos-ext-shapes.shacl.ttl",
+        catalog_path=Path(catalog) if catalog else None,
+    )
+    click.echo(json.dumps(result, indent=2, sort_keys=True))
+    if not result["passed"]:
+        raise click.exceptions.Exit(1)
+
+
+@cli.command(name="scaffold-mapping")
+@click.option("--domain", required=True)
+@click.option("--source-table", required=True, help="Absolute SourceTable IRI.")
+@click.option("--target-class", required=True, help="Absolute target owl:Class IRI.")
+@click.option(
+    "--existing-mapping",
+    "existing_mappings",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Existing mapping evidence used only for denormalized-ownership advisories.",
+)
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--output", type=click.Path(dir_okay=False, path_type=Path))
+@click.option("--overwrite", is_flag=True, help="Explicitly replace an existing output file.")
+def scaffold_mapping_cmd(
+    domain,
+    source_table,
+    target_class,
+    existing_mappings,
+    catalog,
+    output,
+    overwrite,
+):
+    """Preview or write evidence-grounded named v2 mapping proposals."""
+    from ..core.authoring_scaffolds import (
+        AuthoringScaffoldError,
+        build_mapping_scaffold,
+        write_text,
+    )
+    from ..core.hub_utils import find_hub_root
+
+    hub = find_hub_root(Path.cwd(), require_model=True)
+    if hub is None:
+        raise click.ClickException("Cannot locate an ontology hub.")
+    try:
+        scaffold = build_mapping_scaffold(
+            source_root=hub / "integration" / "sources",
+            ontology_path=hub / "model" / "ontologies" / f"{domain}.ttl",
+            source_table_uri=source_table,
+            target_class_uri=target_class,
+            catalog_path=catalog,
+            existing_mapping_paths=existing_mappings,
+        )
+        content = scaffold.serialize()
+        if output is None:
+            click.echo(content)
+        else:
+            destination = output if output.is_absolute() else hub / output
+            write_text(destination, content, overwrite=overwrite)
+            click.echo(f"✓ Wrote mapping proposal scaffold: {destination}")
+    except (AuthoringScaffoldError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Review required: {scaffold.proposals} proposals, {scaffold.review_items} "
+        f"out-of-scope items, {scaffold.advisories} ownership advisories."
+    )
+
+
+@cli.command(name="scaffold-silver-ext")
+@click.option("--domain", required=True)
+@click.option(
+    "--mapping",
+    "mappings",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--output", type=click.Path(dir_okay=False, path_type=Path))
+@click.option("--overwrite", is_flag=True, help="Explicitly replace an existing output file.")
+def scaffold_silver_ext_cmd(domain, mappings, catalog, output, overwrite):
+    """Preview or write a DD-108/DD-109 evidence-only Silver skeleton."""
+    from ..core.authoring_scaffolds import (
+        AuthoringScaffoldError,
+        build_silver_scaffold,
+        write_text,
+    )
+    from ..core.hub_utils import find_hub_root
+
+    hub = find_hub_root(Path.cwd(), require_model=True)
+    if hub is None:
+        raise click.ClickException("Cannot locate an ontology hub.")
+    selected = tuple(mappings) or tuple(
+        sorted((hub / "model" / "mappings").glob(f"*{domain}*.ttl"))
+    )
+    if not selected:
+        raise click.ClickException(f"No scoped mapping evidence found for domain {domain!r}.")
+    try:
+        scaffold = build_silver_scaffold(
+            source_root=hub / "integration" / "sources",
+            ontology_path=hub / "model" / "ontologies" / f"{domain}.ttl",
+            mapping_paths=selected,
+            shapes_path=hub / "model" / "shapes" / "kairos-ext-shapes.shacl.ttl",
+            catalog_path=catalog,
+        )
+        content = scaffold.serialize()
+        if output is None:
+            click.echo(content)
+        else:
+            destination = output if output.is_absolute() else hub / output
+            write_text(destination, content, overwrite=overwrite)
+            click.echo(f"✓ Wrote Silver extension scaffold: {destination}")
+    except (AuthoringScaffoldError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Review required: {scaffold.proposals} evidenced annotations and "
+        f"{scaffold.review_items} governance choices."
+    )
+
+
+@cli.command(name="reconstruct-dbt-transformation")
+@click.option(
+    "--vocabulary",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option("--output", type=click.Path(file_okay=False, path_type=Path))
+@click.option("--overwrite", is_flag=True, help="Explicitly replace existing bundle files.")
+def reconstruct_dbt_transformation_cmd(vocabulary, output, overwrite):
+    """Preview or reconstruct review-required dbt files from synchronized RDF."""
+    from ..core.authoring_scaffolds import (
+        AuthoringScaffoldError,
+        reconstruct_dbt_scaffold,
+        write_bundle,
+    )
+
+    try:
+        scaffold = reconstruct_dbt_scaffold(vocabulary)
+        if output is None:
+            for relative, content in scaffold.files:
+                click.echo(f"--- {relative} ---")
+                click.echo(content)
+        else:
+            write_bundle(output, scaffold, overwrite=overwrite)
+            click.echo(f"✓ Reconstructed dbt transformation scaffold under: {output}")
+    except AuthoringScaffoldError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Review required: {len(scaffold.review_items)} transformation decisions.")
 
 
 @cli.command(name="show-source-schema")
@@ -4334,7 +4720,6 @@ def claims_to_silver_ext_cmd(
     from ..core.claim_projection_sync import (
         apply_projection_sync,
         evaluate_projection_sync,
-        scaffold_missing_surfaces,
     )
     from ..core.hub_utils import find_hub_root
 
@@ -4357,14 +4742,6 @@ def claims_to_silver_ext_cmd(
         else _resolve_ref_models_dir(cwd, hub_root)
     )
     catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
-    from ..core.reference_modules import build_reference_module_context
-
-    module_context = build_reference_module_context(
-        ref_models_path,
-        catalog_path=catalog_path,
-        accelerator=accelerator,
-    )
-
     filter_list = None
     if domains_filter:
         filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
@@ -4383,29 +4760,17 @@ def claims_to_silver_ext_cmd(
             ref_models_dir=ref_models_path,
             catalog_path=catalog_path,
             accelerator=accelerator,
-            module_context=module_context,
         )
     else:
-        if not no_scaffold:
-            created = scaffold_missing_surfaces(
-                claims_dir=claims_path,
-                ontologies_dir=ontologies_path,
-                extensions_dir=extensions_path,
-                domains_filter=filter_list,
-                module_context=module_context,
-            )
-            for path in created:
-                click.echo(f"   🆕 scaffolded skeleton: {path.name}")
         report = apply_projection_sync(
             claims_dir=claims_path,
             ontologies_dir=ontologies_path,
             extensions_dir=extensions_path,
             domains_filter=filter_list,
-            scaffold_missing=False,
+            scaffold_missing=not no_scaffold,
             ref_models_dir=ref_models_path,
             catalog_path=catalog_path,
             accelerator=accelerator,
-            module_context=module_context,
         )
 
     if not report.domains:
@@ -5067,12 +5432,10 @@ def inventory_transformation_candidates_cmd(artifact_roots, hub_path, repository
 )
 @click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text")
 def check_transformation_readiness_cmd(stage, table_scope, hub_path, output_format):
-    """Enforce deterministic, non-writing Mapping or Silver readiness."""
+    """Enforce deterministic, non-writing transformation readiness."""
     from ..core.hub_utils import find_hub_root
-    from ..core.transformation_candidates import (
-        TransformationCandidateError,
-        evaluate_transformation_readiness,
-    )
+    from ..core.transformation_candidates import TransformationCandidateError
+    from ..core.projection_readiness import check_projection
 
     hub_root = (
         Path(hub_path).resolve()
@@ -5082,25 +5445,53 @@ def check_transformation_readiness_cmd(stage, table_scope, hub_path, output_form
     if hub_root is None:
         raise click.ClickException("Could not locate an ontology-hub root; pass --hub.")
     try:
-        report = evaluate_transformation_readiness(
-            hub_root,
-            stage=stage,
+        shared = check_projection(
+            ontologies_path=hub_root / "model" / "ontologies",
+            catalog_path=(
+                hub_root / "model" / "catalog-v001.xml"
+                if (hub_root / "model" / "catalog-v001.xml").is_file()
+                else None
+            ),
+            output_path=hub_root / "output",
+            target="dbt",
+            namespace=None,
+            platform="fabric",
+            emit_aspirational_stubs=False,
+            degraded=False,
+            ref_models_dir=None,
+            accelerator=None,
+            scope="transformation",
+            hub_root=hub_root,
             table_scope=table_scope,
+            transformation_stage=stage,
         )
     except TransformationCandidateError as exc:
         raise click.ClickException(str(exc)) from exc
     if output_format == "json":
-        click.echo(json.dumps(report.to_dict(), indent=2))
-    elif not report.inventory_exists:
-        click.echo("✓ No transformation candidate inventory; existing hub behavior is unchanged.")
+        payload = dict(shared.phase_details.get("transformation_readiness", {}))
+        payload["shared_readiness"] = shared.to_dict()
+        payload["owner_skill"] = shared.owner_skill
+        payload["prerequisites"] = list(shared.prerequisites)
+        payload["is_blocking"] = not shared.ready
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
     else:
         click.echo(f"🔎 Transformation readiness ({stage})")
-        for candidate in report.candidates:
-            marker = "❌" if candidate.is_blocking else ("⚠" if candidate.reasons else "✓")
-            click.echo(f"   {marker} {candidate.id}: {candidate.status}")
-            for reason in candidate.reasons:
+        details = shared.phase_details.get("transformation_readiness", {})
+        if not details.get("inventory_exists", False):
+            click.echo("   No candidate inventory; evaluating discovered synchronized contracts.")
+        for candidate in details.get("candidates", []):
+            marker = (
+                "❌"
+                if candidate["is_blocking"]
+                else ("⚠" if candidate["reasons"] else "✓")
+            )
+            click.echo(f"   {marker} {candidate['id']}: {candidate['status']}")
+            for reason in candidate["reasons"]:
                 click.echo(f"      - {reason}")
-    if report.is_blocking:
+        click.echo(f"   Shared readiness: {shared.status}")
+        click.echo(f"   Owner: {shared.owner_skill}")
+        click.echo(f"   Prerequisites: {', '.join(shared.prerequisites) or 'none'}")
+    if not shared.ready:
         raise SystemExit(1)
 
 
@@ -5162,6 +5553,10 @@ def status_cmd(hub_path, output_format):
         for inst in p.instances:
             if inst.state != 'done':
                 click.echo(f"        - {inst.name}: {inst.state} ({inst.detail})")
+    if status.lifecycle_drift:
+        click.echo("\n⚠️  Phase-log drift:")
+        for item in status.lifecycle_drift:
+            click.echo(f"   - {item.code} {item.log_path}: {item.detail}")
     nxt = status.next_phase
     if nxt:
         click.echo(f"\n➡️  Next phase: {nxt}  (run the kairos-flow skill to start/continue)")
@@ -5555,6 +5950,59 @@ def update(check, upgrade):
         if not devcontainer_dst.exists() and devcontainer_src.is_dir():
             shutil.copytree(devcontainer_src, devcontainer_dst)
             print("  ✓ Created .devcontainer/ (VS Code Dev Container with Node.js)")
+
+
+# ---------------------------------------------------------------------------
+# RDF identity migrations — explicit preview/apply operations
+# ---------------------------------------------------------------------------
+
+
+@cli.command(name="migrate-column-iris")
+@click.option(
+    "--hub",
+    "hub_path",
+    type=click.Path(path_type=Path),
+    help="Hub root (default: discover from the current directory).",
+)
+@click.option("--apply", is_flag=True, help="Apply the previewed RDF rewrites.")
+@click.option(
+    "--backup-dir",
+    type=click.Path(path_type=Path),
+    help="Required new backup directory when --apply is used.",
+)
+def migrate_column_iris_cmd(hub_path, apply, backup_dir):
+    """Preview or apply legacy dbt virtual-column IRI migration."""
+    from ..core.column_iri_migration import (
+        ColumnIriMigrationError,
+        migrate_column_iris,
+    )
+    from ..core.hub_utils import find_hub_root
+
+    hub = Path(hub_path).resolve() if hub_path else find_hub_root(Path.cwd())
+    if hub is None:
+        raise click.ClickException("Cannot locate an ontology hub; pass --hub explicitly.")
+    try:
+        report = migrate_column_iris(
+            hub,
+            apply=apply,
+            backup_dir=Path(backup_dir) if backup_dir else None,
+        )
+    except ColumnIriMigrationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    mode = "Applied" if report.applied else "Preview"
+    if not report.changes:
+        click.echo(f"{mode}: no legacy dbt virtual-column IRIs found.")
+        return
+    click.echo(f"{mode}: {len(report.changes)} column IRI change(s)")
+    for change in report.changes:
+        click.echo(f"  {change.old_iri} -> {change.new_iri}")
+        for path in change.files:
+            click.echo(f"    {path.relative_to(hub)}")
+    if report.backup_dir:
+        click.echo(f"Backup: {report.backup_dir}")
+    elif not apply:
+        click.echo("No files written. Re-run with --apply --backup-dir <new-directory>.")
 
 
 # ---------------------------------------------------------------------------

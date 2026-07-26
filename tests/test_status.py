@@ -7,6 +7,10 @@ import textwrap
 from pathlib import Path
 
 from kairos_ontology.core.status import (
+    HubStatus,
+    LIFECYCLE_ACHIEVED,
+    LIFECYCLE_STATE_ORDER,
+    LIFECYCLE_UNKNOWN,
     SCHEMA_VERSION,
     STATE_DONE,
     STATE_IN_PROGRESS,
@@ -237,6 +241,75 @@ class TestRenderMarkdown:
         assert "Next phase" in md
 
 
+class TestPhaseLogDrift:
+    @staticmethod
+    def _write_phase_log(
+        hub: Path,
+        *,
+        status: str = "done",
+        xrefs: list[str] | None = None,
+    ) -> None:
+        log = hub / ".kairos-state" / "phases" / "mapping" / "crm-to-client.md"
+        log.parent.mkdir(parents=True)
+        xref_lines = "\n".join(f"  - {xref}" for xref in (xrefs or []))
+        log.write_text(
+            textwrap.dedent(
+                f"""\
+                ---
+                okf_version: "0.1"
+                type: kairos-phase-log
+                phase: mapping
+                instance: crm-to-client
+                status: {status}
+                status_source: phase-log
+                xrefs:
+                {xref_lines}
+                ---
+                # Mapping phase
+                """
+            ),
+            encoding="utf-8",
+        )
+
+    def test_missing_xref_and_status_disagreement_are_reported(self, tmp_path):
+        missing = "model/mappings/crm-to-client.ttl"
+        self._write_phase_log(tmp_path, xrefs=[missing])
+
+        status = scan_hub_status(tmp_path)
+
+        assert [item.code for item in status.lifecycle_drift] == [
+            "phase-log.missing-xref",
+            "phase-log.status-disagreement",
+        ]
+        missing_drift = status.lifecycle_drift[0]
+        assert missing_drift.xref == missing
+        assert missing_drift.declared_status == "done"
+        assert missing_drift.scanned_status == "not-started"
+        assert status.to_dict()["lifecycle_drift"][0]["xref"] == missing
+
+    def test_existing_xref_matching_scan_has_no_drift(self, tmp_path):
+        mapping = tmp_path / "model" / "mappings" / "crm-to-client.ttl"
+        mapping.parent.mkdir(parents=True)
+        mapping.write_text("# mapping", encoding="utf-8")
+        self._write_phase_log(
+            tmp_path,
+            xrefs=["model/mappings/crm-to-client.ttl"],
+        )
+
+        assert scan_hub_status(tmp_path).lifecycle_drift == []
+
+    def test_markdown_surfaces_phase_log_drift(self, tmp_path):
+        self._write_phase_log(
+            tmp_path,
+            xrefs=["model/mappings/missing.ttl"],
+        )
+
+        rendered = render_markdown(scan_hub_status(tmp_path))
+
+        assert "### Phase-log drift" in rendered
+        assert "phase-log.missing-xref" in rendered
+
+
 class TestSchemaVersioning:
     """DD-101: `to_dict()` is versioned and additive-only over v1."""
 
@@ -252,6 +325,138 @@ class TestSchemaVersioning:
             for instance in phase["instances"]:
                 for key in ("name", "state", "evidence", "detail", "facts"):
                     assert key in instance
+
+    def test_reads_legacy_done_as_unknown_not_failure(self):
+        status = HubStatus.from_dict(
+            {
+                "hub_root": "legacy",
+                "toolkit_version": "4.6",
+                "phases": [
+                    {
+                        "phase": "silver",
+                        "title": "Silver",
+                        "state": "done",
+                        "instances": [],
+                        "detail": "",
+                    }
+                ],
+            }
+        )
+
+        assert status.phases[0].state == STATE_DONE
+        assert status.lifecycle.current_state is None
+        assert all(
+            item.status == LIFECYCLE_UNKNOWN for item in status.lifecycle.states
+        )
+        assert "legacy done" in status.lifecycle.warnings[0]
+
+
+class TestMonotonicLifecycleState:
+    @staticmethod
+    def _write_report(hub: Path, filename: str, payload: dict) -> None:
+        reports = hub / ".kairos-state" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / filename).write_text(json.dumps(payload), encoding="utf-8")
+
+    def _advance_to(self, hub: Path, target: str) -> None:
+        ontology = hub / "model" / "ontologies" / "widget.ttl"
+        ontology.parent.mkdir(parents=True, exist_ok=True)
+        ontology.write_text("# authored", encoding="utf-8")
+        if target == "authored":
+            return
+        self._write_report(
+            hub,
+            "design-validation.json",
+            {"schema_version": 1, "passed": True},
+        )
+        if target == "design-valid":
+            return
+        self._write_report(
+            hub,
+            "silver-bound-readiness.json",
+            {"schema_version": "1.1", "scope": "silver", "status": "ready"},
+        )
+        if target == "bound-valid":
+            return
+        self._write_report(
+            hub,
+            "projection-readiness.json",
+            {"schema_version": "1.1", "scope": "projection", "status": "ready"},
+        )
+        if target == "projection-ready":
+            return
+        generated = hub / "output" / "medallion" / "dbt" / "models"
+        generated.mkdir(parents=True)
+        (generated / "widget.sql").write_text("select 1", encoding="utf-8")
+        if target == "generated":
+            return
+        self._write_report(
+            hub,
+            "compile-validation.json",
+            {"schema_version": 1, "compile_status": "passed"},
+        )
+        if target == "compile-valid":
+            return
+        self._write_report(
+            hub,
+            "runtime-validation.json",
+            {"schema_version": 1, "runtime_status": "passed"},
+        )
+        if target == "runtime-valid":
+            return
+        self._write_report(
+            hub,
+            "release-readiness.json",
+            {"schema_version": 2, "is_blocking": False},
+        )
+
+    def test_each_state_transition_is_explicit_and_monotonic(self, tmp_path):
+        for expected in LIFECYCLE_STATE_ORDER:
+            hub = tmp_path / expected
+            self._advance_to(hub, expected)
+
+            lifecycle = scan_hub_status(hub).lifecycle
+
+            assert lifecycle.current_state == expected
+            expected_index = LIFECYCLE_STATE_ORDER.index(expected)
+            assert all(
+                lifecycle.state(name).status == LIFECYCLE_ACHIEVED
+                for name in LIFECYCLE_STATE_ORDER[: expected_index + 1]
+            )
+
+    def test_generated_output_cannot_skip_unknown_readiness(self, tmp_path):
+        self._advance_to(tmp_path, "authored")
+        generated = tmp_path / "output" / "medallion" / "dbt" / "models"
+        generated.mkdir(parents=True)
+        (generated / "widget.sql").write_text("select 1", encoding="utf-8")
+
+        lifecycle = scan_hub_status(tmp_path).lifecycle
+
+        assert lifecycle.current_state == "authored"
+        assert lifecycle.state("generated").status == LIFECYCLE_UNKNOWN
+        assert "predecessor" in lifecycle.state("generated").detail
+
+    def test_unknown_schema_and_stale_reports_warn_without_blocking(self, tmp_path):
+        self._advance_to(tmp_path, "authored")
+        self._write_report(
+            tmp_path,
+            "design-validation.json",
+            {"schema_version": 999, "passed": True},
+        )
+
+        lifecycle = scan_hub_status(tmp_path).lifecycle
+
+        assert lifecycle.state("design-valid").status == LIFECYCLE_UNKNOWN
+        assert not lifecycle.has_blockers
+        assert any("schema 999" in warning for warning in lifecycle.warnings)
+
+    def test_phase_log_done_never_promotes_lifecycle_state(self, tmp_path):
+        TestPhaseLogDrift._write_phase_log(tmp_path, status="done")
+
+        lifecycle = scan_hub_status(tmp_path).lifecycle
+
+        assert lifecycle.current_state is None
+        assert lifecycle.state("authored").status == LIFECYCLE_UNKNOWN
 
 
 class TestClaimsFacts:

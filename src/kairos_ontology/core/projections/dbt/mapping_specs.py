@@ -25,6 +25,8 @@ class MappingContractError(ValueError):
         predicate_uri: str = "",
         rule_id: str = "DD-107",
     ) -> None:
+        from .diagnostics import diagnostic_from_exception
+
         self.code = code
         self.resource_uri = resource_uri
         self.predicate_uri = predicate_uri
@@ -32,6 +34,7 @@ class MappingContractError(ValueError):
         location = resource_uri or "<mapping>"
         predicate = f" ({predicate_uri})" if predicate_uri else ""
         super().__init__(f"{code}: {message} at {location}{predicate} [{rule_id}]")
+        self.diagnostic = diagnostic_from_exception(self, stage="mapping")
 
 
 class MappingExpressionKind(str, Enum):

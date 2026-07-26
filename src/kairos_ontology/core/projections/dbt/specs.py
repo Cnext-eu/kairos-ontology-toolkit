@@ -181,6 +181,11 @@ class ContractFact:
     evidence_artifacts: tuple[str, ...] = ()
     verified_tests: tuple[str, ...] = ()
     approved: bool = False
+    identity_resource_uri: str = ""
+    content_hash: str = ""
+    identity_requirements: tuple[str, ...] = ()
+    identity_verified: bool = False
+    canonical_cdc_bindings: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

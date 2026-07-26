@@ -71,19 +71,23 @@ Input type? ──→  Import flat files ──→ Generate vocab ──→  Rev
 - The ontology hub must be initialized (`kairos-ontology init` or `new-repo`)
 - Source data or documentation should be available (CSV/Excel/Parquet files, SQL DDL,
   API specs, or sample data)
-- For Phase 4 (analysis): an AI provider and authentication mode selected during
-  the mandatory startup check below
+- For Phase 4 (analysis): an AI provider and authentication mode selected immediately
+  before the first LLM call
 
 ---
 
-## Phase 0a — Select AI provider and authentication (mandatory)
+## AI provider selection protocol — execute only in Phase 4
 
-Ask at the beginning of **every source-design invocation**, after any
-continue/start-fresh decision and before determining the input type. Do not infer
-consent to send source evidence from an existing `.env`; ask the user to confirm
-the detected configuration before the first LLM call.
+Do **not** ask the user to select an AI provider at source-design startup or while
+performing deterministic Phases 1-3. Source import, vocabulary generation, manual
+vocabulary creation, enrichment review, validation, and preparation-policy work
+must remain available without AI configuration or consent.
 
-First inspect the effective environment safely. The provider layer automatically
+Execute this protocol only when the invocation enters Phase 4, immediately before
+its LLM pre-flight. Do not infer consent to send source evidence from an existing
+`.env`; ask the user to confirm the detected configuration at that point.
+
+When Phase 4 begins, first inspect the effective environment safely. The provider layer automatically
 loads the first applicable `.env` from the working directory, hub, or repository
 root. Report only:
 
@@ -95,7 +99,7 @@ Never display an endpoint containing sensitive query parameters, a token, API ke
 credential value, or `.env` contents. Never ask the user to paste a secret into
 chat. If configuration is needed, direct the user to the gitignored `.env`.
 
-Then explain that Phases 1-3 are deterministic and AI-free, while Phase 4
+Explain that Phases 1-3 were deterministic and AI-free, while Phase 4
 `analyse-sources` sends source metadata and sample evidence to the selected LLM
 provider and may incur cost.
 
@@ -139,8 +143,8 @@ After selection:
 - record only the selected provider, authentication mode, model, and whether the
   pre-flight succeeded in `phases/source/<system>.md`.
 
-This provider choice is runtime consent for the current source-design invocation,
-not a fleet-mode decision and not reusable consent for another invocation.
+This provider choice is runtime consent for Phase 4 of the current source-design
+invocation, not a fleet-mode decision and not reusable consent for another invocation.
 
 ---
 
@@ -447,15 +451,16 @@ log. Then invoke the validation skill; do not bypass its gates with a direct CLI
 
 > **When to use:** All source vocabularies have been created (via any Phase 1-3
 > path) and you want to understand which reference model domains each source
-> contributes to. **Requires the provider and authentication mode explicitly
-> selected in Phase 0a.** If the user chose to skip AI analysis, do not enter this
-> phase.
+> contributes to. This is the first phase that asks for an AI provider and
+> authentication mode.
 
-### 4a — Pre-flight check
+### 4a — Select provider, obtain consent, and run pre-flight
 
-Reconfirm that the effective provider/authentication mode still matches the
-Phase 0a selection before making any LLM call. Configuration drift is blocking:
-stop rather than silently selecting another configured provider.
+Run the mandatory **AI provider selection protocol** now. If the user skips AI
+analysis, leave Phase 4 without making an LLM call. Otherwise, verify that the
+effective provider/authentication mode still matches the selection before making
+any LLM call. Configuration drift is blocking: stop rather than silently selecting
+another configured provider.
 
 Run the mandatory persisted-sample privacy gate before sending source evidence to
 the selected LLM:
@@ -527,8 +532,16 @@ reference models are materialized into `referencemodels-unpacked/*-inventory.yam
 
 ```bash
 kairos-ontology generate-inventory
-kairos-ontology check-inventory    # verify the unpacked inventory is present & current
+kairos-ontology check-inventory \
+  --domains <comma-separated-active-domain-ids> --explain-scope
 ```
+
+`check-inventory --domains` is the only freshness authority. Missing or stale in-scope
+inventories block source-to-domain handoff; repository-wide failures outside the selected
+scope remain visible but non-blocking. Report the installed/current local reference-model
+version from `ontology-reference-models/VERSION`. Never update reference models or regenerate
+inventories silently: route an explicitly requested update through **kairos-toolkit-ops** and
+repeat the exact scoped check afterward.
 
 > **Why up front:** `generate-inventory` is quick and AI-free, so there's no reason to
 > defer it. It gives `analyse-sources` and `propose-alignment` visibility into subclass
@@ -625,21 +638,34 @@ The command produces `{system}-affinity.yaml` files in
 
 After the source vocabulary and analysis are complete:
 
-1. **Assess imported transformation candidates when present** — read
+1. **Separate local validity from bound readiness.** Successful import, Turtle/SHACL
+   validation, analysis, and reviewed descriptions establish local source-design validity only.
+   Before claiming source completion, run the non-writing scoped gate:
+
+   ```powershell
+   $env:KAIROS_SKILL_CONTEXT = "1"
+   kairos-ontology check-projection --target dbt --scope source
+   ```
+
+   This is a source-scoped view of the same bind/normalization evaluator used by projection. It
+   reports preparation, record/array/contract-key classification, casts, canonical CDC, JSON,
+   schema-change, and error-policy blockers with owner and prerequisite data. Do not claim source
+   completion while it is blocked. Findings owned by later phases are deliberately suppressed.
+2. **Assess imported transformation candidates when present** — read
    `model/planning/dbt-transformations/candidates.yaml`. If advanced candidates are
    unassessed or changed, hand off to **kairos-develop-dbt-transformation** before Mapping
    or Silver; do not infer authority from Power BI/parity artifacts.
-2. **Create a draft model report when reporting/business evidence exists** — run
+3. **Create a draft model report when reporting/business evidence exists** — run
    `kairos-ontology draft-model-report` to produce all-domain draft evidence packs
    and one advisory cross-domain Mermaid ERD before domain design. Use this when
    `integration/sources/powerbi/` or `businessdiscovery/*.ttl` exists.
-3. **Design domain ontology** — invoke the **kairos-design-domain** skill.
+4. **Design domain ontology** — invoke the **kairos-design-domain** skill.
    It uses the affinity reports from Phase 4 as a mandatory prerequisite
    (Step 0a) to scope which tables to model per domain.
-4. **Create SKOS mappings** — invoke the **kairos-design-mapping** skill to
+5. **Create SKOS mappings** — invoke the **kairos-design-mapping** skill to
    map source columns to domain ontology properties
-5. **Design silver annotations** — invoke the **kairos-design-silver** skill
-6. **Generate output** — invoke the **kairos-execute-project** skill
+6. **Design silver annotations** — invoke the **kairos-design-silver** skill
+7. **Generate output** — invoke the **kairos-execute-project** skill
 
 ### Draft model report (`draft-model-report`)
 
@@ -848,7 +874,7 @@ Save to `ontology-hub/.kairos-state/phases/source/{system-name}.md`:
 **Last updated:** {ISO-8601}
 **Status:** Complete | In Progress
 **Toolkit version:** {version}
-**AI provider:** GitHub Models | Azure AI | Microsoft Foundry | Skipped
+**AI provider:** GitHub Models | Azure AI | Microsoft Foundry | Not selected | Skipped
 **AI authentication:** GitHub token | API key | Azure identity | Not applicable
 **AI pre-flight:** Passed | Not run | Blocked
 

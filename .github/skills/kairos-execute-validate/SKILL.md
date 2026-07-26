@@ -23,6 +23,18 @@ frontmatter (`type: kairos-phase-log`, `phase: validate`, `instance: hub`, `stat
 `last_updated:`). Record decisions made and an **Open questions** list as the resume
 anchor. Do **not** edit `status.md` directly — kairos-flow folds your proposal in.
 
+Validation results advance only their evidenced lifecycle boundary:
+
+- focused Turtle/SHACL/mapping/Silver checks → `design-valid`;
+- scoped shared readiness checks → `bound-valid`;
+- full `check-projection` → `projection-ready`;
+- generated dbt compile checks → `compile-valid`;
+- warehouse-backed execution/tests → `runtime-valid`.
+
+Never promote a later state from a phase-log `done` checkbox. Preserve exact
+versioned JSON evidence under `.kairos-state/reports/` when requested; absent,
+stale, or unknown-schema reports remain warnings, not migration failures.
+
 
 > **🔒 Skill context:** Before running any `kairos-ontology` /
 > `python -m kairos_ontology` command in this skill, set the sentinel env var so
@@ -256,6 +268,19 @@ projection output or downstream issues.
 Review `model/extensions/` and `model/mappings/` for projection readiness.
 This is where most "it generated wrong output" bugs originate.
 
+Run the focused, read-only local-design validators for each active domain before the
+manual review:
+
+```bash
+kairos-ontology validate-mapping --domain <domain>
+kairos-ontology validate-silver-ext --domain <domain>
+```
+
+These commands validate scoped mapping structure/IRI/type resolution and Silver
+syntax/DD-108/DD-109 SHACL without loading unrelated accelerator modules. They establish
+`design-valid`, not bound or projection readiness; use the scoped/full non-writing
+`check-projection` gates for those later states.
+
 ### Extension file structure
 
 | Check | Rule | Severity |
@@ -413,6 +438,8 @@ For hubs with `integration/transforms/dbt/`:
    validation skill must not rewrite authoritative custom dbt files.
 2. Check synchronization without writing:
    `kairos-ontology sync-dbt-contracts --check`. Drift is blocking; regenerate through
+   the transformation skill. A `ContractIdentity` must also have current hash-bound passing
+   warehouse evidence; declared tests alone are `identity.contract-unverified`.
    the development skill, never edit
    `integration/sources/custom-transformations/*.vocabulary.ttl`.
 3. After `project --target dbt --platform <fabric|databricks>`, run:

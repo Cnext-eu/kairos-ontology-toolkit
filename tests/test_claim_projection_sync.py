@@ -25,6 +25,7 @@ from kairos_ontology.core.claim_registry import (
     CoverageTable,
     EvidenceSource,
     Freshness,
+    load_registry,
     registry_path,
     write_registry,
 )
@@ -480,6 +481,50 @@ def test_managed_block_sync_is_idempotent(tmp_path):
     assert ext_after_1 == ext_after_2
     # Exactly one managed block (no marker accumulation).
     assert onto_after_2.count("# >>> kairos-managed") == 1
+
+
+def test_managed_block_preserves_authored_content_after_block(tmp_path):
+    claims_dir, ontologies, extensions = _setup_authored(tmp_path)
+    apply_projection_sync(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+
+    ontology_file = ontologies / "party.ttl"
+    authored_suffix = (
+        "\n# Authored after the managed block; keep this location and text.\n"
+        "dom:LocalParty a owl:Class ;\n"
+        '    rdfs:label "Local Party"@en .\n'
+    )
+    ontology_file.write_text(
+        ontology_file.read_text(encoding="utf-8") + authored_suffix,
+        encoding="utf-8",
+    )
+    before = ontology_file.read_text(encoding="utf-8")
+    before_suffix = before[before.index(authored_suffix):]
+    registry_file = registry_path(claims_dir, "party")
+    registry = load_registry(registry_file)
+    registry.claims.append(
+        Claim(
+            id="party-organisation",
+            type="class",
+            status="approved",
+            disposition="claim",
+            origin="imported",
+            class_uri="https://example.org/ref/org#Organisation",
+        )
+    )
+    write_registry(registry, registry_file)
+
+    report = apply_projection_sync(
+        claims_dir=claims_dir, ontologies_dir=ontologies, extensions_dir=extensions
+    )
+
+    assert not report.is_blocking
+    after = ontology_file.read_text(encoding="utf-8")
+    assert after[after.index(authored_suffix):] == before_suffix
+    assert after.index("# <<< kairos-managed") < after.index(authored_suffix)
+    assert "<https://example.org/ref/org>" in after
+    assert after.count("# >>> kairos-managed") == 1
 
 
 def test_sync_rejects_legacy_inline_imports_without_modifying_authored_ttl(tmp_path):

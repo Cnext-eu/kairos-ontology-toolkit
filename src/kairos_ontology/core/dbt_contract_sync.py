@@ -6,15 +6,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Literal as TypingLiteral
 from urllib.parse import quote
 
-from rdflib import Graph, Literal, Namespace, URIRef
+from rdflib import BNode, Graph, Literal, Namespace, URIRef
+from rdflib.collection import Collection
 from rdflib.compare import isomorphic
 from rdflib.namespace import RDF, RDFS, XSD
 
 from ._provenance import prepend_provenance
 from .dbt_contracts import DbtContractModel, discover_dbt_contracts
+from .dbt_contract_identity import (
+    ContractIdentityEvidence,
+    contract_content_hash,
+    identity_requirements,
+    load_evidence,
+)
 from .source_catalog import SourceCatalogError, build_source_catalog
 
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
@@ -78,11 +86,30 @@ class DbtContractSyncReport:
         return sum(item.state == "unchanged" for item in self.items)
 
 
-def _column_iri(table_iri: str, column_name: str) -> URIRef:
+def legacy_column_iri(table_iri: str, column_name: str) -> URIRef:
+    """Return the deprecated slash-delimited column IRI."""
+
     return URIRef(f"{table_iri}/{quote(column_name, safe='')}")
 
 
-def build_dbt_contract_graph(contract: DbtContractModel) -> Graph:
+def column_iri(table_iri: str, column_name: str) -> URIRef:
+    """Mint a Turtle PN_LOCAL-safe column IRI using the stable ``__`` separator."""
+
+    encoded = "".join(
+        chr(byte)
+        if byte == 95 or 48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122
+        else f"%{byte:02X}"
+        for byte in column_name.encode("utf-8")
+    )
+    return URIRef(f"{table_iri}__{encoded}")
+
+
+def build_dbt_contract_graph(
+    contract: DbtContractModel,
+    *,
+    existing_column_iris: Mapping[str, URIRef] | None = None,
+    evidence: ContractIdentityEvidence | None = None,
+) -> Graph:
     """Build the established Kairos Bronze graph for one custom dbt contract."""
 
     graph = Graph()
@@ -93,6 +120,8 @@ def build_dbt_contract_graph(contract: DbtContractModel) -> Graph:
 
     table = URIRef(contract.virtual_source_iri)
     system = URIRef(f"{contract.virtual_source_iri}/source-system")
+    identity = URIRef(f"{contract.virtual_source_iri}/contract-identity")
+    content_hash = contract_content_hash(contract)
 
     graph.add((system, RDF.type, KAIROS_BRONZE.SourceSystem))
     graph.add((system, RDFS.label, Literal(f"dbt contract: {contract.name}")))
@@ -113,19 +142,82 @@ def build_dbt_contract_graph(contract: DbtContractModel) -> Graph:
     for replacement in contract.replaces_sources:
         graph.add((table, KAIROS_DBT.replacesSource, URIRef(replacement.table_iri)))
 
+    graph.add((identity, RDF.type, KAIROS_DBT.ContractIdentity))
+    graph.add((identity, RDFS.label, Literal(f"Contract identity: {contract.name}")))
+    graph.add((identity, KAIROS_DBT.modelRef, Literal(contract.name)))
+    graph.add((identity, KAIROS_DBT.virtualTable, table))
+    graph.add((identity, KAIROS_DBT.identityScope, Literal("contract-output")))
+    graph.add((identity, KAIROS_DBT.contractContentHash, Literal(content_hash)))
+    grain_list = BNode()
+    Collection(
+        graph,
+        grain_list,
+        [
+            (existing_column_iris or {}).get(
+                name, column_iri(contract.virtual_source_iri, name)
+            )
+            for name in contract.grain_key
+        ],
+    )
+    graph.add((identity, KAIROS_DBT.orderedGrainColumns, grain_list))
+    for requirement in identity_requirements(contract):
+        graph.add((identity, KAIROS_DBT.requiredTest, Literal(requirement)))
+    for replacement in contract.replaces_sources:
+        graph.add((identity, KAIROS_DBT.replacesSource, URIRef(replacement.table_iri)))
+    for role, column in contract.canonical_cdc_bindings:
+        binding = BNode()
+        graph.add((identity, KAIROS_DBT.canonicalCdcBinding, binding))
+        graph.add((binding, RDF.type, KAIROS_DBT.CdcBinding))
+        graph.add((binding, KAIROS_DBT.cdcRole, Literal(role)))
+        graph.add(
+            (
+                binding,
+                KAIROS_DBT.outputColumn,
+                (existing_column_iris or {}).get(
+                    column, column_iri(contract.virtual_source_iri, column)
+                ),
+            )
+        )
+    for decision in contract.decisions:
+        graph.add((identity, KAIROS_DBT.decisionStatus, Literal(decision.status)))
+        for item in decision.evidence:
+            graph.add((identity, KAIROS_DBT.decisionEvidence, Literal(item.artifact)))
+    verified = (
+        evidence is not None
+        and evidence.contract_content_hash == content_hash
+        and set(identity_requirements(contract)).issubset(evidence.passed_requirements)
+    )
+    graph.add(
+        (
+            identity,
+            KAIROS_DBT.verificationStatus,
+            Literal("verified" if verified else "unverified"),
+        )
+    )
+    if verified:
+        graph.add((identity, KAIROS_DBT.evidenceInvocation, Literal(evidence.invocation_id)))
+        graph.add((identity, KAIROS_DBT.evidenceContentHash, Literal(content_hash)))
+
     grain_key = set(contract.grain_key)
     for column in contract.columns:
-        column_iri = _column_iri(contract.virtual_source_iri, column.name)
+        column_resource = (existing_column_iris or {}).get(
+            column.name,
+            column_iri(contract.virtual_source_iri, column.name),
+        )
         is_key = column.name in grain_key
         nullable = not (is_key or column.not_null)
-        graph.add((column_iri, RDF.type, KAIROS_BRONZE.SourceColumn))
-        graph.add((column_iri, RDFS.label, Literal(column.description or column.name)))
-        graph.add((column_iri, KAIROS_BRONZE.sourceTable, table))
-        graph.add((column_iri, KAIROS_BRONZE.columnName, Literal(column.name)))
-        graph.add((column_iri, KAIROS_BRONZE.dataType, Literal(column.data_type)))
-        graph.add((column_iri, KAIROS_BRONZE.nullable, Literal(nullable, datatype=XSD.boolean)))
-        graph.add((column_iri, KAIROS_BRONZE.isPrimaryKey, Literal(is_key, datatype=XSD.boolean)))
-        graph.add((column_iri, KAIROS_DBT.modelRef, Literal(contract.name)))
+        graph.add((column_resource, RDF.type, KAIROS_BRONZE.SourceColumn))
+        graph.add((column_resource, RDFS.label, Literal(column.description or column.name)))
+        graph.add((column_resource, KAIROS_BRONZE.sourceTable, table))
+        graph.add((column_resource, KAIROS_BRONZE.columnName, Literal(column.name)))
+        graph.add((column_resource, KAIROS_BRONZE.dataType, Literal(column.data_type)))
+        graph.add(
+            (column_resource, KAIROS_BRONZE.nullable, Literal(nullable, datatype=XSD.boolean))
+        )
+        graph.add(
+            (column_resource, KAIROS_BRONZE.isPrimaryKey, Literal(is_key, datatype=XSD.boolean))
+        )
+        graph.add((column_resource, KAIROS_DBT.modelRef, Literal(contract.name)))
     return graph
 
 
@@ -194,6 +286,23 @@ def _serialize_graph(graph: Graph, model: str) -> str:
     )
 
 
+def _managed_column_iris(graph: Graph | None, table: URIRef) -> dict[str, URIRef]:
+    """Recover existing managed column identities so ordinary sync never remints them."""
+
+    if graph is None:
+        return {}
+    result: dict[str, URIRef] = {}
+    for resource in graph.subjects(RDF.type, KAIROS_BRONZE.SourceColumn):
+        if not isinstance(resource, URIRef):
+            continue
+        if graph.value(resource, KAIROS_BRONZE.sourceTable) != table:
+            continue
+        name = graph.value(resource, KAIROS_BRONZE.columnName)
+        if isinstance(name, Literal):
+            result[str(name)] = resource
+    return result
+
+
 def sync_dbt_contracts(
     hub_root: Path,
     *,
@@ -224,12 +333,20 @@ def sync_dbt_contracts(
         return DbtContractSyncReport(transforms, sources, check)
 
     contracts = discover_dbt_contracts(transforms, root)
+    evidence_by_model = {item.model: item for item in load_evidence(root)}
     _validate_source_replacements(contracts, bronze_sources, sources)
     items: list[DbtContractSyncItem] = []
     for contract in contracts:
         output_path = sources / f"{contract.name}.vocabulary.ttl"
-        expected = build_dbt_contract_graph(contract)
         current = _load_graph(output_path)
+        expected = build_dbt_contract_graph(
+            contract,
+            existing_column_iris=_managed_column_iris(
+                current,
+                URIRef(contract.virtual_source_iri),
+            ),
+            evidence=evidence_by_model.get(contract.name),
+        )
         if current is not None and isomorphic(current, expected):
             items.append(DbtContractSyncItem(contract.name, output_path, "unchanged", "none"))
             continue

@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+
+@prefix kairos-dbt: <https://kairos.cnext.eu/dbt-contract#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://kairos.cnext.eu/dbt-contract> a owl:Ontology ;
+    rdfs:label "Kairos dbt Contract Vocabulary" ;
+    rdfs:comment "Synchronized contracted-transformation and output-identity authority." ;
+    owl:versionInfo "1.0.0" .
+
+kairos-dbt:ContractIdentity a owl:Class ;
+    rdfs:label "Contract Identity" ;
+    rdfs:comment "A source-scoped identity formed and verified at one contracted dbt output." .
+
+kairos-dbt:CdcBinding a owl:Class ;
+    rdfs:label "Canonical CDC Binding" ;
+    rdfs:comment "One canonical CDC role bound to a contracted output column." .
+
+kairos-dbt:modelRef a owl:DatatypeProperty ; rdfs:label "model reference" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range xsd:string .
+kairos-dbt:virtualTable a owl:ObjectProperty ; rdfs:label "virtual table" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range rdfs:Resource .
+kairos-dbt:orderedGrainColumns a owl:ObjectProperty ; rdfs:label "ordered grain columns" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range rdf:List .
+kairos-dbt:identityScope a owl:DatatypeProperty ; rdfs:label "identity scope" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range xsd:string .
+kairos-dbt:contractContentHash a owl:DatatypeProperty ; rdfs:label "contract content hash" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range xsd:string .
+kairos-dbt:requiredTest a owl:DatatypeProperty ; rdfs:label "required test" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range xsd:string .
+kairos-dbt:verificationStatus a owl:DatatypeProperty ; rdfs:label "verification status" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range xsd:string .
+kairos-dbt:evidenceContentHash a owl:DatatypeProperty ; rdfs:label "evidence content hash" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range xsd:string .
+kairos-dbt:evidenceInvocation a owl:DatatypeProperty ; rdfs:label "evidence invocation" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range xsd:string .
+kairos-dbt:replacesSource a owl:ObjectProperty ; rdfs:label "replaces source" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range rdfs:Resource .
+kairos-dbt:canonicalCdcBinding a owl:ObjectProperty ; rdfs:label "canonical CDC binding" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range kairos-dbt:CdcBinding .
+kairos-dbt:cdcRole a owl:DatatypeProperty ; rdfs:label "CDC role" ;
+    rdfs:domain kairos-dbt:CdcBinding ; rdfs:range xsd:string .
+kairos-dbt:outputColumn a owl:ObjectProperty ; rdfs:label "output column" ;
+    rdfs:domain kairos-dbt:CdcBinding ; rdfs:range rdfs:Resource .
+kairos-dbt:decisionStatus a owl:DatatypeProperty ; rdfs:label "decision status" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range xsd:string .
+kairos-dbt:decisionEvidence a owl:DatatypeProperty ; rdfs:label "decision evidence" ;
+    rdfs:domain kairos-dbt:ContractIdentity ; rdfs:range xsd:string .

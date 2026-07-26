@@ -96,7 +96,7 @@ def test_writes_bronze_compatible_graph_with_stable_iris(tmp_path: Path) -> None
 
     graph = Graph().parse(item.output_path, format="turtle")
     table = URIRef("https://example.com/source#orders")
-    column = URIRef("https://example.com/source#orders/order_id")
+    column = URIRef("https://example.com/source#orders__order_id")
     assert (table, RDF.type, KAIROS_BRONZE.SourceTable) in graph
     assert (column, RDF.type, KAIROS_BRONZE.SourceColumn) in graph
     assert (table, KAIROS_DBT.sourceKind, None) in graph
@@ -131,6 +131,39 @@ def test_semantically_equal_graph_is_not_rewritten(tmp_path: Path) -> None:
     assert second.items[0].state == "unchanged"
     assert second.written_count == 0
     assert output.read_text(encoding="utf-8") == alternate
+
+
+def test_existing_legacy_column_iris_remain_resolvable_and_are_not_reminted(
+    tmp_path: Path,
+) -> None:
+    hub, _ = _make_hub(tmp_path)
+    first = sync_dbt_contracts(hub)
+    output = first.items[0].output_path
+    graph = Graph().parse(output, format="turtle")
+    safe = URIRef("https://example.com/source#orders__order_id")
+    legacy = URIRef("https://example.com/source#orders/order_id")
+    for subject, predicate, object_ in tuple(graph):
+        graph.remove((subject, predicate, object_))
+        graph.add(
+            (
+                legacy if subject == safe else subject,
+                predicate,
+                legacy if object_ == safe else object_,
+            )
+        )
+    graph.serialize(output, format="turtle")
+
+    second = sync_dbt_contracts(hub)
+
+    assert second.items[0].state == "unchanged"
+    preserved = Graph().parse(output, format="turtle")
+    assert (legacy, RDF.type, KAIROS_BRONZE.SourceColumn) in preserved
+    assert (safe, RDF.type, KAIROS_BRONZE.SourceColumn) not in preserved
+    parsed = _parse_bronze(hub / "integration" / "sources")
+    parsed_order_id = next(
+        column for column in parsed[0]["tables"][0]["columns"] if column["name"] == "order_id"
+    )
+    assert legacy == URIRef(parsed_order_id["uri"])
 
 
 def test_sync_emits_validated_source_replacement(tmp_path: Path) -> None:

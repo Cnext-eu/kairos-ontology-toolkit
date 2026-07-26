@@ -32,11 +32,18 @@ The hub's lifecycle state has two clearly separated layers. **Never conflate the
 
 | Layer | Authority over | Produced by | Editable by hand |
 |-------|----------------|-------------|------------------|
-| **Objective** (scan) | *What exists* — phase/instance `not-started \| in-progress \| done` | `kairos-ontology status` (deterministic, AI-free) | ❌ No |
+| **Objective** (scan) | Legacy phase presence plus monotonic `authored → design-valid → bound-valid → projection-ready → generated → compile-valid → runtime-valid → release-eligible` | `kairos-ontology status` (deterministic, AI-free) | ❌ No |
 | **Continuation** (markdown) | *Intent* — open questions, decisions, next actions, `blocked` / `open-questions` | This skill + phase skills | ✅ Yes |
 
 **Reconciliation rule of thumb:** the **scan wins for objective facts**; the
 **continuation state wins for intent and open questions**.
+
+The legacy phase `done` value remains readable but means only "legacy artifacts
+were present." It is **legacy/unknown input** to the richer state chain, never a
+failed gate and never proof of readiness. Read `lifecycle.states` and its
+versioned report evidence. Missing, stale, or unknown-schema reports are
+`unknown` warnings until their deterministic check is explicitly rerun; they do
+not make an existing hub fail migration.
 
 ---
 
@@ -168,6 +175,27 @@ xrefs:
    `{"proposed": N, "approved": N}`, silver `{"bound_classes": [...],
    "aspirational_classes": [...], "release_eligible": bool}`, and validate
    `{"data_valid": bool}`. Read these fields directly — never hand-derive them.
+2a. **Before any hand-off to domain design, run the scoped inventory gate.**
+   Determine the active domain ID(s) from the requested/resumed domain instance or
+   the scan facts, then run:
+   ```bash
+   uv run kairos-ontology check-inventory \
+     --domains <comma-separated-active-domain-ids> --explain-scope
+   cat ontology-reference-models/VERSION 2>/dev/null \
+     || echo "(VERSION file absent — installed local reference-model version unknown)"
+   ```
+   `check-inventory --domains` is the **only freshness authority**. Report its
+   active-domain result and the installed/current local reference-model version.
+   Repository-wide missing/stale inventories remain visible in the output, but
+   failures outside the selected domain scope are **non-blocking**.
+
+   A missing or stale **in-scope** inventory is a blocking pre-design gate: do not
+   hand off to `kairos-design-domain`, and do not infer freshness from file dates,
+   Git state, a phase log, or another command. Never update reference models or
+   regenerate inventories silently. Explain the failing inventory; if the user
+   wants to upgrade/replace the installed reference models, hand off to
+   **kairos-toolkit-ops**. After an explicitly approved update or inventory
+   regeneration, re-run this exact scoped check and continue only when it exits 0.
 3. **Optionally run the composed release gate** when the user asks "are we ready
    to ship / release" or before recommending `kairos-execute-project --strict`:
    ```bash
@@ -181,8 +209,9 @@ xrefs:
    any `phases/**/*.md` with `status: in-progress | open-questions | blocked`.
    Ignore `_archive/`.
 5. **Reconcile** scan vs continuation (see §5) and refresh `status.md` region 1.
-6. **Present a compact overview**: per-phase state + the first incomplete phase
-   (`next_phase` from the scan) + any open questions / blockers from continuation.
+6. **Present a compact overview**: legacy per-phase presence, the monotonic
+   `lifecycle.current_state`/`next_state`, report warnings, and continuation
+   questions. Never route from a phase-log checkbox.
 7. **Offer a decision:**
    - **Clean start** -> begin the first `not-started` phase (or `next_phase`).
    - **Continue** -> resume the `in-progress` / `open-questions` instance, opening
@@ -220,24 +249,37 @@ xrefs:
 |-------|-------------|------------------------|
 | discovery | `kairos-design-discovery` | — (recommended first) |
 | source | `kairos-design-source` | discovery done/skipped |
-| domain | `kairos-design-domain` | sources imported + analysed |
-| dbt-transformation checkpoint | `kairos-develop-dbt-transformation` | candidate readiness reports unresolved advanced evidence; checkpoint only, not a `PHASE_ORDER` phase |
-| mapping | `kairos-design-mapping` | domain + source vocab exist |
+| domain | `kairos-design-domain` | sources imported + analysed; scoped `check-inventory --domains` passes |
+| silver logical intent | `kairos-design-silver` | domain + source evidence; records SCD, identity/grain, FK, PII/DQ intent only |
+| dbt-transformation checkpoint | `kairos-develop-dbt-transformation` | logical Silver identifies joins/windows/aggregation/fallback/JSON/grain change |
+| mapping | `kairos-design-mapping` | domain + source/final contracted vocabulary exist |
 | claims | `kairos-design-domain` (claim governance) | mappings + evidence |
-| silver | `kairos-design-silver` | domain + mappings |
+| silver bound confirmation | `kairos-design-silver` | final transformation + mapping; consumes only `check-projection --scope silver` |
 | gold | `kairos-design-gold` | silver |
 | mdm (optional) | `kairos-design-mdm` | domain present; runs independently of medallion |
 | validate | `kairos-execute-validate` | model present |
-| project | `kairos-execute-project` | validate passed |
+| check-projection | `kairos-execute-project` (readiness pre-flight only) | `bound-valid`; full non-writing report has no blockers |
+| project | `kairos-execute-project` | `projection-ready`; never route here from artifact presence or legacy `done` |
 
-Follow the canonical order `discovery → source → domain → mapping → claims →
-silver → gold → validate → project`. Respect each target skill's own pre-flight
-(it runs after the hand-off).
+Follow `discovery → source → domain → logical Silver → [dbt transformation when
+needed] → mapping → bound Silver confirmation → gold → validate →
+check-projection → project → compile/runtime validation → release`. For simple
+direct/scalar mappings, omit only the transformation checkpoint:
+`logical Silver → mapping → bound Silver confirmation`.
+The complex segment is `logical Silver → dbt transformation → mapping → bound Silver confirmation`.
 
 Before handing off to Mapping or Silver, run the matching deterministic readiness command.
 A non-zero result temporarily overrides the ordinary phase handoff and routes to the
 dbt-transformation checkpoint. Do not mark the mapping/silver phase `blocked` in the scan;
 record the blocker in continuation state while `status` remains objective and observational.
+
+**Hard routing invariant:** before any generation handoff, run full
+`check-projection` with exactly the intended domain/target/platform options.
+If it exits nonzero or reports any blocking diagnostic, route each remediation
+to its `owner_skill`; never invoke project. If readiness evidence is absent,
+stale, or unknown-schema, report `projection-ready: unknown` and rerun the check
+rather than treating it as failure or success. A green scoped Silver gate proves
+`bound-valid`, not `projection-ready`.
 
 **Proposals, approvals, and stubs — surface intent, not machine truth.** Three
 lifecycle signals commonly appear at resume; route them without re-deriving or

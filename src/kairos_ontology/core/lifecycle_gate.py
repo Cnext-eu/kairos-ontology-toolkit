@@ -45,7 +45,7 @@ from .claim_coverage import ClaimCheckReport, check_claims_coverage
 from .claim_projection_sync import ProjectionSyncReport, evaluate_projection_sync
 from .completeness_model import compute_completeness_facts
 from .source_coverage import SourceCoverageReport, check_source_coverage
-from .status import HubStatus, scan_hub_status
+from .status import HubStatus, LifecycleStateReport, scan_hub_status
 from .transformation_candidates import (
     TransformationReadinessReport,
     evaluate_transformation_readiness,
@@ -230,6 +230,7 @@ class LifecycleGateReport:
     release: tuple[DomainReleaseFact, ...]
     validation: ValidationFact
     project: ProjectionFact
+    lifecycle: LifecycleStateReport
 
     @property
     def release_blocking_domains(self) -> tuple[str, ...]:
@@ -245,6 +246,7 @@ class LifecycleGateReport:
             or self.transformation_candidates.is_blocking
             or bool(self.release_blocking_domains)
             or self.validation.passed is False
+            or self.lifecycle.has_blockers
         )
 
     def to_dict(self) -> dict:
@@ -264,6 +266,7 @@ class LifecycleGateReport:
             "release": [r.to_dict() for r in self.release],
             "validation": self.validation.to_dict(),
             "project": self.project.to_dict(),
+            "lifecycle": self.lifecycle.to_dict(),
         }
 
 
@@ -428,4 +431,5 @@ def evaluate_lifecycle_gate(
         release=release,
         validation=_validation_fact(status),
         project=_project_fact(status),
+        lifecycle=status.lifecycle,
     )

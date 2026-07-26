@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+
+@prefix kairos-dbt: <https://kairos.cnext.eu/dbt-contract#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+
+kairos-dbt:ContractIdentityShape a sh:NodeShape ;
+    sh:targetClass kairos-dbt:ContractIdentity ;
+    sh:nodeKind sh:IRI ;
+    sh:property [ sh:path kairos-dbt:modelRef ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-dbt:virtualTable ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+    sh:property [ sh:path kairos-dbt:orderedGrainColumns ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-dbt:identityScope ; sh:minCount 1 ; sh:maxCount 1 ;
+                  sh:hasValue "contract-output" ] ;
+    sh:property [ sh:path kairos-dbt:contractContentHash ; sh:minCount 1 ; sh:maxCount 1 ;
+                  sh:pattern "^[0-9a-f]{64}$" ] ;
+    sh:property [ sh:path kairos-dbt:requiredTest ; sh:minCount 2 ] ;
+    sh:property [ sh:path kairos-dbt:verificationStatus ; sh:minCount 1 ; sh:maxCount 1 ;
+                  sh:in ( "verified" "unverified" ) ] .

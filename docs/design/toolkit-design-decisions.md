@@ -163,14 +163,17 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-113](#dd-113-governed-semantic-model-lifecycle) | Governed Semantic-Model Lifecycle | Accepted | 2026-07-25 |
 | [DD-114](#dd-114-policy-capability-deviation-and-versioned-release-evidence) | Policy, Capability, Deviation, and Versioned Release Evidence | Accepted | 2026-07-25 |
 | [DD-115](#dd-115-data-quality-policy-and-runtime-result-contract) | Data-Quality Policy and Runtime-Result Contract | Accepted | 2026-07-25 |
+| [DD-116](#dd-116-non-writing-projection-readiness) | Non-Writing Projection Readiness | Accepted | 2026-07-26 |
+| [DD-117](#dd-117-prefixable-virtual-column-iris-and-explicit-migration) | Prefixable Virtual-Column IRIs and Explicit Migration | Accepted | 2026-07-26 |
+| [DD-118](#dd-118-contracted-dbt-output-as-verified-source-identity) | Contracted dbt Output as Verified Source Identity | Accepted | 2026-07-26 |
 
 ---
 
 ## DD-001: Gold Layer Inheritance — Class-Per-Table
 
-**Status:** Proposed  
-**Date:** 2026-04-25  
-**Affects:** `gold_projector.py`, TMDL output, Power BI relationships  
+**Status:** Proposed
+**Date:** 2026-04-25
+**Affects:** `gold_projector.py`, TMDL output, Power BI relationships
 **Implementation:** `src/kairos_ontology/projections/medallion_gold_projector.py`
 
 ### Context
@@ -213,9 +216,9 @@ dim_legal_entity (party_sk PK+FK, registration_number, ...)
 
 ## DD-002: dbt SQL Dialect — Platform-Specific Generation
 
-**Status:** Accepted  
-**Date:** 2026-04-30  
-**Affects:** `medallion_dbt_projector.py`, silver/gold templates, type maps  
+**Status:** Accepted
+**Date:** 2026-04-30
+**Affects:** `medallion_dbt_projector.py`, silver/gold templates, type maps
 **Implementation:** Type maps `_SOURCE_TO_FABRIC`, `_SOURCE_TO_DATABRICKS`, `_PLATFORM_TYPE_MAPS`
 
 ### Context
@@ -251,9 +254,9 @@ Generate **platform-specific SQL** controlled by a `target_platform` parameter:
 
 ## DD-003: Staging = Platform-Specific, Silver = Portable
 
-**Status:** ~~Superseded by [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly)~~  
-**Date:** 2026-04-30  
-**Affects:** Template selection logic in `_gen_staging_models()`, silver model generation  
+**Status:** ~~Superseded by [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly)~~
+**Date:** 2026-04-30
+**Affects:** Template selection logic in `_gen_staging_models()`, silver model generation
 **Implementation:** `staging_model.sql.jinja2` (Fabric), `staging_model_databricks.sql.jinja2`
 
 ### Context
@@ -272,9 +275,9 @@ Original decision was: Platform-specific staging templates, portable silver via 
 
 ## DD-004: Keep "staging" Naming (Not "bronze")
 
-**Status:** ~~Superseded by [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly)~~  
-**Date:** 2026-04-30  
-**Affects:** dbt model naming convention, folder structure  
+**Status:** ~~Superseded by [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly)~~
+**Date:** 2026-04-30
+**Affects:** dbt model naming convention, folder structure
 **Implementation:** N/A — staging layer removed
 
 ### Context
@@ -292,9 +295,9 @@ directly via `{{ source() }}`. See DD-014.
 
 ## DD-005: Silver References Staging Directly
 
-**Status:** ~~Superseded by [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly)~~  
-**Date:** 2026-04-30  
-**Affects:** Silver model generation, dbt DAG structure  
+**Status:** ~~Superseded by [DD-014](#dd-014-eliminate-staging--silver-reads-bronze-directly)~~
+**Date:** 2026-04-30
+**Affects:** Silver model generation, dbt DAG structure
 **Implementation:** Silver models use `{{ source('system', 'table') }}` directly
 
 ### Context
@@ -310,9 +313,9 @@ is no staging layer at all. See DD-014.
 
 ## DD-006: Column-Level JSON, Not Table-Level physicalStorage
 
-**Status:** Accepted  
-**Date:** 2026-04-30  
-**Affects:** `kairos-bronze:` vocabulary, staging template JSON handling  
+**Status:** Accepted
+**Date:** 2026-04-30
+**Affects:** `kairos-bronze:` vocabulary, staging template JSON handling
 **Implementation:** `kairos-bronze:contentType` annotation on columns
 
 ### Context
@@ -338,9 +341,9 @@ Do NOT add a table-level `physicalStorage` property.
 
 ## DD-007: Extend kairos-ext Namespace
 
-**Status:** Accepted  
-**Date:** 2026-04-30  
-**Affects:** Annotation vocabulary, `scaffold/kairos-ext.ttl`  
+**Status:** Accepted
+**Date:** 2026-04-30
+**Affects:** Annotation vocabulary, `scaffold/kairos-ext.ttl`
 **Implementation:** New properties in `kairos-ext:` namespace
 
 ### Context
@@ -362,9 +365,9 @@ Extend `kairos-ext:` namespace.
 
 ## DD-008: Generated Macros Alongside Models
 
-**Status:** Accepted  
-**Date:** 2026-04-30  
-**Affects:** dbt output structure, `macros/` folder generation  
+**Status:** Accepted
+**Date:** 2026-04-30
+**Affects:** dbt output structure, `macros/` folder generation
 **Implementation:** `templates/dbt/macros/kairos_*.sql`
 
 ### Context
@@ -392,9 +395,9 @@ Macros use `{% if target.type == '...' %}` for platform dispatch.
 
 ## DD-009: Fabric-First Default Platform
 
-**Status:** Accepted  
-**Date:** 2026-04-30  
-**Affects:** `DEFAULT_PLATFORM` constant, dbt_project.yml scaffold  
+**Status:** Accepted
+**Date:** 2026-04-30
+**Affects:** `DEFAULT_PLATFORM` constant, dbt_project.yml scaffold
 **Implementation:** `medallion_dbt_projector.py: DEFAULT_PLATFORM = "fabric"`
 
 ### Context
@@ -416,9 +419,9 @@ Default to **Microsoft Fabric** (`"fabric"`).
 
 ## DD-010: Branch Protection on new-repo
 
-**Status:** Accepted  
-**Date:** 2026-04-30  
-**Affects:** `cli/main.py` new-repo command, `_configure_branch_protection()`  
+**Status:** Accepted
+**Date:** 2026-04-30
+**Affects:** `cli/main.py` new-repo command, `_configure_branch_protection()`
 **Implementation:** `gh api` REST calls for repo settings + branch protection rules
 
 ### Context
@@ -453,9 +456,9 @@ Protection failures warn but do not abort repo creation (see DD-012).
 
 ## DD-011: Silver Output Inside dbt Tree
 
-**Status:** Accepted  
-**Date:** 2026-04-28  
-**Affects:** Output directory structure, `projector.py` path logic  
+**Status:** Accepted
+**Date:** 2026-04-28
+**Affects:** Output directory structure, `projector.py` path logic
 **Implementation:** Silver DDL → `output/medallion/dbt/analyses/{domain}/`, ERD → `docs/diagrams/`
 
 ### Context
@@ -486,9 +489,9 @@ Consolidate all silver artifacts inside the dbt project tree:
 
 ## DD-012: Non-Fatal GitHub Operations
 
-**Status:** Accepted  
-**Date:** 2026-04-30  
-**Affects:** `_configure_branch_protection()`, `_add_reference_models()`  
+**Status:** Accepted
+**Date:** 2026-04-30
+**Affects:** `_configure_branch_protection()`, `_add_reference_models()`
 **Implementation:** try/except with warning prints, non-zero exit avoided
 
 ### Context
@@ -530,9 +533,9 @@ except subprocess.CalledProcessError as exc:
 
 ## DD-013: Pre-Release Publishing via Git Tags + Channel System
 
-**Status:** Accepted  
-**Date:** 2026-05-01  
-**Affects:** `release.ps1`, `.github/workflows/release.yml`, scaffold `pyproject.toml.template`, `cli/main.py` update command  
+**Status:** Accepted
+**Date:** 2026-05-01
+**Affects:** `release.ps1`, `.github/workflows/release.yml`, scaffold `pyproject.toml.template`, `cli/main.py` update command
 **Implementation:** Tag-based pre-releases, `[tool.kairos] channel` in hub pyproject.toml
 
 > **Superseded in part by [DD-066](#dd-066-no-pypi-publishing--git-tag--wheel-url-distribution):**
@@ -583,9 +586,9 @@ Use **git tag-based pre-releases** with a **channel system**:
 ## DD-014: Eliminate Staging — Silver Reads Bronze Directly
 
 **Status:** ~~Superseded by [DD-106](#dd-106-immutable-bronze-and-mandatory-logical-source-preparation)~~
-**Date:** 2026-05-14  
-**Affects:** `medallion_dbt_projector.py`, dbt templates, generated project structure  
-**Implementation:** `_gen_silver_models()` uses `{{ source() }}`, `_gen_staging_models()` removed from pipeline  
+**Date:** 2026-05-14
+**Affects:** `medallion_dbt_projector.py`, dbt templates, generated project structure
+**Implementation:** `_gen_silver_models()` uses `{{ source() }}`, `_gen_staging_models()` removed from pipeline
 **Supersedes:** DD-003, DD-004, DD-005
 
 ### Context
@@ -653,9 +656,9 @@ The `models/staging/` directory and all `stg_*` files should be deleted.
 
 ## DD-015: Vocabulary TTL as Bronze Contract
 
-**Status:** Accepted  
-**Date:** 2026-05-14  
-**Affects:** `integration/sources/`, `_sources.yml` generation, silver model generation  
+**Status:** Accepted
+**Date:** 2026-05-14
+**Affects:** `integration/sources/`, `_sources.yml` generation, silver model generation
 **Implementation:** `_parse_bronze()` reads vocabulary TTL; `_gen_sources()` generates minimal YAML
 
 ### Context
@@ -698,9 +701,9 @@ source of truth** for bronze table structure. This is a foundational contract:
 
 ## DD-016: Stale Managed Skill Cleanup During Update
 
-**Status:** Accepted  
-**Date:** 2026-05-14  
-**Affects:** `cli/main.py` update command  
+**Status:** Accepted
+**Date:** 2026-05-14
+**Affects:** `cli/main.py` update command
 **Implementation:** Stale skill scan after managed-file sync in `update()`
 
 ### Context
@@ -737,9 +740,9 @@ code is non-zero (same as outdated/missing files).
 
 ## DD-017: Dataplatform Integration — Two Deliverable Packages + Copilot Agent
 
-**Status:** Accepted  
-**Date:** 2026-04-30  
-**Affects:** scaffold workflows, issue templates, CLI `init`/`new-repo` commands  
+**Status:** Accepted
+**Date:** 2026-04-30
+**Affects:** scaffold workflows, issue templates, CLI `init`/`new-repo` commands
 **Implementation:** `scaffold/github-workflows/release-projections.yml`, `assign-copilot.yml`, `copilot-setup-steps.yml`, `scaffold/github-issue-templates/ontology-gap-request.yml`, `cli/main.py`
 
 ### Context
@@ -809,9 +812,9 @@ and **Copilot coding agent automation** for gap-request implementation:
 
 ## DD-018: Silver Model Granularity — Entity-Centric with Multi-Source Split
 
-**Status:** Accepted  
-**Date:** 2026-04-30 (updated 2026-05-01)  
-**Affects:** `medallion_dbt_projector.py`, silver model generation, dbt package structure  
+**Status:** Accepted
+**Date:** 2026-04-30 (updated 2026-05-01)
+**Affects:** `medallion_dbt_projector.py`, silver model generation, dbt package structure
 **Implementation:** `src/kairos_ontology/projections/medallion_dbt_projector.py`
 
 ### Context
@@ -875,9 +878,9 @@ consistent keys regardless of source column naming.
 
 ## DD-019: Cross-Domain FK Resolution via Surrogate Key Joins
 
-**Status:** Accepted  
-**Date:** 2026-05-01  
-**Affects:** `medallion_dbt_projector.py`, silver model SQL generation, schema YAML  
+**Status:** Accepted
+**Date:** 2026-05-01
+**Affects:** `medallion_dbt_projector.py`, silver model SQL generation, schema YAML
 **Implementation:** `src/kairos_ontology/projections/medallion_dbt_projector.py` `_extract_fk_columns_and_joins()`
 
 ### Context
@@ -925,9 +928,9 @@ The join approach was chosen because:
 
 ## DD-020: Stable Ontology IRIs — No Version in Namespace
 
-**Status:** Accepted  
-**Date:** 2026-05-01  
-**Affects:** all ontology files, `detect_ontology_uri()`, projections, `owl:imports`  
+**Status:** Accepted
+**Date:** 2026-05-01
+**Affects:** all ontology files, `detect_ontology_uri()`, projections, `owl:imports`
 **Implementation:** `src/kairos_ontology/projections/shared.py:136-141`, hub ontology conventions
 
 ### Context
@@ -977,9 +980,9 @@ Alternatives considered:
 
 ## DD-021: Extension-as-Whitelist for Imported Class Projection
 
-**Status:** Proposed  
-**Date:** 2026-05-01  
-**Affects:** silver projector, gold projector, `projector.py`, `kairos-ext:` annotation vocabulary  
+**Status:** Proposed
+**Date:** 2026-05-01
+**Affects:** silver projector, gold projector, `projector.py`, `kairos-ext:` annotation vocabulary
 **Implementation:** `src/kairos_ontology/projections/projector.py`, extension annotation handling
 
 ### Context
@@ -1086,9 +1089,9 @@ bsp-party:TradeParty kairos-ext:silverInclude true ;
 
 ## DD-022: Simplified FK Annotations for Silver Projection
 
-**Status:** Proposed  
-**Date:** 2026-05-01  
-**Affects:** `projections/shared.py`, all three medallion projectors, `kairos-ext.ttl`  
+**Status:** Proposed
+**Date:** 2026-05-01
+**Affects:** `projections/shared.py`, all three medallion projectors, `kairos-ext.ttl`
 **Implementation:** `classify_foreign_keys()` / `ForeignKeyDescriptor` in
 `src/kairos_ontology/core/projections/shared.py`
 
@@ -1168,9 +1171,9 @@ workflow where extension files already claim imported classes.
 
 ## DD-023: Shared Extension Defaults for Reference Models
 
-**Status:** Proposed  
-**Date:** 2026-05-19  
-**Affects:** silver projector, gold projector, dbt projector, `projector.py`, `catalog_utils.py`, `shared.py`  
+**Status:** Proposed
+**Date:** 2026-05-19
+**Affects:** silver projector, gold projector, dbt projector, `projector.py`, `catalog_utils.py`, `shared.py`
 **Implementation:** `src/kairos_ontology/projector.py`, `src/kairos_ontology/catalog_utils.py`, `src/kairos_ontology/projections/shared.py`
 
 ### Context
@@ -1229,9 +1232,9 @@ The shared defaults pattern was chosen because:
 
 ## DD-024: Hash-Tolerant Catalog Resolution
 
-**Status:** Accepted  
-**Date:** 2026-05-26  
-**Affects:** `catalog_utils.py`, import resolution, projection pipeline  
+**Status:** Accepted
+**Date:** 2026-05-26
+**Affects:** `catalog_utils.py`, import resolution, projection pipeline
 **Implementation:** `src/kairos_ontology/catalog_utils.py`
 
 ### Context
@@ -1298,8 +1301,8 @@ The normalization approach was chosen because:
 ## DD-025: SCD Type-Aware dbt Silver Models
 
 **Status:** ~~Superseded by [DD-109](#dd-109-temporal-execution-canonical-hashing-and-fk-resolution)~~
-**Date:** 2026-05-26  
-**Affects:** `medallion_dbt_projector.py`, `silver_model.sql.jinja2`, silver dbt output  
+**Date:** 2026-05-26
+**Affects:** `medallion_dbt_projector.py`, `silver_model.sql.jinja2`, silver dbt output
 **Implementation:** `src/kairos_ontology/projections/medallion_dbt_projector.py`, `src/kairos_ontology/templates/dbt/silver_model.sql.jinja2`
 
 ### Context
@@ -1364,9 +1367,9 @@ See full design: [`docs/design/dd-025-scd-type-aware-dbt-silver.md`](dd-025-scd-
 
 ## DD-026: Silver Layer Accuracy — Mapped-Only Columns, FK Parity, and SCD2 History Preservation
 
-**Status:** Accepted  
-**Date:** 2026-05-27  
-**Affects:** `medallion_dbt_projector.py`, `silver_model.sql.jinja2`, `silver_source_model.sql.jinja2`, `silver_union_model.sql.jinja2`  
+**Status:** Accepted
+**Date:** 2026-05-27
+**Affects:** `medallion_dbt_projector.py`, `silver_model.sql.jinja2`, `silver_source_model.sql.jinja2`, `silver_union_model.sql.jinja2`
 **Implementation:** `src/kairos_ontology/projections/medallion_dbt_projector.py`, `src/kairos_ontology/templates/dbt/`
 
 ### Context
@@ -1402,9 +1405,9 @@ Three accuracy issues were identified in the dbt silver projector output:
 
 ## DD-027: Cross-Domain Peer Extension Loading for FK Resolution
 
-**Status:** Accepted  
-**Date:** 2026-05-27  
-**Affects:** `projections/shared.py`, `projections/medallion_dbt_projector.py`, `projector.py`  
+**Status:** Accepted
+**Date:** 2026-05-27
+**Affects:** `projections/shared.py`, `projections/medallion_dbt_projector.py`, `projector.py`
 **Implementation:** `merge_ext_graph()` peer_ext_paths parameter; `_run_projection()` peer ext discovery
 
 ### Context
@@ -1466,9 +1469,9 @@ The peer loading approach was chosen because:
 
 ## DD-028: Multi-Table Same-Source Union Model Disambiguation
 
-**Status:** Accepted  
-**Date:** 2026-05-27  
-**Affects:** `projections/medallion_dbt_projector.py`, dbt silver model naming  
+**Status:** Accepted
+**Date:** 2026-05-27
+**Affects:** `projections/medallion_dbt_projector.py`, dbt silver model naming
 **Implementation:** Per-source model naming logic in `_gen_silver_models()`
 
 ### Context
@@ -1515,9 +1518,9 @@ The table suffix is only added when `count > 1` for that source system.
 
 ## DD-029: Silver Model Registry for Gold ref() Resolution
 
-**Status:** Accepted  
-**Date:** 2026-05-28  
-**Affects:** `projections/medallion_dbt_projector.py`, gold dbt model generation  
+**Status:** Accepted
+**Date:** 2026-05-28
+**Affects:** `projections/medallion_dbt_projector.py`, gold dbt model generation
 **Implementation:** `_build_silver_model_registry()`, updated `_silver_model_name_for_class()`
 
 ### Context
@@ -1568,9 +1571,9 @@ silver model's column set (structural columns like `_sk`, `_type`, `valid_from/t
 
 ## DD-030: rewriteURI Catalog Resolution with Extension Fallback
 
-**Status:** Accepted  
-**Date:** 2026-05-29  
-**Affects:** `src/kairos_ontology/catalog_utils.py` (CatalogResolver)  
+**Status:** Accepted
+**Date:** 2026-05-29
+**Affects:** `src/kairos_ontology/catalog_utils.py` (CatalogResolver)
 **Implementation:** `CatalogResolver._resolve_via_rewrite()` + `_rewrite_rules` list
 
 ### Context
@@ -1622,9 +1625,9 @@ directly point to a file.
 
 ## DD-031: Inherit naturalKey from Discriminator Parents
 
-**Status:** Accepted  
-**Date:** 2026-05-29  
-**Affects:** dbt projector — SK/IRI generation for discriminator subtypes  
+**Status:** Accepted
+**Date:** 2026-05-29
+**Affects:** dbt projector — SK/IRI generation for discriminator subtypes
 **Implementation:** `src/kairos_ontology/projections/medallion_dbt_projector.py`
 
 ### Context
@@ -1662,9 +1665,9 @@ the raw camelCase literal (used by `_get_nk_property_uris` for property URI reso
 
 ## DD-032: Reference Model Inspired — Local Pattern Adoption from Reference Models
 
-**Status:** Accepted  
-**Date:** 2026-05-30  
-**Affects:** modeling workflow, skill guidance, scaffold, alignment file conventions  
+**Status:** Accepted
+**Date:** 2026-05-30
+**Affects:** modeling workflow, skill guidance, scaffold, alignment file conventions
 **Implementation:** No code changes required — Inspired classes are regular local classes already supported by all projectors. Guidance lives in skills and `docs/design/dd-032-reference-model-alignment.md`.
 
 ### Context
@@ -1816,10 +1819,10 @@ file lives in `model/alignments/` and is never loaded during projection.
 
 ## DD-033: Replace Alignment Files with rdfs:seeAlso on Inspired Classes
 
-**Status:** Accepted  
-**Date:** 2026-05-30  
-**Affects:** modeling workflow, skill guidance, scaffold, DD-032 alignment mechanism  
-**Supersedes:** DD-032 §4 (alignment file convention)  
+**Status:** Accepted
+**Date:** 2026-05-30
+**Affects:** modeling workflow, skill guidance, scaffold, DD-032 alignment mechanism
+**Supersedes:** DD-032 §4 (alignment file convention)
 **Implementation:** Skill docs updated; `model/alignments/` removed from scaffold and scenario tests.
 
 ### Context
@@ -1878,9 +1881,9 @@ In practice, these files:
 
 ## DD-034: Extension Vocabulary is the Single Source of Truth; Defer `identityStrategy`
 
-**Status:** Accepted  
-**Date:** 2026-05-30  
-**Affects:** `scaffold/kairos-ext.ttl`, `medallion_dbt_projector.py`, `medallion_gold_projector.py`, CR-3, `tests/test_ext_vocabulary_coverage.py`  
+**Status:** Accepted
+**Date:** 2026-05-30
+**Affects:** `scaffold/kairos-ext.ttl`, `medallion_dbt_projector.py`, `medallion_gold_projector.py`, CR-3, `tests/test_ext_vocabulary_coverage.py`
 **Implementation:** Vocabulary declarations + FK-child warning in projectors; coverage guard test.
 
 ### Context
@@ -1936,9 +1939,9 @@ proposal to add a new `kairos-ext:identityStrategy` annotation for FK-child enti
 
 ## DD-035: Silver S3 Inheritance Gate — Respect `inheritanceStrategy` Annotation
 
-**Status:** Accepted  
-**Date:** 2026-05-30  
-**Affects:** `medallion_silver_projector.py`, `medallion_dbt_projector.py`, `gold_model.sql.jinja2`, scenario tests  
+**Status:** Accepted
+**Date:** 2026-05-30
+**Affects:** `medallion_silver_projector.py`, `medallion_dbt_projector.py`, `gold_model.sql.jinja2`, scenario tests
 **Implementation:** Silver pre-scan gate + TPC property inheritance; dbt sources scoping, dim_date CTE, SK validation, FK-child inverse lookup.
 
 ### Context
@@ -2008,9 +2011,9 @@ inconsistency plus four additional independent bugs:
 
 ## DD-036: Drop Git Submodules for Reference Models
 
-**Status:** Accepted  
-**Date:** 2026-05-31  
-**Affects:** `cli/main.py` (init, new-repo, update-refmodels), scaffold workflows, hub repos  
+**Status:** Accepted
+**Date:** 2026-05-31
+**Affects:** `cli/main.py` (init, new-repo, update-refmodels), scaffold workflows, hub repos
 **Implementation:** `_run_reference_models_update()` in cli/main.py
 
 ### Context
@@ -2047,8 +2050,8 @@ Remove all git submodule logic. Reference models are committed directly into
 
 ## DD-037: uv as Standard Environment Manager for Hub Repos
 
-**Status:** Accepted  
-**Date:** 2026-05-31  
+**Status:** Accepted
+**Date:** 2026-05-31
 **Affects:** scaffold/setup-env.ps1, scaffold/setup-env.sh, CLI update --upgrade,
 copilot-setup-steps.yml, kairos-setup-init skill, kairos-toolkit-ops skill
 
@@ -2104,9 +2107,9 @@ Alternatives considered:
 
 ## DD-038: Bronze Source Introspection & Layered dbt Architecture
 
-**Status:** Proposed  
-**Date:** 2026-06-01  
-**Affects:** `integration/sources/`, `_sources.yml` generation, dataplatform repos, dbt projector  
+**Status:** Proposed
+**Date:** 2026-06-01
+**Affects:** `integration/sources/`, `_sources.yml` generation, dataplatform repos, dbt projector
 **Implementation:** See `docs/design/dd-038-bronze-introspection-architecture.md` for full ADR
 
 ### Context
@@ -2144,8 +2147,8 @@ database/schema info, coupling the hub to a specific environment.
 ## DD-039: Enhanced Schema Extraction with JSON Flattening & Bronze Expanded Layer
 
 **Status:** ~~Superseded by [DD-106](#dd-106-immutable-bronze-and-mandatory-logical-source-preparation)~~
-**Date:** 2026-06-02  
-**Affects:** `extract-schema` CLI command, `import_source.py`, `kairos-develop-dataplatform` skill, dataplatform staging models, dbt projector  
+**Date:** 2026-06-02
+**Affects:** `extract-schema` CLI command, `import_source.py`, `kairos-develop-dataplatform` skill, dataplatform staging models, dbt projector
 **Implementation:** `src/kairos_ontology/extract_schema.py`, `src/kairos_ontology/generate_staging.py`, `scaffold/dataplatform/`, `medallion_dbt_projector.py`
 
 ### Context
@@ -2239,9 +2242,9 @@ the same fields.
 
 ## DD-040: Skill Lifecycle Architecture — Design / Execute Separation
 
-**Status:** Accepted  
-**Date:** 2026-05-30  
-**Affects:** All Copilot skills, skill naming, routing, scaffold distribution  
+**Status:** Accepted
+**Date:** 2026-05-30
+**Affects:** All Copilot skills, skill naming, routing, scaffold distribution
 **Implementation:** See `docs/design/dd-040-skill-lifecycle-architecture.md` for full ADR
 
 ### Context
@@ -2270,7 +2273,7 @@ Separate all skills into two categories:
 
 ## DD-041: LLM-powered Source Affinity Analysis & Coverage Reporting
 
-**Status:** Accepted  
+**Status:** Accepted
 **Date:** 2026-06-04 (updated 2026-07-18)
 **Affects:** `analyse_sources.py`, `coverage_report.py`, `ai_provider.py`, CLI,
 `kairos-design-source` and `kairos-design-domain` skills
@@ -2414,9 +2417,9 @@ Rewrite to **table-centric, one-call-per-table** classification:
 
 ## DD-043: Propose-alignment — pre-modeling column-to-property matching
 
-**Status:** Accepted  
-**Date:** 2026-06-05  
-**Affects:** `propose_alignment.py`, `cli/main.py`, `kairos-design-domain` skill  
+**Status:** Accepted
+**Date:** 2026-06-05
+**Affects:** `propose_alignment.py`, `cli/main.py`, `kairos-design-domain` skill
 **Implementation:** `src/kairos_ontology/propose_alignment.py`
 
 ### Context
@@ -2478,9 +2481,9 @@ Design choices:
 
 ## DD-044: Reference Model Specialization Discovery & Materialized Inventories
 
-**Status:** Proposed  
-**Date:** 2026-06-12  
-**Affects:** `analyse_sources.py`, `propose_alignment.py`, `coverage_report.py`, `inventory.py` (new), `cli/main.py`, DD-032 (amended)  
+**Status:** Proposed
+**Date:** 2026-06-12
+**Affects:** `analyse_sources.py`, `propose_alignment.py`, `coverage_report.py`, `inventory.py` (new), `cli/main.py`, DD-032 (amended)
 **Implementation:** `src/kairos_ontology/inventory.py`, `src/kairos_ontology/analyse_sources.py`
 
 ### Context
@@ -2537,9 +2540,9 @@ independently, which is wasteful and opaque.
 
 ## DD-045: Mapping Hints for `propose-alignment`
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `propose_alignment.py`, `cli/main.py`, `kairos-design-mapping` skill, `kairos-design-source` skill  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `propose_alignment.py`, `cli/main.py`, `kairos-design-mapping` skill, `kairos-design-source` skill
 **Implementation:** `src/kairos_ontology/propose_alignment.py` (hint functions + `include_mapping_hints`), `src/kairos_ontology/cli/main.py` (`--include-mapping-hints`)
 
 ### Context
@@ -2610,9 +2613,9 @@ advisory (Tier 2 shape), and the final transform/split decision stays human (Tie
 
 ## DD-046: Reference Model Specialization Visibility in Domain Modeling
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `kairos-design-domain` skill (both copies)  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `kairos-design-domain` skill (both copies)
 **Implementation:** `.github/skills/kairos-design-domain/SKILL.md` + `src/kairos_ontology/scaffold/skills/kairos-design-domain/SKILL.md`
 
 ### Context
@@ -2674,9 +2677,9 @@ presenting it, consistent with the three-tier methodology
 
 ## DD-047: Deterministic Inventory Freshness Pre-flight Gate
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `inventory.py`, `cli/main.py`, `kairos-design-domain` skill (both copies)  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `inventory.py`, `cli/main.py`, `kairos-design-domain` skill (both copies)
 **Implementation:** `src/kairos_ontology/inventory.py` (`compute_source_hash`, `source_sha256` envelope field, `check_inventories`), `src/kairos_ontology/cli/main.py` (`check-inventory` command)
 
 ### Context
@@ -2735,9 +2738,9 @@ now made by code, not by the model.
 
 ## DD-048: Business Discovery Phase & Company SKOS Glossary
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** new `kairos-design-discovery` skill (both copies), `kairos-design-mapping`, `kairos-design-domain`, `kairos-help`, `kairos-setup-init`, `copilot-instructions.md` (both copies), `cli/main.py` (`init` + `new-repo`), scaffold (`import/businessdiscovery/`, `ontology-hub/model/glossary/`)  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** new `kairos-design-discovery` skill (both copies), `kairos-design-mapping`, `kairos-design-domain`, `kairos-help`, `kairos-setup-init`, `copilot-instructions.md` (both copies), `cli/main.py` (`init` + `new-repo`), scaffold (`import/businessdiscovery/`, `ontology-hub/model/glossary/`)
 **Implementation:** `.github/skills/kairos-design-discovery/SKILL.md`, `src/kairos_ontology/scaffold/skills/kairos-design-discovery/SKILL.md`, `src/kairos_ontology/cli/main.py`, `src/kairos_ontology/scaffold/ontology-hub/model/glossary/`, `src/kairos_ontology/scaffold/import/businessdiscovery/`
 
 > **Update 2026-06-13:** the repo-root artifacts folder was renamed from
@@ -2808,9 +2811,9 @@ inferred until approved.
 
 ## DD-049: Self-Upgrade Re-exec & Running-vs-Pinned Version Guard
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `cli/main.py` (`update --upgrade`, `cli()` group callback), `kairos-toolkit-ops` skill (both copies)  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `cli/main.py` (`update --upgrade`, `cli()` group callback), `kairos-toolkit-ops` skill (both copies)
 **Implementation:** `src/kairos_ontology/cli/main.py` (`update`, `_read_pinned_toolkit_version`, `_warn_if_version_mismatch`), `tests/test_cli_update_upgrade.py`, `tests/test_cli_version_guard.py`
 
 ### Context
@@ -2866,9 +2869,9 @@ Two related failure modes left hubs silently running the wrong toolkit version:
 
 ## DD-050: Parquet Source Import
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `import_flatfile.py`, `cli/main.py` (`import-flatfile`), `pyproject.toml`, `kairos-design-source` skill (both copies)  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `import_flatfile.py`, `cli/main.py` (`import-flatfile`), `pyproject.toml`, `kairos-design-source` skill (both copies)
 **Implementation:** `src/kairos_ontology/import_flatfile.py` (`_arrow_type_to_sql`, `read_parquet_table`, `run_import_flatfile` dispatch), `tests/test_import_flatfile.py`
 
 ### Context
@@ -2915,9 +2918,9 @@ Add native Parquet support to `import-flatfile`:
 
 ## DD-051: Start-Modeling Routes to Lifecycle Start & Restart Pre-flight
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `copilot-instructions.md` (both copies), `kairos-design-domain` skill (both copies)  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `copilot-instructions.md` (both copies), `kairos-design-domain` skill (both copies)
 **Implementation:** `.github/copilot-instructions.md`, `.github/skills/kairos-design-domain/SKILL.md` (+ scaffold copies via `scripts/sync_dev_skills.py`)
 
 ### Context
@@ -2982,8 +2985,8 @@ blocking gate** — Gate 6 remains the hard constraint):
 
 ## DD-052: Import Commands Auto-Write an Import-Results Session File
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
+**Status:** Accepted
+**Date:** 2026-06-13
 **Affects:** `import_session.py` (new), `import_source.py`, `import_flatfile.py`,
 `cli/main.py` (init/new-repo), `kairos-design-source` skill
 
@@ -3029,10 +3032,10 @@ ontology-hub/.sessions-design-import/
 
 ## DD-053: CLI Soft Skill-Gate
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
+**Status:** Accepted
+**Date:** 2026-06-13
 **Affects:** `cli/main.py` (group + skill-covered commands), gated `*/SKILL.md`
-files, `.github/copilot-instructions.md` (+ scaffold copy)  
+files, `.github/copilot-instructions.md` (+ scaffold copy)
 **Implementation:** `_warn_if_no_skill_context()` + `_SKILL_COVERED_COMMANDS`
 in `src/kairos_ontology/cli/main.py`
 
@@ -3079,9 +3082,9 @@ silent and only the raw path nags**. CLI-only commands (`import-tmdl`,
 
 ## DD-054: Reference-Model Inventories Namespaced by Owning Model
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `generate-inventory`, `check-inventory`, `model/inventory/*.yaml`  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `generate-inventory`, `check-inventory`, `model/inventory/*.yaml`
 **Implementation:** `inventory.py` (`inventory_filename`, `check_inventories`),
 `cli/main.py` (`generate-inventory` command)
 
@@ -3144,10 +3147,10 @@ so they transparently pick up the now-complete set with no code change.
 
 ## DD-055: Business Discovery Materializes Reference-Model Breadth & Links Glossary to Ref-Model IRIs
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
+**Status:** Accepted
+**Date:** 2026-06-13
 **Affects:** `kairos-design-discovery` skill (+ scaffold copy), `kairos-design-domain`
-skill (step 2a note)  
+skill (step 2a note)
 **Implementation:** `.github/skills/kairos-design-discovery/SKILL.md` (Phase 1a,
 Phase 1 breadth, Phase 2 IRI resolution, Phase 4 rerun), mirrored to
 `src/kairos_ontology/scaffold/skills/`
@@ -3204,10 +3207,10 @@ it would violate discovery's read-only Gate 4 and bloat the hub with unclaimed c
 
 ## DD-056: Relocate Glossary & Inventory Folders to Hub Root (New Hubs Only)
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
+**Status:** Accepted
+**Date:** 2026-06-13
 **Affects:** `init`, `new-repo`, `migrate`, `generate-inventory`, `check-inventory`,
-hub scaffold layout, design skills (discovery/domain/mapping/source/help/setup-init)  
+hub scaffold layout, design skills (discovery/domain/mapping/source/help/setup-init)
 **Implementation:** `src/kairos_ontology/cli/main.py`,
 `src/kairos_ontology/scaffold/ontology-hub/businessdiscovery/` (moved),
 skills (both copies), `CHANGELOG.md`
@@ -3259,9 +3262,9 @@ auto-migration was rejected as out of scope and risky for committed data.
 
 ## DD-057: Windows `update --upgrade` Uses a Detached Self-Healing Managed-File Refresh
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `update --upgrade` (Windows)  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `update --upgrade` (Windows)
 **Implementation:** `src/kairos_ontology/cli/main.py`
 (`_schedule_windows_refresh`, `update()` upgrade branch),
 `tests/test_cli_update_upgrade.py`
@@ -3323,10 +3326,10 @@ out of sync with the pin.
 
 ## DD-058: Modeling Pre-Flight Gates on Source Analysis; Unpack Reference Models Before `analyse-sources`
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
+**Status:** Accepted
+**Date:** 2026-06-13
 **Affects:** `kairos-design-domain` skill (pre-flight branches), `kairos-design-source`
-skill (Phase 4)  
+skill (Phase 4)
 **Implementation:** `.github/skills/kairos-design-domain/SKILL.md`,
 `.github/skills/kairos-design-source/SKILL.md` (+ scaffold copies)
 
@@ -3386,9 +3389,9 @@ expensive analysis.
 
 ## DD-059: Modeling Pre-Flight Adds a Discovery-Completeness Gate (Independent of Source State)
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `kairos-design-domain` skill (pre-flight + Step 2a)  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `kairos-design-domain` skill (pre-flight + Step 2a)
 **Implementation:** `.github/skills/kairos-design-domain/SKILL.md` (+ scaffold copy)
 
 ### Context
@@ -3440,10 +3443,10 @@ not the authoritative evidence source (that is Gate 6 / source data).
 
 ## DD-060: Per-Document Extraction Tracking for Business Discovery
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
+**Status:** Accepted
+**Date:** 2026-06-13
 **Affects:** `kairos-design-discovery` skill, `.import/businessdiscovery/`,
-`ontology-hub/businessdiscovery/_extractions/`, new `discovery-status` CLI command  
+`ontology-hub/businessdiscovery/_extractions/`, new `discovery-status` CLI command
 **Implementation:** `src/kairos_ontology/discovery_extraction.py`,
 `discovery-status` command in `src/kairos_ontology/cli/main.py`,
 `.github/skills/kairos-design-discovery/SKILL.md` (Phase 1 / Phase 4) + scaffold copy
@@ -3531,11 +3534,11 @@ should store the repository-relative form `.import/businessdiscovery/<nested/pat
 
 ## DD-061: Deterministic Source-Coverage Gates (check-alignment + check-source-coverage)
 
-**Status:** Superseded by DD-094 on 2026-07-21  
-**Date:** 2026-06-13  
+**Status:** Superseded by DD-094 on 2026-07-21
+**Date:** 2026-06-13
 **Affects:** `kairos-design-domain` skill (Step 0a.2), `kairos-design-silver` +
 `kairos-execute-project` skills, `propose-alignment` output (alignment YAML
-`schema_version` 1 → 2), two new read-only CLI commands  
+`schema_version` 1 → 2), two new read-only CLI commands
 **Implementation:** `src/kairos_ontology/alignment_coverage.py`,
 `src/kairos_ontology/source_coverage.py`, `check-alignment` +
 `check-source-coverage` commands in `src/kairos_ontology/cli/main.py`,
@@ -3619,9 +3622,9 @@ operator experience consistent across all deterministic gates.
 
 ## DD-062: `update` Resolves an Upward-Walked Managed Root (No Silent Split-Hub)
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `src/kairos_ontology/hub_utils.py`, `src/kairos_ontology/cli/main.py` (`update`)  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `src/kairos_ontology/hub_utils.py`, `src/kairos_ontology/cli/main.py` (`update`)
 **Implementation:** `find_managed_root()` in `hub_utils.py`; re-root + guards in the `update` command
 
 ### Context
@@ -3688,9 +3691,9 @@ fix is scoped to `update`'s managed-root resolution.
 
 ## DD-063: Deterministic SKOS Glossary Builder (`build-glossary`)
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `src/kairos_ontology/glossary_builder.py`, `src/kairos_ontology/cli/main.py` (`build-glossary`), `kairos-design-discovery` skill  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `src/kairos_ontology/glossary_builder.py`, `src/kairos_ontology/cli/main.py` (`build-glossary`), `kairos-design-discovery` skill
 **Implementation:** `build_glossary()` + helpers in `glossary_builder.py`; `build_glossary_cmd` in `cli/main.py`
 
 ### Context
@@ -3747,9 +3750,9 @@ reuses the existing extraction schema as the single source of truth.
 
 ## DD-064: `validate` / `project` Resolve Paths From the Hub Root (Not CWD)
 
-**Status:** Accepted  
-**Date:** 2026-06-13  
-**Affects:** `src/kairos_ontology/cli/main.py` (`validate`, `project`, `_resolve_catalog`)  
+**Status:** Accepted
+**Date:** 2026-06-13
+**Affects:** `src/kairos_ontology/cli/main.py` (`validate`, `project`, `_resolve_catalog`)
 **Implementation:** `find_hub_root()`-based default resolution in the `validate`/`project` command bodies; hub-root-aware `_resolve_catalog()`
 
 ### Context
@@ -3817,10 +3820,10 @@ doubly-nested output directory.
 
 ## DD-065: Concurrent, Cached AI Pre-Modeling (`analyse-sources` + `propose-alignment`)
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `analyse-sources` + `propose-alignment` CLI commands, `kairos-design-source`
-+ `kairos-design-domain` skills, `kairos-help` CLI listing  
++ `kairos-design-domain` skills, `kairos-help` CLI listing
 **Implementation:** `src/kairos_ontology/_concurrency.py`, `src/kairos_ontology/_cache.py`,
 `src/kairos_ontology/_cost.py`, `src/kairos_ontology/analyse_sources.py`,
 `src/kairos_ontology/propose_alignment.py`, `src/kairos_ontology/cli/main.py`
@@ -3842,10 +3845,10 @@ layers; `--max-workers 1` reproduces the original serial path.
 
 ## DD-066: No PyPI Publishing — Git-Tag + Wheel-URL Distribution
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `.github/workflows/release.yml`, `README.md`, `kairos-toolkit-ops` +
-`SC-merge-pr` skills (and scaffold copies)  
+`SC-merge-pr` skills (and scaffold copies)
 **Implementation:** `release.yml` `build` + `github-release` jobs (no `publish-pypi`
 job, no `id-token` permission)
 
@@ -3899,10 +3902,10 @@ Drop PyPI publishing from the toolkit entirely:
 
 ## DD-067: Single-Line Release Management with Ephemeral Hotfix Branches
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `docs/RELEASING.md` (new), `CONTRIBUTING.md`, `kairos-toolkit-ops` skill
-(+ scaffold copy)  
+(+ scaffold copy)
 **Implementation:** Documentation + process only — no tooling or CI changes
 
 ### Context
@@ -3963,10 +3966,10 @@ Adopt **trunk-based development + ephemeral hotfix branches**, documented in a n
 
 ## DD-068: Custom-column triage in domain modeling (issue #164)
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `propose_alignment.py`, `alignment_coverage.py`, `cli/main.py`
-(`check-alignment`), `.github/skills/kairos-design-domain/SKILL.md` (+ scaffold copy)  
+(`check-alignment`), `.github/skills/kairos-design-domain/SKILL.md` (+ scaffold copy)
 **Implementation:** `disposition` field on `custom_columns`;
 `collect_custom_columns` + `CustomColumn` + `check-alignment --strict`
 
@@ -4028,10 +4031,10 @@ threshold-filtering keeps genuine business columns visible without arbitrary cut
 
 ## DD-069: propose-alignment plausibility & address review flags (issues #167/#168)
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `propose_alignment.py`, `alignment_coverage.py`, `cli/main.py`,
-`kairos-design-mapping` skill  
+`kairos-design-mapping` skill
 **Implementation:** `src/kairos_ontology/propose_alignment.py`
 (`_review_column_alignment`, `_detect_address_part`, `ColumnAlignment.review`),
 `src/kairos_ontology/alignment_coverage.py` (`collect_review_columns`,
@@ -4102,11 +4105,11 @@ Strong-evidence address detection and the numeric-identifier carve-out
 
 ## DD-070: Cross-module candidate properties in propose-alignment (issue #166)
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `src/kairos_ontology/propose_alignment.py`,
 `src/kairos_ontology/analyse_sources.py`, `src/kairos_ontology/cli/main.py`,
-`.github/skills/kairos-design-mapping/SKILL.md` (+ scaffold copy)  
+`.github/skills/kairos-design-mapping/SKILL.md` (+ scaffold copy)
 **Implementation:** `--cross-module` / `--accelerator` on `propose-alignment`;
 two-pool prompt + `ref_class_id` + `cross_module_matches` in
 `run_propose_alignment`; `load_accelerator_uri_modules` in `analyse_sources.py`.
@@ -4179,11 +4182,11 @@ explicitly-listed accelerator URIs (no `owl:imports` following → no FIBO blowu
 
 ## DD-071: File-management hygiene: session-log archival + non-authoritative glossary
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `src/kairos_ontology/glossary_builder.py`, design-skill SKILL.md
 files (`kairos-design-{domain,discovery,mapping,silver,gold,source}`,
-`kairos-diagnose-status`) + scaffold copies  
+`kairos-diagnose-status`) + scaffold copies
 **Implementation:** `_NON_AUTHORITATIVE_NOTE` stamp in `build_glossary_graph`;
 `.sessions-design/_archive/` convention documented in the design skills.
 
@@ -4242,12 +4245,12 @@ removes the manual step for projection logs. `kairos-diagnose-status` ignores th
 
 ## DD-072: Provenance comment header on toolkit-generated TTL
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `src/kairos_ontology/_provenance.py` (new),
 `src/kairos_ontology/import_source.py`, `src/kairos_ontology/glossary_builder.py`,
 `src/kairos_ontology/cli/main.py` (`init` / `new-repo` scaffold writers),
-`kairos-design-domain` + `kairos-setup-config` SKILL.md (+ scaffold copies)  
+`kairos-design-domain` + `kairos-setup-config` SKILL.md (+ scaffold copies)
 **Implementation:** `provenance_comment()` / `prepend_provenance()` /
 `strip_provenance()` in `_provenance.py`; call sites in the generators above.
 
@@ -4300,11 +4303,11 @@ across generators and gives skills one reusable entry point.
 
 ## DD-073: Transitive discriminator folding + silverExclude (issue #172)
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `src/kairos_ontology/projections/medallion_silver_projector.py`,
 `src/kairos_ontology/scaffold/kairos-ext.ttl`,
-`kairos-design-silver` SKILL.md (+ scaffold copy)  
+`kairos-design-silver` SKILL.md (+ scaffold copy)
 **Implementation:** `_nearest_claimed_ancestor()` (new), URI-keyed `folded_subtypes`,
 bounded-ancestor merge in the S3 post-pass, `silverExclude` filter +
 `_warn_silver_exclude_dependents()`.
@@ -4370,11 +4373,11 @@ existing "stop at claimed" semantics gives the bounded property merge for free.
 
 ## DD-074: Multi-source merge — canonical superset + per-source FK joins (issue #175)
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `src/kairos_ontology/projections/medallion_dbt_projector.py`,
 `src/kairos_ontology/templates/dbt/silver_source_model.sql.jinja2`,
-`src/kairos_ontology/templates/dbt/silver_union_model.sql.jinja2`  
+`src/kairos_ontology/templates/dbt/silver_union_model.sql.jinja2`
 **Implementation:** `_build_merge_superset()`, `_build_column_type_map()`,
 `_merge_pad_type()` (new); rewired multi-source branch of `_gen_silver_models()`.
 
@@ -4464,15 +4467,15 @@ external dbt/medallion review, which both converged on superset + typed NULL pad
 
 ## DD-075: Sample-grounded mapping evidence (masked example values + transform compatibility)
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `src/kairos_ontology/core/_samples.py`,
 `src/kairos_ontology/core/source_privacy.py`,
 `src/kairos_ontology/core/import_flatfile.py`,
 `src/kairos_ontology/core/extract_schema.py`,
 `src/kairos_ontology/core/import_source.py`,
 `src/kairos_ontology/core/propose_alignment.py`, `src/kairos_ontology/cli/main.py`,
-`src/kairos_ontology/validator.py`, `.github/skills/kairos-design-mapping/SKILL.md`  
+`src/kairos_ontology/validator.py`, `.github/skills/kairos-design-mapping/SKILL.md`
 **Implementation:** `_samples.py` (`is_pii_column`, `value_is_pii_shaped`,
 `mask_value`, `example_values`, opaque persistence redaction);
 `source-privacy [--fix]`; `ColumnAlignment.example_values` /
@@ -4542,11 +4545,11 @@ human-confirmed mapping flow.
 
 ## DD-076: `suggest-shapes` — draft SHACL from source profiling
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `src/kairos_ontology/suggest_shapes.py` (new),
 `src/kairos_ontology/cli/main.py`, `.github/skills/kairos-execute-validate/SKILL.md`,
-`.github/skills/kairos-help/SKILL.md`  
+`.github/skills/kairos-help/SKILL.md`
 **Implementation:** `suggest_shapes.build_shapes_graph()` / `suggest_shapes()`;
 `suggest-shapes` CLI command; entry in `_SKILL_COVERED_COMMANDS`.
 
@@ -4593,10 +4596,10 @@ Writing outside the loaded shapes dir is the safety mechanism that makes
 
 ## DD-077: Custom-column triage hardening (issue #182)
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
+**Status:** Accepted
+**Date:** 2026-06-14
 **Affects:** `propose-alignment` generation + `check-alignment` gate; custom-column
-triage at Checkpoint 3b of `kairos-design-domain`  
+triage at Checkpoint 3b of `kairos-design-domain`
 **Implementation:** `src/kairos_ontology/propose_alignment.py`,
 `src/kairos_ontology/alignment_coverage.py`, `src/kairos_ontology/_cost.py`,
 `src/kairos_ontology/ai_provider.py`, `src/kairos_ontology/cli/main.py`
@@ -4685,9 +4688,9 @@ Ship a dependency-ordered set of workstreams (rubber-duck-reviewed):
 
 ## DD-078: User-facing extras packaging + Foundry token-credential fallback
 
-**Status:** Accepted  
-**Date:** 2026-06-14  
-**Affects:** `pyproject.toml`, `src/kairos_ontology/ai_provider.py`, scaffold `.env.example` copies  
+**Status:** Accepted
+**Date:** 2026-06-14
+**Affects:** `pyproject.toml`, `src/kairos_ontology/ai_provider.py`, scaffold `.env.example` copies
 **Implementation:** `pyproject.toml` (`[project.optional-dependencies]` + `[dependency-groups]`), `ai_provider.py::_create_foundry_client`, `tests/test_packaging_extras.py`, `tests/test_ai_provider.py`
 
 ### Context
@@ -4740,9 +4743,9 @@ workflows. Defensive try/fallback keeps behavior correct across SDK versions.
 
 ## DD-079: dbt cross-table warning conflates inherited vs own properties (issue #181)
 
-**Status:** Accepted  
-**Date:** 2026-06-15  
-**Affects:** `src/kairos_ontology/projections/medallion_dbt_projector.py`  
+**Status:** Accepted
+**Date:** 2026-06-15
+**Affects:** `src/kairos_ontology/projections/medallion_dbt_projector.py`
 **Implementation:** `_gen_silver_models` (cross-table classification), `write_dbt_session_log` (`## ℹ️ Info` section), `tests/scenarios/test_scenario_dbt.py::TestCrossTableWarnings`
 
 ### Context
@@ -4797,11 +4800,11 @@ counts.
 
 ## DD-080: Two-layer lifecycle state, deterministic `status` CLI, and the `kairos-flow` single entry point
 
-**Status:** Accepted  
-**Date:** 2026-06-20  
+**Status:** Accepted
+**Date:** 2026-06-20
 **Affects:** `src/kairos_ontology/status.py`, `cli/main.py` (`status` command),
 `.github/skills/kairos-flow/`, `.github/skills/kairos-diagnose-status/`, scaffold
-skills, `kairos-help`, methodology doc §21  
+skills, `kairos-help`, methodology doc §21
 **Implementation:** `src/kairos_ontology/status.py` (scanner),
 `status` CLI command, `kairos-flow` skill (state owner + orchestrator)
 
@@ -4890,10 +4893,10 @@ backward-compatibility break.
 
 ## DD-081: `analyse-sources --domains` is an output filter, not a candidate restriction
 
-**Status:** Accepted  
-**Date:** 2026-06-20  
+**Status:** Accepted
+**Date:** 2026-06-20
 **Affects:** `src/kairos_ontology/analyse_sources.py`, `cli/main.py`
-(`analyse-sources`), `kairos-design-source` skill  
+(`analyse-sources`), `kairos-design-source` skill
 **Implementation:** `run_analyse_sources` (remove candidate prune; add
 `_filter_analysis_by_domain` post-classification); issue #189
 
@@ -4933,11 +4936,11 @@ Treat `--domains` as a **post-classification output focus**:
 
 ## DD-082: Claim-curation ergonomics: `decide-claims`, URI back-fill, skeleton bootstrap, intra-hub imports (issue #190)
 
-**Status:** Accepted  
-**Date:** 2026-06-20  
+**Status:** Accepted
+**Date:** 2026-06-20
 **Affects:** `src/kairos_ontology/decide_claims.py` (new),
 `claim_projection_sync.py`, `migrate_claims.py`, `cli/main.py`,
-`kairos-design-domain` skill  
+`kairos-design-domain` skill
 **Implementation:** issue #190 (items 1–5, 7); item 6 split to issue #191
 
 ### Context
@@ -5005,10 +5008,10 @@ gap, which is a missing **query + bulk-update API**. Address each item:
 
 ## DD-083: `claims-to-silver-ext` preserves authored TTL via a managed block (issue #191)
 
-**Status:** Accepted  
-**Date:** 2026-06-20  
+**Status:** Accepted
+**Date:** 2026-06-20
 **Affects:** `src/kairos_ontology/claim_projection_sync.py`,
-`kairos-design-domain` skill  
+`kairos-design-domain` skill
 **Implementation:** issue #191 (split from #190 item 6); supersedes the
 whole-graph rewrite
 
@@ -5077,11 +5080,11 @@ verbatim:
 
 ## DD-084: Deterministic address relationship candidates surfaced as advisory metadata (issue #192)
 
-**Status:** Accepted  
-**Date:** 2026-06-20  
+**Status:** Accepted
+**Date:** 2026-06-20
 **Affects:** `src/kairos_ontology/propose_alignment.py`,
 `src/kairos_ontology/claim_registry.py`,
-`src/kairos_ontology/migrate_claims.py`, `kairos-design-domain` skill  
+`src/kairos_ontology/migrate_claims.py`, `kairos-design-domain` skill
 **Implementation:** issue #192 Phase A1 (A2 target-URI naming + Phase B
 satellite/child-entity detection deferred)
 
@@ -5158,10 +5161,10 @@ cross-module widening, no new claim type, no registry migration.
 
 ## DD-085: OKF phase logs replace interactive `.sessions-design` logs
 
-**Status:** Accepted  
-**Date:** 2026-06-20  
+**Status:** Accepted
+**Date:** 2026-06-20
 **Affects:** `cli/main.py`, design skill instructions, scaffold skill copies,
-`kairos-help`, `kairos-diagnose-status`, `tests/test_init.py`  
+`kairos-help`, `kairos-diagnose-status`, `tests/test_init.py`
 **Implementation:** scaffold and skill cleanup following DD-080
 
 ### Context
@@ -5215,10 +5218,10 @@ session evidence.
 
 ## DD-086: Reporting-informed draft-model planning report
 
-**Status:** Accepted  
-**Date:** 2026-06-21  
+**Status:** Accepted
+**Date:** 2026-06-21
 **Affects:** `src/kairos_ontology/draft_model_report.py`, `import_tmdl.py`,
-`derive_claims.py` evidence workflow, `cli/main.py`, design skills  
+`derive_claims.py` evidence workflow, `cli/main.py`, design skills
 **Implementation:** `kairos-ontology draft-model-report`
 
 ### Context
@@ -6082,10 +6085,10 @@ or in `kairos-diagnose-status`/`kairos-flow` without generating artifacts.
 
 ## DD-097: Multi-domain dbt projection — shared-artifact reconciliation and peer-import authority (issue #220)
 
-**Status:** Accepted  
-**Date:** 2026-07-21  
+**Status:** Accepted
+**Date:** 2026-07-21
 **Affects:** `src/kairos_ontology/core/projector.py`,
-`src/kairos_ontology/core/projections/medallion_dbt_projector.py`  
+`src/kairos_ontology/core/projections/medallion_dbt_projector.py`
 **Implementation:** issue #220
 
 ### Context
@@ -6148,8 +6151,8 @@ already scanned the full directory, closing the divergence between the two code 
 
 ## DD-098: Alignment & projection correctness hardening (toolkit-optimizations F1–F7)
 
-**Status:** Accepted  
-**Date:** 2026-07-21  
+**Status:** Accepted
+**Date:** 2026-07-21
 **Affects:** `src/kairos_ontology/core/propose_alignment.py`,
 `src/kairos_ontology/core/migrate_claims.py`,
 `src/kairos_ontology/core/claim_registry.py`,
@@ -6160,7 +6163,7 @@ already scanned the full directory, closing the divergence between the two code 
 `src/kairos_ontology/cli/main.py`,
 `src/kairos_ontology/core/projections/shared.py`,
 `src/kairos_ontology/core/projections/medallion_dbt_projector.py`,
-`src/kairos_ontology/core/projections/medallion_silver_projector.py`  
+`src/kairos_ontology/core/projections/medallion_silver_projector.py`
 **Implementation:** `docs/draft/toolkitoptimizations.md` (issue #219 for F1)
 
 ### Context
@@ -6235,10 +6238,10 @@ are deterministic (no LLM). `core` still never imports `mdm`.
 
 ## DD-099: Single typed projection target registry
 
-**Status:** Accepted  
-**Date:** 2026-07-21  
+**Status:** Accepted
+**Date:** 2026-07-21
 **Affects:** `src/kairos_ontology/core/projector.py`,
-`src/kairos_ontology/cli/main.py`, `src/kairos_ontology/mdm/__init__.py`  
+`src/kairos_ontology/cli/main.py`, `src/kairos_ontology/mdm/__init__.py`
 **Implementation:** `TargetSpec` and `register_target()` in the core projector
 
 ### Context
@@ -6281,10 +6284,10 @@ retains extensibility without weakening the package boundary.
 
 ## DD-100: Explicit one-shot migration for retired inventory & projection layouts
 
-**Status:** Accepted  
-**Date:** 2026-07-21  
+**Status:** Accepted
+**Date:** 2026-07-21
 **Affects:** `core/inventory.py`, `core/claim_projection_sync.py`,
-`core/migrate_claims.py`, `core/propose_alignment.py`, `cli/main.py`  
+`core/migrate_claims.py`, `core/propose_alignment.py`, `cli/main.py`
 **Implementation:** the existing `kairos-ontology migrate` command
 
 ### Context
@@ -7381,15 +7384,198 @@ generated SQL has executed or that the toolkit operates a data platform.
 
 ---
 
-## Template for New Decisions
+## DD-116: Non-Writing Projection Readiness
 
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** scoped closure/loading, projection CLI/orchestration, dbt and Gold physical
+planning, lifecycle status, design validators/scaffolds, and readiness reports
+**Implementation:** `core/projection_readiness.py`, projector check-only execution, and
+`check-projection`; `core/reference_modules.py`; `core/design_validation.py`;
+`core/authoring_scaffolds.py`; `core/status.py`
+
+### Context
+
+Projection was the first point where scoped ontology closure, synchronized contracts,
+bindings, normalized policy, adapter feasibility, and physical plans were evaluated
+together. Running it for diagnosis also rendered and wrote generated output.
+
+### Decision
+
+`check-projection` runs the same scope discovery and projection pipeline through physical
+artifact planning, then stops before render and every filesystem write. Preparation, mapping, DD-108 identity, incremental runtime, temporal/FK, adapter feasibility,
+data quality, and Gold evaluation use the shared `COLLECT` model for dbt, Silver, and Power BI
+readiness. Each subsystem is evaluated once; the orchestrator never catches and retries a
+whole projection. Stages return partial or unavailable typed results, preserve fail-fast first-
+diagnostic parity, and mechanically mark dependent checks `not_evaluated` with prerequisite
+diagnostic IDs while unrelated roots continue. Real projection keeps `FAIL_FAST` as its
+default. The command returns a schema-versioned text or stable JSON report and exits
+nonzero for blockers. The evaluator itself remains non-writing. Callers may preserve its exact
+versioned JSON under `.kairos-state/reports/`; status consumes but never fabricates that evidence.
+
+Scope is derived from the selected ontology/import closure plus the explicitly selected
+accelerator/module profile. Validation, inventory, claim synchronization, readiness, and
+projection share that domain-scoped closure authority: unresolved modules inside the requested
+closure fail closed, while unrelated installed accelerator modules are neither instantiated nor
+allowed to affect the exit code. `check-inventory --domains ... --explain-scope` remains the sole
+reference-inventory freshness authority and reference-model updates are always explicit.
+
+Source, mapping, transformation, and Silver completion gates are scoped views of this same
+non-writing evaluation. Scope filters diagnostics only after the shared bind/normalize
+authorities have produced them; it does not reimplement their rules. Reports identify the owner
+skill and prerequisite phases. Local Turtle/SHACL/design validity remains distinct from bound
+readiness.
+
+Lifecycle status is an additive v3 compatibility layer over the legacy phase view. It derives the
+monotonic chain `authored`, `design-valid`, `bound-valid`, `projection-ready`, `generated`,
+`compile-valid`, `runtime-valid`, and `release-eligible` from authored artifacts and known
+versioned reports. A later artifact cannot promote the effective state across an unknown or
+blocked predecessor. Missing, stale, malformed, or unknown-schema reports are `unknown` warnings,
+not migration failures. Legacy `done` remains readable as legacy/unknown input and is never
+interpreted as a failed gate or richer readiness evidence.
+
+Silver is split into logical intent (SCD, identity/grain, FK/temporal, PII and DQ choices) and a
+later bound confirmation. Bound confirmation consumes only the Silver-scoped non-writing
+evaluator after final transformation and mapping. Complex routing is logical Silver → contracted
+dbt transformation → mapping → bound Silver → full readiness → projection; simple direct/scalar
+mapping omits only the transformation checkpoint. Flow and project skills never route to
+generation while the full readiness report has blockers.
+
+Focused, read-only `validate-mapping` and `validate-silver-ext` commands establish local design
+validity without loading unrelated accelerator closure. Evidence-grounded `scaffold-mapping` and
+`scaffold-silver-ext` output proposed-only RDF by default and write only when an output is
+explicitly requested; existing outputs require `--overwrite`. Scaffolds never authorize business
+semantics and must pass the focused validator before review. Class/property lookup uses the shared
+semantic index, including inherited properties and ranges.
+
+Regeneration is non-destructive. Managed authorities update only their delimited managed blocks
+and preserve authored triples outside those blocks. Operations that must rewrite RDF provide a
+non-writing plan first. In particular, legacy whole-graph managed-surface migration stages durable
+backups, and column-IRI migration requires explicit apply, validates all collisions first, and
+creates a new backup before writing. The lifecycle scanner validates phase-log xrefs and declared
+deliverables, reports disagreement with deterministic filesystem state as drift, ignores archived
+logs, and never treats a phase-log checkbox as artifact evidence.
+
+### Rationale
+
+Sharing the existing bind, `normalize_contract`, shape, adapter, and materialization
+functions preserves first-error parity and avoids a second simulation of projection rules.
+
+### Consequences
+
+- The command cannot detect rendering, output-filesystem, SVG, compile, or runtime failures.
+- Existing projection behavior and legacy exception contracts remain unchanged.
+- Reports expose stable ordered diagnostics plus the backward-compatible first `blocker`.
+  Remediation is dependency ordered and deduplicated by owning skill and root cause; impacted
+  FKs share one task when they depend on the same missing target semantic key.
+- A collected blocker is valid only when it is reachable through normal `FAIL_FAST` projection
+  after its prerequisites are repaired; blockers need not be simultaneously reachable.
+- Existing v1/v2 status keys and legacy phase readers remain intact; v3 adds the lifecycle object.
+- Readiness blockers participate in the composed release gate, while absent/stale/unknown evidence
+  remains advisory for compatibility.
+- Authoring scaffolds reduce mechanical TTL work but leave naming, mapping, identity, runtime, and
+  governance decisions proposed until their owning design skill confirms them.
+
+---
+
+## DD-117: Prefixable Virtual-Column IRIs and Explicit Migration
+
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** synchronized dbt virtual vocabularies and source-column mapping references
+**Implementation:** `core/dbt_contract_sync.py`, `core/column_iri_migration.py`, and
+`migrate-column-iris`
+
+### Context
+
+Slash-delimited virtual-column IRIs such as `#orders/order_id` are valid full IRIs but
+cannot be written as Turtle prefixed names because `/` is not allowed in `PN_LOCAL`.
+Silently changing managed vocabularies would break existing mappings.
+
+### Decision
+
+New columns use `{virtual_source_iri}__{percent-encoded-column-name}`. The stable `__`
+separator is valid in `PN_LOCAL`; dbt contract column names are restricted identifiers.
+Synchronization preserves identities found in an existing managed vocabulary.
+
+Legacy full IRIs remain resolvable during a deprecation window. Migration is a separate,
+default-preview operation that rewrites source and mapping RDF references with `rdflib`.
+Apply requires an explicit new backup directory, reports every old/new IRI, checks all
+target collisions before writing, and preserves unrelated triples.
+
+Compatibility is vocabulary-led: legacy mappings resolve against a preserved legacy
+vocabulary, but no legacy aliases are added to a newly generated vocabulary. Mixed
+new-vocabulary/old-mapping input remains an explicit resolution error. Migration
+transitions the legacy vocabulary and its discovered mapping references together.
+
+### Rationale
+
+Double underscore is visually distinct, valid at every `PN_LOCAL` position used here,
+and avoids the trailing-dot restrictions of the alternative `.` separator. Explicit
+migration keeps compatibility and review separate from routine contract synchronization.
+
+### Consequences
+
+- New mappings can use compact prefixed names such as `virtual:orders__order_id`.
+- Existing hubs retain slash IRIs until their owners run the migration.
+- Serialized Turtle formatting may change on apply, while graph semantics and unrelated
+  triples remain intact.
+
+---
+
+## DD-118: Contracted dbt Output as Verified Source Identity
+
+**Status:** Accepted
+**Date:** 2026-07-26
+
+### Context
+
+DD-108 accepted physical `RecordKeyPolicy` and `ArrayChildContract` authorities only. A
+keyless raw source whose governed dbt transformation forms a unique output grain could not
+represent that identity truthfully. Declared tests were insufficient because they prove no
+warehouse result.
+
+### Decision
+
+`sync-dbt-contracts` emits a typed `kairos-dbt:ContractIdentity` containing its contract/model
+reference, virtual table, ordered grain columns, contract-output scope, replacement lineage,
+required uniqueness/non-null tests, canonical CDC bindings, decision evidence/status, and a
+canonical SHA-256 content hash covering contract identity fields and SQL.
+
+DD-108 accepts this as its third `sourceIdentity` authority. It remains source/output-scoped
+and never establishes enterprise identity. Actual passing dbt test results are captured from
+supplied `run_results.json` plus its manifest in a versioned deterministic evidence artifact.
+Evidence v2 requires matching non-empty invocation IDs and dbt versions, an unambiguous model,
+and exact executed tests. Ordinary standard dbt manifest v12 and run-results artifacts are the
+authority: the model path, raw code, and dbt SHA-256 checksum bind current SQL, while standard
+model, column, config/contract, constraint, generic-test, singular-test, and unit-test fields
+bind current YAML semantics. Custom manifest fields and post-run current-file attestations are
+not accepted. Unbound v1 evidence is rejected rather than upgraded or synthesized.
+Missing, incomplete, or hash-stale evidence blocks as `identity.contract-unverified`.
+Readiness evaluates discovered contracts even with no transformation candidates.
+The transformation-scoped readiness view also reuses contract discovery, synchronization,
+candidate governance, completeness, and projection normalization to report grain, decision
+evidence, replacement, CDC, dependency, implementation, and test blockers. An absent or empty
+candidate inventory never suppresses checks for synchronized contracts.
+
+Canonical `__` and legacy slash virtual-column IRIs remain supported.
+
+### Consequences
+
+- Keyless physical input may safely form identity at a verified contracted output boundary.
+- Contract, SQL, key, test, CDC, decision, or replacement changes invalidate prior evidence.
+- The toolkit never claims warehouse execution without supplied dbt results.
+
+---
+
+## Template for New Decisions
 
 ```markdown
 ## DD-NNN: Title
 
-**Status:** Proposed | Accepted | Deprecated | Superseded by DD-XXX  
-**Date:** YYYY-MM-DD  
-**Affects:** which components / files  
+**Status:** Proposed | Accepted | Deprecated | Superseded by DD-XXX
+**Date:** YYYY-MM-DD
+**Affects:** which components / files
 **Implementation:** where the code lives
 
 ### Context

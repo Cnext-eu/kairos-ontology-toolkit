@@ -954,6 +954,15 @@ def _effective_symbols(
                     origin="prepared" if prepared else column.origin,
                 )
                 by_uri.setdefault(column.uri, []).append(symbol)
+                if table.relation_kind == "contracted-virtual":
+                    for alias in (
+                        f"{table.uri}__{column.name}",
+                        f"{table.uri}/{column.name}",
+                    ):
+                        if alias != column.uri:
+                            by_uri.setdefault(alias, []).append(
+                                replace(symbol, source_column_uri=alias)
+                            )
     ambiguous = {
         uri: tuple(values)
         for uri, values in by_uri.items()

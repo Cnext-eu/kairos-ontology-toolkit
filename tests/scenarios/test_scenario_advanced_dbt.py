@@ -2,6 +2,8 @@
 # Copyright 2026 Cnext.eu
 """End-to-end scenario for governed advanced Bronze-to-Silver dbt logic."""
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,19 @@ from kairos_ontology.core.claim_registry import (
     EvidenceSource,
     write_registry,
 )
-from kairos_ontology.core.dbt_contract_sync import sync_dbt_contracts
+from kairos_ontology.core.dbt_contract_sync import (
+    column_iri,
+    legacy_column_iri,
+    sync_dbt_contracts,
+)
+from kairos_ontology.core.dbt_contract_identity import (
+    ContractIdentityEvidenceError,
+    capture_dbt_run_results,
+)
+from kairos_ontology.core.dbt_contracts import discover_dbt_contracts
+from kairos_ontology.core.transformation_candidates import (
+    evaluate_transformation_readiness,
+)
 from kairos_ontology.core.projector import ProjectionRunError, run_projections
 from kairos_ontology.core.source_coverage import check_source_coverage
 
@@ -36,6 +50,7 @@ def _create_hub(
     root: Path,
     *,
     supported_adapters: list[str] | None = None,
+    legacy_column_iris: bool = False,
 ) -> Path:
     hub = root / "advanced-dbt-hub"
 
@@ -108,7 +123,11 @@ def _create_hub(
         ("shipment_id", DOMAIN.shipmentId),
         ("route_code", DOMAIN.routeCode),
     ):
-        source_column = URIRef(f"{VIRTUAL}/{name}")
+        source_column = (
+            legacy_column_iri(str(VIRTUAL), name)
+            if legacy_column_iris
+            else column_iri(str(VIRTUAL), name)
+        )
         mapping_resource = URIRef(f"{VIRTUAL}/mapping/{name}")
         mapping.add((source_column, SKOS.exactMatch, target))
         mapping.add((mapping_resource, RDF.type, KMAP.ColumnMapping))
@@ -192,7 +211,11 @@ having count(*) > 1
                     }
                 },
                 "columns": [
-                    {"name": "shipment_id", "data_type": "string"},
+                    {
+                        "name": "shipment_id",
+                        "data_type": "string",
+                        "data_tests": ["not_null", "unique"],
+                    },
                     {
                         "name": "route_code",
                         "data_type": "string",
@@ -249,8 +272,409 @@ having count(*) > 1
         ),
         hub / "model" / "claims" / "shipment-claims.yaml",
     )
-    sync_dbt_contracts(hub)
+    sync_report = sync_dbt_contracts(hub)
+    if legacy_column_iris:
+        vocabulary = sync_report.items[0].output_path
+        virtual_graph = Graph().parse(vocabulary, format="turtle")
+        replacements = {
+            resource: legacy_column_iri(
+                str(virtual_graph.value(resource, BRONZE.sourceTable)),
+                str(virtual_graph.value(resource, BRONZE.columnName)),
+            )
+            for resource in virtual_graph.subjects(RDF.type, BRONZE.SourceColumn)
+        }
+        for subject, predicate, object_ in tuple(virtual_graph):
+            virtual_graph.remove((subject, predicate, object_))
+            virtual_graph.add(
+                (
+                    replacements.get(subject, subject),
+                    predicate,
+                    replacements.get(object_, object_),
+                )
+            )
+        virtual_graph.serialize(vocabulary, format="turtle")
+        assert sync_dbt_contracts(hub).items[0].state == "unchanged"
     return hub
+
+
+def _bind_contract_identity(hub: Path) -> URIRef:
+    path = hub / "model" / "extensions" / "shipment-silver-ext.ttl"
+    graph = Graph().parse(path, format="turtle")
+    identity = URIRef(f"{VIRTUAL}/contract-identity")
+    graph.add((DOMAIN.Shipment, EXT.businessGrain, Literal("one row per shipment")))
+    graph.add(
+        (DOMAIN.Shipment, EXT.identityStrategy, Literal("source-scoped-immutable-key"))
+    )
+    graph.add((DOMAIN.Shipment, EXT.entityInstanceIriPolicy, Literal("emit")))
+    graph.add((DOMAIN.Shipment, EXT.keyScope, Literal("source-table")))
+    graph.add((DOMAIN.Shipment, EXT.sourceIdentity, identity))
+    graph.add((DOMAIN.Shipment, EXT.changeDetectionStrategy, Literal("compare-columns")))
+    graph.add((DOMAIN.Shipment, EXT.lineagePolicy, Literal("source-record")))
+    graph.serialize(path, format="turtle")
+    return identity
+
+
+def _identity_artifacts(hub: Path) -> tuple[dict, dict]:
+    contract = discover_dbt_contracts(
+        hub / "integration" / "transforms" / "dbt", hub
+    )[0]
+    transforms = hub / "integration" / "transforms" / "dbt"
+    properties = yaml.safe_load(contract.properties_path.read_text(encoding="utf-8"))
+    model_definition = properties["models"][0]
+    model_id = "model.pkg.int_shipment_conformed"
+    invocation_metadata = {
+        "invocation_id": "warehouse-run-123",
+        "generated_at": "2026-07-26",
+        "dbt_version": "1.10.0",
+        "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
+    }
+    manifest = {
+        "metadata": invocation_metadata,
+        "unit_tests": {
+            "unit_test.pkg.int_shipment_conformed.unit_test_route_fallback": {
+                **properties["unit_tests"][0],
+                "resource_type": "unit_test",
+                "unique_id": (
+                    "unit_test.pkg.int_shipment_conformed.unit_test_route_fallback"
+                ),
+            }
+        },
+        "nodes": {
+            model_id: {
+                "resource_type": "model",
+                "name": "int_shipment_conformed",
+                "unique_id": model_id,
+                "original_file_path": "models/intermediate/int_shipment_conformed.sql",
+                "raw_code": contract.sql_path.read_text(encoding="utf-8"),
+                "checksum": {
+                    "name": "sha256",
+                    "checksum": hashlib.sha256(
+                        contract.sql_path.read_text(encoding="utf-8").encode("utf-8")
+                    ).hexdigest(),
+                },
+                "description": model_definition["description"],
+                "meta": model_definition["meta"],
+                "config": model_definition["config"],
+                "constraints": [],
+                "columns": {
+                    column["name"]: {
+                        "name": column["name"],
+                        "description": column.get("description", ""),
+                        "data_type": column["data_type"],
+                        "meta": column.get("meta", {}),
+                        "constraints": column.get("constraints", []),
+                    }
+                    for column in model_definition["columns"]
+                },
+            },
+            "test.pkg.unique_int_shipment_conformed_shipment_id": {
+                "resource_type": "test",
+                "column_name": "shipment_id",
+                "attached_node": model_id,
+                "depends_on": {"nodes": [model_id]},
+                "test_metadata": {
+                    "name": "unique",
+                    "kwargs": {
+                        "model": "{{ get_where_subquery(ref('int_shipment_conformed')) }}",
+                        "column_name": "shipment_id",
+                    },
+                },
+            },
+            "test.pkg.not_null_int_shipment_conformed_shipment_id": {
+                "resource_type": "test",
+                "column_name": "shipment_id",
+                "attached_node": model_id,
+                "depends_on": {"nodes": [model_id]},
+                "test_metadata": {
+                    "name": "not_null",
+                    "kwargs": {
+                        "model": "{{ get_where_subquery(ref('int_shipment_conformed')) }}",
+                        "column_name": "shipment_id",
+                    },
+                },
+            },
+            "test.pkg.not_null_int_shipment_conformed_route_code": {
+                "resource_type": "test",
+                "column_name": "route_code",
+                "attached_node": model_id,
+                "depends_on": {"nodes": [model_id]},
+                "test_metadata": {
+                    "name": "not_null",
+                    "kwargs": {
+                        "model": "{{ get_where_subquery(ref('int_shipment_conformed')) }}",
+                        "column_name": "route_code",
+                    },
+                },
+            },
+            "test.pkg.shipment_grain": {
+                "resource_type": "test",
+                "name": "shipment_grain",
+                "unique_id": "test.pkg.shipment_grain",
+                "original_file_path": "tests/shipment_grain.sql",
+                "raw_code": (transforms / "tests" / "shipment_grain.sql").read_text(
+                    encoding="utf-8"
+                ),
+                "checksum": {
+                    "name": "sha256",
+                    "checksum": hashlib.sha256(
+                        (transforms / "tests" / "shipment_grain.sql")
+                        .read_text(encoding="utf-8")
+                        .encode("utf-8")
+                    ).hexdigest(),
+                },
+                "depends_on": {"nodes": [model_id]},
+            },
+        }
+    }
+    run_metadata = {
+        **invocation_metadata,
+        "dbt_schema_version": "https://schemas.getdbt.com/dbt/run-results/v6.json",
+    }
+    run_results = {
+        "metadata": run_metadata,
+        "results": [
+            {"unique_id": unique_id, "status": "pass"}
+            for unique_id in manifest["nodes"]
+            if unique_id.startswith("test.")
+        ],
+    }
+    return run_results, manifest
+
+
+def _write_identity_artifacts(
+    hub: Path, run_results: dict, manifest: dict
+) -> tuple[Path, Path]:
+    target = hub / "dbt-actual-results"
+    target.mkdir(exist_ok=True)
+    manifest_path = target / "manifest.json"
+    results_path = target / "run_results.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    results_path.write_text(json.dumps(run_results), encoding="utf-8")
+    return results_path, manifest_path
+
+
+def _capture_passing_identity_evidence(hub: Path) -> None:
+    run_results, manifest = _identity_artifacts(hub)
+    results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
+    capture_dbt_run_results(hub, results_path, manifest_path)
+    sync_dbt_contracts(hub)
+
+
+def test_contract_identity_requires_actual_current_passing_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    hub = _create_hub(tmp_path)
+    identity = _bind_contract_identity(hub)
+    vocabulary = (
+        hub
+        / "integration"
+        / "sources"
+        / "custom-transformations"
+        / "int_shipment_conformed.vocabulary.ttl"
+    )
+    graph = Graph().parse(vocabulary, format="turtle")
+    assert (identity, RDF.type, Namespace("https://kairos.cnext.eu/dbt-contract#").ContractIdentity) in graph
+
+    with pytest.raises(ProjectionRunError, match="dbt projection failed"):
+        run_projections(
+            ontologies_path=hub / "model" / "ontologies",
+            catalog_path=hub / "missing-catalog.xml",
+            output_path=tmp_path / "declared-only",
+            target="dbt",
+            platform="fabric",
+        )
+    assert "identity.contract-unverified" in capsys.readouterr().err
+
+    _capture_passing_identity_evidence(hub)
+    verified_graph = Graph().parse(vocabulary, format="turtle")
+    dbt = Namespace("https://kairos.cnext.eu/dbt-contract#")
+    assert verified_graph.value(identity, dbt.identityScope) == Literal("contract-output")
+    assert verified_graph.value(identity, dbt.verificationStatus) == Literal("verified")
+    assert verified_graph.value(identity, dbt.evidenceContentHash) == verified_graph.value(
+        identity, dbt.contractContentHash
+    )
+    run_projections(
+        ontologies_path=hub / "model" / "ontologies",
+        catalog_path=hub / "missing-catalog.xml",
+        output_path=tmp_path / "verified",
+        target="dbt",
+        platform="fabric",
+    )
+
+    sql = (
+        hub
+        / "integration"
+        / "transforms"
+        / "dbt"
+        / "models"
+        / "intermediate"
+        / "int_shipment_conformed.sql"
+    )
+    sql.write_text(sql.read_text(encoding="utf-8") + "\n-- changed contract SQL\n", encoding="utf-8")
+    sync_dbt_contracts(hub)
+    stale_graph = Graph().parse(vocabulary, format="turtle")
+    assert stale_graph.value(identity, dbt.verificationStatus) == Literal("unverified")
+    assert stale_graph.value(identity, dbt.evidenceContentHash) is None
+    with pytest.raises(ProjectionRunError, match="dbt projection failed"):
+        run_projections(
+            ontologies_path=hub / "model" / "ontologies",
+            catalog_path=hub / "missing-catalog.xml",
+            output_path=tmp_path / "stale",
+            target="dbt",
+            platform="fabric",
+        )
+    assert "identity.contract-unverified" in capsys.readouterr().err
+
+
+def test_contract_identity_rejects_stale_sql_artifacts(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    run_results, manifest = _identity_artifacts(hub)
+    sql = (
+        hub
+        / "integration"
+        / "transforms"
+        / "dbt"
+        / "models"
+        / "intermediate"
+        / "int_shipment_conformed.sql"
+    )
+    sql.write_text(sql.read_text(encoding="utf-8") + "\n-- changed after dbt run\n", encoding="utf-8")
+    results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
+
+    with pytest.raises(ContractIdentityEvidenceError, match="raw_code does not match"):
+        capture_dbt_run_results(hub, results_path, manifest_path)
+
+
+def test_contract_identity_rejects_stale_yaml_and_tests(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    run_results, manifest = _identity_artifacts(hub)
+    properties = (
+        hub
+        / "integration"
+        / "transforms"
+        / "dbt"
+        / "models"
+        / "intermediate"
+        / "int_shipment_conformed.yml"
+    )
+    document = yaml.safe_load(properties.read_text(encoding="utf-8"))
+    document["unit_tests"][0]["expect"]["rows"][0]["route_code"] = "CHANGED"
+    properties.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
+
+    with pytest.raises(ContractIdentityEvidenceError, match="unit-test definitions"):
+        capture_dbt_run_results(hub, results_path, manifest_path)
+
+
+def test_contract_identity_rejects_mismatched_invocations(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    run_results, manifest = _identity_artifacts(hub)
+    manifest["metadata"]["invocation_id"] = "different-run"
+    results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
+
+    with pytest.raises(ContractIdentityEvidenceError, match="invocation mismatch"):
+        capture_dbt_run_results(hub, results_path, manifest_path)
+
+
+def test_contract_identity_rejects_missing_provenance_metadata(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    run_results, manifest = _identity_artifacts(hub)
+    manifest.pop("metadata")
+    results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
+
+    with pytest.raises(ContractIdentityEvidenceError, match="manifest.json lacks metadata"):
+        capture_dbt_run_results(hub, results_path, manifest_path)
+
+
+def test_contract_identity_rejects_missing_model_node(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    run_results, manifest = _identity_artifacts(hub)
+    manifest["nodes"].pop("model.pkg.int_shipment_conformed")
+    results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
+
+    with pytest.raises(ContractIdentityEvidenceError, match="exactly one matching model node"):
+        capture_dbt_run_results(hub, results_path, manifest_path)
+
+
+def test_contract_identity_rejects_wrong_manifest_model(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    run_results, manifest = _identity_artifacts(hub)
+    manifest["nodes"]["model.pkg.int_shipment_conformed"]["original_file_path"] = (
+        "models/other/int_shipment_conformed.sql"
+    )
+    results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
+
+    with pytest.raises(ContractIdentityEvidenceError, match="wrong original_file_path"):
+        capture_dbt_run_results(hub, results_path, manifest_path)
+
+
+def test_contract_identity_rejects_stale_model_yaml_semantics(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    run_results, manifest = _identity_artifacts(hub)
+    properties = (
+        hub
+        / "integration"
+        / "transforms"
+        / "dbt"
+        / "models"
+        / "intermediate"
+        / "int_shipment_conformed.yml"
+    )
+    document = yaml.safe_load(properties.read_text(encoding="utf-8"))
+    document["models"][0]["description"] = "Changed after dbt parsed the project."
+    properties.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
+
+    with pytest.raises(ContractIdentityEvidenceError, match="manifest description is stale"):
+        capture_dbt_run_results(hub, results_path, manifest_path)
+
+
+def test_contract_identity_rejects_stale_generic_tests(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    run_results, manifest = _identity_artifacts(hub)
+    properties = (
+        hub
+        / "integration"
+        / "transforms"
+        / "dbt"
+        / "models"
+        / "intermediate"
+        / "int_shipment_conformed.yml"
+    )
+    document = yaml.safe_load(properties.read_text(encoding="utf-8"))
+    document["models"][0]["columns"][0]["data_tests"].remove("unique")
+    properties.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
+
+    with pytest.raises(ContractIdentityEvidenceError, match="not declared"):
+        capture_dbt_run_results(hub, results_path, manifest_path)
+
+
+def test_contract_identity_accepts_standard_v12_artifacts(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    run_results, manifest = _identity_artifacts(hub)
+    results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
+
+    output = capture_dbt_run_results(hub, results_path, manifest_path)
+
+    assert output.is_file()
+    assert "kairos_content_fingerprints" not in manifest["metadata"]
+
+
+def test_existing_contract_is_checked_with_empty_candidate_inventory(tmp_path: Path) -> None:
+    hub = _create_hub(tmp_path)
+    inventory = hub / "model" / "planning" / "dbt-transformations" / "candidates.yaml"
+    inventory.parent.mkdir(parents=True)
+    inventory.write_text(
+        "schema_version: 1\nprojection_authority: false\nroots: []\ncandidates: []\n",
+        encoding="utf-8",
+    )
+
+    report = evaluate_transformation_readiness(hub, stage="mapping")
+
+    assert report.is_blocking
+    assert report.candidates[0].id == "contract:int_shipment_conformed"
+    assert "identity.contract-unverified" in report.candidates[0].reasons[0]
 
 
 def test_wrong_grain_sources_are_covered_only_by_governed_replacement(
@@ -284,8 +708,8 @@ def test_virtual_vocabulary_preserves_contract_nullability(tmp_path: Path) -> No
     )
     graph = Graph().parse(vocabulary, format="turtle")
 
-    shipment_id = URIRef(f"{VIRTUAL}/shipment_id")
-    route_code = URIRef(f"{VIRTUAL}/route_code")
+    shipment_id = column_iri(str(VIRTUAL), "shipment_id")
+    route_code = column_iri(str(VIRTUAL), "route_code")
     assert graph.value(shipment_id, BRONZE.nullable).toPython() is False
     assert graph.value(route_code, BRONZE.nullable).toPython() is False
 
@@ -308,6 +732,25 @@ def test_single_adapter_contract_rejects_other_projection(tmp_path: Path) -> Non
             target="dbt",
             platform="databricks",
         )
+
+
+def test_existing_legacy_virtual_vocabulary_and_mapping_still_project(
+    tmp_path: Path,
+) -> None:
+    hub = _create_hub(tmp_path, legacy_column_iris=True)
+    output = tmp_path / "legacy-output"
+
+    run_projections(
+        ontologies_path=hub / "model" / "ontologies",
+        catalog_path=hub / "missing-catalog.xml",
+        output_path=output,
+        target="dbt",
+        platform="fabric",
+    )
+
+    assert (
+        output / "medallion" / "dbt" / "models" / "silver" / "shipment" / "shipment.sql"
+    ).is_file()
 
 
 @pytest.mark.parametrize(
