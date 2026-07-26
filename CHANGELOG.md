@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc8] — 2026-07-26
+
+### Fixed
+- **Convergent Silver readiness and managed imports (DD-129):** focused Silver
+  validation now prefers the hub catalog, reports distinct closure, shape-loading,
+  and SHACL execution failures, and behaves consistently with explicit catalog
+  selection. Managed-import synchronization and readiness now consume the same
+  reasoned `ManagedImportPlan`, retaining activated, authored, and accepted
+  transitive dependencies without hiding genuinely stale imports.
+- **Domain-scoped projection source authority (DD-129):** dbt bind now derives one
+  immutable, explainable active-source scope for preparation, mapping, identity,
+  coverage, and physical planning. Unrelated-domain mappings no longer create
+  readiness obligations, while synchronized contracted dbt virtual sources and
+  required cross-domain identity dependencies remain visible with inclusion
+  reasons in readiness output.
+
 ## [4.7.0rc7] — 2026-07-26
 
 ### Added
