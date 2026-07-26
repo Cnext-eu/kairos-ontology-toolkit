@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.design_validation import (
+    resolve_silver_ext_shapes,
     validate_mapping_design,
     validate_silver_extension,
 )
@@ -368,7 +369,7 @@ ex:Child ext:silverInclude true ; ext:businessGrain ex:name .
 
     assert automatic.exit_code == 0, automatic.output
     assert explicit.exit_code == 0, explicit.output
-    assert json.loads(automatic.output) == json.loads(explicit.output)
+    assert json.loads(automatic.stdout) == json.loads(explicit.stdout)
 
 
 def test_list_class_properties_includes_ranges_and_inheritance(tmp_path):
@@ -414,3 +415,183 @@ ex:Imported ext:silverInclude true .
 
     assert "https://example.test/domain#Imported" in message
     assert "kairos-ontology migrate --hub <hub>" in message
+
+
+def _silver_hub(tmp_path: Path, *, with_hub_shape: bool) -> tuple[Path, Path]:
+    """Build a minimal Silver-ext hub; optionally omit the hub-local shape."""
+    hub = tmp_path / "ontology-hub"
+    ontologies = hub / "model" / "ontologies"
+    extensions = hub / "model" / "extensions"
+    shapes = hub / "model" / "shapes"
+    references = hub / "references"
+    for directory in (ontologies, extensions, shapes, references):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    (ontologies / "domain.ttl").write_text(
+        ONTOLOGY.replace(
+            "<https://example.test/domain> a owl:Ontology .",
+            "<https://example.test/domain> a owl:Ontology ; owl:imports <urn:reference> .",
+        ),
+        encoding="utf-8",
+    )
+    (extensions / "domain-silver-ext.ttl").write_text(
+        """\
+@prefix ex: <https://example.test/domain#> .
+@prefix ext: <https://kairos.cnext.eu/ext#> .
+ex:Child ext:silverInclude true ; ext:businessGrain ex:name .
+""",
+        encoding="utf-8",
+    )
+    if with_hub_shape:
+        (shapes / "kairos-ext-shapes.shacl.ttl").write_text(SHAPES, encoding="utf-8")
+    (references / "reference.ttl").write_text(
+        """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<urn:reference> a owl:Ontology .
+""",
+        encoding="utf-8",
+    )
+    catalog = hub / "catalog-v001.xml"
+    catalog.write_text(
+        """\
+<?xml version="1.0"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="urn:reference" uri="references/reference.ttl"/>
+</catalog>
+""",
+        encoding="utf-8",
+    )
+    return hub, catalog
+
+
+def test_silver_extension_reports_shapes_missing(tmp_path):
+    """A non-existent shape path yields silver.shapes-missing, never scheme 'g'."""
+    ontology, _, _ = _files(tmp_path)
+    extension = tmp_path / "domain-silver-ext.ttl"
+    extension.write_text("", encoding="utf-8")
+    missing = tmp_path / "does-not-exist.shacl.ttl"
+
+    result = validate_silver_extension(
+        extension_path=extension,
+        ontology_path=ontology,
+        shapes_path=missing,
+    )
+
+    assert not result["passed"]
+    assert result["diagnostics"][0]["code"] == "silver.shapes-missing"
+    assert result["diagnostics"][0]["resource_uri"] == str(missing)
+    assert "scheme" not in result["diagnostics"][0]["message"].lower()
+
+
+def test_silver_extension_loads_absolute_shape_via_file_uri(tmp_path):
+    """An existing absolute (drive-letter on Windows) shape path loads cleanly."""
+    ontology, _, _ = _files(tmp_path)
+    extension = tmp_path / "domain-silver-ext.ttl"
+    shapes = tmp_path / "ext.shacl.ttl"
+    extension.write_text(
+        """\
+@prefix ex: <https://example.test/domain#> .
+@prefix ext: <https://kairos.cnext.eu/ext#> .
+ex:Child ext:silverInclude true ; ext:businessGrain ex:name .
+""",
+        encoding="utf-8",
+    )
+    shapes.write_text(SHAPES, encoding="utf-8")
+
+    result = validate_silver_extension(
+        extension_path=extension,
+        ontology_path=ontology,
+        shapes_path=shapes.resolve(),
+    )
+
+    assert result["passed"]
+    assert not any(item["code"].startswith("silver.shapes-") for item in result["diagnostics"])
+
+
+def test_resolve_silver_ext_shapes_prefers_hub_local(tmp_path):
+    hub = tmp_path / "ontology-hub"
+    (hub / "model" / "shapes").mkdir(parents=True)
+    hub_local = hub / "model" / "shapes" / "kairos-ext-shapes.shacl.ttl"
+    hub_local.write_text(SHAPES, encoding="utf-8")
+
+    path, source = resolve_silver_ext_shapes(hub)
+
+    assert path == hub_local
+    assert source == "hub-local"
+
+
+def test_resolve_silver_ext_shapes_falls_back_to_packaged(tmp_path):
+    hub = tmp_path / "ontology-hub"
+    (hub / "model").mkdir(parents=True)
+
+    path, source = resolve_silver_ext_shapes(hub)
+
+    assert source == "packaged"
+    assert path is not None and path.is_file()
+
+
+def test_resolve_silver_ext_shapes_returns_none_when_absent(tmp_path, monkeypatch):
+    hub = tmp_path / "ontology-hub"
+    (hub / "model").mkdir(parents=True)
+    monkeypatch.setattr(
+        "kairos_ontology.core.design_validation._PACKAGED_SILVER_EXT_SHAPES",
+        tmp_path / "no-such-packaged-shape.ttl",
+    )
+
+    path, source = resolve_silver_ext_shapes(hub)
+
+    assert path is None
+    assert source == ""
+
+
+def test_validate_silver_ext_uses_packaged_shape_when_hub_local_absent(tmp_path, monkeypatch):
+    hub, _ = _silver_hub(tmp_path, with_hub_shape=False)
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["validate-silver-ext", "--domain", "domain"], env={"KAIROS_SKILL_CONTEXT": "1"}
+    )
+
+    payload = json.loads(result.stdout)
+    assert "passed" in payload
+    assert not any(item["code"].startswith("silver.shapes-") for item in payload["diagnostics"])
+    assert "source: packaged" in result.stderr
+
+
+def test_validate_silver_ext_shapes_override_accepts_existing_path(tmp_path, monkeypatch):
+    hub, _ = _silver_hub(tmp_path, with_hub_shape=True)
+    override = tmp_path / "custom-shapes.shacl.ttl"
+    override.write_text(SHAPES, encoding="utf-8")
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["validate-silver-ext", "--domain", "domain", "--shapes", str(override.resolve())],
+        env={"KAIROS_SKILL_CONTEXT": "1"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "source: override" in result.stderr
+
+
+def test_validate_silver_ext_shapes_override_rejects_missing_path(tmp_path, monkeypatch):
+    hub, _ = _silver_hub(tmp_path, with_hub_shape=True)
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        [
+            "validate-silver-ext",
+            "--domain",
+            "domain",
+            "--shapes",
+            str(tmp_path / "missing-shapes.shacl.ttl"),
+        ],
+        env={"KAIROS_SKILL_CONTEXT": "1"},
+    )
+
+    assert result.exit_code == 2
+    assert "does not exist" in result.output.lower()

@@ -281,6 +281,26 @@ def validate_mapping_design(
     )
 
 
+_PACKAGED_SILVER_EXT_SHAPES = (
+    Path(__file__).resolve().parent.parent / "scaffold" / "kairos-ext-shapes.shacl.ttl"
+)
+
+
+def resolve_silver_ext_shapes(hub_root: Path) -> tuple[Path | None, str]:
+    """Resolve the Silver-ext SHACL shape source for a hub.
+
+    Prefers the hub-local managed shape, then the packaged canonical shape.
+    Returns ``(path, source)`` where ``source`` is ``"hub-local"``,
+    ``"packaged"``, or ``""`` when neither is available.
+    """
+    hub_local = hub_root / "model" / "shapes" / "kairos-ext-shapes.shacl.ttl"
+    if hub_local.is_file():
+        return hub_local, "hub-local"
+    if _PACKAGED_SILVER_EXT_SHAPES.is_file():
+        return _PACKAGED_SILVER_EXT_SHAPES, "packaged"
+    return None, ""
+
+
 def validate_silver_extension(
     *,
     extension_path: Path | None,
@@ -367,8 +387,27 @@ def validate_silver_extension(
     data += loaded.graph
     data += extension
     shapes = Graph()
+    if not shapes_path.is_file():
+        return _report(
+            "silver-extension",
+            [
+                DesignDiagnostic(
+                    "silver.shapes-missing",
+                    f"Silver SHACL shape file not found: {shapes_path}",
+                    str(shapes_path),
+                    remediation=(
+                        "Restore model/shapes/kairos-ext-shapes.shacl.ttl (e.g. run "
+                        "'kairos-ontology update'), pass an explicit --shapes path, or "
+                        "reinstall the toolkit so the packaged canonical shape is present."
+                    ),
+                )
+            ],
+        )
     try:
-        shapes.parse(shapes_path, format="turtle")
+        # Resolve to a file URI so an absolute Windows drive-letter path (e.g.
+        # "G:\\...") is never mis-parsed by rdflib as a URL scheme ("g").
+        resolved_shapes = shapes_path.resolve(strict=True)
+        shapes.parse(location=resolved_shapes.as_uri(), format="turtle")
     except Exception as exc:
         return _report(
             "silver-extension",

@@ -177,6 +177,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-127](#dd-127-domain-ownership-handoffs-and-generalized-stable-cluster-relationship-candidates) | Domain-Ownership Handoffs and Generalized, Stable-Cluster Relationship Candidates | Accepted | 2026-08-09 |
 | [DD-128](#dd-128-intent-preserving-coverage-classification-run-atomic-registry-writes-and-authoritative-model-precedence) | Intent-Preserving Coverage Classification, Run-Atomic Registry Writes, and Authoritative Model Precedence | Accepted | 2026-07-26 |
 | [DD-129](#dd-129-domain-scoped-active-source-authority-for-projection-readiness) | Domain-Scoped Active Source Authority for Projection Readiness | Accepted | 2026-07-26 |
+| [DD-130](#dd-130-silver-ext-shape-discovery-with-packaged-fallback-and-windows-safe-loading) | Silver-ext Shape Discovery with Packaged Fallback and Windows-Safe Loading | Accepted | 2026-07-26 |
 
 ---
 
@@ -8740,6 +8741,54 @@ are active and makes readiness diagnostics explainable.
   emitted for another domain's projection.
 - Domain-scoped dbt output excludes unreachable contracted transformations owned by another
   ontology, while full-hub output remains the union of all selected domain closures.
+
+---
+
+
+
+
+## DD-130: Silver-ext Shape Discovery with Packaged Fallback and Windows-Safe Loading
+
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** `validate-silver-ext` / `scaffold-silver-ext` CLI commands, `core/design_validation.py`
+**Implementation:** `resolve_silver_ext_shapes()` and the shape-load block in
+`core/design_validation.py`; `validate_silver_ext_cmd` / `scaffold_silver_ext_cmd` in `cli/main.py`
+
+### Context
+
+`validate-silver-ext` hardcoded the hub-local shape at
+`model/shapes/kairos-ext-shapes.shacl.ttl` and passed the absolute `Path` straight to
+`rdflib.Graph.parse()`. On a hub missing that managed shape (older or partially migrated
+hubs), the missing path fell through to rdflib's URL handling, which on Windows mis-read a
+drive letter (`G:\...`) as URI scheme `g` — a misleading error that blocked DD-108/DD-109
+validation from ever starting. There was no `--shapes` override and no packaged fallback.
+
+### Decision
+
+1. Add a shared `resolve_silver_ext_shapes(hub)` resolver: prefer the hub-local managed
+   shape, else fall back to the packaged canonical shape shipped in the scaffold; report the
+   selected source on stderr (stdout stays pure JSON).
+2. In `validate_silver_extension`, return a dedicated `silver.shapes-missing` diagnostic when
+   the shape file does not exist, and parse via a resolved `file://` URI so a drive-letter
+   path is never treated as a URL scheme. Malformed Turtle still yields the existing
+   `silver.shapes-load-error`.
+3. Add a `--shapes` override validated by `click.Path(exists=True, ...)` so a bad path fails
+   at Click parsing, before rdflib. `scaffold-silver-ext` reuses the same resolver.
+
+### Rationale
+
+Centralising transport/existence handling in the core validator fixes every caller at once,
+while the packaged fallback keeps older hubs validating without weakening checks. New/updated
+hubs still receive the managed shape via scaffold install, so the fallback is additive.
+
+### Consequences
+
+- `validate-silver-ext` runs on Windows when the hub-local shape is absent but the packaged
+  shape exists, and reports which shape source was used.
+- A missing shape now surfaces as `silver.shapes-missing`, never as URL scheme `g`.
+- CLI stdout remains pure JSON; the selected-source line is emitted on stderr, so callers that
+  parse output must read stdout (tests updated accordingly).
 
 ---
 
