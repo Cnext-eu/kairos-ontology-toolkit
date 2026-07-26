@@ -171,7 +171,6 @@ from .specs import (
     SourceSystemFact,
 )
 
-
 E = TypeVar("E", bound=Enum)
 _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NULL_EXPRESSION = re.compile(r"^\s*cast\s*\(\s*null\b", re.I)
@@ -220,19 +219,27 @@ class PolicyNormalizationError(ValueError):
         stage = (
             "preparation"
             if code.startswith("prep.")
-            else "identity"
-            if code.startswith(("identity.", "lineage."))
-            else "runtime"
-            if code.startswith(("incremental.", "runtime.", "hash."))
-            else "temporal_fk"
-            if code.startswith(("temporal.", "fk.", "foreign-key."))
-            else "adapter"
-            if code.startswith(("adapter.", "capability."))
-            else "quality"
-            if code.startswith(("dq.", "quality."))
-            else "gold"
-            if code.startswith("gold.")
-            else "normalization"
+            else (
+                "identity"
+                if code.startswith(("identity.", "lineage."))
+                else (
+                    "runtime"
+                    if code.startswith(("incremental.", "runtime.", "hash."))
+                    else (
+                        "temporal_fk"
+                        if code.startswith(("temporal.", "fk.", "foreign-key."))
+                        else (
+                            "adapter"
+                            if code.startswith(("adapter.", "capability."))
+                            else (
+                                "quality"
+                                if code.startswith(("dq.", "quality."))
+                                else "gold" if code.startswith("gold.") else "normalization"
+                            )
+                        )
+                    )
+                )
+            )
         )
         owner_skill = {
             "preparation": "kairos-design-source",
@@ -730,9 +737,7 @@ def _passthrough_risks(
             )
         )
 
-    raw_columns = {
-        column.uri: column for column in table.columns if column.origin == "raw"
-    }
+    raw_columns = {column.uri: column for column in table.columns if column.origin == "raw"}
     for column in raw_columns.values():
         if not _SAFE_NAME.fullmatch(column.name):
             risks.add(
@@ -1227,9 +1232,7 @@ def _normalize_prep(
     for table_uri, policy_facts in sorted(by_table.items()):
         fact = policy_facts[0]
         system, table = table_index[table_uri]
-        raw_columns = tuple(
-            column for column in table.columns if column.origin == "raw"
-        )
+        raw_columns = tuple(column for column in table.columns if column.origin == "raw")
         column_uris = frozenset(column.uri for column in raw_columns)
         if not fact.mode.values:
             raise PolicyNormalizationError(
@@ -1272,8 +1275,7 @@ def _normalize_prep(
         )
         if passthrough_risks:
             details = "; ".join(
-                f"{code} ({rule_id}): {reason}"
-                for code, rule_id, reason in passthrough_risks
+                f"{code} ({rule_id}): {reason}" for code, rule_id, reason in passthrough_risks
             )
             raise PolicyNormalizationError(
                 "prep.passthrough-blocked",
@@ -1322,46 +1324,25 @@ def _normalize_prep(
                 reserved = is_reserved_identifier(adapter, column.name)
                 if (unsafe or reserved) and column.uri not in rename_by_uri:
                     reason = (
-                        "not a portable identifier"
-                        if unsafe
-                        else f"reserved on {adapter.value}"
+                        "not a portable identifier" if unsafe else f"reserved on {adapter.value}"
                     )
                     raise PolicyNormalizationError(
                         "prep.missing-safe-rename",
-                        (
-                            f"source column {column.name!r} is {reason}; "
-                            "declare prep:physicalRename"
-                        ),
+                        (f"source column {column.name!r} is {reason}; declare prep:physicalRename"),
                         rule_id="DD-106-prep-identifier",
                         resource_uri=fact.resource_uri,
                     )
-            physical_names = [
-                rename_by_uri.get(column.uri, column.name)
-                for column in raw_columns
-            ]
-            duplicates = sorted(
-                {
-                    name
-                    for name in physical_names
-                    if physical_names.count(name) > 1
-                }
-            )
+            physical_names = [rename_by_uri.get(column.uri, column.name) for column in raw_columns]
+            duplicates = sorted({name for name in physical_names if physical_names.count(name) > 1})
             if duplicates:
                 raise PolicyNormalizationError(
                     "prep.output-name-collision",
-                    (
-                        "prepared physical column names collide: "
-                        f"{', '.join(duplicates)}"
-                    ),
+                    (f"prepared physical column names collide: {', '.join(duplicates)}"),
                     rule_id="DD-106-prep-identifier",
                     resource_uri=fact.resource_uri,
                 )
             reserved_outputs = sorted(
-                {
-                    name
-                    for name in physical_names
-                    if is_reserved_identifier(adapter, name)
-                }
+                {name for name in physical_names if is_reserved_identifier(adapter, name)}
             )
             if reserved_outputs:
                 raise PolicyNormalizationError(
@@ -1423,10 +1404,7 @@ def _normalize_prep(
             if not re.fullmatch(r"[a-z][a-z0-9-]*", parse_policy.value):
                 raise PolicyNormalizationError(
                     "prep.invalid-parse-policy",
-                    (
-                        f"parse policy {parse_policy.value!r} must be a safe "
-                        "lowercase named parser"
-                    ),
+                    (f"parse policy {parse_policy.value!r} must be a safe lowercase named parser"),
                     rule_id="DD-106-prep-cast",
                     resource_uri=conversion.resource_uri,
                 )
@@ -1510,9 +1488,7 @@ def _normalize_prep(
                 resource_uri=fact.resource_uri,
             )
 
-        conversion_by_uri = {
-            item.source_column_uri: item.target_type.value for item in conversions
-        }
+        conversion_by_uri = {item.source_column_uri: item.target_type.value for item in conversions}
         raw_by_uri = {column.uri: column for column in raw_columns}
         for mapping in mappings.columns:
             column = raw_by_uri.get(mapping.source_column_uri)
@@ -1570,9 +1546,9 @@ def _normalize_prep(
 
         scalar_json = _normalize_scalar_json(fact.scalar_json, column_uris)
         array_json = _normalize_array_json(fact.array_json, column_uris)
-        json_contract_columns = {
-            item.source_column_uri for item in scalar_json
-        } | {item.source_column_uri for item in array_json}
+        json_contract_columns = {item.source_column_uri for item in scalar_json} | {
+            item.source_column_uri for item in array_json
+        }
         for column in raw_columns:
             if column.json is not None and column.uri not in json_contract_columns:
                 raise PolicyNormalizationError(
@@ -1589,8 +1565,7 @@ def _normalize_prep(
         primary_key_uris = {
             column.uri
             for column in raw_columns
-            if column.is_primary_key
-            or column.name in table.primary_key_columns
+            if column.is_primary_key or column.name in table.primary_key_columns
         }
         if set(record_key.components.value) != primary_key_uris:
             raise PolicyNormalizationError(
@@ -1622,18 +1597,10 @@ def _normalize_prep(
                     if field is not None
                 ),
                 *(item.output.name.value for item in scalar_json),
-                *(
-                    column.name.value
-                    for child in array_json
-                    for column in child.columns
-                ),
+                *(column.name.value for child in array_json for column in child.columns),
             ]
             reserved_derived = sorted(
-                {
-                    name
-                    for name in derived_names
-                    if is_reserved_identifier(adapter, name)
-                }
+                {name for name in derived_names if is_reserved_identifier(adapter, name)}
             )
             if reserved_derived:
                 raise PolicyNormalizationError(
@@ -1656,9 +1623,7 @@ def _normalize_prep(
         if fact.technical_dedupes:
             authored_dedupe = fact.technical_dedupes[0]
             by_uri = {column.uri: column.name for column in raw_columns}
-            unknown_keys = sorted(
-                set(authored_dedupe.keys.values) - set(by_uri)
-            )
+            unknown_keys = sorted(set(authored_dedupe.keys.values) - set(by_uri))
             if unknown_keys:
                 raise PolicyNormalizationError(
                     "prep.unknown-dedupe-key",
@@ -1666,9 +1631,7 @@ def _normalize_prep(
                     rule_id="DD-106-technical-dedupe",
                     resource_uri=authored_dedupe.resource_uri,
                 )
-            keys = tuple(
-                by_uri[uri] for uri in authored_dedupe.keys.values
-            )
+            keys = tuple(by_uri[uri] for uri in authored_dedupe.keys.values)
             positioned: list[tuple[int, str, str]] = []
             seen_positions: set[int] = set()
             for order_fact in authored_dedupe.order_terms:
@@ -1703,11 +1666,7 @@ def _normalize_prep(
                     "dedupe sort direction",
                     "DD-109-total-order",
                 ).upper()
-                if (
-                    position < 1
-                    or position in seen_positions
-                    or direction not in {"ASC", "DESC"}
-                ):
+                if position < 1 or position in seen_positions or direction not in {"ASC", "DESC"}:
                     raise PolicyNormalizationError(
                         "prep.invalid-dedupe-order",
                         "order positions must be unique positive integers and direction "
@@ -1721,8 +1680,7 @@ def _normalize_prep(
             if (
                 not keys
                 or not positioned
-                or [item[0] for item in positioned]
-                != list(range(1, len(positioned) + 1))
+                or [item[0] for item in positioned] != list(range(1, len(positioned) + 1))
             ):
                 raise PolicyNormalizationError(
                     "prep.incomplete-dedupe",
@@ -1731,12 +1689,8 @@ def _normalize_prep(
                     resource_uri=authored_dedupe.resource_uri,
                 )
             order_columns = [item[1] for item in positioned]
-            normalized_order = tuple(
-                f"{name} {direction}" for _, name, direction in positioned
-            )
-            missing_ties = sorted(
-                set(table.primary_key_columns) - set(order_columns)
-            )
+            normalized_order = tuple(f"{name} {direction}" for _, name, direction in positioned)
+            missing_ties = sorted(set(table.primary_key_columns) - set(order_columns))
             if missing_ties:
                 raise PolicyNormalizationError(
                     "prep.incomplete-total-order",
@@ -2479,20 +2433,20 @@ def _timestamp_semantics(
                 if preparation is not None and preparation.cdc is not None
                 else None
             )
-            contract_column = (contract_cdc_by_source or {}).get(source_ref, {}).get(
-                cdc_attribute
-            )
+            contract_column = (contract_cdc_by_source or {}).get(source_ref, {}).get(cdc_attribute)
             source_column = (
                 cdc_field.normalized_fields[0].name.value
                 if cdc_field is not None
-                else configured.value
-                if (
-                    configured is not None
-                    and not configured.value.startswith("_")
-                    and configured.value
-                    in (available_columns_by_source or {}).get(source_ref, frozenset())
+                else (
+                    configured.value
+                    if (
+                        configured is not None
+                        and not configured.value.startswith("_")
+                        and configured.value
+                        in (available_columns_by_source or {}).get(source_ref, frozenset())
+                    )
+                    else None
                 )
-                else None
             )
             if source_column is None and contract_column is not None:
                 source_column = contract_column
@@ -2509,13 +2463,7 @@ def _timestamp_semantics(
                 )
             )
         supplied_columns = tuple(
-            sorted(
-                {
-                    item.source_column
-                    for item in source_values
-                    if item.source_column is not None
-                }
-            )
+            sorted({item.source_column for item in source_values if item.source_column is not None})
         )
         supplied = bool(supplied_columns)
         source_column = supplied_columns[0] if len(supplied_columns) == 1 else None
@@ -2580,10 +2528,7 @@ def _normalize_identities(
                 preparation.table.source_table_uri,
                 preparation.source_record_key.resource_uri,
             ),
-            *(
-                (child.resource_uri, child.resource_uri)
-                for child in preparation.array_children
-            ),
+            *((child.resource_uri, child.resource_uri) for child in preparation.array_children),
         )
     }
     source_ref_by_relation.update(
@@ -2613,12 +2558,16 @@ def _normalize_identities(
                 ).update(supplied_columns)
     result: list[EntityIdentitySpec] = []
     for fact in facts:
-        strategy = _enum(
-            fact.strategy,
-            IdentityStrategy,
-            "identity strategy",
-            "DD-108-identity",
-        ) if fact.strategy is not None else None
+        strategy = (
+            _enum(
+                fact.strategy,
+                IdentityStrategy,
+                "identity strategy",
+                "DD-108-identity",
+            )
+            if fact.strategy is not None
+            else None
+        )
         if strategy is None:
             raise PolicyNormalizationError(
                 "identity.missing-strategy",
@@ -2626,11 +2575,11 @@ def _normalize_identities(
                 rule_id="DD-108-identity",
                 resource_uri=fact.resource_uri,
             )
-        raw_source_refs = tuple(
-            value.strip()
-            for value in fact.source_identities.values
-            if value.strip()
-        ) if fact.source_identities is not None else ()
+        raw_source_refs = (
+            tuple(value.strip() for value in fact.source_identities.values if value.strip())
+            if fact.source_identities is not None
+            else ()
+        )
         if len(set(raw_source_refs)) != len(raw_source_refs):
             raise PolicyNormalizationError(
                 "identity.duplicate-source-identity",
@@ -2721,12 +2670,16 @@ def _normalize_identities(
                 rule_id="DD-108-source-identity",
                 resource_uri=fact.resource_uri,
             )
-        raw_natural_keys = tuple(
-            item.strip()
-            for value in fact.natural_keys.values
-            for item in value.split(",")
-            if item.strip()
-        ) if fact.natural_keys is not None else ()
+        raw_natural_keys = (
+            tuple(
+                item.strip()
+                for value in fact.natural_keys.values
+                for item in value.split(",")
+                if item.strip()
+            )
+            if fact.natural_keys is not None
+            else ()
+        )
         if len(set(raw_natural_keys)) != len(raw_natural_keys):
             raise PolicyNormalizationError(
                 "identity.duplicate-key-component",
@@ -2836,10 +2789,7 @@ def _normalize_identities(
                 rule_id="DD-108-identity",
                 resource_uri=fact.resource_uri,
             )
-        if (
-            strategy.value is IdentityStrategy.SURROGATE_ONLY
-            and natural_keys.value
-        ):
+        if strategy.value is IdentityStrategy.SURROGATE_ONLY and natural_keys.value:
             raise PolicyNormalizationError(
                 "identity.surrogate-only-forbids-natural-key",
                 (
@@ -2865,8 +2815,7 @@ def _normalize_identities(
             )
         if (
             strategy.value is IdentityStrategy.SOURCE_SCOPED_IMMUTABLE_KEY
-            and key_scope.value
-            not in {KeyScope.SOURCE_TABLE, KeyScope.SOURCE_TABLE_ARRAY_ELEMENT}
+            and key_scope.value not in {KeyScope.SOURCE_TABLE, KeyScope.SOURCE_TABLE_ARRAY_ELEMENT}
         ):
             raise PolicyNormalizationError(
                 "identity.source-scoped-key-scope",
@@ -2877,11 +2826,10 @@ def _normalize_identities(
                 rule_id="DD-108-key-scope",
                 resource_uri=fact.resource_uri,
             )
-        if (
-            strategy.value is IdentityStrategy.SURROGATE_ONLY
-            and key_scope.value
-            not in {KeyScope.SOURCE_TABLE, KeyScope.SOURCE_TABLE_ARRAY_ELEMENT}
-        ):
+        if strategy.value is IdentityStrategy.SURROGATE_ONLY and key_scope.value not in {
+            KeyScope.SOURCE_TABLE,
+            KeyScope.SOURCE_TABLE_ARRAY_ELEMENT,
+        }:
             raise PolicyNormalizationError(
                 "identity.surrogate-only-key-scope",
                 (
@@ -2943,15 +2891,11 @@ def _normalize_identities(
         if (
             multi_policy is not None
             and multi_policy.exact_equivalence.approved
-            and set(multi_policy.precedence.ordered_sources.value)
-            != set(source_refs.value)
+            and set(multi_policy.precedence.ordered_sources.value) != set(source_refs.value)
         ):
             raise PolicyNormalizationError(
                 "identity.exact-precedence-source-mismatch",
-                (
-                    "exact-equivalence declared-order must contain every sourceIdentity "
-                    "exactly once"
-                ),
+                ("exact-equivalence declared-order must contain every sourceIdentity exactly once"),
                 rule_id="DD-108-precedence",
                 resource_uri=fact.resource_uri,
             )
@@ -2999,10 +2943,7 @@ def _normalize_identities(
         if contribution is not None and not contribution.emits_all_source_records:
             raise PolicyNormalizationError(
                 "lineage.unsupported-contribution-policy",
-                (
-                    "contributionLineagePolicy must be "
-                    "'all-source-record-contributions'"
-                ),
+                ("contributionLineagePolicy must be 'all-source-record-contributions'"),
                 rule_id="DD-108-contribution-lineage",
                 resource_uri=fact.resource_uri,
             )
@@ -3065,12 +3006,16 @@ def _normalize_identities(
                 resource_uri=fact.resource_uri,
             )
 
-        change_detection = _enum(
-            fact.change_detection,
-            ChangeDetectionStrategy,
-            "change-detection strategy",
-            "DD-108-change-detection",
-        ) if fact.change_detection is not None else None
+        change_detection = (
+            _enum(
+                fact.change_detection,
+                ChangeDetectionStrategy,
+                "change-detection strategy",
+                "DD-108-change-detection",
+            )
+            if fact.change_detection is not None
+            else None
+        )
         if change_detection is None:
             raise PolicyNormalizationError(
                 "identity.missing-change-detection",
@@ -3124,16 +3069,12 @@ def _normalize_identities(
                     authoritative=strategy.value is IdentityStrategy.BUSINESS_KEY,
                 ),
                 integration=IntegrationIdentityPolicy(
-                    emitted=(
-                        strategy.value
-                        is IdentityStrategy.DETERMINISTIC_INTEGRATION_KEY
-                    )
+                    emitted=(strategy.value is IdentityStrategy.DETERMINISTIC_INTEGRATION_KEY)
                 ),
                 mastered=MasteredIdentityPolicy(
                     external_identifier_refs=(
                         natural_keys
-                        if strategy.value
-                        is IdentityStrategy.EXTERNALLY_MASTERED_IDENTIFIER
+                        if strategy.value is IdentityStrategy.EXTERNALLY_MASTERED_IDENTIFIER
                         else _default(
                             (),
                             "DD-108-mastered-identity",
@@ -3141,8 +3082,7 @@ def _normalize_identities(
                         )
                     ),
                     routed_to_mdm=(
-                        strategy.value
-                        is IdentityStrategy.EXTERNALLY_MASTERED_IDENTIFIER
+                        strategy.value is IdentityStrategy.EXTERNALLY_MASTERED_IDENTIFIER
                     ),
                 ),
                 surrogate=SurrogateIdentityPolicy(
@@ -3170,7 +3110,9 @@ def _normalize_identities(
                             for source_ref in source_refs.value
                         },
                         {
-                            source_ref: dict(contract_by_identity[source_ref].canonical_cdc_bindings)
+                            source_ref: dict(
+                                contract_by_identity[source_ref].canonical_cdc_bindings
+                            )
                             for source_ref in source_refs.value
                             if source_ref in contract_by_identity
                         },
@@ -3192,12 +3134,8 @@ _DQ_PARAMETER_KEYS: dict[DqCheckKind, frozenset[str]] = {
     DqCheckKind.DUPLICATE_RATE: frozenset({"columns"}),
     DqCheckKind.RANGE: frozenset({"column", "minimum", "maximum"}),
     DqCheckKind.DISTRIBUTION: frozenset({"column", "allowed"}),
-    DqCheckKind.RECONCILIATION: frozenset(
-        {"compare_model", "metric", "column", "compare_column"}
-    ),
-    DqCheckKind.REFERENTIAL_COVERAGE: frozenset(
-        {"column", "parent_model", "parent_column"}
-    ),
+    DqCheckKind.RECONCILIATION: frozenset({"compare_model", "metric", "column", "compare_column"}),
+    DqCheckKind.REFERENTIAL_COVERAGE: frozenset({"column", "parent_model", "parent_column"}),
     DqCheckKind.CROSS_FIELD: frozenset({"left", "operator", "right"}),
 }
 _DQ_SAFE_LITERAL = re.compile(r"^[A-Za-z0-9_.:@/+ -]+$")
@@ -3413,18 +3351,16 @@ def _normalize_dq_expression(
                 rule_id="DD-115-dq-check",
                 resource_uri=fact.resource_uri,
             )
-        if {"minimum", "maximum"}.issubset(parsed) and Decimal(
-            values["minimum"][0]
-        ) > Decimal(values["maximum"][0]):
+        if {"minimum", "maximum"}.issubset(parsed) and Decimal(values["minimum"][0]) > Decimal(
+            values["maximum"][0]
+        ):
             raise PolicyNormalizationError(
                 "dq.invalid-range",
                 "range minimum cannot exceed maximum",
                 rule_id="DD-115-dq-check",
                 resource_uri=fact.resource_uri,
             )
-    return tuple(
-        DqParameterSpec(key, values[key]) for key in sorted(values)
-    )
+    return tuple(DqParameterSpec(key, values[key]) for key in sorted(values))
 
 
 def _normalize_dq_tolerance(
@@ -3563,9 +3499,7 @@ def _normalize_dq(
                     "check": check_kind.value.value,
                     "evidence": list(evidence.value),
                     "owner_role": owner_role.value,
-                    "parameters": [
-                        [item.name, list(item.values)] for item in parameters
-                    ],
+                    "parameters": [[item.name, list(item.values)] for item in parameters],
                     "rule_id": rule_id.value,
                     "scope": scope.value,
                     "severity": severity.value.value,
@@ -3601,9 +3535,7 @@ def _normalize_dq(
                 effect=QuarantineEffectSpec(
                     quarantines_rows=action.value is DqAction.QUARANTINE,
                     releases_source_rows=action.value is not DqAction.BLOCK,
-                    release_requires_passing_recheck=(
-                        action.value is DqAction.QUARANTINE
-                    ),
+                    release_requires_passing_recheck=(action.value is DqAction.QUARANTINE),
                 ),
                 rule_hash=rule_hash,
             )
@@ -3840,9 +3772,7 @@ def _validate_adapter_evidence(
 def _measure_cycle(measures: tuple[MeasureFact, ...]) -> tuple[str, ...] | None:
     graph = {
         fact.resource_uri: tuple(
-            fact.measure_dependencies.values
-            if fact.measure_dependencies is not None
-            else ()
+            fact.measure_dependencies.values if fact.measure_dependencies is not None else ()
         )
         for fact in measures
     }
@@ -4558,9 +4488,7 @@ def _normalize_gold(
         )
 
     incremental_index = {item.resource_uri: item for item in incremental}
-    tables = tuple(
-        _normalize_gold_table(item, incremental_index) for item in fact.tables
-    )
+    tables = tuple(_normalize_gold_table(item, incremental_index) for item in fact.tables)
     measures = _normalize_measures(fact.measures)
     linked_measure_refs = (
         frozenset(
@@ -4604,21 +4532,15 @@ def _normalize_gold(
     return GoldProductSpec(
         profile=profile,
         schema=(
-            _text(fact.schema, "Gold schema", "DD-112-profile")
-            if fact.schema is not None
-            else None
+            _text(fact.schema, "Gold schema", "DD-112-profile") if fact.schema is not None else None
         ),
         tables=tables,
         measures=measures,
         calendar=(
-            _normalize_calendar(calendar_fact)
-            if isinstance(calendar_fact, CalendarFact)
-            else None
+            _normalize_calendar(calendar_fact) if isinstance(calendar_fact, CalendarFact) else None
         ),
         security=(
-            _normalize_security(security_fact)
-            if isinstance(security_fact, SecurityFact)
-            else None
+            _normalize_security(security_fact) if isinstance(security_fact, SecurityFact) else None
         ),
         perspectives=tuple(
             PerspectiveSpec(name, tuple(sorted(set(resources))))
@@ -4651,42 +4573,23 @@ def _capability_requirements(
     if any(item.scalar_json for item in preparations):
         required.add((AdapterCapability.JSON_SCALAR, "prep", "DD-106-json-scalar"))
     if any(item.array_children for item in preparations):
-        required.add(
-            (AdapterCapability.JSON_ARRAY_CHILD, "prep", "DD-106-json-array")
-        )
+        required.add((AdapterCapability.JSON_ARRAY_CHILD, "prep", "DD-106-json-array"))
     if incremental:
         required.add((AdapterCapability.MERGE_UPSERT, "project", "DD-109-merge"))
-        required.add(
-            (AdapterCapability.DELETE_SEMANTICS, "project", "DD-109-delete")
-        )
-        required.add(
-            (AdapterCapability.WINDOW_FUNCTIONS, "project", "DD-109-total-order")
-        )
+        required.add((AdapterCapability.DELETE_SEMANTICS, "project", "DD-109-delete"))
+        required.add((AdapterCapability.WINDOW_FUNCTIONS, "project", "DD-109-total-order"))
     if temporal or has_foreign_keys:
-        required.add(
-            (AdapterCapability.TEMPORAL_LOOKUP, "silver", "DD-109-temporal-fk")
-        )
-        required.add(
-            (AdapterCapability.CONSTRAINTS, "silver", "DD-110-constraints")
-        )
-    if any(
-        item.action.value in {DqAction.QUARANTINE, DqAction.BLOCK}
-        for item in quality
-    ):
-        required.add(
-            (AdapterCapability.QUARANTINE, "quality", "DD-115-quarantine")
-        )
+        required.add((AdapterCapability.TEMPORAL_LOOKUP, "silver", "DD-109-temporal-fk"))
+        required.add((AdapterCapability.CONSTRAINTS, "silver", "DD-110-constraints"))
+    if any(item.action.value in {DqAction.QUARANTINE, DqAction.BLOCK} for item in quality):
+        required.add((AdapterCapability.QUARANTINE, "quality", "DD-115-quarantine"))
     if quality:
         required.add((AdapterCapability.DBT_TESTS, "quality", "DD-115-tests"))
     if gold.profile is not None:
-        required.add(
-            (AdapterCapability.PHYSICAL_LAYOUT, "gold", "DD-111-layout")
-        )
+        required.add((AdapterCapability.PHYSICAL_LAYOUT, "gold", "DD-111-layout"))
         required.add((AdapterCapability.TMDL, "gold", "DD-113-tmdl"))
     if gold.security is not None:
-        required.add(
-            (AdapterCapability.SECURITY_RLS_OLS, "gold", "DD-113-security")
-        )
+        required.add((AdapterCapability.SECURITY_RLS_OLS, "gold", "DD-113-security"))
     return tuple(
         CapabilityRequirementSpec(capability, scope, rule_id)
         for capability, scope, rule_id in sorted(
@@ -4890,9 +4793,7 @@ def _validate_runtime_sources(
             "ingested_at": _cdc_output_name(cdc.ingested_at),
         }
         mismatches = [
-            label
-            for label, expected_name in expected.items()
-            if actual[label] != expected_name
+            label for label, expected_name in expected.items() if actual[label] != expected_name
         ]
         if mismatches:
             raise PolicyNormalizationError(
@@ -4956,8 +4857,7 @@ def _validate_identity_columns(
     missing = tuple(
         key
         for key in identity.business.keys.value
-        if key not in columns
-        or _NULL_EXPRESSION.match(columns[key].expression or "")
+        if key not in columns or _NULL_EXPRESSION.match(columns[key].expression or "")
     )
     if missing:
         raise PolicyNormalizationError(
@@ -5002,11 +4902,7 @@ def _identity_roles(
         ),
         IdentityRoleSpec(
             role=SilverColumnRole.INTEGRATION_IDENTITY,
-            columns=(
-                (f"{model_name}_integration_key",)
-                if identity.integration.emitted
-                else ()
-            ),
+            columns=((f"{model_name}_integration_key",) if identity.integration.emitted else ()),
             emitted=identity.integration.emitted,
             establishes_business_identity=identity.integration.emitted,
             key_scope=identity.key_scope.value,
@@ -5014,11 +4910,7 @@ def _identity_roles(
         ),
         IdentityRoleSpec(
             role=SilverColumnRole.MASTERED_IDENTIFIER,
-            columns=(
-                identity.business.keys.value
-                if identity.mastered.routed_to_mdm
-                else ()
-            ),
+            columns=(identity.business.keys.value if identity.mastered.routed_to_mdm else ()),
             emitted=identity.mastered.routed_to_mdm,
             establishes_business_identity=identity.mastered.routed_to_mdm,
             key_scope=identity.key_scope.value,
@@ -5035,9 +4927,7 @@ def _identity_roles(
         IdentityRoleSpec(
             role=SilverColumnRole.ENTITY_IRI,
             columns=(
-                (f"{model_name}_iri",)
-                if identity.iri.mode.value is EntityIriMode.EMIT
-                else ()
+                (f"{model_name}_iri",) if identity.iri.mode.value is EntityIriMode.EMIT else ()
             ),
             emitted=identity.iri.mode.value is EntityIriMode.EMIT,
             establishes_business_identity=False,
@@ -5080,21 +4970,15 @@ def _resolve_quality_scopes(
     fk_policy: ForeignKeyPolicy,
 ) -> dict[str, str]:
     candidate_classes = {
-        candidate.identity.class_uri: candidate.identity.class_uri
-        for candidate in candidates
+        candidate.identity.class_uri: candidate.identity.class_uri for candidate in candidates
     }
     candidate_classes.update(
-        {
-            candidate.identity.model_name: candidate.identity.class_uri
-            for candidate in candidates
-        }
+        {candidate.identity.model_name: candidate.identity.class_uri for candidate in candidates}
     )
     table_targets: dict[str, set[str]] = {}
     for mapping in mappings.tables:
         if mapping.target_class_uri in candidate_classes:
-            table_targets.setdefault(mapping.source_table_uri, set()).add(
-                mapping.target_class_uri
-            )
+            table_targets.setdefault(mapping.source_table_uri, set()).add(mapping.target_class_uri)
     source_column_tables = {
         column.uri: table.uri
         for system in systems
@@ -5110,9 +4994,7 @@ def _resolve_quality_scopes(
             table_targets.get(table_uri, ())
         )
     for descriptor in fk_policy.descriptors:
-        property_targets.setdefault(descriptor.property_uri, set()).add(
-            descriptor.source_class
-        )
+        property_targets.setdefault(descriptor.property_uri, set()).add(descriptor.source_class)
 
     resolved: dict[str, str] = {}
     for rule in quality:
@@ -5137,6 +5019,43 @@ def _resolve_quality_scopes(
             )
         resolved[rule.resource_uri] = next(iter(targets))
     return resolved
+
+
+def _silver_foreign_key_policy(
+    fk_policy: ForeignKeyPolicy,
+    candidates: tuple[BoundSilverModel, ...],
+) -> ForeignKeyPolicy:
+    """Derive the qualified FK view used only by Silver policy normalization."""
+    materialized_classes = {
+        candidate.identity.class_uri
+        for candidate in candidates
+        if candidate.identity.class_uri
+        and candidate.identity.outcome is ModelOutcome.GENERATED
+        and candidate.kind is not SilverModelKind.STUB
+    }
+    descriptors = []
+    for descriptor in fk_policy.descriptors:
+        applicable_classes = descriptor.silver_applicable_classes or (
+            frozenset({descriptor.source_class})
+            if (
+                descriptor.redirected
+                or descriptor.silver_foreign_key
+                or descriptor.silver_column_name is not None
+                or descriptor.is_functional
+            )
+            else descriptor.max_cardinality_classes
+        )
+        descriptors.extend(
+            replace(descriptor, source_class=class_uri)
+            for class_uri in sorted(applicable_classes & materialized_classes)
+        )
+    return ForeignKeyPolicy(
+        descriptors=tuple(descriptors),
+        diagnostics=fk_policy.diagnostics,
+        outgoing_relationship_sources=tuple(
+            sorted({descriptor.source_class for descriptor in descriptors})
+        ),
+    )
 
 
 def _silver_authorities(
@@ -5174,9 +5093,7 @@ def _silver_authorities(
         class_uri = candidate.identity.class_uri
         descriptors = descriptors_by_class.get(class_uri, [])
         fk_names = frozenset(
-            item.silver_column_name
-            for item in descriptors
-            if item.silver_column_name is not None
+            item.silver_column_name for item in descriptors if item.silver_column_name is not None
         )
         foreign_keys = tuple(
             temporal_by_property[item.property_uri]
@@ -5239,23 +5156,17 @@ def _silver_authorities(
                     resource_uri=descriptor.property_uri,
                 )
             if relationship.mode.value is not TemporalMode.NONE:
-                if (
-                    parent_history is None
-                    or parent_history.scd_type.value is not ScdType.TYPE_2
-                ):
+                if parent_history is None or parent_history.scd_type.value is not ScdType.TYPE_2:
                     raise PolicyNormalizationError(
                         "temporal-fk.history-target-required",
                         "current/as-of FK lookup requires an SCD2 parent",
                         rule_id="DD-109-temporal-fk",
                         resource_uri=descriptor.property_uri,
                     )
-            if (
-                relationship.mode.value is TemporalMode.AS_OF
-                and (
-                    parent_history is None
-                    or parent_history.time_basis is None
-                    or parent_history.time_basis.value is not Scd2TimeBasis.BUSINESS_VALID
-                )
+            if relationship.mode.value is TemporalMode.AS_OF and (
+                parent_history is None
+                or parent_history.time_basis is None
+                or parent_history.time_basis.value is not Scd2TimeBasis.BUSINESS_VALID
             ):
                 raise PolicyNormalizationError(
                     "temporal-fk.business-valid-parent-required",
@@ -5282,16 +5193,10 @@ def _silver_authorities(
             all_identity_roles
             if is_final_entity
             else tuple(
-                role
-                for role in all_identity_roles
-                if role.role is SilverColumnRole.SOURCE_IDENTITY
+                role for role in all_identity_roles if role.role is SilverColumnRole.SOURCE_IDENTITY
             )
         )
-        role_by_column = {
-            column: role.role
-            for role in identity_roles
-            for column in role.columns
-        }
+        role_by_column = {column: role.role for role in identity_roles for column in role.columns}
         logical_columns = list(candidate.columns)
         logical_column_names = {column.name for column in logical_columns}
         if is_final_entity or candidate.kind is SilverModelKind.SOURCE_BRANCH:
@@ -5347,18 +5252,13 @@ def _silver_authorities(
                     history_columns.extend(
                         (
                             ColumnSpec(
-                                name=(
-                                    runtime_authority.history
-                                    .business_valid_from_column
-                                ),
+                                name=(runtime_authority.history.business_valid_from_column),
                                 data_type="TIMESTAMP",
                                 description="Inclusive business-valid interval start",
                                 include_in_change_detection=False,
                             ),
                             ColumnSpec(
-                                name=(
-                                    runtime_authority.history.business_valid_to_column
-                                ),
+                                name=(runtime_authority.history.business_valid_to_column),
                                 data_type="TIMESTAMP",
                                 description="Exclusive business-valid interval end",
                                 include_in_change_detection=False,
@@ -5397,9 +5297,7 @@ def _silver_authorities(
         )
         required_runtime_columns = {"_loaded_at"}
         if runtime_authority is not None:
-            required_runtime_columns.add(
-                runtime_authority.history.deleted_flag_column
-            )
+            required_runtime_columns.add(runtime_authority.history.deleted_flag_column)
             if runtime_authority.canonical_hash is not None:
                 required_runtime_columns.add("_row_hash")
             if runtime_authority.history.scd_type.value is ScdType.TYPE_2:
@@ -5411,8 +5309,7 @@ def _silver_authorities(
                 )
                 if (
                     runtime_authority.history.time_basis is not None
-                    and runtime_authority.history.time_basis.value
-                    is Scd2TimeBasis.BUSINESS_VALID
+                    and runtime_authority.history.time_basis.value is Scd2TimeBasis.BUSINESS_VALID
                 ):
                     required_runtime_columns.add(
                         runtime_authority.history.business_valid_from_column
@@ -5476,9 +5373,7 @@ def _silver_authorities(
                 multi_source=multi_source_policy,
                 contribution_lineage=(
                     ContributionLineageRelationSpec(
-                        relation_name=(
-                            f"{candidate.identity.model_name}__contributions"
-                        ),
+                        relation_name=(f"{candidate.identity.model_name}__contributions"),
                         parent_key_column=f"{candidate.identity.model_name}_sk",
                     )
                     if identity is not None
@@ -5576,9 +5471,7 @@ def _collect_preparations(
         scoped_system = replace(system, tables=(table,))
         scoped_mappings = replace(
             mappings,
-            tables=tuple(
-                item for item in mappings.tables if item.source_table_uri == table_uri
-            ),
+            tables=tuple(item for item in mappings.tables if item.source_table_uri == table_uri),
             columns=tuple(
                 item for item in mappings.columns if item.source_column_uri in column_uris
             ),
@@ -5667,15 +5560,11 @@ def _collect_identities(
     runtime_prerequisite = Prerequisite(
         id="runtime",
         status=(
-            incremental_result.status
-            if incremental_result is not None
-            else EvaluationStatus.PASSED
+            incremental_result.status if incremental_result is not None else EvaluationStatus.PASSED
         ),
         diagnostic_ids=tuple(
             item.id
-            for item in (
-                incremental_result.diagnostics if incremental_result is not None else ()
-            )
+            for item in (incremental_result.diagnostics if incremental_result is not None else ())
         ),
     )
     incremental_refs = {item.resource_uri for item in incremental}
@@ -5704,9 +5593,8 @@ def _collect_identities(
             )
             if value
         }
-        if (
-            not runtime_prerequisite.available
-            and not authored_incremental_refs.issubset(incremental_refs)
+        if not runtime_prerequisite.available and not authored_incremental_refs.issubset(
+            incremental_refs
         ):
             skipped_prerequisites.append(runtime_prerequisite)
             continue
@@ -5726,9 +5614,7 @@ def _collect_identities(
             )
         except PolicyNormalizationError as exc:
             collector.add(exc.diagnostic)
-        own_diagnostics.extend(
-            item for item in collector.diagnostics if item.id not in before
-        )
+        own_diagnostics.extend(item for item in collector.diagnostics if item.id not in before)
 
     if skipped_prerequisites:
         combined = Prerequisite(
@@ -5749,9 +5635,7 @@ def _collect_identities(
     status = (
         EvaluationStatus.FAILED
         if any(item.evaluation_status is EvaluationStatus.FAILED for item in own_diagnostics)
-        else EvaluationStatus.NOT_EVALUATED
-        if skipped_prerequisites
-        else EvaluationStatus.PASSED
+        else EvaluationStatus.NOT_EVALUATED if skipped_prerequisites else EvaluationStatus.PASSED
     )
     return EvaluationResult(
         status=status,
@@ -5813,6 +5697,7 @@ def normalize_medallion_policy(
 ) -> MedallionPolicySpec:
     """Classify all effective policy; this function performs no RDF or file I/O."""
     issues: list[PolicyIssue] = []
+    silver_fk_policy = _silver_foreign_key_policy(fk_policy, silver_candidates)
     try:
         adapter = AdapterName(target_adapter)
     except ValueError as exc:
@@ -5882,9 +5767,7 @@ def normalize_medallion_policy(
     )
     temporal = temporal_result.value or ()
     quality_result = (
-        _collect_policy_values(
-            facts.data_quality, _normalize_dq, collector, stage="quality"
-        )
+        _collect_policy_values(facts.data_quality, _normalize_dq, collector, stage="quality")
         if mode is ExecutionMode.COLLECT
         else EvaluationResult(
             status=EvaluationStatus.PASSED,
@@ -5954,8 +5837,7 @@ def normalize_medallion_policy(
         {
             candidate.identity.class_uri
             for candidate in silver_candidates
-            if candidate.identity.class_uri
-            and candidate.identity.outcome.value != "skipped"
+            if candidate.identity.class_uri and candidate.identity.outcome.value != "skipped"
         }
         - identity_uris
     ):
@@ -6002,14 +5884,14 @@ def normalize_medallion_policy(
         temporal,
         quality,
         gold,
-        has_foreign_keys=bool(fk_policy.descriptors),
+        has_foreign_keys=bool(silver_fk_policy.descriptors),
     )
     quality_scope_targets = _resolve_quality_scopes(
         quality,
         silver_candidates,
         systems,
         mappings,
-        fk_policy,
+        silver_fk_policy,
     )
     if mode is ExecutionMode.COLLECT:
         silver_items: list[SilverModelAuthoritySpec] = []
@@ -6034,7 +5916,7 @@ def normalize_medallion_policy(
                         hashes,
                         temporal,
                         quality,
-                        fk_policy,
+                        silver_fk_policy,
                         requirements,
                         deviations,
                         quality_scope_targets,
@@ -6064,7 +5946,7 @@ def normalize_medallion_policy(
             hashes,
             temporal,
             quality,
-            fk_policy,
+            silver_fk_policy,
             requirements,
             deviations,
             quality_scope_targets,

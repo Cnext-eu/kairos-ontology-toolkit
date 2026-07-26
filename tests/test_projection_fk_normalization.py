@@ -7,8 +7,8 @@ from dataclasses import FrozenInstanceError
 import pytest
 from rdflib import Graph, URIRef
 
+from kairos_ontology.core.projections.medallion_dbt_projector import _infer_fk_targets
 from kairos_ontology.core.projections.shared import classify_foreign_keys
-
 
 BASE = "https://example.test/fk#"
 
@@ -31,8 +31,7 @@ def _graph(body: str) -> Graph:
 
 
 def test_classifier_normalizes_fk_signals_into_immutable_descriptors():
-    graph = _graph(
-        """
+    graph = _graph("""
         ex:Source a owl:Class ;
             rdfs:subClassOf [
                 a owl:Restriction ;
@@ -53,8 +52,7 @@ def test_classifier_normalizes_fk_signals_into_immutable_descriptors():
             rdfs:domain ex:Source ; rdfs:range ex:Target .
         ex:unqualified a owl:ObjectProperty ;
             rdfs:domain ex:Source ; rdfs:range ex:Target .
-        """
-    )
+        """)
 
     result = classify_foreign_keys(graph)
     descriptors = {str(item.property_uri).rsplit("#", 1)[-1]: item for item in result.descriptors}
@@ -68,8 +66,7 @@ def test_classifier_normalizes_fk_signals_into_immutable_descriptors():
     assert descriptors["byCardinality"].qualifies_silver(URIRef(f"{BASE}Source"))
     assert not descriptors["unqualified"].is_silver_fk
     assert (
-        descriptors["byColumn"].physical_column_name("target", layer="silver")
-        == "custom_target_sk"
+        descriptors["byColumn"].physical_column_name("target", layer="silver") == "custom_target_sk"
     )
     assert descriptors["byColumn"].physical_column_name("target", layer="gold") == "target_sk"
 
@@ -78,8 +75,7 @@ def test_classifier_normalizes_fk_signals_into_immutable_descriptors():
 
 
 def test_classifier_normalizes_direct_and_reverse_redirection():
-    graph = _graph(
-        """
+    graph = _graph("""
         ex:Parent a owl:Class .
         ex:Child a owl:Class .
 
@@ -93,8 +89,7 @@ def test_classifier_normalizes_direct_and_reverse_redirection():
         ex:ownedBy a owl:ObjectProperty ;
             rdfs:domain ex:Child ; rdfs:range ex:Parent ;
             kairos-ext:silverForeignKeyOn ex:Child .
-        """
-    )
+        """)
 
     descriptors = {
         str(item.property_uri).rsplit("#", 1)[-1]: item
@@ -117,8 +112,7 @@ def test_classifier_normalizes_direct_and_reverse_redirection():
 
 
 def test_classifier_preserves_invalid_annotation_diagnostics():
-    graph = _graph(
-        """
+    graph = _graph("""
         ex:Order a owl:Class .
         ex:Customer a owl:Class .
         ex:Product a owl:Class .
@@ -132,8 +126,7 @@ def test_classifier_preserves_invalid_annotation_diagnostics():
         ex:invalidTarget a owl:ObjectProperty ;
             rdfs:domain ex:Order ; rdfs:range ex:Customer ;
             kairos-ext:silverForeignKeyOn ex:Product .
-        """
-    )
+        """)
 
     result = classify_foreign_keys(graph)
 
@@ -154,15 +147,13 @@ def test_classifier_preserves_invalid_annotation_diagnostics():
 
 def test_classifier_keeps_imported_property_and_class_uris():
     imported = "https://reference.example/party#"
-    graph = _graph(
-        f"""
+    graph = _graph(f"""
         <{imported}TradeParty> a owl:Class .
         <{imported}Country> a owl:Class .
         <{imported}registeredIn> a owl:ObjectProperty, owl:FunctionalProperty ;
             rdfs:domain <{imported}TradeParty> ;
             rdfs:range <{imported}Country> .
-        """
-    )
+        """)
 
     descriptor = classify_foreign_keys(graph).descriptors[0]
 
@@ -170,3 +161,44 @@ def test_classifier_keeps_imported_property_and_class_uris():
     assert descriptor.source_class == URIRef(f"{imported}TradeParty")
     assert descriptor.target_class == URIRef(f"{imported}Country")
     assert descriptor.is_silver_fk
+
+
+def test_cardinality_fk_is_emitted_only_for_restricted_subclass():
+    graph = _graph("""
+        ex:Base a owl:Class .
+        ex:Restricted a owl:Class ;
+            rdfs:subClassOf ex:Base, [
+                a owl:Restriction ;
+                owl:onProperty ex:parent ;
+                owl:maxCardinality 1
+            ] .
+        ex:RestrictedChild a owl:Class ;
+            rdfs:subClassOf ex:Restricted .
+        ex:Sibling a owl:Class ;
+            rdfs:subClassOf ex:Base .
+        ex:Target a owl:Class .
+        ex:parent a owl:ObjectProperty ;
+            rdfs:domain ex:Base ;
+            rdfs:range ex:Target .
+        """)
+    classification = classify_foreign_keys(graph)
+
+    restricted = _infer_fk_targets(
+        graph,
+        f"{BASE}Restricted",
+        fk_classification=classification,
+    )
+    sibling = _infer_fk_targets(
+        graph,
+        f"{BASE}Sibling",
+        fk_classification=classification,
+    )
+    restricted_child = _infer_fk_targets(
+        graph,
+        f"{BASE}RestrictedChild",
+        fk_classification=classification,
+    )
+
+    assert [item["prop"] for item in restricted] == [URIRef(f"{BASE}parent")]
+    assert [item["prop"] for item in restricted_child] == [URIRef(f"{BASE}parent")]
+    assert sibling == []

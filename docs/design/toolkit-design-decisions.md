@@ -177,6 +177,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-127](#dd-127-domain-ownership-handoffs-and-generalized-stable-cluster-relationship-candidates) | Domain-Ownership Handoffs and Generalized, Stable-Cluster Relationship Candidates | Accepted | 2026-08-09 |
 | [DD-128](#dd-128-intent-preserving-coverage-classification-run-atomic-registry-writes-and-authoritative-model-precedence) | Intent-Preserving Coverage Classification, Run-Atomic Registry Writes, and Authoritative Model Precedence | Accepted | 2026-07-26 |
 | [DD-129](#dd-129-domain-scoped-active-source-authority-for-projection-readiness) | Domain-Scoped Active Source Authority for Projection Readiness | Accepted | 2026-07-26 |
+| [DD-130](#dd-130-silver-ext-shape-discovery-with-packaged-fallback-and-windows-safe-loading) | Silver-ext Shape Discovery with Packaged Fallback and Windows-Safe Loading | Accepted | 2026-07-26 |
 
 ---
 
@@ -5648,6 +5649,10 @@ Introduce a contracted custom dbt boundary:
 - Custom models, schema/unit-test YAML, singular tests, and namespaced macros
   are bundled. Paths, names, collisions, references, and a toolkit-owned package
   allow-list are validated before dbt target files are written.
+- Domain-scoped projection assembles only active contracts for the selected
+  ontology plus their transitive custom-model `ref()` dependency closure. Model
+  properties, verifying tests, required macro files, and governed packages follow
+  that closure; unreachable contracts from another domain are not copied.
 - `project --platform fabric|databricks` generates one adapter-specific package
   per invocation at the backward-compatible `output/medallion/dbt/` path.
   Dual-adapter CI uses separate temporary output roots.
@@ -5676,6 +5681,8 @@ second hand-authored physical schema.
 - Advanced transformation authoring is optional; hubs without custom contracts
   retain existing output and Fabric defaults.
 - A contract change requires `sync-dbt-contracts` before projection.
+- Full-hub projection assembles the union of every active domain contract, while
+  `project --ontology` produces a self-contained package without unrelated models.
 - Runtime data/grain guarantees still require warehouse-backed tests before
   production publication; toolkit CI supplies hooks but no live credentials.
 - Atomic directory replacement and verified internal SQL column lineage remain
@@ -6634,6 +6641,11 @@ resolution and the ontology's declared
 managed imports. Claims remain the governed materialization authority, while module
 profiles may provide an explicit source-neutral default allow-list.
 
+Module-selection evidence is collected from selected hub ontology files and Claim
+Registries before recursive ontology loading. Imports discovered only inside a
+loaded reference-module closure are transitive implementation facts, not authored
+direct-import evidence, and never force a duplicate direct import into the hub.
+
 Managed synchronization owns only its final generated block and preserves authored Turtle
 outside it. Validation and projection preflight report the external term, owning ontology
 IRI, managed source, and claim where available. Missing required imports fail semantic
@@ -6674,6 +6686,9 @@ import rules.
   compatibility.
 - Ambiguous ownership, profile term drift, ontology-IRI mismatch, and version mismatch are
   blocking structured diagnostics.
+- Claim synchronization and projection preflight share the same direct,
+  domain-scoped evidence collector, so closure loading cannot make their import
+  expectations diverge.
 - Imported definitions remain in their source modules. Self-contained deployment bundles,
   if ever required, must be separate derived output.
 - Activation inventory output is deterministic and omits timestamps.
@@ -6996,6 +7011,13 @@ interval boundaries, time-zone normalization, expected lookup cardinality, and
 missing/ambiguous/late-parent behavior: fail, quarantine, retry, or explicit unknown
 member. Multiple matches are never resolved by silently choosing one.
 
+The normalized relationship inventory remains complete for Gold analysis. Silver
+temporal policy applies only to relationships that canonically qualify for Silver
+on the materialized source class: explicit `silverForeignKeyOn`,
+`silverForeignKey`, or `silverColumnName`, `owl:FunctionalProperty`, or an
+applicable max-cardinality-one restriction. A complete domain/range-only object
+property is not a materialized Silver FK.
+
 ### Rationale
 
 Incremental correctness depends on time and ordering semantics, not merely a unique key
@@ -7009,6 +7031,9 @@ cross-adapter reproducibility.
   correction, natural-key change, interval integrity, one current row, and temporal FK
   ambiguity.
 - Artifact determinism and runtime determinism are reported separately.
+- Silver temporal completeness, capability, DQ scope, and authority generation
+  consume the Silver-qualified relationship view; Gold retains the unfiltered
+  descriptor inventory.
 
 ### Implemented contract
 
@@ -8695,6 +8720,8 @@ Every inclusion carries a deterministic reason.
 The scoped systems, mappings, contracts, and preparation policies are the only source
 authorities passed to normalization, identity, coverage, and physical planning. Contracted
 virtual sources are registered relations but do not acquire physical preparation obligations.
+Final custom dbt package assembly uses the union of those active contracts and their declared
+custom-model dependency closure rather than re-scanning every hub transformation as selected.
 
 ### Rationale
 
@@ -8712,6 +8739,56 @@ are active and makes readiness diagnostics explainable.
 - Readiness JSON includes the active source inventory by domain.
 - Preparation output is domain-scoped; unrelated array-child preparation models are no longer
   emitted for another domain's projection.
+- Domain-scoped dbt output excludes unreachable contracted transformations owned by another
+  ontology, while full-hub output remains the union of all selected domain closures.
+
+---
+
+
+
+
+## DD-130: Silver-ext Shape Discovery with Packaged Fallback and Windows-Safe Loading
+
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** `validate-silver-ext` / `scaffold-silver-ext` CLI commands, `core/design_validation.py`
+**Implementation:** `resolve_silver_ext_shapes()` and the shape-load block in
+`core/design_validation.py`; `validate_silver_ext_cmd` / `scaffold_silver_ext_cmd` in `cli/main.py`
+
+### Context
+
+`validate-silver-ext` hardcoded the hub-local shape at
+`model/shapes/kairos-ext-shapes.shacl.ttl` and passed the absolute `Path` straight to
+`rdflib.Graph.parse()`. On a hub missing that managed shape (older or partially migrated
+hubs), the missing path fell through to rdflib's URL handling, which on Windows mis-read a
+drive letter (`G:\...`) as URI scheme `g` — a misleading error that blocked DD-108/DD-109
+validation from ever starting. There was no `--shapes` override and no packaged fallback.
+
+### Decision
+
+1. Add a shared `resolve_silver_ext_shapes(hub)` resolver: prefer the hub-local managed
+   shape, else fall back to the packaged canonical shape shipped in the scaffold; report the
+   selected source on stderr (stdout stays pure JSON).
+2. In `validate_silver_extension`, return a dedicated `silver.shapes-missing` diagnostic when
+   the shape file does not exist, and parse via a resolved `file://` URI so a drive-letter
+   path is never treated as a URL scheme. Malformed Turtle still yields the existing
+   `silver.shapes-load-error`.
+3. Add a `--shapes` override validated by `click.Path(exists=True, ...)` so a bad path fails
+   at Click parsing, before rdflib. `scaffold-silver-ext` reuses the same resolver.
+
+### Rationale
+
+Centralising transport/existence handling in the core validator fixes every caller at once,
+while the packaged fallback keeps older hubs validating without weakening checks. New/updated
+hubs still receive the managed shape via scaffold install, so the fallback is additive.
+
+### Consequences
+
+- `validate-silver-ext` runs on Windows when the hub-local shape is absent but the packaged
+  shape exists, and reports which shape source was used.
+- A missing shape now surfaces as `silver.shapes-missing`, never as URL scheme `g`.
+- CLI stdout remains pure JSON; the selected-source line is emitted on stderr, so callers that
+  parse output must read stdout (tests updated accordingly).
 
 ---
 

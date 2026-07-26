@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc9] — 2026-07-26
+
+### Fixed
+- **Silver-ext shape discovery with packaged fallback and Windows-safe loading
+  (DD-130):** `validate-silver-ext` and `scaffold-silver-ext` now resolve the
+  Silver SHACL shape from the hub-local managed file first and fall back to the
+  packaged canonical shape, reporting the selected source. A missing shape yields
+  a precise `silver.shapes-missing` diagnostic, and shapes are parsed via a
+  resolved `file://` URI so an absolute Windows drive-letter path (e.g. `G:\...`)
+  is never mis-read as a URL scheme. A new `--shapes` override is validated by
+  Click before it reaches rdflib.
+- **Booking / medallion dbt projection fixes:** refinements to the medallion dbt
+  projector, dbt policy normalization, FK normalization, projection specs, the
+  projector claim gate, managed-import synchronization, and the dbt bundle, with
+  expanded scenario and unit coverage.
+
 ## [4.7.0rc8] — 2026-07-26
 
 ### Fixed

@@ -303,9 +303,7 @@ def _bind_contract_identity(hub: Path) -> URIRef:
     graph = Graph().parse(path, format="turtle")
     identity = URIRef(f"{VIRTUAL}/contract-identity")
     graph.add((DOMAIN.Shipment, EXT.businessGrain, Literal("one row per shipment")))
-    graph.add(
-        (DOMAIN.Shipment, EXT.identityStrategy, Literal("source-scoped-immutable-key"))
-    )
+    graph.add((DOMAIN.Shipment, EXT.identityStrategy, Literal("source-scoped-immutable-key")))
     graph.add((DOMAIN.Shipment, EXT.entityInstanceIriPolicy, Literal("emit")))
     graph.add((DOMAIN.Shipment, EXT.keyScope, Literal("source-table")))
     graph.add((DOMAIN.Shipment, EXT.sourceIdentity, identity))
@@ -316,9 +314,7 @@ def _bind_contract_identity(hub: Path) -> URIRef:
 
 
 def _identity_artifacts(hub: Path) -> tuple[dict, dict]:
-    contract = discover_dbt_contracts(
-        hub / "integration" / "transforms" / "dbt", hub
-    )[0]
+    contract = discover_dbt_contracts(hub / "integration" / "transforms" / "dbt", hub)[0]
     transforms = hub / "integration" / "transforms" / "dbt"
     properties = yaml.safe_load(contract.properties_path.read_text(encoding="utf-8"))
     model_definition = properties["models"][0]
@@ -335,9 +331,7 @@ def _identity_artifacts(hub: Path) -> tuple[dict, dict]:
             "unit_test.pkg.int_shipment_conformed.unit_test_route_fallback": {
                 **properties["unit_tests"][0],
                 "resource_type": "unit_test",
-                "unique_id": (
-                    "unit_test.pkg.int_shipment_conformed.unit_test_route_fallback"
-                ),
+                "unique_id": ("unit_test.pkg.int_shipment_conformed.unit_test_route_fallback"),
             }
         },
         "nodes": {
@@ -425,7 +419,7 @@ def _identity_artifacts(hub: Path) -> tuple[dict, dict]:
                 },
                 "depends_on": {"nodes": [model_id]},
             },
-        }
+        },
     }
     run_metadata = {
         **invocation_metadata,
@@ -442,9 +436,7 @@ def _identity_artifacts(hub: Path) -> tuple[dict, dict]:
     return run_results, manifest
 
 
-def _write_identity_artifacts(
-    hub: Path, run_results: dict, manifest: dict
-) -> tuple[Path, Path]:
+def _write_identity_artifacts(hub: Path, run_results: dict, manifest: dict) -> tuple[Path, Path]:
     target = hub / "dbt-actual-results"
     target.mkdir(exist_ok=True)
     manifest_path = target / "manifest.json"
@@ -472,7 +464,11 @@ def test_contract_identity_requires_actual_current_passing_evidence(tmp_path: Pa
         / "int_shipment_conformed.vocabulary.ttl"
     )
     graph = Graph().parse(vocabulary, format="turtle")
-    assert (identity, RDF.type, Namespace("https://kairos.cnext.eu/dbt-contract#").ContractIdentity) in graph
+    assert (
+        identity,
+        RDF.type,
+        Namespace("https://kairos.cnext.eu/dbt-contract#").ContractIdentity,
+    ) in graph
 
     readiness = check_projection(
         ontologies_path=hub / "model" / "ontologies",
@@ -488,8 +484,7 @@ def test_contract_identity_requires_actual_current_passing_evidence(tmp_path: Pa
     )
     assert readiness.ready
     assert any(
-        item["rule_id"] == "DD-108-contract-identity"
-        and item["blocking"] is False
+        item["rule_id"] == "DD-108-contract-identity" and item["blocking"] is False
         for item in readiness.diagnostics
     )
 
@@ -512,8 +507,7 @@ def test_contract_identity_requires_actual_current_passing_evidence(tmp_path: Pa
     )
     assert release_review["mode"] == "review-only"
     assert any(
-        issue["code"] == "identity.contract-unverified"
-        for issue in release_review["policy_issues"]
+        issue["code"] == "identity.contract-unverified" for issue in release_review["policy_issues"]
     )
     with pytest.raises(ProjectionRunError, match="Strict release blocked"):
         run_projections(
@@ -550,7 +544,9 @@ def test_contract_identity_requires_actual_current_passing_evidence(tmp_path: Pa
         / "intermediate"
         / "int_shipment_conformed.sql"
     )
-    sql.write_text(sql.read_text(encoding="utf-8") + "\n-- changed contract SQL\n", encoding="utf-8")
+    sql.write_text(
+        sql.read_text(encoding="utf-8") + "\n-- changed contract SQL\n", encoding="utf-8"
+    )
     sync_dbt_contracts(hub)
     stale_graph = Graph().parse(vocabulary, format="turtle")
     assert stale_graph.value(identity, dbt.verificationStatus) == Literal("unverified")
@@ -576,7 +572,9 @@ def test_contract_identity_rejects_stale_sql_artifacts(tmp_path: Path) -> None:
         / "intermediate"
         / "int_shipment_conformed.sql"
     )
-    sql.write_text(sql.read_text(encoding="utf-8") + "\n-- changed after dbt run\n", encoding="utf-8")
+    sql.write_text(
+        sql.read_text(encoding="utf-8") + "\n-- changed after dbt run\n", encoding="utf-8"
+    )
     results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
 
     with pytest.raises(ContractIdentityEvidenceError, match="raw_code does not match"):
@@ -637,9 +635,9 @@ def test_contract_identity_rejects_missing_model_node(tmp_path: Path) -> None:
 def test_contract_identity_rejects_wrong_manifest_model(tmp_path: Path) -> None:
     hub = _create_hub(tmp_path)
     run_results, manifest = _identity_artifacts(hub)
-    manifest["nodes"]["model.pkg.int_shipment_conformed"]["original_file_path"] = (
-        "models/other/int_shipment_conformed.sql"
-    )
+    manifest["nodes"]["model.pkg.int_shipment_conformed"][
+        "original_file_path"
+    ] = "models/other/int_shipment_conformed.sql"
     results_path, manifest_path = _write_identity_artifacts(hub, run_results, manifest)
 
     with pytest.raises(ContractIdentityEvidenceError, match="wrong original_file_path"):
@@ -836,6 +834,80 @@ def test_advanced_transformation_projects_complete_package(
     assert "route-fallback" in (
         project / "models" / "intermediate" / "int_shipment_conformed.yml"
     ).read_text(encoding="utf-8")
+
+
+def test_single_domain_projection_excludes_unrelated_custom_contract_artifacts(
+    tmp_path: Path,
+) -> None:
+    hub = _create_hub(tmp_path)
+    transforms = hub / "integration" / "transforms" / "dbt"
+    model_dir = transforms / "models" / "intermediate"
+    (model_dir / "int_unrelated.sql").write_text(
+        "select 'other' as other_id\n",
+        encoding="utf-8",
+    )
+    (model_dir / "int_unrelated.yml").write_text(
+        yaml.safe_dump(
+            {
+                "version": 2,
+                "models": [
+                    {
+                        "name": "int_unrelated",
+                        "description": "An unrelated domain transformation.",
+                        "config": {
+                            "materialized": "table",
+                            "contract": {"enforced": True},
+                        },
+                        "meta": {
+                            "kairos": {
+                                "target_class": "https://example.com/ontology/other#Other",
+                                "virtual_source_iri": "https://example.com/source/custom/other",
+                                "grain": "one row per other",
+                                "supported_adapters": ["fabric", "databricks"],
+                                "grain_key": ["other_id"],
+                                "required_packages": ["metaplane/dbt_expectations"],
+                                "required_macros": ["other__normalize"],
+                            }
+                        },
+                        "columns": [
+                            {
+                                "name": "other_id",
+                                "data_type": "string",
+                                "data_tests": ["not_null", "unique"],
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (transforms / "tests" / "unrelated_grain.sql").write_text(
+        "select * from {{ ref('int_unrelated') }}\n",
+        encoding="utf-8",
+    )
+    (transforms / "macros" / "unrelated.sql").write_text(
+        "{% macro other__normalize(value) %}{{ value }}{% endmacro %}\n",
+        encoding="utf-8",
+    )
+    sync_dbt_contracts(hub)
+    output = tmp_path / "single-domain-output"
+
+    run_projections(
+        ontologies_path=hub / "model" / "ontologies" / "shipment.ttl",
+        catalog_path=hub / "missing-catalog.xml",
+        output_path=output,
+        target="dbt",
+        platform="fabric",
+    )
+
+    project = output / "medallion" / "dbt"
+    assert (project / "models" / "intermediate" / "int_shipment_conformed.sql").is_file()
+    assert not (project / "models" / "intermediate" / "int_unrelated.sql").exists()
+    assert not (project / "models" / "intermediate" / "int_unrelated.yml").exists()
+    assert not (project / "tests" / "unrelated_grain.sql").exists()
+    assert not (project / "macros" / "unrelated.sql").exists()
 
 
 def test_fabric_and_databricks_share_the_same_semantic_contract(tmp_path: Path) -> None:

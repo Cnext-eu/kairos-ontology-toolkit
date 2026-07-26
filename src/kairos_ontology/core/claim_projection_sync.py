@@ -14,6 +14,7 @@ This module is AI-free and purely structural.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
@@ -46,48 +47,80 @@ def _truthy(value: object) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes"}
 
 
+def collect_module_scope_evidence(
+    *,
+    claims_dir: Path,
+    ontology_files: Iterable[Path],
+    requested_domains: Iterable[str] = (),
+) -> tuple[set[str], set[str], set[str]]:
+    """Collect direct authored-file evidence without loading module closures."""
+    paths = tuple(Path(path) for path in ontology_files)
+    domains = {str(domain).strip() for domain in requested_domains if str(domain).strip()}
+    domains.update(path.stem for path in paths)
+    claimed_terms: set[str] = set()
+    imported_iris: set[str] = set()
+    if claims_dir.is_dir():
+        for domain in sorted(domains):
+            claims_file = claims_dir / f"{domain}-claims.yaml"
+            if not claims_file.is_file():
+                continue
+            registry = load_registry(claims_file)
+            claimed_terms.update(
+                term_uri
+                for _claim_id, term_uri, _claim_type in approved_imported_term_refs(registry)
+            )
+    for path in paths:
+        try:
+            graph = Graph().parse(path)
+        except Exception:  # syntax/load diagnostics are owned by the caller
+            continue
+        imported_iris.update(str(value) for value in graph.objects(predicate=OWL.imports))
+    return domains, claimed_terms, imported_iris
+
+
 def _module_scope_evidence(
     *,
     claims_dir: Path,
     ontologies_dir: Path,
     domains_filter: list[str] | None,
 ) -> tuple[set[str], set[str], set[str]]:
-    """Collect module-selection evidence without loading any module closures."""
+    """Collect scoped evidence for sync, including registries awaiting scaffolding."""
     lowers = [item.lower() for item in domains_filter] if domains_filter else None
 
     def in_scope(domain: str) -> bool:
         return lowers is None or any(token in domain.lower() for token in lowers)
 
-    domains = set(domains_filter or ())
-    claimed_terms: set[str] = set()
-    imported_iris: set[str] = set()
-    if claims_dir.is_dir():
-        for path in claims_dir.glob("*-claims.yaml"):
-            domain = path.name.removesuffix("-claims.yaml")
-            if not in_scope(domain):
-                continue
-            domains.add(domain)
-            registry = load_registry(path)
-            claimed_terms.update(
-                term_uri
-                for _claim_id, term_uri, _claim_type in approved_imported_term_refs(registry)
-            )
-    if ontologies_dir.is_dir():
-        for path in (*ontologies_dir.glob("*.ttl"), *ontologies_dir.glob("*.rdf")):
-            if not in_scope(path.stem):
-                continue
-            domains.add(path.stem)
-            try:
-                graph = Graph().parse(path)
-            except Exception:  # syntax/load diagnostics are owned by the caller
-                continue
-            imported_iris.update(str(value) for value in graph.objects(predicate=OWL.imports))
-            claimed_terms.update(
-                str(node)
-                for triple in graph
-                for node in triple
-                if isinstance(node, URIRef)
-            )
+    ontology_files = (
+        tuple(
+            path
+            for path in (*ontologies_dir.glob("*.ttl"), *ontologies_dir.glob("*.rdf"))
+            if in_scope(path.stem)
+        )
+        if ontologies_dir.is_dir()
+        else ()
+    )
+    registry_domains = (
+        {
+            path.name.removesuffix("-claims.yaml")
+            for path in claims_dir.glob("*-claims.yaml")
+            if in_scope(path.name.removesuffix("-claims.yaml"))
+        }
+        if claims_dir.is_dir()
+        else set()
+    )
+    domains, claimed_terms, imported_iris = collect_module_scope_evidence(
+        claims_dir=claims_dir,
+        ontology_files=ontology_files,
+        requested_domains=registry_domains | set(domains_filter or ()),
+    )
+    for path in ontology_files:
+        try:
+            graph = Graph().parse(path)
+        except Exception:  # syntax/load diagnostics are owned by the caller
+            continue
+        claimed_terms.update(
+            str(node) for triple in graph for node in triple if isinstance(node, URIRef)
+        )
     return domains, claimed_terms, imported_iris
 
 
@@ -251,9 +284,7 @@ def evaluate_domain_projection_sync(
 
     try:
         registry = (
-            load_registry(claims_file)
-            if claims_file.exists()
-            else ClaimRegistry(domain=domain)
+            load_registry(claims_file) if claims_file.exists() else ClaimRegistry(domain=domain)
         )
         ontology_graph = Graph()
         ontology_graph.parse(ontology_file, format="turtle")
@@ -291,19 +322,13 @@ def evaluate_domain_projection_sync(
     )
     status.import_diagnostics = list(plan.diagnostics)
     status.activation_inventory = plan.activation_inventory
-    status.disputed_claims = [
-        {**item.to_dict(), "domain": domain} for item in plan.disputed_claims
-    ]
-    configuration_errors = [
-        item for item in plan.diagnostics if item.level == "error"
-    ]
+    status.disputed_claims = [{**item.to_dict(), "domain": domain} for item in plan.disputed_claims]
+    configuration_errors = [item for item in plan.diagnostics if item.level == "error"]
     if configuration_errors:
         status.error = "; ".join(item.message for item in configuration_errors)
         return status
     expected_includes = {
-        uri
-        for uri in plan.selected_class_uris
-        if not _is_local_class_uri(uri, ontology_iri)
+        uri for uri in plan.selected_class_uris if not _is_local_class_uri(uri, ontology_iri)
     }
     expected_imports = set(plan.expected_imports)
 
@@ -332,8 +357,7 @@ def evaluate_domain_projection_sync(
         return status
 
     authored_imports = {
-        str(obj).rstrip("#")
-        for obj in authored_graph.objects(ontology_subj, OWL.imports)
+        str(obj).rstrip("#") for obj in authored_graph.objects(ontology_subj, OWL.imports)
     }
     actual_imports: set[str] = set()
     for obj in ontology_graph.objects(ontology_subj, OWL.imports):
@@ -348,7 +372,9 @@ def evaluate_domain_projection_sync(
     managed_imports = actual_imports - authored_imports
 
     bulk_subj = URIRef(ontology_iri.rstrip("#/"))
-    status.has_bulk_include_imports = _truthy(ext_graph.value(bulk_subj, KAIROS_EXT.silverIncludeImports))
+    status.has_bulk_include_imports = _truthy(
+        ext_graph.value(bulk_subj, KAIROS_EXT.silverIncludeImports)
+    )
 
     status.missing_imports = sorted(expected_imports - actual_imports)
     status.extra_imports = sorted(managed_imports - expected_imports)
@@ -402,10 +428,11 @@ def evaluate_projection_sync(
         )
     hub_domain_bases = _collect_hub_domain_bases(ontologies_dir)
 
-    domains = {
-        path.name.replace("-claims.yaml", "")
-        for path in claims_dir.glob("*-claims.yaml")
-    } if claims_dir.is_dir() else set()
+    domains = (
+        {path.name.replace("-claims.yaml", "") for path in claims_dir.glob("*-claims.yaml")}
+        if claims_dir.is_dir()
+        else set()
+    )
     if module_context:
         domains.update(item.domain for item in module_context.config.domains)
     for path in ontologies_dir.glob("*.ttl"):
@@ -604,12 +631,8 @@ def _sync_managed_surface(
             )
         )
 
-    managed_lines = sorted(
-        _turtle_statement(s, p, o) for (s, p, o) in managed_triples
-    )
-    path.write_bytes(
-        _replace_managed_block(text, managed_lines, path=path).encode("utf-8")
-    )
+    managed_lines = sorted(_turtle_statement(s, p, o) for (s, p, o) in managed_triples)
+    path.write_bytes(_replace_managed_block(text, managed_lines, path=path).encode("utf-8"))
 
 
 _PREFIX_DECLARATION = re.compile(
@@ -651,7 +674,7 @@ def _predicate_aliases(text: str, predicate_iris: set[str]) -> dict[str, str]:
     for prefix, namespace in _prefixes_in(text).items():
         for iri in predicate_iris:
             if iri.startswith(namespace):
-                aliases[f"{prefix}:{iri[len(namespace):]}"] = iri
+                aliases[f"{prefix}:{iri[len(namespace) :]}"] = iri
     if str(OWL.imports) in predicate_iris:
         aliases.setdefault("owl:imports", str(OWL.imports))
     if str(KAIROS_EXT.silverInclude) in predicate_iris:
@@ -672,7 +695,7 @@ def _replace_preceding_semicolon(lines: list[str], index: int) -> None:
             continue
         replaced, count = re.subn(r";([ \t]*)$", r".\1", body)
         if count:
-            ending = lines[previous][len(body):]
+            ending = lines[previous][len(body) :]
             lines[previous] = replaced + ending
             return
         break
@@ -900,11 +923,7 @@ def _rewrite_domain_projection_surfaces(
     hub_domain_bases: set[str],
     module_context: ReferenceModuleContext | None = None,
 ) -> None:
-    registry = (
-        load_registry(claims_file)
-        if claims_file.exists()
-        else ClaimRegistry(domain=domain)
-    )
+    registry = load_registry(claims_file) if claims_file.exists() else ClaimRegistry(domain=domain)
     ontology_graph = Graph()
     ontology_graph.parse(ontology_file, format="turtle")
 
@@ -926,17 +945,14 @@ def _rewrite_domain_projection_surfaces(
         local_ontology_iri=ontology_iri,
     )
     expected_includes = {
-        uri
-        for uri in plan.selected_class_uris
-        if not _is_local_class_uri(uri, ontology_iri)
+        uri for uri in plan.selected_class_uris if not _is_local_class_uri(uri, ontology_iri)
     }
     expected_imports = set(plan.expected_imports)
 
     # Ontology owl:imports (A1): managed = external (non-hub-base) imports driven by
     # approved imported claims. Intra-hub bases (_foundation/_master) stay authored.
     authored_imports = {
-        str(value).rstrip("#")
-        for value in authored_graph.objects(ontology_subj, OWL.imports)
+        str(value).rstrip("#") for value in authored_graph.objects(ontology_subj, OWL.imports)
     }
     import_triples: list[tuple[URIRef, URIRef, object]] = [
         (ontology_subj, OWL.imports, URIRef(iri))
@@ -947,9 +963,7 @@ def _rewrite_domain_projection_surfaces(
         _s, p, o = triple
         iri = str(o).rstrip("#")
         return (
-            p == OWL.imports
-            and iri.rstrip("/") not in hub_domain_bases
-            and iri in expected_imports
+            p == OWL.imports and iri.rstrip("/") not in hub_domain_bases and iri in expected_imports
         )
 
     _sync_managed_surface(
@@ -1069,9 +1083,7 @@ def _validate_generated_metadata(graph: Graph, subject: URIRef, *, path: Path) -
     Graph().parse(data=graph.serialize(format="turtle"), format="turtle")
 
 
-def _scaffold_ontology_skeleton(
-    *, domain: str, ontology_file: Path, ontologies_dir: Path
-) -> str:
+def _scaffold_ontology_skeleton(*, domain: str, ontology_file: Path, ontologies_dir: Path) -> str:
     """Create a minimal valid domain ontology skeleton and return its IRI.
 
     Meets the same baseline metadata checks required of hand-authored ontologies
@@ -1101,9 +1113,7 @@ def _scaffold_ontology_skeleton(
     return domain_iri
 
 
-def _scaffold_extension_skeleton(
-    *, domain: str, extension_file: Path, domain_iri: str
-) -> None:
+def _scaffold_extension_skeleton(*, domain: str, extension_file: Path, domain_iri: str) -> None:
     """Create a minimal valid silver-extension skeleton for *domain*.
 
     Meets the same ontology-level metadata baseline as the domain skeleton
@@ -1168,9 +1178,7 @@ def _sync_master_registration(
         graph = Graph()
         graph.parse(master_file, format="turtle")
     except Exception as exc:  # noqa: BLE001 - report and skip, never crash the run
-        return "skipped", [
-            f"{master_file}: could not parse — domain registration skipped ({exc})."
-        ]
+        return "skipped", [f"{master_file}: could not parse — domain registration skipped ({exc})."]
     master_subj = _ontology_subject(graph)
     if master_subj is None:
         return "skipped", [
@@ -1393,10 +1401,11 @@ def scaffold_missing_surfaces(
             return True
         return any(token in name.lower() for token in lowers)
 
-    domains = {
-        path.name.replace("-claims.yaml", "")
-        for path in claims_dir.glob("*-claims.yaml")
-    } if claims_dir.is_dir() else set()
+    domains = (
+        {path.name.replace("-claims.yaml", "") for path in claims_dir.glob("*-claims.yaml")}
+        if claims_dir.is_dir()
+        else set()
+    )
     if module_context:
         domains.update(item.domain for item in module_context.config.domains)
 

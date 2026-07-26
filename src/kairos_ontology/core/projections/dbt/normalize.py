@@ -36,10 +36,7 @@ def _binding_policy(bound: BoundSources) -> BindingPolicy:
             reason = "bound to bronze source(s)"
         elif observation.discriminator_parent_name:
             state = "folded"
-            reason = (
-                "S3 discriminator subclass of "
-                f"{observation.discriminator_parent_name}"
-            )
+            reason = f"S3 discriminator subclass of {observation.discriminator_parent_name}"
         elif observation.eligible:
             state = "stub"
             reason = "approved claim, no bronze mapping (aspirational)"
@@ -64,6 +61,34 @@ def _foreign_key_policy(bound: BoundSources) -> ForeignKeyPolicy:
     from ..shared import normalize_foreign_key_facts
 
     classification = normalize_foreign_key_facts(bound.foreign_key_facts)
+
+    parents_by_child: dict[str, set[str]] = {}
+    for child_uri, parent_uri in bound.parent_relations:
+        parents_by_child.setdefault(child_uri, set()).add(parent_uri)
+
+    def inherits_from(class_uri: str, roots: set[str]) -> bool:
+        frontier = [class_uri]
+        visited: set[str] = set()
+        while frontier:
+            current = frontier.pop()
+            if current in roots:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            frontier.extend(parents_by_child.get(current, ()))
+        return False
+
+    folded_parent_by_child: dict[str, str] = {}
+    for observation in bound.binding_observations:
+        if not observation.discriminator_parent_name:
+            continue
+        for parent_uri in parents_by_child.get(observation.class_uri, ()):
+            parent_name = parent_uri.rstrip("#/").rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+            if parent_name == observation.discriminator_parent_name:
+                folded_parent_by_child[observation.class_uri] = parent_uri
+                break
+
     return ForeignKeyPolicy(
         descriptors=tuple(
             ForeignKeyDescriptorSpec(
@@ -73,9 +98,7 @@ def _foreign_key_policy(bound: BoundSources) -> ForeignKeyPolicy:
                 source_class=str(item.source_class),
                 target_class=str(item.target_class),
                 is_functional=item.is_functional,
-                max_cardinality_classes=frozenset(
-                    str(uri) for uri in item.max_cardinality_classes
-                ),
+                max_cardinality_classes=frozenset(str(uri) for uri in item.max_cardinality_classes),
                 silver_foreign_key=item.silver_foreign_key,
                 silver_column_name=item.silver_column_name,
                 redirected=item.redirected,
@@ -83,6 +106,30 @@ def _foreign_key_policy(bound: BoundSources) -> ForeignKeyPolicy:
                 junction_table_name=item.junction_table_name,
                 nullable=item.nullable,
                 conditional_on_type=item.conditional_on_type,
+                silver_applicable_classes=frozenset(
+                    {
+                        applicable_uri
+                        for class_fact in bound.classes
+                        if inherits_from(
+                            class_fact.uri,
+                            (
+                                {str(item.source_class)}
+                                if (
+                                    item.redirected
+                                    or item.silver_foreign_key
+                                    or item.silver_column_name is not None
+                                    or item.is_functional
+                                )
+                                else {str(uri) for uri in item.max_cardinality_classes}
+                            ),
+                        )
+                        for applicable_uri in (
+                            class_fact.uri,
+                            folded_parent_by_child.get(class_fact.uri),
+                        )
+                        if applicable_uri
+                    }
+                ),
             )
             for item in classification.descriptors
         ),
@@ -158,9 +205,7 @@ def normalize_contract(
         ):
             from .diagnostics import Diagnostic
 
-            dependencies = tuple(
-                item.id for item in preparation.diagnostics if item.blocking
-            )
+            dependencies = tuple(item.id for item in preparation.diagnostics if item.blocking)
             mapping_result = EvaluationResult.not_evaluated(
                 preparation.prerequisites,
                 (
@@ -172,9 +217,7 @@ def normalize_contract(
                         owner_skill="kairos-design-mapping",
                         blocking=False,
                         depends_on=dependencies,
-                        evidence=tuple(
-                            f"prerequisite:{item}" for item in dependencies
-                        ),
+                        evidence=tuple(f"prerequisite:{item}" for item in dependencies),
                         remediation=(
                             "Resolve preparation blockers, then rerun "
                             "kairos-design-mapping readiness."
@@ -208,15 +251,11 @@ def normalize_contract(
         for mapping in mapping_contract.columns
         for item in mapping.expression.metadata.referenced_inputs
     }
-    authorities = {
-        item.identity.class_uri: item for item in policy.silver_models
-    }
+    authorities = {item.identity.class_uri: item for item in policy.silver_models}
     mapped_types: dict[str, set[CanonicalTypeSpec]] = {}
     mapped_properties: dict[str, set[str]] = {}
     for mapping in mapping_contract.columns:
-        mapped_types.setdefault(mapping.target_column_name, set()).add(
-            mapping.target_data_type
-        )
+        mapped_types.setdefault(mapping.target_column_name, set()).add(mapping.target_data_type)
         mapped_properties.setdefault(mapping.target_column_name, set()).add(
             mapping.target_property_uri
         )
@@ -233,17 +272,15 @@ def normalize_contract(
         if len(candidates) > 1:
             raise MappingContractError(
                 "mapping.ambiguous-silver-type",
-                (
-                    f"Silver column {column.name!r} has conflicting canonical "
-                    "mapping types"
-                ),
+                (f"Silver column {column.name!r} has conflicting canonical mapping types"),
                 resource_uri=authority.identity.class_uri if authority else "",
                 rule_id="DD-110-silver-authority",
             )
-        timestamp_names = {
-            timestamp.column_name
-            for timestamp in authority.audit.columns
-        } if authority is not None else set()
+        timestamp_names = (
+            {timestamp.column_name for timestamp in authority.audit.columns}
+            if authority is not None
+            else set()
+        )
         runtime = authority.runtime if authority is not None else None
         if runtime is not None:
             timestamp_names.update(
@@ -295,21 +332,21 @@ def normalize_contract(
                     rule_id="DD-107-phase-contract",
                 )
             column = replace(column, mapping_expression=mapping.expression)
-        authority_column = next(
-            (
-                item
-                for item in authority.columns
-                if item.column.name == column.name
-            ),
-            None,
-        ) if authority is not None else None
+        authority_column = (
+            next(
+                (item for item in authority.columns if item.column.name == column.name),
+                None,
+            )
+            if authority is not None
+            else None
+        )
         canonical_type = inferred_type(column, authority)
         nullable = (
             mapping.expression.metadata.nullable
             if mapping is not None
-            else authority_column.nullable.value
-            if authority_column is not None
-            else column.nullable
+            else (
+                authority_column.nullable.value if authority_column is not None else column.nullable
+            )
         )
         role = (
             authority_column.role.value.value
@@ -327,8 +364,7 @@ def normalize_contract(
             )
         else:
             provenance.update(
-                f"property:{value}"
-                for value in mapped_properties.get(column.name, ())
+                f"property:{value}" for value in mapped_properties.get(column.name, ())
             )
         return replace(
             column,
@@ -395,12 +431,8 @@ def normalize_contract(
                         )
                         for column in candidate.columns
                     ),
-                    sources=tuple(
-                        normalized_source(source) for source in candidate.sources
-                    ),
-                    joins=tuple(
-                        normalized_join(join) for join in candidate.joins
-                    ),
+                    sources=tuple(normalized_source(source) for source in candidate.sources),
+                    joins=tuple(normalized_join(join) for join in candidate.joins),
                     materialization_intent=candidate.requested_materialization,
                     ontology_metadata=candidate.ontology_metadata,
                     where_clause=candidate.where_clause,

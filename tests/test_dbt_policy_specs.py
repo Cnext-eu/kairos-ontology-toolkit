@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rdflib import Graph
@@ -24,7 +25,9 @@ from kairos_ontology.core.projections.dbt import (
     shape_project,
 )
 from kairos_ontology.core.projections.dbt.policy_bind import bind_policy_facts
+from kairos_ontology.core.projections.dbt.normalize import _foreign_key_policy
 from kairos_ontology.core.projections.dbt.policy_normalize import (
+    _silver_foreign_key_policy,
     normalize_medallion_policy,
 )
 from kairos_ontology.core.projections.dbt.policy_specs import (
@@ -49,6 +52,7 @@ from kairos_ontology.core.projections.dbt.mapping_specs import (
 from kairos_ontology.core.projections.dbt.specs import (
     BoundSilverModel,
     ColumnSpec,
+    ForeignKeyDescriptorSpec,
     ForeignKeyPolicy,
     ModelIdentity,
     ModelOutcome,
@@ -57,7 +61,11 @@ from kairos_ontology.core.projections.dbt.specs import (
     SourceSystemFact,
     SourceTableFact,
 )
-
+from kairos_ontology.core.projections.medallion_dbt_projector import _infer_fk_targets
+from kairos_ontology.core.projections.shared import (
+    ForeignKeyAuthoringFact,
+    classify_foreign_keys,
+)
 
 EXT_TTL = """
 @prefix ex: <urn:test#> .
@@ -357,6 +365,27 @@ def _silver_candidate() -> BoundSilverModel:
     )
 
 
+def _fk_descriptor(**overrides) -> ForeignKeyDescriptorSpec:
+    values = {
+        "property_uri": "urn:test#parent",
+        "domain_class": "urn:test#Entity",
+        "range_class": "urn:test#Parent",
+        "source_class": "urn:test#Entity",
+        "target_class": "urn:test#Parent",
+        "is_functional": False,
+        "max_cardinality_classes": frozenset(),
+        "silver_foreign_key": False,
+        "silver_column_name": None,
+        "redirected": False,
+        "reverse": False,
+        "junction_table_name": None,
+        "nullable": None,
+        "conditional_on_type": "",
+    }
+    values.update(overrides)
+    return ForeignKeyDescriptorSpec(**values)
+
+
 def _bound_and_normalized(tmp_path: Path):
     prep = tmp_path / "test-prep.ttl"
     prep.write_text(PREP_TTL, encoding="utf-8")
@@ -388,6 +417,246 @@ def _bound_and_normalized(tmp_path: Path):
         fk_policy=ForeignKeyPolicy((), (), ()),
     )
     return facts, policy, mappings
+
+
+@pytest.mark.parametrize(
+    "signal",
+    [
+        {"redirected": True},
+        {"silver_foreign_key": True},
+        {"silver_column_name": "parent_sk"},
+        {"is_functional": True},
+        {"max_cardinality_classes": frozenset({"urn:test#Entity"})},
+    ],
+)
+def test_all_canonical_fk_signals_require_temporal_policy(tmp_path: Path, signal):
+    facts, _, mappings = _bound_and_normalized(tmp_path)
+    facts = dataclasses.replace(facts, temporal_relationships=())
+    fk_policy = ForeignKeyPolicy((_fk_descriptor(**signal),), (), ())
+
+    with pytest.raises(PolicyNormalizationError, match="temporal-fk.policy-missing"):
+        normalize_medallion_policy(
+            facts,
+            systems=_source_facts(),
+            mappings=mappings,
+            silver_candidates=(_silver_candidate(),),
+            fk_policy=fk_policy,
+        )
+
+
+def test_silver_fk_view_is_class_specific_and_preserves_complete_gold_policy(
+    tmp_path: Path,
+):
+    facts, _, mappings = _bound_and_normalized(tmp_path)
+    facts = dataclasses.replace(facts, temporal_relationships=())
+    unqualified = _fk_descriptor()
+    other_class_cardinality = _fk_descriptor(
+        property_uri="urn:test#otherCardinality",
+        max_cardinality_classes=frozenset({"urn:test#Other"}),
+    )
+    unmaterialized = _fk_descriptor(
+        property_uri="urn:test#unmaterialized",
+        source_class="urn:test#Other",
+        is_functional=True,
+    )
+    complete_policy = ForeignKeyPolicy(
+        (unqualified, other_class_cardinality, unmaterialized),
+        (),
+        ("urn:test#Entity", "urn:test#Other"),
+    )
+
+    assert other_class_cardinality.qualifies_silver("urn:test#Other")
+    assert not other_class_cardinality.qualifies_silver("urn:test#Entity")
+    assert not _silver_foreign_key_policy(complete_policy, (_silver_candidate(),)).descriptors
+
+    policy = normalize_medallion_policy(
+        facts,
+        systems=_source_facts(),
+        mappings=mappings,
+        silver_candidates=(_silver_candidate(),),
+        fk_policy=complete_policy,
+    )
+
+    assert complete_policy.descriptors == (
+        unqualified,
+        other_class_cardinality,
+        unmaterialized,
+    )
+    assert not policy.silver_models[0].foreign_keys
+    capabilities = {item.capability for item in policy.capability_requirements}
+    assert AdapterCapability.TEMPORAL_LOOKUP not in capabilities
+    assert AdapterCapability.CONSTRAINTS not in capabilities
+
+
+def test_cardinality_fk_uses_materialized_restriction_owner(tmp_path: Path):
+    facts, _, mappings = _bound_and_normalized(tmp_path)
+    facts = dataclasses.replace(facts, temporal_relationships=())
+    descriptor = _fk_descriptor(
+        domain_class="urn:test#BaseEntity",
+        source_class="urn:test#BaseEntity",
+        max_cardinality_classes=frozenset({"urn:test#Entity"}),
+    )
+
+    qualified = _silver_foreign_key_policy(
+        ForeignKeyPolicy((descriptor,), (), ()),
+        (_silver_candidate(),),
+    )
+
+    assert [item.source_class for item in qualified.descriptors] == ["urn:test#Entity"]
+    with pytest.raises(PolicyNormalizationError, match="temporal-fk.policy-missing"):
+        normalize_medallion_policy(
+            facts,
+            systems=_source_facts(),
+            mappings=mappings,
+            silver_candidates=(_silver_candidate(),),
+            fk_policy=ForeignKeyPolicy((descriptor,), (), ()),
+        )
+
+
+def test_inherited_property_fk_uses_materialized_subclass(tmp_path: Path):
+    facts, _, mappings = _bound_and_normalized(tmp_path)
+    facts = dataclasses.replace(facts, temporal_relationships=())
+    descriptor = _fk_descriptor(
+        domain_class="urn:test#BaseEntity",
+        source_class="urn:test#BaseEntity",
+        is_functional=True,
+        silver_applicable_classes=frozenset({"urn:test#BaseEntity", "urn:test#Entity"}),
+    )
+
+    qualified = _silver_foreign_key_policy(
+        ForeignKeyPolicy((descriptor,), (), ()),
+        (_silver_candidate(),),
+    )
+
+    assert [item.source_class for item in qualified.descriptors] == ["urn:test#Entity"]
+    with pytest.raises(PolicyNormalizationError, match="temporal-fk.policy-missing"):
+        normalize_medallion_policy(
+            facts,
+            systems=_source_facts(),
+            mappings=mappings,
+            silver_candidates=(_silver_candidate(),),
+            fk_policy=ForeignKeyPolicy((descriptor,), (), ()),
+        )
+
+
+def test_folded_subtype_fk_applies_to_generated_parent():
+    base = "urn:test#BaseEntity"
+    subtype = "urn:test#FoldedSubtype"
+    fact = ForeignKeyAuthoringFact(
+        property_uri="urn:test#parent",
+        domain_value=subtype,
+        domain_is_uri=True,
+        range_value="urn:test#Parent",
+        range_is_uri=True,
+        foreign_key_on=None,
+        silver_foreign_key=False,
+        silver_column_name=None,
+        is_functional=False,
+        max_cardinality_classes=frozenset({subtype}),
+        junction_table_name=None,
+        nullable=None,
+        conditional_on_type="",
+    )
+    bound = SimpleNamespace(
+        foreign_key_facts=(fact,),
+        parent_relations=((subtype, base),),
+        binding_observations=(
+            SimpleNamespace(
+                class_uri=subtype,
+                discriminator_parent_name="BaseEntity",
+            ),
+        ),
+        classes=(SimpleNamespace(uri=base), SimpleNamespace(uri=subtype)),
+    )
+
+    policy = _foreign_key_policy(bound)
+
+    assert policy.descriptors[0].silver_applicable_classes == {base, subtype}
+    graph = Graph().parse(
+        data="""\
+@prefix ex: <urn:test#> .
+@prefix ext: <https://kairos.cnext.eu/ext#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+ex:BaseEntity a owl:Class ; ext:inheritanceStrategy "discriminator" .
+ex:FoldedSubtype a owl:Class ;
+    rdfs:subClassOf ex:BaseEntity, [
+        a owl:Restriction ;
+        owl:onProperty ex:parent ;
+        owl:maxCardinality 1
+    ] .
+ex:Parent a owl:Class .
+ex:parent a owl:ObjectProperty ;
+    rdfs:domain ex:FoldedSubtype ;
+    rdfs:range ex:Parent .
+""",
+        format="turtle",
+    )
+
+    targets = _infer_fk_targets(
+        graph,
+        base,
+        fk_classification=classify_foreign_keys(graph),
+    )
+
+    assert [str(item["prop"]) for item in targets] == ["urn:test#parent"]
+
+
+def test_qualified_fk_drives_dq_scope_capabilities_and_silver_authority(tmp_path: Path):
+    facts, _, mappings = _bound_and_normalized(tmp_path)
+    temporal = facts.temporal_relationships[0]
+    temporal = dataclasses.replace(
+        temporal,
+        mode=dataclasses.replace(temporal.mode, values=("none",)),
+    )
+    quality = facts.data_quality[0]
+    quality = dataclasses.replace(
+        quality,
+        scope=dataclasses.replace(quality.scope, values=("urn:test#parent",)),
+    )
+    facts = dataclasses.replace(
+        facts,
+        temporal_relationships=(temporal,),
+        data_quality=(quality,),
+    )
+
+    policy = normalize_medallion_policy(
+        facts,
+        systems=_source_facts(),
+        mappings=mappings,
+        silver_candidates=(_silver_candidate(),),
+        fk_policy=ForeignKeyPolicy((_fk_descriptor(is_functional=True),), (), ()),
+    )
+
+    authority = policy.silver_models[0]
+    assert [item.property_uri for item in authority.foreign_keys] == ["urn:test#parent"]
+    assert [item.resource_uri for item in authority.quality_rules] == ["urn:test#Quality"]
+    capabilities = {item.capability for item in policy.capability_requirements}
+    assert AdapterCapability.TEMPORAL_LOOKUP in capabilities
+    assert AdapterCapability.CONSTRAINTS in capabilities
+
+
+def test_unqualified_fk_is_not_a_silver_dq_property_scope(tmp_path: Path):
+    facts, _, mappings = _bound_and_normalized(tmp_path)
+    quality = facts.data_quality[0]
+    quality = dataclasses.replace(
+        quality,
+        scope=dataclasses.replace(quality.scope, values=("urn:test#parent",)),
+    )
+    facts = dataclasses.replace(
+        facts,
+        temporal_relationships=(),
+        data_quality=(quality,),
+    )
+
+    with pytest.raises(PolicyNormalizationError, match="dq.unrenderable-scope"):
+        normalize_medallion_policy(
+            facts,
+            systems=_source_facts(),
+            mappings=mappings,
+            silver_candidates=(_silver_candidate(),),
+            fk_policy=ForeignKeyPolicy((_fk_descriptor(),), (), ()),
+        )
 
 
 def _assert_immutable(value: object) -> None:
@@ -440,8 +709,7 @@ def test_rdf_facts_normalize_all_policy_families(tmp_path: Path):
     assert policy.data_quality[0].effect.quarantines_rows
     assert policy.silver_models[0].audit.source_record_key_column == "_source_record_key"
     runtime_columns = {
-        item.column.name: item.role.value.value
-        for item in policy.silver_models[0].columns
+        item.column.name: item.role.value.value for item in policy.silver_models[0].columns
     }
     assert runtime_columns["_business_valid_from"] == "history"
     assert runtime_columns["_business_valid_to"] == "history"
@@ -456,9 +724,7 @@ def test_rdf_facts_normalize_all_policy_families(tmp_path: Path):
     assert policy.gold.calendar is not None and policy.gold.calendar.approved
     assert policy.gold.security is not None and policy.gold.security.fail_closed.value
     assert policy.gold.perspectives[0].is_security_boundary is False
-    assert policy.adapter_evidence[0].compile_evidence.value == (
-        "compile:test-fabric",
-    )
+    assert policy.adapter_evidence[0].compile_evidence.value == ("compile:test-fabric",)
     assert policy.dq_runtime_result.schema_version == "1.0"
     _assert_immutable(facts)
     _assert_immutable(policy)
@@ -491,9 +757,7 @@ def test_passthrough_with_operations_is_rejected_actionably(tmp_path: Path):
     )
     contradictory = dataclasses.replace(
         facts,
-        preparations=(
-            dataclasses.replace(prep, mode=contradictory_mode),
-        ),
+        preparations=(dataclasses.replace(prep, mode=contradictory_mode),),
     )
     with pytest.raises(
         PolicyNormalizationError,
@@ -570,9 +834,7 @@ def test_capability_registry_is_complete_and_both_adapters_negotiate(tmp_path: P
         policy.deviations,
     )
     assert all(result.rule_id and result.evidence for result in fabric)
-    constraint = next(
-        item for item in fabric if item.capability is AdapterCapability.CONSTRAINTS
-    )
+    constraint = next(item for item in fabric if item.capability is AdapterCapability.CONSTRAINTS)
     assert constraint.disposition is CapabilityDisposition.DEVIATION
 
     databricks = negotiate_capabilities(
@@ -580,9 +842,7 @@ def test_capability_registry_is_complete_and_both_adapters_negotiate(tmp_path: P
         policy.capability_requirements,
         policy.deviations,
     )
-    assert any(
-        item.disposition is CapabilityDisposition.BLOCKING for item in databricks
-    )
+    assert any(item.disposition is CapabilityDisposition.BLOCKING for item in databricks)
 
 
 def test_unknown_adapter_and_unapproved_deviation_fail_closed():

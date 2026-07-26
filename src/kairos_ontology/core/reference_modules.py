@@ -100,9 +100,7 @@ class ReferenceModuleProfile:
             accepted_transitive_dependencies=_strings(
                 data.get("accepted_transitive_dependencies", [])
             ),
-            local_extension_namespaces=_strings(
-                data.get("local_extension_namespaces", [])
-            ),
+            local_extension_namespaces=_strings(data.get("local_extension_namespaces", [])),
             legacy=legacy,
         )
 
@@ -304,9 +302,7 @@ def available_accelerators(ref_models_dir: Path | None) -> tuple[str, ...]:
     """Return accelerator packs that expose managed module configuration."""
     if ref_models_dir is None or not Path(ref_models_dir).is_dir():
         return ()
-    paths = Path(ref_models_dir).glob(
-        "accelerator-packs/*/client-hub-blueprint/data-domains.yaml"
-    )
+    paths = Path(ref_models_dir).glob("accelerator-packs/*/client-hub-blueprint/data-domains.yaml")
     return tuple(sorted({path.parents[1].name for path in paths}))
 
 
@@ -354,9 +350,7 @@ def _accelerator_domain_owners(
         domains = load_data_domains(ref_models_dir, accelerator=name)
         domain_ids = [d.lower() for d in domains]
         if any(
-            hint in domain_id or domain_id in hint
-            for domain_id in domain_ids
-            for hint in hints
+            hint in domain_id or domain_id in hint for domain_id in domain_ids for hint in hints
         ):
             owners.append(name)
     return tuple(owners)
@@ -532,10 +526,7 @@ def load_accelerator_module_config(
                     profile_id = f"legacy-{_slug(label)}"
                     suffix = 2
                     base_id = profile_id
-                    while (
-                        profile_id in profiles
-                        and profiles[profile_id].catalog_uri != uri
-                    ):
+                    while profile_id in profiles and profiles[profile_id].catalog_uri != uri:
                         profile_id = f"{base_id}-{suffix}"
                         suffix += 1
                     profiles.setdefault(
@@ -573,6 +564,7 @@ def resolve_reference_modules(
     requested_domains: Iterable[str] | None = None,
     claimed_term_uris: Iterable[str] = (),
     imported_ontology_iris: Iterable[str] = (),
+    include_domain_activation: bool = True,
 ) -> ReferenceModuleContext:
     """Resolve the requested module closure and enforce document/version contracts.
 
@@ -588,6 +580,7 @@ def resolve_reference_modules(
         requested_domains=requested_domains,
         claimed_term_uris=claimed_term_uris,
         imported_ontology_iris=imported_ontology_iris,
+        include_domain_activation=include_domain_activation,
     )
 
     for profile in config.profiles:
@@ -626,7 +619,9 @@ def resolve_reference_modules(
                 )
             )
             continue
-        resolved = resolver.resolve(profile.catalog_uri or profile.ontology_iri) if resolver else None
+        resolved = (
+            resolver.resolve(profile.catalog_uri or profile.ontology_iri) if resolver else None
+        )
         if resolved is None:
             diagnostics.append(
                 ModuleDiagnostic(
@@ -724,6 +719,7 @@ def resolve_reference_module_ids(
     requested_domains: Iterable[str] | None = None,
     claimed_term_uris: Iterable[str] = (),
     imported_ontology_iris: Iterable[str] = (),
+    include_domain_activation: bool = True,
 ) -> frozenset[str]:
     """Return module profile IDs reachable from domain, claim, and import scope."""
     if requested_domains is None:
@@ -731,32 +727,52 @@ def resolve_reference_module_ids(
 
     domains = {str(domain).strip().lower() for domain in requested_domains if str(domain).strip()}
     terms = {str(uri).strip() for uri in claimed_term_uris if str(uri).strip()}
-    imports = {
-        str(uri).strip().rstrip("#/")
-        for uri in imported_ontology_iris
-        if str(uri).strip()
-    }
-    selected = {
-        module_id
-        for activation in config.domains
-        if any(domain in activation.domain.lower() for domain in domains)
-        for module_id in activation.module_ids
-    }
+    imports = {str(uri).strip().rstrip("#/") for uri in imported_ontology_iris if str(uri).strip()}
+    base_selected = (
+        {
+            module_id
+            for activation in config.domains
+            if any(domain in activation.domain.lower() for domain in domains)
+            for module_id in activation.module_ids
+        }
+        if include_domain_activation
+        else set()
+    )
     for profile in config.profiles:
         document_iris = {
             profile.ontology_iri.rstrip("#/"),
             (profile.catalog_uri or profile.ontology_iri).rstrip("#/"),
-            *(uri.rstrip("#/") for uri in profile.accepted_transitive_dependencies),
         }
-        namespaces = (
-            *profile.term_namespaces,
-            profile.ontology_iri.rstrip("#/") + "#",
-            profile.ontology_iri.rstrip("#/") + "/",
+        if imports.intersection(document_iris):
+            base_selected.add(profile.id)
+
+    term_selected = {
+        profile.id
+        for profile in config.profiles
+        if any(
+            term.startswith(namespace)
+            for term in terms
+            for namespace in (
+                *profile.term_namespaces,
+                profile.ontology_iri.rstrip("#/") + "#",
+                profile.ontology_iri.rstrip("#/") + "/",
+            )
         )
-        if imports.intersection(document_iris) or any(
-            term.startswith(namespace) for term in terms for namespace in namespaces
+    }
+    selected = base_selected | term_selected
+    selected_profiles = {
+        profile.id: profile for profile in config.profiles if profile.id in selected
+    }
+    for module_id in term_selected - base_selected:
+        profile = selected_profiles[module_id]
+        owner = profile.ontology_iri.rstrip("#")
+        if any(
+            candidate.id != module_id
+            and owner
+            in {dependency.rstrip("#") for dependency in candidate.accepted_transitive_dependencies}
+            for candidate in selected_profiles.values()
         ):
-            selected.add(profile.id)
+            selected.discard(module_id)
     return frozenset(selected)
 
 
@@ -768,6 +784,7 @@ def build_reference_module_context(
     requested_domains: Iterable[str] | None = None,
     claimed_term_uris: Iterable[str] = (),
     imported_ontology_iris: Iterable[str] = (),
+    include_domain_activation: bool = True,
 ) -> ReferenceModuleContext | None:
     """Load a reusable module context bounded by explicit semantic scope."""
     if ref_models_dir is None or not Path(ref_models_dir).is_dir():
@@ -780,6 +797,7 @@ def build_reference_module_context(
             requested_domains=requested_domains,
             claimed_term_uris=claimed_term_uris,
             imported_ontology_iris=imported_ontology_iris,
+            include_domain_activation=include_domain_activation,
         )
         if config is not None
         else None
@@ -824,9 +842,7 @@ def _find_term_module(
     activated_ids: set[str],
 ) -> tuple[ResolvedReferenceModule, Any] | None:
     matches = [
-        (module, term)
-        for module in modules
-        if (term := _module_term(module, uri)) is not None
+        (module, term) for module in modules if (term := _module_term(module, uri)) is not None
     ]
     activated = [item for item in matches if item[0].profile.id in activated_ids]
     candidates = activated or matches
@@ -943,6 +959,33 @@ def build_managed_import_plan(
     activation = context.config.activation(domain) if context else None
     activated_ids = set(activation.module_ids if activation else ())
     requirement_data: dict[tuple[str, str], dict[str, Any]] = {}
+    dependency_graph = (
+        authored_ontology_graph if authored_ontology_graph is not None else ontology_graph
+    )
+    authored_imports = {
+        str(imported).rstrip("#")
+        for imported in (
+            dependency_graph.objects(predicate=OWL.imports) if dependency_graph is not None else ()
+        )
+    }
+
+    def accepted_transitive_importer(owner_iri: str) -> ResolvedReferenceModule | None:
+        if context is None:
+            return None
+        owner = owner_iri.rstrip("#")
+        return next(
+            (
+                module
+                for module in context.modules
+                if (
+                    module.profile.id in activated_ids
+                    or module.ontology_iri.rstrip("#") in authored_imports
+                )
+                and owner
+                in {item.rstrip("#") for item in module.profile.accepted_transitive_dependencies}
+            ),
+            None,
+        )
 
     def require(
         import_iri: str,
@@ -967,9 +1010,7 @@ def build_managed_import_plan(
         entry["reasons"].add(reason)
         if term_uri:
             entry["terms"].add(term_uri)
-        entry["accepted_transitive"] = (
-            entry["accepted_transitive"] or accepted_transitive
-        )
+        entry["accepted_transitive"] = entry["accepted_transitive"] or accepted_transitive
 
     if context and activation:
         for module_id in activation.module_ids:
@@ -989,11 +1030,7 @@ def build_managed_import_plan(
             continue
         if claim_type in {"class", "reference_data"}:
             class_claims.add(term_uri)
-        match = (
-            _find_term_module(term_uri, context.modules, activated_ids)
-            if context
-            else None
-        )
+        match = _find_term_module(term_uri, context.modules, activated_ids) if context else None
         if match is None:
             fallback = _fallback_document_iri(term_uri).rstrip("#")
             require(
@@ -1020,9 +1057,11 @@ def build_managed_import_plan(
 
         module, term = match
         owner_iri = _owner_ontology(module, term)
-        accepted = owner_iri in {
-            item.rstrip("#")
-            for item in module.profile.accepted_transitive_dependencies
+        importer = accepted_transitive_importer(owner_iri)
+        if importer is not None:
+            module = importer
+        accepted = importer is not None or owner_iri in {
+            item.rstrip("#") for item in module.profile.accepted_transitive_dependencies
         }
         import_iri = module.ontology_iri if accepted else owner_iri
         require(
@@ -1043,11 +1082,6 @@ def build_managed_import_plan(
                 accepted_transitive=True,
             )
 
-    dependency_graph = (
-        authored_ontology_graph
-        if authored_ontology_graph is not None
-        else ontology_graph
-    )
     if context and dependency_graph is not None:
         authored_term_uris = {
             str(node)
@@ -1064,9 +1098,7 @@ def build_managed_import_plan(
         }
         for term_uri in sorted(authored_term_uris):
             matches = [
-                module
-                for module in context.modules
-                if _module_term(module, term_uri) is not None
+                module for module in context.modules if _module_term(module, term_uri) is not None
             ]
             match = _find_term_module(term_uri, context.modules, activated_ids)
             if match is None:
@@ -1076,17 +1108,18 @@ def build_managed_import_plan(
                             "error",
                             "term_owner_ambiguous",
                             f"External term {term_uri} is provided by multiple managed "
-                            "modules: "
-                            + ", ".join(sorted(item.profile.id for item in matches)),
+                            "modules: " + ", ".join(sorted(item.profile.id for item in matches)),
                             term_uri=term_uri,
                         )
                     )
                 continue
             module, term = match
             owner_iri = _owner_ontology(module, term)
-            accepted = owner_iri in {
-                item.rstrip("#")
-                for item in module.profile.accepted_transitive_dependencies
+            importer = accepted_transitive_importer(owner_iri)
+            if importer is not None:
+                module = importer
+            accepted = importer is not None or owner_iri in {
+                item.rstrip("#") for item in module.profile.accepted_transitive_dependencies
             }
             require(
                 module.ontology_iri if accepted else owner_iri,
@@ -1254,12 +1287,8 @@ def build_activation_inventory(
 
     activation = context.config.activation(domain)
     active_ids = set(activation.module_ids if activation else ())
-    modules = [
-        module for module in context.modules if module.profile.id in active_ids
-    ]
-    closure_payload = "\n".join(
-        f"{module.profile.id}:{module.closure_hash}" for module in modules
-    )
+    modules = [module for module in context.modules if module.profile.id in active_ids]
+    closure_payload = "\n".join(f"{module.profile.id}:{module.closure_hash}" for module in modules)
     inherited_by: dict[str, set[str]] = {}
     for module in modules:
         for cls in module.semantic_index.classes:
@@ -1270,22 +1299,16 @@ def build_activation_inventory(
     for module in modules:
         available_classes = _available_classes(module)
         explicit_exclusions = set(module.profile.excluded_terms)
-        records = [
-            ("class", item) for item in module.semantic_index.classes
-        ] + [
-            ("property", item) for item in module.semantic_index.properties
-        ] + [
-            ("individual", item) for item in module.semantic_index.individuals
-        ]
+        records = (
+            [("class", item) for item in module.semantic_index.classes]
+            + [("property", item) for item in module.semantic_index.properties]
+            + [("individual", item) for item in module.semantic_index.individuals]
+        )
         for kind, record in records:
             if kind == "class":
-                availability = (
-                    "available" if record.uri in available_classes else "excluded"
-                )
+                availability = "available" if record.uri in available_classes else "excluded"
             else:
-                availability = (
-                    "excluded" if record.uri in explicit_exclusions else "available"
-                )
+                availability = "excluded" if record.uri in explicit_exclusions else "available"
             terms[record.uri] = {
                 "uri": record.uri,
                 "kind": kind,
@@ -1294,15 +1317,11 @@ def build_activation_inventory(
                 "selection": (
                     "selected"
                     if record.uri in selected
-                    else "excluded"
-                    if availability == "excluded"
-                    else "unselected"
+                    else "excluded" if availability == "excluded" else "unselected"
                 ),
                 "inherited": bool(inherited_by.get(record.uri)),
                 "inherited_by": sorted(inherited_by.get(record.uri, set())),
-                "projection": (
-                    "projected" if record.uri in projected else "not_projected"
-                ),
+                "projection": ("projected" if record.uri in projected else "not_projected"),
                 "provenance": {
                     "source_identity": record.provenance.source_identity,
                     "import_depth": record.provenance.import_depth,
@@ -1315,9 +1334,7 @@ def build_activation_inventory(
         "domain": domain,
         "accelerator": context.config.accelerator,
         "closure_hash": (
-            hashlib.sha256(closure_payload.encode("utf-8")).hexdigest()
-            if closure_payload
-            else None
+            hashlib.sha256(closure_payload.encode("utf-8")).hexdigest() if closure_payload else None
         ),
         "modules": [
             {
@@ -1329,12 +1346,8 @@ def build_activation_inventory(
                 "root_classes": list(module.profile.root_classes),
                 "descendant_policy": module.profile.descendant_policy.value,
                 "projection_allowlist": list(module.profile.projection_allowlist),
-                "default_annotation_sources": list(
-                    module.profile.default_annotation_sources
-                ),
-                "local_extension_namespaces": list(
-                    module.profile.local_extension_namespaces
-                ),
+                "default_annotation_sources": list(module.profile.default_annotation_sources),
+                "local_extension_namespaces": list(module.profile.local_extension_namespaces),
             }
             for module in modules
         ],

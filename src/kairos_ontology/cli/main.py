@@ -1967,9 +1967,22 @@ def validate_mapping_cmd(domain, mappings, catalog):
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
 )
-def validate_silver_ext_cmd(domain, catalog):
+@click.option(
+    "--shapes",
+    "shapes_override",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Override the Silver-ext SHACL shape file. Defaults to the hub-local "
+        "managed shape, then the packaged canonical shape."
+    ),
+)
+def validate_silver_ext_cmd(domain, catalog, shapes_override):
     """Run syntax and DD-108/DD-109 SHACL checks on one Silver extension."""
-    from ..core.design_validation import validate_silver_extension
+    from ..core.design_validation import (
+        resolve_silver_ext_shapes,
+        validate_silver_extension,
+    )
     from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
@@ -1982,10 +1995,26 @@ def validate_silver_ext_cmd(domain, catalog):
         cwd=cwd,
         ref_models_dir=_resolve_ref_models_dir(cwd, hub),
     )
+    if shapes_override is not None:
+        shapes_path: Path = shapes_override
+        shape_source = "override"
+    else:
+        shapes_path, shape_source = resolve_silver_ext_shapes(hub)
+        if shapes_path is None:
+            raise click.ClickException(
+                "No Silver-ext SHACL shape found: hub-local "
+                "model/shapes/kairos-ext-shapes.shacl.ttl is absent and no packaged "
+                "canonical shape is available. Run 'kairos-ontology update' or pass "
+                "--shapes."
+            )
+    click.echo(
+        f"Using Silver-ext shapes: {shapes_path} (source: {shape_source})",
+        err=True,
+    )
     result = validate_silver_extension(
         extension_path=hub / "model" / "extensions" / f"{domain}-silver-ext.ttl",
         ontology_path=hub / "model" / "ontologies" / f"{domain}.ttl",
-        shapes_path=hub / "model" / "shapes" / "kairos-ext-shapes.shacl.ttl",
+        shapes_path=shapes_path,
         catalog_path=catalog_path,
     )
     click.echo(json.dumps(result, indent=2, sort_keys=True))
@@ -2069,6 +2098,7 @@ def scaffold_silver_ext_cmd(domain, mappings, catalog, output, overwrite):
         build_silver_scaffold,
         write_text,
     )
+    from ..core.design_validation import resolve_silver_ext_shapes
     from ..core.hub_utils import find_hub_root
 
     hub = find_hub_root(Path.cwd(), require_model=True)
@@ -2079,12 +2109,23 @@ def scaffold_silver_ext_cmd(domain, mappings, catalog, output, overwrite):
     )
     if not selected:
         raise click.ClickException(f"No scoped mapping evidence found for domain {domain!r}.")
+    shapes_path, shape_source = resolve_silver_ext_shapes(hub)
+    if shapes_path is None:
+        raise click.ClickException(
+            "No Silver-ext SHACL shape found: hub-local "
+            "model/shapes/kairos-ext-shapes.shacl.ttl is absent and no packaged "
+            "canonical shape is available. Run 'kairos-ontology update'."
+        )
+    click.echo(
+        f"Using Silver-ext shapes: {shapes_path} (source: {shape_source})",
+        err=True,
+    )
     try:
         scaffold = build_silver_scaffold(
             source_root=hub / "integration" / "sources",
             ontology_path=hub / "model" / "ontologies" / f"{domain}.ttl",
             mapping_paths=selected,
-            shapes_path=hub / "model" / "shapes" / "kairos-ext-shapes.shacl.ttl",
+            shapes_path=shapes_path,
             catalog_path=catalog,
         )
         content = scaffold.serialize()

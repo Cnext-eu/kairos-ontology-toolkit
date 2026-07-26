@@ -96,9 +96,10 @@ def _resolve_qname(uri: str, ns_bindings: dict[str, str] | None = None) -> str:
         return _prefixed_iri(uri)
     for prefix, ns_uri in ns_bindings.items():
         if uri.startswith(ns_uri):
-            local = uri[len(ns_uri):]
+            local = uri[len(ns_uri) :]
             return f"{prefix}:{local}"
     return _prefixed_iri(uri)
+
 
 # Module-level cache for entity metadata (populated by generate_dbt_artifacts,
 # read by projector.py via get_last_entity_metadata)
@@ -112,6 +113,7 @@ def get_last_entity_metadata() -> dict[str, list[dict]]:
         Dict of {domain_name: [entity_meta_dicts]}.
     """
     return dict(_last_entity_metadata)
+
 
 # ---------------------------------------------------------------------------
 # Namespaces
@@ -241,13 +243,55 @@ SH = Namespace("http://www.w3.org/ns/shacl#")
 # T-SQL reserved keywords that must be bracket-quoted when used as identifiers.
 # This list covers the most commonly encountered keywords in bronze source columns.
 _TSQL_RESERVED_KEYWORDS: set[str] = {
-    "function", "key", "value", "index", "table", "column", "user", "role",
-    "order", "group", "type", "status", "date", "time", "level", "check",
-    "default", "select", "insert", "update", "delete", "create", "drop",
-    "alter", "grant", "revoke", "execute", "view", "procedure", "trigger",
-    "constraint", "primary", "foreign", "references", "identity", "schema",
-    "database", "transaction", "commit", "rollback", "cursor", "open",
-    "close", "fetch", "option", "plan", "rule", "system", "backup",
+    "function",
+    "key",
+    "value",
+    "index",
+    "table",
+    "column",
+    "user",
+    "role",
+    "order",
+    "group",
+    "type",
+    "status",
+    "date",
+    "time",
+    "level",
+    "check",
+    "default",
+    "select",
+    "insert",
+    "update",
+    "delete",
+    "create",
+    "drop",
+    "alter",
+    "grant",
+    "revoke",
+    "execute",
+    "view",
+    "procedure",
+    "trigger",
+    "constraint",
+    "primary",
+    "foreign",
+    "references",
+    "identity",
+    "schema",
+    "database",
+    "transaction",
+    "commit",
+    "rollback",
+    "cursor",
+    "open",
+    "close",
+    "fetch",
+    "option",
+    "plan",
+    "rule",
+    "system",
+    "backup",
 }
 
 
@@ -272,11 +316,10 @@ def _resolve_column_name(graph: Graph, prop_uri: str) -> str:
     override = graph.value(URIRef(prop_uri), KAIROS_EXT.silverColumnName)
     if override:
         return portable_sql_identifier(
-            str(override), annotation="kairos-ext:silverColumnName",
+            str(override),
+            annotation="kairos-ext:silverColumnName",
         )
-    derived = re.sub(
-        r"[^A-Za-z0-9_]", "_", _camel_to_snake(extract_local_name(prop_uri))
-    )
+    derived = re.sub(r"[^A-Za-z0-9_]", "_", _camel_to_snake(extract_local_name(prop_uri)))
     return portable_sql_identifier(derived, annotation="derived Silver column")
 
 
@@ -286,9 +329,7 @@ def _validate_business_column_names(columns: list[dict], model_name: str) -> Non
         f"{model_name}_sk",
         f"{model_name}_iri",
     }
-    collisions = sorted(
-        {column["target_name"] for column in columns} & reserved
-    )
+    collisions = sorted({column["target_name"] for column in columns} & reserved)
     if collisions:
         raise ValueError(
             f"Silver model {model_name!r} maps business columns to reserved "
@@ -307,9 +348,7 @@ def _source_type_to_target(src_type: str, platform: str = DEFAULT_PLATFORM) -> s
     """Map a source system data type string to the target platform SQL type."""
     base = re.sub(r"\(.*\)", "", src_type.strip().lower())
     if platform not in _PLATFORM_TYPE_MAPS:
-        raise ValueError(
-            f"Unsupported dbt adapter {platform!r}; expected 'fabric' or 'databricks'"
-        )
+        raise ValueError(f"Unsupported dbt adapter {platform!r}; expected 'fabric' or 'databricks'")
     source_map, _ = _PLATFORM_TYPE_MAPS[platform]
     return source_map.get(base, "VARCHAR(255)")
 
@@ -317,9 +356,7 @@ def _source_type_to_target(src_type: str, platform: str = DEFAULT_PLATFORM) -> s
 def _xsd_to_target(range_uri, platform: str = DEFAULT_PLATFORM) -> str:
     """Map an XSD range URI to the target platform SQL type."""
     if platform not in _PLATFORM_TYPE_MAPS:
-        raise ValueError(
-            f"Unsupported dbt adapter {platform!r}; expected 'fabric' or 'databricks'"
-        )
+        raise ValueError(f"Unsupported dbt adapter {platform!r}; expected 'fabric' or 'databricks'")
     _, xsd_map = _PLATFORM_TYPE_MAPS[platform]
     return xsd_map.get(str(range_uri), "VARCHAR(255)") if range_uri else "VARCHAR(255)"
 
@@ -328,6 +365,7 @@ def _xsd_to_target(range_uri, platform: str = DEFAULT_PLATFORM) -> str:
 # ---------------------------------------------------------------------------
 # Bronze TTL parser
 # ---------------------------------------------------------------------------
+
 
 def _parse_bronze(sources_dir: Path) -> list[dict]:
     """Parse source vocabulary TTL files from *sources_dir* and return source system metadata.
@@ -380,8 +418,9 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
         for tbl_uri in g.subjects(KAIROS_BRONZE.sourceSystem, sys_uri):
             if (tbl_uri, RDF.type, KAIROS_BRONZE.SourceTable) not in g:
                 continue
-            tbl_name = str(g.value(tbl_uri, KAIROS_BRONZE.tableName) or
-                           extract_local_name(str(tbl_uri)))
+            tbl_name = str(
+                g.value(tbl_uri, KAIROS_BRONZE.tableName) or extract_local_name(str(tbl_uri))
+            )
             tbl_label = str(g.value(tbl_uri, RDFS.label) or tbl_name)
             pk_raw = str(g.value(tbl_uri, KAIROS_BRONZE.primaryKeyColumns) or "")
             pk_cols = pk_raw.split() if pk_raw else []
@@ -391,8 +430,9 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
             for col_uri in g.subjects(KAIROS_BRONZE.sourceTable, tbl_uri):
                 if (col_uri, RDF.type, KAIROS_BRONZE.SourceColumn) not in g:
                     continue
-                col_name = str(g.value(col_uri, KAIROS_BRONZE.columnName) or
-                               extract_local_name(str(col_uri)))
+                col_name = str(
+                    g.value(col_uri, KAIROS_BRONZE.columnName) or extract_local_name(str(col_uri))
+                )
                 col_type = str(g.value(col_uri, KAIROS_BRONZE.dataType) or "string")
                 nullable_val = g.value(col_uri, KAIROS_BRONZE.nullable)
                 nullable = True if nullable_val is None else str(nullable_val).lower() == "true"
@@ -409,15 +449,21 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
                     if schema_uri:
                         for field_node in g.objects(schema_uri, KAIROS_BRONZE.jsonField):
                             fname = str(g.value(field_node, KAIROS_BRONZE.fieldName) or "")
-                            ftype = str(g.value(field_node, KAIROS_BRONZE.fieldType) or "VARCHAR(255)")
-                            fpath = str(g.value(field_node, KAIROS_BRONZE.fieldPath) or f"$.{fname}")
+                            ftype = str(
+                                g.value(field_node, KAIROS_BRONZE.fieldType) or "VARCHAR(255)"
+                            )
+                            fpath = str(
+                                g.value(field_node, KAIROS_BRONZE.fieldPath) or f"$.{fname}"
+                            )
                             fmax = g.value(field_node, KAIROS_BRONZE.fieldMaxLength)
-                            json_fields.append({
-                                "name": fname,
-                                "type": ftype,
-                                "path": fpath,
-                                "max_length": int(str(fmax)) if fmax else 255,
-                            })
+                            json_fields.append(
+                                {
+                                    "name": fname,
+                                    "type": ftype,
+                                    "path": fpath,
+                                    "max_length": int(str(fmax)) if fmax else 255,
+                                }
+                            )
                     json_info = {
                         "content_type": str(content_type),
                         "json_path": json_path,
@@ -434,15 +480,17 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
                         if ev_code:
                             enum_values.append({"code": ev_code, "label": ev_label})
 
-                columns.append({
-                    "uri": str(col_uri),
-                    "name": col_name,
-                    "data_type": col_type,
-                    "nullable": nullable,
-                    "is_pk": is_pk,
-                    "json_info": json_info,
-                    "enum_values": enum_values if enum_values else None,
-                })
+                columns.append(
+                    {
+                        "uri": str(col_uri),
+                        "name": col_name,
+                        "data_type": col_type,
+                        "nullable": nullable,
+                        "is_pk": is_pk,
+                        "json_info": json_info,
+                        "enum_values": enum_values if enum_values else None,
+                    }
+                )
 
             # Discriminator column support
             disc_col_uri = g.value(tbl_uri, KAIROS_BRONZE.discriminatorColumn)
@@ -459,25 +507,29 @@ def _parse_bronze(sources_dir: Path) -> list[dict]:
                     if dv_code:
                         disc_values.append({"code": dv_code, "label": dv_label})
 
-            tables.append({
-                "uri": str(tbl_uri),
-                "name": tbl_name,
-                "label": tbl_label,
-                "pk_columns": pk_cols,
-                "incremental_column": str(inc_col) if inc_col else None,
-                "columns": columns,
-                "discriminator_column": disc_col_name,
-                "discriminator_values": disc_values if disc_values else None,
-            })
+            tables.append(
+                {
+                    "uri": str(tbl_uri),
+                    "name": tbl_name,
+                    "label": tbl_label,
+                    "pk_columns": pk_cols,
+                    "incremental_column": str(inc_col) if inc_col else None,
+                    "columns": columns,
+                    "discriminator_column": disc_col_name,
+                    "discriminator_values": disc_values if disc_values else None,
+                }
+            )
 
-        systems.append({
-            "system_uri": str(sys_uri),
-            "system_label": label,
-            "database": db,
-            "schema": schema,
-            "connection_type": conn,
-            "tables": tables,
-        })
+        systems.append(
+            {
+                "system_uri": str(sys_uri),
+                "system_label": label,
+                "database": db,
+                "schema": schema,
+                "connection_type": conn,
+                "tables": tables,
+            }
+        )
 
     return systems
 
@@ -554,9 +606,11 @@ def _validate_contract_boundaries(
                 f"table mapping to {contract.target_class!r}"
             )
 
+
 # ---------------------------------------------------------------------------
 # SHACL → dbt test extraction
 # ---------------------------------------------------------------------------
+
 
 def _load_shacl_graph(shapes_dir: Path) -> Graph | None:
     """Load all SHACL files from shapes_dir into a single graph (cached per call).
@@ -577,9 +631,12 @@ def _load_shacl_graph(shapes_dir: Path) -> Graph | None:
     return sg if loaded else None
 
 
-def _extract_shacl_tests(shapes_dir: Path, class_uri: str,
-                          shacl_graph: Graph | None = None,
-                          ontology_graph: Graph | None = None) -> dict[str, list]:
+def _extract_shacl_tests(
+    shapes_dir: Path,
+    class_uri: str,
+    shacl_graph: Graph | None = None,
+    ontology_graph: Graph | None = None,
+) -> dict[str, list]:
     """Extract dbt tests from SHACL shapes for a given class.
 
     Args:
@@ -643,7 +700,8 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str,
             continue
         col_name = (
             _resolve_column_name(ontology_graph, str(path))
-            if ontology_graph else _camel_to_snake(extract_local_name(str(path)))
+            if ontology_graph
+            else _camel_to_snake(extract_local_name(str(path)))
         )
         if col_name in tests_by_col:
             continue  # already extracted via NodeShape path
@@ -658,7 +716,9 @@ def _extract_shacl_tests(shapes_dir: Path, class_uri: str,
 
 
 def _extract_property_shape_tests(
-    sg: Graph, ps, tests_by_col: dict[str, list],
+    sg: Graph,
+    ps,
+    tests_by_col: dict[str, list],
     ontology_graph: Graph | None = None,
 ) -> None:
     """Extract dbt tests from a single SHACL property shape node."""
@@ -667,7 +727,8 @@ def _extract_property_shape_tests(
         return
     col_name = (
         _resolve_column_name(ontology_graph, str(path))
-        if ontology_graph else _camel_to_snake(extract_local_name(str(path)))
+        if ontology_graph
+        else _camel_to_snake(extract_local_name(str(path)))
     )
     if col_name in tests_by_col:
         return  # already processed
@@ -686,18 +747,14 @@ def _extract_property_shape_tests(
     if pattern:
         p = str(pattern).replace("'", "\\'")
         tests.append(
-            f"dbt_expectations.expect_column_values_to_match_regex:\n"
-            f"              regex: '{p}'"
+            f"dbt_expectations.expect_column_values_to_match_regex:\n              regex: '{p}'"
         )
 
     in_list = sg.value(ps, SH["in"])
     if in_list:
         values = [f"'{str(v)}'" for v in sg.items(in_list)]
         if values:
-            tests.append(
-                f"accepted_values:\n"
-                f"              values: [{', '.join(values)}]"
-            )
+            tests.append(f"accepted_values:\n              values: [{', '.join(values)}]")
 
     min_len = sg.value(ps, SH.minLength)
     max_len = sg.value(ps, SH.maxLength)
@@ -732,6 +789,7 @@ def _extract_property_shape_tests(
 # ---------------------------------------------------------------------------
 # Artifact generators
 # ---------------------------------------------------------------------------
+
 
 def _nearest_projected_ancestor(
     graph: Graph,
@@ -913,10 +971,7 @@ def compute_source_bindings(
                     continue
                 active_contract = active_contracts.get(target)
                 if tbl["uri"] in virtual_table_uris:
-                    if (
-                        active_contract is None
-                        or tbl["uri"] != active_contract.virtual_source_iri
-                    ):
+                    if active_contract is None or tbl["uri"] != active_contract.virtual_source_iri:
                         continue
                 elif active_contract is not None:
                     # A contracted class consumes only its managed virtual source.
@@ -934,7 +989,9 @@ def compute_source_bindings(
                     warnings.append(msg)
                     continue
                 folded_parent = _resolve_projected_discriminator_parent(
-                    graph, target, projected_uris,
+                    graph,
+                    target,
+                    projected_uris,
                 )
                 effective_target = folded_parent or target
                 source_ref: SourceRef = (
@@ -978,11 +1035,7 @@ def compute_source_bindings(
             if str(parent).startswith("http://www.w3.org/"):
                 continue
             strategy = graph.value(parent, KAIROS_EXT.inheritanceStrategy)
-            if (
-                strategy
-                and str(strategy) == "discriminator"
-                and str(parent) in projected_uris
-            ):
+            if strategy and str(strategy) == "discriminator" and str(parent) in projected_uris:
                 folded_parent = str(parent)
                 break
         if folded_parent is not None:
@@ -1070,7 +1123,7 @@ def _extract_silver_model_facts(
     fk_classification: ForeignKeyClassification | None = None,
     bindings: "SourceBindings | None" = None,
     analysis: "BindingAnalysis | None" = None,
- ) -> tuple[tuple, list[str], list[dict]]:
+) -> tuple[tuple, list[str], list[dict]]:
     """Extract Silver logical-model facts from the bound authoring graph.
 
     Enforces layer contracts:
@@ -1097,18 +1150,25 @@ def _extract_silver_model_facts(
         specs.append(spec)
 
     schema_name = silver_schema_name(
-        graph, detect_ontology_uri(graph, namespace), ontology_name,
+        graph,
+        detect_ontology_uri(graph, namespace),
+        ontology_name,
     )
     naming_conv = silver_naming_convention(
-        graph, detect_ontology_uri(graph, namespace),
+        graph,
+        detect_ontology_uri(graph, namespace),
     )
     fk_contract = fk_classification or classify_foreign_keys(graph)
-    bindings = bindings if bindings is not None else compute_source_bindings(
-        classes=classes,
-        graph=graph,
-        systems=systems,
-        mappings=mappings,
-        contract_registry=contract_registry,
+    bindings = (
+        bindings
+        if bindings is not None
+        else compute_source_bindings(
+            classes=classes,
+            graph=graph,
+            systems=systems,
+            mappings=mappings,
+            contract_registry=contract_registry,
+        )
     )
     active_contracts = bindings.active_contracts
     class_to_sources = bindings.class_to_sources
@@ -1121,15 +1181,19 @@ def _extract_silver_model_facts(
     # the aspirational/release facts are derived independently of it.
     from .. import binding_analysis as _ba
 
-    analysis = analysis if analysis is not None else _ba.build(
-        classes=classes,
-        graph=graph,
-        systems=systems,
-        mappings=mappings,
-        contract_registry=contract_registry,
-        eligible_class_uris=eligible_class_uris,
-        stubs_enabled=emit_aspirational_stubs,
-        bindings=bindings,
+    analysis = (
+        analysis
+        if analysis is not None
+        else _ba.build(
+            classes=classes,
+            graph=graph,
+            systems=systems,
+            mappings=mappings,
+            contract_registry=contract_registry,
+            eligible_class_uris=eligible_class_uris,
+            stubs_enabled=emit_aspirational_stubs,
+            bindings=bindings,
+        )
     )
     for cls in classes:
         cls_uri = cls["uri"]
@@ -1157,18 +1221,20 @@ def _extract_silver_model_facts(
                     f"Class '{local}' flattened into parent '{parent_name}' via "
                     f"S3 discriminator strategy — no separate silver model needed."
                 )
-                entity_metadata.append({
-                    "class_name": local,
-                    "class_uri": cls_uri,
-                    "model_file": None,
-                    "scd_type": None,
-                    "source_count": 0,
-                    "column_count": 0,
-                    "column_names": [],
-                    "fk_join_count": 0,
-                    "skipped": True,
-                    "skip_reason": f"S3 discriminator subclass of {parent_name}",
-                })
+                entity_metadata.append(
+                    {
+                        "class_name": local,
+                        "class_uri": cls_uri,
+                        "model_file": None,
+                        "scd_type": None,
+                        "source_count": 0,
+                        "column_count": 0,
+                        "column_names": [],
+                        "fk_join_count": 0,
+                        "skipped": True,
+                        "skip_reason": f"S3 discriminator subclass of {parent_name}",
+                    }
+                )
                 continue
 
             if analysis.should_emit_stub(cls_uri):
@@ -1200,19 +1266,21 @@ def _extract_silver_model_facts(
                     "emitting aspirational Silver stub (bind via kairos-design-mapping).",
                     local,
                 )
-                entity_metadata.append({
-                    "class_name": local,
-                    "class_uri": cls_uri,
-                    "model_file": stub_path,
-                    "scd_type": None,
-                    "source_count": 0,
-                    "column_count": len(stub_cols),
-                    "column_names": [c["name"] for c in stub_cols],
-                    "fk_join_count": 0,
-                    "skipped": False,
-                    "aspirational": True,
-                    "skip_reason": None,
-                })
+                entity_metadata.append(
+                    {
+                        "class_name": local,
+                        "class_uri": cls_uri,
+                        "model_file": stub_path,
+                        "scd_type": None,
+                        "source_count": 0,
+                        "column_count": len(stub_cols),
+                        "column_names": [c["name"] for c in stub_cols],
+                        "fk_join_count": 0,
+                        "skipped": False,
+                        "aspirational": True,
+                        "skip_reason": None,
+                    }
+                )
                 continue
 
             msg = (
@@ -1221,32 +1289,30 @@ def _extract_silver_model_facts(
             )
             logger.warning(msg)
             warnings.append(msg)
-            entity_metadata.append({
-                "class_name": local,
-                "class_uri": cls_uri,
-                "model_file": None,
-                "scd_type": None,
-                "source_count": 0,
-                "column_count": 0,
-                "column_names": [],
-                "fk_join_count": 0,
-                "skipped": True,
-                # Release gate (DD-096 / DEC-1): an approved, materialization-eligible
-                # claim with no bronze mapping is an *unbound target*. Recorded from
-                # the canonical analysis (release-blocking == aspirational) regardless
-                # of whether a stub was emitted, so `project --strict` can block
-                # release on unbound approved claims.
-                "unbound_eligible": analysis.is_release_blocking(cls_uri),
-                "skip_reason": "No bronze mapping found",
-            })
+            entity_metadata.append(
+                {
+                    "class_name": local,
+                    "class_uri": cls_uri,
+                    "model_file": None,
+                    "scd_type": None,
+                    "source_count": 0,
+                    "column_count": 0,
+                    "column_names": [],
+                    "fk_join_count": 0,
+                    "skipped": True,
+                    # Release gate (DD-096 / DEC-1): an approved, materialization-eligible
+                    # claim with no bronze mapping is an *unbound target*. Recorded from
+                    # the canonical analysis (release-blocking == aspirational) regardless
+                    # of whether a stub was emitted, so `project --strict` can block
+                    # release on unbound approved claims.
+                    "unbound_eligible": analysis.is_release_blocking(cls_uri),
+                    "skip_reason": "No bronze mapping found",
+                }
+            )
             continue
 
         # DD-093: manual source refs are reserved for governed contracted models.
-        silver_source_ref = (
-            active_contracts[cls_uri].name
-            if cls_uri in active_contracts
-            else None
-        )
+        silver_source_ref = active_contracts[cls_uri].name if cls_uri in active_contracts else None
 
         # ----- Multi-source: generate per-source views + union model -----
         if len(source_refs) > 1:
@@ -1255,12 +1321,9 @@ def _extract_silver_model_facts(
             # Detect same-source collisions requiring table-name disambiguation
             source_system_counts = Counter(_source_ref_parts(ref)[0] for ref in source_refs)
             source_table_counts = Counter(
-                (_source_ref_parts(ref)[0], _source_ref_parts(ref)[1])
-                for ref in source_refs
+                (_source_ref_parts(ref)[0], _source_ref_parts(ref)[1]) for ref in source_refs
             )
-            needs_table_suffix = {
-                src for src, count in source_system_counts.items() if count > 1
-            }
+            needs_table_suffix = {src for src, count in source_system_counts.items() if count > 1}
 
             # Canonical SQL types for NULL-pad columns (matches schema YAML)
             type_map = _build_column_type_map(graph, cls_uri, platform)
@@ -1294,19 +1357,32 @@ def _extract_silver_model_facts(
 
                 # Extract data columns scoped to this source (no SK/IRI)
                 src_columns = _extract_silver_columns(
-                    graph, extraction_cls_uri, namespace, mappings, platform=platform,
-                    source_refs=source_refs, systems=systems,
-                    table_column_uris=tbl_col_uris, include_sk_iri=False,
+                    graph,
+                    extraction_cls_uri,
+                    namespace,
+                    mappings,
+                    platform=platform,
+                    source_refs=source_refs,
+                    systems=systems,
+                    table_column_uris=tbl_col_uris,
+                    include_sk_iri=False,
                     mapping_ns=mapping_ns,
                 )
                 if folded_subtype_uri:
                     _apply_folded_discriminator_column(
-                        graph, cls_uri, folded_subtype_uri, src_columns, model_name,
+                        graph,
+                        cls_uri,
+                        folded_subtype_uri,
+                        src_columns,
+                        model_name,
                     )
 
                 # FK joins resolved within this single-source staging view
                 fk_cols, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
-                    graph, extraction_cls_uri, mappings, [source_ref],
+                    graph,
+                    extraction_cls_uri,
+                    mappings,
+                    [source_ref],
                     systems=systems,
                     fk_classification=fk_contract,
                     naming_conv=naming_conv,
@@ -1317,7 +1393,9 @@ def _extract_silver_model_facts(
                 cte_filter = ""
                 filter_mapping_resource_uri = ""
                 filter_target_uri = _filter_target_for_source_ref(
-                    cls_uri, source_ref, folded_source_targets,
+                    cls_uri,
+                    source_ref,
+                    folded_source_targets,
                 )
                 tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
                 for tbl_map in tbl_maps_list:
@@ -1325,9 +1403,7 @@ def _extract_silver_model_facts(
                         tbl_map.get("target_uri") == filter_target_uri
                         and tbl_map.get("filter_expression") is not None
                     ):
-                        filter_mapping_resource_uri = str(
-                            tbl_map.get("mapping_id") or ""
-                        )
+                        filter_mapping_resource_uri = str(tbl_map.get("mapping_id") or "")
                         break
 
                 per_source_data.append(src_columns)
@@ -1337,23 +1413,27 @@ def _extract_silver_model_facts(
                     source_ref,
                     _camel_to_snake(raw_tbl),
                 )
-                per_source_meta.append({
-                    "model_name": src_model_name,
-                    "src": src,
-                    "raw_tbl": raw_tbl,
-                    "table_uri": tbl_uri,
-                    "source_alias": _camel_to_snake(raw_tbl),
-                    "joins": fk_joins,
-                    "filter": cte_filter,
-                    "filter_mapping_resource_uri": filter_mapping_resource_uri,
-                    "source_record_key_expression": source_record_key,
-                    "source_record_key_generated_after_mapping": source_key_after_mapping,
-                })
+                per_source_meta.append(
+                    {
+                        "model_name": src_model_name,
+                        "src": src,
+                        "raw_tbl": raw_tbl,
+                        "table_uri": tbl_uri,
+                        "source_alias": _camel_to_snake(raw_tbl),
+                        "joins": fk_joins,
+                        "filter": cte_filter,
+                        "filter_mapping_resource_uri": filter_mapping_resource_uri,
+                        "source_record_key_expression": source_record_key,
+                        "source_record_key_generated_after_mapping": source_key_after_mapping,
+                    }
+                )
 
             # Build canonical superset (data cols then FK cols) with NULL pads so
             # every per-source view projects an identical, positional column list.
             canonical_columns, padded_per_source = _build_merge_superset(
-                per_source_data, per_source_fk, type_map,
+                per_source_data,
+                per_source_fk,
+                type_map,
             )
             _validate_business_column_names(canonical_columns, model_name)
 
@@ -1372,17 +1452,17 @@ def _extract_silver_model_facts(
                     ),
                     kind=SilverModelKind.SOURCE_BRANCH,
                     columns=padded,
-                    sources=[{
-                        "source_name": psm["src"],
-                        "table_name": psm["raw_tbl"],
-                        "table_uri": psm["table_uri"],
-                        "alias": psm["source_alias"],
-                        "filter": psm["filter"],
-                        "filter_mapping_resource_uri": psm[
-                            "filter_mapping_resource_uri"
-                        ],
-                        "ref_model": silver_source_ref or "",
-                    }],
+                    sources=[
+                        {
+                            "source_name": psm["src"],
+                            "table_name": psm["raw_tbl"],
+                            "table_uri": psm["table_uri"],
+                            "alias": psm["source_alias"],
+                            "filter": psm["filter"],
+                            "filter_mapping_resource_uri": psm["filter_mapping_resource_uri"],
+                            "ref_model": silver_source_ref or "",
+                        }
+                    ],
                     joins=psm["joins"],
                     materialization="view",
                     source_record_key_expression=psm["source_record_key_expression"],
@@ -1424,18 +1504,20 @@ def _extract_silver_model_facts(
             )
             emit(union_spec)
             total_fk_joins = sum(len(psm["joins"]) for psm in per_source_meta)
-            entity_metadata.append({
-                "class_name": local,
-                "class_uri": cls_uri,
-                "model_file": f"{model_name}.sql",
-                "scd_type": None,
-                "source_count": len(source_refs),
-                "column_count": len(canonical_columns),
-                "column_names": [c["target_name"] for c in canonical_columns],
-                "fk_join_count": total_fk_joins,
-                "skipped": False,
-                "skip_reason": None,
-            })
+            entity_metadata.append(
+                {
+                    "class_name": local,
+                    "class_uri": cls_uri,
+                    "model_file": f"{model_name}.sql",
+                    "scd_type": None,
+                    "source_count": len(source_refs),
+                    "column_count": len(canonical_columns),
+                    "column_names": [c["target_name"] for c in canonical_columns],
+                    "fk_join_count": total_fk_joins,
+                    "skipped": False,
+                    "skip_reason": None,
+                }
+            )
             continue
 
         # ----- Single source: existing inline model -----
@@ -1448,23 +1530,37 @@ def _extract_silver_model_facts(
         primary_col_uris = _get_table_column_uris(systems, _source_ref_parts(source_ref)[2])
         folded_subtype_uri = folded_source_targets.get(source_ref)
         columns = _extract_silver_columns(
-            graph, cls_uri, namespace, mappings, platform=platform,
-            source_refs=source_refs, systems=systems,
+            graph,
+            cls_uri,
+            namespace,
+            mappings,
+            platform=platform,
+            source_refs=source_refs,
+            systems=systems,
             table_column_uris=primary_col_uris or None,
             mapping_ns=mapping_ns,
         )
         _validate_business_column_names(columns[2:], model_name)
         if folded_subtype_uri:
             subtype_columns = _extract_silver_columns(
-                graph, folded_subtype_uri, namespace, mappings, platform=platform,
-                source_refs=source_refs, systems=systems,
+                graph,
+                folded_subtype_uri,
+                namespace,
+                mappings,
+                platform=platform,
+                source_refs=source_refs,
+                systems=systems,
                 table_column_uris=primary_col_uris or None,
                 include_sk_iri=False,
                 mapping_ns=mapping_ns,
             )
             columns = _merge_columns_by_target_name(columns, subtype_columns)
             _apply_folded_discriminator_column(
-                graph, cls_uri, folded_subtype_uri, columns, model_name,
+                graph,
+                cls_uri,
+                folded_subtype_uri,
+                columns,
+                model_name,
             )
 
         # Cross-table column detection: warn if mapped columns reference source
@@ -1493,8 +1589,7 @@ def _extract_silver_model_facts(
             for ptype in (OWL.DatatypeProperty, OWL.ObjectProperty):
                 for prop in graph.subjects(RDF.type, ptype):
                     prop_domains = {
-                        str(d) for d in graph.objects(prop, RDFS.domain)
-                        if isinstance(d, URIRef)
+                        str(d) for d in graph.objects(prop, RDFS.domain) if isinstance(d, URIRef)
                     }
                     if prop_domains & self_domain:
                         own_domain_props.add(str(prop))
@@ -1523,14 +1618,11 @@ def _extract_silver_model_facts(
                         elif target_uri in inherited_domain_props:
                             inherited_props_seen.add(target_uri)
                             owner_domains = {
-                                str(d) for d in graph.objects(
-                                    URIRef(target_uri), RDFS.domain
-                                )
+                                str(d)
+                                for d in graph.objects(URIRef(target_uri), RDFS.domain)
                                 if isinstance(d, URIRef) and str(d) in ancestor_domain
                             }
-                            inherited_parents.update(
-                                extract_local_name(d) for d in owner_domains
-                            )
+                            inherited_parents.update(extract_local_name(d) for d in owner_domains)
 
             inherited_count = len(inherited_props_seen)
             if inherited_count:
@@ -1550,7 +1642,11 @@ def _extract_silver_model_facts(
         # Extract FK columns from object properties (cross-domain joins)
         fk_extraction_cls_uri = folded_subtype_uri or cls_uri
         fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
-            graph, fk_extraction_cls_uri, mappings, source_refs, systems=systems,
+            graph,
+            fk_extraction_cls_uri,
+            mappings,
+            source_refs,
+            systems=systems,
             fk_classification=fk_contract,
             naming_conv=naming_conv,
         )
@@ -1571,7 +1667,9 @@ def _extract_silver_model_facts(
             cte_filter = ""
             filter_mapping_resource_uri = ""
             filter_target_uri = _filter_target_for_source_ref(
-                cls_uri, source_ref, folded_source_targets,
+                cls_uri,
+                source_ref,
+                folded_source_targets,
             )
             tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
             for tbl_map in tbl_maps_list:
@@ -1579,9 +1677,7 @@ def _extract_silver_model_facts(
                     tbl_map.get("target_uri") == filter_target_uri
                     and tbl_map.get("filter_expression") is not None
                 ):
-                    filter_mapping_resource_uri = str(
-                        tbl_map.get("mapping_id") or ""
-                    )
+                    filter_mapping_resource_uri = str(tbl_map.get("mapping_id") or "")
                     break
             cte = {
                 "source_name": src,
@@ -1670,20 +1766,22 @@ def _extract_silver_model_facts(
             ontology_metadata=meta,
         )
         emit(model_spec)
-        entity_metadata.append({
-            "class_name": local,
-            "class_uri": cls_uri,
-            "model_name": model_name,
-            "model_file": f"{model_name}.sql",
-            "scd_type": None,
-            "source_count": len(source_refs),
-            "column_count": len(columns),
-            "column_names": [c["target_name"] for c in columns],
-            "fk_join_count": len(fk_joins) if fk_joins else 0,
-            "skipped": False,
-            "skip_reason": None,
-            "info_notes": info_notes,
-        })
+        entity_metadata.append(
+            {
+                "class_name": local,
+                "class_uri": cls_uri,
+                "model_name": model_name,
+                "model_file": f"{model_name}.sql",
+                "scd_type": None,
+                "source_count": len(source_refs),
+                "column_count": len(columns),
+                "column_names": [c["target_name"] for c in columns],
+                "fk_join_count": len(fk_joins) if fk_joins else 0,
+                "skipped": False,
+                "skip_reason": None,
+                "info_notes": info_notes,
+            }
+        )
 
     typed_outcomes = tuple(outcome_from_context(item) for item in entity_metadata)
     return tuple(specs), warnings, [outcome_context(item) for item in typed_outcomes]
@@ -1749,9 +1847,7 @@ def _source_record_key_expression(
                 continue
             table_prefix = str(table.get("name") or raw_table).replace("'", "''") + "|"
             primary_keys = table.get("pk_columns") or [
-                column["name"]
-                for column in table["columns"]
-                if column.get("is_pk")
+                column["name"] for column in table["columns"] if column.get("is_pk")
             ]
             if primary_keys:
                 components = [
@@ -1860,17 +1956,17 @@ def _build_merge_superset(
                 padded.append(by_name[name])
             else:
                 pad_type = _merge_pad_type(name, type_map)
-                padded.append({
-                    "expression": f"CAST(NULL AS {pad_type})",
-                    "target_name": name,
-                })
+                padded.append(
+                    {
+                        "expression": f"CAST(NULL AS {pad_type})",
+                        "target_name": name,
+                    }
+                )
         padded_per_source.append(padded)
     return canonical_columns, padded_per_source
 
 
-def _build_sk_expression(
-    graph: Graph, class_uri: str
-) -> str:
+def _build_sk_expression(graph: Graph, class_uri: str) -> str:
     """Build the SK expression for a class, using normalised target column names."""
     natural_key_cols = _get_natural_key(graph, class_uri)
     if natural_key_cols:
@@ -1879,21 +1975,16 @@ def _build_sk_expression(
     return "CAST(NULL AS {{ dbt.type_string() }})"
 
 
-def _build_iri_expression(
-    graph: Graph, class_uri: str, namespace: str
-) -> str:
+def _build_iri_expression(graph: Graph, class_uri: str, namespace: str) -> str:
     """Build the IRI expression for a class, using normalised target column names."""
     natural_key_cols = _get_natural_key(graph, class_uri)
     if natural_key_cols:
         if len(natural_key_cols) == 1:
             return (
-                f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', "
-                f"{natural_key_cols[0]})"
+                f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {natural_key_cols[0]})"
             )
         parts = ", '_', ".join(natural_key_cols)
-        return (
-            f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
-        )
+        return f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
     return "CAST(NULL AS {{ dbt.type_string() }})"
 
 
@@ -1937,16 +2028,11 @@ def _build_sk_iri_columns(
     if natural_key_cols:
         if len(natural_key_cols) == 1:
             resolved_0 = _resolve(natural_key_cols[0])
-            iri_expr = (
-                f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', "
-                f"{resolved_0})"
-            )
+            iri_expr = f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {resolved_0})"
         else:
             resolved_parts = [_resolve(nk) for nk in natural_key_cols]
             parts = ", '_', ".join(resolved_parts)
-            iri_expr = (
-                f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
-            )
+            iri_expr = f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
     else:
         iri_expr = "CAST(NULL AS {{ dbt.type_string() }})"
 
@@ -1974,10 +2060,7 @@ def _mapping_expression_hint(
     if fact.kind == "null":
         return "NULL"
     if fact.kind == "operator":
-        arguments = [
-            _mapping_expression_hint(item, bronze_col_lookup)
-            for item in fact.arguments
-        ]
+        arguments = [_mapping_expression_hint(item, bronze_col_lookup) for item in fact.arguments]
         operators = {
             "add": "+",
             "subtract": "-",
@@ -2004,8 +2087,7 @@ def _mapping_expression_hint(
         return "__invalid_mapping_operator__"
     if fact.kind == "function":
         arguments = ", ".join(
-            _mapping_expression_hint(item, bronze_col_lookup)
-            for item in fact.arguments
+            _mapping_expression_hint(item, bronze_col_lookup) for item in fact.arguments
         )
         functions = {
             "abs": "ABS",
@@ -2093,9 +2175,7 @@ def _resolve_mapped_columns(
                         else:
                             bronze_col = bronze_col_lookup.get(col_uri)
                             source_col_name = (
-                                bronze_col["name"]
-                                if bronze_col
-                                else extract_local_name(col_uri)
+                                bronze_col["name"] if bronze_col else extract_local_name(col_uri)
                             )
                             expr = _quote_identifier_if_reserved(source_col_name)
                         break
@@ -2105,9 +2185,7 @@ def _resolve_mapped_columns(
             if expr is None:
                 if population == "derived":
                     # Check for derivation formula
-                    formula = graph.value(
-                        URIRef(str(prop)), KAIROS_EXT.derivationFormula
-                    )
+                    formula = graph.value(URIRef(str(prop)), KAIROS_EXT.derivationFormula)
                     if formula:
                         expr = str(formula)
                     else:
@@ -2127,25 +2205,27 @@ def _resolve_mapped_columns(
             else:
                 lineage_comment = _resolve_qname(str(prop), mapping_ns)
 
-            columns.append({
-                "expression": expr,
-                "target_name": col_name,
-                "comment": lineage_comment,
-                "mapping_resource_uri": (
-                    matched_col_map.get("mapping_id")
-                    if matched_col_map is not None
-                    else ""
-                ),
-            })
+            columns.append(
+                {
+                    "expression": expr,
+                    "target_name": col_name,
+                    "comment": lineage_comment,
+                    "mapping_resource_uri": (
+                        matched_col_map.get("mapping_id") if matched_col_map is not None else ""
+                    ),
+                }
+            )
 
             # Generate _label column for enum-typed source columns
             if mapped_col_uri and mapped_col_uri in enum_lookup:
                 enum_vals = enum_lookup[mapped_col_uri]
                 case_expr = _build_enum_case(expr, enum_vals)
-                columns.append({
-                    "expression": case_expr,
-                    "target_name": f"{col_name}_label",
-                })
+                columns.append(
+                    {
+                        "expression": case_expr,
+                        "target_name": f"{col_name}_label",
+                    }
+                )
 
     return columns
 
@@ -2206,8 +2286,13 @@ def _extract_silver_columns(
     # for the natural key — required to avoid alias-before-definition errors in T-SQL
     # (T-SQL resolves all SELECT expressions against FROM, not sibling aliases).
     mapped_cols = _resolve_mapped_columns(
-        graph, class_uri, mappings, platform,
-        bronze_col_lookup, enum_lookup, table_column_uris,
+        graph,
+        class_uri,
+        mappings,
+        platform,
+        bronze_col_lookup,
+        enum_lookup,
+        table_column_uris,
         mapping_ns=mapping_ns,
     )
 
@@ -2220,9 +2305,7 @@ def _extract_silver_columns(
         if missing_nk:
             class_name = extract_local_name(class_uri)
             mapped_identity: dict[str, dict] = {}
-            for col_uri_m, col_maps_list in sorted(
-                mappings.get("column_maps", {}).items()
-            ):
+            for col_uri_m, col_maps_list in sorted(mappings.get("column_maps", {}).items()):
                 if table_column_uris is not None and col_uri_m not in table_column_uris:
                     continue
                 for col_map in col_maps_list:
@@ -2263,9 +2346,7 @@ def _extract_silver_columns(
     if include_sk_iri:
         # Bind reserves the physical columns only; normalize and shape decide whether
         # and how SK/IRI values are emitted.
-        columns.extend(
-            _build_sk_iri_columns(graph, class_uri, namespace, [])
-        )
+        columns.extend(_build_sk_iri_columns(graph, class_uri, namespace, []))
 
     columns.extend(mapped_cols)
     columns.extend(identity_cols)
@@ -2320,37 +2401,53 @@ def _infer_fk_targets(
     fk_col_name.
     """
     domain_classes = _get_class_and_parents(graph, class_uri)
+    folded_classes = {
+        str(candidate)
+        for candidate in graph.subjects(RDF.type, OWL.Class)
+        if class_uri in _get_class_and_parents(graph, str(candidate))
+        and _resolve_discriminated_model(graph, candidate, naming_conv)
+        == _resolve_discriminated_model(graph, class_uri, naming_conv)
+    }
+    applicable_domain_classes = domain_classes | folded_classes
     classification = fk_classification or classify_foreign_keys(graph)
     targets: list[dict] = []
 
     for fk in classification.descriptors:
-        if fk.redirected or str(fk.domain_class) not in domain_classes:
+        applicable_classes = getattr(fk, "silver_applicable_classes", frozenset())
+        if fk.redirected or not (
+            str(fk.domain_class) in applicable_domain_classes
+            or applicable_classes.intersection(applicable_domain_classes)
+        ):
             continue
 
         # Skip junction-table properties (many-to-many)
         if fk.junction_table_name:
             continue
 
-        if not fk.is_silver_fk:
+        if not any(fk.qualifies_silver(uri) for uri in applicable_domain_classes):
             continue
 
         range_cls = fk.target_class
 
         # Resolve through discriminator folding (e.g. LegalEntity → Party)
         range_model, range_local = _resolve_discriminated_model(
-            graph, range_cls, naming_conv,
+            graph,
+            range_cls,
+            naming_conv,
         )
 
         # Determine FK column name
         fk_col_name = fk.physical_column_name(range_model, layer="silver")
 
-        targets.append({
-            "prop": fk.property_uri,
-            "range_cls": range_cls,
-            "range_local": range_local,
-            "range_model": range_model,
-            "fk_col_name": fk_col_name,
-        })
+        targets.append(
+            {
+                "prop": fk.property_uri,
+                "range_cls": range_cls,
+                "range_local": range_local,
+                "range_model": range_model,
+                "fk_col_name": fk_col_name,
+            }
+        )
 
     return targets
 
@@ -2375,11 +2472,7 @@ def _infer_fk_on_targets(
     targets: list[dict] = []
 
     for fk in classification.descriptors:
-        if (
-            not fk.redirected
-            or fk.junction_table_name
-            or str(fk.source_class) != class_uri
-        ):
+        if not fk.redirected or fk.junction_table_name or str(fk.source_class) != class_uri:
             continue
 
         # Skip if parent is same as current class (true self-referential)
@@ -2389,17 +2482,21 @@ def _infer_fk_on_targets(
         # Resolve through discriminator folding
         parent_cls = fk.target_class
         parent_model, parent_local = _resolve_discriminated_model(
-            graph, parent_cls, naming_conv,
+            graph,
+            parent_cls,
+            naming_conv,
         )
         fk_col_name = fk.physical_column_name(parent_model, layer="silver")
 
-        targets.append({
-            "prop": fk.property_uri,
-            "range_cls": parent_cls,
-            "range_local": parent_local,
-            "range_model": parent_model,
-            "fk_col_name": fk_col_name,
-        })
+        targets.append(
+            {
+                "prop": fk.property_uri,
+                "range_cls": parent_cls,
+                "range_local": parent_local,
+                "range_model": parent_model,
+                "fk_col_name": fk_col_name,
+            }
+        )
 
     return targets
 
@@ -2407,11 +2504,7 @@ def _infer_fk_on_targets(
 def _physical_columns_referenced(col_map: dict) -> set[str]:
     """Return source-column IRIs bound by the structured mapping AST."""
 
-    return {
-        str(value)
-        for value in col_map.get("referenced_column_uris") or ()
-        if value
-    }
+    return {str(value) for value in col_map.get("referenced_column_uris") or () if value}
 
 
 def _mapping_belongs_to_source(
@@ -2491,9 +2584,7 @@ def _resolve_fk_source_column(
                 col_uri, col_map, current_table_col_uris, current_table_col_names
             ):
                 continue
-            referenced = tuple(
-                col_map.get("referenced_column_uris") or (col_uri,)
-            )
+            referenced = tuple(col_map.get("referenced_column_uris") or (col_uri,))
             resolved_names = tuple(
                 (
                     bronze_col_lookup[item]["name"]
@@ -2537,9 +2628,7 @@ def _resolve_fk_source_column(
                 continue
             for col_map in col_maps_list:
                 if col_map.get("target_uri") == nk_uri:
-                    referenced = tuple(
-                        col_map.get("referenced_column_uris") or (col_uri,)
-                    )
+                    referenced = tuple(col_map.get("referenced_column_uris") or (col_uri,))
                     resolved_names = [
                         (
                             bronze_col_lookup[item]["name"]
@@ -2571,13 +2660,8 @@ def _resolve_fk_source_column(
             # Composite NK: build ordered source column list
             source_col_name = nk_candidates[0][0]
             source_columns = [c[0] for c in nk_candidates]
-            source_column_uris = tuple(
-                uri for candidate in nk_candidates for uri in candidate[2]
-            )
-        msg = (
-            f"FK column '{fk_col_name}': auto-inferred join via "
-            f"natural key of '{range_local}'."
-        )
+            source_column_uris = tuple(uri for candidate in nk_candidates for uri in candidate[2])
+        msg = f"FK column '{fk_col_name}': auto-inferred join via natural key of '{range_local}'."
         logger.info(msg)
 
     status = "resolved" if source_col_name is not None else "not_found"
@@ -2607,23 +2691,16 @@ def _build_fk_join_clause(
 
     # Build join condition — single or composite NK
     if len(target_nk) == 1:
-        join_condition = (
-            f"{source_alias}.{source_col_name} = "
-            f"{join_alias}.{target_nk[0]}"
-        )
+        join_condition = f"{source_alias}.{source_col_name} = {join_alias}.{target_nk[0]}"
     elif source_columns and len(source_columns) == len(target_nk):
         # Composite NK: match source columns to target NK columns in order
         parts = [
-            f"{source_alias}.{sc} = {join_alias}.{nk}"
-            for sc, nk in zip(source_columns, target_nk)
+            f"{source_alias}.{sc} = {join_alias}.{nk}" for sc, nk in zip(source_columns, target_nk)
         ]
         join_condition = " AND ".join(parts)
     else:
         # Composite NK but no matching sourceColumns — single col match + warning
-        join_condition = (
-            f"{source_alias}.{source_col_name} = "
-            f"{join_alias}.{target_nk[0]}"
-        )
+        join_condition = f"{source_alias}.{source_col_name} = {join_alias}.{target_nk[0]}"
         warning = (
             f"FK column '{fk_col_name}' targets class '{range_local}' with "
             f"composite natural key ({', '.join(target_nk)}) but mapping has "
@@ -2659,9 +2736,7 @@ def _build_fk_join_clause(
             else source_column_uris[:1]
         ),
         "target_columns": (
-            target_nk
-            if source_columns and len(source_columns) == len(target_nk)
-            else target_nk[:1]
+            target_nk if source_columns and len(source_columns) == len(target_nk) else target_nk[:1]
         ),
         "relationship_uri": relationship_uri,
         "temporal_mode": temporal_mode,
@@ -2722,12 +2797,20 @@ def _extract_fk_columns_and_joins(
     # Identify qualifying FK targets
     classification = fk_classification or classify_foreign_keys(graph)
     fk_targets = _infer_fk_targets(
-        graph, class_uri, classification, naming_conv,
+        graph,
+        class_uri,
+        classification,
+        naming_conv,
     )
     # Also include FK columns redirected to this class via silverForeignKeyOn
-    fk_targets.extend(_infer_fk_on_targets(
-        graph, class_uri, classification, naming_conv,
-    ))
+    fk_targets.extend(
+        _infer_fk_on_targets(
+            graph,
+            class_uri,
+            classification,
+            naming_conv,
+        )
+    )
 
     # Detect FK properties that share the same auto-inference signature: their range
     # natural keys resolve to the *same* property URIs, so NK-based auto-inference would
@@ -2753,8 +2836,7 @@ def _extract_fk_columns_and_joins(
         fk_col_name = target_info["fk_col_name"]
 
         auto_inference_ambiguous = (
-            ambiguity_key is not None
-            and ambiguity_key_counts.get(ambiguity_key, 0) > 1
+            ambiguity_key is not None and ambiguity_key_counts.get(ambiguity_key, 0) > 1
         )
 
         # Disambiguate duplicate FK column names
@@ -2769,19 +2851,28 @@ def _extract_fk_columns_and_joins(
             source_column_uris,
             status,
         ) = _resolve_fk_source_column(
-            prop, mappings, bronze_col_lookup, graph, range_cls,
-            source_refs, systems, fk_col_name, range_local,
+            prop,
+            mappings,
+            bronze_col_lookup,
+            graph,
+            range_cls,
+            source_refs,
+            systems,
+            fk_col_name,
+            range_local,
             auto_inference_ambiguous=auto_inference_ambiguous,
         )
 
         if source_col_name is None:
             # Unresolved — emit NULL placeholder with a status-specific warning
             prop_local = extract_local_name(str(prop))
-            fk_columns.append({
-                "expression": "CAST(NULL AS {{ dbt.type_string() }})",
-                "target_name": fk_col_name,
-                "include_in_change_detection": False,
-            })
+            fk_columns.append(
+                {
+                    "expression": "CAST(NULL AS {{ dbt.type_string() }})",
+                    "target_name": fk_col_name,
+                    "include_in_change_detection": False,
+                }
+            )
             if status == "ambiguous_auto_inference":
                 msg = (
                     f"FK column '{fk_col_name}': multiple FK properties on this class "
@@ -2810,11 +2901,13 @@ def _extract_fk_columns_and_joins(
 
         if len(target_nk) == 0:
             # No natural key — cannot generate join
-            fk_columns.append({
-                "expression": "CAST(NULL AS {{ dbt.type_string() }})",
-                "target_name": fk_col_name,
-                "include_in_change_detection": False,
-            })
+            fk_columns.append(
+                {
+                    "expression": "CAST(NULL AS {{ dbt.type_string() }})",
+                    "target_name": fk_col_name,
+                    "include_in_change_detection": False,
+                }
+            )
             msg = (
                 f"FK column '{fk_col_name}' targets class '{range_local}' which "
                 f"has no kairos-ext:naturalKey — cannot generate join. "
@@ -2838,9 +2931,19 @@ def _extract_fk_columns_and_joins(
         # Bind captures relationship structure only. DD-109 temporal/change policy is
         # classified once in normalize and applied to this typed join during shape.
         fk_col_dict, join_dict, join_warning = _build_fk_join_clause(
-            source_alias, source_col_name, source_columns, source_column_uris,
-            range_model, range_local, fk_col_name, target_nk, join_alias,
-            str(prop), "", None, False,
+            source_alias,
+            source_col_name,
+            source_columns,
+            source_column_uris,
+            range_model,
+            range_local,
+            fk_col_name,
+            target_nk,
+            join_alias,
+            str(prop),
+            "",
+            None,
+            False,
         )
         fk_col_dict["comment"] = _prefixed_iri(str(prop))
 
@@ -2859,9 +2962,7 @@ def _build_enum_case(source_expr: str, enum_values: list[dict]) -> str:
         code = ev["code"].replace("'", "''")
         label = ev["label"].replace("'", "''")
         parts.append(f"        WHEN '{code}' THEN '{label}'")
-    parts.append(
-        f"        ELSE CONCAT('Unknown (', CAST({source_expr} AS VARCHAR(50)), ')')"
-    )
+    parts.append(f"        ELSE CONCAT('Unknown (', CAST({source_expr} AS VARCHAR(50)), ')')")
     parts.append("    END")
     return "\n".join(parts)
 
@@ -2882,11 +2983,7 @@ def _fk_child_parents(
     parents: list[str] = []
     classification = fk_classification or classify_foreign_keys(graph)
     for fk in classification.descriptors:
-        if (
-            not fk.reverse
-            or fk.junction_table_name
-            or str(fk.source_class) != class_uri
-        ):
+        if not fk.reverse or fk.junction_table_name or str(fk.source_class) != class_uri:
             continue
         local = extract_local_name(str(fk.target_class))
         if local not in parents:
@@ -2894,9 +2991,7 @@ def _fk_child_parents(
     return parents
 
 
-def _get_natural_key(
-    graph: Graph, class_uri: str, _visited: set[str] | None = None
-) -> list[str]:
+def _get_natural_key(graph: Graph, class_uri: str, _visited: set[str] | None = None) -> list[str]:
     """Get natural key column names for a class from kairos-ext:naturalKey annotation.
 
     Walks up the rdfs:subClassOf hierarchy when the parent declares
@@ -2913,7 +3008,7 @@ def _get_natural_key(
     nk = graph.value(URIRef(class_uri), KAIROS_EXT.naturalKey)
     if nk:
         # Split on commas and/or whitespace to support both "a,b" and "a b" and "a, b"
-        return [_camel_to_snake(c) for c in re.split(r'[,\s]+', str(nk).strip()) if c.strip()]
+        return [_camel_to_snake(c) for c in re.split(r"[,\s]+", str(nk).strip()) if c.strip()]
 
     # Walk up rdfs:subClassOf to inherit from discriminator parents
     for parent in graph.objects(URIRef(class_uri), RDFS.subClassOf):
@@ -3039,7 +3134,8 @@ def _extract_schema_model_facts(
     shacl_graph = _load_shacl_graph(shapes_dir) if shapes_dir else None
     fk_contract = fk_classification or classify_foreign_keys(graph)
     fk_naming_conv = naming_conv or silver_naming_convention(
-        graph, detect_ontology_uri(graph, namespace),
+        graph,
+        detect_ontology_uri(graph, namespace),
     )
 
     models_data = []
@@ -3051,16 +3147,20 @@ def _extract_schema_model_facts(
         model_name = _camel_to_snake(cls["name"])
         shacl_tests = (
             _extract_shacl_tests(
-                shapes_dir, cls["uri"], shacl_graph=shacl_graph,
+                shapes_dir,
+                cls["uri"],
+                shacl_graph=shacl_graph,
                 ontology_graph=graph,
             )
-            if shapes_dir else {}
+            if shapes_dir
+            else {}
         )
 
         unique_test: str | dict = "unique"
         cols = []
         folded_subtype_uris = {
-            c["uri"] for c in classes
+            c["uri"]
+            for c in classes
             if c["uri"] != cls["uri"]
             and _resolve_projected_discriminator_parent(graph, c["uri"], class_uris) == cls["uri"]
         }
@@ -3072,24 +3172,30 @@ def _extract_schema_model_facts(
         if shapes_dir and folded_subtype_uris:
             for sub_uri in sorted(folded_subtype_uris):
                 sub_tests = _extract_shacl_tests(
-                    shapes_dir, sub_uri, shacl_graph=shacl_graph,
+                    shapes_dir,
+                    sub_uri,
+                    shacl_graph=shacl_graph,
                     ontology_graph=graph,
                 )
                 for sub_col_name, sub_col_tests in sub_tests.items():
                     shacl_tests.setdefault(sub_col_name, sub_col_tests)
         # SK + IRI columns
-        cols.append({
-            "name": f"{model_name}_sk",
-            "description": "Surrogate key (PK)",
-            "meta": {"is_pk": "true"},
-            "tests": ["not_null", unique_test],
-        })
-        cols.append({
-            "name": f"{model_name}_iri",
-            "description": "OWL IRI lineage",
-            "meta": {},
-            "tests": ["not_null", unique_test],
-        })
+        cols.append(
+            {
+                "name": f"{model_name}_sk",
+                "description": "Surrogate key (PK)",
+                "meta": {"is_pk": "true"},
+                "tests": ["not_null", unique_test],
+            }
+        )
+        cols.append(
+            {
+                "name": f"{model_name}_iri",
+                "description": "OWL IRI lineage",
+                "meta": {},
+                "tests": ["not_null", unique_test],
+            }
+        )
         cols.extend(
             [
                 {
@@ -3120,12 +3226,14 @@ def _extract_schema_model_facts(
             disc_col = str_val(graph, URIRef(cls["uri"]), KAIROS_EXT.discriminatorColumn)
             if not disc_col:
                 disc_col = f"{model_name}_type"
-            cols.append({
-                "name": disc_col,
-                "description": "Type discriminator for S3-folded subtypes",
-                "meta": {"data_type": _xsd_to_target(XSD.string, platform)},
-                "tests": [],
-            })
+            cols.append(
+                {
+                    "name": disc_col,
+                    "description": "Type discriminator for S3-folded subtypes",
+                    "meta": {"data_type": _xsd_to_target(XSD.string, platform)},
+                    "tests": [],
+                }
+            )
             seen_schema_cols.add(disc_col)
         for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
             domain = graph.value(prop, RDFS.domain)
@@ -3169,11 +3277,13 @@ def _extract_schema_model_facts(
                 if source_col_uri and source_col_uri in enum_lookup:
                     enum_vals = enum_lookup[source_col_uri]
                     values_list = [ev["code"] for ev in enum_vals]
-                    tests.append({
-                        "accepted_values": {
-                            "values": values_list,
+                    tests.append(
+                        {
+                            "accepted_values": {
+                                "values": values_list,
+                            }
                         }
-                    })
+                    )
 
                 # Lineage metadata
                 col_meta = {
@@ -3183,24 +3293,28 @@ def _extract_schema_model_facts(
                 if source_col_uri:
                     col_meta["source_iri"] = source_col_uri
 
-                cols.append({
-                    "name": col_name,
-                    "description": desc,
-                    "meta": col_meta,
-                    "tests": tests,
-                })
+                cols.append(
+                    {
+                        "name": col_name,
+                        "description": desc,
+                        "meta": col_meta,
+                        "tests": tests,
+                    }
+                )
 
         # Object property FK columns (including inherited and redirected relationships)
         direct_fks = [
-            fk for fk in fk_contract.descriptors
+            fk
+            for fk in fk_contract.descriptors
             if (
                 not fk.redirected
                 and str(fk.domain_class) in domain_classes
-                and fk.is_silver_fk
+                and any(fk.qualifies_silver(uri) for uri in domain_classes)
             )
         ]
         redirected_fks = [
-            fk for fk in fk_contract.descriptors
+            fk
+            for fk in fk_contract.descriptors
             if fk.redirected and str(fk.source_class) in domain_classes
         ]
         existing_fk_cols = {column["name"] for column in cols}
@@ -3210,7 +3324,9 @@ def _extract_schema_model_facts(
             prop = fk.property_uri
             range_cls = fk.target_class
             range_model, range_local = _resolve_discriminated_model(
-                graph, range_cls, fk_naming_conv,
+                graph,
+                range_cls,
+                fk_naming_conv,
             )
             fk_col_name = fk.physical_column_name(range_model, layer="silver")
             if fk_col_name in existing_fk_cols:
@@ -3223,9 +3339,9 @@ def _extract_schema_model_facts(
             prop_label = graph.value(prop, RDFS.label)
             prop_comment = graph.value(prop, RDFS.comment)
             fk_desc = (
-                str(prop_comment) if prop_comment
-                else (str(prop_label) if prop_label
-                      else f"FK to {range_local}")
+                str(prop_comment)
+                if prop_comment
+                else (str(prop_label) if prop_label else f"FK to {range_local}")
             )
             fk_tests: list[dict | str] = [
                 {
@@ -3237,16 +3353,18 @@ def _extract_schema_model_facts(
             ]
             if fk.nullable is False:
                 fk_tests.insert(0, "not_null")
-            cols.append({
-                "name": fk_col_name,
-                "description": fk_desc,
-                "meta": {
-                    "is_fk": "true",
-                    "references": range_model,
-                    "domain_iri": str(prop),
-                },
-                "tests": fk_tests,
-            })
+            cols.append(
+                {
+                    "name": fk_col_name,
+                    "description": fk_desc,
+                    "meta": {
+                        "is_fk": "true",
+                        "references": range_model,
+                        "domain_iri": str(prop),
+                    },
+                    "tests": fk_tests,
+                }
+            )
 
         model_meta = {
             "ontology_class": cls["name"],
@@ -3254,24 +3372,24 @@ def _extract_schema_model_facts(
             "ontology_version": meta.get("version", ""),
             "toolkit_version": meta.get("toolkit_version", ""),
             "closure_hash": meta.get("closure_hash", ""),
-            "silver_default_packages": ", ".join(
-                meta.get("silver_default_packages", [])
-            ),
+            "silver_default_packages": ", ".join(meta.get("silver_default_packages", [])),
             "silver_overrides": ", ".join(meta.get("silver_overrides", [])),
         }
         if aspirational_class_names and cls["name"] in aspirational_class_names:
             # Read-only, derived marker: this Silver model is an aspirational stub
             # (approved claim, not yet bound to a bronze source).
             model_meta["is_aspirational"] = "true"
-        models_data.append({
-            "name": model_name,
-            "description": cls["comment"],
-            "meta": model_meta,
-            "columns": cols,
-            "grain_columns": ["_source_system", "_source_record_key"],
-            "source_identity_columns": ["_source_system", "_source_record_key"],
-            "grain_where": "",
-        })
+        models_data.append(
+            {
+                "name": model_name,
+                "description": cls["comment"],
+                "meta": model_meta,
+                "columns": cols,
+                "grain_columns": ["_source_system", "_source_record_key"],
+                "source_identity_columns": ["_source_system", "_source_record_key"],
+                "grain_where": "",
+            }
+        )
 
     return tuple(schema_model_from_context(model) for model in models_data)
 
@@ -3321,6 +3439,7 @@ def _silver_model_name_for_class(
 # ---------------------------------------------------------------------------
 # Public entry point (called by projector orchestrator)
 # ---------------------------------------------------------------------------
+
 
 def generate_dbt_artifacts(
     classes: list,
@@ -3489,15 +3608,12 @@ def plan_dbt_projection(
         if not contract.policy.preparations:
             missing.append("normalized preparation policy")
         final_models = tuple(
-            model
-            for model in shaped.silver_models
-            if model.kind.value in {"entity", "union"}
+            model for model in shaped.silver_models if model.kind.value in {"entity", "union"}
         )
         if not final_models:
             missing.append("bound generated Silver models")
         if any(
-            model.authority is None
-            or model.authority.entity_identity is None
+            model.authority is None or model.authority.entity_identity is None
             for model in final_models
         ):
             missing.append("normalized identity/Silver policy")
@@ -3508,20 +3624,13 @@ def plan_dbt_projection(
                 if state == "stub"
                 for name in (
                     next(
-                        (
-                            item.name
-                            for item in bound.classes
-                            if item.uri == uri
-                        ),
+                        (item.name for item in bound.classes if item.uri == uri),
                         uri,
                     ),
                 )
             )
         ):
-            missing.append(
-                "bound evidence for eligible entities: "
-                + ", ".join(planless_unbound)
-            )
+            missing.append("bound evidence for eligible entities: " + ", ".join(planless_unbound))
         if missing:
             raise ValueError(
                 "Silver projection is evidence-bound and cannot infer an "
@@ -3603,6 +3712,7 @@ def generate_dbt_project_config(
 # ---------------------------------------------------------------------------
 # Coverage report generation
 # ---------------------------------------------------------------------------
+
 
 def generate_coverage_data(
     classes: list[dict],
@@ -3692,7 +3802,8 @@ def generate_coverage_data(
                         tbl_cols = {c["uri"] for c in tbl["columns"]}
                         used = tbl_cols & consumed_source_cols
                         unused = [
-                            c["name"] for c in tbl["columns"]
+                            c["name"]
+                            for c in tbl["columns"]
                             if c["uri"] not in consumed_source_cols
                         ]
                         key = f"{source_name}__{_camel_to_snake(tbl['name'])}"
@@ -3792,12 +3903,11 @@ def write_dbt_session_log(
     skipped_class_names = {e["class_name"] for e in entity_metadata if e.get("skipped")}
     seen: set[str] = set()
     unique_warnings: list[str] = []
-    for w in (warnings or []):
+    for w in warnings or []:
         if w not in seen:
             # Skip warnings about classes already listed in Skipped section
             is_about_skipped = any(
-                f"'{name}'" in w and "skipping" in w.lower()
-                for name in skipped_class_names
+                f"'{name}'" in w and "skipping" in w.lower() for name in skipped_class_names
             )
             if not is_about_skipped:
                 seen.add(w)
