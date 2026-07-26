@@ -176,6 +176,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-126](#dd-126-metadata-complete-convergent-scaffolding-with-explicit-createdupdatedunchanged-reporting) | Metadata-Complete, Convergent Scaffolding with Explicit Created/Updated/Unchanged Reporting | Accepted | 2026-08-02 |
 | [DD-127](#dd-127-domain-ownership-handoffs-and-generalized-stable-cluster-relationship-candidates) | Domain-Ownership Handoffs and Generalized, Stable-Cluster Relationship Candidates | Accepted | 2026-08-09 |
 | [DD-128](#dd-128-intent-preserving-coverage-classification-run-atomic-registry-writes-and-authoritative-model-precedence) | Intent-Preserving Coverage Classification, Run-Atomic Registry Writes, and Authoritative Model Precedence | Accepted | 2026-07-26 |
+| [DD-129](#dd-129-domain-scoped-active-source-authority-for-projection-readiness) | Domain-Scoped Active Source Authority for Projection Readiness | Accepted | 2026-07-26 |
 
 ---
 
@@ -8666,6 +8667,54 @@ at the point of use.
   `tests/test_propose_alignment.py::TestModelPrecedence`.
 
 ---
+
+## DD-129: Domain-Scoped Active Source Authority for Projection Readiness
+
+**Status:** Accepted
+**Date:** 2026-07-26
+**Affects:** dbt bind/normalize/materialize phases, projection readiness, source mappings,
+preparation and identity evaluation
+**Implementation:** `projections/dbt/context.py::ActiveSourceScope`,
+`projections/dbt/bind.py::_active_source_inputs`
+
+### Context
+
+The dbt bind phase loaded every source vocabulary and mapping document for every selected
+ontology. Downstream preparation and mapping checks then evaluated unrelated-domain mappings.
+Generated vocabularies for contracted dbt outputs could also be present on disk but absent
+from the effective source set used by a later stage.
+
+### Decision
+
+The bind phase still loads the complete registered source vocabulary before validation, then
+derives one immutable active-source scope for the selected ontology. A source table enters
+that scope through a selected-domain table mapping, an active contracted virtual source, a
+contract replacement input, or an identity dependency required by the selected domain.
+Every inclusion carries a deterministic reason.
+
+The scoped systems, mappings, contracts, and preparation policies are the only source
+authorities passed to normalization, identity, coverage, and physical planning. Contracted
+virtual sources are registered relations but do not acquire physical preparation obligations.
+
+### Rationale
+
+Scoping after source discovery preserves conflict detection and contracted-vocabulary
+recognition while preventing unrelated mappings from creating false policy obligations.
+Deriving the scope once avoids separate stage-specific interpretations of which source tables
+are active and makes readiness diagnostics explainable.
+
+### Consequences
+
+- Domain-scoped readiness ignores mappings that target another ontology.
+- Cross-domain sources required by an actual identity/FK dependency remain active and state
+  that dependency as their reason.
+- Generated contracted dbt vocabularies participate in mapping and identity validation.
+- Readiness JSON includes the active source inventory by domain.
+- Preparation output is domain-scoped; unrelated array-child preparation models are no longer
+  emitted for another domain's projection.
+
+---
+
 
 
 

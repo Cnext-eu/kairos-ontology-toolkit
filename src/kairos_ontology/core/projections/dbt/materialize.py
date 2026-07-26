@@ -1299,6 +1299,10 @@ def _plan_materialization(
                 if model.kind.value in {"entity", "union"}
                 and model.authority is not None
             ),
+            active_sources=tuple(
+                (item.table_uri, item.source_kind, item.reasons)
+                for item in project.active_source_scope.tables
+            ),
         ),
         silver=silver_physical,
         gold=gold_physical,

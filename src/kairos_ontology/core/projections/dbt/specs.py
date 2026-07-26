@@ -1057,3 +1057,4 @@ class ReleasePlan:
     mapping_contract: "MappingContractSpec | None" = None
     mapping_capability_results: tuple["MappingCapabilityResult", ...] = ()
     silver_authorities: tuple["SilverModelAuthoritySpec", ...] = ()
+    active_sources: tuple[tuple[str, str, tuple[str, ...]], ...] = ()

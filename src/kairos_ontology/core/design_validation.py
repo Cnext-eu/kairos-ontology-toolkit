@@ -11,7 +11,7 @@ from typing import Iterable
 from pyshacl import validate as shacl_validate
 from rdflib import Graph, Namespace, RDF, URIRef
 
-from .ontology_loader import load_ontology
+from .ontology_loader import OntologyLoadError, load_ontology
 from .projections.dbt.mapping_bind import (
     bind_mapping_graph,
     expression_input_uris,
@@ -316,11 +316,73 @@ def validate_silver_extension(
             catalog_path=catalog_path,
             profile="rdfs",
         )
-        data = Graph()
-        data += loaded.graph
-        data += extension
-        shapes = Graph()
+    except OntologyLoadError as exc:
+        root_errors = [
+            item for item in exc.result.diagnostics if item.code == "root_parse_error"
+        ]
+        if root_errors:
+            error = root_errors[0]
+            diagnostic = DesignDiagnostic(
+                "silver.domain-load-error",
+                error.message,
+                error.source_path or str(ontology_path),
+                remediation="Correct the domain ontology path or Turtle syntax.",
+            )
+        else:
+            details = "; ".join(
+                item.message
+                for item in exc.result.diagnostics
+                if item.level == "error"
+            )
+            diagnostic = DesignDiagnostic(
+                "silver.domain-closure-error",
+                details or str(exc),
+                str(ontology_path),
+                remediation="Resolve this domain's required imports and catalog entries.",
+            )
+        return _report(
+            "silver-extension",
+            [diagnostic],
+        )
+    except Exception as exc:
+        resource = str(catalog_path or ontology_path)
+        remediation = (
+            "Correct the catalog path or XML syntax and retry."
+            if catalog_path is not None
+            else "Correct the domain ontology path or Turtle syntax."
+        )
+        return _report(
+            "silver-extension",
+            [
+                DesignDiagnostic(
+                    "silver.domain-closure-error",
+                    str(exc),
+                    resource,
+                    remediation=remediation,
+                )
+            ],
+        )
+
+    data = Graph()
+    data += loaded.graph
+    data += extension
+    shapes = Graph()
+    try:
         shapes.parse(shapes_path, format="turtle")
+    except Exception as exc:
+        return _report(
+            "silver-extension",
+            [
+                DesignDiagnostic(
+                    "silver.shapes-load-error",
+                    str(exc),
+                    str(shapes_path),
+                    remediation="Correct the Silver SHACL shape path or Turtle syntax.",
+                )
+            ],
+        )
+
+    try:
         conforms, report_graph, _ = shacl_validate(
             data,
             shacl_graph=shapes,
@@ -332,10 +394,10 @@ def validate_silver_extension(
             "silver-extension",
             [
                 DesignDiagnostic(
-                    "silver.validation-error",
+                    "silver.shacl-execution-error",
                     str(exc),
                     str(extension_path or "<generated-silver-scaffold>"),
-                    remediation="Resolve this domain closure or Silver SHACL shape file.",
+                    remediation="Correct the SHACL engine inputs or execution environment.",
                 )
             ],
         )

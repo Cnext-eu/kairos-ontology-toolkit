@@ -450,5 +450,6 @@ def normalize_contract(
             macro_names=bound.macro_names,
             warnings=bound.warnings,
             policy=policy,
+            active_source_scope=bound.active_source_scope,
         ),
     )

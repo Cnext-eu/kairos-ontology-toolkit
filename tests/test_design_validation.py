@@ -2,6 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Focused tests for scoped mapping, Silver, and class-property validation."""
 
+import json
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -189,6 +190,185 @@ ex:Child ext:silverInclude true ; ext:businessGrain ex:name .
 
     assert result["passed"]
     assert result["diagnostics"] == []
+
+
+def test_silver_extension_distinguishes_domain_load_error(tmp_path):
+    ontology, _, _ = _files(tmp_path)
+    extension = tmp_path / "domain-silver-ext.ttl"
+    shapes = tmp_path / "ext.shacl.ttl"
+    extension.write_text("", encoding="utf-8")
+    shapes.write_text(SHAPES, encoding="utf-8")
+    ontology.write_text("@prefix broken:", encoding="utf-8")
+
+    result = validate_silver_extension(
+        extension_path=extension,
+        ontology_path=ontology,
+        shapes_path=shapes,
+    )
+
+    assert result["diagnostics"][0]["code"] == "silver.domain-load-error"
+    assert result["diagnostics"][0]["resource_uri"] == str(ontology)
+
+
+def test_silver_extension_distinguishes_incomplete_closure(tmp_path):
+    ontology, _, _ = _files(tmp_path)
+    extension = tmp_path / "domain-silver-ext.ttl"
+    shapes = tmp_path / "ext.shacl.ttl"
+    extension.write_text("", encoding="utf-8")
+    shapes.write_text(SHAPES, encoding="utf-8")
+    ontology.write_text(
+        ONTOLOGY.replace(
+            "<https://example.test/domain> a owl:Ontology .",
+            "<https://example.test/domain> a owl:Ontology ; owl:imports <urn:missing> .",
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_silver_extension(
+        extension_path=extension,
+        ontology_path=ontology,
+        shapes_path=shapes,
+    )
+
+    assert result["diagnostics"][0]["code"] == "silver.domain-closure-error"
+    assert "No catalog mapping for required import: urn:missing" in (
+        result["diagnostics"][0]["message"]
+    )
+
+
+def test_silver_extension_distinguishes_catalog_parse_error(tmp_path):
+    ontology, _, _ = _files(tmp_path)
+    extension = tmp_path / "domain-silver-ext.ttl"
+    shapes = tmp_path / "ext.shacl.ttl"
+    catalog = tmp_path / "catalog-v001.xml"
+    extension.write_text("", encoding="utf-8")
+    shapes.write_text(SHAPES, encoding="utf-8")
+    catalog.write_text("<catalog>", encoding="utf-8")
+
+    result = validate_silver_extension(
+        extension_path=extension,
+        ontology_path=ontology,
+        shapes_path=shapes,
+        catalog_path=catalog,
+    )
+
+    assert set(result) == {
+        "schema_version",
+        "validator",
+        "passed",
+        "diagnostics",
+    }
+    assert result["diagnostics"][0]["code"] == "silver.domain-closure-error"
+    assert result["diagnostics"][0]["resource_uri"] == str(catalog)
+    assert set(result["diagnostics"][0]) == {
+        "code",
+        "message",
+        "resource_uri",
+        "predicate_uri",
+        "remediation",
+    }
+
+
+def test_silver_extension_distinguishes_shapes_load_error(tmp_path):
+    ontology, _, _ = _files(tmp_path)
+    extension = tmp_path / "domain-silver-ext.ttl"
+    shapes = tmp_path / "ext.shacl.ttl"
+    extension.write_text("", encoding="utf-8")
+    shapes.write_text("@prefix broken:", encoding="utf-8")
+
+    result = validate_silver_extension(
+        extension_path=extension,
+        ontology_path=ontology,
+        shapes_path=shapes,
+    )
+
+    assert result["diagnostics"][0]["code"] == "silver.shapes-load-error"
+    assert result["diagnostics"][0]["resource_uri"] == str(shapes)
+
+
+def test_silver_extension_distinguishes_shacl_execution_error(tmp_path, monkeypatch):
+    ontology, _, _ = _files(tmp_path)
+    extension = tmp_path / "domain-silver-ext.ttl"
+    shapes = tmp_path / "ext.shacl.ttl"
+    extension.write_text("", encoding="utf-8")
+    shapes.write_text(SHAPES, encoding="utf-8")
+
+    def fail_shacl(*args, **kwargs):
+        raise RuntimeError("engine failed")
+
+    monkeypatch.setattr("kairos_ontology.core.design_validation.shacl_validate", fail_shacl)
+    result = validate_silver_extension(
+        extension_path=extension,
+        ontology_path=ontology,
+        shapes_path=shapes,
+    )
+
+    assert result["diagnostics"][0]["code"] == "silver.shacl-execution-error"
+    assert result["diagnostics"][0]["message"] == "engine failed"
+
+
+def test_validate_silver_ext_explicit_and_automatic_catalogs_have_parity(tmp_path, monkeypatch):
+    hub = tmp_path / "ontology-hub"
+    ontologies = hub / "model" / "ontologies"
+    extensions = hub / "model" / "extensions"
+    shapes = hub / "model" / "shapes"
+    references = hub / "references"
+    for directory in (ontologies, extensions, shapes, references):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    (ontologies / "domain.ttl").write_text(
+        ONTOLOGY.replace(
+            "<https://example.test/domain> a owl:Ontology .",
+            "<https://example.test/domain> a owl:Ontology ; owl:imports <urn:reference> .",
+        ),
+        encoding="utf-8",
+    )
+    (extensions / "domain-silver-ext.ttl").write_text(
+        """\
+@prefix ex: <https://example.test/domain#> .
+@prefix ext: <https://kairos.cnext.eu/ext#> .
+ex:Child ext:silverInclude true ; ext:businessGrain ex:name .
+""",
+        encoding="utf-8",
+    )
+    (shapes / "kairos-ext-shapes.shacl.ttl").write_text(SHAPES, encoding="utf-8")
+    (references / "reference.ttl").write_text(
+        """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<urn:reference> a owl:Ontology .
+""",
+        encoding="utf-8",
+    )
+    catalog = hub / "catalog-v001.xml"
+    catalog.write_text(
+        """\
+<?xml version="1.0"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="urn:reference" uri="references/reference.ttl"/>
+</catalog>
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    env = {"KAIROS_SKILL_CONTEXT": "1"}
+
+    automatic = runner.invoke(cli, ["validate-silver-ext", "--domain", "domain"], env=env)
+    explicit = runner.invoke(
+        cli,
+        [
+            "validate-silver-ext",
+            "--domain",
+            "domain",
+            "--catalog",
+            str(catalog),
+        ],
+        env=env,
+    )
+
+    assert automatic.exit_code == 0, automatic.output
+    assert explicit.exit_code == 0, explicit.output
+    assert json.loads(automatic.output) == json.loads(explicit.output)
 
 
 def test_list_class_properties_includes_ranges_and_inheritance(tmp_path):

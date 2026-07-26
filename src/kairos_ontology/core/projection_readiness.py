@@ -257,7 +257,14 @@ def check_projection(
 
     diagnostics = _ordered_diagnostics(diagnostic_items)
     resolved_hub = None
-    phase_details: dict[str, Any] = {}
+    active_sources = {
+        str(item.get("domain", "")): item.get("details", {}).get("active_sources", [])
+        for item in projection.projections
+        if item.get("details", {}).get("active_sources")
+    }
+    phase_details: dict[str, Any] = (
+        {"active_sources": active_sources} if active_sources else {}
+    )
     if scope in {"mapping", "transformation", "silver"}:
         resolved_hub = _resolve_hub_root(ontologies_path, hub_root)
         transformation_report = _transformation_report(
