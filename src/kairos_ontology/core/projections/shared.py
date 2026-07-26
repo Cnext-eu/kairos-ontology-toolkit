@@ -17,6 +17,57 @@ from typing import Optional
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 
+# schema.org namespace — used for ``schema:domainIncludes``, an additive,
+# entailment-free way to declare that a property may be used on several classes.
+SCHEMA = Namespace("http://schema.org/")
+
+# ---------------------------------------------------------------------------
+# Multi-class property domain resolution (DD-131)
+# ---------------------------------------------------------------------------
+
+
+def effective_domain_classes(graph: Graph, prop: URIRef) -> set[URIRef]:
+    """Return every class a property applies to, honoring multi-class domains.
+
+    A property is considered to apply to a class when any of the following
+    declare it (all treated as **union** — "applies to A *or* B"):
+
+    * a direct ``rdfs:domain`` whose object is a class IRI;
+    * an ``rdfs:domain`` blank node carrying ``owl:unionOf ( :A :B ... )``;
+    * ``schema:domainIncludes`` class IRIs (additive, no OWL entailment).
+
+    Repeated ``rdfs:domain`` triples are treated as union — the property lands on
+    each declared class independently. This is the single authority used by the
+    silver/dbt projectors and ``validate-mapping`` so union semantics are
+    resolved identically everywhere. See DD-131.
+    """
+    classes: set[URIRef] = set()
+    for domain in graph.objects(prop, RDFS.domain):
+        if isinstance(domain, URIRef):
+            classes.add(domain)
+            continue
+        union = graph.value(domain, OWL.unionOf)
+        if union is not None:
+            classes.update(
+                member for member in graph.items(union) if isinstance(member, URIRef)
+            )
+    for domain in graph.objects(prop, SCHEMA.domainIncludes):
+        if isinstance(domain, URIRef):
+            classes.add(domain)
+    return classes
+
+
+def properties_with_domain(graph: Graph) -> set[URIRef]:
+    """Return all properties that declare a domain via ``rdfs:domain`` or
+    ``schema:domainIncludes`` (subjects of either predicate)."""
+    return {
+        subject
+        for predicate in (RDFS.domain, SCHEMA.domainIncludes)
+        for subject in graph.subjects(predicate, None)
+        if isinstance(subject, URIRef)
+    }
+
+
 # ---------------------------------------------------------------------------
 # Typed dataclasses for structured projection data
 # ---------------------------------------------------------------------------

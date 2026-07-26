@@ -12,6 +12,7 @@ from rdflib import BNode, Graph, Literal, OWL, RDF, RDFS, URIRef
 from rdflib.collection import Collection
 
 from .ontology_loader import OntologyLoadResult, SemanticProfile
+from .projections.shared import SCHEMA, effective_domain_classes
 
 SEMANTIC_INDEX_VERSION = "1.0"
 
@@ -462,7 +463,7 @@ def _property_uris(graph: Graph) -> set[URIRef]:
         for subject in graph.subjects(RDF.type, property_type)
         if isinstance(subject, URIRef)
     }
-    for predicate in (RDFS.domain, RDFS.range, RDFS.subPropertyOf):
+    for predicate in (RDFS.domain, RDFS.range, RDFS.subPropertyOf, SCHEMA.domainIncludes):
         properties.update(
             subject
             for subject in graph.subjects(predicate, None)
@@ -493,14 +494,12 @@ def build_semantic_index(
     class_uris = _class_uris(graph)
     property_uris = _property_uris(graph)
 
-    direct_properties: dict[URIRef, set[URIRef]] = {
-        cls: {
-            prop
-            for prop in graph.subjects(RDFS.domain, cls)
-            if isinstance(prop, URIRef)
-        }
-        for cls in class_uris
-    }
+    direct_properties: dict[URIRef, set[URIRef]] = {cls: set() for cls in class_uris}
+    for prop in property_uris:
+        for cls in effective_domain_classes(graph, prop):
+            bucket = direct_properties.get(cls)
+            if bucket is not None:
+                bucket.add(prop)
 
     class_records: list[ClassRecord] = []
     for cls in sorted(class_uris, key=str):
@@ -586,12 +585,12 @@ def build_semantic_index(
             RDFS.subPropertyOf,
             transitive=transitive,
         )
-        domains = _uri_objects(graph, prop, RDFS.domain)
+        domains = effective_domain_classes(graph, prop)
         ranges = _uri_objects(graph, prop, RDFS.range)
         if transitive:
             for superproperty in superproperties:
                 domains.update(
-                    _uri_objects(graph, URIRef(superproperty.uri), RDFS.domain)
+                    effective_domain_classes(graph, URIRef(superproperty.uri))
                 )
                 ranges.update(
                     _uri_objects(graph, URIRef(superproperty.uri), RDFS.range)

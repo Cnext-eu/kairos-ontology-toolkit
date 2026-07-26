@@ -281,7 +281,15 @@ def check_projection(
         )
     if scope == "silver" and resolved_hub is not None:
         diagnostics = _ordered_diagnostics(
-            [*diagnostics, *_silver_sync_diagnostics(resolved_hub)]
+            [
+                *diagnostics,
+                *_silver_sync_diagnostics(
+                    resolved_hub,
+                    accelerator=accelerator,
+                    catalog_path=catalog_path,
+                    ref_models_dir=ref_models_dir,
+                ),
+            ]
         )
     if scope != "projection":
         diagnostics = tuple(
@@ -379,8 +387,19 @@ def _transformation_diagnostics(report: Any) -> list[dict[str, Any]]:
     return diagnostics
 
 
-def _silver_sync_diagnostics(hub_root: Path) -> list[dict[str, Any]]:
-    """Project the lifecycle gate's claim/include sync authority into diagnostics."""
+def _silver_sync_diagnostics(
+    hub_root: Path,
+    *,
+    accelerator: str | None = None,
+    catalog_path: Path | None = None,
+    ref_models_dir: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Project the lifecycle gate's claim/include sync authority into diagnostics.
+
+    The accelerator/catalog/ref-models context must be threaded through so
+    ``expected_imports`` accounts for data-domain-activated reference modules;
+    otherwise those imports are false-flagged as ``extra import`` (issue #239).
+    """
 
     from .claim_projection_sync import evaluate_projection_sync
 
@@ -388,6 +407,9 @@ def _silver_sync_diagnostics(hub_root: Path) -> list[dict[str, Any]]:
         claims_dir=hub_root / "model" / "claims",
         ontologies_dir=hub_root / "model" / "ontologies",
         extensions_dir=hub_root / "model" / "extensions",
+        ref_models_dir=ref_models_dir,
+        catalog_path=catalog_path,
+        accelerator=accelerator,
     )
     diagnostics: list[dict[str, Any]] = []
     for domain in report.domains:

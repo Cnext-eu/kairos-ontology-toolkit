@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from rdflib import Graph, OWL, RDF, RDFS, URIRef
 
 from ...ontology_loader import load_ontology
+from ..shared import effective_domain_classes, properties_with_domain
 from .context import ActiveSourceScope, ActiveSourceTable, BoundSources
 from .mapping_bind import bind_mapping_documents, mapping_context
 from .mapping_specs import SourceMappings
@@ -135,10 +136,11 @@ def _active_source_inputs(
                 continue
             class_scope.add(str(parent))
             frontier.append(parent)
+    class_scope_uris = {URIRef(uri) for uri in class_scope}
     active_properties = {
         str(prop)
-        for prop in graph.subjects(RDFS.domain, None)
-        if any(str(domain) in class_scope for domain in graph.objects(prop, RDFS.domain))
+        for prop in properties_with_domain(graph)
+        if effective_domain_classes(graph, prop) & class_scope_uris
     }
     active_columns = tuple(
         mapping
