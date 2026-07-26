@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc6] — 2026-07-26
+
+### Added
+- **Shared non-writing projection readiness (DD-116):** versioned diagnostics support
+  fail-fast generation and collected, prerequisite-aware readiness across scoped closure,
+  phase gates, Silver bound confirmation, and monotonic lifecycle status.
+- Verified dbt contract-output identity evidence, focused mapping/Silver validators,
+  evidence-grounded authoring scaffolds, and an explicit preview-first column-IRI migration.
+
+### Changed
+- Lifecycle skills now route logical Silver through any required contracted transformation,
+  final mapping, non-writing bound confirmation, full readiness, and only then generation.
+- Managed regeneration preserves authored content, and status reports stale phase-log
+  deliverables without treating legacy completion as readiness evidence.
+
 ## [4.7.0rc5] — 2026-07-25
 
 ### Added
