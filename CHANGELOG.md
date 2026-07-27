@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc11] — 2026-07-27
+
+### Changed
+- **Fact-extraction decomposition guarded by a full-artifact characterization
+  baseline (DD-132):** the large medallion dbt fact-extraction functions
+  (`_extract_silver_model_facts` / `_extract_schema_model_facts`) and the
+  preparation-policy normalization (`_index_preparation_policies`) were decomposed
+  into smaller single-purpose helpers with **no change to generated artifacts**. A
+  new characterization test pins the complete artifact set (all file paths + byte
+  content + non-file coverage/release facts, in true emission order) for the
+  acme-hub client, invoice, and logistics scenarios against a frozen SHA-256
+  baseline, with a deliberate `regenerate_dbt_artifact_baseline.py --write` path for
+  intentional changes.
+
 ## [4.7.0rc10] — 2026-07-26
 
 ### Fixed
