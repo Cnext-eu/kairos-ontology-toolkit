@@ -3503,6 +3503,196 @@ class TestProjectedFoldedSubtypeMappings:
 
 
 # ---------------------------------------------------------------------------
+# Characterization coverage for the fact-extraction refactor
+# (medallion_dbt_projector: _extract_silver_model_facts /
+# _extract_schema_model_facts decomposition). These pin ordering behaviour
+# that is not already covered elsewhere, ahead of moving the corresponding
+# code into smaller helpers.
+# ---------------------------------------------------------------------------
+
+_MISSING_MAPPING_ONTOLOGY_TTL = textwrap.dedent("""\
+    @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+    @prefix ex:   <http://kairos.example/ontology/gap/> .
+
+    <http://kairos.example/ontology/gap> a owl:Ontology ;
+        rdfs:label "Gap" ; owl:versionInfo "1.0.0" .
+
+    ex:Alpha a owl:Class ; rdfs:label "Alpha" ; rdfs:comment "alpha, unmapped" .
+    ex:Bravo a owl:Class ; rdfs:label "Bravo" ; rdfs:comment "bravo, unmapped" .
+    ex:Charlie a owl:Class ; rdfs:label "Charlie" ; rdfs:comment "charlie, unmapped" .
+""")
+
+
+class TestExtractionCharacterization:
+    """Pins ordering facts the fact-extraction refactor must preserve exactly."""
+
+    def test_multi_source_model_emission_order_stable(self, tmp_path, template_dir):
+        """Per-source staging models are emitted before the union model, in the
+        same order as ``source_refs`` (qlik, then qargo bookings, then qargo
+        orders) — the exact emission order ``_extract_silver_model_facts``
+        currently produces via its inline multi-source branch."""
+        graph = Graph()
+        graph.parse(data=_FOLDED_SUBTYPE_ONTOLOGY_TTL, format="turtle")
+        bronze = tmp_path / "bronze"
+        bronze.mkdir()
+        (bronze / "sources.ttl").write_text(_FOLDED_SUBTYPE_BRONZE_TTL, encoding="utf-8")
+        mappings = tmp_path / "mappings"
+        mappings.mkdir()
+        (mappings / "to-booking.ttl").write_text(
+            _FOLDED_SUBTYPE_MAPPING_TTL, encoding="utf-8"
+        )
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/booking/Booking",
+                "name": "Booking", "label": "Booking", "comment": "booking",
+            },
+            {
+                "uri": "http://kairos.example/ontology/booking/ConfirmedBooking",
+                "name": "ConfirmedBooking", "label": "Confirmed Booking",
+                "comment": "confirmed",
+            },
+            {
+                "uri": "http://kairos.example/ontology/booking/BookingRequest",
+                "name": "BookingRequest", "label": "Booking Request",
+                "comment": "request",
+            },
+        ]
+        artifacts = generate_dbt_artifacts(
+            classes=classes, graph=graph, template_dir=template_dir,
+            namespace="http://kairos.example/ontology/booking/",
+            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+        )
+        silver_sql_keys = [
+            key for key in artifacts
+            if key.startswith("models/silver/booking/") and key.endswith(".sql")
+        ]
+        expected_order = [
+            "models/silver/booking/booking__from_qlik.sql",
+            "models/silver/booking/booking__from_qargo__bookings.sql",
+            "models/silver/booking/booking__from_qargo__orders.sql",
+            "models/silver/booking/booking.sql",
+        ]
+        assert silver_sql_keys == expected_order, (
+            f"Multi-source emission order changed:\n{silver_sql_keys}"
+        )
+
+    def test_missing_mapping_warning_order_matches_class_iteration_order(
+        self, tmp_path, template_dir, caplog
+    ):
+        """Classes with no bronze mapping warn in the same order they appear
+        in the ``classes`` input list — pinning the parent loop's append
+        order ahead of any per-class decision extraction."""
+        graph = Graph()
+        graph.parse(data=_MISSING_MAPPING_ONTOLOGY_TTL, format="turtle")
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/gap/Alpha",
+                "name": "Alpha", "label": "Alpha", "comment": "alpha",
+            },
+            {
+                "uri": "http://kairos.example/ontology/gap/Bravo",
+                "name": "Bravo", "label": "Bravo", "comment": "bravo",
+            },
+            {
+                "uri": "http://kairos.example/ontology/gap/Charlie",
+                "name": "Charlie", "label": "Charlie", "comment": "charlie",
+            },
+        ]
+        with caplog.at_level("WARNING"):
+            generate_dbt_artifacts(
+                classes=classes, graph=graph, template_dir=template_dir,
+                namespace="http://kairos.example/ontology/gap/",
+                ontology_name="gap",
+            )
+        skip_messages = [
+            r.getMessage() for r in caplog.records if "No bronze mapping" in r.getMessage()
+        ]
+        skipped_names = [m.split("'")[1] for m in skip_messages]
+        # The extraction runs once for artifact generation and once for coverage
+        # data (generate_coverage_data reuses the same class-iteration warning
+        # path), so the current behaviour is exactly two full passes over the
+        # three classes, in class-iteration order, back to back.
+        assert skipped_names == [
+            "Alpha", "Bravo", "Charlie",
+            "Alpha", "Bravo", "Charlie",
+        ], f"Missing-mapping warning sequence changed:\n{skipped_names}"
+
+    def test_single_source_folded_subtype_schema_column_order(
+        self, tmp_path, template_dir
+    ):
+        """The folded discriminator column precedes the folded-subtype's own
+        datatype columns in the generated schema YAML, matching the current
+        single-source assembly + SHACL-merge column ordering."""
+        single_mapping = textwrap.dedent("""\
+            @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+            @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
+            @prefix map: <https://example.com/mapping/single-folded-order#> .
+            @prefix bronze-qargo: <https://example.com/bronze/qargo#> .
+            @prefix ex: <http://kairos.example/ontology/booking/> .
+
+            bronze-qargo:bookings skos:exactMatch ex:ConfirmedBooking .
+            bronze-qargo:bookings_booking_ref skos:exactMatch ex:carrierBookingReference .
+            bronze-qargo:bookings_confirmed_at skos:exactMatch ex:confirmedAt .
+            map:table a kairos-map:TableMapping ;
+                kairos-map:sourceTable bronze-qargo:bookings ;
+                kairos-map:targetClass ex:ConfirmedBooking ;
+                kairos-map:mappingType "direct" ;
+                kairos-map:matchType "exactMatch" .
+            map:reference a kairos-map:ColumnMapping ;
+                kairos-map:sourceColumn bronze-qargo:bookings_booking_ref ;
+                kairos-map:targetProperty ex:carrierBookingReference ;
+                kairos-map:matchType "exactMatch" .
+            map:confirmedAt a kairos-map:ColumnMapping ;
+                kairos-map:sourceColumn bronze-qargo:bookings_confirmed_at ;
+                kairos-map:targetProperty ex:confirmedAt ;
+                kairos-map:matchType "exactMatch" .
+        """)
+        graph = Graph()
+        graph.parse(data=_FOLDED_SUBTYPE_ONTOLOGY_TTL, format="turtle")
+        bronze = tmp_path / "bronze"
+        bronze.mkdir()
+        (bronze / "sources.ttl").write_text(_FOLDED_SUBTYPE_BRONZE_TTL, encoding="utf-8")
+        mappings = tmp_path / "mappings"
+        mappings.mkdir()
+        (mappings / "to-booking.ttl").write_text(single_mapping, encoding="utf-8")
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/booking/Booking",
+                "name": "Booking", "label": "Booking", "comment": "booking",
+            },
+            {
+                "uri": "http://kairos.example/ontology/booking/ConfirmedBooking",
+                "name": "ConfirmedBooking", "label": "Confirmed Booking",
+                "comment": "confirmed",
+            },
+            {
+                "uri": "http://kairos.example/ontology/booking/BookingRequest",
+                "name": "BookingRequest", "label": "Booking Request",
+                "comment": "request",
+            },
+        ]
+        artifacts = generate_dbt_artifacts(
+            classes=classes, graph=graph, template_dir=template_dir,
+            namespace="http://kairos.example/ontology/booking/",
+            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+        )
+        schema_yml = yaml.safe_load(artifacts["models/silver/booking/_booking__models.yml"])
+        booking_model = next(m for m in schema_yml["models"] if m["name"] == "booking")
+        column_names = [c["name"] for c in booking_model["columns"]]
+        assert column_names == [
+            "booking_sk",
+            "carrier_booking_reference",
+            "confirmed_at",
+            "booking_type",
+            "_source_system",
+            "_source_record_key",
+            "_loaded_at",
+        ], f"Schema column order changed:\n{column_names}"
+
+
+# ---------------------------------------------------------------------------
 # Split pattern filter condition tests
 # ---------------------------------------------------------------------------
 

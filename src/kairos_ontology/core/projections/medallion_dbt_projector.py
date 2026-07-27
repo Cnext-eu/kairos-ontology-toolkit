@@ -53,6 +53,7 @@ from .shared import (
 if TYPE_CHECKING:
     from ..binding_analysis import BindingAnalysis
     from ..dbt_contracts import DbtContractModel
+    from .dbt.specs import SilverModelSpec
 
 logger = logging.getLogger(__name__)
 
@@ -934,6 +935,190 @@ class SourceBindings:
     warnings: list
 
 
+@dataclass(frozen=True, slots=True)
+class SilverProjectionInputs:
+    """Shared, read-only facts for Silver logical-model fact extraction.
+
+    Computed once per domain — before the per-class iteration in
+    :func:`_extract_silver_model_facts` — and consumed by every class and
+    branch helper. Deliberately excludes per-class mutable state, warning or
+    output collections, RDF graphs, and emitted metadata; those remain owned
+    by the parent coordinator so append/emit ordering is unaffected by this
+    extraction.
+    """
+
+    schema_name: str
+    naming_convention: str
+    fk_contract: ForeignKeyClassification
+    bindings: "SourceBindings"
+    analysis: "BindingAnalysis"
+    active_contracts: dict
+    class_to_sources: dict
+    folded_source_targets: dict
+
+
+def _build_projection_fact_inputs(
+    *,
+    classes: list[dict],
+    graph: Graph,
+    namespace: str,
+    systems: list[dict],
+    mappings: dict,
+    ontology_name: str,
+    contract_registry: Mapping[str, "DbtContractModel"] | None,
+    emit_aspirational_stubs: bool,
+    eligible_class_uris: set[str] | None,
+    fk_classification: ForeignKeyClassification | None,
+    bindings: "SourceBindings | None",
+    analysis: "BindingAnalysis | None",
+) -> SilverProjectionInputs:
+    """Resolve the shared, read-only inputs consumed by every Silver class.
+
+    Reuses ``bindings``/``analysis`` when the caller already computed them
+    (bind pass), otherwise derives them exactly as
+    ``_extract_silver_model_facts`` did inline. Binding warnings are returned
+    on ``bindings.warnings`` — the caller remains responsible for appending
+    them to its own warnings list at the same point as before.
+    """
+    schema_name = silver_schema_name(
+        graph,
+        detect_ontology_uri(graph, namespace),
+        ontology_name,
+    )
+    naming_conv = silver_naming_convention(
+        graph,
+        detect_ontology_uri(graph, namespace),
+    )
+    fk_contract = fk_classification or classify_foreign_keys(graph)
+    resolved_bindings = (
+        bindings
+        if bindings is not None
+        else compute_source_bindings(
+            classes=classes,
+            graph=graph,
+            systems=systems,
+            mappings=mappings,
+            contract_registry=contract_registry,
+        )
+    )
+    # Canonical materialization analysis (DD-096): reuse the already-computed
+    # bindings so stub emission and the release gate consume the *same* bound/
+    # folded/stub/skipped classification as status and the strict gate — never a
+    # divergent inline reimplementation. `stubs_enabled` only gates byte emission;
+    # the aspirational/release facts are derived independently of it.
+    from .. import binding_analysis as _ba
+
+    resolved_analysis = (
+        analysis
+        if analysis is not None
+        else _ba.build(
+            classes=classes,
+            graph=graph,
+            systems=systems,
+            mappings=mappings,
+            contract_registry=contract_registry,
+            eligible_class_uris=eligible_class_uris,
+            stubs_enabled=emit_aspirational_stubs,
+            bindings=resolved_bindings,
+        )
+    )
+    return SilverProjectionInputs(
+        schema_name=schema_name,
+        naming_convention=naming_conv,
+        fk_contract=fk_contract,
+        bindings=resolved_bindings,
+        analysis=resolved_analysis,
+        active_contracts=resolved_bindings.active_contracts,
+        class_to_sources=resolved_bindings.class_to_sources,
+        folded_source_targets=resolved_bindings.folded_source_targets,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SilverClassDecision:
+    """A single class's Silver assembly classification.
+
+    Purely classificatory: never logs, mutates a shared warnings/metadata
+    collection, or emits a model spec. The parent coordinator in
+    ``_extract_silver_model_facts`` still owns logging, ``warnings.append``,
+    ``emit()``, and ``entity_metadata.append()`` at the exact same points as
+    before — this only replaces the inline classification logic that used to
+    precede them.
+    """
+
+    status: str  # "folded" | "stub" | "unbound" | "bound"
+    model_name: str
+    source_refs: list["SourceRef"]
+    folded_parent_name: str | None = None
+    stub_columns: list[dict] | None = None
+    unbound_eligible: bool = False
+
+
+def _class_silver_decision(
+    *,
+    cls_uri: str,
+    local: str,
+    graph: Graph,
+    naming_conv: str,
+    class_to_sources: dict,
+    analysis: "BindingAnalysis",
+    platform: str,
+) -> SilverClassDecision:
+    """Classify a single class's Silver assembly path.
+
+    Mirrors the discriminator-subclass, stub-eligibility, and missing-mapping
+    checks previously inlined at the top of ``_extract_silver_model_facts``'s
+    per-class loop, in the same precedence order: bound (has source refs) >
+    S3 discriminator-folded subtype > aspirational stub-eligible > unbound
+    (no bronze mapping).
+    """
+    model_name = silver_table_name(graph, URIRef(cls_uri), local, naming_conv)
+    source_refs = class_to_sources.get(cls_uri, [])
+    if source_refs:
+        return SilverClassDecision(
+            status="bound", model_name=model_name, source_refs=source_refs,
+        )
+
+    # Check if this class is a discriminator subclass (S3-flattened into parent)
+    for parent in graph.objects(URIRef(cls_uri), RDFS.subClassOf):
+        if not isinstance(parent, URIRef):
+            continue
+        if str(parent).startswith("http://www.w3.org/"):
+            continue
+        strategy = graph.value(parent, KAIROS_EXT.inheritanceStrategy)
+        if strategy and str(strategy) == "discriminator":
+            return SilverClassDecision(
+                status="folded",
+                model_name=model_name,
+                source_refs=[],
+                folded_parent_name=extract_local_name(str(parent)),
+            )
+
+    if analysis.should_emit_stub(cls_uri):
+        # Target-first stub → bind loop: this class is an approved,
+        # materialization-eligible claim with no bronze mapping yet. The stub
+        # columns are computed here so the parent can build a typed, zero-row
+        # placeholder without recomputing this classification.
+        stub_cols = _stub_columns(graph, cls_uri, model_name, platform)
+        return SilverClassDecision(
+            status="stub",
+            model_name=model_name,
+            source_refs=[],
+            stub_columns=stub_cols,
+        )
+
+    return SilverClassDecision(
+        status="unbound",
+        model_name=model_name,
+        source_refs=[],
+        # Release gate (DD-096 / DEC-1): an approved, materialization-eligible
+        # claim with no bronze mapping is an *unbound target*, regardless of
+        # whether a stub was emitted, so `project --strict` can block release
+        # on unbound approved claims.
+        unbound_eligible=analysis.is_release_blocking(cls_uri),
+    )
+
+
 def compute_source_bindings(
     classes: list[dict],
     graph: Graph,
@@ -1108,6 +1293,549 @@ def _stub_columns(
     return cols
 
 
+def _build_multi_source_silver_specs(
+    *,
+    cls_uri: str,
+    local: str,
+    model_name: str,
+    source_refs: list["SourceRef"],
+    silver_source_ref: str | None,
+    graph: Graph,
+    namespace: str,
+    systems: list[dict],
+    mappings: dict,
+    mapping_ns: dict[str, str] | None,
+    ontology_name: str,
+    meta: dict,
+    platform: str,
+    fact_inputs: SilverProjectionInputs,
+) -> tuple[list[SilverModelSpec], list[str], dict[str, object]]:
+    """Build the per-source staging models + union model for a multi-source class.
+
+    Mirrors the multi-source branch previously inlined in
+    ``_extract_silver_model_facts``: per-source column/FK extraction, a
+    canonical NULL-padded superset, one staging model per source, and the
+    union model on top.
+
+    Returns ``(specs, fk_warnings, entity_metadata_entry)`` in the same order
+    the parent used to ``emit()``/``warnings.extend()``/append — the caller
+    still owns those shared collections and appends them at the same point
+    as before.
+    """
+    from .dbt.builders import build_silver_model
+    from .dbt.specs import ModelIdentity, ModelOutcome, SilverModelKind
+
+    schema_name = fact_inputs.schema_name
+    naming_conv = fact_inputs.naming_convention
+    fk_contract = fact_inputs.fk_contract
+    folded_source_targets = fact_inputs.folded_source_targets
+
+    specs: list[SilverModelSpec] = []
+    fk_warnings_accum: list[str] = []
+    source_model_names: list[str] = []
+
+    # Detect same-source collisions requiring table-name disambiguation
+    source_system_counts = Counter(_source_ref_parts(ref)[0] for ref in source_refs)
+    source_table_counts = Counter(
+        (_source_ref_parts(ref)[0], _source_ref_parts(ref)[1]) for ref in source_refs
+    )
+    needs_table_suffix = {src for src, count in source_system_counts.items() if count > 1}
+
+    # Canonical SQL types for NULL-pad columns (matches schema YAML)
+    type_map = _build_column_type_map(graph, cls_uri, platform)
+
+    # Pass 1: extract per-source data columns + FK columns/joins.
+    # Each per-source staging view is single-source, so the existing
+    # single-source FK machinery resolves real joins within it.
+    per_source_meta: list[dict] = []
+    per_source_data: list[list[dict]] = []
+    per_source_fk: list[list[dict]] = []
+
+    for i, source_ref in enumerate(source_refs):
+        src, raw_tbl, tbl_uri = _source_ref_parts(source_ref)
+        src_suffix = _camel_to_snake(src)
+        if src in needs_table_suffix:
+            tbl_suffix = _camel_to_snake(raw_tbl.split(".")[-1])
+            subtype_target = _source_ref_target(source_ref)
+            if subtype_target and source_table_counts[(src, raw_tbl)] > 1:
+                tbl_suffix = (
+                    f"{tbl_suffix}__{_camel_to_snake(extract_local_name(subtype_target))}"
+                )
+            src_model_name = f"{model_name}__from_{src_suffix}__{tbl_suffix}"
+        else:
+            src_model_name = f"{model_name}__from_{src_suffix}"
+        source_model_names.append(src_model_name)
+
+        # Get the set of column URIs for this specific source table
+        tbl_col_uris = _get_table_column_uris(systems, tbl_uri)
+        folded_subtype_uri = folded_source_targets.get(source_ref)
+        extraction_cls_uri = folded_subtype_uri or cls_uri
+
+        # Extract data columns scoped to this source (no SK/IRI)
+        src_columns = _extract_silver_columns(
+            graph,
+            extraction_cls_uri,
+            namespace,
+            mappings,
+            platform=platform,
+            source_refs=source_refs,
+            systems=systems,
+            table_column_uris=tbl_col_uris,
+            include_sk_iri=False,
+            mapping_ns=mapping_ns,
+        )
+        if folded_subtype_uri:
+            _apply_folded_discriminator_column(
+                graph,
+                cls_uri,
+                folded_subtype_uri,
+                src_columns,
+                model_name,
+            )
+
+        # FK joins resolved within this single-source staging view
+        fk_cols, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
+            graph,
+            extraction_cls_uri,
+            mappings,
+            [source_ref],
+            systems=systems,
+            fk_classification=fk_contract,
+            naming_conv=naming_conv,
+        )
+        fk_warnings_accum.extend(fk_warnings)
+
+        # Bind the structured row-filter contract; SQL is rendered later.
+        cte_filter = ""
+        filter_mapping_resource_uri = ""
+        filter_target_uri = _filter_target_for_source_ref(
+            cls_uri,
+            source_ref,
+            folded_source_targets,
+        )
+        tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
+        for tbl_map in tbl_maps_list:
+            if (
+                tbl_map.get("target_uri") == filter_target_uri
+                and tbl_map.get("filter_expression") is not None
+            ):
+                filter_mapping_resource_uri = str(tbl_map.get("mapping_id") or "")
+                break
+
+        per_source_data.append(src_columns)
+        per_source_fk.append(fk_cols)
+        source_record_key, source_key_after_mapping = _source_record_key_expression(
+            systems,
+            source_ref,
+            _camel_to_snake(raw_tbl),
+        )
+        per_source_meta.append(
+            {
+                "model_name": src_model_name,
+                "src": src,
+                "raw_tbl": raw_tbl,
+                "table_uri": tbl_uri,
+                "source_alias": _camel_to_snake(raw_tbl),
+                "joins": fk_joins,
+                "filter": cte_filter,
+                "filter_mapping_resource_uri": filter_mapping_resource_uri,
+                "source_record_key_expression": source_record_key,
+                "source_record_key_generated_after_mapping": source_key_after_mapping,
+            }
+        )
+
+    # Build canonical superset (data cols then FK cols) with NULL pads so
+    # every per-source view projects an identical, positional column list.
+    canonical_columns, padded_per_source = _build_merge_superset(
+        per_source_data,
+        per_source_fk,
+        type_map,
+    )
+    _validate_business_column_names(canonical_columns, model_name)
+
+    # Pass 2: render per-source staging views with padded canonical columns
+    for psm, padded in zip(per_source_meta, padded_per_source):
+        path = f"models/silver/{ontology_name}/{psm['model_name']}.sql"
+        source_spec = build_silver_model(
+            identity=ModelIdentity(
+                class_name=local,
+                class_uri=cls_uri,
+                model_name=psm["model_name"],
+                domain_name=ontology_name,
+                schema_name=schema_name,
+                artifact_path=path,
+                outcome=ModelOutcome.GENERATED,
+            ),
+            kind=SilverModelKind.SOURCE_BRANCH,
+            columns=padded,
+            sources=[
+                {
+                    "source_name": psm["src"],
+                    "table_name": psm["raw_tbl"],
+                    "table_uri": psm["table_uri"],
+                    "alias": psm["source_alias"],
+                    "filter": psm["filter"],
+                    "filter_mapping_resource_uri": psm["filter_mapping_resource_uri"],
+                    "ref_model": silver_source_ref or "",
+                }
+            ],
+            joins=psm["joins"],
+            materialization="view",
+            source_record_key_expression=psm["source_record_key_expression"],
+            source_record_key_generated_after_mapping=(
+                psm["source_record_key_generated_after_mapping"]
+            ),
+            parent_model=model_name,
+            ontology_metadata=meta,
+        )
+        specs.append(source_spec)
+
+    # Union model: SK/IRI on normalised columns + explicit superset list.
+    # FK columns are already resolved upstream, so no union-level joins.
+    # Normalize is the sole identity classifier. Shape replaces these empty
+    # bind-time placeholders from the authoritative EntityIdentitySpec.
+    sk_expr = ""
+    iri_expr = ""
+    materialization = "table"
+    unique_key = ""
+    path = f"models/silver/{ontology_name}/{model_name}.sql"
+    union_spec = build_silver_model(
+        identity=ModelIdentity(
+            class_name=local,
+            class_uri=cls_uri,
+            model_name=model_name,
+            domain_name=ontology_name,
+            schema_name=schema_name,
+            artifact_path=path,
+            outcome=ModelOutcome.GENERATED,
+        ),
+        kind=SilverModelKind.UNION,
+        columns=canonical_columns,
+        materialization=materialization,
+        unique_key=unique_key,
+        source_models=source_model_names,
+        surrogate_key_expression=sk_expr,
+        iri_expression=iri_expr,
+        ontology_metadata=meta,
+    )
+    specs.append(union_spec)
+    total_fk_joins = sum(len(psm["joins"]) for psm in per_source_meta)
+    entity_metadata_entry = {
+        "class_name": local,
+        "class_uri": cls_uri,
+        "model_file": f"{model_name}.sql",
+        "scd_type": None,
+        "source_count": len(source_refs),
+        "column_count": len(canonical_columns),
+        "column_names": [c["target_name"] for c in canonical_columns],
+        "fk_join_count": total_fk_joins,
+        "skipped": False,
+        "skip_reason": None,
+    }
+    return specs, fk_warnings_accum, entity_metadata_entry
+
+
+def _build_single_source_silver_spec(
+    *,
+    cls_uri: str,
+    local: str,
+    model_name: str,
+    source_refs: list[SourceRef],
+    silver_source_ref: str | None,
+    graph: Graph,
+    namespace: str,
+    systems: list[dict],
+    mappings: dict,
+    mapping_ns: dict[str, str] | None,
+    ontology_name: str,
+    meta: dict,
+    platform: str,
+    fact_inputs: SilverProjectionInputs,
+) -> tuple[SilverModelSpec, list[str], dict[str, object]]:
+    """Build the single-source Silver entity model spec for one bound class.
+
+    Near-verbatim transplant of the original single-source branch body: builds
+    the entity column list (data + FK + lineage), the source CTE list, and the
+    entity metadata entry, returning them for the caller to `emit()`/append at
+    the same point the inline code previously did. No emission or accumulator
+    mutation happens here — this is a pure "what should happen" computation,
+    matching the multi-source extraction pattern from Stage 4.
+
+    Returns:
+        Tuple of (model_spec, warnings_accum, entity_metadata_entry) where
+        warnings_accum preserves the exact original ordering (cross-table
+        warnings first, then FK warnings).
+    """
+    from .dbt.builders import build_silver_model
+    from .dbt.specs import ModelIdentity, ModelOutcome, SilverModelKind
+
+    schema_name = fact_inputs.schema_name
+    naming_conv = fact_inputs.naming_convention
+    fk_contract = fact_inputs.fk_contract
+    active_contracts = fact_inputs.active_contracts
+    folded_source_targets = fact_inputs.folded_source_targets
+
+    warnings_accum: list[str] = []
+
+    # Extract properties for column list with platform-aware types.
+    # Scope to primary table columns so inherited properties from other
+    # source tables are excluded (they would require a JOIN to resolve).
+    source_ref = source_refs[0]
+    primary_col_uris = _get_table_column_uris(systems, _source_ref_parts(source_ref)[2])
+    folded_subtype_uri = folded_source_targets.get(source_ref)
+    columns = _extract_silver_columns(
+        graph,
+        cls_uri,
+        namespace,
+        mappings,
+        platform=platform,
+        source_refs=source_refs,
+        systems=systems,
+        table_column_uris=primary_col_uris or None,
+        mapping_ns=mapping_ns,
+    )
+    _validate_business_column_names(columns[2:], model_name)
+    if folded_subtype_uri:
+        subtype_columns = _extract_silver_columns(
+            graph,
+            folded_subtype_uri,
+            namespace,
+            mappings,
+            platform=platform,
+            source_refs=source_refs,
+            systems=systems,
+            table_column_uris=primary_col_uris or None,
+            include_sk_iri=False,
+            mapping_ns=mapping_ns,
+        )
+        columns = _merge_columns_by_target_name(columns, subtype_columns)
+        _apply_folded_discriminator_column(
+            graph,
+            cls_uri,
+            folded_subtype_uri,
+            columns,
+            model_name,
+        )
+
+    # Cross-table column detection: warn if mapped columns reference source
+    # tables other than the primary source (would require a JOIN to resolve).
+    # Issue #181: classify each property's domain as THIS class (own) vs an
+    # ancestor (inherited). Own properties whose column lives in a different
+    # table of the same source are genuine JOIN candidates → ⚠️ warning.
+    # Inherited properties were intentionally excluded (they live on the
+    # parent's table); collapse them into one ℹ️ Info note instead of N
+    # misleading warnings.
+    info_notes: list[str] = []
+    if systems and source_refs and len(source_refs) == 1:
+        primary_tbl_uri = _source_ref_parts(source_ref)[2]
+        primary_col_uris = _get_table_column_uris(systems, primary_tbl_uri)
+        self_domain = {cls_uri}
+        ancestor_domain = _get_class_and_parents(graph, cls_uri) - self_domain
+
+        # Partition domain properties into own (declared on this class) and
+        # inherited (declared on an ancestor only). RDF permits multiple
+        # rdfs:domain values; only URIRef domains are considered (blank-node /
+        # owl:unionOf domain expressions are ignored, as before). Own domain
+        # takes precedence: a property declared on this class stays a warning
+        # even if it is also declared on an ancestor.
+        own_domain_props: set[str] = set()
+        inherited_domain_props: set[str] = set()
+        for ptype in (OWL.DatatypeProperty, OWL.ObjectProperty):
+            for prop in graph.subjects(RDF.type, ptype):
+                prop_domains = {
+                    str(d) for d in graph.objects(prop, RDFS.domain) if isinstance(d, URIRef)
+                }
+                if prop_domains & self_domain:
+                    own_domain_props.add(str(prop))
+                elif prop_domains & ancestor_domain:
+                    inherited_domain_props.add(str(prop))
+
+        inherited_parents: set[str] = set()
+        inherited_props_seen: set[str] = set()
+        if primary_col_uris:
+            for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
+                if col_uri in primary_col_uris:
+                    continue
+                for col_map in col_maps_list:
+                    target_uri = col_map.get("target_uri")
+                    if not target_uri:
+                        continue
+                    if target_uri in own_domain_props:
+                        target_prop = extract_local_name(target_uri)
+                        source_col = extract_local_name(col_uri)
+                        warnings_accum.append(
+                            f"Cross-table reference in '{local}': "
+                            f"column '{source_col}' mapped to own property "
+                            f"'{target_prop}' lives in a different table of "
+                            f"the same source — model may need a JOIN."
+                        )
+                    elif target_uri in inherited_domain_props:
+                        inherited_props_seen.add(target_uri)
+                        owner_domains = {
+                            str(d)
+                            for d in graph.objects(URIRef(target_uri), RDFS.domain)
+                            if isinstance(d, URIRef) and str(d) in ancestor_domain
+                        }
+                        inherited_parents.update(extract_local_name(d) for d in owner_domains)
+
+        inherited_count = len(inherited_props_seen)
+        if inherited_count:
+            parents = ", ".join(sorted(inherited_parents)) or "a parent class"
+            plural = "y" if inherited_count == 1 else "ies"
+            verb = "is" if inherited_count == 1 else "are"
+            info_notes.append(
+                f"'{local}' is a subtype claimed as its own silver table; "
+                f"{inherited_count} inherited propert{plural} from {parents} "
+                f"{verb} mapped on the parent's table(s) and {verb} excluded "
+                f"from this model by design (inherited master attributes live "
+                f"on the parent table, not the subtype). No action needed "
+                f"unless you intend to enrich '{local}' via a JOIN to the "
+                f"parent."
+            )
+
+    # Extract FK columns from object properties (cross-domain joins)
+    fk_extraction_cls_uri = folded_subtype_uri or cls_uri
+    fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
+        graph,
+        fk_extraction_cls_uri,
+        mappings,
+        source_refs,
+        systems=systems,
+        fk_classification=fk_contract,
+        naming_conv=naming_conv,
+    )
+    if cls_uri in active_contracts and fk_warnings:
+        raise ValueError(
+            f"Contracted transformation {active_contracts[cls_uri].name!r} "
+            f"has an unresolved Silver foreign-key shape: {'; '.join(fk_warnings)}"
+        )
+    warnings_accum.extend(fk_warnings)
+
+    # Build source CTEs. Shape applies mandatory preparation routing after
+    # normalization; a bind-time ref is reserved for DD-093 contracts.
+    source_ctes = []
+    for i, src_ref in enumerate(source_refs):
+        src, raw_tbl, tbl_uri = _source_ref_parts(src_ref)
+        alias = _camel_to_snake(raw_tbl) if len(source_refs) == 1 else f"src_{i + 1}"
+        # Bind the structured row-filter contract; SQL is rendered later.
+        cte_filter = ""
+        filter_mapping_resource_uri = ""
+        filter_target_uri = _filter_target_for_source_ref(
+            cls_uri,
+            src_ref,
+            folded_source_targets,
+        )
+        tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
+        for tbl_map in tbl_maps_list:
+            if (
+                tbl_map.get("target_uri") == filter_target_uri
+                and tbl_map.get("filter_expression") is not None
+            ):
+                filter_mapping_resource_uri = str(tbl_map.get("mapping_id") or "")
+                break
+        cte = {
+            "source_name": src,
+            "table_name": raw_tbl,
+            "table_uri": tbl_uri,
+            "alias": alias,
+            "filter": cte_filter,
+            "filter_mapping_resource_uri": filter_mapping_resource_uri,
+            "ref_model": silver_source_ref or None,
+        }
+        source_ctes.append(cte)
+
+    # When FK JOINs are present, qualify unqualified column expressions with
+    # the primary source alias to prevent ambiguous references in T-SQL.
+    if fk_joins and source_ctes:
+        primary_alias = source_ctes[0]["alias"]
+        for col in columns:
+            expr = col["expression"]
+            # Only qualify simple column references (no dots, parens, or spaces)
+            # Skip SK/IRI/NULL expressions and already-qualified references
+            if (
+                "." not in expr
+                and "(" not in expr
+                and " " not in expr
+                and "{{" not in expr
+                and expr != "CAST(NULL"
+                and not expr.startswith("CAST(")
+                and not expr.startswith("COALESCE(")
+            ):
+                col["expression"] = f"{primary_alias}.{expr}"
+
+    columns.extend(fk_columns)
+
+    # Canonical row lineage survives the semantic projection boundary. Source
+    # record identity comes from the Bronze primary key when available; load
+    # context records when this projected version was created.
+    source_system_literal = source_ctes[0]["source_name"].replace("'", "''")
+    source_record_key_expression, source_key_after_mapping = _source_record_key_expression(
+        systems,
+        source_ref,
+        source_ctes[0]["alias"],
+    )
+    columns.extend(
+        [
+            {
+                "expression": f"'{source_system_literal}'",
+                "target_name": "_source_system",
+            },
+            {
+                "expression": source_record_key_expression,
+                "target_name": "_source_record_key",
+                "generated_after_mapping": source_key_after_mapping,
+            },
+            {
+                "expression": "{{ kairos_current_timestamp() }}",
+                "target_name": "_loaded_at",
+            },
+        ]
+    )
+
+    # Filter conditions are embedded in each CTE via cte.filter.
+    # No top-level WHERE needed — all filtering happens at the CTE level.
+    where_clause = ""
+
+    materialization = "table"
+    unique_key = ""
+
+    path = f"models/silver/{ontology_name}/{model_name}.sql"
+    model_spec = build_silver_model(
+        identity=ModelIdentity(
+            class_name=local,
+            class_uri=cls_uri,
+            model_name=model_name,
+            domain_name=ontology_name,
+            schema_name=schema_name,
+            artifact_path=path,
+            outcome=ModelOutcome.GENERATED,
+        ),
+        kind=SilverModelKind.ENTITY,
+        columns=columns,
+        sources=source_ctes,
+        joins=fk_joins,
+        materialization=materialization,
+        unique_key=unique_key,
+        where_clause=where_clause,
+        ontology_metadata=meta,
+    )
+    entity_metadata_entry = {
+        "class_name": local,
+        "class_uri": cls_uri,
+        "model_name": model_name,
+        "model_file": f"{model_name}.sql",
+        "scd_type": None,
+        "source_count": len(source_refs),
+        "column_count": len(columns),
+        "column_names": [c["target_name"] for c in columns],
+        "fk_join_count": len(fk_joins) if fk_joins else 0,
+        "skipped": False,
+        "skip_reason": None,
+        "info_notes": info_notes,
+    }
+    return model_spec, warnings_accum, entity_metadata_entry
+
+
 def _extract_silver_model_facts(
     classes: list[dict],
     graph: Graph,
@@ -1141,7 +1869,7 @@ def _extract_silver_model_facts(
         Each entity_metadata entry: {class_name, model_file, scd_type,
         source_count, column_count, fk_join_count, skipped, skip_reason}.
     """
-    specs: list = []
+    specs: list[SilverModelSpec] = []
     warnings: list[str] = []
     entity_metadata: list[dict] = []
     from .dbt.builders import build_silver_model, outcome_context, outcome_from_context
@@ -1150,140 +1878,110 @@ def _extract_silver_model_facts(
     def emit(spec) -> None:
         specs.append(spec)
 
-    schema_name = silver_schema_name(
-        graph,
-        detect_ontology_uri(graph, namespace),
-        ontology_name,
+    fact_inputs = _build_projection_fact_inputs(
+        classes=classes,
+        graph=graph,
+        namespace=namespace,
+        systems=systems,
+        mappings=mappings,
+        ontology_name=ontology_name,
+        contract_registry=contract_registry,
+        emit_aspirational_stubs=emit_aspirational_stubs,
+        eligible_class_uris=eligible_class_uris,
+        fk_classification=fk_classification,
+        bindings=bindings,
+        analysis=analysis,
     )
-    naming_conv = silver_naming_convention(
-        graph,
-        detect_ontology_uri(graph, namespace),
-    )
-    fk_contract = fk_classification or classify_foreign_keys(graph)
-    bindings = (
-        bindings
-        if bindings is not None
-        else compute_source_bindings(
-            classes=classes,
-            graph=graph,
-            systems=systems,
-            mappings=mappings,
-            contract_registry=contract_registry,
-        )
-    )
-    active_contracts = bindings.active_contracts
-    class_to_sources = bindings.class_to_sources
-    folded_source_targets = bindings.folded_source_targets
+    schema_name = fact_inputs.schema_name
+    naming_conv = fact_inputs.naming_convention
+    bindings = fact_inputs.bindings
+    active_contracts = fact_inputs.active_contracts
+    class_to_sources = fact_inputs.class_to_sources
     warnings.extend(bindings.warnings)
-    # Canonical materialization analysis (DD-096): reuse the already-computed
-    # bindings so stub emission and the release gate consume the *same* bound/
-    # folded/stub/skipped classification as status and the strict gate — never a
-    # divergent inline reimplementation. `stubs_enabled` only gates byte emission;
-    # the aspirational/release facts are derived independently of it.
-    from .. import binding_analysis as _ba
-
-    analysis = (
-        analysis
-        if analysis is not None
-        else _ba.build(
-            classes=classes,
-            graph=graph,
-            systems=systems,
-            mappings=mappings,
-            contract_registry=contract_registry,
-            eligible_class_uris=eligible_class_uris,
-            stubs_enabled=emit_aspirational_stubs,
-            bindings=bindings,
-        )
-    )
+    analysis = fact_inputs.analysis
     for cls in classes:
         cls_uri = cls["uri"]
         local = cls["name"]
-        model_name = silver_table_name(graph, URIRef(cls_uri), local, naming_conv)
+        decision = _class_silver_decision(
+            cls_uri=cls_uri,
+            local=local,
+            graph=graph,
+            naming_conv=naming_conv,
+            class_to_sources=class_to_sources,
+            analysis=analysis,
+            platform=platform,
+        )
+        model_name = decision.model_name
 
-        source_refs = class_to_sources.get(cls_uri, [])
-        if not source_refs:
-            # Check if this class is a discriminator subclass (S3-flattened into parent)
-            is_discriminator_subclass = False
-            parent_name = None
-            for parent in graph.objects(URIRef(cls_uri), RDFS.subClassOf):
-                if not isinstance(parent, URIRef):
-                    continue
-                if str(parent).startswith("http://www.w3.org/"):
-                    continue
-                strategy = graph.value(parent, KAIROS_EXT.inheritanceStrategy)
-                if strategy and str(strategy) == "discriminator":
-                    is_discriminator_subclass = True
-                    parent_name = extract_local_name(str(parent))
-                    break
+        if decision.status == "folded":
+            logger.info(
+                f"Class '{local}' flattened into parent "
+                f"'{decision.folded_parent_name}' via S3 discriminator strategy — "
+                f"no separate silver model needed."
+            )
+            entity_metadata.append(
+                {
+                    "class_name": local,
+                    "class_uri": cls_uri,
+                    "model_file": None,
+                    "scd_type": None,
+                    "source_count": 0,
+                    "column_count": 0,
+                    "column_names": [],
+                    "fk_join_count": 0,
+                    "skipped": True,
+                    "skip_reason": f"S3 discriminator subclass of {decision.folded_parent_name}",
+                }
+            )
+            continue
 
-            if is_discriminator_subclass:
-                logger.info(
-                    f"Class '{local}' flattened into parent '{parent_name}' via "
-                    f"S3 discriminator strategy — no separate silver model needed."
-                )
-                entity_metadata.append(
-                    {
-                        "class_name": local,
-                        "class_uri": cls_uri,
-                        "model_file": None,
-                        "scd_type": None,
-                        "source_count": 0,
-                        "column_count": 0,
-                        "column_names": [],
-                        "fk_join_count": 0,
-                        "skipped": True,
-                        "skip_reason": f"S3 discriminator subclass of {parent_name}",
-                    }
-                )
-                continue
+        if decision.status == "stub":
+            # Target-first stub → bind loop: this class is an approved,
+            # materialization-eligible claim with no bronze mapping yet. Emit a
+            # typed, zero-row placeholder so downstream models have a stable
+            # Silver contract. `aspirational` is DERIVED (canonical
+            # BindingAnalysis), not persisted; emission is byte-gated on the flag.
+            stub_cols = decision.stub_columns
+            stub_path = f"models/silver/{ontology_name}/{model_name}.sql"
+            stub_spec = build_silver_model(
+                identity=ModelIdentity(
+                    class_name=local,
+                    class_uri=cls_uri,
+                    model_name=model_name,
+                    domain_name=ontology_name,
+                    schema_name=schema_name,
+                    artifact_path=stub_path,
+                    outcome=ModelOutcome.ASPIRATIONAL_STUB,
+                ),
+                kind=SilverModelKind.STUB,
+                columns=stub_cols,
+                materialization="view",
+                ontology_metadata=meta,
+            )
+            emit(stub_spec)
+            logger.info(
+                "Class '%s' is an approved claim with no bronze mapping — "
+                "emitting aspirational Silver stub (bind via kairos-design-mapping).",
+                local,
+            )
+            entity_metadata.append(
+                {
+                    "class_name": local,
+                    "class_uri": cls_uri,
+                    "model_file": stub_path,
+                    "scd_type": None,
+                    "source_count": 0,
+                    "column_count": len(stub_cols),
+                    "column_names": [c["name"] for c in stub_cols],
+                    "fk_join_count": 0,
+                    "skipped": False,
+                    "aspirational": True,
+                    "skip_reason": None,
+                }
+            )
+            continue
 
-            if analysis.should_emit_stub(cls_uri):
-                # Target-first stub → bind loop: this class is an approved,
-                # materialization-eligible claim with no bronze mapping yet. Emit a
-                # typed, zero-row placeholder so downstream models have a stable
-                # Silver contract. `aspirational` is DERIVED (canonical
-                # BindingAnalysis), not persisted; emission is byte-gated on the flag.
-                stub_cols = _stub_columns(graph, cls_uri, model_name, platform)
-                stub_path = f"models/silver/{ontology_name}/{model_name}.sql"
-                stub_spec = build_silver_model(
-                    identity=ModelIdentity(
-                        class_name=local,
-                        class_uri=cls_uri,
-                        model_name=model_name,
-                        domain_name=ontology_name,
-                        schema_name=schema_name,
-                        artifact_path=stub_path,
-                        outcome=ModelOutcome.ASPIRATIONAL_STUB,
-                    ),
-                    kind=SilverModelKind.STUB,
-                    columns=stub_cols,
-                    materialization="view",
-                    ontology_metadata=meta,
-                )
-                emit(stub_spec)
-                logger.info(
-                    "Class '%s' is an approved claim with no bronze mapping — "
-                    "emitting aspirational Silver stub (bind via kairos-design-mapping).",
-                    local,
-                )
-                entity_metadata.append(
-                    {
-                        "class_name": local,
-                        "class_uri": cls_uri,
-                        "model_file": stub_path,
-                        "scd_type": None,
-                        "source_count": 0,
-                        "column_count": len(stub_cols),
-                        "column_names": [c["name"] for c in stub_cols],
-                        "fk_join_count": 0,
-                        "skipped": False,
-                        "aspirational": True,
-                        "skip_reason": None,
-                    }
-                )
-                continue
-
+        if decision.status == "unbound":
             msg = (
                 f"No bronze mapping for class '{local}' — skipping silver model. "
                 f"Resolve via: kairos-design-mapping"
@@ -1306,483 +2004,65 @@ def _extract_silver_model_facts(
                     # the canonical analysis (release-blocking == aspirational) regardless
                     # of whether a stub was emitted, so `project --strict` can block
                     # release on unbound approved claims.
-                    "unbound_eligible": analysis.is_release_blocking(cls_uri),
+                    "unbound_eligible": decision.unbound_eligible,
                     "skip_reason": "No bronze mapping found",
                 }
             )
             continue
+
+        # decision.status == "bound"
+        source_refs = decision.source_refs
 
         # DD-093: manual source refs are reserved for governed contracted models.
         silver_source_ref = active_contracts[cls_uri].name if cls_uri in active_contracts else None
 
         # ----- Multi-source: generate per-source views + union model -----
         if len(source_refs) > 1:
-            source_model_names: list[str] = []
-
-            # Detect same-source collisions requiring table-name disambiguation
-            source_system_counts = Counter(_source_ref_parts(ref)[0] for ref in source_refs)
-            source_table_counts = Counter(
-                (_source_ref_parts(ref)[0], _source_ref_parts(ref)[1]) for ref in source_refs
-            )
-            needs_table_suffix = {src for src, count in source_system_counts.items() if count > 1}
-
-            # Canonical SQL types for NULL-pad columns (matches schema YAML)
-            type_map = _build_column_type_map(graph, cls_uri, platform)
-
-            # Pass 1: extract per-source data columns + FK columns/joins.
-            # Each per-source staging view is single-source, so the existing
-            # single-source FK machinery resolves real joins within it.
-            per_source_meta: list[dict] = []
-            per_source_data: list[list[dict]] = []
-            per_source_fk: list[list[dict]] = []
-
-            for i, source_ref in enumerate(source_refs):
-                src, raw_tbl, tbl_uri = _source_ref_parts(source_ref)
-                src_suffix = _camel_to_snake(src)
-                if src in needs_table_suffix:
-                    tbl_suffix = _camel_to_snake(raw_tbl.split(".")[-1])
-                    subtype_target = _source_ref_target(source_ref)
-                    if subtype_target and source_table_counts[(src, raw_tbl)] > 1:
-                        tbl_suffix = (
-                            f"{tbl_suffix}__{_camel_to_snake(extract_local_name(subtype_target))}"
-                        )
-                    src_model_name = f"{model_name}__from_{src_suffix}__{tbl_suffix}"
-                else:
-                    src_model_name = f"{model_name}__from_{src_suffix}"
-                source_model_names.append(src_model_name)
-
-                # Get the set of column URIs for this specific source table
-                tbl_col_uris = _get_table_column_uris(systems, tbl_uri)
-                folded_subtype_uri = folded_source_targets.get(source_ref)
-                extraction_cls_uri = folded_subtype_uri or cls_uri
-
-                # Extract data columns scoped to this source (no SK/IRI)
-                src_columns = _extract_silver_columns(
-                    graph,
-                    extraction_cls_uri,
-                    namespace,
-                    mappings,
-                    platform=platform,
-                    source_refs=source_refs,
-                    systems=systems,
-                    table_column_uris=tbl_col_uris,
-                    include_sk_iri=False,
-                    mapping_ns=mapping_ns,
-                )
-                if folded_subtype_uri:
-                    _apply_folded_discriminator_column(
-                        graph,
-                        cls_uri,
-                        folded_subtype_uri,
-                        src_columns,
-                        model_name,
-                    )
-
-                # FK joins resolved within this single-source staging view
-                fk_cols, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
-                    graph,
-                    extraction_cls_uri,
-                    mappings,
-                    [source_ref],
-                    systems=systems,
-                    fk_classification=fk_contract,
-                    naming_conv=naming_conv,
-                )
-                warnings.extend(fk_warnings)
-
-                # Bind the structured row-filter contract; SQL is rendered later.
-                cte_filter = ""
-                filter_mapping_resource_uri = ""
-                filter_target_uri = _filter_target_for_source_ref(
-                    cls_uri,
-                    source_ref,
-                    folded_source_targets,
-                )
-                tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
-                for tbl_map in tbl_maps_list:
-                    if (
-                        tbl_map.get("target_uri") == filter_target_uri
-                        and tbl_map.get("filter_expression") is not None
-                    ):
-                        filter_mapping_resource_uri = str(tbl_map.get("mapping_id") or "")
-                        break
-
-                per_source_data.append(src_columns)
-                per_source_fk.append(fk_cols)
-                source_record_key, source_key_after_mapping = _source_record_key_expression(
-                    systems,
-                    source_ref,
-                    _camel_to_snake(raw_tbl),
-                )
-                per_source_meta.append(
-                    {
-                        "model_name": src_model_name,
-                        "src": src,
-                        "raw_tbl": raw_tbl,
-                        "table_uri": tbl_uri,
-                        "source_alias": _camel_to_snake(raw_tbl),
-                        "joins": fk_joins,
-                        "filter": cte_filter,
-                        "filter_mapping_resource_uri": filter_mapping_resource_uri,
-                        "source_record_key_expression": source_record_key,
-                        "source_record_key_generated_after_mapping": source_key_after_mapping,
-                    }
-                )
-
-            # Build canonical superset (data cols then FK cols) with NULL pads so
-            # every per-source view projects an identical, positional column list.
-            canonical_columns, padded_per_source = _build_merge_superset(
-                per_source_data,
-                per_source_fk,
-                type_map,
-            )
-            _validate_business_column_names(canonical_columns, model_name)
-
-            # Pass 2: render per-source staging views with padded canonical columns
-            for psm, padded in zip(per_source_meta, padded_per_source):
-                path = f"models/silver/{ontology_name}/{psm['model_name']}.sql"
-                source_spec = build_silver_model(
-                    identity=ModelIdentity(
-                        class_name=local,
-                        class_uri=cls_uri,
-                        model_name=psm["model_name"],
-                        domain_name=ontology_name,
-                        schema_name=schema_name,
-                        artifact_path=path,
-                        outcome=ModelOutcome.GENERATED,
-                    ),
-                    kind=SilverModelKind.SOURCE_BRANCH,
-                    columns=padded,
-                    sources=[
-                        {
-                            "source_name": psm["src"],
-                            "table_name": psm["raw_tbl"],
-                            "table_uri": psm["table_uri"],
-                            "alias": psm["source_alias"],
-                            "filter": psm["filter"],
-                            "filter_mapping_resource_uri": psm["filter_mapping_resource_uri"],
-                            "ref_model": silver_source_ref or "",
-                        }
-                    ],
-                    joins=psm["joins"],
-                    materialization="view",
-                    source_record_key_expression=psm["source_record_key_expression"],
-                    source_record_key_generated_after_mapping=(
-                        psm["source_record_key_generated_after_mapping"]
-                    ),
-                    parent_model=model_name,
-                    ontology_metadata=meta,
-                )
-                emit(source_spec)
-
-            # Union model: SK/IRI on normalised columns + explicit superset list.
-            # FK columns are already resolved upstream, so no union-level joins.
-            # Normalize is the sole identity classifier. Shape replaces these empty
-            # bind-time placeholders from the authoritative EntityIdentitySpec.
-            sk_expr = ""
-            iri_expr = ""
-            materialization = "table"
-            unique_key = ""
-            path = f"models/silver/{ontology_name}/{model_name}.sql"
-            union_spec = build_silver_model(
-                identity=ModelIdentity(
-                    class_name=local,
-                    class_uri=cls_uri,
+            multi_specs, multi_fk_warnings, multi_entity_metadata = (
+                _build_multi_source_silver_specs(
+                    cls_uri=cls_uri,
+                    local=local,
                     model_name=model_name,
-                    domain_name=ontology_name,
-                    schema_name=schema_name,
-                    artifact_path=path,
-                    outcome=ModelOutcome.GENERATED,
-                ),
-                kind=SilverModelKind.UNION,
-                columns=canonical_columns,
-                materialization=materialization,
-                unique_key=unique_key,
-                source_models=source_model_names,
-                surrogate_key_expression=sk_expr,
-                iri_expression=iri_expr,
-                ontology_metadata=meta,
+                    source_refs=source_refs,
+                    silver_source_ref=silver_source_ref,
+                    graph=graph,
+                    namespace=namespace,
+                    systems=systems,
+                    mappings=mappings,
+                    mapping_ns=mapping_ns,
+                    ontology_name=ontology_name,
+                    meta=meta,
+                    platform=platform,
+                    fact_inputs=fact_inputs,
+                )
             )
-            emit(union_spec)
-            total_fk_joins = sum(len(psm["joins"]) for psm in per_source_meta)
-            entity_metadata.append(
-                {
-                    "class_name": local,
-                    "class_uri": cls_uri,
-                    "model_file": f"{model_name}.sql",
-                    "scd_type": None,
-                    "source_count": len(source_refs),
-                    "column_count": len(canonical_columns),
-                    "column_names": [c["target_name"] for c in canonical_columns],
-                    "fk_join_count": total_fk_joins,
-                    "skipped": False,
-                    "skip_reason": None,
-                }
-            )
+            for spec in multi_specs:
+                emit(spec)
+            warnings.extend(multi_fk_warnings)
+            entity_metadata.append(multi_entity_metadata)
             continue
 
         # ----- Single source: existing inline model -----
         # SCD policy was normalized above and is shared by all source-count paths.
-
-        # Extract properties for column list with platform-aware types.
-        # Scope to primary table columns so inherited properties from other
-        # source tables are excluded (they would require a JOIN to resolve).
-        source_ref = source_refs[0]
-        primary_col_uris = _get_table_column_uris(systems, _source_ref_parts(source_ref)[2])
-        folded_subtype_uri = folded_source_targets.get(source_ref)
-        columns = _extract_silver_columns(
-            graph,
-            cls_uri,
-            namespace,
-            mappings,
-            platform=platform,
+        single_spec, single_warnings, single_entity_metadata = _build_single_source_silver_spec(
+            cls_uri=cls_uri,
+            local=local,
+            model_name=model_name,
             source_refs=source_refs,
+            silver_source_ref=silver_source_ref,
+            graph=graph,
+            namespace=namespace,
             systems=systems,
-            table_column_uris=primary_col_uris or None,
+            mappings=mappings,
             mapping_ns=mapping_ns,
+            ontology_name=ontology_name,
+            meta=meta,
+            platform=platform,
+            fact_inputs=fact_inputs,
         )
-        _validate_business_column_names(columns[2:], model_name)
-        if folded_subtype_uri:
-            subtype_columns = _extract_silver_columns(
-                graph,
-                folded_subtype_uri,
-                namespace,
-                mappings,
-                platform=platform,
-                source_refs=source_refs,
-                systems=systems,
-                table_column_uris=primary_col_uris or None,
-                include_sk_iri=False,
-                mapping_ns=mapping_ns,
-            )
-            columns = _merge_columns_by_target_name(columns, subtype_columns)
-            _apply_folded_discriminator_column(
-                graph,
-                cls_uri,
-                folded_subtype_uri,
-                columns,
-                model_name,
-            )
-
-        # Cross-table column detection: warn if mapped columns reference source
-        # tables other than the primary source (would require a JOIN to resolve).
-        # Issue #181: classify each property's domain as THIS class (own) vs an
-        # ancestor (inherited). Own properties whose column lives in a different
-        # table of the same source are genuine JOIN candidates → ⚠️ warning.
-        # Inherited properties were intentionally excluded (they live on the
-        # parent's table); collapse them into one ℹ️ Info note instead of N
-        # misleading warnings.
-        info_notes: list[str] = []
-        if systems and source_refs and len(source_refs) == 1:
-            primary_tbl_uri = _source_ref_parts(source_ref)[2]
-            primary_col_uris = _get_table_column_uris(systems, primary_tbl_uri)
-            self_domain = {cls_uri}
-            ancestor_domain = _get_class_and_parents(graph, cls_uri) - self_domain
-
-            # Partition domain properties into own (declared on this class) and
-            # inherited (declared on an ancestor only). RDF permits multiple
-            # rdfs:domain values; only URIRef domains are considered (blank-node /
-            # owl:unionOf domain expressions are ignored, as before). Own domain
-            # takes precedence: a property declared on this class stays a warning
-            # even if it is also declared on an ancestor.
-            own_domain_props: set[str] = set()
-            inherited_domain_props: set[str] = set()
-            for ptype in (OWL.DatatypeProperty, OWL.ObjectProperty):
-                for prop in graph.subjects(RDF.type, ptype):
-                    prop_domains = {
-                        str(d) for d in graph.objects(prop, RDFS.domain) if isinstance(d, URIRef)
-                    }
-                    if prop_domains & self_domain:
-                        own_domain_props.add(str(prop))
-                    elif prop_domains & ancestor_domain:
-                        inherited_domain_props.add(str(prop))
-
-            inherited_parents: set[str] = set()
-            inherited_props_seen: set[str] = set()
-            if primary_col_uris:
-                for col_uri, col_maps_list in mappings.get("column_maps", {}).items():
-                    if col_uri in primary_col_uris:
-                        continue
-                    for col_map in col_maps_list:
-                        target_uri = col_map.get("target_uri")
-                        if not target_uri:
-                            continue
-                        if target_uri in own_domain_props:
-                            target_prop = extract_local_name(target_uri)
-                            source_col = extract_local_name(col_uri)
-                            warnings.append(
-                                f"Cross-table reference in '{local}': "
-                                f"column '{source_col}' mapped to own property "
-                                f"'{target_prop}' lives in a different table of "
-                                f"the same source — model may need a JOIN."
-                            )
-                        elif target_uri in inherited_domain_props:
-                            inherited_props_seen.add(target_uri)
-                            owner_domains = {
-                                str(d)
-                                for d in graph.objects(URIRef(target_uri), RDFS.domain)
-                                if isinstance(d, URIRef) and str(d) in ancestor_domain
-                            }
-                            inherited_parents.update(extract_local_name(d) for d in owner_domains)
-
-            inherited_count = len(inherited_props_seen)
-            if inherited_count:
-                parents = ", ".join(sorted(inherited_parents)) or "a parent class"
-                plural = "y" if inherited_count == 1 else "ies"
-                verb = "is" if inherited_count == 1 else "are"
-                info_notes.append(
-                    f"'{local}' is a subtype claimed as its own silver table; "
-                    f"{inherited_count} inherited propert{plural} from {parents} "
-                    f"{verb} mapped on the parent's table(s) and {verb} excluded "
-                    f"from this model by design (inherited master attributes live "
-                    f"on the parent table, not the subtype). No action needed "
-                    f"unless you intend to enrich '{local}' via a JOIN to the "
-                    f"parent."
-                )
-
-        # Extract FK columns from object properties (cross-domain joins)
-        fk_extraction_cls_uri = folded_subtype_uri or cls_uri
-        fk_columns, fk_joins, fk_warnings = _extract_fk_columns_and_joins(
-            graph,
-            fk_extraction_cls_uri,
-            mappings,
-            source_refs,
-            systems=systems,
-            fk_classification=fk_contract,
-            naming_conv=naming_conv,
-        )
-        if cls_uri in active_contracts and fk_warnings:
-            raise ValueError(
-                f"Contracted transformation {active_contracts[cls_uri].name!r} "
-                f"has an unresolved Silver foreign-key shape: {'; '.join(fk_warnings)}"
-            )
-        warnings.extend(fk_warnings)
-
-        # Build source CTEs. Shape applies mandatory preparation routing after
-        # normalization; a bind-time ref is reserved for DD-093 contracts.
-        source_ctes = []
-        for i, source_ref in enumerate(source_refs):
-            src, raw_tbl, tbl_uri = _source_ref_parts(source_ref)
-            alias = _camel_to_snake(raw_tbl) if len(source_refs) == 1 else f"src_{i + 1}"
-            # Bind the structured row-filter contract; SQL is rendered later.
-            cte_filter = ""
-            filter_mapping_resource_uri = ""
-            filter_target_uri = _filter_target_for_source_ref(
-                cls_uri,
-                source_ref,
-                folded_source_targets,
-            )
-            tbl_maps_list = mappings["table_maps"].get(tbl_uri, [])
-            for tbl_map in tbl_maps_list:
-                if (
-                    tbl_map.get("target_uri") == filter_target_uri
-                    and tbl_map.get("filter_expression") is not None
-                ):
-                    filter_mapping_resource_uri = str(tbl_map.get("mapping_id") or "")
-                    break
-            cte = {
-                "source_name": src,
-                "table_name": raw_tbl,
-                "table_uri": tbl_uri,
-                "alias": alias,
-                "filter": cte_filter,
-                "filter_mapping_resource_uri": filter_mapping_resource_uri,
-                "ref_model": silver_source_ref or None,
-            }
-            source_ctes.append(cte)
-
-        # When FK JOINs are present, qualify unqualified column expressions with
-        # the primary source alias to prevent ambiguous references in T-SQL.
-        if fk_joins and source_ctes:
-            primary_alias = source_ctes[0]["alias"]
-            for col in columns:
-                expr = col["expression"]
-                # Only qualify simple column references (no dots, parens, or spaces)
-                # Skip SK/IRI/NULL expressions and already-qualified references
-                if (
-                    "." not in expr
-                    and "(" not in expr
-                    and " " not in expr
-                    and "{{" not in expr
-                    and expr != "CAST(NULL"
-                    and not expr.startswith("CAST(")
-                    and not expr.startswith("COALESCE(")
-                ):
-                    col["expression"] = f"{primary_alias}.{expr}"
-
-        columns.extend(fk_columns)
-
-        # Canonical row lineage survives the semantic projection boundary. Source
-        # record identity comes from the Bronze primary key when available; load
-        # context records when this projected version was created.
-        source_system_literal = source_ctes[0]["source_name"].replace("'", "''")
-        source_record_key_expression, source_key_after_mapping = _source_record_key_expression(
-            systems,
-            source_ref,
-            source_ctes[0]["alias"],
-        )
-        columns.extend(
-            [
-                {
-                    "expression": f"'{source_system_literal}'",
-                    "target_name": "_source_system",
-                },
-                {
-                    "expression": source_record_key_expression,
-                    "target_name": "_source_record_key",
-                    "generated_after_mapping": source_key_after_mapping,
-                },
-                {
-                    "expression": "{{ kairos_current_timestamp() }}",
-                    "target_name": "_loaded_at",
-                },
-            ]
-        )
-
-        # Filter conditions are embedded in each CTE via cte.filter.
-        # No top-level WHERE needed — all filtering happens at the CTE level.
-        where_clause = ""
-
-        materialization = "table"
-        unique_key = ""
-
-        path = f"models/silver/{ontology_name}/{model_name}.sql"
-        model_spec = build_silver_model(
-            identity=ModelIdentity(
-                class_name=local,
-                class_uri=cls_uri,
-                model_name=model_name,
-                domain_name=ontology_name,
-                schema_name=schema_name,
-                artifact_path=path,
-                outcome=ModelOutcome.GENERATED,
-            ),
-            kind=SilverModelKind.ENTITY,
-            columns=columns,
-            sources=source_ctes,
-            joins=fk_joins,
-            materialization=materialization,
-            unique_key=unique_key,
-            where_clause=where_clause,
-            ontology_metadata=meta,
-        )
-        emit(model_spec)
-        entity_metadata.append(
-            {
-                "class_name": local,
-                "class_uri": cls_uri,
-                "model_name": model_name,
-                "model_file": f"{model_name}.sql",
-                "scd_type": None,
-                "source_count": len(source_refs),
-                "column_count": len(columns),
-                "column_names": [c["target_name"] for c in columns],
-                "fk_join_count": len(fk_joins) if fk_joins else 0,
-                "skipped": False,
-                "skip_reason": None,
-                "info_notes": info_notes,
-            }
-        )
+        emit(single_spec)
+        warnings.extend(single_warnings)
+        entity_metadata.append(single_entity_metadata)
 
     typed_outcomes = tuple(outcome_from_context(item) for item in entity_metadata)
     return tuple(specs), warnings, [outcome_context(item) for item in typed_outcomes]
@@ -3093,6 +3373,269 @@ def _get_raw_natural_key(
     return None
 
 
+def _build_schema_base_columns(*, model_name: str, unique_test: str | dict) -> list[dict]:
+    """Return the fixed SK/IRI/lineage schema columns emitted for every model.
+
+    Verbatim transplant of the leading column-list construction in
+    ``_extract_schema_model_facts``: surrogate key, OWL IRI, then the three
+    immutable lineage columns, in that exact order.
+    """
+    cols = [
+        {
+            "name": f"{model_name}_sk",
+            "description": "Surrogate key (PK)",
+            "meta": {"is_pk": "true"},
+            "tests": ["not_null", unique_test],
+        },
+        {
+            "name": f"{model_name}_iri",
+            "description": "OWL IRI lineage",
+            "meta": {},
+            "tests": ["not_null", unique_test],
+        },
+    ]
+    cols.extend(
+        [
+            {
+                "name": "_source_system",
+                "description": "Immutable source-system lineage",
+                "meta": {"is_lineage": "true"},
+                "tests": ["not_null"],
+            },
+            {
+                "name": "_source_record_key",
+                "description": "Source-scoped immutable source record key",
+                "meta": {"is_lineage": "true"},
+                "tests": ["not_null"],
+            },
+            {
+                "name": "_loaded_at",
+                "description": "Timestamp when this Silver version was projected",
+                "meta": {"is_lineage": "true"},
+                "tests": ["not_null"],
+            },
+        ]
+    )
+    return cols
+
+
+def _merge_folded_subtype_schema_tests(
+    *,
+    shapes_dir: Optional[Path],
+    shacl_graph,
+    graph: Graph,
+    folded_subtype_uris: set[str],
+    shacl_tests: dict[str, list],
+) -> dict[str, list]:
+    """Merge folded-subtype SHACL column tests onto the parent's shacl_tests.
+
+    S3 folding: subtypes folded into this parent contribute their datatype
+    properties as columns on the parent model, so their SHACL constraints must
+    also flow onto those columns. Merges in any folded-subtype column tests
+    the parent shape didn't already define (parent constraints win on shared
+    column names). Returns a (possibly) updated dict; the input dict is not
+    mutated in place so callers retain the original parent-only tests if
+    there are no folded subtypes.
+    """
+    if not (shapes_dir and folded_subtype_uris):
+        return shacl_tests
+    merged = dict(shacl_tests)
+    for sub_uri in sorted(folded_subtype_uris):
+        sub_tests = _extract_shacl_tests(
+            shapes_dir,
+            sub_uri,
+            shacl_graph=shacl_graph,
+            ontology_graph=graph,
+        )
+        for sub_col_name, sub_col_tests in sub_tests.items():
+            merged.setdefault(sub_col_name, sub_col_tests)
+    return merged
+
+
+def _append_schema_datatype_columns(
+    *,
+    cols: list[dict],
+    seen_schema_cols: set[str],
+    graph: Graph,
+    cls_uri: str,
+    model_name: str,
+    domain_classes: set[str],
+    folded_subtype_uris: set[str],
+    platform: str,
+    shacl_tests: dict[str, list],
+    prop_to_match_type: dict[str, str],
+    prop_to_source: dict[str, str],
+    enum_lookup: dict[str, list[dict]],
+) -> None:
+    """Append the S3 discriminator column (if any) and datatype-property columns.
+
+    Mutates ``cols`` and ``seen_schema_cols`` in place, matching the original
+    inline loop exactly: discriminator column first (when this class has
+    folded subtypes), then one column per sorted OWL.DatatypeProperty whose
+    rdfs:domain is in ``domain_classes``, skipping duplicate column names.
+    """
+    if folded_subtype_uris:
+        disc_col = str_val(graph, URIRef(cls_uri), KAIROS_EXT.discriminatorColumn)
+        if not disc_col:
+            disc_col = f"{model_name}_type"
+        cols.append(
+            {
+                "name": disc_col,
+                "description": "Type discriminator for S3-folded subtypes",
+                "meta": {"data_type": _xsd_to_target(XSD.string, platform)},
+                "tests": [],
+            }
+        )
+        seen_schema_cols.add(disc_col)
+
+    for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
+        prop_domains = {str(cls) for cls in effective_domain_classes(graph, prop)}
+        if prop_domains & domain_classes:
+            prop_name = extract_local_name(str(prop))
+            col_name = _resolve_column_name(graph, str(prop))
+            if col_name in seen_schema_cols:
+                continue
+            seen_schema_cols.add(col_name)
+            label = graph.value(prop, RDFS.label)
+            comment = graph.value(prop, RDFS.comment)
+            desc = str(comment) if comment else (str(label) if label else prop_name)
+
+            # Append SKOS match type for non-exactMatch columns
+            match_type = prop_to_match_type.get(str(prop))
+            if match_type and match_type != "exactMatch":
+                match_labels = {
+                    "closeMatch": "computed/derived",
+                    "narrowMatch": "subset mapping",
+                    "broadMatch": "broad mapping",
+                    "relatedMatch": "related mapping",
+                }
+                label_hint = match_labels.get(match_type, match_type)
+                desc = f"{desc} ({match_type} — {label_hint})"
+            range_uri = graph.value(prop, RDFS.range)
+            data_type = (
+                _xsd_to_target(range_uri, platform)
+                if range_uri
+                else _xsd_to_target(XSD.string, platform)
+            )
+
+            # Start with SHACL-derived tests
+            tests = list(shacl_tests.get(col_name, []))
+            # Add not_null for required properties (from kairos-ext annotation)
+            pop_req = graph.value(URIRef(str(prop)), KAIROS_EXT.populationRequirement)
+            if pop_req and str(pop_req) == "required" and "not_null" not in tests:
+                tests.append("not_null")
+
+            # Add accepted_values for enum-typed source columns
+            source_col_uri = prop_to_source.get(str(prop))
+            if source_col_uri and source_col_uri in enum_lookup:
+                enum_vals = enum_lookup[source_col_uri]
+                values_list = [ev["code"] for ev in enum_vals]
+                tests.append(
+                    {
+                        "accepted_values": {
+                            "values": values_list,
+                        }
+                    }
+                )
+
+            # Lineage metadata
+            col_meta = {
+                "data_type": data_type,
+                "domain_iri": str(prop),
+            }
+            if source_col_uri:
+                col_meta["source_iri"] = source_col_uri
+
+            cols.append(
+                {
+                    "name": col_name,
+                    "description": desc,
+                    "meta": col_meta,
+                    "tests": tests,
+                }
+            )
+
+
+def _append_schema_fk_columns(
+    *,
+    cols: list[dict],
+    graph: Graph,
+    domain_classes: set[str],
+    fk_contract: ForeignKeyClassification,
+    fk_naming_conv: str,
+) -> None:
+    """Append object-property FK columns (including inherited/redirected) to cols.
+
+    Mutates ``cols`` in place. ``existing_fk_cols`` is (re)computed from the
+    current column names in ``cols`` so FK-name collision handling matches the
+    original inline behavior exactly (it accounted for both the base/datatype
+    columns already appended and FK columns appended earlier in this same
+    loop).
+    """
+    direct_fks = [
+        fk
+        for fk in fk_contract.descriptors
+        if (
+            not fk.redirected
+            and str(fk.domain_class) in domain_classes
+            and any(fk.qualifies_silver(uri) for uri in domain_classes)
+        )
+    ]
+    redirected_fks = [
+        fk
+        for fk in fk_contract.descriptors
+        if fk.redirected and str(fk.source_class) in domain_classes
+    ]
+    existing_fk_cols = {column["name"] for column in cols}
+    for fk in direct_fks + redirected_fks:
+        if fk.junction_table_name:
+            continue
+        prop = fk.property_uri
+        range_cls = fk.target_class
+        range_model, range_local = _resolve_discriminated_model(
+            graph,
+            range_cls,
+            fk_naming_conv,
+        )
+        fk_col_name = fk.physical_column_name(range_model, layer="silver")
+        if fk_col_name in existing_fk_cols:
+            prop_suffix = _camel_to_snake(extract_local_name(str(prop)))
+            fk_col_name = f"{prop_suffix}_sk"
+            if fk_col_name in existing_fk_cols:
+                fk_col_name = f"{range_model}_{prop_suffix}_sk"
+        existing_fk_cols.add(fk_col_name)
+
+        prop_label = graph.value(prop, RDFS.label)
+        prop_comment = graph.value(prop, RDFS.comment)
+        fk_desc = (
+            str(prop_comment)
+            if prop_comment
+            else (str(prop_label) if prop_label else f"FK to {range_local}")
+        )
+        fk_tests: list[dict | str] = [
+            {
+                "relationships": {
+                    "to": f"ref('{range_model}')",
+                    "field": f"{range_model}_sk",
+                }
+            }
+        ]
+        if fk.nullable is False:
+            fk_tests.insert(0, "not_null")
+        cols.append(
+            {
+                "name": fk_col_name,
+                "description": fk_desc,
+                "meta": {
+                    "is_fk": "true",
+                    "references": range_model,
+                    "domain_iri": str(prop),
+                },
+                "tests": fk_tests,
+            }
+        )
+
+
 def _extract_schema_model_facts(
     classes: list[dict],
     graph: Graph,
@@ -3158,7 +3701,6 @@ def _extract_schema_model_facts(
         )
 
         unique_test: str | dict = "unique"
-        cols = []
         folded_subtype_uris = {
             c["uri"]
             for c in classes
@@ -3170,202 +3712,41 @@ def _extract_schema_model_facts(
         # so their SHACL constraints must also flow onto those columns. Merge in any
         # folded-subtype column tests the parent shape didn't already define
         # (parent constraints win on shared column names).
-        if shapes_dir and folded_subtype_uris:
-            for sub_uri in sorted(folded_subtype_uris):
-                sub_tests = _extract_shacl_tests(
-                    shapes_dir,
-                    sub_uri,
-                    shacl_graph=shacl_graph,
-                    ontology_graph=graph,
-                )
-                for sub_col_name, sub_col_tests in sub_tests.items():
-                    shacl_tests.setdefault(sub_col_name, sub_col_tests)
-        # SK + IRI columns
-        cols.append(
-            {
-                "name": f"{model_name}_sk",
-                "description": "Surrogate key (PK)",
-                "meta": {"is_pk": "true"},
-                "tests": ["not_null", unique_test],
-            }
+        shacl_tests = _merge_folded_subtype_schema_tests(
+            shapes_dir=shapes_dir,
+            shacl_graph=shacl_graph,
+            graph=graph,
+            folded_subtype_uris=folded_subtype_uris,
+            shacl_tests=shacl_tests,
         )
-        cols.append(
-            {
-                "name": f"{model_name}_iri",
-                "description": "OWL IRI lineage",
-                "meta": {},
-                "tests": ["not_null", unique_test],
-            }
-        )
-        cols.extend(
-            [
-                {
-                    "name": "_source_system",
-                    "description": "Immutable source-system lineage",
-                    "meta": {"is_lineage": "true"},
-                    "tests": ["not_null"],
-                },
-                {
-                    "name": "_source_record_key",
-                    "description": "Source-scoped immutable source record key",
-                    "meta": {"is_lineage": "true"},
-                    "tests": ["not_null"],
-                },
-                {
-                    "name": "_loaded_at",
-                    "description": "Timestamp when this Silver version was projected",
-                    "meta": {"is_lineage": "true"},
-                    "tests": ["not_null"],
-                },
-            ]
-        )
+        cols = _build_schema_base_columns(model_name=model_name, unique_test=unique_test)
 
         # Datatype properties (including inherited from parent classes)
         domain_classes = _get_class_and_parents(graph, cls["uri"]) | folded_subtype_uris
         seen_schema_cols: set[str] = set()
-        if folded_subtype_uris:
-            disc_col = str_val(graph, URIRef(cls["uri"]), KAIROS_EXT.discriminatorColumn)
-            if not disc_col:
-                disc_col = f"{model_name}_type"
-            cols.append(
-                {
-                    "name": disc_col,
-                    "description": "Type discriminator for S3-folded subtypes",
-                    "meta": {"data_type": _xsd_to_target(XSD.string, platform)},
-                    "tests": [],
-                }
-            )
-            seen_schema_cols.add(disc_col)
-        for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
-            prop_domains = {str(cls) for cls in effective_domain_classes(graph, prop)}
-            if prop_domains & domain_classes:
-                prop_name = extract_local_name(str(prop))
-                col_name = _resolve_column_name(graph, str(prop))
-                if col_name in seen_schema_cols:
-                    continue
-                seen_schema_cols.add(col_name)
-                label = graph.value(prop, RDFS.label)
-                comment = graph.value(prop, RDFS.comment)
-                desc = str(comment) if comment else (str(label) if label else prop_name)
-
-                # Append SKOS match type for non-exactMatch columns
-                match_type = prop_to_match_type.get(str(prop))
-                if match_type and match_type != "exactMatch":
-                    match_labels = {
-                        "closeMatch": "computed/derived",
-                        "narrowMatch": "subset mapping",
-                        "broadMatch": "broad mapping",
-                        "relatedMatch": "related mapping",
-                    }
-                    label_hint = match_labels.get(match_type, match_type)
-                    desc = f"{desc} ({match_type} — {label_hint})"
-                range_uri = graph.value(prop, RDFS.range)
-                data_type = (
-                    _xsd_to_target(range_uri, platform)
-                    if range_uri
-                    else _xsd_to_target(XSD.string, platform)
-                )
-
-                # Start with SHACL-derived tests
-                tests = list(shacl_tests.get(col_name, []))
-                # Add not_null for required properties (from kairos-ext annotation)
-                pop_req = graph.value(URIRef(str(prop)), KAIROS_EXT.populationRequirement)
-                if pop_req and str(pop_req) == "required" and "not_null" not in tests:
-                    tests.append("not_null")
-
-                # Add accepted_values for enum-typed source columns
-                source_col_uri = prop_to_source.get(str(prop))
-                if source_col_uri and source_col_uri in enum_lookup:
-                    enum_vals = enum_lookup[source_col_uri]
-                    values_list = [ev["code"] for ev in enum_vals]
-                    tests.append(
-                        {
-                            "accepted_values": {
-                                "values": values_list,
-                            }
-                        }
-                    )
-
-                # Lineage metadata
-                col_meta = {
-                    "data_type": data_type,
-                    "domain_iri": str(prop),
-                }
-                if source_col_uri:
-                    col_meta["source_iri"] = source_col_uri
-
-                cols.append(
-                    {
-                        "name": col_name,
-                        "description": desc,
-                        "meta": col_meta,
-                        "tests": tests,
-                    }
-                )
+        _append_schema_datatype_columns(
+            cols=cols,
+            seen_schema_cols=seen_schema_cols,
+            graph=graph,
+            cls_uri=cls["uri"],
+            model_name=model_name,
+            domain_classes=domain_classes,
+            folded_subtype_uris=folded_subtype_uris,
+            platform=platform,
+            shacl_tests=shacl_tests,
+            prop_to_match_type=prop_to_match_type,
+            prop_to_source=prop_to_source,
+            enum_lookup=enum_lookup,
+        )
 
         # Object property FK columns (including inherited and redirected relationships)
-        direct_fks = [
-            fk
-            for fk in fk_contract.descriptors
-            if (
-                not fk.redirected
-                and str(fk.domain_class) in domain_classes
-                and any(fk.qualifies_silver(uri) for uri in domain_classes)
-            )
-        ]
-        redirected_fks = [
-            fk
-            for fk in fk_contract.descriptors
-            if fk.redirected and str(fk.source_class) in domain_classes
-        ]
-        existing_fk_cols = {column["name"] for column in cols}
-        for fk in direct_fks + redirected_fks:
-            if fk.junction_table_name:
-                continue
-            prop = fk.property_uri
-            range_cls = fk.target_class
-            range_model, range_local = _resolve_discriminated_model(
-                graph,
-                range_cls,
-                fk_naming_conv,
-            )
-            fk_col_name = fk.physical_column_name(range_model, layer="silver")
-            if fk_col_name in existing_fk_cols:
-                prop_suffix = _camel_to_snake(extract_local_name(str(prop)))
-                fk_col_name = f"{prop_suffix}_sk"
-                if fk_col_name in existing_fk_cols:
-                    fk_col_name = f"{range_model}_{prop_suffix}_sk"
-            existing_fk_cols.add(fk_col_name)
-
-            prop_label = graph.value(prop, RDFS.label)
-            prop_comment = graph.value(prop, RDFS.comment)
-            fk_desc = (
-                str(prop_comment)
-                if prop_comment
-                else (str(prop_label) if prop_label else f"FK to {range_local}")
-            )
-            fk_tests: list[dict | str] = [
-                {
-                    "relationships": {
-                        "to": f"ref('{range_model}')",
-                        "field": f"{range_model}_sk",
-                    }
-                }
-            ]
-            if fk.nullable is False:
-                fk_tests.insert(0, "not_null")
-            cols.append(
-                {
-                    "name": fk_col_name,
-                    "description": fk_desc,
-                    "meta": {
-                        "is_fk": "true",
-                        "references": range_model,
-                        "domain_iri": str(prop),
-                    },
-                    "tests": fk_tests,
-                }
-            )
+        _append_schema_fk_columns(
+            cols=cols,
+            graph=graph,
+            domain_classes=domain_classes,
+            fk_contract=fk_contract,
+            fk_naming_conv=fk_naming_conv,
+        )
 
         model_meta = {
             "ontology_class": cls["name"],

@@ -169,6 +169,7 @@ from .specs import (
     ModelOutcome,
     SilverModelKind,
     SourceSystemFact,
+    SourceTableFact,
 )
 
 E = TypeVar("E", bound=Enum)
@@ -1180,15 +1181,16 @@ def _normalize_array_json(
     return tuple(result)
 
 
-def _normalize_prep(
+def _index_preparation_policies(
     facts: MedallionPolicyFacts,
     systems: tuple[SourceSystemFact, ...],
     mappings: SourceMappings,
-    adapter: AdapterName,
-) -> tuple[PreparationSpec, ...]:
-    from .capabilities import is_reserved_identifier
-
-    table_index: dict[str, tuple[SourceSystemFact, object]] = {}
+) -> tuple[
+    dict[str, tuple[SourceSystemFact, SourceTableFact]],
+    dict[str, list[PreparationPolicyFact]],
+]:
+    """Index physical tables and enforce one preparation policy per mapped table."""
+    table_index: dict[str, tuple[SourceSystemFact, SourceTableFact]] = {}
     for system in systems:
         for table in system.tables:
             if table.relation_kind != "physical":
@@ -1227,6 +1229,19 @@ def _normalize_prep(
             rule_id="DD-106-prep-coverage",
             resource_uri=table_uri,
         )
+
+    return table_index, by_table
+
+
+def _normalize_prep(
+    facts: MedallionPolicyFacts,
+    systems: tuple[SourceSystemFact, ...],
+    mappings: SourceMappings,
+    adapter: AdapterName,
+) -> tuple[PreparationSpec, ...]:
+    from .capabilities import is_reserved_identifier
+
+    table_index, by_table = _index_preparation_policies(facts, systems, mappings)
 
     result: list[PreparationSpec] = []
     for table_uri, policy_facts in sorted(by_table.items()):

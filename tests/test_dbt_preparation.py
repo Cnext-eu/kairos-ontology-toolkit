@@ -26,6 +26,9 @@ from kairos_ontology.core.projections.dbt.policy_specs import (
     CanonicalTypeKind,
     CanonicalTypeSpec,
 )
+from kairos_ontology.core.projections.dbt.policy_normalize import (
+    _index_preparation_policies,
+)
 from kairos_ontology.core.projections.dbt.prep_renderers import _conversion_expression
 from kairos_ontology.core.projections.dbt.shape import _source_record_key_expression
 from kairos_ontology.core.projections.medallion_dbt_projector import (
@@ -76,6 +79,21 @@ def _policy_for(bound, table_suffix: str):
         for policy in bound.policy_facts.preparations
         if policy.source_table.values[0].endswith(table_suffix)
     )
+
+
+def test_preparation_policy_index_contains_only_physical_tables():
+    bound = bind_sources(_client_inputs())
+
+    table_index, by_table = _index_preparation_policies(
+        bound.policy_facts,
+        bound.systems,
+        bound.mappings,
+    )
+
+    assert table_index
+    assert set(by_table) <= set(table_index)
+    assert all(table.relation_kind == "physical" for _, table in table_index.values())
+    assert all(len(policies) == 1 for policies in by_table.values())
 
 
 def test_missing_duplicate_and_absent_prep_mode_are_blocking():
