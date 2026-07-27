@@ -1,0 +1,752 @@
+{
+  "schema_version": 1,
+  "generated_from": "Python AST Import/ImportFrom nodes; paths and registrations are separately asserted",
+  "managed_skill_reference_markers": [
+    ".kairos-state",
+    ".sessions-",
+    "check-projection",
+    "check-release",
+    "check-transformation-readiness",
+    "claims",
+    "integration/preparation",
+    "inventory-dbt-candidates",
+    "kairos-prep",
+    "projection-report",
+    "release-baseline",
+    "sync-dbt-contracts"
+  ],
+  "forbidden_production_markers": [
+    "ASPIRATIONAL_STUB",
+    "SilverModelKind.STUB",
+    "classify_binding",
+    "emit_aspirational_stubs",
+    "silver_stub_model.sql.jinja2",
+    "unbound_eligible_names",
+    "kairos_ontology.core.projections.dbt.prep_renderers",
+    "PreparationPolicyFact",
+    "PreparationSpec",
+    "PrepModelSpec",
+    "preparation_root",
+    "integration/preparation",
+    "kairos-prep"
+  ],
+  "stage3_cutover": {
+    "status": "implemented-in-working-tree",
+    "facts": [
+      "project --target dbt|silver fails before scope resolution or writes",
+      "run_projections, project_graph, and _run_projection reject dbt|silver",
+      "TARGET_REGISTRY and --target all no longer dispatch dbt|silver",
+      "compile plans are the public Silver authority",
+      "Gold and MDM consume the typed compile plan through optional downstream registrations"
+    ],
+    "tests": [
+      "tests/test_silver_compile_cutover.py",
+      "tests/test_downstream_compile_consumers.py",
+      "tests/test_target_registry.py"
+    ]
+  },
+  "waves": [
+    {
+      "id": "release-lifecycle-readiness-status",
+      "retired_modules": {
+        "kairos_ontology.core.release_evaluator": {
+          "importers": {}
+        },
+        "kairos_ontology.core.lifecycle_gate": {
+          "importers": {}
+        },
+        "kairos_ontology.core.projection_readiness": {
+          "importers": {}
+        },
+        "kairos_ontology.core.status": {
+          "importers": {}
+        }
+      },
+      "cli_registrations": [
+        "check-projection",
+        "check-release",
+        "status"
+      ],
+      "scaffold_assets": [],
+      "managed_skill_references": [],
+      "tests": [
+        "tests/test_lifecycle_gate.py",
+        "tests/test_projection_readiness.py",
+        "tests/test_quality_release.py",
+        "tests/test_status.py",
+        "tests/scenarios/test_scenario_lifecycle_gate.py",
+        "tests/scenarios/test_scenario_release_gate.py",
+        "tests/scenarios/test_scenario_status_binding.py"
+      ],
+      "status": "retired",
+      "retained_scaffold_assets": [
+        "src/kairos_ontology/scaffold/skills/kairos-diagnose-status/SKILL.md",
+        "src/kairos_ontology/scaffold/skills/kairos-flow/SKILL.md"
+      ]
+    },
+    {
+      "id": "transformation-evidence-sync-candidates",
+      "retired_modules": {
+        "kairos_ontology.core.dbt_contract_identity": {
+          "importers": {
+            "kairos_ontology.cli.main": [
+              "ContractIdentityEvidenceError",
+              "capture_dbt_run_results"
+            ],
+            "kairos_ontology.core.dbt_contract_sync": [
+              "ContractIdentityEvidence",
+              "contract_content_hash",
+              "identity_requirements",
+              "load_evidence"
+            ],
+            "kairos_ontology.core.dbt_contracts": [
+              "artifact_content_fingerprint",
+              "contract_content_hash",
+              "identity_requirements",
+              "load_evidence"
+            ]
+          }
+        },
+        "kairos_ontology.core.dbt_contract_sync": {
+          "importers": {
+            "kairos_ontology.cli.main": [
+              "sync_dbt_contracts"
+            ],
+            "kairos_ontology.core.column_iri_migration": [
+              "KAIROS_BRONZE",
+              "KAIROS_DBT",
+              "column_iri",
+              "legacy_column_iri"
+            ],
+            "kairos_ontology.core.completeness_model": [
+              "sync_dbt_contracts"
+            ],
+            "kairos_ontology.core.projector": [
+              "sync_dbt_contracts"
+            ],
+            "kairos_ontology.core.transformation_candidates": [
+              "DbtContractSyncError",
+              "sync_dbt_contracts"
+            ]
+          }
+        },
+        "kairos_ontology.core.transformation_candidates": {
+          "importers": {
+            "kairos_ontology.cli.main": [
+              "TransformationCandidateError",
+              "evaluate_transformation_readiness",
+              "inventory_transformation_candidates",
+              "write_candidate_inventory"
+            ]
+          }
+        }
+      },
+      "kairos_ontology.core.column_iri_migration": {
+        "importers": {}
+      },
+      "mixed_modules": {
+        "kairos_ontology.core.dbt_contracts": {
+          "retire": [
+            "DbtContractDecision",
+            "DbtDecisionApproval",
+            "DbtDecisionEvidence",
+            "DbtSourceReplacement",
+            "_parse_approval",
+            "_parse_decisions",
+            "_parse_evidence",
+            "_parse_source_replacements"
+          ],
+          "retain_or_extract": [
+            "DbtContractColumn",
+            "DbtContractError",
+            "DbtContractModel",
+            "discover_dbt_contracts"
+          ],
+          "reason": "ordinary dbt SQL/YAML output contracts remain authoritative; v4 decision, evidence, and virtual-source replacement authority does not"
+        },
+        "kairos_ontology.core.dbt_bundle": {
+          "retire": [
+            "v4 evidence/decision bundle validation"
+          ],
+          "retain_or_extract": [
+            "ordinary dbt package/model contract validation"
+          ],
+          "reason": "contracted dbt sources remain supported by compiler.dbt_source"
+        }
+      },
+      "cli_registrations": [
+        "capture-dbt-contract-evidence",
+        "check-transformation-readiness",
+        "inventory-dbt-candidates",
+        "migrate-column-iris",
+        "reconstruct-dbt-transformation",
+        "sync-dbt-contracts"
+      ],
+      "scaffold_assets": [
+        "docs/schemas/dbt-contract-identity-evidence-v1.schema.json",
+        "docs/schemas/dbt-contract-identity-evidence-v2.schema.json",
+        "src/kairos_ontology/scaffold/ontology-hub/integration/transforms/dbt/evidence/README.md",
+        "src/kairos_ontology/scaffold/ontology-hub/model/planning/dbt-transformations/README.md",
+        "src/kairos_ontology/scaffold/ontology-hub/integration/sources/custom-transformations/README.md",
+        "src/kairos_ontology/scaffold/ontology-hub/model/mappings/custom-transformations/README.md"
+      ],
+      "managed_skill_references": [],
+      "tests": [
+        "tests/test_cli_dbt_contract_sync.py",
+        "tests/test_column_iri_migration.py",
+        "tests/test_dbt_contract_sync.py",
+        "tests/test_dbt_contracts.py",
+        "tests/test_transformation_candidates.py",
+        "tests/test_silver_source_ref.py",
+        "tests/test_source_replacement_coverage.py",
+        "tests/scenarios/test_scenario_advanced_dbt.py"
+      ],
+      "status": "retired",
+      "retained_scaffold_assets": [
+        "src/kairos_ontology/scaffold/skills/kairos-develop-dbt-transformation/SKILL.md",
+        "src/kairos_ontology/scaffold/skills/kairos-design-source/SKILL.md"
+      ]
+    },
+    {
+      "id": "claims",
+      "retired_modules": {
+        "kairos_ontology.core.claim_check_result": {
+          "importers": {
+            "kairos_ontology.cli.main": [
+              "build_claim_check_result"
+            ]
+          }
+        },
+        "kairos_ontology.core.claim_coverage": {
+          "importers": {
+            "kairos_ontology.core.claim_check_result": [
+              "ClaimCheckReport",
+              "check_claims_coverage"
+            ]
+          }
+        },
+        "kairos_ontology.core.claim_projection_sync": {
+          "importers": {
+            "kairos_ontology.cli.main": [
+              "ScaffoldPartialFailureError",
+              "apply_projection_sync",
+              "evaluate_projection_sync"
+            ],
+            "kairos_ontology.core.claim_check_result": [
+              "ProjectionSyncReport",
+              "evaluate_projection_sync"
+            ],
+            "kairos_ontology.core.migrate_claims": [
+              "plan_legacy_projection_sync_migration"
+            ],
+            "kairos_ontology.core.projector": [
+              "_collect_hub_domain_bases",
+              "collect_module_scope_evidence",
+              "evaluate_domain_projection_sync"
+            ]
+          }
+        },
+        "kairos_ontology.core.claim_registry": {
+          "importers": {
+            "kairos_ontology.cli.main": [
+              "load_registry",
+              "registry_path",
+              "validate_registry",
+              "validation_errors",
+              "write_registry"
+            ],
+            "kairos_ontology.core.binding_analysis": [
+              "Claim",
+              "ClaimRegistry",
+              "load_registry"
+            ],
+            "kairos_ontology.core.claim_coverage": [
+              "ANCHOR_STATE_UNRESOLVED",
+              "Claim"
+            ],
+            "kairos_ontology.core.claim_projection_sync": [
+              "ClaimRegistry",
+              "load_registry"
+            ],
+            "kairos_ontology.core.completeness_model": [
+              "Claim",
+              "ClaimRegistry",
+              "GenerationOutcome",
+              "load_registry",
+              "registry_path",
+              "validate_registry",
+              "validation_errors"
+            ],
+            "kairos_ontology.core.decide_claims": [
+              "Claim",
+              "ClaimRegistry",
+              "VALID_DISPOSITIONS",
+              "VALID_ORIGINS",
+              "VALID_STATUSES",
+              "VALID_TYPES",
+              "approval_gate_errors",
+              "is_valid_transition"
+            ],
+            "kairos_ontology.core.derive_claims": [
+              "Claim",
+              "ClaimRegistry",
+              "Deviation",
+              "EvidenceSource",
+              "dump_registry",
+              "load_registry",
+              "merge_preserving_decisions"
+            ],
+            "kairos_ontology.core.draft_model_report": [
+              "ClaimRegistry",
+              "load_registry"
+            ],
+            "kairos_ontology.core.migrate_claims": [
+              "Claim",
+              "ClaimRegistry",
+              "CoverageSystem",
+              "CoverageTable",
+              "DomainHandoff",
+              "EvidenceSource",
+              "Freshness",
+              "GenerationOutcome",
+              "TRIAGE_TO_DISPOSITION",
+              "VALID_ANCHOR_STATES"
+            ],
+            "kairos_ontology.core.projector": [
+              "load_registry"
+            ],
+            "kairos_ontology.core.propose_alignment": [
+              "load_registry",
+              "merge_preserving_decisions",
+              "registry_path",
+              "write_registry"
+            ],
+            "kairos_ontology.core.validator": [
+              "ClaimRegistry",
+              "load_registry"
+            ]
+          }
+        },
+        "kairos_ontology.core.decide_claims": {
+          "importers": {
+            "kairos_ontology.cli.main": [
+              "ClaimSelector",
+              "apply_decisions",
+              "parse_by_disposition",
+              "select_claims",
+              "validate_filter_values"
+            ]
+          }
+        },
+        "kairos_ontology.core.derive_claims": {
+          "importers": {
+            "kairos_ontology.cli.main": [
+              "run_derive_claims"
+            ],
+            "kairos_ontology.core.draft_model_report": [
+              "class_claim_id",
+              "load_affinity_by_domain",
+              "load_skos_links",
+              "load_tmdl_concept_mappings"
+            ]
+          }
+        },
+        "kairos_ontology.core.migrate_claims": {
+          "importers": {
+            "kairos_ontology.cli.main": [
+              "apply_legacy_format_migration",
+              "find_legacy_alignment_files",
+              "legacy_alignment_error",
+              "legacy_format_backup_dir",
+              "migrate_alignment_file",
+              "plan_legacy_format_migration"
+            ],
+            "kairos_ontology.core.derive_claims": [
+              "_slug"
+            ],
+            "kairos_ontology.core.propose_alignment": [
+              "alignment_to_registry",
+              "load_inventory_uri_index"
+            ]
+          }
+        }
+      },
+      "cli_registrations": [
+        "check-claims",
+        "claims-to-silver-ext",
+        "decide-claims",
+        "derive-claims",
+        "migrate-claims"
+      ],
+      "scaffold_assets": [
+        "src/kairos_ontology/scaffold/ontology-hub/model/mappings/README.md"
+      ],
+      "managed_skill_references": [
+        ".github/skills/kairos-design-domain/SKILL.md",
+        ".github/skills/kairos-design-mapping/SKILL.md"
+      ],
+      "tests": [
+        "tests/test_claim_check_result.py",
+        "tests/test_claim_coverage.py",
+        "tests/test_claim_projection_sync.py",
+        "tests/test_claim_registry.py",
+        "tests/test_decide_claims.py",
+        "tests/test_derive_claims.py",
+        "tests/test_migrate_claims.py",
+        "tests/scenarios/test_scenario_claims_sync.py",
+        "tests/scenarios/test_scenario_derive_claims.py",
+        "tests/test_legacy_format_migrations.py"
+      ],
+      "status": "retired"
+    },
+    {
+      "id": "claim-binding-completeness",
+      "retired_modules": {
+        "kairos_ontology.core.binding_analysis": {
+          "importers": {}
+        },
+        "kairos_ontology.core.completeness_model": {
+          "importers": {}
+        },
+        "kairos_ontology.core.source_coverage": {
+          "importers": {}
+        }
+      },
+      "mixed_modules": {
+        "kairos_ontology.core.reference_modules": {
+          "retire": [
+            "claim-approved imported-term filtering"
+          ],
+          "retain_or_extract": [
+            "reference-model loading and namespace resolution"
+          ],
+          "reason": "reference models remain a v5 ontology input"
+        },
+        "kairos_ontology.core.propose_alignment": {
+          "retire": [
+            "claim registry merge and legacy alignment migration"
+          ],
+          "retain_or_extract": [
+            "source-to-property analysis and hints"
+          ],
+          "reason": "source analysis remains reusable while YAML bindings replace claim output"
+        }
+      },
+      "cli_registrations": [],
+      "scaffold_assets": [
+        "src/kairos_ontology/templates/dbt/silver_stub_model.sql.jinja2"
+      ],
+      "managed_skill_references": [
+        ".github/skills/kairos-design-domain/SKILL.md",
+        ".github/skills/kairos-design-mapping/SKILL.md"
+      ],
+      "tests": [
+        "tests/test_aspirational_stubs.py",
+        "tests/test_binding_analysis.py",
+        "tests/test_completeness_model.py",
+        "tests/test_projector_claim_gate.py",
+        "tests/scenarios/test_scenario_aspirational_stubs.py",
+        "tests/scenarios/test_scenario_binding_parity.py"
+      ],
+      "status": "retired",
+      "retained_modules": {
+        "kairos_ontology.core.binding_semantics": [
+          "is_discriminator_subclass"
+        ],
+        "kairos_ontology.core.source_analysis": [
+          "AffinityAssignment",
+          "MappingRecord",
+          "SourceTableRecord",
+          "collect_mapped_subjects",
+          "collect_mapping_records",
+          "collect_source_table_records",
+          "collect_source_tables",
+          "compute_affinity_hash"
+        ],
+        "kairos_ontology.core.evidence_loaders": [
+          "load_affinity_by_domain",
+          "load_skos_links",
+          "load_tmdl_concept_mappings"
+        ],
+        "kairos_ontology.core.ontology_scope": [
+          "collect_hub_domain_bases"
+        ]
+      }
+    },
+    {
+      "id": "preparation-silver-rdf-authority",
+      "retired_modules": {
+        "kairos_ontology.core.projections.dbt.prep_renderers": {
+          "importers": {
+            "kairos_ontology.core.projections.dbt.render": [
+              "render_prep_array_child",
+              "render_prep_model",
+              "render_prep_schema"
+            ]
+          }
+        }
+      },
+      "mixed_modules": {
+        "kairos_ontology.core.projections.dbt.policy_bind": {
+          "retire": [
+            "_load_prep",
+            "_preparations",
+            "preparation RDF branches in bind_policy_facts"
+          ],
+          "retain_or_extract": [
+            "Gold policy binding until Gold consumes a dedicated typed input"
+          ],
+          "reason": "RDF preparation/Silver authority retires, but optional Gold remains"
+        },
+        "kairos_ontology.core.projections.dbt.policy_specs": {
+          "retire": [
+            "PreparationPolicyFact",
+            "PreparationSpec",
+            "PreparedColumnFact",
+            "PreparedColumnSpec"
+          ],
+          "retain_or_extract": [
+            "adapter capability types",
+            "canonical hash and incremental types used by compiler",
+            "Gold policy types",
+            "immutable policy phase types"
+          ],
+          "reason": "this is a shared type module, not a wave-delete candidate"
+        },
+        "kairos_ontology.core.projections.dbt.mapping_specs": {
+          "retire": [
+            "RDF mapping-authority adapters"
+          ],
+          "retain_or_extract": [
+            "closed typed scalar-expression AST"
+          ],
+          "reason": "EntityBinding converts directly to this reusable expression authority"
+        },
+        "kairos_ontology.core.projections.dbt.mapping_normalize": {
+          "retire": [
+            "RDF mapping normalization entry points"
+          ],
+          "retain_or_extract": [
+            "typed deterministic expression normalization"
+          ],
+          "reason": "compiler bindings reuse normalized expressions"
+        },
+        "kairos_ontology.core.projections.dbt.mapping_renderers": {
+          "retire": [],
+          "retain_or_extract": [
+            "typed expression SQL renderer"
+          ],
+          "reason": "renderer is reusable compiler infrastructure"
+        },
+        "kairos_ontology.core.projections.dbt.canonical_hash": {
+          "retire": [],
+          "retain_or_extract": [
+            "canonical hash contract and renderer"
+          ],
+          "reason": "v5 incremental identity depends on canonical hashing"
+        },
+        "kairos_ontology.core.projections.dbt.bind": {
+          "retire": [
+            "bind_sources legacy mapping/preparation/claim/virtual-source path"
+          ],
+          "retain_or_extract": [
+            "ontology-only discriminator helper if still needed"
+          ],
+          "reason": "compiler adapter replaces the legacy binder"
+        },
+        "kairos_ontology.core.projections.dbt.normalize": {
+          "retire": [
+            "legacy preparation and Silver RDF authority branches"
+          ],
+          "retain_or_extract": [
+            "immutable normalize phase and shared safety normalization"
+          ],
+          "reason": "phase immutability remains an architecture requirement"
+        },
+        "kairos_ontology.core.projections.dbt.shape": {
+          "retire": [
+            "preparation physical-model shaping"
+          ],
+          "retain_or_extract": [
+            "immutable canonical Silver shaping"
+          ],
+          "reason": "compile plan now owns canonical shaping"
+        },
+        "kairos_ontology.core.projections.dbt.render": {
+          "retire": [
+            "preparation and release-evidence artifact assembly"
+          ],
+          "retain_or_extract": [
+            "deterministic canonical dbt renderer"
+          ],
+          "reason": "compile emit delegates to deterministic graph-free rendering"
+        },
+        "kairos_ontology.core.projections.medallion_dbt_projector": {
+          "retire": [
+            "DbtInputs and legacy RDF projection facade"
+          ],
+          "retain_or_extract": [
+            "any renderer helpers still called by compiler adapter"
+          ],
+          "reason": "Stage 3 closes public legacy dispatch before extracting reusable leaves"
+        }
+      },
+      "cli_registrations": [],
+      "scaffold_assets": [
+        "src/kairos_ontology/scaffold/kairos-prep-shapes.shacl.ttl",
+        "src/kairos_ontology/scaffold/kairos-prep.ttl",
+        "src/kairos_ontology/scaffold/ontology-hub/integration/preparation/README.md",
+        "src/kairos_ontology/scaffold/ontology-hub/integration/preparation/source-prep.example.ttl",
+        "src/kairos_ontology/scaffold/ontology-hub/integration/preparation/source-prep.ttl.template"
+      ],
+      "managed_skill_references": [
+        ".github/skills/kairos-design-silver/SKILL.md"
+      ],
+      "tests": [
+        "tests/test_dbt_preparation.py",
+        "tests/test_dbt_policy_specs.py",
+        "tests/test_medallion_policy_vocabulary.py",
+        "tests/scenarios/test_scenario_dbt.py",
+        "tests/scenarios/test_scenario_fk_normalization.py",
+        "tests/scenarios/test_scenario_identity_lineage.py",
+        "tests/scenarios/test_scenario_runtime_semantics.py"
+      ],
+      "status": "retired"
+    },
+    {
+      "id": "report-session-release-baseline",
+      "retired_modules": {
+        "kairos_ontology.core.import_session": {
+          "importers": {
+            "kairos_ontology.core.import_flatfile": [
+              "write_import_session"
+            ],
+            "kairos_ontology.core.import_source": [
+              "write_import_session"
+            ]
+          }
+        }
+      },
+      "mixed_modules": {
+        "kairos_ontology.core.projector": {
+          "retire": [
+            "ProjectionReport",
+            "_archive_prior_projection_logs",
+            "_prune_legacy_report_files",
+            "release evaluation and projection-report persistence in run_projections"
+          ],
+          "retain_or_extract": [
+            "target registry",
+            "Gold/MDM downstream compile-plan dispatch",
+            "non-Silver projectors",
+            "ontology metadata helpers"
+          ],
+          "reason": "projector remains shared while operational report persistence retires"
+        },
+        "kairos_ontology.core.import_flatfile": {
+          "retire": [
+            "write_import_session call"
+          ],
+          "retain_or_extract": [
+            "flat-file source import and source analysis"
+          ],
+          "reason": "source vocabularies remain Bronze authority"
+        },
+        "kairos_ontology.core.import_source": {
+          "retire": [
+            "write_import_session call"
+          ],
+          "retain_or_extract": [
+            "source vocabulary import and source analysis"
+          ],
+          "reason": "source vocabularies remain Bronze authority"
+        },
+        "kairos_ontology.core.projections.report_projector": {
+          "retire": [],
+          "retain_or_extract": [
+            "on-demand mapping report generation"
+          ],
+          "reason": "a requested derived report is distinct from persisted lifecycle/release state"
+        }
+      },
+      "cli_registrations": [],
+      "scaffold_assets": [
+        "src/kairos_ontology/scaffold/ontology-hub/model/governance/README.md",
+        "src/kairos_ontology/scaffold/ontology-hub/model/governance/release-baseline.yaml"
+      ],
+      "managed_skill_references": [
+        ".github/skills/kairos-design-discovery/SKILL.md",
+        ".github/skills/kairos-design-gold/SKILL.md",
+        ".github/skills/kairos-design-mdm/SKILL.md",
+        ".github/skills/kairos-design-silver/SKILL.md",
+        ".github/skills/kairos-design-source/SKILL.md",
+        ".github/skills/kairos-execute-report/SKILL.md",
+        ".github/skills/kairos-flow/SKILL.md"
+      ],
+      "tests": [
+        "tests/test_import_session.py",
+        "tests/test_projection_report.py",
+        "tests/test_validate_report_output.py",
+        "tests/scenarios/test_scenario_projection.py"
+      ],
+      "status": "planned"
+    },
+    {
+      "id": "obsolete-cli-tests",
+      "retired_modules": {},
+      "mixed_modules": {
+        "kairos_ontology.cli.main": {
+          "retire": [
+            "capture_dbt_contract_evidence_cmd",
+            "check_claims_cmd",
+            "check_projection_cmd",
+            "check_release_cmd",
+            "check_transformation_readiness_cmd",
+            "claims_to_silver_ext_cmd",
+            "decide_claims_cmd",
+            "derive_claims_cmd",
+            "inventory_transformation_candidates_cmd",
+            "migrate_claims_cmd",
+            "status_cmd",
+            "sync_dbt_contracts_cmd"
+          ],
+          "retain_or_extract": [
+            "compile registration in cli.compile",
+            "source import/analysis commands",
+            "ontology loader and reference-model commands",
+            "Gold and MDM optional commands",
+            "setup/update/validation commands"
+          ],
+          "reason": "remove registrations only after their owning production waves reach zero imports"
+        }
+      },
+      "cli_registrations": [
+        "capture-dbt-contract-evidence",
+        "check-claims",
+        "check-projection",
+        "check-release",
+        "check-transformation-readiness",
+        "claims-to-silver-ext",
+        "decide-claims",
+        "derive-claims",
+        "inventory-dbt-candidates",
+        "migrate-column-iris",
+        "migrate-claims",
+        "status",
+        "reconstruct-dbt-transformation",
+        "sync-dbt-contracts"
+      ],
+      "scaffold_assets": [
+        "src/kairos_ontology/scaffold/copilot-instructions.md",
+        "src/kairos_ontology/scaffold/README.md.template",
+        "src/kairos_ontology/scaffold/ontology-hub/README.md.template"
+      ],
+      "managed_skill_references": [],
+      "tests": [
+        "tests/test_cli_path_resolution.py",
+        "tests/test_cli_skill_gate.py"
+      ],
+      "status": "planned"
+    }
+  ]
+}

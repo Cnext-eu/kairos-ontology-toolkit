@@ -182,6 +182,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-132](#dd-132-fact-extraction-decomposition-guarded-by-a-full-artifact-characterization-baseline) | Fact-Extraction Decomposition Guarded by a Full-Artifact Characterization Baseline | Accepted | 2026-07-27 |
 | [DD-133](#dd-133-v5-authoring-break--yaml-entitybinding--stateless-compile) | V5 Authoring Break — YAML EntityBinding + Stateless `compile` | Accepted | 2026-07-27 |
 | [DD-134](#dd-134-immutable-reversible-unreleased-toolkit-testing) | Immutable, Reversible Unreleased Toolkit Testing | Accepted | 2026-07-27 |
+| [DD-135](#dd-135-retire-v4-release-and-lifecycle-orchestration) | Retire V4 Release and Lifecycle Orchestration | Accepted | 2026-07-27 |
+| [DD-136](#dd-136-retire-v4-claim-binding-and-completeness-authority) | Retire V4 Claim Binding and Completeness Authority | Accepted | 2026-07-27 |
 
 ---
 
@@ -8959,6 +8961,13 @@ upgrade path is provided** — existing client hubs are **rebuilt from fresh** a
    command paths keep working until stages 4–5 remove them. DD-107's graph-free scalar AST
    is **retained and reused**; only its RDF-authored, preparation-routed acquisition path is
    superseded.
+6. **Stage 2 closed contract:** `load` is discriminated between full refresh and complete
+   incremental SCD1/SCD2 policy; relationships are discriminated between non-temporal,
+   current, and as-of policy; multi-source materialization requires explicit conformance,
+   precedence, conflict, and union/dedup policy; and `source.dbtModel` carries required SQL
+   and authoritative dbt-contract paths. All values load into frozen types. Unknown fields,
+   duplicate YAML keys, incomplete variants, and ambiguous CDC operation values fail with
+   source-located diagnostics. No v4 shape is accepted.
 
 The full normative contract — hub layout, closed YAML schema, scalar-expression grammar,
 safety kernel, atomic-emission contract, scope/provenance rules, and a canonical example —
@@ -8979,10 +8988,10 @@ lives in the companion doc.
 
 ### Consequences
 
-- **First slice only** is implemented now (YAML → compile → deterministic Fabric dbt, proven
-  by `tests/scenarios/v5-hub/`). Stages 2–8 (strict incremental/SCD kernel, projection
-  cutover, v4 retirement, CLI/scaffold simplification, skill rewrite, test replacement,
-  docs/release) are **documented but deferred** (session plan + `docs/draft/plan.md`).
+- The first vertical slice (YAML → compile → deterministic Fabric dbt) and the Stage 2
+  closed authoring/schema/loader contract are implemented. Stage 2 downstream policy
+  adaptation, rendering, and scenarios remain separate gated work; Stages 3–8 remain
+  documented in the session plan and `docs/draft/plan.md`.
 - v4 machinery remains live and authoritative for its own command paths during the slice;
   DD-133 does not make it dead-but-live. v4↔v5 output-collision rules are defined in the
   emission contract.
@@ -9047,6 +9056,82 @@ Windows refresh mechanisms avoids a second, platform-specific update path.
 - Failed synchronous resolution, locking, syncing, scheduling, or refresh does
   not leave a partially changed dependency state. A detached Windows-helper
   failure remains recoverable from its transcript and the saved restore state.
+
+---
+
+## DD-135: Retire V4 Release and Lifecycle Orchestration
+
+**Status:** Accepted
+**Date:** 2026-07-27
+**Affects:** release evaluation, lifecycle/status scanning, projection readiness, CLI and scaffold
+**Implementation:** Stage 4 retirement inventory and the canonical v5 compiler
+
+### Context
+
+DD-133 made `CompilePlan` the canonical Silver/dbt planning authority. The older release
+evaluator, lifecycle gate, projection-readiness planner, and status scanner duplicated planning
+and persisted heuristic lifecycle evidence after their production consumers had been cut over.
+
+### Decision
+
+Delete those four modules after the deterministic AST inventory proves their production import
+edges are zero. Remove their Click commands and lifecycle-state scaffold. Retained diagnostics
+and routing consume ordered compiler diagnostics; source analysis, ontology/reference inventory,
+update/version diagnostics, and compiler diagnostics remain supported.
+
+### Rationale
+
+One typed planning authority prevents readiness and release heuristics from disagreeing with the
+artifacts the compiler can actually emit. A versioned retirement gate makes deletion reviewable
+and prevents a removed subsystem from being reintroduced by an unnoticed import.
+
+### Consequences
+
+- `check-projection`, `check-release`, and `status` are no longer CLI commands.
+- Importing any retired module raises `ModuleNotFoundError`.
+- New hubs do not scaffold `.kairos-state`; flow and diagnostic skills are stateless.
+- Compile success is not a runtime-validation or release-certification claim.
+
+---
+
+## DD-136: Retire V4 Claim Binding and Completeness Authority
+
+**Status:** Accepted
+**Date:** 2026-07-27
+**Affects:** claim registry/binding/completeness modules, dbt shared phases, CLI, scaffold,
+managed skills, and Stage 4 architecture gates
+**Implementation:** `docs/design/stage4-retirement-import-inventory.json`,
+`tests/test_stage4_retirement_inventory.py`
+
+### Context
+
+The v5 compiler makes reviewed `EntityBinding` YAML the only materialization authority.
+V4 claims, aspirational Silver stubs, and completeness-policy gates duplicated that decision
+and left dead authority embedded in otherwise reusable normalization and rendering modules.
+
+### Decision
+
+Delete the claim, binding-analysis, completeness, and source-coverage modules and their command,
+scaffold, export, and test surfaces. Remove aspirational/stub and claim-eligibility branches from
+shared dbt phases. Retain only source analysis, ontology/reference loading, Gold/MDM consumers,
+typed expression/policy structures, renderers, and the ontology-only discriminator predicate
+required by active compiler paths.
+
+The deterministic Stage 4 inventory asserts zero production imports, absent retired modules and
+commands/assets, mirrored managed skills, and absence of retired production markers.
+
+### Rationale
+
+One binding authority prevents source evidence, claims, stub eligibility, and completeness
+heuristics from disagreeing. Extracting narrow shared predicates before deletion preserves the
+v5 compiler and downstream consumers without retaining V4 governance semantics.
+
+### Consequences
+
+- V4 claim, aspirational-stub, and completeness commands and Python APIs no longer exist.
+- Unbound entities fail through compiler diagnostics; no empty Silver model is emitted.
+- Source completeness remains an interactive onboarding question, not projection authority.
+- Historical DD-094 through DD-096 describe retired V4 behavior and are superseded here.
 
 ---
 

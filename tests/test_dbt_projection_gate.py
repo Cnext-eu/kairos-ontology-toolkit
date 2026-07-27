@@ -34,7 +34,7 @@ def _hub(tmp_path: Path) -> Path:
     return hub
 
 
-def test_domain_failure_writes_report_but_no_partial_dbt_package(
+def test_retired_dbt_projection_fails_before_report_or_partial_package(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -42,17 +42,14 @@ def test_domain_failure_writes_report_but_no_partial_dbt_package(
     output = hub / "output"
 
     def fake_projection(*args, **kwargs):
-        ontology_name = args[6]
-        if ontology_name == "beta":
-            raise ValueError("broken beta projection")
-        return {"models/silver/alpha/alpha.sql": "select 1\n"}
+        raise AssertionError("retired dbt path must fail before domain projection")
 
     monkeypatch.setattr(
         "kairos_ontology.core.projector._run_projection",
         fake_projection,
     )
 
-    with pytest.raises(ProjectionRunError, match="no dbt artifacts were written"):
+    with pytest.raises(ProjectionRunError, match=r"compile <domain> --emit"):
         run_projections(
             ontologies_path=hub / "model" / "ontologies",
             catalog_path=hub / "missing.xml",
@@ -60,5 +57,4 @@ def test_domain_failure_writes_report_but_no_partial_dbt_package(
             target="dbt",
         )
 
-    assert (output / "projection-report.json").is_file()
-    assert not (output / "medallion" / "dbt" / "models").exists()
+    assert not output.exists()

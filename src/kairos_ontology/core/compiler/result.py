@@ -113,6 +113,36 @@ class CompileDiagnostics:
 
 
 @dataclass(frozen=True, slots=True)
+class ExplainLoad:
+    """Closed explain shape for authored load policy."""
+
+    mode: str
+    scd: int | None = None
+    merge_identity: tuple[str, ...] = ()
+    canonical_hash_inputs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExplainRelationship:
+    """Closed explain shape for one authored relationship."""
+
+    target: str
+    mode: str
+    cardinality: str
+    temporal: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ExplainConformance:
+    """Closed explain shape for multi-source conformance."""
+
+    group: str
+    source_precedence: int
+    conflict: str
+    union_mode: str
+
+
+@dataclass(frozen=True, slots=True)
 class ExplainEntity:
     """Resolved, deterministic explanation of one entity binding."""
 
@@ -123,6 +153,10 @@ class ExplainEntity:
     identity_strategy: str
     fields: tuple[tuple[str, str], ...]
     relationships: tuple[str, ...] = ()
+    source_kind: str = "relation"
+    load: ExplainLoad = field(default_factory=lambda: ExplainLoad(mode="full-refresh"))
+    relationship_shapes: tuple[ExplainRelationship, ...] = ()
+    conformance: ExplainConformance | None = None
     blocked: bool = False
 
 
@@ -149,6 +183,7 @@ class CompileResult:
     artifacts: tuple[tuple[str, str], ...] = ()
     explain: ExplainReport | None = None
     ir: Any = None
+    plan: Any = None
 
     @property
     def succeeded(self) -> bool:
@@ -178,10 +213,20 @@ class CompileResult:
             "safety.expression-unsafe",
             "safety.grain-missing",
             "safety.identity-incomplete",
+            "safety.identity-role-collision",
+            "safety.incremental-identity-incomplete",
+            "safety.relationship-endpoint",
+            "safety.type-incompatible",
             "safety.adapter-unsupported",
         }
         if any(entity.blocked for entity in self.ir.entities):
-            return all(item.code in entity_codes for item in self.diagnostics.items)
+            return all(
+                item.code in entity_codes
+                or item.code.startswith(
+                    ("load-policy.", "temporal.", "dbt-source.", "conformance.")
+                )
+                for item in self.diagnostics.items
+            )
         return all(
             item.code.startswith(("binding.", "expression.")) for item in self.diagnostics.items
         )

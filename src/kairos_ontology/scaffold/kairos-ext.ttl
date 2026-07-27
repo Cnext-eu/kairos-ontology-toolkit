@@ -6,7 +6,7 @@
 # This ontology defines annotation properties used to drive the medallion
 # projections from OWL/Turtle domain ontologies. It is the fresh-hub authoring
 # contract defined by DD-106 through DD-115. Technical source preparation is
-# declared separately with kairos-prep; probabilistic matching and survivorship
+# declared separately; probabilistic matching and survivorship
 # are declared with the imported kairos-mdm vocabulary.
 #
 # These annotations belong in SEPARATE projection extension files

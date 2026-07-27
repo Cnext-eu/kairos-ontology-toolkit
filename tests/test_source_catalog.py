@@ -72,22 +72,17 @@ def test_distinct_iris_with_same_system_table_name_are_conflicting(
         catalog.require_consistent()
 
 
-def test_malformed_managed_generated_file_still_excludes_legacy_report(
+def test_custom_transformation_directory_has_no_implicit_generated_status(
     tmp_path: Path,
 ) -> None:
-    generated = (
-        tmp_path
-        / "sources"
-        / "custom-transformations"
-        / "int_orders.vocabulary.ttl"
-    )
+    generated = tmp_path / "sources" / "custom-transformations" / "int_orders.vocabulary.ttl"
     generated.parent.mkdir(parents=True)
     generated.write_text("not valid turtle [", encoding="utf-8")
 
     catalog = build_source_catalog(tmp_path / "sources")
 
-    assert catalog.generated_report_stems() == {"int_orders"}
-    assert catalog.conflicts == []
+    assert catalog.generated_report_stems() == set()
+    assert len(catalog.conflicts) == 1
 
 
 def test_split_file_stem_is_superseded_by_directory_system(tmp_path: Path) -> None:

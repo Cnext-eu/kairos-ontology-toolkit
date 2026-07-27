@@ -11,7 +11,7 @@ baseline's ``artifact_keys`` is a single ordered sequence of *all* artifact
 keys (file paths and ``__``-prefixed non-file facts together, in true
 emission order) — file and non-file keys are intentionally not split into
 separate lists, because ``generate_dbt_artifacts`` can interleave them
-(e.g. ``__unbound_eligible__`` may be set before later schema/gold/silver
+(e.g. metadata keys may be set before later schema/gold/silver
 file artifacts are added), and splitting would silently discard that
 relative interleaving.
 
@@ -56,8 +56,8 @@ def _hash_value(value: object) -> str:
 def _hash_artifacts(artifacts: dict) -> dict:
     # Preserve the actual dict insertion order (the order ``generate_dbt_artifacts``
     # produced) as ONE sequence — file artifacts and non-file facts (keys prefixed
-    # ``__``, e.g. ``__coverage_data__``/``__unbound_eligible__``/``__release_data__``)
-    # are interleaved in real emission (e.g. ``__unbound_eligible__`` can be set
+    # ``__``, e.g. ``__coverage_data__``/``__release_data__``)
+    # are interleaved in real emission (e.g. metadata can be set
     # before later schema/gold/silver file artifacts are added), so splitting them
     # into separate lists would silently discard that relative interleaving. A
     # single ``artifact_keys`` sequence is the byte-identity contract for order;
@@ -86,13 +86,9 @@ def _assert_matches_baseline(label: str, artifacts: dict, baseline: dict) -> Non
         f"(Set difference is empty when only relative order/interleaving changed.)"
     )
     drifted = sorted(
-        key
-        for key in expected["hashes"]
-        if expected["hashes"][key] != actual["hashes"].get(key)
+        key for key in expected["hashes"] if expected["hashes"][key] != actual["hashes"].get(key)
     )
-    assert not drifted, (
-        f"{label}: byte-identical contract broken for: {drifted}"
-    )
+    assert not drifted, f"{label}: byte-identical contract broken for: {drifted}"
 
 
 class TestArtifactByteParity:

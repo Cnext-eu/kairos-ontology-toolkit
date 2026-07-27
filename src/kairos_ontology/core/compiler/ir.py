@@ -11,8 +11,6 @@ defines their closed shapes so schema, adapter, and emission agree on one contra
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
-
 from .bindings import EntityBinding
 from .scope import BuildScope
 
@@ -22,7 +20,6 @@ class EntityBindingSpec:
     """One authored binding plus its graph-free resolved projection facts."""
 
     binding: EntityBinding
-    bound: Any = None
     artifact_paths: tuple[str, ...] = ()
     blocked: bool = False
 

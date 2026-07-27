@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-import yaml
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
 
@@ -19,7 +18,6 @@ from .ontology_loader import load_ontology
 from .projections.dbt.mapping_bind import bind_mapping_graph
 
 BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
-DBT = Namespace("https://kairos.cnext.eu/dbt-contract#")
 EXT = Namespace("https://kairos.cnext.eu/ext#")
 KMAP = Namespace("https://kairos.cnext.eu/mapping#")
 AUTHORING = Namespace("https://kairos.cnext.eu/authoring#")
@@ -42,14 +40,6 @@ class RdfScaffold:
     def serialize(self) -> str:
         """Serialize the graph using rdflib."""
         return self.graph.serialize(format="turtle")
-
-
-@dataclass(frozen=True, slots=True)
-class TextScaffold:
-    """A deterministic multi-file text scaffold."""
-
-    files: tuple[tuple[Path, str], ...]
-    review_items: tuple[str, ...]
 
 
 def _token(value: str) -> str:
@@ -80,7 +70,9 @@ def _load_source_graph(source_root: Path) -> Graph:
         try:
             graph.parse(path, format="turtle")
         except Exception as exc:
-            raise AuthoringScaffoldError(f"Could not parse source vocabulary {path}: {exc}") from exc
+            raise AuthoringScaffoldError(
+                f"Could not parse source vocabulary {path}: {exc}"
+            ) from exc
     return graph
 
 
@@ -158,10 +150,7 @@ def build_mapping_scaffold(
     unmatched_columns: list[URIRef] = []
     for column in columns:
         name = _column_name(source_graph, column)
-        matches = {
-            item["property_uri"]: item
-            for item in candidates.get(_token(name), ())
-        }
+        matches = {item["property_uri"]: item for item in candidates.get(_token(name), ())}
         if len(matches) == 1:
             target_uri = next(iter(matches))
             mapping = _resource(namespace, "column", str(column), target_uri)
@@ -263,16 +252,16 @@ def build_silver_scaffold(
         mapping_graph.parse(path, format="turtle")
     facts = bind_mapping_graph(mapping_graph, include_proposals=True)
     if not facts.tables:
-        raise AuthoringScaffoldError("No TableMapping evidence is available for Silver scaffolding.")
+        raise AuthoringScaffoldError(
+            "No TableMapping evidence is available for Silver scaffolding."
+        )
 
     loaded = load_ontology(
         ontology_path,
         catalog_path=catalog_path,
         profile="asserted",
     )
-    root_source = next(
-        source for source in loaded.sources if source.manifest.import_depth == 0
-    )
+    root_source = next(source for source in loaded.sources if source.manifest.import_depth == 0)
     ontology_resources = tuple(root_source.graph.subjects(RDF.type, OWL.Ontology))
     if len(ontology_resources) != 1:
         raise AuthoringScaffoldError("The domain ontology must declare exactly one owl:Ontology.")
@@ -292,7 +281,9 @@ def build_silver_scaffold(
         (
             scaffold_ontology,
             RDFS.comment,
-            Literal("Mechanical evidence only; every authoring:ReviewItem requires governance review."),
+            Literal(
+                "Mechanical evidence only; every authoring:ReviewItem requires governance review."
+            ),
         )
     )
     graph.add((scaffold_ontology, OWL.versionInfo, Literal("1.0.0")))
@@ -367,126 +358,11 @@ def build_silver_scaffold(
     return RdfScaffold(graph, validation, proposals, review_items)
 
 
-def reconstruct_dbt_scaffold(vocabulary_path: Path) -> TextScaffold:
-    """Reconstruct review-required dbt SQL/schema/tests from synchronized RDF evidence."""
-    graph = Graph()
-    try:
-        graph.parse(vocabulary_path, format="turtle")
-    except Exception as exc:
-        raise AuthoringScaffoldError(
-            f"Could not parse synchronized vocabulary {vocabulary_path}: {exc}"
-        ) from exc
-    tables = tuple(graph.subjects(RDF.type, BRONZE.SourceTable))
-    if len(tables) != 1 or not isinstance(tables[0], URIRef):
-        raise AuthoringScaffoldError(
-            "A surviving synchronized vocabulary must contain exactly one named SourceTable."
-        )
-    table = tables[0]
-    model = str(graph.value(table, DBT.modelRef) or graph.value(table, BRONZE.tableName) or "")
-    target_class = graph.value(table, DBT.targetClass)
-    if not model or not isinstance(target_class, URIRef):
-        raise AuthoringScaffoldError(
-            "The vocabulary lacks reliable dbt modelRef or targetClass evidence."
-        )
-    grain_key = tuple(
-        item
-        for item in str(graph.value(table, BRONZE.primaryKeyColumns) or "").split()
-        if item
-    )
-    if not grain_key:
-        raise AuthoringScaffoldError("The vocabulary lacks a synchronized physical grain key.")
-    columns = _source_columns(graph, table)
-    if not columns:
-        raise AuthoringScaffoldError("The synchronized virtual table has no output columns.")
-
-    select_lines = [f"    {_column_name(graph, column)}" for column in columns]
-    sql = (
-        "-- REVIEW REQUIRED: restore governed source()/ref() dependencies and transformation logic.\n"
-        "select\n"
-        + ",\n".join(select_lines)
-        + "\nfrom {{ ref('REVIEW_REQUIRED_upstream_model') }}\n"
-    )
-    column_docs = []
-    for column in columns:
-        name = _column_name(graph, column)
-        item = {
-            "name": name,
-            "description": str(graph.value(column, RDFS.label) or name),
-            "data_type": str(graph.value(column, BRONZE.dataType) or "REVIEW_REQUIRED"),
-        }
-        if name in grain_key:
-            item["data_tests"] = ["not_null"]
-        column_docs.append(item)
-    schema = {
-        "version": 2,
-        "models": [
-            {
-                "name": model,
-                "description": str(graph.value(table, RDFS.label) or model),
-                "config": {
-                    "materialized": "REVIEW_REQUIRED",
-                    "contract": {"enforced": True},
-                },
-                "meta": {
-                    "kairos": {
-                        "authoring_review_state": "proposed",
-                        "target_class": str(target_class),
-                        "virtual_source_iri": str(table),
-                        "grain": "REVIEW_REQUIRED: confirm what one output row represents",
-                        "supported_adapters": ["REVIEW_REQUIRED"],
-                        "grain_key": list(grain_key),
-                        "required_packages": [],
-                        "required_macros": [],
-                        "decisions": [],
-                    }
-                },
-                "columns": column_docs,
-            }
-        ],
-    }
-    key_csv = ", ".join(grain_key)
-    test = (
-        "-- REVIEW REQUIRED: execute and record passing evidence before approval.\n"
-        f"select {key_csv}\n"
-        f"from {{{{ ref('{model}') }}}}\n"
-        f"group by {key_csv}\n"
-        f"having count(*) > 1 or {' or '.join(f'{key} is null' for key in grain_key)}\n"
-    )
-    files = (
-        (Path("models") / f"{model}.sql", sql),
-        (
-            Path("models") / f"{model}.yml",
-            yaml.safe_dump(schema, sort_keys=False, allow_unicode=True),
-        ),
-        (Path("tests") / f"{model}__grain.sql", test),
-    )
-    return TextScaffold(
-        files,
-        (
-            "Restore governed source()/ref() dependencies and transformation SQL.",
-            "Confirm materialization, adapters, business grain, decisions, and evidence.",
-            "Run the reconstructed grain test and record passing evidence.",
-        ),
-    )
-
-
 def write_text(path: Path, content: str, *, overwrite: bool = False) -> None:
     """Write one scaffold only when explicitly allowed to replace an existing file."""
     if path.exists() and not overwrite:
-        raise AuthoringScaffoldError(f"Refusing to overwrite existing file without --overwrite: {path}")
+        raise AuthoringScaffoldError(
+            f"Refusing to overwrite existing file without --overwrite: {path}"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
-
-
-def write_bundle(root: Path, scaffold: TextScaffold, *, overwrite: bool = False) -> None:
-    """Write a bundle after checking every destination, preventing partial overwrite failure."""
-    destinations = tuple((root / relative, content) for relative, content in scaffold.files)
-    conflicts = [path for path, _ in destinations if path.exists()]
-    if conflicts and not overwrite:
-        raise AuthoringScaffoldError(
-            "Refusing to overwrite existing files without --overwrite: "
-            + ", ".join(map(str, conflicts))
-        )
-    for path, content in destinations:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")

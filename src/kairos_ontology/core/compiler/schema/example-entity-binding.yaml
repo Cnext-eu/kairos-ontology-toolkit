@@ -16,7 +16,27 @@ identity:
   strategy: source-natural
   sourceKey: [customer_id]
 load:
-  mode: full-refresh
+  mode: incremental
+  scd: 2
+  incremental:
+    mergeIdentity: [customer_id]
+    canonicalHashInputs: [customer_id, full_name, country]
+    cdcOperation:
+      column: operation
+      insertValues: [I]
+      updateValues: [U]
+      deleteValues: [D]
+    sourceUpdatedAt: source_updated_at
+    businessEffectiveAt: effective_at
+    ingestedAt: ingested_at
+    totalOrder: [source_updated_at, sequence_number]
+    lookback: { value: 2, unit: days }
+    delete: soft-delete
+    lateArrival: accept
+    correction: new-version
+    replay: idempotent
+    backfill: merge
+    schemaEvolution: fail
 fields:
   - property: party:customerId
     expression: customer_id
@@ -33,9 +53,26 @@ relationships:
     target: ref:Country
     join: [{ local: country, foreign: iso2 }]
     cardinality: many-to-one
-    mode: non-temporal
+    mode: as-of
     missingParent: error
     ambiguousParent: error
+    temporal:
+      childEventTime: effective_at
+      parentValidFrom: valid_from
+      parentValidTo: valid_to
+      openEnded: null
+      overlap: error
+      lateParent: error
+      changeDetection: include
+conformance:
+  group: party-customer
+  sourcePrecedence: 1
+  conflict: prefer-precedence
+  union:
+    mode: deduplicate
+    deduplicateBy: [customer_id]
+    orderBy:
+      - { column: source_updated_at, direction: descending }
 quality:
   - kind: not-null
     columns: [customer_id]

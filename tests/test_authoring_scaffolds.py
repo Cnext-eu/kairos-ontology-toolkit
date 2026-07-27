@@ -14,13 +14,10 @@ from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
 from kairos_ontology.core.authoring_scaffolds import (
     AUTHORING,
     BRONZE,
-    DBT,
     KMAP,
     AuthoringScaffoldError,
     build_mapping_scaffold,
     build_silver_scaffold,
-    reconstruct_dbt_scaffold,
-    write_bundle,
     write_text,
 )
 from kairos_ontology.core.projections.dbt.mapping_bind import bind_mapping_graph
@@ -51,12 +48,8 @@ def _hub_evidence(tmp_path: Path) -> tuple[Path, Path, str, str]:
     domain = Namespace("https://example.com/domain/customer#")
     ontology = Graph()
     ontology.add((URIRef("https://example.com/domain/customer"), RDF.type, OWL.Ontology))
-    ontology.add(
-        (URIRef("https://example.com/domain/customer"), RDFS.label, Literal("Customer"))
-    )
-    ontology.add(
-        (URIRef("https://example.com/domain/customer"), OWL.versionInfo, Literal("1.0.0"))
-    )
+    ontology.add((URIRef("https://example.com/domain/customer"), RDFS.label, Literal("Customer")))
+    ontology.add((URIRef("https://example.com/domain/customer"), OWL.versionInfo, Literal("1.0.0")))
     ontology.add((domain.Customer, RDF.type, OWL.Class))
     ontology.add((domain.Customer, RDFS.label, Literal("Customer")))
     ontology.add((domain.Customer, RDFS.comment, Literal("A customer.")))
@@ -91,8 +84,7 @@ def test_mapping_scaffold_is_valid_named_and_non_authoritative(tmp_path: Path) -
     assert scaffold.proposals == 2
     assert scaffold.review_items == 1
     assert all(
-        isinstance(item, URIRef)
-        for item in scaffold.graph.subjects(RDF.type, KMAP.TableMapping)
+        isinstance(item, URIRef) for item in scaffold.graph.subjects(RDF.type, KMAP.TableMapping)
     )
     assert len(bind_mapping_graph(scaffold.graph).tables) == 0
     assert len(bind_mapping_graph(scaffold.graph, include_proposals=True).tables) == 1
@@ -145,9 +137,9 @@ def test_mapping_scaffold_advises_denormalized_column_owned_by_mapped_entity(
     )
 
     assert scaffold.advisories == 1
-    assert len(
-        tuple(scaffold.graph.subjects(RDF.type, AUTHORING.DenormalizedOwnershipAdvisory))
-    ) == 1
+    assert (
+        len(tuple(scaffold.graph.subjects(RDF.type, AUTHORING.DenormalizedOwnershipAdvisory))) == 1
+    )
 
 
 def test_silver_scaffold_uses_evidence_and_leaves_governance_for_review(
@@ -238,32 +230,6 @@ def test_silver_scaffold_loads_import_closure_without_counting_imported_ontology
     )
 
     assert scaffold.validation["passed"] is True
-
-
-def test_reconstruct_dbt_scaffold_and_non_overwrite(tmp_path: Path) -> None:
-    table = URIRef("https://example.com/virtual#orders")
-    column = URIRef("https://example.com/virtual#orders/order_id")
-    graph = Graph()
-    graph.add((table, RDF.type, BRONZE.SourceTable))
-    graph.add((table, DBT.modelRef, Literal("int_orders")))
-    graph.add((table, DBT.targetClass, URIRef("https://example.com/domain#Order")))
-    graph.add((table, BRONZE.primaryKeyColumns, Literal("order_id")))
-    graph.add((column, RDF.type, BRONZE.SourceColumn))
-    graph.add((column, BRONZE.sourceTable, table))
-    graph.add((column, BRONZE.columnName, Literal("order_id")))
-    graph.add((column, BRONZE.dataType, Literal("string")))
-    vocabulary = tmp_path / "int_orders.vocabulary.ttl"
-    graph.serialize(vocabulary, format="turtle")
-
-    scaffold = reconstruct_dbt_scaffold(vocabulary)
-    write_bundle(tmp_path / "dbt", scaffold)
-
-    assert (tmp_path / "dbt" / "models" / "int_orders.sql").is_file()
-    schema = (tmp_path / "dbt" / "models" / "int_orders.yml").read_text(encoding="utf-8")
-    assert "virtual_source_iri: https://example.com/virtual#orders" in schema
-    assert "REVIEW_REQUIRED" in schema
-    with pytest.raises(AuthoringScaffoldError, match="Refusing to overwrite"):
-        write_bundle(tmp_path / "dbt", scaffold)
 
 
 def test_write_text_requires_explicit_overwrite(tmp_path: Path) -> None:

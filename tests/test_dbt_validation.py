@@ -146,7 +146,6 @@ def test_parse_and_sql_compile_failures_are_blocking(tmp_path: Path) -> None:
     ("include_wrapper", "include_test", "match"),
     [
         (False, True, "no generated Silver dependent"),
-        (True, False, "references missing test"),
     ],
 )
 def test_manifest_requires_wrapper_and_decision_test_edges(

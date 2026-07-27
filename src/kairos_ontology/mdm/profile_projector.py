@@ -23,10 +23,10 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from rdflib import Graph, URIRef
-from rdflib.namespace import RDF, RDFS
+from rdflib import Graph, Literal, URIRef
+from rdflib.namespace import OWL, RDF, RDFS
 
 from kairos_ontology.mdm import vocabulary as V
 from kairos_ontology.core.determinism import resolve_generated_at
@@ -43,6 +43,9 @@ from kairos_ontology.mdm.model import (
     SurvivorshipRule,
     WorkflowPolicy,
 )
+
+if TYPE_CHECKING:
+    from kairos_ontology.core.compiler.plan import CompilePlan
 
 
 def _as_bool(value: Any) -> bool:
@@ -97,9 +100,7 @@ def _domain_properties(graph: Graph, cls: URIRef) -> List[URIRef]:
     classes.add(cls)
     props: List[URIRef] = []
     for c in classes:
-        props.extend(
-            p for p in graph.subjects(RDFS.domain, c) if isinstance(p, URIRef)
-        )
+        props.extend(p for p in graph.subjects(RDFS.domain, c) if isinstance(p, URIRef))
     return props
 
 
@@ -122,7 +123,11 @@ def extract_profile(
         ontology_iri=meta.get("namespace", namespace) or namespace,
         ontology_version=str(meta.get("version", "")),
         toolkit_version=_toolkit_version(),
-        generated_at=resolve_generated_at().isoformat(),
+        generated_at=(
+            str(meta["generated_at"])
+            if "generated_at" in meta
+            else resolve_generated_at().isoformat()
+        ),
     )
 
     # -- Mastered concepts -------------------------------------------------
@@ -204,17 +209,13 @@ def _opt_str(value: Any) -> Optional[str]:
     return None if value is None else str(value)
 
 
-def _extract_match_attributes(
-    graph: Graph, props: List[URIRef]
-) -> List[MatchAttribute]:
+def _extract_match_attributes(graph: Graph, props: List[URIRef]) -> List[MatchAttribute]:
     attrs: List[MatchAttribute] = []
     for prop in sorted(props, key=str):
         is_match = _as_bool(graph.value(prop, V.MATCH_ATTRIBUTE))
         is_id = _as_bool(graph.value(prop, V.IS_IDENTIFIER))
         survivorship = _opt_str(graph.value(prop, V.SURVIVORSHIP))
-        authorities = sorted(
-            str(o) for o in graph.objects(prop, V.AUTHORITATIVE_SOURCE)
-        )
+        authorities = sorted(str(o) for o in graph.objects(prop, V.AUTHORITATIVE_SOURCE))
         if not (is_match or is_id or survivorship or authorities):
             continue
         attrs.append(
@@ -225,17 +226,13 @@ def _extract_match_attributes(
                 identifier_type=_opt_str(graph.value(prop, V.IDENTIFIER_TYPE)),
                 authoritative_sources=authorities,
                 survivorship=survivorship,
-                survivorship_priority=_as_int(
-                    graph.value(prop, V.SURVIVORSHIP_PRIORITY)
-                ),
+                survivorship_priority=_as_int(graph.value(prop, V.SURVIVORSHIP_PRIORITY)),
             )
         )
     return attrs
 
 
-def _extract_match_rules(
-    graph: Graph, cls: URIRef, props: List[URIRef]
-) -> List[MatchRule]:
+def _extract_match_rules(graph: Graph, cls: URIRef, props: List[URIRef]) -> List[MatchRule]:
     prop_set = {str(p) for p in props}
     rules: List[MatchRule] = []
     for rule in sorted(graph.subjects(RDF.type, V.MATCH_RULE), key=str):
@@ -260,9 +257,7 @@ def _extract_match_rules(
     return rules
 
 
-def _extract_dq_rules(
-    graph: Graph, cls: URIRef, props: List[URIRef]
-) -> List[DataQualityRule]:
+def _extract_dq_rules(graph: Graph, cls: URIRef, props: List[URIRef]) -> List[DataQualityRule]:
     prop_set = {str(p) for p in props}
     rules: List[DataQualityRule] = []
     for dq in sorted(graph.subjects(RDF.type, V.DQ_RULE), key=str):
@@ -279,9 +274,7 @@ def _extract_dq_rules(
                 dimension=str(graph.value(dq, V.DQ_DIMENSION) or ""),
                 on_attributes=on_attrs,
                 expression=_opt_str(graph.value(dq, V.DQ_EXPRESSION)),
-                scorecard_threshold=_as_float(
-                    graph.value(dq, V.DQ_SCORECARD_THRESHOLD)
-                ),
+                scorecard_threshold=_as_float(graph.value(dq, V.DQ_SCORECARD_THRESHOLD)),
                 severity=str(graph.value(dq, V.DQ_SEVERITY) or "warning"),
             )
         )
@@ -334,7 +327,9 @@ def _render_markdown(profile: MdmProfile, digest: str) -> str:
             for a in c.match_attributes:
                 tags = []
                 if a.is_identifier:
-                    tags.append(f"identifier{f' ({a.identifier_type})' if a.identifier_type else ''}")
+                    tags.append(
+                        f"identifier{f' ({a.identifier_type})' if a.identifier_type else ''}"
+                    )
                 if a.survivorship:
                     tags.append(f"survivorship={a.survivorship}")
                 if a.authoritative_sources:
@@ -346,21 +341,13 @@ def _render_markdown(profile: MdmProfile, digest: str) -> str:
             for r in c.match_rules:
                 attrs = ", ".join(_local(a) for a in r.on_attributes)
                 thr = f" @ {r.threshold}" if r.threshold is not None else ""
-                lines.append(
-                    f"    - {r.comparator}({attrs}){thr} → {r.action}"
-                )
+                lines.append(f"    - {r.comparator}({attrs}){thr} → {r.action}")
         if c.data_quality:
             lines.append("- **Data-quality rules:**")
             for d in c.data_quality:
                 attrs = ", ".join(_local(a) for a in d.on_attributes) or "—"
-                thr = (
-                    f" ≥ {d.scorecard_threshold}"
-                    if d.scorecard_threshold is not None
-                    else ""
-                )
-                lines.append(
-                    f"    - [{d.dimension}/{d.severity}] {attrs}{thr}"
-                )
+                thr = f" ≥ {d.scorecard_threshold}" if d.scorecard_threshold is not None else ""
+                lines.append(f"    - [{d.dimension}/{d.severity}] {attrs}{thr}")
         lines.append("")
 
     if p.reference_lists:
@@ -428,4 +415,109 @@ def generate_mdm_profile_artifacts(
     return {
         f"{ontology_name}-mdm-profile.json": json_content,
         f"{ontology_name}-mdm-profile.md": md_content,
+    }
+
+
+class MdmCompilePlanError(ValueError):
+    """Raised when MDM cannot consume the canonical compiler plan."""
+
+
+def _typed_policy_graph(compile_plan: "CompilePlan", mdm_ext_path: Path) -> Graph:
+    graph = Graph()
+    graph.parse(mdm_ext_path, format="turtle")
+    for cls in compile_plan.resolution.classes:
+        subject = URIRef(cls.uri)
+        graph.add((subject, RDF.type, OWL.Class))
+        if cls.label:
+            graph.add((subject, RDFS.label, Literal(cls.label)))
+    for prop in compile_plan.resolution.properties:
+        subject = URIRef(prop.uri)
+        for domain_uri in prop.domain_uris:
+            graph.add((subject, RDFS.domain, URIRef(domain_uri)))
+        graph.add((subject, RDFS.label, Literal(prop.column_name)))
+    return graph
+
+
+def _validate_profile_registry(profile: MdmProfile, compile_plan: "CompilePlan") -> None:
+    registry = compile_plan.silver_registry
+    assert registry is not None
+    model_names = dict(registry.names)
+    model_columns = dict(registry.columns)
+    properties = {item.uri: item for item in compile_plan.resolution.properties}
+    errors: list[str] = []
+    for concept in profile.mastered_concepts:
+        model_name = model_names.get(concept.class_iri)
+        if model_name is None:
+            errors.append(f"mastered concept {concept.class_iri} has no shaped Silver model")
+            continue
+        columns = model_columns.get(model_name, frozenset())
+        for attribute in concept.match_attributes:
+            prop = properties.get(attribute.property_iri)
+            if prop is None or prop.column_name not in columns:
+                errors.append(
+                    f"match attribute {attribute.property_iri} is absent from shaped Silver"
+                )
+    if errors:
+        raise MdmCompilePlanError("; ".join(sorted(errors)))
+
+
+def _validate_annotated_properties(graph: Graph, compile_plan: "CompilePlan") -> None:
+    known = {item.uri for item in compile_plan.resolution.properties}
+    predicates = (
+        V.MATCH_ATTRIBUTE,
+        V.IS_IDENTIFIER,
+        V.SURVIVORSHIP,
+        V.AUTHORITATIVE_SOURCE,
+    )
+    unknown = sorted(
+        {
+            str(subject)
+            for predicate in predicates
+            for subject in graph.subjects(predicate, None)
+            if isinstance(subject, URIRef) and str(subject) not in known
+        }
+    )
+    if unknown:
+        raise MdmCompilePlanError(
+            "match attribute is absent from shaped Silver: " + ", ".join(unknown)
+        )
+
+
+def generate_mdm_profile_from_compile_plan(
+    compile_plan: "CompilePlan",
+    *,
+    mdm_ext_path: Optional[Path],
+    ontology_metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Render deterministic optional MDM policy against shaped Silver authority."""
+    if compile_plan.blocked:
+        raise MdmCompilePlanError("MDM cannot consume a blocked compiler plan")
+    if compile_plan.shaped_project is None or compile_plan.silver_registry is None:
+        raise MdmCompilePlanError("MDM requires a shaped compiler plan with a Silver registry")
+    if mdm_ext_path is None or not Path(mdm_ext_path).is_file():
+        return {}
+
+    graph = _typed_policy_graph(compile_plan, Path(mdm_ext_path))
+    _validate_annotated_properties(graph, compile_plan)
+    metadata = dict(ontology_metadata or {})
+    metadata.setdefault("namespace", compile_plan.resolution.namespace)
+    metadata.setdefault("version", compile_plan.resolution.ontology_version)
+    metadata["generated_at"] = ""
+    profile = extract_profile(
+        graph,
+        compile_plan.resolution.namespace,
+        compile_plan.domain,
+        metadata,
+    )
+    if not profile.mastered_concepts and not profile.reference_lists:
+        return {}
+    _validate_profile_registry(profile, compile_plan)
+    profile_dict = profile.to_dict()
+    digest = _content_digest(profile_dict)
+    profile_dict["content_digest"] = digest
+    return {
+        f"{compile_plan.domain}-mdm-profile.json": (
+            json.dumps(profile_dict, indent=2, sort_keys=True) + "\n"
+        ),
+        f"{compile_plan.domain}-mdm-profile.md": _render_markdown(profile, digest),
     }

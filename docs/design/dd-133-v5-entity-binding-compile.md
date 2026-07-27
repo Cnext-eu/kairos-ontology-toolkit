@@ -1,7 +1,7 @@
 # DD-133 companion — v5 EntityBinding + `compile` contract
 
 > Detailed specification for [DD-133](toolkit-design-decisions.md#dd-133-v5-authoring-break--yaml-entitybinding--stateless-compile).
-> This is the **authoritative contract** for the v5 first vertical slice. It is
+> This is the **authoritative contract** for the v5 compiler. It is
 > normative for the closed YAML schema, the scalar-expression grammar, the stateless
 > `compile` command, the atomic emission contract, and the minimal static safety kernel.
 > Stages 2–8 (see `docs/draft/plan.md`) extend but must not weaken this contract.
@@ -57,7 +57,7 @@ identity:
   sourceKey: [<source-column>, ...]   # strict: source identity, distinct from IRI/surrogate
   businessKey: [<source-column>, ...] # optional; distinct from sourceKey
 load:
-  mode: full-refresh                  # slice-1 is full-refresh only; incremental/SCD in stage 2
+  mode: full-refresh | incremental    # closed discriminated union; see §3a
 fields:                               # field -> property mappings
   - property: <prefix:propertyLocalName>   # resolved against the ontology closure
     expression: <expression-node>     # see §4; may be a bare source-column shorthand
@@ -66,7 +66,7 @@ relationships:                        # optional; zero or more
     target: <prefix:ClassLocalName>   # must be a materializable entity or external ref (§7)
     join: [{ local: <source-column>, foreign: <parent-key-column> }, ...]
     cardinality: many-to-one | one-to-one
-    mode: non-temporal                # slice-1; current/as-of temporal FK in stage 2
+    mode: non-temporal | current | as-of  # temporal modes require `temporal`; see §3b
     missingParent: error | null       # required explicit action
     ambiguousParent: error | first    # required explicit action
 quality:                              # optional focused checks (evidence, not authority)
@@ -76,6 +76,104 @@ quality:                              # optional focused checks (evidence, not a
 
 > **YAML footgun:** relationship join columns use the key `join:` (not `on:`) — under YAML
 > 1.1 an unquoted `on` parses as the boolean `True`, so `on` is deliberately avoided.
+
+### 3a. Stage 2 load contract
+
+`load` is a closed discriminated union. `full-refresh` permits only `mode`.
+`incremental` requires explicit `scd: 1 | 2` and every runtime fact below; no SCD or
+incremental behavior is inferred:
+
+```yaml
+load:
+  mode: incremental
+  scd: 2
+  incremental:
+    mergeIdentity: [customer_id]
+    canonicalHashInputs: [customer_id, display_name, country]
+    cdcOperation:
+      column: operation
+      insertValues: [I]
+      updateValues: [U]
+      deleteValues: [D]
+    sourceUpdatedAt: source_updated_at
+    businessEffectiveAt: effective_at
+    ingestedAt: ingested_at
+    totalOrder: [source_updated_at, sequence_number]
+    lookback: { value: 2, unit: days }
+    delete: error | hard-delete | soft-delete | ignore
+    lateArrival: error | accept
+    correction: error | overwrite | new-version
+    replay: error | idempotent
+    backfill: error | merge | replace-window
+    schemaEvolution: fail | append-compatible
+```
+
+The three CDC value sets are non-empty, unique, and pairwise disjoint. Hash inputs and
+ordering are explicit ordered lists. The compiler adapter must reuse the DD-109/DD-110
+typed, length-delimited SHA-256 contract; this document does not define a second hash.
+SCD1 permits correction `overwrite | error`; SCD2 permits `new-version | error`. The loader
+rejects cross-mode correction actions rather than silently changing their meaning.
+
+### 3b. Stage 2 temporal relationships
+
+`non-temporal` forbids `temporal`. `current` and `as-of` require parent validity columns,
+open-ended semantics, overlap handling, late-parent handling, and change-detection
+participation. `as-of` additionally requires the child event-time column:
+
+```yaml
+mode: as-of
+temporal:
+  childEventTime: effective_at       # as-of only
+  parentValidFrom: valid_from
+  parentValidTo: valid_to
+  openEnded: null | max-value
+  overlap: error | latest-start
+  lateParent: error | null | defer
+  changeDetection: include | exclude
+```
+
+Cardinality, missing-parent, and ambiguous-parent actions remain required on every
+relationship. These declarations are immutable compiler input; downstream adapters may
+reject unsupported actions but may not choose defaults.
+
+### 3c. Stage 2 multi-source conformance
+
+One document still binds exactly one source. Bindings that materialize the same class must
+declare the same explicit conformance `group`, unique positive `sourcePrecedence`, compatible
+grain/identity/property contracts, an explicit conflict action, and one closed union policy:
+
+```yaml
+conformance:
+  group: party-customer
+  sourcePrecedence: 1
+  conflict: error | prefer-precedence
+  union:
+    mode: union-all
+    # or:
+    # mode: deduplicate
+    # deduplicateBy: [customer_id]
+    # orderBy: [{ column: source_updated_at, direction: descending }]
+```
+
+Deduplication requires non-empty identity and total ordering declarations. Binding/source
+ordering in explain output and provenance is canonical, never filesystem-discovery order.
+
+### 3d. Stage 2 contracted dbt source
+
+`source` is an exactly-one union. A relation uses `source.relation`; complex relational logic
+uses immutable metadata for an ordinary SQL model and its authoritative dbt YAML contract:
+
+```yaml
+source:
+  dbtModel:
+    name: int_customer
+    sqlPath: integration/transforms/dbt/models/int_customer.sql
+    contractPath: integration/transforms/dbt/models/schema.yml
+```
+
+All three fields are required and unknown metadata is rejected. Resolution, output-column,
+type, grain, and deterministic-identity checks belong to the Stage 2 source adapter; the
+binding never embeds SQL, joins, windows, aggregation, or transformation evidence.
 
 ## 4. Scalar-expression grammar (maps 1:1 to the existing closed AST)
 
@@ -175,15 +273,17 @@ A hand-built graph-free `BoundSources` was proven to flow through
 `normalize_contract → shape_project → plan_materialization → render_project` and emit valid
 Fabric Silver SQL with **no** RDF input. Findings that bind the v5 compiler design:
 
-- **Entry point:** the compiler builds a `BoundSources` and calls the existing
-  `normalize_contract(...)` chain — no second renderer. A thin **`normalize_v5(facts)`**
-  constructor (adapter over `BoundSources`) is preferred over exposing the 26-field
-  `BoundSources` ABI to compiler code.
-- **Not load-bearing for a simple full-refresh entity (set empty/neutral):**
-  `emit_aspirational_stubs`, claim-driven `binding_observations` eligibility, `contracts`,
-  `virtual_table_uris`, `replacement_input_uris`, `foreign_key_facts`, `parent_relations`,
-  `coverage`, `silver_outcomes`, release authoring input. This confirms none of the
-  claims/stub/release/virtual-source machinery is required by the v5 path.
+- **Entry point:** `build_compile_plan(...)` returns one immutable, graph-free `CompilePlan`
+  after `normalize_contract → shape_project → plan_materialization` and before byte rendering.
+  It carries the selected `BuildScope`, parsed bindings, normalized contract, shaped project
+  and Silver registry, physical plan, planned paths, and entity/project blocking diagnostics.
+  `BoundSources` remains an internal adapter transport and is not the public compiler seam.
+  `compile_plan_result(...)` and `render_compile_plan(...)` provide explicit write-free result
+  and rendering views so Gold/MDM consumers reuse the plan without resolution or rebuilding.
+- **Retired from the compiler seam:** claim-driven eligibility, aspirational/stub emission,
+  and completeness-policy authority. `binding_observations` now records only source-bound or
+  ontology-folded facts needed by the shared normalizer. Contracts, virtual-source replacement,
+  coverage, and release authoring remain outside the v5 authority.
 - **Still load-bearing — the compiler MUST synthesize these internally** (they are retired
   from *authoring* but required by the downstream normalizer):
   - a **neutral passthrough DD-106 preparation policy** for every mapped physical table

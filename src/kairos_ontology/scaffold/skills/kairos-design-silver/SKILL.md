@@ -62,7 +62,7 @@ generated SQL traceability before handing the package to the dataplatform.
 
 **On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
 continuation region and this phase's log(s) at `phases/silver/<domain>.md` — to resume
-open questions. Ignore `_archive/`. (`kairos-ontology status` gives the objective view.)
+open questions. Ignore `_archive/`. (`kairos-ontology compile <domain> --check` gives the objective view.)
 
 **On pause or finish:** append a *State update proposal* to `phases/silver/<domain>.md`
 with OKF frontmatter (`type: kairos-phase-log`, `phase: silver`, `instance: <domain>`,
@@ -76,7 +76,7 @@ This skill has two explicit, non-generating passes:
 1. **Logical intent** — author SCD choice, desired identity/grain semantics,
    FK/temporal policy, PII and DQ intent in `*-silver-ext.ttl`.
 2. **Bound confirmation** — after the final transformation and mappings exist,
-   consume only `check-projection --scope silver` to confirm that intent binds.
+   consume only `compile check --scope silver` to confirm that intent binds.
 
 > **Design/Execute separation (DD-033):** This skill creates annotation files.
 > It never runs `project`, renders output, or reviews generated artifacts as a
@@ -98,26 +98,6 @@ This skill has two explicit, non-generating passes:
 
 ---
 
-## Target-first aspirational stubs (DD-096)
-
-Silver design is normally **binding-first**: a class gets a real Silver model once a
-bronze source is mapped to it. The **target-first stub → bind loop** (opt-in, DD-096)
-lets an *approved but not-yet-mapped* claim project a **stub** Silver target first, so
-downstream Silver/Gold can be designed against a stable contract before mappings exist.
-
-- **Derived, not annotated.** `aspirational` is **not** a silver-ext annotation you
-  author — it is derived at projection time (approved, materialization-eligible claim
-  ∧ unbound physical model). Do not add a field for it.
-- **Typability caveat.** Stub columns are typed where typable
-  (`kairos-ext:silverDataType` → `rdfs:range` → `VARCHAR(255)` fallback). Declaring
-  `silverDataType` on properties makes stub columns precise before binding.
-- **Clearing it.** A stub is cleared by **binding a mapping** (kairos-design-mapping),
-  not by editing silver-ext. Re-projection replaces the stub with the real model.
-- **OKF capture.** Record any target-first stub decisions in
-  `phases/silver/<domain>.md`.
-
-See the **kairos-execute-project** skill for the `--emit-aspirational-stubs` flag.
-
 ## Choose the pass before starting
 
 - **Logical-intent pass:** do not require final mappings or a completed custom
@@ -128,21 +108,18 @@ See the **kairos-execute-project** skill for the `--emit-aspirational-stubs` fla
 - **Bound-confirmation pass:** requires the final physical or contracted source
   and final mapping. It is read-only and runs only the scoped shared evaluator.
 
-## Transformation readiness gate (bound-confirmation pass only)
+## Contracted source gate (bound-confirmation pass only)
 
 Before bound confirmation, run:
 
 ```bash
 $env:KAIROS_SKILL_CONTEXT = "1"
-kairos-ontology check-transformation-readiness --stage silver
+kairos-ontology compile <domain> --check --format json
 ```
 
 A non-zero result is blocking for bound confirmation. Report its reasons verbatim and hand off to
-**kairos-develop-dbt-transformation**. For every accepted candidate, the deterministic
-gate must confirm the contracted model and synchronized virtual source; the existing
-mapping/source coverage gates remain authoritative for virtual-table exact matches,
-column mappings, `silverSourceRef`, and direct/replacement conflicts. Deferred candidates
-must retain a rationale and distinct-grain statement. `status` is observational and does
+**kairos-develop-dbt-transformation** when the direct SQL/YAML model contract is invalid.
+`status` is observational and does
 not replace this command. Do not use this gate to prevent the earlier
 logical-intent pass.
 
@@ -611,50 +588,28 @@ logical Silver → dbt transformation → mapping → bound Silver confirmation.
 
 ### 4b — Bound-confirmation completion
 
-> **Pre-silver claims gate (MANDATORY — DD-094).** Before generating the
-> silver layer, verify that the ontology + mappings actually cover every source
-> table the affinity reports assign to the in-scope domains — so silver is built
-> against a **complete** ontology, not a partial one (`check-claims` includes the
-> pre-silver mapping-coverage check):
->
-> ```bash
-> kairos-ontology check-claims
-> # or scope to a single domain:
-> kairos-ontology check-claims --domains <domain>
-> ```
->
-> - **Exit 0** → every affinity-assigned source table is mapped to a domain entity.
->   Proceed to the non-writing bound confirmation below.
-> - **Exit 1** → STOP. The listed `(system.table)` pairs have domain affinity but
->   no source-to-domain mapping (no SKOS match on the bronze table or its columns).
->   Complete the mappings via the **kairos-design-mapping** skill (and, if classes
->   are missing, the **kairos-design-domain** skill), then re-check.
->
-> `check-claims` is read-only and deterministic (no AI). Use `--warn-only`
-> only as a deliberate, documented override (e.g. a domain you intentionally defer).
-
 Local Turtle/SHACL and annotation checks establish **Silver design validity** only. Before
 claiming Silver completion, run the separate, non-writing bound gate:
 
 ```powershell
 $env:KAIROS_SKILL_CONTEXT = "1"
-kairos-ontology check-projection --target silver --scope silver
+kairos-ontology compile <domain> --check --format json
 ```
 
 This Silver-scoped view of projection's shared evaluator reports source identity authority,
 incremental runtime fields, semantic key versus record identity, FK resolution and
-temporal/failure policy, data-quality policy, claim/include synchronization reached by binding,
+temporal/failure policy and data-quality policy,
 and the same bound normalization results projection consumes. It suppresses source/mapping and
 adapter findings, exposes owner/prerequisite information, and must be green before Silver
 completion is claimed.
 
-Once the claims gate and scoped evaluator are green, record `bound-valid` and
-return control to **kairos-flow**. The flow must run full `check-projection` next;
+Once the scoped evaluator is green, record `bound-valid` and
+return control to **kairos-flow**. The flow must run full `compile check` next;
 only a green result may hand off to **kairos-execute-project**.
 
 For a contracted custom intermediate, first hand off to
-**kairos-develop-dbt-transformation**. After `sync-dbt-contracts` and virtual-source
-mapping, this skill remains authoritative for semantic natural-key properties, SK/IRI,
+**kairos-develop-dbt-transformation**. After the direct SQL/YAML contract is bound,
+this skill remains authoritative for semantic natural-key properties, SK/IRI,
 SCD/FK policy, and `kairos-ext:silverSourceRef`. The dbt contract owns physical output
 columns/types and key columns; custom SQL owns relational logic. Confirm
 `silverSourceRef` names the contracted model, then return to the bound-confirmation pass.
@@ -1021,9 +976,8 @@ remain downstream.
 Before running the dbt projection, ensure these artifacts exist in the hub:
 
 - **Source vocabulary** in `integration/sources/{system-name}/{system-name}.vocabulary.ttl`
-- **Optional custom source vocabulary** in
-  `integration/sources/custom-transformations/{model}.vocabulary.ttl`, generated from
-  `integration/transforms/dbt/models/**/*.yml` by `sync-dbt-contracts`
+- **Optional contracted dbt source** under `integration/transforms/dbt/models/`, selected
+  directly by `source.dbtModel`
 - **Silver schema** — domain ontologies with `kairos-ext:` annotations (Part A above)
 - **SKOS mappings** in `model/mappings/{system}-to-{domain}.ttl`
 

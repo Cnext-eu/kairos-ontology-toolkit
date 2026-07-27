@@ -33,7 +33,10 @@ from kairos_ontology.mdm.model import (
     WorkflowPolicy,
 )
 from kairos_ontology.mdm.validation import validate_mdm_extension
-from kairos_ontology.mdm.profile_projector import generate_mdm_profile_artifacts
+from kairos_ontology.mdm.profile_projector import (
+    generate_mdm_profile_artifacts,
+    generate_mdm_profile_from_compile_plan,
+)
 
 __all__ = [
     "KAIROS_MDM",
@@ -51,6 +54,7 @@ __all__ = [
     "WorkflowPolicy",
     "validate_mdm_extension",
     "generate_mdm_profile_artifacts",
+    "generate_mdm_profile_from_compile_plan",
 ]
 
 
@@ -71,6 +75,14 @@ def _project_mdm_profile(
     )
 
 
+def _project_mdm_compile_plan(*, compile_plan, ext_path, ontology_metadata):
+    return generate_mdm_profile_from_compile_plan(
+        compile_plan,
+        mdm_ext_path=ext_path,
+        ontology_metadata=ontology_metadata,
+    )
+
+
 def _register_projection_target() -> None:
     """Register the ``mdm-profile`` target with the core projector registry.
 
@@ -84,6 +96,7 @@ def _register_projection_target() -> None:
         "mdm-profile",
         discover_ext=discover_mdm_extension,
         project=_project_mdm_profile,
+        project_compile_plan=_project_mdm_compile_plan,
         output_subdir="mdm",
     )
 

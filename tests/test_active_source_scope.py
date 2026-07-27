@@ -22,7 +22,7 @@ def _table(uri: str, column_uri: str, *, relation_kind: str = "physical") -> dic
     }
 
 
-def test_active_source_scope_excludes_unrelated_domain_and_keeps_contract_vocab():
+def test_active_source_scope_excludes_unrelated_domain_and_keeps_direct_contract():
     booking = "https://example.test/booking#Booking"
     party = "https://example.test/party#Party"
     booking_property = "https://example.test/booking#bookingName"
@@ -109,15 +109,10 @@ def test_active_source_scope_excludes_unrelated_domain_and_keeps_contract_vocab(
         "urn:map:booking",
         "urn:map:virtual",
     }
-    assert [item.resource_uri for item in scoped_mappings.columns] == [
-        "urn:map:booking-name"
-    ]
+    assert [item.resource_uri for item in scoped_mappings.columns] == ["urn:map:booking-name"]
     assert set(scoped_contracts) == {"booking_enriched"}
     reasons = {item.table_uri: set(item.reasons) for item in scope.tables}
-    assert reasons[booking_table] == {
-        "domain-table-mapping:urn:map:booking",
-        "contract-replacement-input:booking_enriched",
-    }
+    assert reasons[booking_table] == {"domain-table-mapping:urn:map:booking"}
     assert reasons[virtual_table] == {
         "domain-table-mapping:urn:map:virtual",
         "contract-virtual-source:booking_enriched",

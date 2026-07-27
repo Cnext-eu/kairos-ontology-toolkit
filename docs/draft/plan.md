@@ -324,6 +324,9 @@ SCD and multi-source features.
 
 ### Stage 2: complete the strict binding kernel
 
+- **Contract/schema status (2026-07-27): complete.** DD-133, the packaged closed schema and
+  example, frozen loader types, explain shapes, and source-located structural diagnostics now
+  cover the approved Stage 2 variants. Adapter integration/rendering items below remain open.
 - Add incremental/SCD1/SCD2 policy and canonical hash integration.
 - Add delete, late-arrival, correction, replay, backfill, schema-change, and total-order
   checks.
@@ -349,6 +352,15 @@ SCD and multi-source features.
 ### Stage 4: remove v4 operational subsystems
 
 Delete leaf-to-root after production imports reach zero:
+
+The deterministic wave inventory is
+`docs/design/stage4-retirement-import-inventory.json`. Its architecture test parses Python
+`Import`/`ImportFrom` nodes, records exact importing modules and symbols, verifies obsolete
+Click registrations, and fails when a new production edge reaches a retirement module.
+Stage 3's current cutover is reflected there: legacy `project` Silver/dbt entry points are
+closed, compiler plans own Silver generation, and optional Gold/MDM consumers use the typed
+compile plan. The release/lifecycle/status wave and transformation
+evidence/synchronization/candidate wave are retired; later Stage 4 waves remain inventoried.
 
 1. release evaluator, lifecycle gate, projection readiness, and status;
 2. transformation evidence/synchronization and candidate inventories;

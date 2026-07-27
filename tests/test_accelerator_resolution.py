@@ -27,9 +27,7 @@ from click.testing import CliRunner
 
 import kairos_ontology.cli.main as cli_main
 from kairos_ontology.cli.main import cli
-from kairos_ontology.core.analyse_sources import load_data_domains
 from kairos_ontology.core.reference_modules import (
-    load_accelerator_module_config,
     resolve_hub_accelerator,
     resolve_hub_accelerator_detailed,
 )
@@ -186,9 +184,7 @@ class TestResolverPrecedence:
         ref_models = tmp_path / "ontology-reference-models"
         _write_pack(ref_models, "logistics", NESTED_DATA_DOMAINS_YAML)
 
-        simple = resolve_hub_accelerator(
-            explicit=None, hub_root=None, ref_models_dir=ref_models
-        )
+        simple = resolve_hub_accelerator(explicit=None, hub_root=None, ref_models_dir=ref_models)
         detailed = resolve_hub_accelerator_detailed(
             explicit=None, hub_root=None, ref_models_dir=ref_models
         )
@@ -198,34 +194,6 @@ class TestResolverPrecedence:
 # --------------------------------------------------------------------------- #
 # Nested groups[].domains[] parity across parsed registries
 # --------------------------------------------------------------------------- #
-class TestNestedDomainRegistryParity:
-    """The domain-ownership lookup must agree across the inventory-key parser
-    (``analyse_sources.load_data_domains``) and the managed-import-planning parser
-    (``reference_modules.load_accelerator_module_config``) for the same nested
-    ``groups[].domains[]`` registry."""
-
-    def test_both_parsers_see_every_nested_domain(self, tmp_path):
-        ref_models = tmp_path / "ontology-reference-models"
-        _write_pack(ref_models, "logistics", NESTED_DATA_DOMAINS_YAML)
-
-        via_analyse_sources = set(load_data_domains(ref_models, accelerator="logistics"))
-        config = load_accelerator_module_config(ref_models, "logistics")
-        via_reference_modules = {activation.domain for activation in config.domains}
-
-        assert via_analyse_sources == via_reference_modules == {"party", "booking", "commercial"}
-
-    def test_second_group_domain_is_not_lost(self, tmp_path):
-        """Regression: a domain nested in the *second* group must resolve, not just
-        the first group's domains (booking/commercial live in the second group)."""
-        ref_models = tmp_path / "ontology-reference-models"
-        _write_pack(ref_models, "logistics", NESTED_DATA_DOMAINS_YAML)
-
-        data_domains = load_data_domains(ref_models, accelerator="logistics")
-        assert "booking" in data_domains
-        assert data_domains["booking"]["group"] == "commercial"
-        assert data_domains["booking"]["uris"] == [
-            "https://www.kairosflow.ai/ont/bsp/booking#"
-        ]
 
 
 # --------------------------------------------------------------------------- #
@@ -265,9 +233,7 @@ class TestScopedInventoryWording:
         (ref_dir / "party.ttl").write_text(_INVENTORY_REF_TTL, encoding="utf-8")
         dd_dir = ref_dir / "accelerator-packs" / "logistics" / "client-hub-blueprint"
         dd_dir.mkdir(parents=True)
-        (dd_dir / "data-domains.yaml").write_text(
-            _INVENTORY_DATA_DOMAINS_YAML, encoding="utf-8"
-        )
+        (dd_dir / "data-domains.yaml").write_text(_INVENTORY_DATA_DOMAINS_YAML, encoding="utf-8")
         (tmp_path / "catalog-v001.xml").write_text(_INVENTORY_CATALOG_XML, encoding="utf-8")
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
 
@@ -292,9 +258,7 @@ class TestScopedInventoryWording:
         gen = runner.invoke(cli, ["generate-inventory"])
         assert gen.exit_code == 0, gen.output
 
-        result = runner.invoke(
-            cli, ["check-inventory", "--domains", "unregistered-domain"]
-        )
+        result = runner.invoke(cli, ["check-inventory", "--domains", "unregistered-domain"])
         assert result.exit_code == 0, result.output
         assert "(none matched)" not in result.output
         assert "no profile found" in result.output
@@ -308,14 +272,17 @@ class TestScopedInventoryWording:
         result = runner.invoke(cli, ["check-inventory", "--domains", "party"])
         assert result.exit_code == 0, result.output
         assert "Accelerator:  logistics" in result.output
-        assert str(
-            tmp_path
-            / "ontology-reference-models"
-            / "accelerator-packs"
-            / "logistics"
-            / "client-hub-blueprint"
-            / "data-domains.yaml"
-        ) in result.output
+        assert (
+            str(
+                tmp_path
+                / "ontology-reference-models"
+                / "accelerator-packs"
+                / "logistics"
+                / "client-hub-blueprint"
+                / "data-domains.yaml"
+            )
+            in result.output
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -332,115 +299,6 @@ def _write_affinity(analysis_dir: Path, system: str, tables: list[tuple[str, str
     }
     with open(analysis_dir / f"{system}-affinity.yaml", "w", encoding="utf-8") as f:
         yaml.dump(data, f, sort_keys=False)
-
-
-def _write_booking_registry(claims_dir: Path) -> None:
-    from kairos_ontology.core.claim_registry import (
-        ClaimRegistry,
-        CoverageSystem,
-        CoverageTable,
-        Freshness,
-        registry_path,
-        write_registry,
-    )
-    from kairos_ontology.core.completeness_model import compute_affinity_hash
-
-    tables = [("qargo", "bookings")]
-    registry = ClaimRegistry(
-        domain="booking",
-        generated_at="2026-07-26T00:00:00Z",
-        algorithm_version=1,
-        freshness=Freshness(affinity_sha256=compute_affinity_hash(tables)),
-        coverage=[CoverageSystem(system="qargo", tables=[CoverageTable(table="bookings")])],
-        claims=[],
-    )
-    write_registry(registry, registry_path(claims_dir, "booking"))
-
-
-class TestCheckClaimsRegistryOwnership:
-    def _build_hub(self, tmp_path):
-        ref_models = tmp_path / "ontology-reference-models"
-        _write_pack(ref_models, "finance", _empty_pack_yaml())
-        _write_pack(ref_models, "logistics", NESTED_DATA_DOMAINS_YAML)
-        analysis = tmp_path / "_analysis"
-        claims = tmp_path / "model" / "claims"
-        _write_affinity(analysis, "qargo", [("bookings", "booking")])
-        _write_booking_registry(claims)
-        return analysis, claims
-
-    def test_ambiguous_accelerator_still_errors(self, tmp_path, monkeypatch):
-        analysis, claims = self._build_hub(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        runner = CliRunner()
-
-        # No --domains, and the claims-dir hint ("booking") is genuinely owned by
-        # only "logistics" here — but pass a --domains filter that matches nothing
-        # ownable to force genuine ambiguity.
-        result = runner.invoke(
-            cli,
-            [
-                "check-claims",
-                "--analysis-dir",
-                str(analysis),
-                "--claims-dir",
-                str(claims),
-                "--domains",
-                "nowhere",
-                "--no-source-coverage",
-                "--no-extension-sync",
-            ],
-            env={"KAIROS_SKILL_CONTEXT": "1"},
-        )
-        assert result.exit_code != 0
-        assert "Accelerator selection is ambiguous" in result.output
-
-    def test_claims_dir_domain_hint_resolves_unambiguously(self, tmp_path, monkeypatch):
-        """No --domains and no --accelerator: the existing booking-claims.yaml
-        registry is used as the domain hint, unambiguously resolving 'logistics'."""
-        analysis, claims = self._build_hub(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        runner = CliRunner()
-
-        result = runner.invoke(
-            cli,
-            [
-                "check-claims",
-                "--analysis-dir",
-                str(analysis),
-                "--claims-dir",
-                str(claims),
-                "--no-source-coverage",
-                "--no-extension-sync",
-            ],
-            env={"KAIROS_SKILL_CONTEXT": "1"},
-        )
-        assert result.exit_code == 0, result.output
-        assert "registry domain not found in data-domains.yaml" not in result.output
-        assert "Accelerator:  logistics" in result.output
-        assert "(source: inferred (domain ownership))" in result.output
-
-    def test_explicit_accelerator_still_wins(self, tmp_path, monkeypatch):
-        analysis, claims = self._build_hub(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        runner = CliRunner()
-
-        result = runner.invoke(
-            cli,
-            [
-                "check-claims",
-                "--analysis-dir",
-                str(analysis),
-                "--claims-dir",
-                str(claims),
-                "--accelerator",
-                "logistics",
-                "--no-source-coverage",
-                "--no-extension-sync",
-            ],
-            env={"KAIROS_SKILL_CONTEXT": "1"},
-        )
-        assert result.exit_code == 0, result.output
-        assert "Accelerator:  logistics (source: --accelerator)" in result.output
 
 
 # --------------------------------------------------------------------------- #

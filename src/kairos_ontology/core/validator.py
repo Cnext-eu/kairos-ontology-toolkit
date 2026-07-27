@@ -10,10 +10,10 @@ from rdflib import Graph, Namespace
 from rdflib.namespace import OWL, RDF, RDFS
 from pyshacl import validate as shacl_validate
 import json
+
 # Canonical PII keyword list lives in ._samples (single source of truth, also
 # used by the sample-exposure masking policy); re-exported for compatibility.
 from ._samples import PII_KEYWORDS
-from .claim_registry import ClaimRegistry, load_registry
 from .reference_modules import (
     ModuleDiagnostic,
     ReferenceModuleContext,
@@ -101,6 +101,7 @@ def validate_content(
 def _camel_to_snake(name: str) -> str:
     """Convert CamelCase to snake_case for PII matching."""
     import re
+
     s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
@@ -173,17 +174,16 @@ def validate_gdpr(
             if cls_uri in parents_with_satellite:
                 continue
             # Unprotected PII
-            cls_local = (
-                cls_uri.rsplit("#", 1)[-1] if "#" in cls_uri
-                else cls_uri.rsplit("/", 1)[-1]
+            cls_local = cls_uri.rsplit("#", 1)[-1] if "#" in cls_uri else cls_uri.rsplit("/", 1)[-1]
+            warnings.append(
+                {
+                    "class": cls_local,
+                    "class_uri": cls_uri,
+                    "property": local,
+                    "property_uri": prop_uri,
+                    "keyword": matched_keyword,
+                }
             )
-            warnings.append({
-                "class": cls_local,
-                "class_uri": cls_uri,
-                "property": local,
-                "property_uri": prop_uri,
-                "keyword": matched_keyword,
-            })
 
     return {
         "passed": len(warnings) == 0,
@@ -226,8 +226,10 @@ def run_gdpr_validation(ontologies_path: Path, catalog_path: Optional[Path] = No
             total_warnings += len(result["warnings"])
             print(f"\n  \u26a0\ufe0f  {ontology_file.name}:")
             for w in result["warnings"]:
-                print(f"     {w['class']}.{w['property']} \u2014 "
-                      f"PII keyword '{w['keyword']}' without gdprSatelliteOf")
+                print(
+                    f"     {w['class']}.{w['property']} \u2014 "
+                    f"PII keyword '{w['keyword']}' without gdprSatelliteOf"
+                )
 
     print(f"\n  Scanned {total_domains} domains")
     if total_warnings:
@@ -241,29 +243,18 @@ def run_gdpr_validation(ontologies_path: Path, catalog_path: Optional[Path] = No
 
 def validate_managed_imports(
     ontology_file: Path,
-    claims_file: Path | None,
     *,
     domain: str | None = None,
     module_context: ReferenceModuleContext | None = None,
 ) -> list[ModuleDiagnostic]:
-    """Validate claim/profile-required imports with structured ownership details."""
+    """Validate configured and authored managed imports."""
     graph = Graph()
     graph.parse(
         ontology_file,
         format="turtle" if ontology_file.suffix == ".ttl" else "xml",
     )
-    resolved_domain = domain or (
-        claims_file.name.removesuffix("-claims.yaml")
-        if claims_file is not None
-        else ontology_file.stem
-    )
-    registry = (
-        load_registry(claims_file)
-        if claims_file is not None and claims_file.is_file()
-        else ClaimRegistry(domain=resolved_domain)
-    )
+    resolved_domain = domain or ontology_file.stem
     plan = build_managed_import_plan(
-        registry,
         domain=resolved_domain,
         context=module_context,
         ontology_graph=graph,
@@ -442,13 +433,19 @@ def render_validation_markdown(
     return "\n".join(lines) + "\n"
 
 
-def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
-                   do_syntax: bool, do_shacl: bool, do_consistency: bool,
-                   report_path: Optional[Path] = None, degraded: bool = False,
-                   claims_dir: Optional[Path] = None,
-                   ref_models_dir: Optional[Path] = None,
-                   accelerator: Optional[str] = None,
-                   markdown_report_path: Optional[Path] = None):
+def run_validation(
+    ontologies_path: Path,
+    shapes_path: Path,
+    catalog_path: Path,
+    do_syntax: bool,
+    do_shacl: bool,
+    do_consistency: bool,
+    report_path: Optional[Path] = None,
+    degraded: bool = False,
+    ref_models_dir: Optional[Path] = None,
+    accelerator: Optional[str] = None,
+    markdown_report_path: Optional[Path] = None,
+):
     """Run validation pipeline.
 
     Args:
@@ -471,46 +468,31 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
             ``render_validation_markdown``). Omitted by default, which preserves the
             pre-existing JSON-only report contract exactly.
     """
-    
+
     print("🔍 Kairos Ontology Validation")
     print("=" * 50)
-    
+
     results = {
         "syntax": {"passed": 0, "failed": 0, "errors": []},
         "imports": {"passed": 0, "failed": 0, "errors": [], "warnings": []},
         "shacl": {"passed": 0, "failed": 0, "errors": []},
-        "consistency": {"passed": 0, "failed": 0, "errors": []}
+        "consistency": {"passed": 0, "failed": 0, "errors": []},
     }
-    
+
     # Find all ontology files. Sorted for deterministic iteration/reporting order
     # (glob() order is filesystem-dependent), which the Markdown report relies on.
     ontology_files = list(ontologies_path.glob("**/*.ttl")) + list(ontologies_path.glob("**/*.rdf"))
     # Skip non-domain files: silver-ext annotations, _master imports, etc.
-    ontology_files = sorted(
-        (f for f in ontology_files if _is_domain_ontology(f)), key=str
-    )
-    
+    ontology_files = sorted((f for f in ontology_files if _is_domain_ontology(f)), key=str)
+
     print(f"\nFound {len(ontology_files)} ontology files\n")
 
     # Semantic import preflight is separate from syntax parsing. It catches
     # externally used governed terms whose required owl:imports edge is absent;
     # the canonical loader cannot discover an import edge that was never authored.
     if do_shacl or do_consistency:
-        resolved_claims_dir = claims_dir or ontologies_path.parent / "claims"
-        from .claim_registry import load_registry
-        from .reference_modules import _claim_term_refs
-
-        claimed_term_uris: set[str] = set()
         imported_ontology_iris: set[str] = set()
         for ontology_file in ontology_files:
-            claims_file = resolved_claims_dir / f"{ontology_file.stem}-claims.yaml"
-            if claims_file.is_file():
-                claimed_term_uris.update(
-                    term_uri
-                    for _claim_id, term_uri, _claim_type in _claim_term_refs(
-                        load_registry(claims_file)
-                    )
-                )
             try:
                 scope_graph = Graph().parse(ontology_file)
             except Exception:  # syntax diagnostics below retain ownership of parse failures
@@ -523,43 +505,32 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
             catalog_path=catalog_path,
             accelerator=accelerator,
             requested_domains=(path.stem for path in ontology_files),
-            claimed_term_uris=claimed_term_uris,
             imported_ontology_iris=imported_ontology_iris,
         )
         print("🔗 Managed Import Completeness")
         print("-" * 50)
         for ontology_file in ontology_files:
-            claims_file = resolved_claims_dir / f"{ontology_file.stem}-claims.yaml"
             activation = (
-                module_context.config.activation(ontology_file.stem)
-                if module_context
-                else None
+                module_context.config.activation(ontology_file.stem) if module_context else None
             )
-            if not claims_file.is_file() and activation is None:
+            if activation is None and module_context is None:
                 continue
             try:
                 diagnostics = validate_managed_imports(
                     ontology_file,
-                    claims_file if claims_file.is_file() else None,
                     domain=ontology_file.stem,
                     module_context=module_context,
                 )
             except Exception as exc:  # noqa: BLE001
                 results["imports"]["failed"] += 1
-                results["imports"]["errors"].append(
-                    {"file": str(ontology_file), "error": str(exc)}
-                )
+                results["imports"]["errors"].append({"file": str(ontology_file), "error": str(exc)})
                 print(f"  ✗ {ontology_file.name}: {exc}")
                 continue
 
             errors = [item for item in diagnostics if item.level == "error"]
             warnings = [item for item in diagnostics if item.level != "error"]
-            hard_errors = [
-                item for item in errors if item.code != "missing_managed_import"
-            ]
-            degradable_errors = [
-                item for item in errors if item.code == "missing_managed_import"
-            ]
+            hard_errors = [item for item in errors if item.code != "missing_managed_import"]
+            degradable_errors = [item for item in errors if item.code == "missing_managed_import"]
             results["imports"]["warnings"].extend(
                 {"file": str(ontology_file), **item.to_dict()} for item in warnings
             )
@@ -575,8 +546,7 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
                 results["imports"]["passed"] += 1
                 if degradable_errors:
                     results["imports"]["warnings"].extend(
-                        {"file": str(ontology_file), **item.to_dict()}
-                        for item in degradable_errors
+                        {"file": str(ontology_file), **item.to_dict()} for item in degradable_errors
                     )
                     print(
                         f"  ⚠ {ontology_file.name}: degraded mode accepted "
@@ -585,7 +555,7 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
                 else:
                     print(f"  ✓ {ontology_file.name}")
         print()
-    
+
     # Level 1: Syntax Validation
     if do_syntax:
         print("📋 Level 1: Syntax Validation")
@@ -593,26 +563,26 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
         for ontology_file in ontology_files:
             try:
                 g = Graph()
-                g.parse(ontology_file, format='turtle' if ontology_file.suffix == '.ttl' else 'xml')
+                g.parse(ontology_file, format="turtle" if ontology_file.suffix == ".ttl" else "xml")
                 results["syntax"]["passed"] += 1
                 print(f"  ✓ {ontology_file.name}")
             except Exception as e:
                 results["syntax"]["failed"] += 1
                 results["syntax"]["errors"].append({"file": str(ontology_file), "error": str(e)})
                 print(f"  ✗ {ontology_file.name}: {e}")
-        
+
         print(f"\n  Passed: {results['syntax']['passed']}, Failed: {results['syntax']['failed']}\n")
-    
+
     # Level 2: SHACL Validation
     if do_shacl and shapes_path.exists():
         print("📐 Level 2: SHACL Validation")
         print("-" * 50)
-        
+
         # Load all shapes
         shapes_graph = Graph()
         for shape_file in shapes_path.glob("**/*.shacl.ttl"):
-            shapes_graph.parse(shape_file, format='turtle')
-        
+            shapes_graph.parse(shape_file, format="turtle")
+
         for ontology_file in ontology_files:
             try:
                 from .ontology_loader import SemanticProfile, load_ontology
@@ -624,19 +594,14 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
                     degraded=degraded,
                 )
                 data_graph = loaded.graph
-                
+
                 conforms, report_graph, report_text = shacl_validate(
-                    data_graph,
-                    shacl_graph=shapes_graph,
-                    inference='rdfs',
-                    abort_on_first=False
+                    data_graph, shacl_graph=shapes_graph, inference="rdfs", abort_on_first=False
                 )
-                
+
                 if conforms:
                     results["shacl"]["passed"] += 1
-                    results["shacl"].setdefault("semantic_context", {})[
-                        str(ontology_file)
-                    ] = {
+                    results["shacl"].setdefault("semantic_context", {})[str(ontology_file)] = {
                         "profile": loaded.profile.value,
                         "closure_hash": loaded.closure_hash,
                         "import_complete": loaded.complete,
@@ -644,20 +609,19 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
                     print(f"  ✓ {ontology_file.name}")
                 else:
                     results["shacl"]["failed"] += 1
-                    results["shacl"]["errors"].append({
-                        "file": str(ontology_file),
-                        "report": report_text
-                    })
+                    results["shacl"]["errors"].append(
+                        {"file": str(ontology_file), "report": report_text}
+                    )
                     print(f"  ✗ {ontology_file.name}")
                     print(f"    {report_text}")
-                    
+
             except Exception as e:
                 results["shacl"]["failed"] += 1
                 results["shacl"]["errors"].append({"file": str(ontology_file), "error": str(e)})
                 print(f"  ✗ {ontology_file.name}: {e}")
-        
+
         print(f"\n  Passed: {results['shacl']['passed']}, Failed: {results['shacl']['failed']}\n")
-    
+
     # Level 3: Consistency Validation (SPARQL queries)
     if do_consistency:
         print("🔗 Level 3: Consistency Validation")
@@ -670,19 +634,17 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
         # (when the merged graph is available).
         print("  (Custom SPARQL queries for consistency checks)")
         print("  Not implemented yet - future enhancement\n")
-    
+
     # Save results (explicit destination only — see report_path docstring above)
     # Non-writing lifecycle-state suggestion (typed, DD-080): computed here purely
     # from in-memory `results`; never persisted to `.kairos-state/` by this function.
-    state_proposal = propose_lifecycle_state(
-        results, do_syntax=do_syntax, do_shacl=do_shacl
-    )
+    state_proposal = propose_lifecycle_state(results, do_syntax=do_syntax, do_shacl=do_shacl)
     results["state_proposal"] = state_proposal.to_dict()
 
     if report_path is not None:
         report_path = Path(report_path)
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(results, indent=2), encoding='utf-8')
+        report_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
         print(f"📄 Results saved to {report_path}")
 
     if markdown_report_path is not None:
@@ -706,10 +668,10 @@ def run_validation(ontologies_path: Path, shapes_path: Path, catalog_path: Path,
                 ontology_files=ontology_files,
                 state_proposal=state_proposal,
             ),
-            encoding='utf-8',
+            encoding="utf-8",
         )
         print(f"📄 Markdown report saved to {markdown_report_path}")
-    
+
     # Exit code
     total_failed = (
         results["syntax"]["failed"]
@@ -779,26 +741,30 @@ def validate_whitelist_mapping(
     # 3. Check for mismatches
     for cls_uri in mapped - whitelisted:
         cls_name = cls_uri.split("#")[-1].split("/")[-1] if cls_uri else cls_uri
-        warnings.append({
-            "class_uri": cls_uri,
-            "class_name": cls_name,
-            "warning_type": "mapped_not_whitelisted",
-            "message": (
-                f"Class {cls_name} has SKOS source mappings but no "
-                f"silverInclude annotation. It will not be projected to silver."
-            ),
-        })
+        warnings.append(
+            {
+                "class_uri": cls_uri,
+                "class_name": cls_name,
+                "warning_type": "mapped_not_whitelisted",
+                "message": (
+                    f"Class {cls_name} has SKOS source mappings but no "
+                    f"silverInclude annotation. It will not be projected to silver."
+                ),
+            }
+        )
 
     for cls_uri in whitelisted - mapped:
         cls_name = cls_uri.split("#")[-1].split("/")[-1] if cls_uri else cls_uri
-        warnings.append({
-            "class_uri": cls_uri,
-            "class_name": cls_name,
-            "warning_type": "whitelisted_not_mapped",
-            "message": (
-                f"Class {cls_name} has silverInclude but no source mappings. "
-                f"It will produce an empty silver table."
-            ),
-        })
+        warnings.append(
+            {
+                "class_uri": cls_uri,
+                "class_name": cls_name,
+                "warning_type": "whitelisted_not_mapped",
+                "message": (
+                    f"Class {cls_name} has silverInclude but no source mappings. "
+                    f"It will produce an empty silver table."
+                ),
+            }
+        )
 
     return warnings

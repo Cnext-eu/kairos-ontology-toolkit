@@ -168,21 +168,6 @@ def validate_manifest(manifest_path: Path) -> None:
         for node_id, node in nodes.items()
         if isinstance(node, dict) and node.get("resource_type") == "model"
     }
-    test_nodes = {
-        node_id: node
-        for node_id, node in nodes.items()
-        if isinstance(node, dict) and node.get("resource_type") == "test"
-    }
-    unit_tests = manifest.get("unit_tests", {})
-    if isinstance(unit_tests, dict):
-        test_nodes.update(
-            {
-                node_id: node
-                for node_id, node in unit_tests.items()
-                if isinstance(node, dict) and node.get("resource_type") == "unit_test"
-            }
-        )
-
     for model_id, model in model_nodes.items():
         meta = model.get("meta")
         kairos = meta.get("kairos") if isinstance(meta, dict) else None
@@ -200,28 +185,6 @@ def validate_manifest(manifest_path: Path) -> None:
                 "manifest",
                 f"contracted model '{_node_name(model)}' has no generated Silver dependent",
             )
-
-        decisions = kairos.get("decisions", [])
-        if not isinstance(decisions, list):
-            continue
-        for decision in decisions:
-            if not isinstance(decision, dict):
-                continue
-            for test_name in decision.get("verified_by", []) or []:
-                matches = [
-                    test for test in test_nodes.values() if _node_name(test) == str(test_name)
-                ]
-                if not matches:
-                    raise DbtValidationError(
-                        "manifest",
-                        f"decision '{decision.get('id')}' references missing test '{test_name}'",
-                    )
-                if not any(model_id in _dependency_ids(test) for test in matches):
-                    raise DbtValidationError(
-                        "manifest",
-                        f"test '{test_name}' does not depend on contracted model "
-                        f"'{_node_name(model)}'",
-                    )
 
 
 def validate_dbt_project(

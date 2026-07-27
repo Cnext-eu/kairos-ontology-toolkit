@@ -37,12 +37,7 @@ def freeze_value(value: object) -> FrozenValue:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Mapping):
-        return FrozenMapping(
-            tuple(
-                (str(key), freeze_value(item))
-                for key, item in value.items()
-            )
-        )
+        return FrozenMapping(tuple((str(key), freeze_value(item)) for key, item in value.items()))
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return FrozenSequence(tuple(freeze_value(item) for item in value))
     raise TypeError(f"Unsupported logical template value: {type(value).__name__}")
@@ -117,9 +112,7 @@ def column_from_context(column: Mapping[str, object]) -> ColumnSpec:
         metadata=metadata_items,
         tests=test_items,
         generated_after_mapping=bool(column.get("generated_after_mapping", False)),
-        include_in_change_detection=bool(
-            column.get("include_in_change_detection", True)
-        ),
+        include_in_change_detection=bool(column.get("include_in_change_detection", True)),
         mapping_resource_uri=str(column.get("mapping_resource_uri") or ""),
     )
 
@@ -133,9 +126,7 @@ def source_from_context(source: Mapping[str, object]) -> SourceBindingSpec:
         table_uri=str(source.get("table_uri") or ""),
         model_name=str(source.get("model") or ""),
         filter_condition=str(source.get("filter") or ""),
-        filter_mapping_resource_uri=str(
-            source.get("filter_mapping_resource_uri") or ""
-        ),
+        filter_mapping_resource_uri=str(source.get("filter_mapping_resource_uri") or ""),
         ref_model=str(source.get("ref_model") or ""),
     )
 
@@ -206,17 +197,12 @@ def build_silver_model(
 def outcome_from_context(context: Mapping[str, object]) -> SilverModelOutcome:
     """Build typed registry/report facts from the legacy private facade shape."""
     skipped = bool(context.get("skipped", False))
-    aspirational = bool(context.get("aspirational", False))
     reason_value = context.get("skip_reason")
     reason = str(reason_value) if reason_value is not None else None
     outcome = (
         ModelOutcome.FOLDED
         if skipped and reason and "discriminator subclass" in reason
-        else ModelOutcome.SKIPPED
-        if skipped
-        else ModelOutcome.ASPIRATIONAL_STUB
-        if aspirational
-        else ModelOutcome.GENERATED
+        else ModelOutcome.SKIPPED if skipped else ModelOutcome.GENERATED
     )
     class_name = str(context.get("class_name") or "")
     model_name = str(context.get("model_name") or "")
@@ -248,9 +234,7 @@ def outcome_from_context(context: Mapping[str, object]) -> SilverModelOutcome:
             domain_name="",
             schema_name="",
             artifact_path=(
-                str(context.get("model_file"))
-                if context.get("model_file") is not None
-                else None
+                str(context.get("model_file")) if context.get("model_file") is not None else None
             ),
             outcome=outcome,
             reason=reason,
@@ -259,12 +243,8 @@ def outcome_from_context(context: Mapping[str, object]) -> SilverModelOutcome:
         source_count=int(source_count) if isinstance(source_count, int) else 0,
         column_names=column_names,
         fk_join_count=int(fk_join_count) if isinstance(fk_join_count, int) else 0,
-        aspirational=aspirational,
-        unbound_eligible=bool(context.get("unbound_eligible", False)),
         info_notes=info_notes,
         model_name_reported="model_name" in context,
-        aspirational_reported="aspirational" in context,
-        unbound_eligible_reported="unbound_eligible" in context,
         info_notes_reported="info_notes" in context,
     )
 
@@ -285,10 +265,6 @@ def outcome_context(outcome: SilverModelOutcome) -> dict[str, object]:
     }
     if outcome.model_name_reported:
         context["model_name"] = outcome.identity.model_name
-    if outcome.aspirational_reported:
-        context["aspirational"] = outcome.aspirational
-    if outcome.unbound_eligible_reported:
-        context["unbound_eligible"] = outcome.unbound_eligible
     if outcome.info_notes_reported:
         context["info_notes"] = list(outcome.info_notes)
     return context
@@ -319,13 +295,11 @@ def build_silver_registry(
             identity.outcome in {ModelOutcome.SKIPPED, ModelOutcome.FOLDED}
             or not identity.class_uri
             or not identity.model_name
-            or names.get(identity.class_uri) != identity.model_name
+            or (identity.class_uri in names and names[identity.class_uri] != identity.model_name)
         ):
             continue
         names[identity.class_uri] = identity.model_name
-        columns[identity.model_name] = frozenset(
-            column.name for column in model.columns
-        )
+        columns[identity.model_name] = frozenset(column.name for column in model.columns)
 
     parent_children: dict[str, set[str]] = defaultdict(set)
     for child_uri, parent_uri in sorted(parent_relations):
@@ -343,10 +317,7 @@ def build_silver_registry(
     return SilverRegistry(
         names=tuple(sorted(names.items())),
         columns=tuple(sorted(columns.items())),
-        versions=tuple(
-            (model_name, ontology_version)
-            for model_name in sorted(columns)
-        ),
+        versions=tuple((model_name, ontology_version) for model_name in sorted(columns)),
         ambiguous_parents=tuple(ambiguous),
         authorities=tuple(
             sorted(
@@ -366,8 +337,7 @@ def schema_model_from_context(context: Mapping[str, object]) -> SchemaModelSpec:
     columns = context.get("columns")
     column_specs = (
         tuple(column_from_context(column) for column in columns if isinstance(column, Mapping))
-        if isinstance(columns, Sequence)
-        and not isinstance(columns, (str, bytes, bytearray))
+        if isinstance(columns, Sequence) and not isinstance(columns, (str, bytes, bytearray))
         else ()
     )
     metadata = context.get("meta")

@@ -41,9 +41,9 @@ Use the canonical lifecycle:
 
 `discovery → source → domain → mapping → claims → silver → gold → validate → project`
 
-Source onboarding includes an explicit `integration/preparation/` contract. Typed mappings
-bind prepared source fields to domain properties. Silver dbt, YAML, DDL, constraints, and
-ERD share one parity-checked authority. Gold is profile-driven; the v1 Power BI profile
+Source onboarding captures source vocabulary and typed source-to-domain mappings. Compiler
+entity bindings provide the runtime contract and generate parity-checked Silver artifacts.
+Gold is profile-driven; the v1 Power BI profile
 requires explicit table roles, governed measures/calendars, and fail-closed security.
 Projection emits evidence and checks but does not claim runtime monitoring or deployment
 success.

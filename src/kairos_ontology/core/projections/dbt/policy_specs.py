@@ -11,7 +11,6 @@ from typing import Generic, TypeVar
 from .diagnostics import Diagnostic, DiagnosticSeverity, EvaluationStatus
 from .specs import ColumnSpec, ModelIdentity
 
-
 T = TypeVar("T")
 
 
@@ -74,9 +73,7 @@ class PolicyIssue:
             message=self.message,
             rule_id=self.rule_id,
             resource_uri=self.resource_uri,
-            severity=(
-                DiagnosticSeverity.ERROR if self.blocking else DiagnosticSeverity.WARNING
-            ),
+            severity=(DiagnosticSeverity.ERROR if self.blocking else DiagnosticSeverity.WARNING),
             blocking=self.blocking,
             evaluation_status=EvaluationStatus.FAILED,
         )
@@ -86,28 +83,12 @@ class NamingConvention(str, Enum):
     CAMEL_TO_SNAKE = "camel-to-snake"
 
 
-class PrepMode(str, Enum):
-    PASSTHROUGH = "passthrough"
-    NORMALIZE = "normalize"
 
 
-class CleanupOperation(str, Enum):
-    TRIM = "trim"
-    LEFT_TRIM = "left-trim"
-    RIGHT_TRIM = "right-trim"
-    UNICODE_NORMALIZE = "unicode-normalize"
-    LINE_ENDING_NORMALIZE = "line-ending-normalize"
 
 
-class ErrorAction(str, Enum):
-    FAIL = "fail"
-    QUARANTINE = "quarantine"
-    NULL_WITH_EVIDENCE = "null-with-evidence"
 
 
-class SentinelAction(str, Enum):
-    TO_NULL = "to-null"
-    TO_NORMALIZED_VALUE = "to-normalized-value"
 
 
 class SchemaEvolutionAction(str, Enum):
@@ -116,15 +97,8 @@ class SchemaEvolutionAction(str, Enum):
     APPROVED_CONTRACT_UPDATE = "approved-contract-update"
 
 
-class RawPayloadRetention(str, Enum):
-    RETAIN_PAYLOAD = "retain-payload"
-    RETAIN_REPLAYABLE_REFERENCE = "retain-replayable-reference"
 
 
-class ArrayValueAction(str, Enum):
-    ZERO_CHILDREN = "zero-children"
-    QUARANTINE = "quarantine"
-    FAIL = "fail"
 
 
 class CanonicalTypeKind(str, Enum):
@@ -152,133 +126,28 @@ class CanonicalTypeSpec:
     length: int | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class PreparedColumnFact:
-    resource_uri: str
-    target_name: AuthoredValuesFact
-    target_type: AuthoredValuesFact
-    json_path: AuthoredValuesFact | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class PhysicalRenameFact:
-    resource_uri: str
-    source_column: AuthoredValuesFact
-    target_name: AuthoredValuesFact
 
 
-@dataclass(frozen=True, slots=True)
-class CleanupRuleFact:
-    resource_uri: str
-    source_column: AuthoredValuesFact
-    operation: AuthoredValuesFact
-    lossless: AuthoredValuesFact
 
 
-@dataclass(frozen=True, slots=True)
-class TypeConversionFact:
-    resource_uri: str
-    source_column: AuthoredValuesFact
-    target_type: AuthoredValuesFact
-    parse_policy: AuthoredValuesFact
-    error_policy: AuthoredValuesFact
 
 
-@dataclass(frozen=True, slots=True)
-class SentinelRuleFact:
-    resource_uri: str
-    source_column: AuthoredValuesFact
-    sentinel_value: AuthoredValuesFact
-    action: AuthoredValuesFact
-    normalized_value: AuthoredValuesFact | None
-    evidence: AuthoredValuesFact
 
 
-@dataclass(frozen=True, slots=True)
-class CdcMappingFact:
-    resource_uri: str
-    raw_operation_columns: AuthoredValuesFact | None
-    raw_update_timestamp_columns: AuthoredValuesFact | None
-    raw_effective_timestamp_columns: AuthoredValuesFact | None
-    raw_ingestion_timestamp_columns: AuthoredValuesFact | None
-    raw_sequence_columns: AuthoredValuesFact | None
-    operation_code_map: AuthoredValuesFact | None
-    normalized_operation_fields: tuple[PreparedColumnFact, ...]
-    normalized_update_timestamp_fields: tuple[PreparedColumnFact, ...]
-    normalized_effective_timestamp_fields: tuple[PreparedColumnFact, ...]
-    normalized_ingestion_timestamp_fields: tuple[PreparedColumnFact, ...]
-    normalized_sequence_fields: tuple[PreparedColumnFact, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class SourceRecordKeyFact:
-    resource_uri: str
-    source_scope: AuthoredValuesFact
-    table_scope: AuthoredValuesFact
-    components: AuthoredValuesFact
-    outputs: tuple[PreparedColumnFact, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class ScalarJsonFact:
-    resource_uri: str
-    source_column: AuthoredValuesFact
-    json_path: AuthoredValuesFact
-    extracted_columns: tuple[PreparedColumnFact, ...]
-    retention: AuthoredValuesFact
-    error_policy: AuthoredValuesFact
 
 
-@dataclass(frozen=True, slots=True)
-class ArrayJsonFact:
-    resource_uri: str
-    source_column: AuthoredValuesFact
-    json_path: AuthoredValuesFact
-    child_relation_name: AuthoredValuesFact
-    parent_key_components: AuthoredValuesFact
-    element_key_path: AuthoredValuesFact | None
-    element_index_field: AuthoredValuesFact | None
-    null_policy: AuthoredValuesFact
-    empty_policy: AuthoredValuesFact
-    retention: AuthoredValuesFact
-    extracted_columns: tuple[PreparedColumnFact, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class DedupeOrderFact:
-    """One explicitly ordered prep deduplication tie-breaker."""
-
-    resource_uri: str
-    source_column: AuthoredValuesFact
-    position: AuthoredValuesFact
-    direction: AuthoredValuesFact
 
 
-@dataclass(frozen=True, slots=True)
-class TechnicalDedupeFact:
-    """Prep-owned partition and complete total-order authoring facts."""
-
-    resource_uri: str
-    keys: AuthoredValuesFact
-    order_terms: tuple[DedupeOrderFact, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class PreparationPolicyFact:
-    resource_uri: str
-    source_table: AuthoredValuesFact
-    mode: AuthoredValuesFact
-    schema_change_policy: AuthoredValuesFact
-    normalization_evidence: AuthoredValuesFact | None
-    renames: tuple[PhysicalRenameFact, ...]
-    cleanup_rules: tuple[CleanupRuleFact, ...]
-    type_conversions: tuple[TypeConversionFact, ...]
-    sentinel_rules: tuple[SentinelRuleFact, ...]
-    cdc: tuple[CdcMappingFact, ...]
-    record_keys: tuple[SourceRecordKeyFact, ...]
-    scalar_json: tuple[ScalarJsonFact, ...]
-    array_json: tuple[ArrayJsonFact, ...]
-    technical_dedupes: tuple[TechnicalDedupeFact, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,108 +158,28 @@ class SourceTableIdentitySpec:
     table_name: str
 
 
-@dataclass(frozen=True, slots=True)
-class PreparedColumnSpec:
-    resource_uri: str
-    name: EffectiveValue[str]
-    data_type: EffectiveValue[CanonicalTypeSpec]
-    json_path: EffectiveValue[str] | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class PhysicalRenameSpec:
-    source_column_uri: str
-    target_name: EffectiveValue[str]
 
 
-@dataclass(frozen=True, slots=True)
-class CleanupRuleSpec:
-    source_column_uri: str
-    operation: EffectiveValue[CleanupOperation]
-    lossless: EffectiveValue[bool]
 
 
-@dataclass(frozen=True, slots=True)
-class TypeConversionSpec:
-    source_column_uri: str
-    target_type: EffectiveValue[CanonicalTypeSpec]
-    parse_policy: EffectiveValue[str]
-    error_action: EffectiveValue[ErrorAction]
 
 
-@dataclass(frozen=True, slots=True)
-class SentinelRuleSpec:
-    source_column_uri: str
-    sentinel_value: EffectiveValue[str]
-    action: EffectiveValue[SentinelAction]
-    normalized_value: EffectiveValue[str] | None
-    evidence: EffectiveValue[tuple[str, ...]]
 
 
-@dataclass(frozen=True, slots=True)
-class CdcFieldSpec:
-    raw_columns: EffectiveValue[tuple[str, ...]]
-    normalized_fields: tuple[PreparedColumnSpec, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class SourceCdcSpec:
-    operation: CdcFieldSpec | None
-    source_updated_at: CdcFieldSpec | None
-    source_effective_at: CdcFieldSpec | None
-    ingested_at: CdcFieldSpec | None
-    sequence: CdcFieldSpec | None
-    operation_code_map: EffectiveValue[tuple[tuple[str, str], ...]] | None
 
 
-@dataclass(frozen=True, slots=True)
-class SourceRecordKeySpec:
-    resource_uri: str
-    source_scope: EffectiveValue[str]
-    table_scope: EffectiveValue[str]
-    components: EffectiveValue[tuple[str, ...]]
-    output: PreparedColumnSpec
-    establishes_business_equivalence: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class ScalarJsonSpec:
-    resource_uri: str
-    source_column_uri: str
-    json_path: EffectiveValue[str]
-    output: PreparedColumnSpec
-    retention: EffectiveValue[RawPayloadRetention]
-    error_action: EffectiveValue[ErrorAction]
-    preserves_parent_grain: bool = True
 
 
-@dataclass(frozen=True, slots=True)
-class ArrayChildSpec:
-    resource_uri: str
-    source_column_uri: str
-    json_path: EffectiveValue[str]
-    child_relation_name: EffectiveValue[str]
-    parent_key_components: EffectiveValue[tuple[str, ...]]
-    element_key_path: EffectiveValue[str] | None
-    element_index_field: EffectiveValue[str] | None
-    null_action: EffectiveValue[ArrayValueAction]
-    empty_action: EffectiveValue[ArrayValueAction]
-    retention: EffectiveValue[RawPayloadRetention]
-    columns: tuple[PreparedColumnSpec, ...]
-    preserves_parent_grain: bool = True
 
 
-class TechnicalDedupeMode(str, Enum):
-    NONE = "none"
-    COMPLETE_TOTAL_ORDER = "complete-total-order"
-    CONTRACTED_TRANSFORMATION = "contracted-transformation"
 
 
-@dataclass(frozen=True, slots=True)
-class TechnicalDedupeSpec:
-    mode: EffectiveValue[TechnicalDedupeMode]
-    keys: EffectiveValue[tuple[str, ...]]
-    total_order: EffectiveValue[tuple[str, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,22 +187,6 @@ class SchemaEvolutionSpec:
     action: EffectiveValue[SchemaEvolutionAction]
 
 
-@dataclass(frozen=True, slots=True)
-class PreparationSpec:
-    resource_uri: str
-    table: SourceTableIdentitySpec
-    mode: EffectiveValue[PrepMode]
-    schema_evolution: SchemaEvolutionSpec
-    renames: tuple[PhysicalRenameSpec, ...]
-    cleanup_rules: tuple[CleanupRuleSpec, ...]
-    type_conversions: tuple[TypeConversionSpec, ...]
-    sentinel_rules: tuple[SentinelRuleSpec, ...]
-    cdc: SourceCdcSpec | None
-    source_record_key: SourceRecordKeySpec
-    scalar_json: tuple[ScalarJsonSpec, ...]
-    array_children: tuple[ArrayChildSpec, ...]
-    technical_dedupe: TechnicalDedupeSpec
-    normalization_evidence: EffectiveValue[tuple[str, ...]]
 
 
 class IdentityStrategy(str, Enum):
@@ -1319,12 +1092,22 @@ class AdapterName(str, Enum):
 class AdapterCapability(str, Enum):
     CANONICAL_TYPES = "canonical-types"
     CANONICAL_SHA256_HASH = "canonical-sha256-hash"
+    INCREMENTAL_SCD1 = "incremental-scd1"
+    INCREMENTAL_SCD2 = "incremental-scd2"
     JSON_SCALAR = "json-scalar"
     JSON_ARRAY_CHILD = "json-array-child"
     MERGE_UPSERT = "merge-upsert"
     DELETE_SEMANTICS = "delete-semantics"
     WINDOW_FUNCTIONS = "window-functions"
+    TOTAL_ORDERING = "total-ordering"
     TEMPORAL_LOOKUP = "temporal-lookup"
+    TEMPORAL_FK_CURRENT = "temporal-fk-current"
+    TEMPORAL_FK_AS_OF = "temporal-fk-as-of"
+    SCHEMA_EVOLUTION_FAIL = "schema-evolution-fail"
+    SCHEMA_EVOLUTION_APPEND_COMPATIBLE = "schema-evolution-append-compatible"
+    CONFORMANCE_UNION_ALL = "conformance-union-all"
+    CONFORMANCE_DEDUPLICATE = "conformance-deduplicate"
+    CONTRACTED_DBT_SOURCE = "contracted-dbt-source"
     CONSTRAINTS = "constraints"
     PHYSICAL_LAYOUT = "physical-layout"
     QUARANTINE = "quarantine"
@@ -1470,7 +1253,6 @@ class AdapterCapabilityRegistry:
 class MedallionPolicyFacts:
     ontology_uri: str
     naming_convention: AuthoredValuesFact | None
-    preparations: tuple[PreparationPolicyFact, ...]
     identities: tuple[EntityIdentityFact, ...]
     multi_source: tuple[MultiSourcePolicyFact, ...]
     incremental: tuple[IncrementalPolicyFact, ...]
@@ -1487,7 +1269,6 @@ class MedallionPolicySpec:
     version: str
     target_adapter: EffectiveValue[AdapterName]
     naming_convention: EffectiveValue[NamingConvention]
-    preparations: tuple[PreparationSpec, ...]
     identities: tuple[EntityIdentitySpec, ...]
     multi_source: tuple[MultiSourcePolicySpec, ...]
     incremental: tuple[IncrementalPolicySpec, ...]

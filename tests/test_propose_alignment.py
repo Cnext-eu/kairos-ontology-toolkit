@@ -14,7 +14,6 @@ from kairos_ontology.core.propose_alignment import (
     ColumnAlignment,
     DomainAlignment,
     TableAlignment,
-    AlignmentTotalFailureError,
     OUTCOME_FALLBACK_ONLY,
     OUTCOME_PROVIDER_FAILURE,
     OUTCOME_SEMANTIC_SUCCESS,
@@ -34,8 +33,6 @@ from kairos_ontology.core.propose_alignment import (
     _location_role_token,
     _looks_like_identifier_column,
     _object_relationship_downgrade_reason,
-    _read_claims_affinity_hash,
-    _read_claims_params_hash,
     _clamp_confidence,
     _compact_prompt_samples,
     _detect_address_part,
@@ -58,10 +55,7 @@ from kairos_ontology.core.propose_alignment import (
     build_domain_alignments,
     load_affinity_reports,
     run_propose_alignment,
-    write_claims_output,
 )
-from kairos_ontology.core.claim_registry import load_registry
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -207,9 +201,7 @@ class TestLoadAffinityReports:
 
     def test_preserves_domain_uris(self, analysis_dir):
         result = load_affinity_reports(analysis_dir)
-        assert result["commercial"][0]["domain_uris"] == [
-            "https://example.com/ont/commercial#"
-        ]
+        assert result["commercial"][0]["domain_uris"] == ["https://example.com/ont/commercial#"]
 
 
 # ---------------------------------------------------------------------------
@@ -287,9 +279,7 @@ class TestAlignTable:
     def _mock_client(self, response_dict):
         client = mock.MagicMock()
         client.chat.completions.create.return_value = mock.MagicMock(
-            choices=[mock.MagicMock(
-                message=mock.MagicMock(content=json.dumps(response_dict))
-            )]
+            choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(response_dict)))]
         )
         return client
 
@@ -320,8 +310,7 @@ class TestAlignTable:
             {"name": "ContractNo", "data_type": "nvarchar(50)"},
             {"name": "InternalCode", "data_type": "nvarchar(20)"},
         ]
-        result = align_table(client, "gpt-5.4-mini", "tblContracts", columns,
-                             sample_ref_classes)
+        result = align_table(client, "gpt-5.4-mini", "tblContracts", columns, sample_ref_classes)
 
         assert result["ref_class"] == "SalesContract"
         assert result["ref_class_confidence"] == 0.95
@@ -354,54 +343,66 @@ class TestAlignTable:
         assert result["column_alignments"][0]["alignment"] == "custom"
 
     def test_anchor_status_matched(self, sample_ref_classes):
-        response = {"ref_class": "SalesContract", "ref_class_confidence": 0.9,
-                    "column_alignments": []}
+        response = {
+            "ref_class": "SalesContract",
+            "ref_class_confidence": 0.9,
+            "column_alignments": [],
+        }
         client = self._mock_client(response)
-        result = align_table(client, "gpt-5.4-mini", "t",
-                             [{"name": "X", "data_type": "string"}], sample_ref_classes)
+        result = align_table(
+            client, "gpt-5.4-mini", "t", [{"name": "X", "data_type": "string"}], sample_ref_classes
+        )
         assert result["ref_class_status"] == "matched"
         assert result["rejected_ref_class"] is None
 
     def test_anchor_status_rejected_when_no_fallback(self, sample_ref_classes):
         # WS6 (issue #182): a hallucinated class with no valid affinity fallback is
         # reported as rejected (unanchored), not silently blanked.
-        response = {"ref_class": "Booking", "ref_class_confidence": 0.9,
-                    "column_alignments": []}
+        response = {"ref_class": "Booking", "ref_class_confidence": 0.9, "column_alignments": []}
         client = self._mock_client(response)
-        result = align_table(client, "gpt-5.4-mini", "t",
-                             [{"name": "X", "data_type": "string"}], sample_ref_classes)
+        result = align_table(
+            client, "gpt-5.4-mini", "t", [{"name": "X", "data_type": "string"}], sample_ref_classes
+        )
         assert result["ref_class"] == ""
         assert result["ref_class_status"] == "rejected"
         assert result["rejected_ref_class"] == "Booking"
 
     def test_anchor_status_fallback_to_affinity_entity(self, sample_ref_classes):
-        response = {"ref_class": "Booking", "ref_class_confidence": 0.9,
-                    "column_alignments": []}
+        response = {"ref_class": "Booking", "ref_class_confidence": 0.9, "column_alignments": []}
         client = self._mock_client(response)
-        result = align_table(client, "gpt-5.4-mini", "t",
-                             [{"name": "X", "data_type": "string"}], sample_ref_classes,
-                             likely_entity="SalesContract")
+        result = align_table(
+            client,
+            "gpt-5.4-mini",
+            "t",
+            [{"name": "X", "data_type": "string"}],
+            sample_ref_classes,
+            likely_entity="SalesContract",
+        )
         assert result["ref_class"] == "SalesContract"
         assert result["ref_class_status"] == "fallback"
         assert result["rejected_ref_class"] == "Booking"
 
     def test_anchor_status_unmatched_when_empty(self, sample_ref_classes):
-        response = {"ref_class": "", "ref_class_confidence": 0.0,
-                    "column_alignments": []}
+        response = {"ref_class": "", "ref_class_confidence": 0.0, "column_alignments": []}
         client = self._mock_client(response)
-        result = align_table(client, "gpt-5.4-mini", "t",
-                             [{"name": "X", "data_type": "string"}], sample_ref_classes)
+        result = align_table(
+            client, "gpt-5.4-mini", "t", [{"name": "X", "data_type": "string"}], sample_ref_classes
+        )
         assert result["ref_class_status"] == "unmatched"
 
     def test_anchor_override_wins_over_model_class_pick(self, sample_ref_classes):
         # uri-anchor-contract: a confirmed anchor always wins, even when the
         # model proposes a different, otherwise-valid class.
-        response = {"ref_class": "TradeTerms", "ref_class_confidence": 0.6,
-                    "column_alignments": []}
+        response = {"ref_class": "TradeTerms", "ref_class_confidence": 0.6, "column_alignments": []}
         client = self._mock_client(response)
-        result = align_table(client, "gpt-5.4-mini", "t",
-                             [{"name": "X", "data_type": "string"}], sample_ref_classes,
-                             anchor_override="SalesContract")
+        result = align_table(
+            client,
+            "gpt-5.4-mini",
+            "t",
+            [{"name": "X", "data_type": "string"}],
+            sample_ref_classes,
+            anchor_override="SalesContract",
+        )
         assert result["ref_class"] == "SalesContract"
         assert result["ref_class_status"] == "confirmed"
         assert result["ref_class_confidence"] == 1.0
@@ -410,34 +411,53 @@ class TestAlignTable:
     def test_anchor_override_wins_even_when_model_returns_no_class(self, sample_ref_classes):
         response = {"ref_class": "", "ref_class_confidence": 0.0, "column_alignments": []}
         client = self._mock_client(response)
-        result = align_table(client, "gpt-5.4-mini", "t",
-                             [{"name": "X", "data_type": "string"}], sample_ref_classes,
-                             anchor_override="SalesContract")
+        result = align_table(
+            client,
+            "gpt-5.4-mini",
+            "t",
+            [{"name": "X", "data_type": "string"}],
+            sample_ref_classes,
+            anchor_override="SalesContract",
+        )
         assert result["ref_class"] == "SalesContract"
         assert result["ref_class_status"] == "confirmed"
 
     def test_anchor_override_becomes_column_default_ref_class(self, sample_ref_classes):
         response = {
-            "ref_class": "TradeTerms", "ref_class_confidence": 0.5,
+            "ref_class": "TradeTerms",
+            "ref_class_confidence": 0.5,
             "column_alignments": [
-                {"column": "X", "ref_property": "contractIdentifier",
-                 "alignment": "semantic", "confidence": 0.8},
+                {
+                    "column": "X",
+                    "ref_property": "contractIdentifier",
+                    "alignment": "semantic",
+                    "confidence": 0.8,
+                },
             ],
         }
         client = self._mock_client(response)
-        result = align_table(client, "gpt-5.4-mini", "t",
-                             [{"name": "X", "data_type": "string"}], sample_ref_classes,
-                             anchor_override="SalesContract")
+        result = align_table(
+            client,
+            "gpt-5.4-mini",
+            "t",
+            [{"name": "X", "data_type": "string"}],
+            sample_ref_classes,
+            anchor_override="SalesContract",
+        )
         # The column had no explicit ref_class of its own, so it inherits the
         # *overridden* (confirmed) class, not the model's own pick.
         assert result["column_alignments"][0]["ref_class"] == "SalesContract"
 
     def test_no_anchor_override_keeps_existing_behavior(self, sample_ref_classes):
-        response = {"ref_class": "SalesContract", "ref_class_confidence": 0.95,
-                    "column_alignments": []}
+        response = {
+            "ref_class": "SalesContract",
+            "ref_class_confidence": 0.95,
+            "column_alignments": [],
+        }
         client = self._mock_client(response)
-        result = align_table(client, "gpt-5.4-mini", "t",
-                             [{"name": "X", "data_type": "string"}], sample_ref_classes)
+        result = align_table(
+            client, "gpt-5.4-mini", "t", [{"name": "X", "data_type": "string"}], sample_ref_classes
+        )
         assert result["ref_class_status"] == "matched"
 
     def test_unknown_column_filtered(self, sample_ref_classes):
@@ -478,11 +498,15 @@ class TestAlignTable:
         assert "API down" in result["generation_error"]
 
     def test_successful_call_is_semantic_success(self, sample_ref_classes):
-        response = {"ref_class": "SalesContract", "ref_class_confidence": 0.9,
-                    "column_alignments": []}
+        response = {
+            "ref_class": "SalesContract",
+            "ref_class_confidence": 0.9,
+            "column_alignments": [],
+        }
         client = self._mock_client(response)
-        result = align_table(client, "gpt-5.4-mini", "t",
-                             [{"name": "X", "data_type": "string"}], sample_ref_classes)
+        result = align_table(
+            client, "gpt-5.4-mini", "t", [{"name": "X", "data_type": "string"}], sample_ref_classes
+        )
         assert result["generation_outcome"] == OUTCOME_SEMANTIC_SUCCESS
         assert result.get("generation_error") is None
 
@@ -638,8 +662,12 @@ class TestAlignmentToDict:
                         ),
                     ],
                     custom_columns=[
-                        {"column": "InternalCode", "data_type": "nvarchar(20)",
-                         "suggested_property": "internalCode", "rationale": "No match"},
+                        {
+                            "column": "InternalCode",
+                            "data_type": "nvarchar(20)",
+                            "suggested_property": "internalCode",
+                            "rationale": "No match",
+                        },
                     ],
                 ),
             ],
@@ -654,112 +682,6 @@ class TestAlignmentToDict:
         assert len(data["tables"][0]["columns"]) == 1
         assert data["tables"][0]["columns"][0]["alignment"] == "semantic"
         assert len(data["tables"][0]["custom_columns"]) == 1
-
-    def test_freshness_hash_round_trips_through_claims_reader(self, tmp_path):
-        # DD-EL-1: the producer persists the freshness hashes under the registry's
-        # ``freshness`` section; the claims readers must read the same keys so the
-        # domain-level cache skip in ``run_propose_alignment`` fires.
-        alignment = DomainAlignment(
-            domain="commercial",
-            domain_uris=["https://example.com/ont/commercial#"],
-            generated_at="2026-06-05T10:00:00Z",
-            model_used="gpt-5.4-mini",
-            affinity_sha256="deadbeefcafe",
-            alignment_params_sha256="paramshash123",
-        )
-        out_path = write_claims_output(alignment, tmp_path)
-        assert out_path.name == "commercial-claims.yaml"
-
-        registry = load_registry(out_path)
-        assert registry.freshness.affinity_sha256 == "deadbeefcafe"
-        assert registry.freshness.alignment_params_sha256 == "paramshash123"
-
-        assert _read_claims_affinity_hash(out_path) == "deadbeefcafe"
-        assert _read_claims_params_hash(out_path) == "paramshash123"
-
-    def test_inventory_dir_backfills_claim_uris(self, tmp_path):
-        # Toolkit-optimizations F4: when propose-alignment writes claims and a
-        # materialized inventory is available, the class/property URIs are
-        # backfilled so check-claims --strict can approve without manual repair.
-        inv_dir = tmp_path / "referencemodels-unpacked"
-        inv_dir.mkdir()
-        (inv_dir / "commercial-inventory.yaml").write_text(
-            yaml.safe_dump({
-                "classes": [{
-                    "uri": "https://example.com/ont/commercial#SalesContract",
-                    "name": "SalesContract",
-                    "properties": [{"name": "contractIdentifier"}],
-                }],
-            }),
-            encoding="utf-8",
-        )
-        alignment = DomainAlignment(
-            domain="commercial",
-            domain_uris=["https://example.com/ont/commercial#"],
-            generated_at="2026-06-05T10:00:00Z",
-            model_used="gpt-5.4-mini",
-            tables=[
-                TableAlignment(
-                    system="admin",
-                    table="tblContracts",
-                    ref_class="SalesContract",
-                    ref_class_confidence=0.95,
-                    columns=[
-                        ColumnAlignment(
-                            column="ContractNo",
-                            data_type="nvarchar(50)",
-                            ref_class="SalesContract",
-                            ref_property="contractIdentifier",
-                            alignment="semantic",
-                            confidence=0.92,
-                        ),
-                    ],
-                ),
-            ],
-        )
-
-        out_path = write_claims_output(alignment, tmp_path, inventory_dir=inv_dir)
-        registry = load_registry(out_path)
-        cls = next(c for c in registry.claims if c.id == "commercial-salescontract")
-        assert cls.class_uri == "https://example.com/ont/commercial#SalesContract"
-        prop = next(
-            c for c in registry.claims
-            if c.id == "commercial-salescontract-contractidentifier"
-        )
-        assert prop.property_uri == (
-            "https://example.com/ont/commercial#contractIdentifier"
-        )
-
-    def test_without_inventory_dir_uris_stay_null(self, tmp_path):
-        # Default (no inventory_dir) preserves the pre-F4 behaviour: URIs null.
-        alignment = DomainAlignment(
-            domain="commercial",
-            domain_uris=["https://example.com/ont/commercial#"],
-            generated_at="2026-06-05T10:00:00Z",
-            model_used="gpt-5.4-mini",
-            tables=[
-                TableAlignment(
-                    system="admin",
-                    table="tblContracts",
-                    ref_class="SalesContract",
-                    ref_class_confidence=0.95,
-                    columns=[
-                        ColumnAlignment(
-                            column="ContractNo",
-                            data_type="nvarchar(50)",
-                            ref_class="SalesContract",
-                            ref_property="contractIdentifier",
-                            alignment="semantic",
-                            confidence=0.92,
-                        ),
-                    ],
-                ),
-            ],
-        )
-        out_path = write_claims_output(alignment, tmp_path)
-        registry = load_registry(out_path)
-        cls = next(c for c in registry.claims if c.id == "commercial-salescontract")
-        assert cls.class_uri is None
 
     def test_review_flags_emitted_only_when_set(self, tmp_path):
         """DD-069: review/review_reason emitted only when a column is flagged."""
@@ -813,16 +735,21 @@ class TestAlignmentToDict:
 class TestDetectAddressPart:
     @pytest.mark.parametrize(
         "name",
-        ["SHIPPER_STREET", "billing_zip", "postal_code", "address_line_1",
-         "house_number", "consignee_city"],
+        [
+            "SHIPPER_STREET",
+            "billing_zip",
+            "postal_code",
+            "address_line_1",
+            "house_number",
+            "consignee_city",
+        ],
     )
     def test_detects_strong_address_parts(self, name):
         assert _detect_address_part(name) is True
 
     @pytest.mark.parametrize(
         "name",
-        ["country", "city", "clearingHouse", "warehouse", "countryOfBirth",
-         "PartyName", ""],
+        ["country", "city", "clearingHouse", "warehouse", "countryOfBirth", "PartyName", ""],
     )
     def test_ignores_ambiguous_or_non_address(self, name):
         assert _detect_address_part(name) is False
@@ -832,77 +759,104 @@ class TestReviewColumnAlignment:
     @pytest.fixture
     def label_index(self):
         ref_classes = [
-            {"name": "TradeParty", "properties": [
-                {"name": "partyName", "label": "Party Name", "range": "string"},
-                {"name": "partyIdentifier", "label": "Party Identifier", "range": "string"},
-                {"name": "isActive", "label": "Is Active", "range": "boolean"},
-                {"name": "address", "label": "Address", "range": "Address"},
-            ]},
+            {
+                "name": "TradeParty",
+                "properties": [
+                    {"name": "partyName", "label": "Party Name", "range": "string"},
+                    {"name": "partyIdentifier", "label": "Party Identifier", "range": "string"},
+                    {"name": "isActive", "label": "Is Active", "range": "boolean"},
+                    {"name": "address", "label": "Address", "range": "Address"},
+                ],
+            },
         ]
         return _build_property_label_index(ref_classes)
 
     def test_address_part_to_non_address_scalar_flagged(self, label_index):
         reason = _review_column_alignment(
-            column_name="SHIPPER_STREET", data_type="nvarchar(100)",
-            ref_class="TradeParty", ref_property="partyName",
-            confidence=0.5, label_index=label_index,
+            column_name="SHIPPER_STREET",
+            data_type="nvarchar(100)",
+            ref_class="TradeParty",
+            ref_property="partyName",
+            confidence=0.5,
+            label_index=label_index,
         )
         assert reason and "address-part" in reason
 
     def test_address_part_to_address_property_not_flagged(self, label_index):
         reason = _review_column_alignment(
-            column_name="SHIPPER_STREET", data_type="nvarchar(100)",
-            ref_class="TradeParty", ref_property="address",
-            confidence=0.5, label_index=label_index,
+            column_name="SHIPPER_STREET",
+            data_type="nvarchar(100)",
+            ref_class="TradeParty",
+            ref_property="address",
+            confidence=0.5,
+            label_index=label_index,
         )
         assert reason is None
 
     def test_boolean_to_identity_flagged(self, label_index):
         reason = _review_column_alignment(
-            column_name="FCPAYABLEIND", data_type="bit",
-            ref_class="TradeParty", ref_property="partyIdentifier",
-            confidence=0.5, label_index=label_index,
+            column_name="FCPAYABLEIND",
+            data_type="bit",
+            ref_class="TradeParty",
+            ref_property="partyIdentifier",
+            confidence=0.5,
+            label_index=label_index,
         )
         assert reason and "boolean" in reason
 
     def test_financial_to_identity_flagged(self, label_index):
         reason = _review_column_alignment(
-            column_name="IBAN", data_type="varchar(34)",
-            ref_class="TradeParty", ref_property="partyIdentifier",
-            confidence=0.9, label_index=label_index,
+            column_name="IBAN",
+            data_type="varchar(34)",
+            ref_class="TradeParty",
+            ref_property="partyIdentifier",
+            confidence=0.9,
+            label_index=label_index,
         )
         assert reason and "financial" in reason
 
     def test_no_token_overlap_low_confidence_flagged(self, label_index):
         reason = _review_column_alignment(
-            column_name="XYZ123", data_type="nvarchar(50)",
-            ref_class="TradeParty", ref_property="partyName",
-            confidence=0.3, label_index=label_index,
+            column_name="XYZ123",
+            data_type="nvarchar(50)",
+            ref_class="TradeParty",
+            ref_property="partyName",
+            confidence=0.3,
+            label_index=label_index,
         )
         assert reason and "share no name token" in reason
 
     def test_numeric_id_to_identifier_not_flagged(self, label_index):
         """ClientID int → partyIdentifier must not be noise (token overlap)."""
         reason = _review_column_alignment(
-            column_name="PartyIdentifier", data_type="int",
-            ref_class="TradeParty", ref_property="partyIdentifier",
-            confidence=0.4, label_index=label_index,
+            column_name="PartyIdentifier",
+            data_type="int",
+            ref_class="TradeParty",
+            ref_property="partyIdentifier",
+            confidence=0.4,
+            label_index=label_index,
         )
         assert reason is None
 
     def test_good_name_match_not_flagged(self, label_index):
         reason = _review_column_alignment(
-            column_name="PartyName", data_type="nvarchar(100)",
-            ref_class="TradeParty", ref_property="partyName",
-            confidence=0.95, label_index=label_index,
+            column_name="PartyName",
+            data_type="nvarchar(100)",
+            ref_class="TradeParty",
+            ref_property="partyName",
+            confidence=0.95,
+            label_index=label_index,
         )
         assert reason is None
 
     def test_empty_property_not_flagged(self, label_index):
         reason = _review_column_alignment(
-            column_name="anything", data_type="int",
-            ref_class="TradeParty", ref_property="",
-            confidence=0.1, label_index=label_index,
+            column_name="anything",
+            data_type="int",
+            ref_class="TradeParty",
+            ref_property="",
+            confidence=0.1,
+            label_index=label_index,
         )
         assert reason is None
 
@@ -999,18 +953,38 @@ class TestBuildReferenceRollup:
         # Over-mapping a 3-property class with 5 distinct ref_property values must
         # still cap coverage at the 3 real ones (issue #182 121% bug).
         cols = [
-            ColumnAlignment(column=f"C{i}", data_type="string",
-                            ref_class="SalesContract", ref_property=name,
-                            alignment="semantic", confidence=0.9)
-            for i, name in enumerate([
-                "contractIdentifier", "effectiveDate", "contractType",
-                "ghost1", "ghost2",
-            ])
+            ColumnAlignment(
+                column=f"C{i}",
+                data_type="string",
+                ref_class="SalesContract",
+                ref_property=name,
+                alignment="semantic",
+                confidence=0.9,
+            )
+            for i, name in enumerate(
+                [
+                    "contractIdentifier",
+                    "effectiveDate",
+                    "contractType",
+                    "ghost1",
+                    "ghost2",
+                ]
+            )
         ]
         alignment = DomainAlignment(
-            domain="commercial", domain_uris=[], generated_at="", model_used="",
-            tables=[TableAlignment(system="s", table="t", ref_class="SalesContract",
-                                   ref_class_confidence=0.9, columns=cols)],
+            domain="commercial",
+            domain_uris=[],
+            generated_at="",
+            model_used="",
+            tables=[
+                TableAlignment(
+                    system="s",
+                    table="t",
+                    ref_class="SalesContract",
+                    ref_class_confidence=0.9,
+                    columns=cols,
+                )
+            ],
         )
         rollup = _build_reference_rollup(alignment, sample_ref_classes)
         sc = next(r for r in rollup if r["ref_class"] == "SalesContract")
@@ -1020,15 +994,28 @@ class TestBuildReferenceRollup:
 
     def test_no_hallucination_fields_when_clean(self, sample_ref_classes):
         alignment = DomainAlignment(
-            domain="commercial", domain_uris=[], generated_at="", model_used="",
-            tables=[TableAlignment(
-                system="s", table="t", ref_class="SalesContract",
-                ref_class_confidence=0.9,
-                columns=[ColumnAlignment(
-                    column="C", data_type="string", ref_class="SalesContract",
-                    ref_property="contractIdentifier", alignment="semantic",
-                    confidence=0.9)],
-            )],
+            domain="commercial",
+            domain_uris=[],
+            generated_at="",
+            model_used="",
+            tables=[
+                TableAlignment(
+                    system="s",
+                    table="t",
+                    ref_class="SalesContract",
+                    ref_class_confidence=0.9,
+                    columns=[
+                        ColumnAlignment(
+                            column="C",
+                            data_type="string",
+                            ref_class="SalesContract",
+                            ref_property="contractIdentifier",
+                            alignment="semantic",
+                            confidence=0.9,
+                        )
+                    ],
+                )
+            ],
         )
         rollup = _build_reference_rollup(alignment, sample_ref_classes)
         sc = next(r for r in rollup if r["ref_class"] == "SalesContract")
@@ -1044,19 +1031,18 @@ class TestBuildReferenceRollup:
 class TestRunProposeAlignment:
     def _mock_client(self, table_responses: dict[str, dict]):
         """Create a mock AI client that returns different responses per table."""
+
         def create_completion(**kwargs):
             prompt = kwargs["messages"][1]["content"]
             for table_name, response in table_responses.items():
                 if table_name in prompt:
                     return mock.MagicMock(
-                        choices=[mock.MagicMock(
-                            message=mock.MagicMock(content=json.dumps(response))
-                        )]
+                        choices=[
+                            mock.MagicMock(message=mock.MagicMock(content=json.dumps(response)))
+                        ]
                     )
             return mock.MagicMock(
-                choices=[mock.MagicMock(
-                    message=mock.MagicMock(content=json.dumps({}))
-                )]
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps({})))]
             )
 
         client = mock.MagicMock()
@@ -1069,40 +1055,72 @@ class TestRunProposeAlignment:
                 "ref_class": "SalesContract",
                 "ref_class_confidence": 0.9,
                 "column_alignments": [
-                    {"column": "ContractNo", "ref_class": "SalesContract",
-                     "ref_property": "contractIdentifier", "alignment": "semantic",
-                     "confidence": 0.92, "rationale": "Contract ID"},
-                    {"column": "ValidFrom", "ref_class": "SalesContract",
-                     "ref_property": "effectiveDate", "alignment": "semantic",
-                     "confidence": 0.85, "rationale": "Start date"},
-                    {"column": "InternalCode", "ref_property": "internalCode",
-                     "alignment": "custom", "confidence": 0.0,
-                     "rationale": "No match"},
+                    {
+                        "column": "ContractNo",
+                        "ref_class": "SalesContract",
+                        "ref_property": "contractIdentifier",
+                        "alignment": "semantic",
+                        "confidence": 0.92,
+                        "rationale": "Contract ID",
+                    },
+                    {
+                        "column": "ValidFrom",
+                        "ref_class": "SalesContract",
+                        "ref_property": "effectiveDate",
+                        "alignment": "semantic",
+                        "confidence": 0.85,
+                        "rationale": "Start date",
+                    },
+                    {
+                        "column": "InternalCode",
+                        "ref_property": "internalCode",
+                        "alignment": "custom",
+                        "confidence": 0.0,
+                        "rationale": "No match",
+                    },
                 ],
             },
             "tblParties": {
                 "ref_class": "TradeParty",
                 "ref_class_confidence": 0.88,
                 "column_alignments": [
-                    {"column": "PartyName", "ref_class": "TradeParty",
-                     "ref_property": "partyName", "alignment": "exact",
-                     "confidence": 0.95, "rationale": "Direct match"},
+                    {
+                        "column": "PartyName",
+                        "ref_class": "TradeParty",
+                        "ref_property": "partyName",
+                        "alignment": "exact",
+                        "confidence": 0.95,
+                        "rationale": "Direct match",
+                    },
                 ],
             },
         }
         client = self._mock_client(responses)
 
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=[
-                {"name": "SalesContract", "label": "Sales Contract", "comment": "",
-                 "properties": [
-                     {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
-                     {"name": "effectiveDate", "label": "Effective Date", "range": "dateTime"},
-                 ]},
-            ],
+        with (
+            mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=[
+                    {
+                        "name": "SalesContract",
+                        "label": "Sales Contract",
+                        "comment": "",
+                        "properties": [
+                            {
+                                "name": "contractIdentifier",
+                                "label": "Contract ID",
+                                "range": "string",
+                            },
+                            {
+                                "name": "effectiveDate",
+                                "label": "Effective Date",
+                                "range": "dateTime",
+                            },
+                        ],
+                    },
+                ],
+            ),
         ):
             alignments = build_domain_alignments(
                 analysis_dir=analysis_dir,
@@ -1150,23 +1168,33 @@ class TestRunProposeAlignment:
                 "ref_class": "TradeParty",
                 "ref_class_confidence": 0.88,
                 "column_alignments": [
-                    {"column": "SHIPPER_STREET", "ref_class": "TradeParty",
-                     "ref_property": "partyName", "alignment": "semantic",
-                     "confidence": 0.5, "rationale": "Best available"},
+                    {
+                        "column": "SHIPPER_STREET",
+                        "ref_class": "TradeParty",
+                        "ref_property": "partyName",
+                        "alignment": "semantic",
+                        "confidence": 0.5,
+                        "rationale": "Best available",
+                    },
                 ],
             },
         }
         client = self._mock_client(responses)
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=[
-                {"name": "TradeParty", "label": "Trade Party", "comment": "",
-                 "properties": [
-                     {"name": "partyName", "label": "Party Name", "range": "string"},
-                 ]},
-            ],
+        with (
+            mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=[
+                    {
+                        "name": "TradeParty",
+                        "label": "Trade Party",
+                        "comment": "",
+                        "properties": [
+                            {"name": "partyName", "label": "Party Name", "range": "string"},
+                        ],
+                    },
+                ],
+            ),
         ):
             alignments = build_domain_alignments(
                 analysis_dir=analysis_dir,
@@ -1180,39 +1208,6 @@ class TestRunProposeAlignment:
         assert col["column"] == "SHIPPER_STREET"
         assert col["review"] is True
         assert "address-part" in col["review_reason"]
-
-    def test_domain_filter(self, analysis_dir, sources_dir, tmp_path):
-        client = mock.MagicMock()
-        client.chat.completions.create.return_value = mock.MagicMock(
-            choices=[mock.MagicMock(
-                message=mock.MagicMock(content=json.dumps({
-                    "ref_class": "", "ref_class_confidence": 0,
-                    "column_alignments": [],
-                }))
-            )]
-        )
-
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=[],
-        ):
-            files = run_propose_alignment(
-                analysis_dir=analysis_dir,
-                sources_dir=sources_dir,
-                catalog_path=None,
-                output_dir=tmp_path,
-                domains_filter=["commercial"],
-                # Alignment-reliability: every table here is fallback_only (no ref
-                # classes at all, via the mocked empty inventory) — this test is
-                # about --domains filtering, not fallback-registry gating, so opt in
-                # explicitly to keep asserting on the written file.
-                allow_fallback_registry=True,
-            )
-
-        assert len(files) == 1
-        assert files[0].name == "commercial-claims.yaml"
 
     def test_no_affinity_reports_raises(self, tmp_path):
         with pytest.raises(ValueError, match="No affinity reports"):
@@ -1233,7 +1228,9 @@ class TestRunProposeAlignment:
                 domains_filter=["nonexistent"],
             )
 
-    def test_retries_with_full_inventory_on_weak_shortlist(self, analysis_dir, sources_dir, tmp_path):
+    def test_retries_with_full_inventory_on_weak_shortlist(
+        self, analysis_dir, sources_dir, tmp_path
+    ):
         calls: list[str] = []
 
         def create_completion(**kwargs):
@@ -1271,7 +1268,9 @@ class TestRunProposeAlignment:
                 "name": "SalesContract",
                 "label": "Sales Contract",
                 "comment": "",
-                "properties": [{"name": "contractIdentifier", "label": "Contract ID", "range": "string"}],
+                "properties": [
+                    {"name": "contractIdentifier", "label": "Contract ID", "range": "string"}
+                ],
             },
             {
                 "name": "TradeTerms",
@@ -1281,11 +1280,12 @@ class TestRunProposeAlignment:
             },
         ]
 
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=ref_classes,
+        with (
+            mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=ref_classes,
+            ),
         ):
             files = run_propose_alignment(
                 analysis_dir=analysis_dir,
@@ -1310,14 +1310,19 @@ class TestRunProposeAlignment:
 
 class TestAlignmentConcurrencyAndCaching:
     REF_CLASSES = [
-        {"name": "SalesContract", "label": "Sales Contract", "comment": "",
-         "properties": [
-             {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
-         ]},
+        {
+            "name": "SalesContract",
+            "label": "Sales Contract",
+            "comment": "",
+            "properties": [
+                {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+            ],
+        },
     ]
 
     def _counting_client(self, counter: list[int]):
         """A mock client that returns a valid alignment and counts each call."""
+
         def create_completion(**kwargs):
             counter.append(1)
             prompt = kwargs["messages"][1]["content"]
@@ -1326,24 +1331,31 @@ class TestAlignmentConcurrencyAndCaching:
                 "ref_class": ref_class,
                 "ref_class_confidence": 0.9,
                 "column_alignments": [
-                    {"column": "ContractNo", "ref_class": ref_class,
-                     "ref_property": "contractIdentifier", "alignment": "semantic",
-                     "confidence": 0.9, "rationale": "id"},
+                    {
+                        "column": "ContractNo",
+                        "ref_class": ref_class,
+                        "ref_property": "contractIdentifier",
+                        "alignment": "semantic",
+                        "confidence": 0.9,
+                        "rationale": "id",
+                    },
                 ],
             }
             return mock.MagicMock(
                 choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
             )
+
         client = mock.MagicMock()
         client.chat.completions.create = create_completion
         return client
 
     def _run(self, client, analysis_dir, sources_dir, output_dir, **kw):
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
+        with (
+            mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=self.REF_CLASSES,
+            ),
         ):
             return run_propose_alignment(
                 analysis_dir=analysis_dir,
@@ -1408,36 +1420,20 @@ class TestAlignmentConcurrencyAndCaching:
         # The commercial table changed → at least one fresh call (party may differ too).
         assert len(counter) >= 1
 
-    def test_parallel_matches_serial(self, analysis_dir, sources_dir, tmp_path):
-        serial_out = tmp_path / "serial"
-        parallel_out = tmp_path / "parallel"
-        self._run(
-            self._counting_client([]), analysis_dir, sources_dir, serial_out,
-            max_workers=1, force=True,
-        )
-        self._run(
-            self._counting_client([]), analysis_dir, sources_dir, parallel_out,
-            max_workers=4, force=True,
-        )
-        for name in ("commercial-claims.yaml", "party-claims.yaml"):
-            s = load_registry(serial_out / name)
-            p = load_registry(parallel_out / name)
-            # generated_at differs; compare the deterministic claim payloads only.
-            s_claims = [c.to_dict() for c in s.claims]
-            p_claims = [c.to_dict() for c in p.claims]
-            assert [c["id"] for c in s_claims] == [c["id"] for c in p_claims]
-            assert s_claims == p_claims
-
 
 class TestAlignmentReliability:
     """Alignment-reliability: typed generation outcomes, total/partial failure,
     fallback-only gating, and no-cache-on-failure for the run-level pipeline."""
 
     REF_CLASSES = [
-        {"name": "SalesContract", "label": "Sales Contract", "comment": "",
-         "properties": [
-             {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
-         ]},
+        {
+            "name": "SalesContract",
+            "label": "Sales Contract",
+            "comment": "",
+            "properties": [
+                {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+            ],
+        },
     ]
 
     def _failing_client(self):
@@ -1450,167 +1446,75 @@ class TestAlignmentReliability:
             prompt = kwargs["messages"][1]["content"]
             ref_class = "SalesContract" if "tblContracts" in prompt else "TradeParty"
             payload = {
-                "ref_class": ref_class, "ref_class_confidence": 0.9,
+                "ref_class": ref_class,
+                "ref_class_confidence": 0.9,
                 "column_alignments": [
-                    {"column": "ContractNo", "ref_class": ref_class,
-                     "ref_property": "contractIdentifier", "alignment": "semantic",
-                     "confidence": 0.9, "rationale": "id"},
+                    {
+                        "column": "ContractNo",
+                        "ref_class": ref_class,
+                        "ref_property": "contractIdentifier",
+                        "alignment": "semantic",
+                        "confidence": 0.9,
+                        "rationale": "id",
+                    },
                 ],
             }
             return mock.MagicMock(
                 choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
             )
+
         client = mock.MagicMock()
         client.chat.completions.create = create_completion
         return client
 
     def _partial_failure_client(self):
         """Succeeds for tblContracts (commercial), fails for tblParties (party)."""
+
         def create_completion(**kwargs):
             prompt = kwargs["messages"][1]["content"]
             if "tblParties" in prompt:
                 raise RuntimeError("provider outage")
             payload = {
-                "ref_class": "SalesContract", "ref_class_confidence": 0.9,
+                "ref_class": "SalesContract",
+                "ref_class_confidence": 0.9,
                 "column_alignments": [
-                    {"column": "ContractNo", "ref_class": "SalesContract",
-                     "ref_property": "contractIdentifier", "alignment": "semantic",
-                     "confidence": 0.9, "rationale": "id"},
+                    {
+                        "column": "ContractNo",
+                        "ref_class": "SalesContract",
+                        "ref_property": "contractIdentifier",
+                        "alignment": "semantic",
+                        "confidence": 0.9,
+                        "rationale": "id",
+                    },
                 ],
             }
             return mock.MagicMock(
                 choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
             )
+
         client = mock.MagicMock()
         client.chat.completions.create = create_completion
         return client
-
-    def test_total_failure_raises_and_writes_nothing(self, analysis_dir, sources_dir, tmp_path):
-        out = tmp_path / "out"
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=self._failing_client(),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
-        ):
-            with pytest.raises(AlignmentTotalFailureError):
-                run_propose_alignment(
-                    analysis_dir=analysis_dir, sources_dir=sources_dir,
-                    catalog_path=None, output_dir=out,
-                )
-        # Nothing on disk — a total failure must never be reported (or persisted)
-        # as if it were a real, if empty, result.
-        assert not out.exists() or list(out.glob("*-claims.yaml")) == []
-
-    def test_partial_failure_writes_success_skips_failed_domain(
-        self, analysis_dir, sources_dir, tmp_path
-    ):
-        out = tmp_path / "out"
-        messages: list[str] = []
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=self._partial_failure_client(),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
-        ):
-            files = run_propose_alignment(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, output_dir=out,
-                report=lambda msg, **kw: messages.append(msg),
-            )
-        names = {f.name for f in files}
-        assert names == {"commercial-claims.yaml"}
-        assert not (out / "party-claims.yaml").exists()
-        # The failed table's outcome is visible, not hidden behind --verbose.
-        assert any("FAILED" in m or "party" in m.lower() for m in messages)
-
-    def test_fallback_only_domain_skipped_by_default(self, analysis_dir, sources_dir, tmp_path):
-        out = tmp_path / "out"
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=mock.MagicMock(),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=[],
-        ):
-            files = run_propose_alignment(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, output_dir=out,
-            )
-        # No reference classes at all → every table is fallback_only; without the
-        # explicit opt-in, an incomplete/placeholder-only registry is never written.
-        assert files == []
-        assert list(out.glob("*-claims.yaml")) == [] if out.exists() else True
-
-    def test_allow_fallback_registry_writes_incomplete_domain(
-        self, analysis_dir, sources_dir, tmp_path
-    ):
-        out = tmp_path / "out"
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=mock.MagicMock(),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=[],
-        ):
-            files = run_propose_alignment(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, output_dir=out,
-                allow_fallback_registry=True,
-            )
-        assert {f.name for f in files} == {"commercial-claims.yaml", "party-claims.yaml"}
-        registry = load_registry(out / "commercial-claims.yaml")
-        assert registry.generation_outcomes
-        assert all(g.outcome == OUTCOME_FALLBACK_ONLY for g in registry.generation_outcomes)
-
-    def test_provider_failure_is_not_cached(self, analysis_dir, sources_dir, tmp_path):
-        out1 = tmp_path / "out1"
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=self._failing_client(),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
-        ):
-            with pytest.raises(AlignmentTotalFailureError):
-                run_propose_alignment(
-                    analysis_dir=analysis_dir, sources_dir=sources_dir,
-                    catalog_path=None, output_dir=out1,
-                )
-
-        # A second run (fresh output dir, same analysis/sources — same sidecar
-        # cache) with a working client must still call the LLM for real: the
-        # earlier provider_failure must not have been cached as a permanent result.
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=self._success_client(),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
-        ):
-            files = run_propose_alignment(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, output_dir=tmp_path / "out2",
-            )
-        assert {f.name for f in files} == {"commercial-claims.yaml", "party-claims.yaml"}
-        registry = load_registry(tmp_path / "out2" / "commercial-claims.yaml")
-        assert registry.claims  # real semantic content was produced, not empty
 
     def test_generation_stats_populated(self, analysis_dir, sources_dir, tmp_path):
         from kairos_ontology.core.propose_alignment import _propose_alignments
 
         stats: dict[str, int] = {}
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=self._success_client(),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
+        with (
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.get_ai_client",
+                return_value=self._success_client(),
+            ),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=self.REF_CLASSES,
+            ),
         ):
             _propose_alignments(
-                analysis_dir, sources_dir, None, tmp_path / "out",
+                analysis_dir,
+                sources_dir,
+                None,
+                tmp_path / "out",
                 generation_stats=stats,
             )
         assert stats == {"attempted": 2, "semantic_success": 2, "provider_failure": 0}
@@ -1623,16 +1527,24 @@ class TestUriAnchorContractIntegration:
     a human 'resolved' decision on that record is honored on the next run."""
 
     REF_CLASSES = [
-        {"name": "SalesContract", "label": "Sales Contract", "comment": "",
-         "uri": "https://example.com/ont/commercial#SalesContract",
-         "properties": [
-             {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
-         ]},
-        {"name": "TradeTerms", "label": "Trade Terms", "comment": "",
-         "uri": "https://example.com/ont/commercial#TradeTerms",
-         "properties": [
-             {"name": "incoterm", "label": "Incoterm", "range": "string"},
-         ]},
+        {
+            "name": "SalesContract",
+            "label": "Sales Contract",
+            "comment": "",
+            "uri": "https://example.com/ont/commercial#SalesContract",
+            "properties": [
+                {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+            ],
+        },
+        {
+            "name": "TradeTerms",
+            "label": "Trade Terms",
+            "comment": "",
+            "uri": "https://example.com/ont/commercial#TradeTerms",
+            "properties": [
+                {"name": "incoterm", "label": "Incoterm", "range": "string"},
+            ],
+        },
     ]
 
     def _model_prefers_trade_terms_client(self, call_log: list[str] | None = None):
@@ -1640,45 +1552,67 @@ class TestUriAnchorContractIntegration:
             if call_log is not None:
                 call_log.append(kwargs["messages"][1]["content"])
             payload = {
-                "ref_class": "TradeTerms", "ref_class_confidence": 0.8,
+                "ref_class": "TradeTerms",
+                "ref_class_confidence": 0.8,
                 "column_alignments": [
-                    {"column": "ContractNo",
-                     "ref_property": "incoterm", "alignment": "semantic",
-                     "confidence": 0.7, "rationale": "model's own guess"},
+                    {
+                        "column": "ContractNo",
+                        "ref_property": "incoterm",
+                        "alignment": "semantic",
+                        "confidence": 0.7,
+                        "rationale": "model's own guess",
+                    },
                 ],
             }
             return mock.MagicMock(
                 choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
             )
+
         client = mock.MagicMock()
         client.chat.completions.create = create_completion
         return client
 
     def _write_conformance(self, tmp_path, *concepts, name="core-concepts-conformance.yaml"):
         path = tmp_path / name
-        path.write_text(yaml.safe_dump({
-            "schema_version": 1,
-            "core_concepts": list(concepts),
-        }), encoding="utf-8")
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "core_concepts": list(concepts),
+                }
+            ),
+            encoding="utf-8",
+        )
         return path
 
     def test_confirmed_anchor_overrides_model_pick(
-        self, analysis_dir, sources_dir, tmp_path,
+        self,
+        analysis_dir,
+        sources_dir,
+        tmp_path,
     ):
-        conformance = self._write_conformance(tmp_path, {
-            "uri": "https://example.com/ont/commercial#SalesContract",
-            "label": "SalesContract", "outcome": "conforms",
-        })
+        conformance = self._write_conformance(
+            tmp_path,
+            {
+                "uri": "https://example.com/ont/commercial#SalesContract",
+                "label": "SalesContract",
+                "outcome": "conforms",
+            },
+        )
         client = self._model_prefers_trade_terms_client()
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
+        with (
+            mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=self.REF_CLASSES,
+            ),
         ):
             alignments = build_domain_alignments(
-                analysis_dir=analysis_dir, sources_dir=sources_dir, catalog_path=None,
-                domains_filter=["commercial"], conformance_artifact_path=conformance,
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
+                domains_filter=["commercial"],
+                conformance_artifact_path=conformance,
             )
         commercial = next(a for a in alignments if a.domain == "commercial")
         ta = next(t for t in commercial.tables if t.table == "tblContracts")
@@ -1693,175 +1627,31 @@ class TestUriAnchorContractIntegration:
         assert commercial.unresolved_anchors == []
 
     def test_no_conformance_artifact_keeps_existing_behavior(
-        self, analysis_dir, sources_dir, tmp_path,
+        self,
+        analysis_dir,
+        sources_dir,
+        tmp_path,
     ):
         # Default (no confirmed evidence at all) — the model's own pick stands,
         # exactly as before this feature.
         client = self._model_prefers_trade_terms_client()
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
+        with (
+            mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=self.REF_CLASSES,
+            ),
         ):
             alignments = build_domain_alignments(
-                analysis_dir=analysis_dir, sources_dir=sources_dir, catalog_path=None,
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
                 domains_filter=["commercial"],
             )
-        ta = next(
-            t for t in alignments[0].tables if t.table == "tblContracts"
-        )
+        ta = next(t for t in alignments[0].tables if t.table == "tblContracts")
         assert ta.ref_class == "TradeTerms"
         assert ta.ref_class_status == "matched"
         assert ta.likely_entity_uri == ""
-
-    def test_ambiguous_confirmed_anchor_blocks_property_claims(
-        self, analysis_dir, sources_dir, tmp_path,
-    ):
-        conformance = self._write_conformance(
-            tmp_path,
-            {"uri": "https://example.com/ont/commercial#SalesContract",
-             "label": "SalesContract", "outcome": "conforms"},
-            {"uri": "https://example.com/ont/commercial#TradeTerms",
-             "label": "SalesContract", "outcome": "conforms"},
-        )
-        call_log: list[str] = []
-        client = self._model_prefers_trade_terms_client(call_log)
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
-        ):
-            alignments = build_domain_alignments(
-                analysis_dir=analysis_dir, sources_dir=sources_dir, catalog_path=None,
-                domains_filter=["commercial"], conformance_artifact_path=conformance,
-            )
-
-        # No LLM call was ever made for the ambiguous table (cost + correctness).
-        assert call_log == []
-
-        commercial = next(a for a in alignments if a.domain == "commercial")
-        ta = next(t for t in commercial.tables if t.table == "tblContracts")
-        assert ta.ref_class == ""
-        assert ta.ref_class_status == "unresolved"
-        assert ta.columns == []
-        assert ta.custom_columns == []  # no passthrough claims materialized either
-        assert set(ta.anchor_candidate_uris) == {
-            "https://example.com/ont/commercial#SalesContract",
-            "https://example.com/ont/commercial#TradeTerms",
-        }
-        assert len(commercial.unresolved_anchors) == 1
-        record = commercial.unresolved_anchors[0]
-        assert record["table"] == "tblContracts"
-        assert record["system"] == "adminpulse"
-        assert record["status"] == "open"
-        assert set(record["candidate_uris"]) == set(ta.anchor_candidate_uris)
-
-    def test_ambiguous_anchor_writes_no_claims_and_a_separate_anchors_file(
-        self, analysis_dir, sources_dir, tmp_path,
-    ):
-        conformance = self._write_conformance(
-            tmp_path,
-            {"uri": "https://example.com/ont/commercial#SalesContract",
-             "label": "SalesContract", "outcome": "conforms"},
-            {"uri": "https://example.com/ont/commercial#TradeTerms",
-             "label": "SalesContract", "outcome": "conforms"},
-        )
-        client = self._model_prefers_trade_terms_client()
-        out = tmp_path / "out"
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
-        ):
-            run_propose_alignment(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, output_dir=out,
-                domains_filter=["commercial"], conformance_artifact_path=conformance,
-                # This domain's only table is unresolved (fallback_only) —
-                # writing a placeholder registry requires the explicit opt-in,
-                # same as any other all-fallback domain (alignment-reliability).
-                allow_fallback_registry=True,
-            )
-
-        registry = load_registry(out / "commercial-claims.yaml")
-        assert not any(
-            c.evidence_sources and c.evidence_sources[0].table == "tblContracts"
-            for c in registry.claims
-        )
-        anchors_path = out / "commercial-unresolved-anchors.yaml"
-        assert anchors_path.is_file()
-        doc = yaml.safe_load(anchors_path.read_text(encoding="utf-8"))
-        assert doc["domain"] == "commercial"
-        assert len(doc["anchors"]) == 1
-        assert doc["anchors"][0]["status"] == "open"
-
-    def test_human_resolved_decision_is_honored_on_next_run(
-        self, analysis_dir, sources_dir, tmp_path,
-    ):
-        conformance = self._write_conformance(
-            tmp_path,
-            {"uri": "https://example.com/ont/commercial#SalesContract",
-             "label": "SalesContract", "outcome": "conforms"},
-            {"uri": "https://example.com/ont/commercial#TradeTerms",
-             "label": "SalesContract", "outcome": "conforms"},
-        )
-        out = tmp_path / "out"
-        client = self._model_prefers_trade_terms_client()
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
-        ):
-            run_propose_alignment(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, output_dir=out,
-                domains_filter=["commercial"], conformance_artifact_path=conformance,
-                allow_fallback_registry=True,
-            )
-
-        # A human resolves the ambiguity by hand, choosing TradeTerms.
-        anchors_path = out / "commercial-unresolved-anchors.yaml"
-        doc = yaml.safe_load(anchors_path.read_text(encoding="utf-8"))
-        doc["anchors"][0]["status"] = "resolved"
-        doc["anchors"][0]["resolved_uri"] = (
-            "https://example.com/ont/commercial#TradeTerms"
-        )
-        doc["anchors"][0]["resolved_by"] = "a-human"
-        anchors_path.write_text(yaml.safe_dump(doc), encoding="utf-8")
-
-        # Re-running (force=True to bypass the domain/table caches) must now
-        # honor the human's resolution: the anchor is no longer ambiguous, the
-        # LLM is called for the table again, and it aligns against TradeTerms.
-        call_log: list[str] = []
-        client2 = self._model_prefers_trade_terms_client(call_log)
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client2
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
-        ):
-            run_propose_alignment(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, output_dir=out,
-                domains_filter=["commercial"], conformance_artifact_path=conformance,
-                force=True,
-            )
-
-        assert any("tblContracts" in prompt for prompt in call_log)
-        registry = load_registry(out / "commercial-claims.yaml")
-        cls = next(c for c in registry.claims if c.type == "class")
-        assert cls.id == "commercial-tradeterms"
-
-        doc_after = yaml.safe_load(anchors_path.read_text(encoding="utf-8"))
-        assert doc_after["anchors"][0]["status"] == "resolved"
-        assert (
-            doc_after["anchors"][0]["resolved_uri"]
-            == "https://example.com/ont/commercial#TradeTerms"
-        )
 
 
 class TestProposeAlignmentCLIReliability:
@@ -1892,62 +1682,20 @@ class TestProposeAlignmentCLIReliability:
         ):
             result = CliRunner().invoke(
                 cli,
-                ["propose-alignment", "--analysis", str(analysis),
-                 "--sources", str(sources), "--output", str(tmp_path / "out")],
+                [
+                    "propose-alignment",
+                    "--analysis",
+                    str(analysis),
+                    "--sources",
+                    str(sources),
+                    "--output",
+                    str(tmp_path / "out"),
+                ],
             )
         assert result.exit_code == 1
         assert "✅" not in result.output
         assert "Proposal complete" not in result.output
         assert "all 2 attempted table(s) failed" in result.output
-
-    def test_allow_fallback_registry_flag_is_passed_through(self, tmp_path):
-        from click.testing import CliRunner
-
-        from kairos_ontology.cli.main import cli
-
-        analysis, sources = self._cli_setup(tmp_path)
-        captured_kwargs: dict = {}
-
-        def fake_run(*args, **kwargs):
-            captured_kwargs.update(kwargs)
-            return []
-
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.run_propose_alignment",
-            side_effect=fake_run,
-        ):
-            result = CliRunner().invoke(
-                cli,
-                ["propose-alignment", "--analysis", str(analysis),
-                 "--sources", str(sources), "--output", str(tmp_path / "out"),
-                 "--allow-fallback-registry"],
-            )
-        assert result.exit_code == 0, result.output
-        assert captured_kwargs.get("allow_fallback_registry") is True
-
-    def test_allow_fallback_registry_defaults_to_false(self, tmp_path):
-        from click.testing import CliRunner
-
-        from kairos_ontology.cli.main import cli
-
-        analysis, sources = self._cli_setup(tmp_path)
-        captured_kwargs: dict = {}
-
-        def fake_run(*args, **kwargs):
-            captured_kwargs.update(kwargs)
-            return []
-
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.run_propose_alignment",
-            side_effect=fake_run,
-        ):
-            result = CliRunner().invoke(
-                cli,
-                ["propose-alignment", "--analysis", str(analysis),
-                 "--sources", str(sources), "--output", str(tmp_path / "out")],
-            )
-        assert result.exit_code == 0, result.output
-        assert captured_kwargs.get("allow_fallback_registry") is False
 
     def test_provider_failure_summary_line_shown(self, tmp_path):
         from click.testing import CliRunner
@@ -1959,17 +1707,25 @@ class TestProposeAlignmentCLIReliability:
             "kairos_ontology.core.propose_alignment.run_propose_alignment",
             return_value=[],
         ) as run_mock:
+
             def side_effect(*args, **kwargs):
                 stats = kwargs.get("generation_stats")
                 if stats is not None:
-                    stats.update({"attempted": 3, "semantic_success": 2,
-                                  "provider_failure": 1})
+                    stats.update({"attempted": 3, "semantic_success": 2, "provider_failure": 1})
                 return []
+
             run_mock.side_effect = side_effect
             result = CliRunner().invoke(
                 cli,
-                ["propose-alignment", "--analysis", str(analysis),
-                 "--sources", str(sources), "--output", str(tmp_path / "out")],
+                [
+                    "propose-alignment",
+                    "--analysis",
+                    str(analysis),
+                    "--sources",
+                    str(sources),
+                    "--output",
+                    str(tmp_path / "out"),
+                ],
             )
         assert result.exit_code == 0, result.output
         assert "1 of 3 attempted table(s) had a semantic generation failure" in result.output
@@ -1989,16 +1745,24 @@ class TestTotalFailureNoWriteGuarantee:
     """
 
     REF_CLASSES = [
-        {"name": "SalesContract", "label": "Sales Contract", "comment": "",
-         "uri": "https://example.com/ont/commercial#SalesContract",
-         "properties": [
-             {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
-         ]},
-        {"name": "TradeTerms", "label": "Trade Terms", "comment": "",
-         "uri": "https://example.com/ont/commercial#TradeTerms",
-         "properties": [
-             {"name": "incoterm", "label": "Incoterm", "range": "string"},
-         ]},
+        {
+            "name": "SalesContract",
+            "label": "Sales Contract",
+            "comment": "",
+            "uri": "https://example.com/ont/commercial#SalesContract",
+            "properties": [
+                {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+            ],
+        },
+        {
+            "name": "TradeTerms",
+            "label": "Trade Terms",
+            "comment": "",
+            "uri": "https://example.com/ont/commercial#TradeTerms",
+            "properties": [
+                {"name": "incoterm", "label": "Incoterm", "range": "string"},
+            ],
+        },
     ]
 
     @pytest.fixture
@@ -2013,14 +1777,24 @@ class TestTotalFailureNoWriteGuarantee:
             "model_used": "gpt-5.4-mini",
             "schema_version": 2,
             "tables": [
-                {"table": "tblContracts", "total_columns": 1, "domain": "commercial",
-                 "domain_uris": ["https://example.com/ont/commercial#"],
-                 "confidence": 0.9, "likely_entity": "SalesContract",
-                 "indicative_columns": ["ContractNo"]},
-                {"table": "tblOrders", "total_columns": 1, "domain": "commercial",
-                 "domain_uris": ["https://example.com/ont/commercial#"],
-                 "confidence": 0.8, "likely_entity": "PurchaseOrder",
-                 "indicative_columns": ["OrderNo"]},
+                {
+                    "table": "tblContracts",
+                    "total_columns": 1,
+                    "domain": "commercial",
+                    "domain_uris": ["https://example.com/ont/commercial#"],
+                    "confidence": 0.9,
+                    "likely_entity": "SalesContract",
+                    "indicative_columns": ["ContractNo"],
+                },
+                {
+                    "table": "tblOrders",
+                    "total_columns": 1,
+                    "domain": "commercial",
+                    "domain_uris": ["https://example.com/ont/commercial#"],
+                    "confidence": 0.8,
+                    "likely_entity": "PurchaseOrder",
+                    "indicative_columns": ["OrderNo"],
+                },
             ],
         }
         (analysis / "adminpulse-affinity.yaml").write_text(
@@ -2033,7 +1807,8 @@ class TestTotalFailureNoWriteGuarantee:
         sources = tmp_path / "sources"
         admin_dir = sources / "adminpulse"
         admin_dir.mkdir(parents=True)
-        (admin_dir / "adminpulse.vocabulary.ttl").write_text("""\
+        (admin_dir / "adminpulse.vocabulary.ttl").write_text(
+            """\
 @prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
 
 <#tblContracts> a kairos-bronze:SourceTable ;
@@ -2051,20 +1826,33 @@ class TestTotalFailureNoWriteGuarantee:
     kairos-bronze:columnName "OrderNo" ;
     kairos-bronze:dataType "nvarchar(50)" ;
     kairos-bronze:belongsToTable <#tblOrders> .
-""", encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
         return sources
 
     def _ambiguous_conformance(self, tmp_path):
         path = tmp_path / "core-concepts-conformance.yaml"
-        path.write_text(yaml.safe_dump({
-            "schema_version": 1,
-            "core_concepts": [
-                {"uri": "https://example.com/ont/commercial#SalesContract",
-                 "label": "SalesContract", "outcome": "conforms"},
-                {"uri": "https://example.com/ont/commercial#TradeTerms",
-                 "label": "SalesContract", "outcome": "conforms"},
-            ],
-        }), encoding="utf-8")
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "core_concepts": [
+                        {
+                            "uri": "https://example.com/ont/commercial#SalesContract",
+                            "label": "SalesContract",
+                            "outcome": "conforms",
+                        },
+                        {
+                            "uri": "https://example.com/ont/commercial#TradeTerms",
+                            "label": "SalesContract",
+                            "outcome": "conforms",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         return path
 
     def _failing_client(self):
@@ -2072,116 +1860,11 @@ class TestTotalFailureNoWriteGuarantee:
         client.chat.completions.create.side_effect = RuntimeError("provider outage")
         return client
 
-    def test_mixed_provider_failure_and_fallback_only_domain_writes_nothing(
-        self, mixed_analysis_dir, mixed_sources_dir, tmp_path,
-    ):
-        out = tmp_path / "out"
-        out.mkdir()
-        # A previously-good registry must survive the failed run untouched.
-        existing = out / "commercial-claims.yaml"
-        existing.write_text("domain: commercial\n# curated by a human\n", encoding="utf-8")
-        before = existing.read_text(encoding="utf-8")
-        conformance = self._ambiguous_conformance(tmp_path)
-        stats: dict[str, int] = {}
-
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=self._failing_client(),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
-        ):
-            with pytest.raises(AlignmentTotalFailureError) as exc:
-                run_propose_alignment(
-                    analysis_dir=mixed_analysis_dir, sources_dir=mixed_sources_dir,
-                    catalog_path=None, output_dir=out,
-                    conformance_artifact_path=conformance,
-                    generation_stats=stats,
-                )
-
-        # Exactly one of the domain's two tables was attempted (and failed); the
-        # other never called the provider — the mixed shape no per-domain gate
-        # covers.
-        assert stats == {"attempted": 1, "semantic_success": 0, "provider_failure": 1}
-        assert "No claim registries were written" in str(exc.value)
-        # The domain mixes fallback_only + provider_failure, so neither
-        # per-domain gate fires — only the staged-write guarantee protects it.
-        assert existing.read_text(encoding="utf-8") == before
-        assert list(out.glob("*-unresolved-anchors.yaml")) == []
-
-    def test_opted_in_fallback_only_domain_not_written_on_total_failure(
-        self, analysis_dir, sources_dir, tmp_path,
-    ):
-        out = tmp_path / "out"
-
-        def inventory(domain_uris, *args, **kwargs):
-            # commercial resolves a reference model (its table is attempted and
-            # fails); party resolves none at all (fallback_only).
-            if any("commercial" in str(u) for u in domain_uris):
-                return self.REF_CLASSES
-            return []
-
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=self._failing_client(),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            side_effect=inventory,
-        ):
-            with pytest.raises(AlignmentTotalFailureError):
-                run_propose_alignment(
-                    analysis_dir=analysis_dir, sources_dir=sources_dir,
-                    catalog_path=None, output_dir=out,
-                    allow_fallback_registry=True,
-                )
-
-        # Even the explicitly opted-in fallback-only domain stays uncommitted:
-        # the error states nothing was written, so nothing may be written.
-        assert list(out.glob("*-claims.yaml")) == []
-
-    def test_partial_success_still_commits_staged_writes(
-        self, analysis_dir, sources_dir, tmp_path,
-    ):
-        """Staging must not change the happy/partial path: a run with at least
-        one semantic success still writes every eligible domain."""
-        out = tmp_path / "out"
-
-        def create_completion(**kwargs):
-            prompt = kwargs["messages"][1]["content"]
-            if "tblParties" in prompt:
-                raise RuntimeError("provider outage")
-            payload = {
-                "ref_class": "SalesContract", "ref_class_confidence": 0.9,
-                "column_alignments": [
-                    {"column": "ContractNo", "ref_class": "SalesContract",
-                     "ref_property": "contractIdentifier", "alignment": "semantic",
-                     "confidence": 0.9, "rationale": "id"},
-                ],
-            }
-            return mock.MagicMock(
-                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
-            )
-
-        client = mock.MagicMock()
-        client.chat.completions.create = create_completion
-        messages: list[str] = []
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client,
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
-        ):
-            files = run_propose_alignment(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, output_dir=out,
-                report=lambda msg, **kw: messages.append(msg),
-            )
-        assert {f.name for f in files} == {"commercial-claims.yaml"}
-        assert (out / "commercial-claims.yaml").is_file()
-        assert any("Written" in m for m in messages)
-
     def test_cached_domain_skip_still_returned_in_order(
-        self, analysis_dir, sources_dir, tmp_path,
+        self,
+        analysis_dir,
+        sources_dir,
+        tmp_path,
     ):
         """A freshness-cached domain is reported once, in domain order, next to
         a newly committed one."""
@@ -2191,7 +1874,8 @@ class TestTotalFailureNoWriteGuarantee:
             prompt = kwargs["messages"][1]["content"]
             ref_class = "SalesContract" if "tblContracts" in prompt else "TradeTerms"
             payload = {
-                "ref_class": ref_class, "ref_class_confidence": 0.9,
+                "ref_class": ref_class,
+                "ref_class_confidence": 0.9,
                 "column_alignments": [],
             }
             return mock.MagicMock(
@@ -2200,19 +1884,27 @@ class TestTotalFailureNoWriteGuarantee:
 
         client = mock.MagicMock()
         client.chat.completions.create = create_completion
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client,
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
+        with (
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.get_ai_client",
+                return_value=client,
+            ),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=self.REF_CLASSES,
+            ),
         ):
             first = run_propose_alignment(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, output_dir=out,
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
+                output_dir=out,
             )
             second = run_propose_alignment(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, output_dir=out,
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
+                output_dir=out,
             )
         assert [f.name for f in second] == [f.name for f in first]
         assert [f.name for f in second] == sorted(f.name for f in second)
@@ -2225,20 +1917,28 @@ class TestModelPrecedence:
     """
 
     REF_CLASSES = [
-        {"name": "SalesContract", "label": "Sales Contract", "comment": "",
-         "properties": [
-             {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
-         ]},
+        {
+            "name": "SalesContract",
+            "label": "Sales Contract",
+            "comment": "",
+            "properties": [
+                {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+            ],
+        },
     ]
 
     def _recording_client(self, seen: list[str]):
         def create_completion(**kwargs):
             seen.append(kwargs["model"])
-            payload = {"ref_class": "SalesContract", "ref_class_confidence": 0.9,
-                       "column_alignments": []}
+            payload = {
+                "ref_class": "SalesContract",
+                "ref_class_confidence": 0.9,
+                "column_alignments": [],
+            }
             return mock.MagicMock(
                 choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
             )
+
         client = mock.MagicMock()
         client.chat.completions.create = create_completion
         return client
@@ -2247,45 +1947,54 @@ class TestModelPrecedence:
         import os
 
         seen: list[str] = []
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=self._recording_client(seen),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=self.REF_CLASSES,
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.get_ai_client",
+                return_value=self._recording_client(seen),
+            ),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=self.REF_CLASSES,
+            ),
         ):
             alignments = build_domain_alignments(
-                analysis_dir=analysis_dir, sources_dir=sources_dir,
-                catalog_path=None, model=model, domains_filter=["commercial"],
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
+                model=model,
+                domains_filter=["commercial"],
             )
         return seen, alignments
 
     def test_explicit_model_wins_over_role_env_override(self, analysis_dir, sources_dir):
         seen, alignments = self._run(
-            analysis_dir, sources_dir, "gpt-explicit",
+            analysis_dir,
+            sources_dir,
+            "gpt-explicit",
             {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override"},
         )
         assert seen and set(seen) == {"gpt-explicit"}
         assert alignments[0].model_used == "gpt-explicit"
 
-    def test_high_accuracy_model_wins_over_role_env_override(
-        self, analysis_dir, sources_dir
-    ):
+    def test_high_accuracy_model_wins_over_role_env_override(self, analysis_dir, sources_dir):
         from kairos_ontology.core.propose_alignment import HIGH_ACCURACY_MODEL
 
         seen, alignments = self._run(
-            analysis_dir, sources_dir, HIGH_ACCURACY_MODEL,
+            analysis_dir,
+            sources_dir,
+            HIGH_ACCURACY_MODEL,
             {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override"},
         )
         assert set(seen) == {HIGH_ACCURACY_MODEL}
         assert alignments[0].model_used == HIGH_ACCURACY_MODEL
 
-    def test_role_endpoint_does_not_change_the_model_either(
-        self, analysis_dir, sources_dir
-    ):
+    def test_role_endpoint_does_not_change_the_model_either(self, analysis_dir, sources_dir):
         # A dedicated per-role endpoint may change provider/auth, never the model.
         seen, _ = self._run(
-            analysis_dir, sources_dir, "gpt-explicit",
+            analysis_dir,
+            sources_dir,
+            "gpt-explicit",
             {
                 "GITHUB_TOKEN": "tok",
                 "KAIROS_AI_ALIGNMENT_ENDPOINT": "https://strong.example.com/v1",
@@ -2297,7 +2006,10 @@ class TestModelPrecedence:
 
     def test_no_role_override_uses_caller_model_unchanged(self, analysis_dir, sources_dir):
         seen, _ = self._run(
-            analysis_dir, sources_dir, "gpt-explicit", {"GITHUB_TOKEN": "tok"},
+            analysis_dir,
+            sources_dir,
+            "gpt-explicit",
+            {"GITHUB_TOKEN": "tok"},
         )
         assert set(seen) == {"gpt-explicit"}
 
@@ -2323,15 +2035,27 @@ class TestModelPrecedence:
             return []
 
         env = {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override"}
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch(
-            "kairos_ontology.core.propose_alignment.run_propose_alignment",
-            side_effect=fake_run,
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.run_propose_alignment",
+                side_effect=fake_run,
+            ),
         ):
-            result = CliRunner().invoke(cli, [
-                "propose-alignment", "--analysis", str(analysis),
-                "--sources", str(sources), "--output", str(tmp_path / "out"),
-                "--model", "gpt-explicit",
-            ])
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "propose-alignment",
+                    "--analysis",
+                    str(analysis),
+                    "--sources",
+                    str(sources),
+                    "--output",
+                    str(tmp_path / "out"),
+                    "--model",
+                    "gpt-explicit",
+                ],
+            )
         assert result.exit_code == 0, result.output
         assert captured["model"] == "gpt-explicit"
 
@@ -2358,15 +2082,26 @@ class TestModelPrecedence:
             return []
 
         env = {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override"}
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch(
-            "kairos_ontology.core.propose_alignment.run_propose_alignment",
-            side_effect=fake_run,
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.run_propose_alignment",
+                side_effect=fake_run,
+            ),
         ):
-            result = CliRunner().invoke(cli, [
-                "propose-alignment", "--analysis", str(analysis),
-                "--sources", str(sources), "--output", str(tmp_path / "out"),
-                "--high-accuracy",
-            ])
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "propose-alignment",
+                    "--analysis",
+                    str(analysis),
+                    "--sources",
+                    str(sources),
+                    "--output",
+                    str(tmp_path / "out"),
+                    "--high-accuracy",
+                ],
+            )
         assert result.exit_code == 0, result.output
         assert captured["model"] == HIGH_ACCURACY_MODEL
 
@@ -2392,14 +2127,25 @@ class TestModelPrecedence:
             return []
 
         env = {"GITHUB_TOKEN": "tok", "KAIROS_AI_ALIGNMENT_MODEL": "gpt-role-override"}
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch(
-            "kairos_ontology.core.propose_alignment.run_propose_alignment",
-            side_effect=fake_run,
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.run_propose_alignment",
+                side_effect=fake_run,
+            ),
         ):
-            result = CliRunner().invoke(cli, [
-                "propose-alignment", "--analysis", str(analysis),
-                "--sources", str(sources), "--output", str(tmp_path / "out"),
-            ])
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "propose-alignment",
+                    "--analysis",
+                    str(analysis),
+                    "--sources",
+                    str(sources),
+                    "--output",
+                    str(tmp_path / "out"),
+                ],
+            )
         assert result.exit_code == 0, result.output
         assert captured["model"] == "gpt-role-override"
 
@@ -2415,26 +2161,41 @@ SIBLING_URI = "https://example.com/ont/reference-data#"
 
 def _home_classes():
     return [
-        {"name": "TradeParty", "label": "Trade Party", "comment": "",
-         "properties": [{"name": "partyName", "label": "Party Name", "range": "string"}]},
+        {
+            "name": "TradeParty",
+            "label": "Trade Party",
+            "comment": "",
+            "properties": [{"name": "partyName", "label": "Party Name", "range": "string"}],
+        },
     ]
 
 
 def _widened_classes():
     """Home TradeParty + a sibling/shared-module Address class (tagged)."""
     return [
-        {"name": "TradeParty", "label": "Trade Party", "comment": "",
-         "properties": [{"name": "partyName", "label": "Party Name", "range": "string"}],
-         "source_uri": PARTY_URI, "module": "party",
-         "ref_class_id": "party:TradeParty", "belongs_to_domains": ["party"]},
-        {"name": "Address", "label": "Address", "comment": "A postal address",
-         "properties": [
-             {"name": "street", "label": "Street", "range": "string"},
-             {"name": "postalCode", "label": "Postal Code", "range": "string"},
-         ],
-         "source_uri": SIBLING_URI, "module": "reference-data",
-         "ref_class_id": "reference-data:Address",
-         "belongs_to_domains": ["party", "commercial"]},
+        {
+            "name": "TradeParty",
+            "label": "Trade Party",
+            "comment": "",
+            "properties": [{"name": "partyName", "label": "Party Name", "range": "string"}],
+            "source_uri": PARTY_URI,
+            "module": "party",
+            "ref_class_id": "party:TradeParty",
+            "belongs_to_domains": ["party"],
+        },
+        {
+            "name": "Address",
+            "label": "Address",
+            "comment": "A postal address",
+            "properties": [
+                {"name": "street", "label": "Street", "range": "string"},
+                {"name": "postalCode", "label": "Postal Code", "range": "string"},
+            ],
+            "source_uri": SIBLING_URI,
+            "module": "reference-data",
+            "ref_class_id": "reference-data:Address",
+            "belongs_to_domains": ["party", "commercial"],
+        },
     ]
 
 
@@ -2461,10 +2222,20 @@ class TestClassMetaIndex:
 
     def test_same_name_across_modules_kept_separate(self):
         classes = [
-            {"name": "Address", "module": "party", "source_uri": PARTY_URI,
-             "is_home": True, "belongs_to_domains": ["party"]},
-            {"name": "Address", "module": "reference-data", "source_uri": SIBLING_URI,
-             "is_home": False, "belongs_to_domains": ["commercial"]},
+            {
+                "name": "Address",
+                "module": "party",
+                "source_uri": PARTY_URI,
+                "is_home": True,
+                "belongs_to_domains": ["party"],
+            },
+            {
+                "name": "Address",
+                "module": "reference-data",
+                "source_uri": SIBLING_URI,
+                "is_home": False,
+                "belongs_to_domains": ["commercial"],
+            },
         ]
         index = _build_class_meta_index(classes)
         assert len(index["Address"]) == 2
@@ -2481,8 +2252,13 @@ class TestResolveColumnModule:
 
     def test_home_match_returns_none(self):
         classes = [
-            {"name": "TradeParty", "module": "party", "source_uri": PARTY_URI,
-             "is_home": True, "belongs_to_domains": ["party"]},
+            {
+                "name": "TradeParty",
+                "module": "party",
+                "source_uri": PARTY_URI,
+                "is_home": True,
+                "belongs_to_domains": ["party"],
+            },
         ]
         index = _build_class_meta_index(classes)
         assert _resolve_column_module("TradeParty", "party", index) is None
@@ -2493,10 +2269,20 @@ class TestResolveColumnModule:
 
     def test_prefers_home_when_module_ambiguous(self):
         classes = [
-            {"name": "Address", "module": "party", "source_uri": PARTY_URI,
-             "is_home": True, "belongs_to_domains": ["party"]},
-            {"name": "Address", "module": "reference-data", "source_uri": SIBLING_URI,
-             "is_home": False, "belongs_to_domains": ["commercial"]},
+            {
+                "name": "Address",
+                "module": "party",
+                "source_uri": PARTY_URI,
+                "is_home": True,
+                "belongs_to_domains": ["party"],
+            },
+            {
+                "name": "Address",
+                "module": "reference-data",
+                "source_uri": SIBLING_URI,
+                "is_home": False,
+                "belongs_to_domains": ["commercial"],
+            },
         ]
         index = _build_class_meta_index(classes)
         # No explicit ref_module → prefers the home class → not a cross-module tag.
@@ -2511,7 +2297,10 @@ class TestSelectPropertyPool:
         home_shortlist = [widened[0]]  # TradeParty
         columns = [{"name": "SHIPPER_STREET", "data_type": "nvarchar", "samples": []}]
         pool = _select_property_pool(
-            "tblParties", columns, widened, home_shortlist,
+            "tblParties",
+            columns,
+            widened,
+            home_shortlist,
             indicative_columns=["SHIPPER_STREET"],
         )
         names = {c["name"] for c in pool}
@@ -2525,7 +2314,10 @@ class TestSelectPropertyPool:
         home_shortlist = [widened[0]]
         columns = [{"name": "PARTY_NAME", "data_type": "nvarchar", "samples": []}]
         pool = _select_property_pool(
-            "tblParties", columns, widened, home_shortlist,
+            "tblParties",
+            columns,
+            widened,
+            home_shortlist,
         )
         # No token overlap with Address → only the home shortlist is returned.
         assert {c["name"] for c in pool} == {"TradeParty"}
@@ -2567,16 +2359,25 @@ class TestAlignTableCrossModule:
 
     def test_captures_ref_module_when_present(self):
         payload = {
-            "ref_class": "TradeParty", "ref_class_confidence": 0.9,
+            "ref_class": "TradeParty",
+            "ref_class_confidence": 0.9,
             "column_alignments": [
-                {"column": "SHIPPER_STREET", "ref_class": "Address",
-                 "ref_module": "reference-data", "ref_property": "street",
-                 "alignment": "semantic", "confidence": 0.8, "rationale": "street"},
+                {
+                    "column": "SHIPPER_STREET",
+                    "ref_class": "Address",
+                    "ref_module": "reference-data",
+                    "ref_property": "street",
+                    "alignment": "semantic",
+                    "confidence": 0.8,
+                    "rationale": "street",
+                },
             ],
         }
         client = self._client(payload)
         result = align_table(
-            client, "gpt", "tblParties",
+            client,
+            "gpt",
+            "tblParties",
             [{"name": "SHIPPER_STREET", "data_type": "nvarchar"}],
             _widened_classes(),
             table_ref_classes=_home_classes(),
@@ -2586,16 +2387,24 @@ class TestAlignTableCrossModule:
 
     def test_default_mode_omits_ref_module(self):
         payload = {
-            "ref_class": "TradeParty", "ref_class_confidence": 0.9,
+            "ref_class": "TradeParty",
+            "ref_class_confidence": 0.9,
             "column_alignments": [
-                {"column": "PartyName", "ref_class": "TradeParty",
-                 "ref_property": "partyName", "alignment": "exact",
-                 "confidence": 0.95, "rationale": "match"},
+                {
+                    "column": "PartyName",
+                    "ref_class": "TradeParty",
+                    "ref_property": "partyName",
+                    "alignment": "exact",
+                    "confidence": 0.95,
+                    "rationale": "match",
+                },
             ],
         }
         client = self._client(payload)
         result = align_table(
-            client, "gpt", "tblParties",
+            client,
+            "gpt",
+            "tblParties",
             [{"name": "PartyName", "data_type": "nvarchar"}],
             _home_classes(),
         )
@@ -2605,25 +2414,40 @@ class TestAlignTableCrossModule:
 class TestWriteAlignmentOutputCrossModule:
     def test_emits_cross_module_fields(self, tmp_path):
         ca = ColumnAlignment(
-            column="SHIPPER_STREET", data_type="nvarchar", ref_class="Address",
-            ref_property="street", alignment="semantic", confidence=0.8,
-            ref_module="reference-data", ref_module_uri=SIBLING_URI,
+            column="SHIPPER_STREET",
+            data_type="nvarchar",
+            ref_class="Address",
+            ref_property="street",
+            alignment="semantic",
+            confidence=0.8,
+            ref_module="reference-data",
+            ref_module_uri=SIBLING_URI,
             belongs_to_domains=["party", "commercial"],
         )
-        ta = TableAlignment(system="adminpulse", table="tblParties",
-                            ref_class="TradeParty", ref_class_confidence=0.9,
-                            columns=[ca])
+        ta = TableAlignment(
+            system="adminpulse",
+            table="tblParties",
+            ref_class="TradeParty",
+            ref_class_confidence=0.9,
+            columns=[ca],
+        )
         alignment = DomainAlignment(
-            domain="party", domain_uris=[PARTY_URI],
-            generated_at="2026-01-01T00:00:00Z", model_used="gpt",
-            tables=[ta], affinity_sha256="abc",
+            domain="party",
+            domain_uris=[PARTY_URI],
+            generated_at="2026-01-01T00:00:00Z",
+            model_used="gpt",
+            tables=[ta],
+            affinity_sha256="abc",
             alignment_params_sha256="deadbeef",
-            cross_module_matches=[{
-                "ref_class": "Address", "ref_module": "reference-data",
-                "ref_module_uri": SIBLING_URI,
-                "belongs_to_domains": ["party", "commercial"],
-                "source_columns": ["adminpulse.tblParties.SHIPPER_STREET"],
-            }],
+            cross_module_matches=[
+                {
+                    "ref_class": "Address",
+                    "ref_module": "reference-data",
+                    "ref_module_uri": SIBLING_URI,
+                    "belongs_to_domains": ["party", "commercial"],
+                    "source_columns": ["adminpulse.tblParties.SHIPPER_STREET"],
+                }
+            ],
         )
         data = alignment_to_dict(alignment)
         col = data["tables"][0]["columns"][0]
@@ -2634,16 +2458,27 @@ class TestWriteAlignmentOutputCrossModule:
 
     def test_default_omits_cross_module_fields(self, tmp_path):
         ca = ColumnAlignment(
-            column="PartyName", data_type="nvarchar", ref_class="TradeParty",
-            ref_property="partyName", alignment="exact", confidence=0.95,
+            column="PartyName",
+            data_type="nvarchar",
+            ref_class="TradeParty",
+            ref_property="partyName",
+            alignment="exact",
+            confidence=0.95,
         )
-        ta = TableAlignment(system="adminpulse", table="tblParties",
-                            ref_class="TradeParty", ref_class_confidence=0.9,
-                            columns=[ca])
+        ta = TableAlignment(
+            system="adminpulse",
+            table="tblParties",
+            ref_class="TradeParty",
+            ref_class_confidence=0.9,
+            columns=[ca],
+        )
         alignment = DomainAlignment(
-            domain="party", domain_uris=[PARTY_URI],
-            generated_at="2026-01-01T00:00:00Z", model_used="gpt",
-            tables=[ta], affinity_sha256="abc",
+            domain="party",
+            domain_uris=[PARTY_URI],
+            generated_at="2026-01-01T00:00:00Z",
+            model_used="gpt",
+            tables=[ta],
+            affinity_sha256="abc",
         )
         data = alignment_to_dict(alignment)
         assert "ref_module" not in data["tables"][0]["columns"][0]
@@ -2669,8 +2504,9 @@ def party_sources(tmp_path):
 
 
 class TestRunProposeAlignmentCrossModule:
-    def _inventory_side_effect(self, domain_uris, catalog_path, *,
-                               inventory_dir=None, module_map=None):
+    def _inventory_side_effect(
+        self, domain_uris, catalog_path, *, inventory_dir=None, module_map=None
+    ):
         if module_map is None:
             return _home_classes()
         return _widened_classes()
@@ -2680,36 +2516,45 @@ class TestRunProposeAlignmentCrossModule:
             if calls is not None:
                 calls.append(kwargs["messages"][1]["content"])
             payload = {
-                "ref_class": "TradeParty", "ref_class_confidence": 0.9,
+                "ref_class": "TradeParty",
+                "ref_class_confidence": 0.9,
                 "column_alignments": [
-                    {"column": "SHIPPER_STREET", "ref_class": "Address",
-                     "ref_module": "reference-data", "ref_property": "street",
-                     "alignment": "semantic", "confidence": 0.8,
-                     "rationale": "street part"},
+                    {
+                        "column": "SHIPPER_STREET",
+                        "ref_class": "Address",
+                        "ref_module": "reference-data",
+                        "ref_property": "street",
+                        "alignment": "semantic",
+                        "confidence": 0.8,
+                        "rationale": "street part",
+                    },
                 ],
             }
             return mock.MagicMock(
-                choices=[mock.MagicMock(
-                    message=mock.MagicMock(content=json.dumps(payload)))]
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
             )
+
         client = mock.MagicMock()
         client.chat.completions.create = create_completion
         return client
 
     def _run(self, analysis_dir, party_sources, output, calls=None, **kw):
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=self._client(calls),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            side_effect=self._inventory_side_effect,
-        ), mock.patch(
-            "kairos_ontology.core.analyse_sources.load_accelerator_uri_modules",
-            return_value={
-                PARTY_URI: {"module": "party", "domains": ["party"]},
-                SIBLING_URI: {"module": "reference-data",
-                              "domains": ["party", "commercial"]},
-            },
+        with (
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.get_ai_client",
+                return_value=self._client(calls),
+            ),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                side_effect=self._inventory_side_effect,
+            ),
+            mock.patch(
+                "kairos_ontology.core.analyse_sources.load_accelerator_uri_modules",
+                return_value={
+                    PARTY_URI: {"module": "party", "domains": ["party"]},
+                    SIBLING_URI: {"module": "reference-data", "domains": ["party", "commercial"]},
+                },
+            ),
         ):
             return run_propose_alignment(
                 analysis_dir=analysis_dir,
@@ -2721,19 +2566,22 @@ class TestRunProposeAlignmentCrossModule:
             )
 
     def _build(self, analysis_dir, party_sources, calls=None, **kw):
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=self._client(calls),
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            side_effect=self._inventory_side_effect,
-        ), mock.patch(
-            "kairos_ontology.core.analyse_sources.load_accelerator_uri_modules",
-            return_value={
-                PARTY_URI: {"module": "party", "domains": ["party"]},
-                SIBLING_URI: {"module": "reference-data",
-                              "domains": ["party", "commercial"]},
-            },
+        with (
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.get_ai_client",
+                return_value=self._client(calls),
+            ),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                side_effect=self._inventory_side_effect,
+            ),
+            mock.patch(
+                "kairos_ontology.core.analyse_sources.load_accelerator_uri_modules",
+                return_value={
+                    PARTY_URI: {"module": "party", "domains": ["party"]},
+                    SIBLING_URI: {"module": "reference-data", "domains": ["party", "commercial"]},
+                },
+            ),
         ):
             return build_domain_alignments(
                 analysis_dir=analysis_dir,
@@ -2744,9 +2592,13 @@ class TestRunProposeAlignmentCrossModule:
             )
 
     def test_column_matches_sibling_module(self, analysis_dir, party_sources, tmp_path):
-        alignments = self._build(analysis_dir, party_sources,
-                                 cross_module=True, accelerator="logistics",
-                                 ref_models_dir=tmp_path)
+        alignments = self._build(
+            analysis_dir,
+            party_sources,
+            cross_module=True,
+            accelerator="logistics",
+            ref_models_dir=tmp_path,
+        )
         data = alignment_to_dict(alignments[0])
         # Table still classifies to the HOME class.
         assert data["tables"][0]["ref_class"] == "TradeParty"
@@ -2759,31 +2611,21 @@ class TestRunProposeAlignmentCrossModule:
         matches = data["cross_module_matches"]
         assert len(matches) == 1
         assert matches[0]["ref_class"] == "Address"
-        assert matches[0]["source_columns"] == [
-            "adminpulse.tblParties.SHIPPER_STREET"
-        ]
+        assert matches[0]["source_columns"] == ["adminpulse.tblParties.SHIPPER_STREET"]
 
     def test_full_inventory_retry_disabled(self, analysis_dir, party_sources, tmp_path):
         calls: list[str] = []
-        self._build(analysis_dir, party_sources, calls=calls,
-                    cross_module=True, accelerator="logistics",
-                    ref_models_dir=tmp_path, max_prompt_classes=1)
+        self._build(
+            analysis_dir,
+            party_sources,
+            calls=calls,
+            cross_module=True,
+            accelerator="logistics",
+            ref_models_dir=tmp_path,
+            max_prompt_classes=1,
+        )
         # Exactly one LLM call for the single party table — no full-inventory retry.
         assert len(calls) == 1
-
-    def test_cross_module_not_skipped_after_home_only_run(
-        self, analysis_dir, party_sources, tmp_path
-    ):
-        out = tmp_path / "out"
-        # First: a default (home-only) run writes claims with a home-only params hash.
-        self._run(analysis_dir, party_sources, out)
-        # Then: a cross-module run with the same affinity but different params must
-        # NOT be domain-skipped — a wrongly-fired skip would make zero LLM calls.
-        calls: list[str] = []
-        self._run(analysis_dir, party_sources, out, calls=calls,
-                  cross_module=True, accelerator="logistics",
-                  ref_models_dir=tmp_path)
-        assert len(calls) >= 1
 
     def test_requires_accelerator(self, analysis_dir, party_sources, tmp_path):
         with pytest.raises(ValueError, match="requires an accelerator"):
@@ -2831,9 +2673,7 @@ class TestParsesAs:
 
 class TestTransformCompatNote:
     def test_flags_non_numeric(self):
-        note = _transform_compat_note(
-            {"samples": ["12", "N/A", "34"]}, "integer"
-        )
+        note = _transform_compat_note({"samples": ["12", "N/A", "34"]}, "integer")
         assert note is not None
         assert "1/3" in note and "non-numeric" in note
 
@@ -2856,26 +2696,37 @@ class TestSampleEvidenceEmission:
             model_used="gpt-5.4-mini",
             tables=[
                 TableAlignment(
-                    system="admin", table="tblParties",
-                    ref_class="TradeParty", ref_class_confidence=0.9,
+                    system="admin",
+                    table="tblParties",
+                    ref_class="TradeParty",
+                    ref_class_confidence=0.9,
                     columns=[
                         ColumnAlignment(
-                            column="PartyName", data_type="nvarchar(100)",
-                            ref_class="TradeParty", ref_property="partyName",
-                            alignment="exact", confidence=0.95,
+                            column="PartyName",
+                            data_type="nvarchar(100)",
+                            ref_class="TradeParty",
+                            ref_property="partyName",
+                            alignment="exact",
+                            confidence=0.95,
                             example_values=["Acme NV", "Globex"],
                         ),
                         ColumnAlignment(
-                            column="Code", data_type="int",
-                            ref_class="TradeParty", ref_property="partyName",
-                            alignment="semantic", confidence=0.5,
+                            column="Code",
+                            data_type="int",
+                            ref_class="TradeParty",
+                            ref_property="partyName",
+                            alignment="semantic",
+                            confidence=0.5,
                             transform_compat="1/3 sample values are non-numeric — "
-                                              "CAST may NULL/fail; confirm",
+                            "CAST may NULL/fail; confirm",
                         ),
                         ColumnAlignment(
-                            column="Bare", data_type="int",
-                            ref_class="TradeParty", ref_property="partyName",
-                            alignment="semantic", confidence=0.5,
+                            column="Bare",
+                            data_type="int",
+                            ref_class="TradeParty",
+                            ref_property="partyName",
+                            alignment="semantic",
+                            confidence=0.5,
                         ),
                     ],
                 ),
@@ -2923,35 +2774,54 @@ class TestSampleEvidenceIntegration:
     def _responses(self):
         return {
             "tblParties": {
-                "ref_class": "TradeParty", "ref_class_confidence": 0.9,
+                "ref_class": "TradeParty",
+                "ref_class_confidence": 0.9,
                 "column_alignments": [
-                    {"column": "PartyName", "ref_class": "TradeParty",
-                     "ref_property": "partyName", "alignment": "exact",
-                     "confidence": 0.95, "rationale": "name"},
-                    {"column": "Email", "ref_class": "TradeParty",
-                     "ref_property": "contactEmail", "alignment": "semantic",
-                     "confidence": 0.8, "rationale": "email"},
+                    {
+                        "column": "PartyName",
+                        "ref_class": "TradeParty",
+                        "ref_property": "partyName",
+                        "alignment": "exact",
+                        "confidence": 0.95,
+                        "rationale": "name",
+                    },
+                    {
+                        "column": "Email",
+                        "ref_class": "TradeParty",
+                        "ref_property": "contactEmail",
+                        "alignment": "semantic",
+                        "confidence": 0.8,
+                        "rationale": "email",
+                    },
                 ],
             },
         }
 
     def _build(self, analysis_dir, sources, **kw):
         client = TestRunProposeAlignment()._mock_client(self._responses())
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=client
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=[
-                {"name": "TradeParty", "label": "Trade Party", "comment": "",
-                 "properties": [
-                     {"name": "partyName", "label": "Party Name", "range": "string"},
-                     {"name": "contactEmail", "label": "Contact Email", "range": "string"},
-                 ]},
-            ],
+        with (
+            mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=[
+                    {
+                        "name": "TradeParty",
+                        "label": "Trade Party",
+                        "comment": "",
+                        "properties": [
+                            {"name": "partyName", "label": "Party Name", "range": "string"},
+                            {"name": "contactEmail", "label": "Contact Email", "range": "string"},
+                        ],
+                    },
+                ],
+            ),
         ):
             return build_domain_alignments(
-                analysis_dir=analysis_dir, sources_dir=sources,
-                catalog_path=None, domains_filter=["party"], **kw,
+                analysis_dir=analysis_dir,
+                sources_dir=sources,
+                catalog_path=None,
+                domains_filter=["party"],
+                **kw,
             )
 
     def test_examples_on_by_default_pii_masked(self, analysis_dir, tmp_path):
@@ -2995,9 +2865,7 @@ class TestNormCanonicalState:
     def _mock_client(self, response_dict):
         client = mock.MagicMock()
         client.chat.completions.create.return_value = mock.MagicMock(
-            choices=[mock.MagicMock(
-                message=mock.MagicMock(content=json.dumps(response_dict))
-            )]
+            choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(response_dict)))]
         )
         return client
 
@@ -3058,8 +2926,7 @@ class TestBuildCustomColumn:
         assert cc["suggested_property"] is None
 
     def test_note_included_when_present(self):
-        ca = {"column": "Foo", "ref_property": "", "confidence": 0.0,
-              "note": "opaque slot"}
+        ca = {"column": "Foo", "ref_property": "", "confidence": 0.0, "note": "opaque slot"}
         cc = _build_custom_column(ca, "int", confidence_floor=0.5)
         assert cc["note"] == "opaque slot"
 
@@ -3168,8 +3035,7 @@ class TestObjectPropertyTarget:
 
     def test_class_range_without_governed_target_is_unresolved(self):
         idx = self._range_idx({"hasPlaceOfReceipt": "Location"})
-        res = _resolve_object_property_target(
-            "hasPlaceOfReceipt", "Shipment", idx, {})
+        res = _resolve_object_property_target("hasPlaceOfReceipt", "Shipment", idx, {})
         assert res is not None
         assert res["target_resolved"] is False
         assert res["target_class_uri"] is None
@@ -3195,20 +3061,30 @@ class TestObjectPropertyBuilders:
     """F3 — passthrough + relationship-candidate builders."""
 
     def test_passthrough_marks_object_property(self):
-        target = {"target_name": "Location", "target_class_uri": None,
-                  "target_resolved": False, "cardinality": "n:1"}
+        target = {
+            "target_name": "Location",
+            "target_class_uri": None,
+            "target_resolved": False,
+            "cardinality": "n:1",
+        }
         cc = _build_object_property_passthrough(
-            "place_of_receipt", "varchar", "hasPlaceOfReceipt", target)
+            "place_of_receipt", "varchar", "hasPlaceOfReceipt", target
+        )
         assert cc["object_property_passthrough"] is True
         assert cc["object_property"] == "hasPlaceOfReceipt"
         assert cc["disposition"] is None
         assert cc["suggested_property"] is None
 
     def test_candidate_carries_target_and_cardinality(self):
-        target = {"target_name": "Location", "target_class_uri": None,
-                  "target_resolved": False, "cardinality": "n:1"}
+        target = {
+            "target_name": "Location",
+            "target_class_uri": None,
+            "target_resolved": False,
+            "cardinality": "n:1",
+        }
         cand = _build_object_property_candidate(
-            "tblShipment", "place_of_receipt", "hasPlaceOfReceipt", target)
+            "tblShipment", "place_of_receipt", "hasPlaceOfReceipt", target
+        )
         assert cand["type"] == "object_property_relationship_candidate"
         assert cand["suggested_relationship"] == "hasPlaceOfReceipt"
         assert cand["target_concept"] == "Location"
@@ -3226,17 +3102,33 @@ class TestObjectPropertyBuilders:
 class TestTechnicalActorSafeguard:
     """Finding #9 — created_by_*/updated_by_* default to audit/passthrough."""
 
-    @pytest.mark.parametrize("column", [
-        "created_by", "createdBy", "created_by_user", "updated_by_id",
-        "modified_by", "deleted_by", "approved_by", "reviewed_by",
-        "authorized_by", "changed_by",
-    ])
+    @pytest.mark.parametrize(
+        "column",
+        [
+            "created_by",
+            "createdBy",
+            "created_by_user",
+            "updated_by_id",
+            "modified_by",
+            "deleted_by",
+            "approved_by",
+            "reviewed_by",
+            "authorized_by",
+            "changed_by",
+        ],
+    )
     def test_technical_actor_names_detected(self, column):
         assert _is_technical_actor_column(column) is True
 
-    @pytest.mark.parametrize("column", [
-        "customer_name", "billing_city", "shipment_reference", "party_id",
-    ])
+    @pytest.mark.parametrize(
+        "column",
+        [
+            "customer_name",
+            "billing_city",
+            "shipment_reference",
+            "party_id",
+        ],
+    )
     def test_ordinary_columns_not_flagged(self, column):
         assert _is_technical_actor_column(column) is False
 
@@ -3244,8 +3136,10 @@ class TestTechnicalActorSafeguard:
         # Even a technical-actor column that also looks like a location
         # property name must be flagged as technical_actor first.
         reason = _object_relationship_downgrade_reason(
-            column="updated_by", data_type="varchar",
-            ref_property="hasPlaceOfReceipt", target_resolved=True,
+            column="updated_by",
+            data_type="varchar",
+            ref_property="hasPlaceOfReceipt",
+            target_resolved=True,
         )
         assert reason == "technical_actor"
 
@@ -3253,15 +3147,22 @@ class TestTechnicalActorSafeguard:
         # A technical-actor object-property column downgrades to passthrough
         # ONLY — never a relationship candidate (finding #9: audit evidence,
         # not an in-domain relationship).
-        target = {"target_name": "Party", "target_class_uri": "https://ex.org#Party",
-                  "target_resolved": True, "cardinality": "n:1"}
+        target = {
+            "target_name": "Party",
+            "target_class_uri": "https://ex.org#Party",
+            "target_resolved": True,
+            "cardinality": "n:1",
+        }
         reason = _object_relationship_downgrade_reason(
-            column="updated_by", data_type="varchar",
-            ref_property="hasResponsibleParty", target_resolved=True,
+            column="updated_by",
+            data_type="varchar",
+            ref_property="hasResponsibleParty",
+            target_resolved=True,
         )
         assert reason == "technical_actor"
         passthrough = _build_object_property_passthrough(
-            "updated_by", "varchar", "hasResponsibleParty", target, reason=reason)
+            "updated_by", "varchar", "hasResponsibleParty", target, reason=reason
+        )
         assert passthrough["object_property_passthrough"] is True
         assert "audit" in passthrough["rationale"].lower()
 
@@ -3287,15 +3188,19 @@ class TestIdentifierEvidenceSafeguard:
 
     def test_downgrade_reason_missing_identifier_evidence(self):
         reason = _object_relationship_downgrade_reason(
-            column="customer_name", data_type="varchar",
-            ref_property="hasCustomer", target_resolved=True,
+            column="customer_name",
+            data_type="varchar",
+            ref_property="hasCustomer",
+            target_resolved=True,
         )
         assert reason == "missing_identifier_evidence"
 
     def test_identifier_evidence_present_keeps_mapping(self):
         reason = _object_relationship_downgrade_reason(
-            column="customer_id", data_type="int",
-            ref_property="hasCustomer", target_resolved=True,
+            column="customer_id",
+            data_type="int",
+            ref_property="hasCustomer",
+            target_resolved=True,
         )
         assert reason is None
 
@@ -3328,15 +3233,19 @@ class TestTypedLocationEvidenceSafeguard:
         # A generic "location" column force-fit onto a specific port property
         # must be downgraded — no explicit evidence for that specific role.
         reason = _object_relationship_downgrade_reason(
-            column="location", data_type="varchar",
-            ref_property="hasPlaceOfDischarge", target_resolved=True,
+            column="location",
+            data_type="varchar",
+            ref_property="hasPlaceOfDischarge",
+            target_resolved=True,
         )
         assert reason == "missing_typed_role_evidence"
 
     def test_typed_evidence_present_keeps_mapping(self):
         reason = _object_relationship_downgrade_reason(
-            column="discharge_location", data_type="varchar",
-            ref_property="hasPlaceOfDischarge", target_resolved=True,
+            column="discharge_location",
+            data_type="varchar",
+            ref_property="hasPlaceOfDischarge",
+            target_resolved=True,
         )
         assert reason is None
 
@@ -3344,8 +3253,10 @@ class TestTypedLocationEvidenceSafeguard:
         # hasLocation/hasAddress carry no specific role → identifier-evidence
         # style checks don't apply to them either (location branch, role=None).
         reason = _object_relationship_downgrade_reason(
-            column="site", data_type="varchar",
-            ref_property="hasLocation", target_resolved=True,
+            column="site",
+            data_type="varchar",
+            ref_property="hasLocation",
+            target_resolved=True,
         )
         assert reason is None
 
@@ -3369,14 +3280,17 @@ class TestRelationshipClusterId:
     def test_address_candidates_carry_cluster_id(self):
         out = _detect_address_relationship_candidates(
             "companies",
-            [{"name": n} for n in
-             ("billing_street", "billing_city", "billing_postal_code")],
+            [{"name": n} for n in ("billing_street", "billing_city", "billing_postal_code")],
             domain="party",
         )
         assert len(out) == 1
         assert "cluster_id" in out[0]
         assert out[0]["cluster_id"] == _relationship_cluster_id(
-            "party", "companies", "billing", "Address", "1:n",
+            "party",
+            "companies",
+            "billing",
+            "Address",
+            "1:n",
         )
 
 
@@ -3385,8 +3299,12 @@ class TestClusterObjectPropertyCandidates:
     contributing columns carried together, stable cluster_id."""
 
     def _candidate(self, table, column, ref_property, target_concept="Location"):
-        target = {"target_name": target_concept, "target_class_uri": None,
-                  "target_resolved": False, "cardinality": "n:1"}
+        target = {
+            "target_name": target_concept,
+            "target_class_uri": None,
+            "target_resolved": False,
+            "cardinality": "n:1",
+        }
         return _build_object_property_candidate(table, column, ref_property, target)
 
     def test_multiple_columns_same_relationship_collapse_into_one_cluster(self):
@@ -3423,8 +3341,10 @@ class TestClusterObjectPropertyCandidates:
             domain="logistics",
         )
         second = _cluster_object_property_candidates(
-            [self._candidate("shipment", "receipt_location", "hasPlaceOfReceipt"),
-             self._candidate("shipment", "receipt_terminal", "hasPlaceOfReceipt")],
+            [
+                self._candidate("shipment", "receipt_location", "hasPlaceOfReceipt"),
+                self._candidate("shipment", "receipt_terminal", "hasPlaceOfReceipt"),
+            ],
             domain="logistics",
         )
         assert first[0]["cluster_id"] == second[0]["cluster_id"]

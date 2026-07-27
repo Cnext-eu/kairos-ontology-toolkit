@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import textwrap
+from dataclasses import FrozenInstanceError
 from importlib import resources
 
 import pytest
@@ -78,6 +79,14 @@ def test_packaged_example_loads() -> None:
     assert binding.domain == "party"
     assert binding.relationships[0].target == "ref:Country"
     assert binding.relationships[0].missing_parent == "error"
+    assert binding.load.mode == "incremental"
+    assert binding.load.scd == 2
+    assert binding.load.incremental is not None
+    assert binding.load.incremental.canonical_hash_inputs == ("customer_id", "full_name", "country")
+    assert binding.relationships[0].temporal is not None
+    assert binding.relationships[0].temporal.child_event_time == "effective_at"
+    assert binding.conformance is not None
+    assert binding.conformance.union.mode == "deduplicate"
     assert binding.quality[0].kind == "not-null"
 
 
@@ -116,6 +125,41 @@ def test_source_requires_exactly_one_of_relation_or_model() -> None:
     assert "binding.schema" in _codes(excinfo.value)
 
 
+def test_contracted_dbt_model_source_parses_as_frozen_metadata() -> None:
+    doc = VALID.replace(
+        "source:\n  relation: crm.customers",
+        "source:\n"
+        "  dbtModel:\n"
+        "    name: int_customer\n"
+        "    sqlPath: integration/transforms/dbt/models/int_customer.sql\n"
+        "    contractPath: integration/transforms/dbt/models/schema.yml",
+    )
+    binding = load_entity_binding(doc, path="dbt.binding.yaml")
+    assert binding.source.dbt_model is not None
+    assert binding.source.dbt_model.name == "int_customer"
+    with pytest.raises(FrozenInstanceError):
+        binding.source.dbt_model.name = "changed"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("missing", ["name", "sqlPath", "contractPath"])
+def test_contracted_dbt_model_requires_complete_metadata(missing: str) -> None:
+    metadata = {
+        "name": "int_customer",
+        "sqlPath": "models/int_customer.sql",
+        "contractPath": "models/schema.yml",
+    }
+    metadata.pop(missing)
+    lines = "\n".join(f"    {key}: {value}" for key, value in metadata.items())
+    doc = VALID.replace(
+        "source:\n  relation: crm.customers",
+        f"source:\n  dbtModel:\n{lines}",
+    )
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(doc, path="dbt.binding.yaml")
+    assert "binding.schema" in _codes(excinfo.value)
+    assert any(diag.location.line > 0 for diag in excinfo.value.diagnostics)
+
+
 def test_missing_required_identity_rejected() -> None:
     bad = VALID.replace(
         "identity:\n  strategy: source-natural\n  sourceKey: [customer_id]\n",
@@ -124,6 +168,225 @@ def test_missing_required_identity_rejected() -> None:
     with pytest.raises(CompileError) as excinfo:
         load_entity_binding(bad, path="bad.yaml")
     assert "binding.schema" in _codes(excinfo.value)
+
+
+INCREMENTAL_LOAD = """\
+load:
+  mode: incremental
+  scd: 2
+  incremental:
+    mergeIdentity: [customer_id]
+    canonicalHashInputs: [customer_id, full_name]
+    cdcOperation:
+      column: operation
+      insertValues: [I]
+      updateValues: [U]
+      deleteValues: [D]
+    sourceUpdatedAt: source_updated_at
+    businessEffectiveAt: effective_at
+    ingestedAt: ingested_at
+    totalOrder: [source_updated_at, sequence_number]
+    lookback: {value: 1, unit: days}
+    delete: soft-delete
+    lateArrival: accept
+    correction: new-version
+    replay: idempotent
+    backfill: merge
+    schemaEvolution: fail
+"""
+
+
+def _incremental() -> str:
+    return VALID.replace("load:\n  mode: full-refresh\n", INCREMENTAL_LOAD)
+
+
+@pytest.mark.parametrize("scd", [1, 2])
+def test_incremental_scd_contract_parses(scd: int) -> None:
+    correction = "overwrite" if scd == 1 else "new-version"
+    binding = load_entity_binding(
+        _incremental()
+        .replace("  scd: 2", f"  scd: {scd}")
+        .replace("correction: new-version", f"correction: {correction}"),
+        path="incremental.binding.yaml",
+    )
+    assert binding.load.scd == scd
+    assert binding.load.incremental is not None
+    assert binding.load.incremental.cdc_operation.delete_values == ("D",)
+    assert binding.load.incremental.lookback.value == 1
+
+
+@pytest.mark.parametrize(
+    ("scd", "correction"),
+    [(1, "new-version"), (2, "overwrite")],
+)
+def test_incremental_rejects_scd_correction_ambiguity(scd: int, correction: str) -> None:
+    bad = (
+        _incremental()
+        .replace("  scd: 2", f"  scd: {scd}")
+        .replace("correction: new-version", f"correction: {correction}")
+    )
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(bad, path="incremental.binding.yaml")
+    assert "binding.scd-correction-incompatible" in _codes(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "mergeIdentity",
+        "canonicalHashInputs",
+        "cdcOperation",
+        "sourceUpdatedAt",
+        "businessEffectiveAt",
+        "ingestedAt",
+        "totalOrder",
+        "lookback",
+        "delete",
+        "lateArrival",
+        "correction",
+        "replay",
+        "backfill",
+        "schemaEvolution",
+    ],
+)
+def test_incremental_policy_rejects_every_missing_required_field(field: str) -> None:
+    lines = _incremental().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"    {field}:"))
+    end = start + 1
+    while end < len(lines) and len(lines[end]) - len(lines[end].lstrip()) > 4:
+        end += 1
+    bad = "\n".join(lines[:start] + lines[end:]) + "\n"
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(bad, path="incremental.binding.yaml")
+    assert "binding.schema" in _codes(excinfo.value)
+
+
+def test_full_refresh_rejects_scd_or_incremental_policy() -> None:
+    bad = VALID.replace("load:\n  mode: full-refresh", "load:\n  mode: full-refresh\n  scd: 1")
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(bad, path="full.binding.yaml")
+    assert "binding.schema" in _codes(excinfo.value)
+
+
+def test_ambiguous_cdc_values_rejected_at_source_location() -> None:
+    bad = _incremental().replace("updateValues: [U]", "updateValues: [I]")
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(bad, path="incremental.binding.yaml")
+    diag = next(
+        item for item in excinfo.value.diagnostics if item.code == "binding.cdc-operation-ambiguous"
+    )
+    assert diag.location.path == "incremental.binding.yaml"
+    assert diag.location.pointer.endswith("/updateValues")
+    assert diag.location.line > 0
+
+
+TEMPORAL_RELATIONSHIP = """\
+relationships:
+  - property: party:hasCountry
+    target: ref:Country
+    join: [{local: country, foreign: iso2}]
+    cardinality: many-to-one
+    mode: as-of
+    missingParent: error
+    ambiguousParent: error
+    temporal:
+      childEventTime: effective_at
+      parentValidFrom: valid_from
+      parentValidTo: valid_to
+      openEnded: null
+      overlap: error
+      lateParent: defer
+      changeDetection: include
+"""
+
+
+def test_as_of_relationship_requires_and_parses_complete_temporal_policy() -> None:
+    binding = load_entity_binding(VALID + TEMPORAL_RELATIONSHIP, path="temporal.binding.yaml")
+    relationship = binding.relationships[0]
+    assert relationship.mode == "as-of"
+    assert relationship.temporal is not None
+    assert relationship.temporal.late_parent == "defer"
+
+
+def test_current_relationship_rejects_as_of_child_event_time() -> None:
+    bad = (VALID + TEMPORAL_RELATIONSHIP).replace("mode: as-of", "mode: current")
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(bad, path="temporal.binding.yaml")
+    assert "binding.schema" in _codes(excinfo.value)
+
+
+def test_current_relationship_parses_complete_temporal_policy() -> None:
+    doc = (
+        (VALID + TEMPORAL_RELATIONSHIP)
+        .replace("mode: as-of", "mode: current")
+        .replace("      childEventTime: effective_at\n", "")
+    )
+    binding = load_entity_binding(doc, path="current.binding.yaml")
+    relationship = binding.relationships[0]
+    assert relationship.mode == "current"
+    assert relationship.temporal is not None
+    assert relationship.temporal.child_event_time == ""
+
+
+def test_non_temporal_relationship_rejects_temporal_policy() -> None:
+    bad = (VALID + TEMPORAL_RELATIONSHIP).replace("mode: as-of", "mode: non-temporal")
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(bad, path="temporal.binding.yaml")
+    assert "binding.schema" in _codes(excinfo.value)
+
+
+def test_conformance_dedup_policy_parses() -> None:
+    doc = VALID + """\
+conformance:
+  group: party-customer
+  sourcePrecedence: 2
+  conflict: prefer-precedence
+  union:
+    mode: deduplicate
+    deduplicateBy: [customer_id]
+    orderBy: [{column: source_updated_at, direction: descending}]
+"""
+    binding = load_entity_binding(doc, path="conformance.binding.yaml")
+    assert binding.conformance is not None
+    assert binding.conformance.source_precedence == 2
+    assert binding.conformance.union.order_by[0].direction == "descending"
+
+
+def test_conformance_dedup_rejects_incomplete_ordering() -> None:
+    bad = VALID + """\
+conformance:
+  group: party-customer
+  sourcePrecedence: 1
+  conflict: error
+  union:
+    mode: deduplicate
+    deduplicateBy: [customer_id]
+"""
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(bad, path="conformance.binding.yaml")
+    assert "binding.schema" in _codes(excinfo.value)
+
+
+def test_conformance_union_all_is_closed_and_typed() -> None:
+    doc = VALID + """\
+conformance:
+  group: party-customer
+  sourcePrecedence: 1
+  conflict: error
+  union:
+    mode: union-all
+"""
+    binding = load_entity_binding(doc, path="conformance.binding.yaml")
+    assert binding.conformance is not None
+    assert binding.conformance.union.deduplicate_by == ()
+    assert binding.conformance.union.order_by == ()
+
+
+def test_unknown_expression_field_rejected() -> None:
+    bad = VALID.replace("fn: upper", "fn: upper\n      sql: forbidden")
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(bad, path="expression.binding.yaml")
+    assert "expression.unknown-field" in _codes(excinfo.value)
 
 
 def test_disallowed_function_rejected_with_pointer() -> None:

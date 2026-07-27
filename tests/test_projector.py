@@ -79,7 +79,7 @@ class TestProjector:
             ontologies_path=ontology_files['dir'],
             catalog_path=None,
             output_path=output_dir,
-            target='dbt'
+            target='neo4j'
         )
         
         captured = capsys.readouterr()
@@ -129,7 +129,7 @@ class TestProjector:
             ontologies_path=empty_dir,
             catalog_path=None,
             output_path=output_dir,
-            target='dbt'
+            target='neo4j'
         )
         
         captured = capsys.readouterr()
@@ -151,26 +151,25 @@ class TestProjector:
                 ontologies_path=ontologies_dir,
                 catalog_path=None,
                 output_path=output_dir,
-                target='dbt'
+                target='neo4j'
             )
         
         captured = capsys.readouterr()
         assert "Could not parse" in captured.out or "⚠️" in captured.out
     
     def test_dbt_projection_creates_files(self, temp_dir, ontology_files):
-        """Test that DBT projection creates output files."""
+        """The retired DBT projector fails before creating output files."""
         output_dir = temp_dir / "output"
-        
-        run_projections(
-            ontologies_path=ontology_files['dir'],
-            catalog_path=None,
-            output_path=output_dir,
-            target='dbt'
-        )
-        
-        # Check if DBT output directory was created
-        dbt_dir = output_dir / "medallion" / "dbt"
-        assert dbt_dir.exists()
+
+        with pytest.raises(ProjectionRunError, match=r"compile <domain> --emit"):
+            run_projections(
+                ontologies_path=ontology_files['dir'],
+                catalog_path=None,
+                output_path=output_dir,
+                target='dbt'
+            )
+
+        assert not output_dir.exists()
     
     def test_neo4j_projection_creates_files(self, temp_dir, ontology_files):
         """Test that Neo4j projection creates output files."""
@@ -206,7 +205,7 @@ class TestProjector:
         )
         
         # Check that all target directories were created
-        assert (output_dir / "medallion" / "dbt").exists()
+        assert not (output_dir / "medallion" / "dbt").exists()
         assert (output_dir / "neo4j").exists()
         assert (output_dir / "azure-search").exists()
         assert (output_dir / "a2ui").exists()
@@ -309,18 +308,16 @@ class TestProjector:
             ontologies_path=ontologies_dir,
             catalog_path=None,
             output_path=output_dir,
-            target='dbt',
+            target='neo4j',
             namespace='http://example.org/ontology/'
         )
         
-        # Verify DBT files were created
-        dbt_dir = output_dir / 'medallion' / 'dbt'
-        assert dbt_dir.exists()
-        
-        # Check that dbt output was generated (macros, project files, etc.)
-        all_files = list(dbt_dir.glob('**/*'))
+        target_dir = output_dir / 'neo4j'
+        assert target_dir.exists()
+
+        all_files = list(target_dir.glob('**/*'))
         generated_files = [f for f in all_files if f.is_file()]
-        assert len(generated_files) > 0, "dbt projection should produce output files"
+        assert len(generated_files) > 0
     
     def test_http_namespace_hash_based(self, temp_dir, hash_ontology):
         """Test that fragment-based HTTP namespaces (with #) are properly handled."""
@@ -372,15 +369,14 @@ class TestProjector:
             ontologies_path=ontologies_dir,
             catalog_path=None,
             output_path=output_dir,
-            target='dbt',
+            target='neo4j',
             namespace=None  # Auto-detect
         )
         
         # Should still generate files
-        dbt_dir = output_dir / 'medallion' / 'dbt'
-        assert dbt_dir.exists()
-        sql_files = list(dbt_dir.glob('**/*.sql'))
-        assert len(sql_files) > 0
+        neo4j_dir = output_dir / 'neo4j'
+        assert neo4j_dir.exists()
+        assert list(neo4j_dir.glob('*.cypher'))
     
     @pytest.mark.slow
     def test_windows_safe_filenames_from_http_uris(self, temp_dir, http_ontology):
@@ -435,30 +431,14 @@ class TestProjector:
             ontologies_path=ontologies_dir,
             catalog_path=None,
             output_path=output_dir,
-            target='dbt',
+            target='neo4j',
             namespace=None,  # Auto-detect should pick custom namespace
             degraded=True,
         )
         
-        # Check that custom classes were projected, not FIBO
-        dbt_dir = output_dir / 'medallion' / 'dbt'
-        assert dbt_dir.exists()
-        
-        # Without bronze data, only macros/schema YAML are generated.
-        # Verify the domain was picked up correctly by checking schema YAML.
-        dbt_dir = output_dir / 'medallion' / 'dbt'
-        assert dbt_dir.exists()
-        
-        schema_files = list(dbt_dir.glob('**/*__models.yml'))
-        assert len(schema_files) >= 1, "Schema YAML should be generated"
-        # Schema YAML filename includes the domain name derived from the ontology
-        schema_names = [f.stem for f in schema_files]
-        assert any('mixed' in n for n in schema_names), (
-            f"Schema YAML should reference 'mixed' domain, found: {schema_names}"
-        )
-        
-        # Should NOT have FIBO classes in any output
-        all_files = list(dbt_dir.rglob('*'))
+        neo4j_dir = output_dir / 'neo4j'
+        assert neo4j_dir.exists()
+        all_files = list(neo4j_dir.rglob('*'))
         filenames = [f.stem.lower() for f in all_files if f.is_file()]
         fibo_classes = ['organization', 'person', 'legalentity', 'contract', 'agreement']
         found_fibo = [cls for cls in fibo_classes if cls in filenames]
@@ -481,26 +461,14 @@ class TestProjector:
             ontologies_path=ontologies_dir,
             catalog_path=None,
             output_path=output_dir,
-            target='dbt',
+            target='neo4j',
             namespace=None,
             degraded=True,
         )
         
-        # Should generate files for the custom namespace
-        dbt_dir = output_dir / 'medallion' / 'dbt'
-        assert dbt_dir.exists()
-        
-        # Without bronze data, silver SQL isn't generated. Verify the projection
-        # ran successfully using the declared owl:Ontology namespace.
-        dbt_dir = output_dir / 'medallion' / 'dbt'
-        assert dbt_dir.exists()
-        
-        schema_files = list(dbt_dir.glob('**/*__models.yml'))
-        assert len(schema_files) >= 1, "Schema YAML should be generated"
-        schema_names = [f.stem for f in schema_files]
-        assert any('myapp' in n for n in schema_names), (
-            f"Schema YAML should reference 'myapp' domain, found: {schema_names}"
-        )
+        neo4j_dir = output_dir / 'neo4j'
+        assert neo4j_dir.exists()
+        assert list(neo4j_dir.glob('*.cypher'))
     
     def test_dbt_shacl_tests_extraction(self, temp_dir, sample_ontology, sample_shacl_shapes):
         """Test that SHACL constraints are properly extracted and converted to DBT tests."""
@@ -1068,7 +1036,7 @@ class TestProjector:
         output_dir = temp_dir / "output"
         
         # Test each projection type
-        for target in ['dbt', 'neo4j', 'azure-search', 'a2ui', 'prompt']:
+        for target in ['neo4j', 'azure-search', 'a2ui', 'prompt']:
             run_projections(
                 ontologies_path=ontologies_dir,
                 catalog_path=None,
@@ -1076,11 +1044,7 @@ class TestProjector:
                 target=target
             )
             
-            # Medallion targets go under medallion/ subdirectory
-            if target in ('dbt', 'silver'):
-                target_dir = output_dir / "medallion" / target
-            else:
-                target_dir = output_dir / target
+            target_dir = output_dir / target
             assert target_dir.exists(), f"{target} output directory should exist"
             
             # Count files (recursively)

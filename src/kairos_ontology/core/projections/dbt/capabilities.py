@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Versioned Fabric and Databricks capability negotiation (DD-111)."""
+"""Versioned Fabric and Databricks capability negotiation (DD-111, DD-133)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ from .policy_specs import (
     CapabilityResultSpec,
     CapabilitySupport,
 )
-
 
 _FABRIC_RESERVED = frozenset(
     {
@@ -155,6 +154,7 @@ _COMMON_PREPARATION_FEATURES = frozenset(
         "raw-payload-retention",
         "replayable-reference-retention",
         "schema-evolution:fail",
+        "schema-evolution:approved-contract-update",
         "array:scalar-object-elements",
         "technical-dedupe",
     }
@@ -263,6 +263,80 @@ _COMMON_CAPABILITIES = (
 )
 
 
+def _stage2_capabilities(
+    adapter: AdapterName,
+    evidence: str,
+) -> tuple[AdapterCapabilitySpec, ...]:
+    merge = {
+        AdapterName.FABRIC: "Fabric Warehouse MERGE",
+        AdapterName.DATABRICKS: "Delta MERGE",
+    }.get(adapter)
+    if merge is None:
+        raise ValueError(f"No Stage 2 physical capability profile for {adapter!r}")
+    return (
+        _capability(
+            AdapterCapability.INCREMENTAL_SCD1,
+            CapabilitySupport.SUPPORTED,
+            "DD-133-stage2-scd1",
+            f"{evidence}: deterministic SCD1 through {merge} and existing dbt runtime plans",
+        ),
+        _capability(
+            AdapterCapability.INCREMENTAL_SCD2,
+            CapabilitySupport.SUPPORTED,
+            "DD-133-stage2-scd2",
+            f"{evidence}: closed-open SCD2 through {merge} and existing dbt runtime plans",
+        ),
+        _capability(
+            AdapterCapability.TOTAL_ORDERING,
+            CapabilitySupport.SUPPORTED,
+            "DD-133-stage2-total-order",
+            f"{evidence}: explicit ordered window keys with no implicit tie breaker",
+        ),
+        _capability(
+            AdapterCapability.TEMPORAL_FK_CURRENT,
+            CapabilitySupport.SUPPORTED,
+            "DD-133-stage2-temporal-current",
+            f"{evidence}: cardinality-checked current-parent lookup",
+        ),
+        _capability(
+            AdapterCapability.TEMPORAL_FK_AS_OF,
+            CapabilitySupport.SUPPORTED,
+            "DD-133-stage2-temporal-as-of",
+            f"{evidence}: cardinality-checked closed-open event-time lookup",
+        ),
+        _capability(
+            AdapterCapability.SCHEMA_EVOLUTION_FAIL,
+            CapabilitySupport.SUPPORTED,
+            "DD-133-stage2-schema-evolution",
+            f"{evidence}: dbt fail-on-schema-change contract",
+        ),
+        _capability(
+            AdapterCapability.SCHEMA_EVOLUTION_APPEND_COMPATIBLE,
+            CapabilitySupport.SUPPORTED,
+            "DD-133-stage2-schema-evolution",
+            f"{evidence}: dbt append-new-columns after compatibility validation",
+        ),
+        _capability(
+            AdapterCapability.CONFORMANCE_UNION_ALL,
+            CapabilitySupport.SUPPORTED,
+            "DD-133-stage2-conformance",
+            f"{evidence}: deterministic contracted-source UNION ALL",
+        ),
+        _capability(
+            AdapterCapability.CONFORMANCE_DEDUPLICATE,
+            CapabilitySupport.SUPPORTED,
+            "DD-133-stage2-conformance",
+            f"{evidence}: explicit precedence and total-order window deduplication",
+        ),
+        _capability(
+            AdapterCapability.CONTRACTED_DBT_SOURCE,
+            CapabilitySupport.SUPPORTED,
+            "DD-133-stage2-contracted-source",
+            f"{evidence}: ordinary dbt model plus authoritative YAML output contract",
+        ),
+    )
+
+
 def _fabric() -> AdapterSpec:
     evidence = "fabric-warehouse-capability-profile-v1"
     return AdapterSpec(
@@ -303,6 +377,7 @@ def _fabric() -> AdapterSpec:
             ),
         ),
         capabilities=_COMMON_CAPABILITIES
+        + _stage2_capabilities(AdapterName.FABRIC, evidence)
         + (
             _capability(
                 AdapterCapability.CONSTRAINTS,
@@ -359,6 +434,7 @@ def _databricks() -> AdapterSpec:
             _type(CanonicalTypeKind.JSON, "VARIANT", evidence=evidence),
         ),
         capabilities=_COMMON_CAPABILITIES
+        + _stage2_capabilities(AdapterName.DATABRICKS, evidence)
         + (
             _capability(
                 AdapterCapability.CONSTRAINTS,
@@ -434,24 +510,17 @@ def physical_canonical_type(
     """Resolve one canonical type through the selected adapter profile."""
     profile = adapter_spec(adapter, registry)
     mapping = next(
-        (
-            item
-            for item in profile.type_mappings
-            if item.semantic_type is value.kind
-        ),
+        (item for item in profile.type_mappings if item.semantic_type is value.kind),
         None,
     )
     if mapping is None:
-        raise ValueError(
-            f"Adapter {profile.name.value!r} has no mapping for {value.kind.value!r}"
-        )
+        raise ValueError(f"Adapter {profile.name.value!r} has no mapping for {value.kind.value!r}")
     if value.kind is CanonicalTypeKind.DECIMAL:
         precision = value.precision or 18
         scale = value.scale if value.scale is not None else 4
         if precision > 38 or scale > precision:
             raise ValueError(
-                f"Adapter {profile.name.value!r} cannot represent "
-                f"decimal({precision},{scale})"
+                f"Adapter {profile.name.value!r} cannot represent " f"decimal({precision},{scale})"
             )
         return f"DECIMAL({precision},{scale})"
     if value.kind is CanonicalTypeKind.STRING and value.length:
@@ -460,11 +529,7 @@ def physical_canonical_type(
                 "Fabric preparation strings require an authored length of 8000 "
                 f"or less, not {value.length}"
             )
-        return (
-            f"VARCHAR({value.length})"
-            if profile.name is AdapterName.FABRIC
-            else "STRING"
-        )
+        return f"VARCHAR({value.length})" if profile.name is AdapterName.FABRIC else "STRING"
     return mapping.physical_type
 
 

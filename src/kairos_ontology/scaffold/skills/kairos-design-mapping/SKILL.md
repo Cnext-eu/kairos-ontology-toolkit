@@ -15,9 +15,9 @@ Use this skill after a bounded canonical ontology slice is accepted. Author
 source-to-canonical execution authority.
 
 This is the DD-133 v5 clean break. Never author SKOS/mapping TTL, preparation
-TTL, Silver-extension TTL, claims, lifecycle/readiness records, proposal
-registries, or virtual-source registries. Do not create `.kairos-state/`, phase
-logs, or persistent explain/check reports. `compile` diagnostics are ephemeral;
+TTL, Silver-extension TTL, lifecycle/readiness records, proposal registries, or
+virtual-source registries. Do not create legacy phase logs or persistent
+explain/check reports. `compile` diagnostics are ephemeral;
 persist only accepted binding and ordinary contracted dbt changes.
 
 ## Design fleet mode (DD-088)

@@ -208,7 +208,7 @@ Use this table to pick the correct skill for a user's intent:
 | "Import CSV/Excel flat files as source" | **kairos-design-source** (Phase 1) |
 | "Release / upgrade / version check / update reference models" | **kairos-toolkit-ops** |
 | "Map source columns to domain / create SKOS mappings" | **kairos-design-mapping** |
-| "Status / progress / what's missing / where are we" | **kairos-flow** (start/continue) or **kairos-diagnose-status** (detailed read-only diagnostic). Both build on the deterministic `kairos-ontology status` CLI. |
+| "Status / progress / what's missing / where are we" | **kairos-flow** (start/continue) or **kairos-diagnose-status** (detailed read-only diagnostic). Both use stateless inventory and CompilePlan diagnostics. |
 | "Set up / scaffold a dataplatform dbt repo" | **kairos-setup-dataplatform** |
 | "Import source schema / refresh vocabulary from bronze" | **kairos-design-source** (Phase 2) |
 | "Generate coverage report" | CLI: `kairos-ontology coverage-report` |

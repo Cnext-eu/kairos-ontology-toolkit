@@ -32,11 +32,6 @@ from .specs import (
     NormalizedCoverage,
     NormalizedSchemaModel,
     OntologyMetadataSpec,
-    PrepArrayChildModelSpec,
-    PrepModelPhysicalPlan,
-    PrepModelSpec,
-    PrepRouteSpec,
-    PrepSchemaPhysicalPlan,
     ProjectConfigPlan,
     ReleasePlan,
     SchemaDocumentSpec,
@@ -76,7 +71,6 @@ class DbtInputs:
     ontology_metadata: OntologyMetadataSpec
     bronze_root: str | None
     sources_root: str | None
-    preparation_root: str | None
     mappings_root: str | None
     gold_extension: str | None
     target_platform: str
@@ -86,8 +80,6 @@ class DbtInputs:
     peer_ontologies: tuple[str, ...]
     logical_sources_only: bool
     contracts: tuple[tuple[str, "DbtContractModel"], ...]
-    emit_aspirational_stubs: bool
-    eligible_class_uris: frozenset[str]
 
     @classmethod
     def from_call(
@@ -103,7 +95,6 @@ class DbtInputs:
         ontology_metadata: dict | None = None,
         bronze_dir: "Path | None" = None,
         sources_dir: "Path | None" = None,
-        preparation_dir: "Path | None" = None,
         mappings_dir: "Path | None" = None,
         gold_ext_path: "Path | None" = None,
         silver_ext_path: "Path | None" = None,
@@ -112,8 +103,6 @@ class DbtInputs:
         peer_ontology_paths: list | None = None,
         logical_sources_only: bool = False,
         contract_registry: "Mapping[str, DbtContractModel] | None" = None,
-        emit_aspirational_stubs: bool = False,
-        eligible_class_uris: set | None = None,
     ) -> "DbtInputs":
         """Copy mutable call arguments into stable authoring inputs."""
         from pathlib import Path
@@ -129,7 +118,6 @@ class DbtInputs:
             )
             for item in classes
         )
-        source_location = sources_dir or bronze_dir
         return cls(
             classes=class_facts,
             graph=graph,
@@ -140,28 +128,15 @@ class DbtInputs:
             ontology_metadata=build_metadata(ontology_metadata),
             bronze_root=str(bronze_dir) if bronze_dir is not None else None,
             sources_root=str(sources_dir) if sources_dir is not None else None,
-            preparation_root=(
-                str(preparation_dir)
-                if preparation_dir is not None
-                else str(Path(source_location).parent / "preparation")
-                if source_location is not None
-                else None
-            ),
             mappings_root=str(mappings_dir) if mappings_dir is not None else None,
             gold_extension=str(gold_ext_path) if gold_ext_path is not None else None,
             target_platform=target_platform,
-            silver_extension=(
-                str(silver_ext_path) if silver_ext_path is not None else None
-            ),
+            silver_extension=(str(silver_ext_path) if silver_ext_path is not None else None),
             ref_model_defaults=tuple(str(path) for path in (ref_model_defaults or ())),
             peer_extensions=tuple(str(path) for path in (peer_ext_paths or ())),
-            peer_ontologies=tuple(
-                str(path) for path in (peer_ontology_paths or ())
-            ),
+            peer_ontologies=tuple(str(path) for path in (peer_ontology_paths or ())),
             logical_sources_only=logical_sources_only,
             contracts=tuple(sorted((contract_registry or {}).items())),
-            emit_aspirational_stubs=emit_aspirational_stubs,
-            eligible_class_uris=frozenset(eligible_class_uris or ()),
         )
 
 
@@ -208,7 +183,6 @@ class BoundSources:
     target_platform: str
     template_root: str
     logical_sources_only: bool
-    emit_aspirational_stubs: bool
     systems: tuple[SourceSystemFact, ...]
     mappings: SourceMappings
     contracts: tuple[tuple[str, ContractFact], ...]
@@ -280,14 +254,12 @@ class ProjectionContract:
         """Return the sole effective naming authority."""
         return self.policy.naming_convention.value.value
 
+
 @dataclass(frozen=True, slots=True)
 class ShapedProject:
     """Result of shape: ordered logical specifications and no artifact content."""
 
     source_catalogs: tuple[SourceCatalogSpec, ...]
-    prep_models: tuple[PrepModelSpec, ...]
-    prep_children: tuple[PrepArrayChildModelSpec, ...]
-    prep_routes: tuple[PrepRouteSpec, ...]
     silver_models: tuple[SilverModelSpec, ...]
     silver_outcomes: tuple[SilverModelOutcome, ...]
     schema_documents: tuple[SchemaDocumentSpec, ...]
@@ -308,8 +280,6 @@ class MaterializationPlan:
     """Result of materialize: adapter, physical model, dependency, and release plans."""
 
     adapter: AdapterPlan
-    prep_models: tuple[PrepModelPhysicalPlan, ...]
-    prep_documents: tuple[PrepSchemaPhysicalPlan, ...]
     models: tuple[ModelPhysicalPlan, ...]
     quality_models: tuple[DqModelPhysicalPlan, ...]
     documents: tuple[DocumentPhysicalPlan, ...]

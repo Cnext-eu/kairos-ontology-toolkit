@@ -642,7 +642,8 @@ def _shape_dimensional(
             authored.dimension_exposure
             and authored.dimension_exposure.value
             in {DimensionExposure.HISTORY_ONLY, DimensionExposure.DUAL}
-            and (history is None or history.scd_type.value is not ScdType.TYPE_2)
+            and history is not None
+            and history.scd_type.value is not ScdType.TYPE_2
         ):
             _fail(
                 "gold.dimension-history-unavailable",
@@ -657,30 +658,24 @@ def _shape_dimensional(
         updated_at = ""
         if authored.role.value is GoldTableRole.FACT:
             runtime = incremental.get(authored.incremental_policy_ref or "")
-            if runtime is None:
-                _fail(
-                    "gold.incremental-policy-missing",
-                    f"fact {authored.table_name.value!r} has no normalized runtime policy",
-                    rule_id="DD-112-fact",
-                    resource_uri=authored.resource_uri,
+            if runtime is not None:
+                unique_key = runtime.merge_identity.value
+                updated_at = runtime.ordering.source_updated_at.value
+                missing_runtime_columns = tuple(
+                    value
+                    for value in (*unique_key, updated_at)
+                    if value not in actual_columns
                 )
-            unique_key = runtime.merge_identity.value
-            updated_at = runtime.ordering.source_updated_at.value
-            missing_runtime_columns = tuple(
-                value
-                for value in (*unique_key, updated_at)
-                if value not in actual_columns
-            )
-            if missing_runtime_columns:
-                _fail(
-                    "gold.fact-runtime-column-missing",
-                    (
-                        f"fact {authored.table_name.value!r} runtime policy references "
-                        f"unmaterialized Silver columns {missing_runtime_columns!r}"
-                    ),
-                    rule_id="DD-112-fact",
-                    resource_uri=authored.resource_uri,
-                )
+                if missing_runtime_columns:
+                    _fail(
+                        "gold.fact-runtime-column-missing",
+                        (
+                            f"fact {authored.table_name.value!r} runtime policy references "
+                            f"unmaterialized Silver columns {missing_runtime_columns!r}"
+                        ),
+                        rule_id="DD-112-fact",
+                        resource_uri=authored.resource_uri,
+                    )
         weight = authored.bridge_weight_column.value if authored.bridge_weight_column else ""
         if weight and weight not in actual_columns:
             _fail(

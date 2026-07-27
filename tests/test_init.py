@@ -7,8 +7,14 @@ from pathlib import Path
 from unittest import mock
 from click.testing import CliRunner
 from kairos_ontology.cli.main import (
-    cli, _slugify, _stamp_managed, _get_managed_version, _managed_scaffold_map,
-    _tag_to_version, _whl_url, _resolve_channel,
+    cli,
+    _slugify,
+    _stamp_managed,
+    _get_managed_version,
+    _managed_scaffold_map,
+    _tag_to_version,
+    _whl_url,
+    _resolve_channel,
 )
 
 
@@ -18,38 +24,23 @@ def test_init_creates_hub_structure(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "order"])
+            result = runner.invoke(
+                cli, ["init", "--company-domain", "test.com", "--domain", "order"]
+            )
             assert result.exit_code == 0
 
             # Check ontology-hub directories
             assert Path("ontology-hub/model/ontologies").is_dir()
             assert Path("ontology-hub/model/shapes").is_dir()
             assert Path("ontology-hub/model/extensions").is_dir()
-            baseline = Path(
-                "ontology-hub/model/governance/release-baseline.yaml"
-            )
+            baseline = Path("ontology-hub/model/governance/release-baseline.yaml")
             assert baseline.is_file()
             assert "approval_status: draft" in baseline.read_text(encoding="utf-8")
             assert Path("ontology-hub/integration/sources").is_dir()
-            assert Path("ontology-hub/integration/preparation/README.md").is_file()
-            assert Path(
-                "ontology-hub/integration/preparation/source-prep.ttl.template"
-            ).is_file()
-            assert Path(
-                "ontology-hub/integration/preparation/source-prep.example.ttl"
-            ).is_file()
-            assert Path(
-                "ontology-hub/integration/sources/custom-transformations/README.md"
-            ).is_file()
+            assert not Path("ontology-hub/integration/preparation").exists()
             assert Path("ontology-hub/integration/transforms/dbt/README.md").is_file()
             assert Path("ontology-hub/integration/discovery").is_dir()
             assert Path("ontology-hub/model/mappings").is_dir()
-            assert Path(
-                "ontology-hub/model/planning/dbt-transformations/README.md"
-            ).is_file()
-            assert Path(
-                "ontology-hub/model/mappings/custom-transformations/README.md"
-            ).is_file()
             assert Path("ontology-hub/output/medallion/dbt").is_dir()
             assert Path("ontology-hub/output/medallion/powerbi").is_dir()
             assert Path("ontology-hub/output/medallion/dbt").is_dir()
@@ -60,19 +51,7 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/.sessions-projection").is_dir()
             assert Path("ontology-hub/.sessions-design-import").is_dir()
             assert not Path("ontology-hub/.sessions-design").exists()
-            for okf_dir in [
-                ".kairos-state",
-                ".kairos-state/_archive",
-                ".kairos-state/phases",
-                ".kairos-state/phases/source",
-                ".kairos-state/phases/domain",
-                ".kairos-state/phases/mapping",
-                ".kairos-state/phases/dbt-transformation",
-                ".kairos-state/phases/silver",
-                ".kairos-state/phases/gold",
-            ]:
-                assert Path("ontology-hub", okf_dir).is_dir()
-                assert Path("ontology-hub", okf_dir, ".gitkeep").is_file()
+            assert not Path("ontology-hub/.kairos-state").exists()
 
             # Business discovery (DD-048/DD-056): glossary under hub, .import at repo root
             assert Path("ontology-hub/businessdiscovery").is_dir()
@@ -83,16 +62,10 @@ def test_init_creates_hub_structure(tmp_path):
             # Check README files
             assert Path("ontology-hub/model/ontologies/README.md").is_file()
             assert Path("ontology-hub/model/shapes/README.md").is_file()
-            assert Path(
-                "ontology-hub/model/shapes/kairos-prep-shapes.shacl.ttl"
-            ).is_file()
-            assert Path(
-                "ontology-hub/model/shapes/kairos-ext-shapes.shacl.ttl"
-            ).is_file()
-            assert Path(
-                "ontology-hub/model/shapes/kairos-map-shapes.shacl.ttl"
-            ).is_file()
-            assert Path("ontology-hub/model/mappings/README.md").is_file()
+            assert not Path("ontology-hub/model/shapes/kairos-prep-shapes.shacl.ttl").exists()
+            assert Path("ontology-hub/model/shapes/kairos-ext-shapes.shacl.ttl").is_file()
+            assert Path("ontology-hub/model/shapes/kairos-map-shapes.shacl.ttl").is_file()
+            assert not Path("ontology-hub/model/mappings/README.md").exists()
 
             # Check skills installed
             assert Path(".github/skills/kairos-setup-config/SKILL.md").is_file()
@@ -100,9 +73,7 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path(".github/skills/kairos-design-discovery/SKILL.md").is_file()
             assert Path(".github/skills/kairos-execute-validate/SKILL.md").is_file()
             assert Path(".github/skills/kairos-execute-project/SKILL.md").is_file()
-            assert Path(
-                ".github/skills/kairos-develop-dbt-transformation/SKILL.md"
-            ).is_file()
+            assert Path(".github/skills/kairos-develop-dbt-transformation/SKILL.md").is_file()
 
             # Check copilot instructions
             assert Path(".github/copilot-instructions.md").is_file()
@@ -116,9 +87,7 @@ def test_init_creates_hub_structure(tmp_path):
 
             # No submodule calls (reference models are fetched separately)
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
-            submodule_calls = [
-                c for c in call_args_list if "submodule" in c
-            ]
+            submodule_calls = [c for c in call_args_list if "submodule" in c]
             assert len(submodule_calls) == 0
 
             # Check starter ontology
@@ -165,9 +134,14 @@ def test_init_no_overwrite_without_force(tmp_path):
             Path("ontology-hub/model/ontologies/customer.ttl").write_text(marker, encoding="utf-8")
 
             # Run again without --force
-            result = runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer"])
+            result = runner.invoke(
+                cli, ["init", "--company-domain", "test.com", "--domain", "customer"]
+            )
             assert result.exit_code == 0
-            assert Path("ontology-hub/model/ontologies/customer.ttl").read_text(encoding="utf-8") == marker
+            assert (
+                Path("ontology-hub/model/ontologies/customer.ttl").read_text(encoding="utf-8")
+                == marker
+            )
 
 
 def test_init_force_overwrites(tmp_path):
@@ -177,9 +151,13 @@ def test_init_force_overwrites(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
             runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer"])
-            Path("ontology-hub/model/ontologies/customer.ttl").write_text("# MARKER", encoding="utf-8")
+            Path("ontology-hub/model/ontologies/customer.ttl").write_text(
+                "# MARKER", encoding="utf-8"
+            )
 
-            result = runner.invoke(cli, ["init", "--company-domain", "test.com", "--domain", "customer", "--force"])
+            result = runner.invoke(
+                cli, ["init", "--company-domain", "test.com", "--domain", "customer", "--force"]
+            )
             assert result.exit_code == 0
             content = Path("ontology-hub/model/ontologies/customer.ttl").read_text(encoding="utf-8")
             assert "owl:Ontology" in content
@@ -218,8 +196,7 @@ def test_new_repo_creates_full_structure(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path),
-             "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
         )
     assert result.exit_code == 0, result.output
 
@@ -229,94 +206,21 @@ def test_new_repo_creates_full_structure(tmp_path):
     # Hub structure
     assert (repo / "ontology-hub" / "model" / "ontologies").is_dir()
     assert (repo / "ontology-hub" / "model" / "shapes" / "README.md").is_file()
-    assert (
-        repo
-        / "ontology-hub"
-        / "model"
-        / "shapes"
-        / "kairos-prep-shapes.shacl.ttl"
-    ).is_file()
-    assert (
-        repo
-        / "ontology-hub"
-        / "model"
-        / "shapes"
-        / "kairos-ext-shapes.shacl.ttl"
-    ).is_file()
-    assert (
-        repo
-        / "ontology-hub"
-        / "model"
-        / "shapes"
-        / "kairos-map-shapes.shacl.ttl"
-    ).is_file()
-    assert (repo / "ontology-hub" / "model" / "mappings" / "README.md").is_file()
-    assert (
-        repo
-        / "ontology-hub"
-        / "model"
-        / "governance"
-        / "release-baseline.yaml"
-    ).is_file()
+    assert not (
+        repo / "ontology-hub" / "model" / "shapes" / "kairos-prep-shapes.shacl.ttl"
+    ).exists()
+    assert (repo / "ontology-hub" / "model" / "shapes" / "kairos-ext-shapes.shacl.ttl").is_file()
+    assert (repo / "ontology-hub" / "model" / "shapes" / "kairos-map-shapes.shacl.ttl").is_file()
+    assert not (repo / "ontology-hub" / "model" / "mappings" / "README.md").exists()
+    assert (repo / "ontology-hub" / "model" / "governance" / "release-baseline.yaml").is_file()
     assert (repo / "ontology-hub" / "output" / "medallion" / "dbt").is_dir()
     assert (repo / "ontology-hub" / "integration" / "discovery").is_dir()
-    assert (
-        repo / "ontology-hub" / "integration" / "preparation" / "README.md"
-    ).is_file()
-    assert (
-        repo
-        / "ontology-hub"
-        / "integration"
-        / "preparation"
-        / "source-prep.ttl.template"
-    ).is_file()
-    assert (
-        repo
-        / "ontology-hub"
-        / "integration"
-        / "preparation"
-        / "source-prep.example.ttl"
-    ).is_file()
-    assert (
-        repo
-        / "ontology-hub"
-        / "integration"
-        / "transforms"
-        / "dbt"
-        / "README.md"
-    ).is_file()
-    assert (
-        repo
-        / "ontology-hub"
-        / "integration"
-        / "sources"
-        / "custom-transformations"
-        / "README.md"
-    ).is_file()
-    assert (
-        repo
-        / "ontology-hub"
-        / "model"
-        / "mappings"
-        / "custom-transformations"
-        / "README.md"
-    ).is_file()
+    assert not (repo / "ontology-hub" / "integration" / "preparation").exists()
+    assert (repo / "ontology-hub" / "integration" / "transforms" / "dbt" / "README.md").is_file()
     assert (repo / "ontology-hub" / ".sessions-projection").is_dir()
     assert (repo / "ontology-hub" / ".sessions-design-import").is_dir()
     assert not (repo / "ontology-hub" / ".sessions-design").exists()
-    for okf_dir in [
-        ".kairos-state",
-        ".kairos-state/_archive",
-        ".kairos-state/phases",
-        ".kairos-state/phases/source",
-        ".kairos-state/phases/domain",
-        ".kairos-state/phases/mapping",
-        ".kairos-state/phases/dbt-transformation",
-        ".kairos-state/phases/silver",
-        ".kairos-state/phases/gold",
-    ]:
-        assert (repo / "ontology-hub" / okf_dir).is_dir()
-        assert (repo / "ontology-hub" / okf_dir / ".gitkeep").is_file()
+    assert not (repo / "ontology-hub" / ".kairos-state").exists()
 
     # Business discovery (DD-048/DD-056): glossary under hub, .import at repo root
     assert (repo / "ontology-hub" / "businessdiscovery").is_dir()
@@ -333,11 +237,7 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / ".github" / "skills" / "kairos-setup-config" / "SKILL.md").is_file()
     assert (repo / ".github" / "skills" / "kairos-design-discovery" / "SKILL.md").is_file()
     assert (
-        repo
-        / ".github"
-        / "skills"
-        / "kairos-develop-dbt-transformation"
-        / "SKILL.md"
+        repo / ".github" / "skills" / "kairos-develop-dbt-transformation" / "SKILL.md"
     ).is_file()
 
     # Repo-level files
@@ -386,8 +286,7 @@ def test_new_repo_rejects_inside_git_repo(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=fake_run):
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(subdir),
-             "--template", ""],
+            ["new-repo", "contoso", "--path", str(subdir), "--template", ""],
         )
     assert result.exit_code != 0
     assert "inside an existing git repo" in result.output
@@ -407,8 +306,7 @@ def test_new_repo_allows_git_root_as_parent(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=fake_run):
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path),
-             "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
         )
     # Should NOT be blocked by the git check (may fail later for other reasons,
     # but the exit should not mention "inside an existing git repo")
@@ -422,8 +320,7 @@ def test_new_repo_default_org_is_cnext(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path),
-             "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
         )
     assert result.exit_code == 0, result.output
 
@@ -440,8 +337,7 @@ def test_new_repo_creates_git_and_pushes(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "test-client", "--path", str(tmp_path),
-             "--template", ""],
+            ["new-repo", "test-client", "--path", str(tmp_path), "--template", ""],
         )
     assert result.exit_code == 0, result.output
 
@@ -470,7 +366,9 @@ def test_new_repo_without_domain(tmp_path):
     repo = tmp_path / "empty-client-ontology-hub"
     assert (repo / "ontology-hub" / "model" / "ontologies").is_dir()
     # Only _foundation.ttl + _master.ttl should exist (no domain starter)
-    ttl_files = sorted(p.name for p in (repo / "ontology-hub" / "model" / "ontologies").glob("*.ttl"))
+    ttl_files = sorted(
+        p.name for p in (repo / "ontology-hub" / "model" / "ontologies").glob("*.ttl")
+    )
     assert ttl_files == ["_foundation.ttl", "_master.ttl"]
 
 
@@ -481,8 +379,16 @@ def test_new_repo_custom_org(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso",
-             "--path", str(tmp_path), "--org", "Acme-Corp", "--template", ""],
+            [
+                "new-repo",
+                "contoso",
+                "--path",
+                str(tmp_path),
+                "--org",
+                "Acme-Corp",
+                "--template",
+                "",
+            ],
         )
     assert result.exit_code == 0, result.output
 
@@ -503,7 +409,8 @@ def test_new_repo_default_private(tmp_path):
         )
     assert result.exit_code == 0, result.output
     gh_create_call = [
-        call.args[0] for call in mock_run.call_args_list
+        call.args[0]
+        for call in mock_run.call_args_list
         if "gh" in call.args[0] and "create" in call.args[0]
     ]
     assert len(gh_create_call) == 1
@@ -521,7 +428,8 @@ def test_new_repo_public_flag(tmp_path):
         )
     assert result.exit_code == 0, result.output
     gh_create_call = [
-        call.args[0] for call in mock_run.call_args_list
+        call.args[0]
+        for call in mock_run.call_args_list
         if "gh" in call.args[0] and "create" in call.args[0]
     ]
     assert len(gh_create_call) == 1
@@ -583,8 +491,7 @@ def test_new_repo_stamps_managed_files(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path),
-             "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
         )
     assert result.exit_code == 0, result.output
 
@@ -674,6 +581,7 @@ def test_update_check_exit_code_nonzero_on_drift(tmp_path):
 def test_update_check_exit_code_zero_when_current(tmp_path):
     """update --check should exit 0 when everything is up to date."""
     from kairos_ontology import __version__ as ver
+
     runner = CliRunner()
     managed_map = _managed_scaffold_map()
 
@@ -693,6 +601,7 @@ def test_update_check_exit_code_zero_when_current(tmp_path):
 def test_update_noop_when_current(tmp_path):
     """update should report up-to-date when versions match."""
     from kairos_ontology import __version__ as ver
+
     runner = CliRunner()
     managed_map = _managed_scaffold_map()
 
@@ -712,6 +621,7 @@ def test_update_noop_when_current(tmp_path):
 def test_update_creates_missing_files(tmp_path):
     """update should create managed files that don't exist locally."""
     from kairos_ontology import __version__ as ver
+
     runner = CliRunner()
     managed_map = _managed_scaffold_map()
 
@@ -748,6 +658,7 @@ def test_update_check_reports_missing_as_drift(tmp_path):
 def test_update_creates_new_skill_file(tmp_path):
     """update should create a newly added skill while leaving existing ones."""
     from kairos_ontology import __version__ as ver
+
     runner = CliRunner()
     managed_map = _managed_scaffold_map()
     skill_paths = [p for p in managed_map if "skills/" in p]
@@ -772,6 +683,7 @@ def test_update_creates_new_skill_file(tmp_path):
 def test_update_removes_stale_managed_skill(tmp_path):
     """update should remove a managed skill that is no longer in the scaffold."""
     from kairos_ontology import __version__ as ver
+
     runner = CliRunner()
     managed_map = _managed_scaffold_map()
 
@@ -802,6 +714,7 @@ def test_update_removes_stale_managed_skill(tmp_path):
 def test_update_check_reports_stale_managed_skill(tmp_path):
     """update --check should report stale managed skills without removing them."""
     from kairos_ontology import __version__ as ver
+
     runner = CliRunner()
     managed_map = _managed_scaffold_map()
 
@@ -831,6 +744,7 @@ def test_update_check_reports_stale_managed_skill(tmp_path):
 def test_update_preserves_custom_unmanaged_skill(tmp_path):
     """update should NOT remove a custom skill without the managed marker."""
     from kairos_ontology import __version__ as ver
+
     runner = CliRunner()
     managed_map = _managed_scaffold_map()
 
@@ -917,8 +831,16 @@ def test_new_repo_ref_models_version(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path),
-             "--ref-models-version", "v1.2.0", "--template", ""],
+            [
+                "new-repo",
+                "contoso",
+                "--path",
+                str(tmp_path),
+                "--ref-models-version",
+                "v1.2.0",
+                "--template",
+                "",
+            ],
         )
     assert result.exit_code == 0, result.output
 
@@ -940,9 +862,7 @@ def test_init_no_submodule_calls(tmp_path):
 
             # No submodule calls at all
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
-            submodule_calls = [
-                c for c in call_args_list if "submodule" in c
-            ]
+            submodule_calls = [c for c in call_args_list if "submodule" in c]
             assert len(submodule_calls) == 0
 
 
@@ -997,11 +917,12 @@ def test_new_repo_template_gh_create_has_template_flag(tmp_path):
             repo_dir.mkdir(parents=True, exist_ok=True)
         return mock.MagicMock(returncode=0)
 
-    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect) as mock_run:
+    with mock.patch(
+        "kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect
+    ) as mock_run:
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path),
-             "--template", "my-custom-template"],
+            ["new-repo", "contoso", "--path", str(tmp_path), "--template", "my-custom-template"],
         )
     assert result.exit_code == 0, result.output
 
@@ -1023,7 +944,9 @@ def test_new_repo_template_no_git_init(tmp_path):
             repo_dir.mkdir(parents=True, exist_ok=True)
         return mock.MagicMock(returncode=0)
 
-    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect) as mock_run:
+    with mock.patch(
+        "kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect
+    ) as mock_run:
         result = runner.invoke(
             cli,
             ["new-repo", "contoso", "--path", str(tmp_path)],
@@ -1048,11 +971,19 @@ def test_new_repo_template_full_org_slash(tmp_path):
             repo_dir.mkdir(parents=True, exist_ok=True)
         return mock.MagicMock(returncode=0)
 
-    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect) as mock_run:
+    with mock.patch(
+        "kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect
+    ) as mock_run:
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path),
-             "--template", "OtherOrg/other-template"],
+            [
+                "new-repo",
+                "contoso",
+                "--path",
+                str(tmp_path),
+                "--template",
+                "OtherOrg/other-template",
+            ],
         )
     assert result.exit_code == 0, result.output
 
@@ -1075,7 +1006,9 @@ def test_new_repo_smartcoding_runs_when_script_exists(tmp_path):
             )
         return mock.MagicMock(returncode=0)
 
-    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect) as mock_run:
+    with mock.patch(
+        "kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect
+    ) as mock_run:
         result = runner.invoke(
             cli,
             ["new-repo", "contoso", "--path", str(tmp_path)],
@@ -1097,9 +1030,7 @@ def test_init_smartcoding_runs_when_script_exists(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
             # Pre-create the script (as if repo was created from template)
-            Path("update-smartcoding-latest.ps1").write_text(
-                "# smartcoding", encoding="utf-8"
-            )
+            Path("update-smartcoding-latest.ps1").write_text("# smartcoding", encoding="utf-8")
             result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert result.exit_code == 0
 
@@ -1237,8 +1168,16 @@ def test_new_repo_custom_company_domain(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path),
-             "--company-domain", "contoso.io", "--template", ""],
+            [
+                "new-repo",
+                "contoso",
+                "--path",
+                str(tmp_path),
+                "--company-domain",
+                "contoso.io",
+                "--template",
+                "",
+            ],
         )
     assert result.exit_code == 0, result.output
 
@@ -1269,13 +1208,15 @@ def test_new_repo_configures_branch_protection(tmp_path):
             result.stderr = ""
         elif "gh" in cmd and "api" in cmd and "protection" in " ".join(cmd):
             if "--method" not in cmd:
-                result.stdout = b'{"required_pull_request_reviews": {"required_approving_review_count": 1}}'
+                result.stdout = (
+                    b'{"required_pull_request_reviews": {"required_approving_review_count": 1}}'
+                )
             else:
-                result.stdout = b'{}'
-            result.stderr = b''
+                result.stdout = b"{}"
+            result.stderr = b""
         else:
-            result.stdout = b''
-            result.stderr = b''
+            result.stdout = b""
+            result.stderr = b""
         return result
 
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
@@ -1303,15 +1244,14 @@ def test_new_repo_skip_protection_flag(tmp_path):
             result.stdout = ""
             result.stderr = ""
         else:
-            result.stdout = b''
-            result.stderr = b''
+            result.stdout = b""
+            result.stderr = b""
         return result
 
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path),
-             "--template", "", "--skip-protection"],
+            ["new-repo", "contoso", "--path", str(tmp_path), "--template", "", "--skip-protection"],
         )
     assert result.exit_code == 0, result.output
     assert "Branch protection" not in result.output
@@ -1331,7 +1271,7 @@ def test_new_repo_protection_failure_is_non_fatal(tmp_path):
                 raise subprocess.CalledProcessError(
                     1, cmd, stderr=b"Resource not accessible by integration"
                 )
-        return mock.MagicMock(returncode=0, stdout=b'{}', stderr=b'')
+        return mock.MagicMock(returncode=0, stdout=b"{}", stderr=b"")
 
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
         result = runner.invoke(

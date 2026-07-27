@@ -2,30 +2,79 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://kairos.eu/v5/entity-binding.schema.json",
   "title": "Kairos v5 EntityBinding",
-  "description": "Closed document shape for a single v5 EntityBinding (DD-133). Expression node grammar is validated structurally in Python (bindings.py), not here.",
+  "description": "Closed Stage 2 EntityBinding contract (DD-133).",
   "type": "object",
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "metadata", "source", "target", "grain", "identity", "load", "fields"],
   "properties": {
     "apiVersion": {"const": "kairos.eu/v5"},
     "kind": {"const": "EntityBinding"},
+    "metadata": {"$ref": "#/definitions/metadata"},
+    "source": {"$ref": "#/definitions/source"},
+    "target": {"$ref": "#/definitions/target"},
+    "grain": {"$ref": "#/definitions/columns"},
+    "identity": {"$ref": "#/definitions/identity"},
+    "load": {"$ref": "#/definitions/load"},
+    "fields": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/definitions/field"}
+    },
+    "relationships": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/relationship"}
+    },
+    "conformance": {"$ref": "#/definitions/conformance"},
+    "quality": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/quality"}
+    }
+  },
+  "definitions": {
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "nonEmptyStrings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/definitions/nonEmptyString"}
+    },
     "metadata": {
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "domain"],
       "properties": {
-        "name": {"type": "string", "minLength": 1},
-        "domain": {"type": "string", "minLength": 1}
+        "name": {"$ref": "#/definitions/nonEmptyString"},
+        "domain": {"$ref": "#/definitions/nonEmptyString"}
       }
     },
     "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relation"],
+          "properties": {
+            "relation": {"$ref": "#/definitions/nonEmptyString"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dbtModel"],
+          "properties": {
+            "dbtModel": {"$ref": "#/definitions/dbtModel"}
+          }
+        }
+      ]
+    },
+    "dbtModel": {
       "type": "object",
       "additionalProperties": false,
-      "minProperties": 1,
-      "maxProperties": 1,
+      "required": ["name", "sqlPath", "contractPath"],
       "properties": {
-        "relation": {"type": "string", "minLength": 1},
-        "dbtModel": {"type": "string", "minLength": 1}
+        "name": {"$ref": "#/definitions/nonEmptyString"},
+        "sqlPath": {"$ref": "#/definitions/nonEmptyString"},
+        "contractPath": {"$ref": "#/definitions/nonEmptyString"}
       }
     },
     "target": {
@@ -33,15 +82,15 @@
       "additionalProperties": false,
       "required": ["class"],
       "properties": {
-        "class": {"type": "string", "minLength": 1}
+        "class": {"$ref": "#/definitions/nonEmptyString"}
       }
     },
-    "grain": {
+    "columns": {
       "type": "object",
       "additionalProperties": false,
       "required": ["columns"],
       "properties": {
-        "columns": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+        "columns": {"$ref": "#/definitions/nonEmptyStrings"}
       }
     },
     "identity": {
@@ -50,69 +99,251 @@
       "required": ["strategy", "sourceKey"],
       "properties": {
         "strategy": {"enum": ["source-natural", "surrogate"]},
-        "sourceKey": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
-        "businessKey": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        "sourceKey": {"$ref": "#/definitions/nonEmptyStrings"},
+        "businessKey": {"$ref": "#/definitions/nonEmptyStrings"}
       }
     },
     "load": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": {"const": "full-refresh"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "scd", "incremental"],
+          "properties": {
+            "mode": {"const": "incremental"},
+            "scd": {"enum": [1, 2]},
+            "incremental": {"$ref": "#/definitions/incremental"}
+          }
+        }
+      ]
+    },
+    "incremental": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode"],
+      "required": [
+        "mergeIdentity",
+        "canonicalHashInputs",
+        "cdcOperation",
+        "sourceUpdatedAt",
+        "businessEffectiveAt",
+        "ingestedAt",
+        "totalOrder",
+        "lookback",
+        "delete",
+        "lateArrival",
+        "correction",
+        "replay",
+        "backfill",
+        "schemaEvolution"
+      ],
       "properties": {
-        "mode": {"enum": ["full-refresh"]}
+        "mergeIdentity": {"$ref": "#/definitions/nonEmptyStrings"},
+        "canonicalHashInputs": {"$ref": "#/definitions/nonEmptyStrings"},
+        "cdcOperation": {"$ref": "#/definitions/cdcOperation"},
+        "sourceUpdatedAt": {"$ref": "#/definitions/nonEmptyString"},
+        "businessEffectiveAt": {"$ref": "#/definitions/nonEmptyString"},
+        "ingestedAt": {"$ref": "#/definitions/nonEmptyString"},
+        "totalOrder": {"$ref": "#/definitions/nonEmptyStrings"},
+        "lookback": {"$ref": "#/definitions/lookback"},
+        "delete": {"enum": ["error", "hard-delete", "soft-delete", "ignore"]},
+        "lateArrival": {"enum": ["error", "accept"]},
+        "correction": {"enum": ["error", "overwrite", "new-version"]},
+        "replay": {"enum": ["error", "idempotent"]},
+        "backfill": {"enum": ["error", "merge", "replace-window"]},
+        "schemaEvolution": {"enum": ["fail", "append-compatible"]}
       }
     },
-    "fields": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["property", "expression"],
-        "properties": {
-          "property": {"type": "string", "minLength": 1},
-          "expression": {}
+    "cdcOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "insertValues", "updateValues", "deleteValues"],
+      "properties": {
+        "column": {"$ref": "#/definitions/nonEmptyString"},
+        "insertValues": {"$ref": "#/definitions/nonEmptyStrings"},
+        "updateValues": {"$ref": "#/definitions/nonEmptyStrings"},
+        "deleteValues": {"$ref": "#/definitions/nonEmptyStrings"}
+      }
+    },
+    "lookback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit"],
+      "properties": {
+        "value": {"type": "integer", "minimum": 0},
+        "unit": {"enum": ["seconds", "minutes", "hours", "days"]}
+      }
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["property", "expression"],
+      "properties": {
+        "property": {"$ref": "#/definitions/nonEmptyString"},
+        "expression": {}
+      }
+    },
+    "join": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["local", "foreign"],
+      "properties": {
+        "local": {"$ref": "#/definitions/nonEmptyString"},
+        "foreign": {"$ref": "#/definitions/nonEmptyString"}
+      }
+    },
+    "relationshipBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["property", "target", "join", "cardinality", "mode", "missingParent", "ambiguousParent"],
+      "properties": {
+        "property": {"$ref": "#/definitions/nonEmptyString"},
+        "target": {"$ref": "#/definitions/nonEmptyString"},
+        "join": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/definitions/join"}
+        },
+        "cardinality": {"enum": ["many-to-one", "one-to-one"]},
+        "mode": {"const": "non-temporal"},
+        "missingParent": {"enum": ["error", "null"]},
+        "ambiguousParent": {"enum": ["error", "first"]}
+      }
+    },
+    "temporalRelationshipBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["property", "target", "join", "cardinality", "mode", "missingParent", "ambiguousParent", "temporal"],
+      "properties": {
+        "property": {"$ref": "#/definitions/nonEmptyString"},
+        "target": {"$ref": "#/definitions/nonEmptyString"},
+        "join": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/definitions/join"}
+        },
+        "cardinality": {"enum": ["many-to-one", "one-to-one"]},
+        "mode": {"const": "current"},
+        "missingParent": {"enum": ["error", "null"]},
+        "ambiguousParent": {"enum": ["error", "first"]},
+        "temporal": {"$ref": "#/definitions/currentTemporal"}
+      }
+    },
+    "relationship": {
+      "oneOf": [
+        {"$ref": "#/definitions/relationshipBase"},
+        {"$ref": "#/definitions/temporalRelationshipBase"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["property", "target", "join", "cardinality", "mode", "missingParent", "ambiguousParent", "temporal"],
+          "properties": {
+            "property": {"$ref": "#/definitions/nonEmptyString"},
+            "target": {"$ref": "#/definitions/nonEmptyString"},
+            "join": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"$ref": "#/definitions/join"}
+            },
+            "cardinality": {"enum": ["many-to-one", "one-to-one"]},
+            "mode": {"const": "as-of"},
+            "missingParent": {"enum": ["error", "null"]},
+            "ambiguousParent": {"enum": ["error", "first"]},
+            "temporal": {"$ref": "#/definitions/asOfTemporal"}
+          }
         }
+      ]
+    },
+    "currentTemporal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parentValidFrom", "parentValidTo", "openEnded", "overlap", "lateParent", "changeDetection"],
+      "properties": {
+        "parentValidFrom": {"$ref": "#/definitions/nonEmptyString"},
+        "parentValidTo": {"$ref": "#/definitions/nonEmptyString"},
+        "openEnded": {"enum": [null, "max-value"]},
+        "overlap": {"enum": ["error", "latest-start"]},
+        "lateParent": {"enum": ["error", "null", "defer"]},
+        "changeDetection": {"enum": ["include", "exclude"]}
       }
     },
-    "relationships": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["property", "target", "join", "cardinality", "mode", "missingParent", "ambiguousParent"],
-        "properties": {
-          "property": {"type": "string", "minLength": 1},
-          "target": {"type": "string", "minLength": 1},
-          "join": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["local", "foreign"],
-              "properties": {
-                "local": {"type": "string", "minLength": 1},
-                "foreign": {"type": "string", "minLength": 1}
-              }
+    "asOfTemporal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["childEventTime", "parentValidFrom", "parentValidTo", "openEnded", "overlap", "lateParent", "changeDetection"],
+      "properties": {
+        "childEventTime": {"$ref": "#/definitions/nonEmptyString"},
+        "parentValidFrom": {"$ref": "#/definitions/nonEmptyString"},
+        "parentValidTo": {"$ref": "#/definitions/nonEmptyString"},
+        "openEnded": {"enum": [null, "max-value"]},
+        "overlap": {"enum": ["error", "latest-start"]},
+        "lateParent": {"enum": ["error", "null", "defer"]},
+        "changeDetection": {"enum": ["include", "exclude"]}
+      }
+    },
+    "conformance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group", "sourcePrecedence", "conflict", "union"],
+      "properties": {
+        "group": {"$ref": "#/definitions/nonEmptyString"},
+        "sourcePrecedence": {"type": "integer", "minimum": 1},
+        "conflict": {"enum": ["error", "prefer-precedence"]},
+        "union": {"$ref": "#/definitions/union"}
+      }
+    },
+    "union": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": {"const": "union-all"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "deduplicateBy", "orderBy"],
+          "properties": {
+            "mode": {"const": "deduplicate"},
+            "deduplicateBy": {"$ref": "#/definitions/nonEmptyStrings"},
+            "orderBy": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"$ref": "#/definitions/order"}
             }
-          },
-          "cardinality": {"enum": ["many-to-one", "one-to-one"]},
-          "mode": {"enum": ["non-temporal"]},
-          "missingParent": {"enum": ["error", "null"]},
-          "ambiguousParent": {"enum": ["error", "first"]}
+          }
         }
+      ]
+    },
+    "order": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "direction"],
+      "properties": {
+        "column": {"$ref": "#/definitions/nonEmptyString"},
+        "direction": {"enum": ["ascending", "descending"]}
       }
     },
     "quality": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["kind"],
-        "properties": {
-          "kind": {"enum": ["not-null", "unique", "reconcile-rowcount", "referential"]},
-          "columns": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["not-null", "unique", "reconcile-rowcount", "referential"]},
+        "columns": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/nonEmptyString"}
         }
       }
     }

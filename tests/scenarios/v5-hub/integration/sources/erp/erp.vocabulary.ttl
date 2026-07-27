@@ -1,0 +1,19 @@
+@prefix src: <https://example.test/source/erp#> .
+@prefix kb: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+src:erp a kb:SourceSystem ; rdfs:label "erp" ;
+  kb:database "erp_raw" ; kb:schema "dbo" ; kb:connectionType "jdbc" .
+
+src:customers a kb:SourceTable ; kb:sourceSystem src:erp ;
+  kb:tableName "customers" ; kb:primaryKeyColumns "customer_id" .
+src:customer_id a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "customer_id" ; kb:dataType "varchar(30)" ;
+  kb:nullable "false"^^xsd:boolean .
+src:customer_name a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "customer_name" ; kb:dataType "varchar(200)" ;
+  kb:nullable "true"^^xsd:boolean .
+src:customer_country a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "country_code" ; kb:dataType "char(2)" ;
+  kb:nullable "false"^^xsd:boolean .

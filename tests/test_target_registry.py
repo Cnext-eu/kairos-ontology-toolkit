@@ -13,27 +13,23 @@ import kairos_ontology.core.projector as projector
 import kairos_ontology.mdm as mdm
 from kairos_ontology.cli.main import cli
 
-
 BUILTIN_TARGETS = (
-    "dbt",
     "neo4j",
     "azure-search",
     "a2ui",
     "prompt",
-    "silver",
     "powerbi",
     "report",
     "ddd",
 )
-ALL_TARGETS = tuple(target for target in BUILTIN_TARGETS if target != "silver")
+ALL_TARGETS = BUILTIN_TARGETS
 CLI_TARGETS = (*BUILTIN_TARGETS, "mdm-profile")
+PROJECT_CLI_TARGETS = ("dbt", "silver", *CLI_TARGETS)
 COMPATIBILITY_TARGETS = (
-    "dbt",
     "neo4j",
     "azure-search",
     "a2ui",
     "prompt",
-    "silver",
     "gold",
     "report",
     "ddd",
@@ -60,9 +56,7 @@ def _project_external(*, graph, namespace, ontology_name, ext_path, ontology_met
     return {"external.txt": "external\n"}
 
 
-def _project_external_collision(
-    *, graph, namespace, ontology_name, ext_path, ontology_metadata
-):
+def _project_external_collision(*, graph, namespace, ontology_name, ext_path, ontology_metadata):
     del graph, namespace, ontology_name, ext_path, ontology_metadata
     return {}
 
@@ -78,10 +72,6 @@ def test_registry_derives_order_aliases_classification_and_external_metadata():
     assert gold.canonical_name == "powerbi"
     assert gold.output_category is projector.OutputCategory.MEDALLION
     assert gold.output_path(Path("output")) == Path("output/medallion/powerbi")
-
-    silver = projector.get_target_spec("silver")
-    assert silver.output_path(Path("output")) == Path("output/medallion/dbt")
-    assert silver.include_in_all is False
 
     report = projector.get_target_spec("report")
     assert report.execution_phase is projector.ExecutionPhase.POST_DOMAIN
@@ -137,7 +127,7 @@ def test_external_registration_is_one_operation_and_idempotent(isolated_registry
 @pytest.mark.parametrize(
     ("name", "aliases", "match"),
     [
-        ("dbt", (), "already registered with different metadata"),
+        ("dbt", (), "reserved for the compile command"),
         ("gold", (), "already registered for 'powerbi'"),
         ("external-example", ("neo4j",), "already registered for 'neo4j'"),
         ("external-example", ("same", "same"), "duplicated"),
@@ -185,5 +175,5 @@ def test_project_help_derives_preserved_target_choice_order():
 
     assert result.exit_code == 0, result.output
     compact = "".join(result.output.split())
-    choices = "[all|" + "|".join(CLI_TARGETS) + "]"
+    choices = "[all|" + "|".join(PROJECT_CLI_TARGETS) + "]"
     assert choices in compact

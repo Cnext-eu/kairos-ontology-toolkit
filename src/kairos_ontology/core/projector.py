@@ -2,6 +2,8 @@
 # Copyright 2026 Cnext.eu
 """Projection orchestrator - generates downstream artifacts."""
 
+from __future__ import annotations
+
 import json
 import hashlib
 import logging
@@ -12,7 +14,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Dict, List, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
@@ -20,6 +22,9 @@ from rdflib.namespace import OWL, RDF, RDFS
 from .determinism import generated_at_iso, resolve_generated_at
 from .projections.uri_utils import extract_local_name
 from .projections.shared import OntologyClassInfo
+
+if TYPE_CHECKING:
+    from .compiler.plan import CompilePlan
 
 
 class OutputCategory(StrEnum):
@@ -64,12 +69,25 @@ class ExternalProjector(Protocol):
     ) -> Dict[str, str]: ...
 
 
+class ExternalCompilePlanProjector(Protocol):
+    """Callable that projects an extension from the canonical compiler plan."""
+
+    def __call__(
+        self,
+        *,
+        compile_plan: CompilePlan,
+        ext_path: Optional[Path],
+        ontology_metadata: Dict[str, Any],
+    ) -> Dict[str, str]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ExternalDispatch:
     """Extension discovery and projection callbacks for an external target."""
 
     discover_ext: ExtensionDiscovery
     project: ExternalProjector
+    project_compile_plan: Optional[ExternalCompilePlanProjector] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +120,7 @@ class TargetSpec:
 
 _TARGET_REGISTRY: dict[str, TargetSpec] = {}
 TARGET_REGISTRY: Mapping[str, TargetSpec] = MappingProxyType(_TARGET_REGISTRY)
+RETIRED_COMPILER_TARGETS = ("dbt", "silver")
 
 # Compatibility list retained for callers that import or hold a reference to it.
 # Its contents are refreshed exclusively from TARGET_REGISTRY.
@@ -119,6 +138,11 @@ def _validate_target_name(name: str, *, label: str) -> None:
 
 def _validate_target_spec(spec: TargetSpec) -> None:
     _validate_target_name(spec.canonical_name, label="Target name")
+    retired_names = set(RETIRED_COMPILER_TARGETS)
+    if spec.canonical_name in retired_names or retired_names.intersection(spec.aliases):
+        raise ValueError(
+            "Projection target names 'dbt' and 'silver' are reserved for the compile command"
+        )
     seen = {spec.canonical_name}
     for alias in spec.aliases:
         _validate_target_name(alias, label="Target alias")
@@ -150,6 +174,12 @@ def _validate_target_spec(spec: TargetSpec) -> None:
         if not callable(dispatch.discover_ext) or not callable(dispatch.project):
             raise ValueError(
                 f"Target '{spec.canonical_name}' external dispatch callbacks must be callable"
+            )
+        if dispatch.project_compile_plan is not None and not callable(
+            dispatch.project_compile_plan
+        ):
+            raise ValueError(
+                f"Target '{spec.canonical_name}' compiler-plan callback must be callable"
             )
         if spec.execution_phase is ExecutionPhase.POST_DOMAIN:
             raise ValueError("External post-domain targets are not supported")
@@ -185,17 +215,10 @@ def _register_target_spec(spec: TargetSpec) -> TargetSpec:
 
 
 for _target_spec in (
-    TargetSpec("dbt", "medallion/dbt", OutputCategory.MEDALLION),
     TargetSpec("neo4j", "neo4j", OutputCategory.STANDARD),
     TargetSpec("azure-search", "azure-search", OutputCategory.STANDARD),
     TargetSpec("a2ui", "a2ui", OutputCategory.STANDARD),
     TargetSpec("prompt", "prompt", OutputCategory.STANDARD),
-    TargetSpec(
-        "silver",
-        "medallion/dbt",
-        OutputCategory.MEDALLION,
-        include_in_all=False,
-    ),
     TargetSpec(
         "powerbi",
         "medallion/powerbi",
@@ -241,6 +264,7 @@ def register_target(
     *,
     discover_ext: ExtensionDiscovery,
     project: ExternalProjector,
+    project_compile_plan: Optional[ExternalCompilePlanProjector] = None,
     output_subdir: str,
     aliases: Iterable[str] = (),
     output_category: OutputCategory | str = OutputCategory.EXTERNAL,
@@ -274,8 +298,36 @@ def register_target(
             external_dispatch=ExternalDispatch(
                 discover_ext=discover_ext,
                 project=project,
+                project_compile_plan=project_compile_plan,
             ),
         )
+    )
+
+
+def project_downstream_compile_plan(
+    target: str,
+    compile_plan: CompilePlan,
+    *,
+    ext_path: Optional[Path] = None,
+    ontology_metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Project one optional downstream target from a typed compiler plan."""
+    target_spec = get_target_spec(target)
+    if target_spec is None:
+        raise ValueError(f"Unknown projection target '{target}'")
+    if target_spec.canonical_name == "powerbi":
+        from .projections.medallion_gold_projector import generate_gold_from_compile_plan
+
+        return generate_gold_from_compile_plan(compile_plan)
+    dispatch = target_spec.external_dispatch
+    if dispatch is None or dispatch.project_compile_plan is None:
+        raise ValueError(
+            f"Projection target '{target_spec.canonical_name}' does not consume compiler plans"
+        )
+    return dispatch.project_compile_plan(
+        compile_plan=compile_plan,
+        ext_path=ext_path,
+        ontology_metadata=ontology_metadata or {},
     )
 
 
@@ -288,6 +340,16 @@ _logger = logging.getLogger(__name__)
 
 class ProjectionRunError(RuntimeError):
     """Raised after reporting one or more fatal projection-target failures."""
+
+
+def _reject_retired_compiler_targets(targets: Iterable[str]) -> None:
+    retired = sorted(set(RETIRED_COMPILER_TARGETS).intersection(targets))
+    if retired:
+        selected = ", ".join(retired)
+        raise ProjectionRunError(
+            f"project target(s) {selected} are retired; canonical Silver/dbt generation "
+            "must use `kairos-ontology compile <domain> --emit <directory>`"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -630,10 +692,6 @@ def _collected_blocker_diagnostics(
     """Convert release blockers into stable projection-readiness diagnostics."""
 
     stage_contracts = {
-        "preparation": (
-            "kairos-design-source",
-            "Complete the governed source preparation policy.",
-        ),
         "mapping": (
             "kairos-design-mapping",
             "Correct the governed source-to-domain mapping.",
@@ -670,8 +728,6 @@ def _collected_blocker_diagnostics(
 
     def classify(rule_id: str, message: str) -> str:
         value = f"{rule_id} {message}".lower()
-        if "dd-106" in value or "prep" in value:
-            return "preparation"
         if "dd-107" in value or "mapping" in value:
             return "mapping"
         if "dd-108" in value or "identity" in value:
@@ -797,6 +853,9 @@ def project_graph(
     """
     from kairos_ontology import __version__ as toolkit_version
 
+    requested_targets = targets or list(VALID_TARGETS)
+    _reject_retired_compiler_targets(requested_targets)
+
     # Resolve the generation timestamp once at the run boundary and thread the
     # same datetime through the report stamp and every target's provenance, so a
     # single run never mixes two clocks (each site used to resolve on its own).
@@ -805,7 +864,7 @@ def project_graph(
         toolkit_version=toolkit_version,
         generated_at=generated_at_iso(generated_at),
     )
-    targets = targets or VALID_TARGETS
+    targets = requested_targets
     report.targets_requested = list(targets)
     template_base = Path(__file__).parent.parent / "templates"
     ns = namespace or _auto_detect_namespace(graph)
@@ -993,7 +1052,7 @@ def _write_artifacts(artifacts: dict[str, str], target_output: Path) -> int:
 
 
 #: Manifest of toolkit-generated files, written at a target output root so a later
-#: projection can delete artifacts it no longer produces (DD-096 C3). Deleting only
+#: projection can delete artifacts it no longer produces. Deleting only
 #: files this manifest recorded guarantees hand-authored files are never touched.
 _PROJECTION_MANIFEST_NAME = ".kairos-projection-manifest.json"
 
@@ -1004,9 +1063,8 @@ def _reconcile_managed_output(target_output: Path, current_paths: Iterable[str])
     Reads the prior manifest at ``target_output/{_PROJECTION_MANIFEST_NAME}``, removes
     any file it listed that is absent from *current_paths* (pruning newly empty
     directories), and writes the updated manifest. This makes re-projection converge
-    on the current output — e.g. an aspirational Silver stub is removed when the
-    feature is turned off or its claim is deferred (DD-096 C3). Only files the toolkit
-    itself recorded are ever deleted; user-authored files are never in the manifest.
+    on the current output. Only files the toolkit itself recorded are ever deleted;
+    user-authored files are never in the manifest.
 
     Returns the number of stale files removed.
     """
@@ -1174,7 +1232,6 @@ def run_projections(
     target: str,
     namespace: str = None,
     platform: str = "fabric",
-    emit_aspirational_stubs: bool = False,
     strict: bool = False,
     degraded: bool = False,
     ref_models_dir: Path | None = None,
@@ -1192,10 +1249,6 @@ def run_projections(
         namespace: Base namespace to project (e.g., 'http://example.org/ont/').
                    If None, auto-detects from ontology.
         platform: dbt SQL adapter platform (``fabric`` or ``databricks``).
-        emit_aspirational_stubs: When True, the dbt/silver projector emits typed
-            zero-row Silver stubs for approved, materialization-eligible claims that
-            have no bronze mapping yet (target-first stub → bind loop, DD-096).
-            Defaults to False; also honoured via ``KAIROS_EMIT_ASPIRATIONAL_STUBS``.
         strict: DD-114/DD-115 fail-closed release evaluation. The run persists
             deterministic review evidence, then fails when baseline, binding,
             coverage, DQ, capability, compile, security, measure, calendar, or
@@ -1205,10 +1258,8 @@ def run_projections(
 
     from kairos_ontology import __version__ as toolkit_version
 
-    if not emit_aspirational_stubs:
-        emit_aspirational_stubs = os.environ.get(
-            "KAIROS_EMIT_ASPIRATIONAL_STUBS", ""
-        ).strip().lower() in {"1", "true", "yes", "on"}
+    _reject_retired_compiler_targets((target,))
+
     if not strict:
         strict = os.environ.get("KAIROS_PROJECT_STRICT", "").strip().lower() in {
             "1",
@@ -1225,8 +1276,6 @@ def run_projections(
         toolkit_version=toolkit_version,
         generated_at=generated_at_iso(generated_at),
     )
-    release_evaluation_result = None
-    unbound_eligible_by_domain: dict[str, list[str]] = {}
     fatal_target_errors: list[str] = []
 
     print("🚀 Kairos Ontology Projections")
@@ -1341,10 +1390,10 @@ def run_projections(
     # `owl:imports` would be mis-flagged as claim/projection drift by the authority gate.
     # Collect every intra-hub `owl:Ontology` base from the full ontologies directory
     # (independent of `--ontology` scoping) so peer imports are recognised as intra-hub.
-    from .claim_projection_sync import _collect_hub_domain_bases
+    from .ontology_scope import collect_hub_domain_bases
 
     try:
-        for base in _collect_hub_domain_bases(ontology_root):
+        for base in collect_hub_domain_bases(ontology_root):
             hub_domain_namespaces.add(base)
             hub_domain_namespaces.add(base + "#")
             hub_domain_namespaces.add(base + "/")
@@ -1368,7 +1417,6 @@ def run_projections(
     sources_dir = hub_root / "integration" / "sources" if hub_root else None
     mappings_dir = hub_root / "model" / "mappings" if hub_root else None
     extensions_dir = hub_root / "model" / "extensions" if hub_root else None
-    claims_dir = hub_root / "model" / "claims" if hub_root else None
     if ref_models_dir is None and hub_root:
         ref_models_dir = next(
             (
@@ -1382,22 +1430,22 @@ def run_projections(
             ),
             None,
         )
-    from .claim_projection_sync import collect_module_scope_evidence
     from .reference_modules import build_reference_module_context
 
-    scoped_domains, claimed_term_uris, imported_ontology_iris = collect_module_scope_evidence(
-        claims_dir=claims_dir,
-        ontology_files=(info["file"] for info in ontology_graphs),
-    )
+    scoped_domains = {info["file"].stem for info in ontology_graphs}
+    imported_ontology_iris = {
+        str(imported)
+        for info in ontology_graphs
+        for imported in info["graph"].objects(predicate=OWL.imports)
+    }
 
     module_context = build_reference_module_context(
         ref_models_dir,
         catalog_path=catalog_path,
         accelerator=accelerator,
         requested_domains=scoped_domains,
-        claimed_term_uris=claimed_term_uris,
         imported_ontology_iris=imported_ontology_iris,
-        include_domain_activation=not (claimed_term_uris or imported_ontology_iris),
+        include_domain_activation=not imported_ontology_iris,
     )
     if sources_dir and sources_dir.exists():
         print(f"  Found source system references: {sources_dir}")
@@ -1441,22 +1489,11 @@ def run_projections(
         target_failed = False
         pending_dbt_artifacts: dict[str, str] = {}
         contract_registry: dict = {}
-        active_dbt_contract_names: set[str] = set()
         transforms_dir = hub_root / "integration" / "transforms" / "dbt" if hub_root else None
         if target_name == "dbt" and transforms_dir and transforms_dir.is_dir():
-            from .dbt_contract_sync import sync_dbt_contracts
             from .dbt_contracts import discover_dbt_contracts
 
             try:
-                freshness = sync_dbt_contracts(hub_root, check=True)
-                if freshness.has_drift:
-                    stale = ", ".join(
-                        f"{item.model} ({item.state})" for item in freshness.items if item.has_drift
-                    )
-                    raise RuntimeError(
-                        "Custom dbt contract vocabularies are not synchronized: "
-                        f"{stale}. Run `kairos-ontology sync-dbt-contracts` first."
-                    )
                 contracts = discover_dbt_contracts(transforms_dir, hub_root)
                 contract_registry = {contract.name: contract for contract in contracts}
             except Exception as exc:
@@ -1531,78 +1568,6 @@ def run_projections(
                         target=target_name,
                     )
 
-                # Slice 2 authority gate: when a claims registry exists for the
-                # domain, projection surfaces must be claim-driven and in sync.
-                if target_name in ("silver", "dbt", "powerbi") and claims_dir:
-                    claims_file = claims_dir / f"{onto_name}-claims.yaml"
-                    activation = (
-                        module_context.config.activation(onto_name) if module_context else None
-                    )
-                    if claims_file.exists() or activation is not None:
-                        from .claim_projection_sync import evaluate_domain_projection_sync
-
-                        sync_status = evaluate_domain_projection_sync(
-                            domain=onto_name,
-                            claims_file=claims_file,
-                            ontology_file=onto_info["file"],
-                            extension_file=_discover_silver_extension_for_sync(
-                                onto_name, onto_info, extensions_dir
-                            ),
-                            hub_domain_bases=hub_domain_namespaces,
-                            module_context=module_context,
-                        )
-                        if not sync_status.in_sync:
-                            import_only_degraded = (
-                                degraded
-                                and sync_status.error is None
-                                and not sync_status.extra_imports
-                                and not sync_status.missing_includes
-                                and not sync_status.extra_includes
-                                and not sync_status.has_bulk_include_imports
-                            )
-                            if import_only_degraded:
-                                for diagnostic in sync_status.import_diagnostics:
-                                    report.record(
-                                        "warning",
-                                        diagnostic.message,
-                                        domain=onto_name,
-                                        target=target_name,
-                                    )
-                                report.record(
-                                    "warning",
-                                    "Managed imports are incomplete; projection continued "
-                                    "under explicit degraded mode.",
-                                    domain=onto_name,
-                                    target=target_name,
-                                )
-                            else:
-                                details: list[str] = []
-                                if sync_status.error:
-                                    details.append(sync_status.error)
-                                details.extend(
-                                    f"missing owl:imports {x}"
-                                    for x in sync_status.missing_imports[:5]
-                                )
-                                details.extend(
-                                    f"extra owl:imports {x}" for x in sync_status.extra_imports[:5]
-                                )
-                                details.extend(
-                                    f"missing silverInclude {x}"
-                                    for x in sync_status.missing_includes[:5]
-                                )
-                                details.extend(
-                                    f"extra silverInclude {x}"
-                                    for x in sync_status.extra_includes[:5]
-                                )
-                                if sync_status.has_bulk_include_imports:
-                                    details.append("silverIncludeImports bulk flag present")
-                                raise RuntimeError(
-                                    "Claim/projection drift for domain "
-                                    f"'{onto_name}'. Run `kairos-ontology "
-                                    "claims-to-silver-ext` first. "
-                                    + ("; ".join(details) if details else "")
-                                )
-
                 # DD-023: Discover reference model default extensions
                 ref_defaults = _discover_ref_model_defaults(
                     onto_info["file"],
@@ -1661,35 +1626,6 @@ def run_projections(
                         else None
                     )
 
-                    # Target-first stub → bind loop (DD-096): compute the
-                    # materialization-eligible governed set so the dbt projector can
-                    # reject invalid bound models in every mode, emit typed zero-row
-                    # stubs when enabled, and report unbound claims in strict mode.
-                    eligible_class_uris: set[str] | None = None
-                    if target_name in {"dbt", "silver"}:
-                        governed_class_uris: set[str] = set()
-                        if claims_dir:
-                            claims_file = claims_dir / f"{onto_name}-claims.yaml"
-                        else:
-                            claims_file = None
-                        if claims_file and claims_file.exists():
-                            from .binding_analysis import (
-                                materialization_eligible_class_uris,
-                            )
-                            from .claim_registry import load_registry
-
-                            governed_class_uris.update(
-                                materialization_eligible_class_uris(load_registry(claims_file))
-                            )
-                        if module_context:
-                            from .reference_modules import active_projection_allowlist
-
-                            governed_class_uris.update(
-                                active_projection_allowlist(module_context, onto_name)
-                            )
-                        if governed_class_uris:
-                            eligible_class_uris = governed_class_uris
-
                     artifacts = _run_projection(
                         target_name,
                         onto_graph,
@@ -1708,8 +1644,6 @@ def run_projections(
                         peer_ext_paths=peer_exts,
                         target_platform=platform,
                         contract_registry=contract_registry,
-                        emit_aspirational_stubs=emit_aspirational_stubs,
-                        eligible_class_uris=eligible_class_uris,
                         semantic_index=load_result.semantic_index,
                         plan_only=check_only,
                         diagnostic_mode=diagnostic_mode,
@@ -1768,24 +1702,12 @@ def run_projections(
                     # Extract coverage data before writing (not a real file artifact)
                     if target_name in {"dbt", "silver"} and "__coverage_data__" in artifacts:
                         dbt_coverage_data[onto_name] = artifacts.pop("__coverage_data__")
-                    # Release gate (DD-096 / DEC-1): collect unbound approved claims.
-                    if target_name in {"dbt", "silver"} and "__unbound_eligible__" in artifacts:
-                        unbound_eligible_by_domain[onto_name] = artifacts.pop(
-                            "__unbound_eligible__"
-                        )
                     if (
                         target_name in {"dbt", "silver", "powerbi"}
                         and "__release_data__" in artifacts
                     ):
                         release_data = artifacts.pop("__release_data__")
                         report.release_data[onto_name] = release_data
-                        if target_name == "dbt":
-                            active_dbt_contract_names.update(
-                                authority["name"]
-                                for authority in release_data.get("mapping_contracts", {}).get(
-                                    "transformation_authorities", ()
-                                )
-                            )
 
                     if target_name in {"dbt", "silver"}:
                         _merge_dbt_artifacts(
@@ -1826,17 +1748,9 @@ def run_projections(
                 target_failed = True
                 if target_name in {"dbt", "silver", "powerbi"}:
                     blocking_rules = tuple(getattr(e, "blocking_rules", ()))
-                    if not blocking_rules and str(getattr(e, "code", "")).startswith("prep."):
-                        blocking_rules = (
-                            (
-                                str(getattr(e, "rule_id", "DD-106-prep")),
-                                str(e),
-                            ),
-                        )
                     if blocking_rules:
                         report.release_data[onto_name] = {
                             "policy_version": "1.0",
-                            "preparation_routes": [],
                             "blocking_reasons": [
                                 {"rule_id": rule_id, "reason": reason}
                                 for rule_id, reason in blocking_rules
@@ -1902,7 +1816,6 @@ def run_projections(
                         transforms_dir,
                         tuple(contract_registry.values()),
                         generated_artifacts=tuple(pending_dbt_artifacts),
-                        active_contract_names=tuple(sorted(active_dbt_contract_names)),
                     )
                     bundle_collisions = sorted(set(pending_dbt_artifacts) & set(bundle.artifacts))
                     if bundle_collisions:
@@ -1912,9 +1825,8 @@ def run_projections(
                     pending_dbt_artifacts.update(bundle.artifacts)
 
                 total_files += _write_artifacts(pending_dbt_artifacts, target_output)
-                # DD-096 C3: remove dbt artifacts this run no longer produces (e.g. a
-                # stale aspirational stub after the feature is disabled or its claim is
-                # deferred), so re-projection converges on the current output.
+                # Remove dbt artifacts this run no longer produces so re-projection
+                # converges on the current output.
                 removed = _reconcile_managed_output(target_output, pending_dbt_artifacts.keys())
                 if removed:
                     _logger.info("Removed %d obsolete dbt artifact(s)", removed)
@@ -2149,118 +2061,7 @@ def run_projections(
         # it no longer produces (convergent output, DD-096 C3 style).
         _reconcile_managed_output(report_output, managed_detail_files)
 
-    if "dbt" in targets_to_run:
-        from .release_evaluator import (
-            ReleaseEvaluationInput,
-            evaluate_release,
-            load_dq_runtime_results,
-            load_release_baseline,
-        )
-
-        dbt_spec = get_target_spec("dbt")
-        dbt_output = (
-            dbt_spec.output_path(output_path) if dbt_spec is not None else output_path / "dbt"
-        )
-        for data in report.release_data.values():
-            for artifact in data.get("generated_artifacts", []):
-                artifact_path = dbt_output / str(artifact.get("path", ""))
-                if artifact_path.is_file():
-                    artifact["sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
-        governance = hub_root / "model" / "governance" if hub_root else None
-        baseline_result = load_release_baseline(
-            governance / "release-baseline.yaml"
-            if governance is not None
-            else Path("model") / "governance" / "release-baseline.yaml"
-        )
-        runtime_results = ()
-        release_input_errors = list(fatal_target_errors)
-        runtime_result_path = (
-            governance / "dq-runtime-results.json"
-            if governance is not None
-            else Path("model") / "governance" / "dq-runtime-results.json"
-        )
-        try:
-            runtime_results = load_dq_runtime_results(runtime_result_path)
-        except (json.JSONDecodeError, ValueError) as exc:
-            release_input_errors.append(f"DQ runtime result evidence is invalid: {exc}")
-        release_input_errors.extend(
-            (
-                f"{item.get('domain', '')}: dbt projection "
-                f"{item.get('status', 'unknown')} — "
-                f"{item.get('error') or item.get('reason') or 'unexpected skip'}"
-            )
-            for item in report.projections
-            if item.get("target") == "dbt" and item.get("status") != "ok"
-        )
-        release_evaluation_result = evaluate_release(
-            ReleaseEvaluationInput(
-                strict=strict,
-                generated_at=report.generated_at,
-                toolkit_version=toolkit_version,
-                baseline_result=baseline_result,
-                domains=tuple(sorted(report.release_data.items())),
-                projection_errors=tuple(sorted(set(release_input_errors))),
-                closure_incomplete=tuple(
-                    sorted(
-                        name
-                        for name, domain in report.domains.items()
-                        if domain.get("import_complete") is not True
-                    )
-                ),
-                warnings=tuple(
-                    sorted(
-                        str(event.get("message", ""))
-                        for event in report.events
-                        if event.get("level") == "warning"
-                    )
-                ),
-                runtime_results=runtime_results,
-            )
-        )
-        release_manifest_path = output_path / "release-manifest.json"
-        release_report_path = output_path / "release-report.json"
-        release_manifest_path.write_text(
-            json.dumps(
-                release_evaluation_result.manifest,
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        release_report_path.write_text(
-            json.dumps(
-                release_evaluation_result.report,
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        report.release_evaluation = {
-            **release_evaluation_result.report,
-            "manifest": release_manifest_path.name,
-            "report": release_report_path.name,
-        }
-        if strict:
-            print(
-                "   🔒 Strict release: "
-                + (
-                    "release-ready"
-                    if release_evaluation_result.release_ready
-                    else (f"blocked by {len(release_evaluation_result.blockers)} finding(s)")
-                )
-            )
-        else:
-            print(
-                "   ⚠ Release metadata is review-only; ordinary projection never "
-                "claims release readiness"
-            )
-
-    if strict and release_evaluation_result is not None and release_evaluation_result.blockers:
-        print("⚠️ Projection artifacts generated for review; strict release is blocked")
-    else:
-        print("✅ Projection generation completed!")
+    print("✅ Projection generation completed!")
     print(f"   Generated artifacts for {len(ontology_graphs)} data domain(s)")
 
     # Write the projection report
@@ -2304,16 +2105,6 @@ def run_projections(
 
     if fatal_target_errors:
         raise ProjectionRunError("; ".join(fatal_target_errors))
-
-    if strict and release_evaluation_result is not None and release_evaluation_result.blockers:
-        details = []
-        for blocker in release_evaluation_result.blockers:
-            evidence = f" [{', '.join(blocker.evidence)}]" if blocker.evidence else ""
-            details.append(f"{blocker.rule_id}/{blocker.code}: {blocker.message}{evidence}")
-        raise ProjectionRunError(
-            "Strict release blocked. Resolve every blocking finding in "
-            f"release-report.json: {'; '.join(details)}"
-        )
 
 
 def _build_coverage_summary(domain_data: dict[str, dict]) -> dict:
@@ -2772,8 +2563,6 @@ def _run_projection(
     peer_ext_paths: Optional[list] = None,
     target_platform: str = "fabric",
     contract_registry: Optional[dict] = None,
-    emit_aspirational_stubs: bool = False,
-    eligible_class_uris: Optional[set] = None,
     semantic_index=None,
     plan_only: bool = False,
     diagnostic_mode: str = "fail_fast",
@@ -2800,6 +2589,7 @@ def _run_projection(
         target_platform: dbt SQL adapter platform.
         contract_registry: Validated custom dbt contracts keyed by model name.
     """
+    _reject_retired_compiler_targets((target,))
 
     if plan_only and target not in {"dbt", "silver", "powerbi"}:
         return {"__plan__": target}
@@ -2951,38 +2741,7 @@ def _run_projection(
 
     # Generate based on target using full-featured projector classes
     # Pass ontology_name so each projector can create domain-specific filenames
-    if target == "dbt":
-        from .projections.medallion_dbt_projector import (
-            generate_dbt_artifacts,
-            plan_dbt_projection,
-        )
-
-        runner = plan_dbt_projection if plan_only else generate_dbt_artifacts
-        from .projections.dbt import ExecutionMode
-
-        result = runner(
-            classes,
-            graph,
-            template_base / "dbt",
-            namespace,
-            shapes_dir,
-            ontology_name,
-            ontology_metadata=meta,
-            bronze_dir=sources_dir,
-            sources_dir=sources_dir,
-            mappings_dir=mappings_dir,
-            gold_ext_path=gold_ext_path,
-            silver_ext_path=projection_ext_path,
-            ref_model_defaults=ref_model_defaults,
-            peer_ext_paths=peer_ext_paths,
-            target_platform=target_platform,
-            contract_registry=contract_registry,
-            emit_aspirational_stubs=emit_aspirational_stubs,
-            eligible_class_uris=eligible_class_uris,
-            **({"diagnostic_mode": ExecutionMode(diagnostic_mode)} if plan_only else {}),
-        )
-        return {"__plan__": result[1]} if plan_only else result
-    elif target == "neo4j":
+    if target == "neo4j":
         from .projections.neo4j_projector import generate_neo4j_artifacts
 
         return generate_neo4j_artifacts(
@@ -3027,37 +2786,6 @@ def _run_projection(
             ontology_metadata=meta,
             semantic_index=semantic_index,
         )
-    elif target == "silver":
-        from .projections.medallion_dbt_projector import (
-            generate_dbt_artifacts,
-            plan_dbt_projection,
-        )
-
-        runner = plan_dbt_projection if plan_only else generate_dbt_artifacts
-        from .projections.dbt import ExecutionMode
-
-        result = runner(
-            classes,
-            graph,
-            template_base / "dbt",
-            namespace,
-            shapes_dir,
-            ontology_name,
-            ontology_metadata=meta,
-            bronze_dir=sources_dir,
-            sources_dir=sources_dir,
-            mappings_dir=mappings_dir,
-            silver_ext_path=projection_ext_path,
-            ref_model_defaults=ref_model_defaults,
-            peer_ext_paths=peer_ext_paths,
-            target_platform=target_platform,
-            contract_registry=contract_registry,
-            emit_aspirational_stubs=emit_aspirational_stubs,
-            eligible_class_uris=eligible_class_uris,
-            require_silver_evidence=True,
-            **({"diagnostic_mode": ExecutionMode(diagnostic_mode)} if plan_only else {}),
-        )
-        return {"__plan__": result[1]} if plan_only else result
     elif target == "powerbi":
         from .projections.medallion_gold_projector import (
             generate_gold_artifacts,
@@ -3097,7 +2825,6 @@ def _run_projection(
             peer_ontology_paths=peer_ontology_paths,
             target_platform=target_platform,
             contract_registry=contract_registry,
-            eligible_class_uris=eligible_class_uris,
             **({"diagnostic_mode": ExecutionMode(diagnostic_mode)} if plan_only else {}),
         )
         return {"__plan__": result[1]} if plan_only else result

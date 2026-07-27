@@ -20,7 +20,6 @@ from .mapping_specs import (
 from .policy_specs import AdapterName, CanonicalTypeKind
 from .specs import JoinSpec, SourceBindingSpec
 
-
 _BINARY_OPERATORS = {
     "add": "+",
     "subtract": "-",
@@ -69,11 +68,7 @@ def _text_literal(lexical: str, adapter: str) -> str:
 
     if adapter == "fabric":
         payload = lexical.encode("utf-8").hex().upper()
-        return (
-            f"CONVERT(VARCHAR(8000), 0x{payload})"
-            if payload
-            else "CAST('' AS VARCHAR(8000))"
-        )
+        return f"CONVERT(VARCHAR(8000), 0x{payload})" if payload else "CAST('' AS VARCHAR(8000))"
     if adapter == "databricks":
         payload = lexical.encode("utf-8").hex().upper()
         return f"decode(unhex('{payload}'), 'UTF-8')"
@@ -85,9 +80,7 @@ def _source_alias(
     sources: tuple[SourceBindingSpec, ...],
 ) -> str:
     matches = tuple(
-        source.alias
-        for source in sources
-        if source.table_uri == expression.input.source_table_uri
+        source.alias for source in sources if source.table_uri == expression.input.source_table_uri
     )
     if len(matches) != 1:
         raise _error(
@@ -110,9 +103,7 @@ def _literal(expression: LiteralExpression, adapter: str) -> str:
         return (
             f"CAST({1 if truthy else 0} AS BIT)"
             if adapter == "fabric"
-            else "TRUE"
-            if truthy
-            else "FALSE"
+            else "TRUE" if truthy else "FALSE"
         )
     if kind in {
         CanonicalTypeKind.INT16,
@@ -128,8 +119,7 @@ def _literal(expression: LiteralExpression, adapter: str) -> str:
         CanonicalTypeKind.TIMESTAMP,
     }:
         return (
-            f"CAST({_text_literal(lexical, adapter)} "
-            f"AS {_physical_type(expression, adapter)})"
+            f"CAST({_text_literal(lexical, adapter)} " f"AS {_physical_type(expression, adapter)})"
         )
     raise _error(
         expression,
@@ -166,14 +156,10 @@ def _render(
         return f"CAST(NULL AS {_physical_type(expression, adapter)})"
     if isinstance(expression, OperatorExpression):
         arguments = tuple(
-            _render(item, adapter, sources, depth=depth + 1)
-            for item in expression.arguments
+            _render(item, adapter, sources, depth=depth + 1) for item in expression.arguments
         )
         if expression.operator in _BINARY_OPERATORS:
-            return (
-                f"({arguments[0]} {_BINARY_OPERATORS[expression.operator]} "
-                f"{arguments[1]})"
-            )
+            return f"({arguments[0]} {_BINARY_OPERATORS[expression.operator]} " f"{arguments[1]})"
         if expression.operator == "negate":
             return f"(-{arguments[0]})"
         if expression.operator == "not":
@@ -185,9 +171,10 @@ def _render(
         raise _error(expression, f"operator {expression.operator!r} is not renderable")
     if isinstance(expression, FunctionExpression):
         arguments = tuple(
-            _render(item, adapter, sources, depth=depth + 1)
-            for item in expression.arguments
+            _render(item, adapter, sources, depth=depth + 1) for item in expression.arguments
         )
+        if expression.function == "cast":
+            return f"CAST({arguments[0]} AS {_physical_type(expression, adapter)})"
         if expression.function == "coalesce":
             return f"COALESCE({', '.join(arguments)})"
         if expression.function == "nullif":
@@ -237,8 +224,7 @@ def _render(
         return f"CASE {branches} ELSE {otherwise} END"
     if isinstance(expression, MacroExpression):
         arguments = ", ".join(
-            _render(item, adapter, sources, depth=depth + 1)
-            for item in expression.arguments
+            _render(item, adapter, sources, depth=depth + 1) for item in expression.arguments
         )
         return f"{{{{ {expression.macro_name}({arguments}) }}}}"
     raise _error(expression, f"unknown validated node {type(expression).__name__}")
@@ -247,11 +233,7 @@ def _render(
 def render_mapping_join_condition(join: JoinSpec, *, adapter: str) -> str:
     """Render a generated FK predicate from normalized source-symbol bindings."""
 
-    source_alias = (
-        quote_mapping_identifier(join.source_alias, adapter)
-        if join.source_alias
-        else ""
-    )
+    source_alias = quote_mapping_identifier(join.source_alias, adapter) if join.source_alias else ""
     target_alias = quote_mapping_identifier(join.alias, adapter)
     if join.source_inputs:
         if (
@@ -280,9 +262,7 @@ def render_mapping_join_condition(join: JoinSpec, *, adapter: str) -> str:
     else:
         parts = [join.condition]
     if join.temporal_mode == "current":
-        parts.append(
-            f"{target_alias}.{quote_mapping_identifier('is_current', adapter)} = 1"
-        )
+        parts.append(f"{target_alias}.{quote_mapping_identifier('is_current', adapter)} = 1")
     elif join.temporal_mode == "as-of":
         if not join.as_of_column or not source_alias:
             raise MappingContractError(
@@ -291,22 +271,17 @@ def render_mapping_join_condition(join: JoinSpec, *, adapter: str) -> str:
                 resource_uri=join.fk_column or join.alias,
                 rule_id="DD-107-render",
             )
-        as_of = (
-            f"{source_alias}."
-            f"{quote_mapping_identifier(join.as_of_column, adapter)}"
-        )
+        as_of = f"{source_alias}." f"{quote_mapping_identifier(join.as_of_column, adapter)}"
         as_of = (
             f"CAST({as_of} AS DATETIME2(6))"
             if adapter == "fabric"
             else f"CAST({as_of} AS TIMESTAMP)"
         )
         valid_from = (
-            f"{target_alias}."
-            f"{quote_mapping_identifier('_business_valid_from', adapter)}"
+            f"{target_alias}." f"{quote_mapping_identifier(join.parent_valid_from_column, adapter)}"
         )
         valid_to = (
-            f"{target_alias}."
-            f"{quote_mapping_identifier('_business_valid_to', adapter)}"
+            f"{target_alias}." f"{quote_mapping_identifier(join.parent_valid_to_column, adapter)}"
         )
         parts.extend(
             (

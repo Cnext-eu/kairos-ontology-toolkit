@@ -2,26 +2,10 @@
 @prefix bronze-bp: <https://acme.example/bronze/billingpro#> .
 @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
 @prefix map: <https://acme.example/mapping/billingpro-to-invoice#> .
-@prefix prep-bp: <https://acme.example/preparation/billingpro#> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-map:column__invoiceLineDetailsDiscountPct__to__discountPct a kairos-map:ColumnMapping ;
-    kairos-map:matchType "exactMatch" ;
-    kairos-map:sourceColumn prep-bp:invoiceLineDetailsDiscountPct ;
-    kairos-map:targetProperty acme-inv:discountPct .
-
-map:column__invoiceLineDetailsTaxCode__to__taxCode a kairos-map:ColumnMapping ;
-    kairos-map:matchType "exactMatch" ;
-    kairos-map:sourceColumn prep-bp:invoiceLineDetailsTaxCode ;
-    kairos-map:targetProperty acme-inv:taxCode .
-
-map:column__invoiceLineDetailsTaxRate__to__taxRate a kairos-map:ColumnMapping ;
-    kairos-map:matchType "exactMatch" ;
-    kairos-map:sourceColumn prep-bp:invoiceLineDetailsTaxRate ;
-    kairos-map:targetProperty acme-inv:taxRate .
 
 map:column__tblCreditNote_ClientRef__to__issuedTo a kairos-map:ColumnMapping ;
     kairos-map:matchType "exactMatch" ;
@@ -116,12 +100,6 @@ map:column__tblInvoice_TotalAmount__to__totalAmount a kairos-map:ColumnMapping ;
     kairos-map:matchType "exactMatch" ;
     kairos-map:sourceColumn bronze-bp:tblInvoice_TotalAmount ;
     kairos-map:targetProperty acme-inv:totalAmount .
-
-map:table__invoiceLineDetails__to__InvoiceLineTax a kairos-map:TableMapping ;
-    kairos-map:mappingType "direct" ;
-    kairos-map:matchType "exactMatch" ;
-    kairos-map:sourceTable prep-bp:invoiceLineDetails ;
-    kairos-map:targetClass acme-inv:InvoiceLineTax .
 
 map:table__tblCreditNote__to__Invoice a kairos-map:TableMapping ;
     kairos-map:mappingType "direct" ;
@@ -282,14 +260,6 @@ map:column__tblInvoice_Currency__to__currency__coalesce_input__source a kairos-m
     kairos-map:outputType "string" ;
     kairos-map:requiresCapability "source-column" ;
     kairos-map:sourceColumn bronze-bp:tblInvoice_Currency .
-
-prep-bp:invoiceLineDetails skos:exactMatch acme-inv:InvoiceLineTax .
-
-prep-bp:invoiceLineDetailsDiscountPct skos:exactMatch acme-inv:discountPct .
-
-prep-bp:invoiceLineDetailsTaxCode skos:exactMatch acme-inv:taxCode .
-
-prep-bp:invoiceLineDetailsTaxRate skos:exactMatch acme-inv:taxRate .
 
 bronze-bp:tblCreditNote_Currency skos:exactMatch acme-inv:currency .
 

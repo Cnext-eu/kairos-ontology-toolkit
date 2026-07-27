@@ -37,7 +37,7 @@ def test_invoice_facts_need_no_dimensions_and_keep_measure_columns(
     product = _product(invoice_dbt_artifacts, "invoice")
     assert {item["role"] for item in product["tables"]} == {"fact"}
     assert all(item["fact_grain"] for item in product["tables"])
-    assert all(item["incremental_policy"] for item in product["tables"])
+    assert all(not item["incremental_policy"] for item in product["tables"])
     assert all(item["lifecycle"] == "approved" for item in product["measures"])
     assert all(
         item["data_validated_by_projection"] is False

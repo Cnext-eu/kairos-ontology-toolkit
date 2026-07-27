@@ -145,6 +145,5 @@ excluding timestamps) — same reviewed hub state → same digest (ADR-11). The
   `kairos-mdm-runtime`.
 - No domain class/property modeling — use **kairos-design-domain**.
 - No source-to-domain column mapping — use **kairos-design-mapping**.
-- Governance ownership/approval of *claims* stays in the claim registry
-  (`mdm_anchor`/ownership gates), which is distinct from this profile policy
-  (MDM-DD-001).
+- Entity materialization authority stays in reviewed v5 bindings; MDM governance
+  remains distinct from that compile contract (MDM-DD-001).

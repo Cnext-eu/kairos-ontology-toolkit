@@ -18,8 +18,6 @@ from .specs import (
     DqModelPhysicalPlan,
     DqRulePhysicalPlan,
     ModelPhysicalPlan,
-    PrepModelPhysicalPlan,
-    PrepSchemaPhysicalPlan,
     ProjectConfigPlan,
     ReleasePlan,
     RuntimePhysicalPlan,
@@ -43,7 +41,6 @@ from .policy_specs import (
     DqCheckKind,
     ParentAction,
     SilverColumnRole,
-    TechnicalDedupeMode,
 )
 from .diagnostics import (
     Diagnostic,
@@ -51,7 +48,6 @@ from .diagnostics import (
     diagnostic_from_exception,
     order_diagnostics,
 )
-
 
 _REF_NAME = re.compile(r"""ref\(\s*['"]([^'"]+)['"]\s*\)""")
 _ROW_LEVEL_DQ_CHECKS = frozenset(
@@ -70,9 +66,7 @@ class QualityMaterializationBlocked(ValueError):
 
     def __init__(self, blocking_rules: tuple[tuple[str, str], ...]) -> None:
         self.blocking_rules = blocking_rules
-        detail = "; ".join(
-            f"{rule_id}: {message}" for rule_id, message in blocking_rules
-        )
+        detail = "; ".join(f"{rule_id}: {message}" for rule_id, message in blocking_rules)
         super().__init__(f"Data-quality materialization blocked: {detail}")
 
 
@@ -81,9 +75,7 @@ class SilverMaterializationBlocked(ValueError):
 
     def __init__(self, blocking_rules: tuple[tuple[str, str], ...]) -> None:
         self.blocking_rules = blocking_rules
-        detail = "; ".join(
-            f"{rule_id}: {message}" for rule_id, message in blocking_rules
-        )
+        detail = "; ".join(f"{rule_id}: {message}" for rule_id, message in blocking_rules)
         super().__init__(f"Silver physical materialization blocked: {detail}")
 
 
@@ -101,14 +93,10 @@ def _dependency_name(value: str) -> str:
 
 
 def _dependencies(model) -> tuple[str, ...]:
-    values = {
-        source.model_name for source in model.sources if source.model_name
-    }
+    values = {source.model_name for source in model.sources if source.model_name}
     values.update(source.ref_model for source in model.sources if source.ref_model)
     values.update(
-        _dependency_name(join.referenced_model)
-        for join in model.joins
-        if join.referenced_model
+        _dependency_name(join.referenced_model) for join in model.joins if join.referenced_model
     )
     values.update(getattr(model, "source_models", ()))
     return tuple(sorted(values))
@@ -138,13 +126,10 @@ def _quality_physical_plans(
             }
         rules: list[DqRulePhysicalPlan] = []
         quarantine = any(
-            rule.action.value is DqAction.QUARANTINE
-            for rule in authority.quality_rules
+            rule.action.value is DqAction.QUARANTINE for rule in authority.quality_rules
         )
         evaluated_model_name = (
-            f"{model.identity.model_name}__dq_input"
-            if quarantine
-            else model.identity.model_name
+            f"{model.identity.model_name}__dq_input" if quarantine else model.identity.model_name
         )
         original_path = model.identity.artifact_path
         directory, filename = original_path.rsplit("/", 1)
@@ -155,9 +140,7 @@ def _quality_physical_plans(
         )
         for rule in authority.quality_rules:
             kind = rule.check.check_kind.value
-            parameters = {
-                item.name: item.values for item in rule.check.parameters
-            }
+            parameters = {item.name: item.values for item in rule.check.parameters}
             referenced_columns = {
                 value
                 for key in {
@@ -237,12 +220,10 @@ def _quality_physical_plans(
                     evaluated_model_name=evaluated_model_name,
                     result_model_name=result_name,
                     result_artifact_path=(
-                        f"models/quality/{model.identity.domain_name}/"
-                        f"{result_name}.sql"
+                        f"models/quality/{model.identity.domain_name}/" f"{result_name}.sql"
                     ),
                     test_artifact_path=(
-                        f"tests/quality/{model.identity.domain_name}/"
-                        f"test_{result_name}.sql"
+                        f"tests/quality/{model.identity.domain_name}/" f"test_{result_name}.sql"
                     ),
                     row_level=row_level,
                 )
@@ -254,18 +235,14 @@ def _quality_physical_plans(
                 evaluated_model_name=evaluated_model_name,
                 evaluated_artifact_path=evaluated_path,
                 quarantine_model_name=(
-                    f"{model.identity.model_name}__dq_quarantine"
-                    if quarantine
-                    else ""
+                    f"{model.identity.model_name}__dq_quarantine" if quarantine else ""
                 ),
                 quarantine_artifact_path=(
                     f"{directory}/{model.identity.model_name}__dq_quarantine.sql"
                     if quarantine
                     else ""
                 ),
-                rules=tuple(
-                    sorted(rules, key=lambda item: item.rule.rule_id.value)
-                ),
+                rules=tuple(sorted(rules, key=lambda item: item.rule.rule_id.value)),
             )
         )
     if blockers:
@@ -273,322 +250,10 @@ def _quality_physical_plans(
     return tuple(sorted(plans, key=lambda item: item.model_name))
 
 
-def _feature_capability(feature: str) -> AdapterCapability:
-    if feature.startswith("array:"):
-        return AdapterCapability.JSON_ARRAY_CHILD
-    if feature.startswith("json-scalar:"):
-        return AdapterCapability.JSON_SCALAR
-    return AdapterCapability.CANONICAL_TYPES
 
 
-def _prep_feature_requirements(shaped: ShapedProject) -> tuple[tuple[str, str, str], ...]:
-    result: set[tuple[str, str, str]] = set()
-    for model in shaped.prep_models:
-        result.add(
-            (
-                f"schema-evolution:{model.schema_evolution.value}",
-                "DD-106-schema-evolution",
-                model.model_name,
-            )
-        )
-        for column in model.columns:
-            for cleanup in column.cleanup_rules:
-                result.add(
-                    (
-                        f"cleanup:{cleanup.operation.value.value}",
-                        "DD-106-prep-cleanup",
-                        model.model_name,
-                    )
-                )
-            if column.conversion is not None:
-                result.add(
-                    (
-                        f"cast:{column.conversion.error_action.value.value}",
-                        "DD-106-prep-cast",
-                        model.model_name,
-                    )
-                )
-                result.add(
-                    (
-                        (
-                            f"parse:{column.conversion.parse_policy.value}:"
-                            f"{column.conversion.target_type.value.kind.value}"
-                        ),
-                        "DD-106-prep-cast",
-                        model.model_name,
-                    )
-                )
-        for scalar in model.scalar_columns:
-            result.add(
-                (
-                    f"json-scalar:{scalar.error_action.value}",
-                    "DD-106-json-scalar",
-                    model.model_name,
-                )
-            )
-            result.add(
-                (
-                    "raw-payload-retention"
-                    if scalar.retention.value == "retain-payload"
-                    else "replayable-reference-retention",
-                    "DD-106-json-replay",
-                    model.model_name,
-                )
-            )
-        if model.technical_dedupe.mode.value is TechnicalDedupeMode.COMPLETE_TOTAL_ORDER:
-            result.add(
-                ("technical-dedupe", "DD-106-technical-dedupe", model.model_name)
-            )
-    for child in shaped.prep_children:
-        result.add(
-            (
-                "array:scalar-object-elements",
-                "DD-106-json-array",
-                child.model_name,
-            )
-        )
-        result.add(
-            (
-                f"array:{child.null_action.value}",
-                "DD-106-json-array",
-                child.model_name,
-            )
-        )
-        result.add(
-            (
-                f"array:{child.empty_action.value}",
-                "DD-106-json-array",
-                child.model_name,
-            )
-        )
-        result.add(
-            (
-                "array:element-index"
-                if child.element_index_column
-                else "array:element-key",
-                "DD-106-json-array",
-                child.model_name,
-            )
-        )
-        result.add(
-            (
-                "raw-payload-retention"
-                if child.retention.value == "retain-payload"
-                else "replayable-reference-retention",
-                "DD-106-json-replay",
-                child.model_name,
-            )
-        )
-    return tuple(sorted(result))
 
 
-def _prep_physical_plans(
-    shaped: ShapedProject,
-    adapter_name,
-) -> tuple[
-    tuple[PrepModelPhysicalPlan, ...],
-    tuple[PrepSchemaPhysicalPlan, ...],
-    tuple[CapabilityResultSpec, ...],
-]:
-    from .capabilities import (
-        physical_canonical_type,
-        physical_source_type,
-        supports_preparation_feature,
-    )
-
-    unsupported: dict[str, list[tuple[str, str]]] = {}
-    capability_results: list[CapabilityResultSpec] = []
-    for feature, rule_id, model_name in _prep_feature_requirements(shaped):
-        if supports_preparation_feature(adapter_name, feature):
-            continue
-        message = (
-            f"Adapter {adapter_name.value!r} does not support required preparation "
-            f"feature {feature!r} for {model_name!r}."
-        )
-        unsupported.setdefault(model_name, []).append((rule_id, message))
-        capability_results.append(
-            CapabilityResultSpec(
-                adapter=adapter_name,
-                capability=_feature_capability(feature),
-                disposition=CapabilityDisposition.BLOCKING,
-                rule_id=rule_id,
-                scope="prep",
-                evidence=("adapter-capability-registry-v1: feature absent",),
-                message=message,
-            )
-        )
-
-    boolean_type = physical_canonical_type(
-        adapter_name, CanonicalTypeSpec(CanonicalTypeKind.BOOLEAN)
-    )
-    string_type = physical_canonical_type(
-        adapter_name, CanonicalTypeSpec(CanonicalTypeKind.STRING)
-    )
-    int64_type = physical_canonical_type(
-        adapter_name, CanonicalTypeSpec(CanonicalTypeKind.INT64)
-    )
-    plans: list[PrepModelPhysicalPlan] = []
-    parent_types: dict[str, dict[str, str]] = {}
-    source_by_model: dict[str, str] = {}
-
-    def canonical_type(
-        model_name: str,
-        column_name: str,
-        value: CanonicalTypeSpec,
-    ) -> str:
-        try:
-            return physical_canonical_type(adapter_name, value)
-        except ValueError as exc:
-            message = f"{model_name}.{column_name}: {exc}"
-            unsupported.setdefault(model_name, []).append(
-                ("DD-111-types", message)
-            )
-            return string_type
-
-    for model in shaped.prep_models:
-        types: list[tuple[str, str]] = []
-        for column in model.columns:
-            try:
-                raw_type = physical_source_type(
-                    adapter_name, column.source_data_type
-                )
-            except ValueError as exc:
-                message = f"{model.model_name}: {exc}"
-                unsupported.setdefault(model.model_name, []).append(
-                    ("DD-111-types", message)
-                )
-                raw_type = string_type
-            output_type = (
-                canonical_type(
-                    model.model_name,
-                    column.output_name,
-                    column.conversion.target_type.value,
-                )
-                if column.conversion is not None
-                else raw_type
-            )
-            types.append((column.output_name, output_type))
-            if column.raw_output_name:
-                types.append((column.raw_output_name, raw_type))
-            if column.error_flag_name:
-                types.append((column.error_flag_name, boolean_type))
-        for cdc in model.cdc_columns:
-            types.append(
-                (
-                    cdc.output_name,
-                    canonical_type(
-                        model.model_name,
-                        cdc.output_name,
-                        cdc.data_type,
-                    ),
-                )
-            )
-        for scalar in model.scalar_columns:
-            types.append(
-                (
-                    scalar.output_name,
-                    canonical_type(
-                        model.model_name,
-                        scalar.output_name,
-                        scalar.data_type,
-                    ),
-                )
-            )
-            if scalar.error_flag_name:
-                types.append((scalar.error_flag_name, boolean_type))
-        types.append(
-            (
-                model.source_record_key.output_name,
-                canonical_type(
-                    model.model_name,
-                    model.source_record_key.output_name,
-                    model.source_record_key.data_type,
-                ),
-            )
-        )
-        names = [name for name, _ in types]
-        if len(names) != len(set(names)):
-            duplicates = sorted(
-                {name for name in names if names.count(name) > 1}
-            )
-            unsupported.setdefault(model.model_name, []).append(
-                (
-                    "DD-106-prep-columns",
-                    (
-                        f"Preparation model {model.model_name!r} has duplicate "
-                        f"output columns: {', '.join(duplicates)}"
-                    ),
-                )
-            )
-        parent_types[model.model_name] = dict(types)
-        source_by_model[model.model_name] = model.source_name
-        plans.append(
-            PrepModelPhysicalPlan(
-                model_name=model.model_name,
-                artifact_path=model.artifact_path,
-                kind="parent",
-                column_types=tuple(types),
-                blocking_reasons=tuple(
-                    sorted(unsupported.get(model.model_name, ()))
-                ),
-            )
-        )
-
-    for child in shaped.prep_children:
-        parent = parent_types[child.parent_model_name]
-        types = [
-            ("_source_record_key", parent["_source_record_key"]),
-            *(
-                (name, parent[name])
-                for name in child.parent_key_columns
-                if name != "_source_record_key"
-            ),
-            (
-                child.element_index_column or "_element_key",
-                int64_type if child.element_index_column else string_type,
-            ),
-            *(
-                (
-                    column.name,
-                    canonical_type(
-                        child.model_name,
-                        column.name,
-                        column.data_type,
-                    ),
-                )
-                for column in child.columns
-            ),
-        ]
-        if child.retention.value == "retain-payload":
-            types.append(("_raw_payload", string_type))
-        source_by_model[child.model_name] = child.source_name
-        plans.append(
-            PrepModelPhysicalPlan(
-                model_name=child.model_name,
-                artifact_path=child.artifact_path,
-                kind="array-child",
-                column_types=tuple(types),
-                dependencies=(child.parent_model_name,),
-                blocking_reasons=tuple(
-                    sorted(unsupported.get(child.model_name, ()))
-                ),
-            )
-        )
-
-    grouped: dict[str, list[str]] = {}
-    for plan in plans:
-        grouped.setdefault(source_by_model[plan.model_name], []).append(
-            plan.model_name
-        )
-    documents = tuple(
-        PrepSchemaPhysicalPlan(
-            artifact_path=f"models/staging/{source}/_{source}__staging.yml",
-            source_name=source,
-            model_names=tuple(sorted(names)),
-        )
-        for source, names in sorted(grouped.items())
-    )
-    return tuple(plans), documents, tuple(capability_results)
 
 
 def _runtime_physical_plan(
@@ -598,10 +263,11 @@ def _runtime_physical_plan(
 ) -> RuntimePhysicalPlan | None:
     runtime = model.runtime
     authority = model.authority
-    relationships = {
-        item.property_uri: item
-        for item in authority.foreign_keys
-    } if authority is not None else {}
+    relationships = (
+        {item.property_uri: item for item in authority.foreign_keys}
+        if authority is not None
+        else {}
+    )
     temporal_lookups: list[TemporalLookupPhysicalPlan] = []
     for join in model.joins:
         relationship = relationships.get(join.relationship_uri)
@@ -632,9 +298,7 @@ def _runtime_physical_plan(
                 ),
             )
         )
-    joined_relationships = {
-        join.relationship_uri for join in model.joins if join.relationship_uri
-    }
+    joined_relationships = {join.relationship_uri for join in model.joins if join.relationship_uri}
     for relationship in relationships.values():
         if relationship.property_uri in joined_relationships:
             continue
@@ -706,8 +370,7 @@ def _runtime_physical_plan(
         {
             item.data_type.kind.value
             for item in runtime.canonical_hash_columns
-            if item.data_type.kind
-            in {CanonicalTypeKind.FLOAT64, CanonicalTypeKind.JSON}
+            if item.data_type.kind in {CanonicalTypeKind.FLOAT64, CanonicalTypeKind.JSON}
         }
     )
     if unsupported_hash_types:
@@ -731,9 +394,7 @@ def _runtime_physical_plan(
         adapter=adapter_name.value,
         strategy=f"scd{runtime.authority.history.scd_type.value.value}",
         merge_strategy=(
-            "fabric-merge"
-            if adapter_name.value == "fabric"
-            else "databricks-delta-merge"
+            "fabric-merge" if adapter_name.value == "fabric" else "databricks-delta-merge"
         ),
         delete_strategy=(
             f"hard:{incremental.hard_delete.value.value};"
@@ -741,17 +402,14 @@ def _runtime_physical_plan(
         ),
         hash_strategy=(
             "canonical-sha256-v1"
-            if runtime.authority.change_detection.value
-            is ChangeDetectionStrategy.CANONICAL_HASH
+            if runtime.authority.change_detection.value is ChangeDetectionStrategy.CANONICAL_HASH
             else "typed-null-safe-column-compare"
         ),
         replay_strategy=incremental.replay.value.value,
         backfill_strategy=incremental.backfill.value.value,
         lookback_strategy=f"bounded-{lookback.amount}-{lookback.unit.value}",
         schema_change_strategy=(
-            "sync_all_columns"
-            if schema_change == "approved-contract-update"
-            else "fail"
+            "sync_all_columns" if schema_change == "approved-contract-update" else "fail"
         ),
         temporal_lookups=tuple(temporal_lookups),
         blocking_reasons=tuple(sorted(runtime_blockers)),
@@ -794,11 +452,7 @@ def _silver_physical_plan(
     plan_by_model = {item.model_name: item for item in model_plans}
     quality_by_model = {item.model_name: item for item in quality_plans}
     constraint_capability = next(
-        (
-            item
-            for item in capability_results
-            if item.capability is AdapterCapability.CONSTRAINTS
-        ),
+        (item for item in capability_results if item.capability is AdapterCapability.CONSTRAINTS),
         None,
     )
     constraint_disposition = (
@@ -807,15 +461,11 @@ def _silver_physical_plan(
         else "not-negotiated"
     )
     constraint_deviation = (
-        constraint_capability.deviation_ref or ""
-        if constraint_capability is not None
-        else ""
+        constraint_capability.deviation_ref or "" if constraint_capability is not None else ""
     )
     blockers: list[tuple[str, str]] = []
     physical_models: list[SilverModelPhysicalPlan] = []
-    model_specs = {
-        item.identity.model_name: item for item in shaped.silver_models
-    }
+    model_specs = {item.identity.model_name: item for item in shaped.silver_models}
     for model in shaped.silver_models:
         if model.identity.artifact_path is None:
             continue
@@ -925,9 +575,7 @@ def _silver_physical_plan(
                     ),
                     kind="foreign-key",
                     columns=foreign_key.columns,
-                    referenced_schema=(
-                        target.identity.schema_name if target is not None else ""
-                    ),
+                    referenced_schema=(target.identity.schema_name if target is not None else ""),
                     referenced_model=foreign_key.referenced_model,
                     referenced_columns=foreign_key.referenced_columns,
                     enforced=False,
@@ -969,9 +617,7 @@ def _silver_physical_plan(
                         relation_kind="dq-quarantine",
                         relation_name=quality.quarantine_model_name,
                         artifact_path=quality.quarantine_artifact_path,
-                        rule_ids=tuple(
-                            item.rule.rule_id.value for item in quality.rules
-                        ),
+                        rule_ids=tuple(item.rule.rule_id.value for item in quality.rules),
                     )
                 )
             links.extend(
@@ -1047,10 +693,6 @@ def _plan_materialization(
         contract.policy.capability_requirements,
         contract.policy.deviations,
     )
-    prep_plans, prep_documents, prep_capability_results = _prep_physical_plans(
-        shaped,
-        adapter_name,
-    )
     mapping_capability_results = tuple(
         item
         for item in contract.mapping_contract.capability_results
@@ -1072,7 +714,7 @@ def _plan_materialization(
     }
     capability_results = tuple(
         sorted(
-            capability_results + prep_capability_results,
+            capability_results,
             key=lambda item: (
                 item.capability.value,
                 item.rule_id,
@@ -1086,7 +728,6 @@ def _plan_materialization(
         "union": "silver_union_model.sql.jinja2",
         "contribution_lineage": "silver_contribution_lineage.sql.jinja2",
         "reconciliation": "silver_reconciliation.sql.jinja2",
-        "stub": "silver_stub_model.sql.jinja2",
     }
     silver_plans: list[ModelPhysicalPlan] = []
     for model in shaped.silver_models:
@@ -1106,15 +747,15 @@ def _plan_materialization(
             )
         silver_plans.append(
             ModelPhysicalPlan(
-            model_name=model.identity.model_name,
-            artifact_path=model.identity.artifact_path or "",
-            template_name=template_name,
-            materialization=model.materialization_intent.kind,
-            unique_key=model.materialization_intent.unique_key,
-            incremental_column=model.materialization_intent.incremental_column,
-            dependencies=_dependencies(model),
-            runtime=runtime_plan,
-        )
+                model_name=model.identity.model_name,
+                artifact_path=model.identity.artifact_path or "",
+                template_name=template_name,
+                materialization=model.materialization_intent.kind,
+                unique_key=model.materialization_intent.unique_key,
+                incremental_column=model.materialization_intent.incremental_column,
+                dependencies=_dependencies(model),
+                runtime=runtime_plan,
+            )
         )
     model_plans = tuple(silver_plans)
     collected: list[Diagnostic] = []
@@ -1135,9 +776,7 @@ def _plan_materialization(
                 stage="quality",
                 owner_skill="kairos-design-silver",
                 evidence=(f"rule:{rule_id}",),
-                remediation=(
-                    "Correct the data-quality rule with kairos-design-silver."
-                ),
+                remediation=("Correct the data-quality rule with kairos-design-silver."),
             )
             for rule_id, message in exc.blocking_rules
         )
@@ -1181,14 +820,6 @@ def _plan_materialization(
         if model_plan.runtime is not None
         for reason in model_plan.runtime.blocking_reasons
     }
-    class_names = {item.uri: item.name for item in project.classes}
-    unbound = tuple(
-        sorted(
-            class_names[uri]
-            for uri, state in contract.binding_policy.states
-            if state == "stub" and uri in class_names
-        )
-    )
     return MaterializationPlan(
         adapter=AdapterPlan(
             platform=adapter_name.value,
@@ -1196,8 +827,6 @@ def _plan_materialization(
             template_root=project.template_root,
             capability_results=capability_results,
         ),
-        prep_models=prep_plans,
-        prep_documents=prep_documents,
         models=model_plans,
         quality_models=quality_plans,
         documents=tuple(
@@ -1214,13 +843,7 @@ def _plan_materialization(
             emit=project.has_sources,
         ),
         release=ReleasePlan(
-            unbound_eligible_names=unbound,
-            known_models=tuple(
-                sorted(
-                    set(project.contracts)
-                    | {item.model_name for item in prep_plans}
-                )
-            ),
+            known_models=tuple(sorted(set(project.contracts))),
             policy_version=contract.policy.version,
             ontology_name=project.ontology_name,
             ontology_version=project.ontology_metadata.version,
@@ -1229,20 +852,11 @@ def _plan_materialization(
             capability_results=capability_results,
             blocking_reasons=tuple(
                 sorted(
-                    {
-                        issue.message
-                        for issue in contract.policy.issues
-                        if issue.blocking
-                    }
+                    {issue.message for issue in contract.policy.issues if issue.blocking}
                     | {
                         result.message
                         for result in capability_results
                         if result.disposition is CapabilityDisposition.BLOCKING
-                    }
-                    | {
-                        message
-                        for prep_plan in prep_plans
-                        for _, message in prep_plan.blocking_reasons
                     }
                     | {message for _, message in mapping_blockers}
                     | {message for _, message in runtime_blockers}
@@ -1260,11 +874,6 @@ def _plan_materialization(
                         for result in capability_results
                         if result.disposition is CapabilityDisposition.BLOCKING
                     }
-                    | {
-                        reason
-                        for prep_plan in prep_plans
-                        for reason in prep_plan.blocking_reasons
-                    }
                     | mapping_blockers
                     | runtime_blockers
                 )
@@ -1281,23 +890,16 @@ def _plan_materialization(
                         for result in capability_results
                         if result.disposition is CapabilityDisposition.BLOCKING
                     }
-                    | {
-                        reason
-                        for prep_plan in prep_plans
-                        for reason in prep_plan.blocking_reasons
-                    }
                     | mapping_blockers
                     | runtime_blockers
                 )
             ),
-            prep_routes=shaped.prep_routes,
             mapping_contract=contract.mapping_contract,
             mapping_capability_results=mapping_capability_results,
             silver_authorities=tuple(
                 model.authority
                 for model in shaped.silver_models
-                if model.kind.value in {"entity", "union"}
-                and model.authority is not None
+                if model.kind.value in {"entity", "union"} and model.authority is not None
             ),
             active_sources=tuple(
                 (item.table_uri, item.source_kind, item.reasons)

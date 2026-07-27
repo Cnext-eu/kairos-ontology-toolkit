@@ -26,7 +26,6 @@ from kairos_ontology.core.semantic_index import (
 )
 from kairos_ontology.core.reference_modules import (
     AcceleratorModuleConfig,
-    DisputedClaimModule,
     ManagedImportPlan,
     ReferenceModuleContext,
     ReferenceModuleProfile,
@@ -37,6 +36,12 @@ from kairos_ontology.core.reference_modules import (
 )
 from kairos_ontology.core.validator import run_validation, validate_content, validate_gdpr
 from kairos_ontology.core.projector import run_projections, project_graph
+from kairos_ontology.core.compiler import (
+    build_compile_plan,
+    compile_domain,
+    compile_plan_result,
+    render_compile_plan,
+)
 from kairos_ontology.core.ontology_ops import (
     list_classes,
     list_properties,
@@ -67,7 +72,6 @@ __all__ = [
     "SemanticIndex",
     "build_semantic_index",
     "AcceleratorModuleConfig",
-    "DisputedClaimModule",
     "ManagedImportPlan",
     "ReferenceModuleContext",
     "ReferenceModuleProfile",
@@ -80,6 +84,10 @@ __all__ = [
     "validate_gdpr",
     "run_projections",
     "project_graph",
+    "build_compile_plan",
+    "compile_domain",
+    "compile_plan_result",
+    "render_compile_plan",
     "list_classes",
     "list_properties",
     "list_relationships",

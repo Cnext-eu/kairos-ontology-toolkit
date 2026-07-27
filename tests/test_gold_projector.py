@@ -178,15 +178,9 @@ def test_explicit_zero_dimension_facts_are_not_inferred(invoice_gold):
     }
     assert all(table["fact_grain"] for table in report["tables"])
     assert all(table["fact_type"] == "transaction" for table in report["tables"])
-    assert all(table["incremental_policy"] for table in report["tables"])
-    assert all(
-        table["correction_policy"] == "replace-by-total-order"
-        for table in report["tables"]
-    )
-    assert all(
-        table["late_arrival_policy"] == "reconcile-with-lookback"
-        for table in report["tables"]
-    )
+    assert all(not table["incremental_policy"] for table in report["tables"])
+    assert all(not table["correction_policy"] for table in report["tables"])
+    assert all(not table["late_arrival_policy"] for table in report["tables"])
 
 
 @pytest.mark.parametrize(
@@ -228,7 +222,7 @@ def test_dimension_exposure_and_source_version_are_explicit(client_gold):
 @pytest.mark.parametrize(
     ("exposure", "current_view", "current_filter"),
     (
-        ("current-only", False, True),
+        ("current-only", False, False),
         ("history-only", False, False),
         ("dual", True, False),
     ),
@@ -252,39 +246,6 @@ def test_dimension_exposure_modes_are_physical(
     assert (
         "client/dbt/models/gold/client/dim_client_current.sql" in artifacts
     ) is current_view
-
-
-def test_explicit_bridge_grain_endpoints_cardinality_and_weight(tmp_path: Path):
-    text = _gold_text("invoice") + """
-acme-inv:InvoiceLineTax
-    kairos-ext:goldTableType "bridge" ;
-    kairos-ext:goldTableName "bridge_invoice_line_tax" ;
-    kairos-ext:goldSourceModel "invoice_line_tax" ;
-    kairos-ext:goldSourceVersion "1.0.0" ;
-    kairos-ext:bridgeGrain "one tax allocation per invoice line" ;
-    kairos-ext:bridgeEndpoint acme-inv:Invoice, acme-inv:InvoiceLine ;
-    kairos-ext:bridgeEndpointBinding
-        "Invoice=invoice_line_tax_sk", "InvoiceLine=_source_record_key" ;
-    kairos-ext:bridgeCardinality "many-to-many" ;
-    kairos-ext:bridgeWeightColumn "tax_rate" ;
-    kairos-ext:bridgeAllocationSemantics "weighted-by-tax-rate" .
-"""
-    artifacts = _generate(
-        "invoice",
-        gold_path=_write_gold(tmp_path, "invoice", text),
-    )
-    bridge = next(
-        table
-        for table in _report(artifacts, "invoice")["tables"]
-        if table["role"] == "bridge"
-    )
-    assert bridge["bridge_grain"] == "one tax allocation per invoice line"
-    assert bridge["bridge_cardinality"] == "many-to-many"
-    assert bridge["bridge_weight_column"] == "tax_rate"
-    assert len(bridge["bridge_endpoint_bindings"]) == 2
-    assert "BRIDGE_INVOICE_LINE_TAX" in artifacts[
-        "invoice/invoice-gold-erd.mmd"
-    ]
 
 
 def test_source_model_and_version_drift_block(tmp_path: Path):

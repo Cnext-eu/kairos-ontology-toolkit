@@ -46,9 +46,9 @@ uv run --extra dbt-validate dbt parse
 
 ## Workflow
 
-1. Import and review source vocabularies and `integration/preparation/` policy.
-2. Author domain semantics, typed mappings, and Silver/Gold extension contracts.
-3. Validate syntax, SHACL, runtime policy, and strict-release prerequisites.
+1. Import and review source vocabularies.
+2. Author domain semantics, typed mappings, and Gold extension contracts.
+3. Validate syntax, SHACL, and strict-release prerequisites.
 4. Project artifacts and review Silver parity plus target-specific evidence.
 5. Commit on a feature branch and open a PR for review.
 

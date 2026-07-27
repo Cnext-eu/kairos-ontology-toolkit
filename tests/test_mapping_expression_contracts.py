@@ -198,7 +198,7 @@ def test_scenario_contract_contains_scalar_null_and_typed_literal_nodes():
     assert line_total.expression.operator == "multiply"
 
 
-def test_prep_rename_is_bound_as_a_symbol_and_rendered_safely():
+def test_raw_source_name_is_bound_as_a_symbol_and_rendered_safely():
     bound = bind_sources(_client_inputs())
     contract = normalize_contract(bound)
     filter_mapping = next(
@@ -209,7 +209,7 @@ def test_prep_rename_is_bound_as_a_symbol_and_rendered_safely():
     assert filter_mapping.row_filter is not None
     source = filter_mapping.row_filter.metadata.referenced_inputs[0]
     assert source.authored_name == "Type"
-    assert source.physical_name == "client_type_code"
+    assert source.physical_name == "Type"
 
     shaped = shape_project(contract)
     artifacts = render_project(
@@ -221,7 +221,7 @@ def test_prep_rename_is_bound_as_a_symbol_and_rendered_safely():
         for path, value in artifacts.items()
         if path.endswith("client__from_admin_pulse__tbl_client__corporate_client.sql")
     )
-    assert "where ([tbl_client].[client_type_code] = 0)" in branch
+    assert "where ([tbl_client].[Type] = 0)" in branch
 
 
 def test_case_and_null_semantics_are_typed_and_immutable():

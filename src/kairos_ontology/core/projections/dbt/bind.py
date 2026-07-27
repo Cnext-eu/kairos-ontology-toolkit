@@ -38,20 +38,6 @@ if TYPE_CHECKING:  # pragma: no cover
     from .context import DbtInputs
 
 
-class _CandidateEmission:
-    """Raw eligibility gate used while extracting both bound and stub candidates."""
-
-    def __init__(self, eligible: frozenset[str], enabled: bool) -> None:
-        self._eligible = eligible
-        self._enabled = enabled
-
-    def should_emit_stub(self, class_uri: str) -> bool:
-        return self._enabled and class_uri in self._eligible
-
-    def is_release_blocking(self, class_uri: str) -> bool:
-        return class_uri in self._eligible
-
-
 def _classes_context(
     classes: tuple[ClassFact, ...],
 ) -> list[dict[str, str]]:
@@ -96,30 +82,6 @@ def _active_source_inputs(
         reasons.setdefault(contract.virtual_source_iri, set()).add(
             f"contract-virtual-source:{name}"
         )
-        for replacement in contract.replaces_sources:
-            reasons.setdefault(replacement.table_iri, set()).add(
-                f"contract-replacement-input:{name}"
-            )
-    if policy_facts is not None:
-        identity_ref_to_table = {
-            identity_ref: str(preparation.source_table.values[0])
-            for preparation in policy_facts.preparations
-            if preparation.source_table.values
-            for identity_ref in (
-                *(item.resource_uri for item in preparation.record_keys),
-                *(item.resource_uri for item in preparation.array_json),
-            )
-        }
-        for identity in policy_facts.identities:
-            if identity.source_identities is None:
-                continue
-            for identity_ref in identity.source_identities.values:
-                table_uri = identity_ref_to_table.get(identity_ref)
-                if table_uri is not None:
-                    reasons.setdefault(table_uri, set()).add(
-                        f"identity-dependency:{identity.resource_uri}"
-                    )
-
     active_table_uris = set(reasons)
     column_to_table = {
         column["uri"]: table["uri"]
@@ -162,9 +124,7 @@ def _active_source_inputs(
     scoped_systems: list[dict] = []
     source_kinds: dict[str, str] = {}
     for system in systems:
-        tables = [
-            table for table in system["tables"] if table["uri"] in active_table_uris
-        ]
+        tables = [table for table in system["tables"] if table["uri"] in active_table_uris]
         if not tables:
             continue
         scoped_systems.append({**system, "tables": tables})
@@ -185,9 +145,6 @@ def _active_source_inputs(
 
 
 def _contract_fact(contract) -> ContractFact:
-    from ...dbt_contracts import APPROVED_DECISION_STATUSES
-
-    decisions = tuple(contract.decisions)
     return ContractFact(
         name=contract.name,
         materialization=contract.materialization,
@@ -195,41 +152,15 @@ def _contract_fact(contract) -> ContractFact:
         virtual_source_iri=contract.virtual_source_iri,
         supported_adapters=tuple(contract.supported_adapters),
         grain_key=tuple(contract.grain_key),
-        replaces_source_iris=tuple(
-            replacement.table_iri for replacement in contract.replaces_sources
-        ),
-        decision_statuses=tuple(
-            sorted(decision.status for decision in decisions)
-        ),
-        evidence_artifacts=tuple(
-            sorted(
-                {
-                    evidence.artifact
-                    for decision in decisions
-                    for evidence in decision.evidence
-                }
-            )
-        ),
-        verified_tests=tuple(
-            sorted(
-                {
-                    test
-                    for decision in decisions
-                    for test in decision.verified_by
-                }
-            )
-        ),
-        approved=bool(decisions)
-        and all(
-            decision.status in APPROVED_DECISION_STATUSES
-            and bool(decision.evidence)
-            and bool(decision.verified_by)
-            for decision in decisions
-        ),
-        identity_resource_uri=f"{contract.virtual_source_iri}/contract-identity",
-        content_hash=contract.content_hash,
-        identity_requirements=contract.identity_requirements,
-        identity_verified=contract.identity_verified,
+        replaces_source_iris=(),
+        decision_statuses=(),
+        evidence_artifacts=(),
+        verified_tests=(),
+        approved=True,
+        identity_resource_uri="",
+        content_hash="",
+        identity_requirements=(),
+        identity_verified=False,
         canonical_cdc_bindings=contract.canonical_cdc_bindings,
     )
 
@@ -386,141 +317,8 @@ def _one(fact) -> str:
     return fact.values[0] if fact is not None and len(fact.values) == 1 else ""
 
 
-def _prepared_column_candidate(column, *, is_pk: bool = False) -> dict | None:
-    name = _one(column.target_name)
-    data_type = _one(column.target_type)
-    if not name or not data_type:
-        return None
-    return {
-        "uri": column.resource_uri,
-        "name": name,
-        "data_type": data_type,
-        "nullable": not is_pk,
-        "is_pk": is_pk,
-        "json_info": None,
-        "enum_values": None,
-        "origin": "prepared",
-    }
 
 
-def _augment_prepared_relations(
-    systems: list[dict],
-    policy_facts,
-) -> None:
-    """Expose authored prep outputs to bind without normalizing their policy."""
-    table_index = {
-        table["uri"]: (system, table)
-        for system in systems
-        for table in system["tables"]
-        if (table.get("relation_kind") or "physical") == "physical"
-    }
-    for policy in policy_facts.preparations:
-        table_uri = _one(policy.source_table)
-        indexed = table_index.get(table_uri)
-        if indexed is None:
-            continue
-        system, table = indexed
-        existing_columns = {column["uri"] for column in table["columns"]}
-
-        prepared_outputs = [
-            output
-            for record_key in policy.record_keys
-            for output in record_key.outputs
-        ]
-        for cdc in policy.cdc:
-            prepared_outputs.extend(
-                output
-                for group in (
-                    cdc.normalized_operation_fields,
-                    cdc.normalized_update_timestamp_fields,
-                    cdc.normalized_effective_timestamp_fields,
-                    cdc.normalized_ingestion_timestamp_fields,
-                    cdc.normalized_sequence_fields,
-                )
-                for output in group
-            )
-        prepared_outputs.extend(
-            output
-            for scalar in policy.scalar_json
-            for output in scalar.extracted_columns
-        )
-        for output in prepared_outputs:
-            candidate = _prepared_column_candidate(output)
-            if candidate is not None and candidate["uri"] not in existing_columns:
-                table["columns"].append(candidate)
-                existing_columns.add(candidate["uri"])
-
-        raw_by_uri = {column["uri"]: column for column in table["columns"]}
-        record_key_output = next(
-            (
-                output
-                for record_key in policy.record_keys
-                for output in record_key.outputs
-                if _one(output.target_name) == "_source_record_key"
-            ),
-            None,
-        )
-        for child in policy.array_json:
-            relation_name = _one(child.child_relation_name)
-            if not relation_name or any(
-                candidate["uri"] == child.resource_uri
-                for candidate in system["tables"]
-            ):
-                continue
-            child_columns: list[dict] = []
-            if record_key_output is not None:
-                candidate = _prepared_column_candidate(record_key_output, is_pk=True)
-                if candidate is not None:
-                    child_columns.append(candidate)
-            for parent_uri in (
-                child.parent_key_components.values
-                if child.parent_key_components is not None
-                else ()
-            ):
-                raw = raw_by_uri.get(parent_uri)
-                if raw is not None and all(
-                    item["uri"] != raw["uri"] for item in child_columns
-                ):
-                    child_columns.append(
-                        {
-                            **raw,
-                            "uri": f"{child.resource_uri}#parent-{raw['name']}",
-                            "origin": "prepared",
-                        }
-                    )
-            for output in child.extracted_columns:
-                candidate = _prepared_column_candidate(output)
-                if candidate is not None:
-                    child_columns.append(candidate)
-            element_index = _one(child.element_index_field)
-            element_name = element_index or "_element_key"
-            child_columns.append(
-                {
-                    "uri": f"{child.resource_uri}#{element_name}",
-                    "name": element_name,
-                    "data_type": "int64" if element_index else "string",
-                    "nullable": False,
-                    "is_pk": True,
-                    "json_info": None,
-                    "enum_values": None,
-                    "origin": "prepared",
-                }
-            )
-            system["tables"].append(
-                {
-                    "uri": child.resource_uri,
-                    "name": relation_name,
-                    "label": relation_name,
-                    "pk_columns": ("_source_record_key", element_name),
-                    "incremental_column": None,
-                    "columns": child_columns,
-                    "discriminator_column": None,
-                    "discriminator_values": None,
-                    "relation_kind": "prepared-child",
-                    "ref_model": relation_name,
-                    "parent_table_uri": table_uri,
-                }
-            )
 
 
 def _source_ref(value: tuple[str, ...]) -> SourceRefFact:
@@ -533,9 +331,7 @@ def _source_ref(value: tuple[str, ...]) -> SourceRefFact:
 
 
 def _freeze_bindings(bindings, contracts: dict[str, object]) -> SourceBindingsFact:
-    contract_facts = {
-        contract.name: _contract_fact(contract) for contract in contracts.values()
-    }
+    contract_facts = {contract.name: _contract_fact(contract) for contract in contracts.values()}
     return SourceBindingsFact(
         active_contracts=tuple(
             sorted(
@@ -621,9 +417,7 @@ def _bound_silver_model(spec) -> BoundSilverModel:
         parent_model=spec.parent_model,
         source_identity_ref=spec.source_identity_ref,
         source_record_key_expression=spec.source_record_key_expression,
-        source_record_key_generated_after_mapping=(
-            spec.source_record_key_generated_after_mapping
-        ),
+        source_record_key_generated_after_mapping=(spec.source_record_key_generated_after_mapping),
     )
 
 
@@ -645,7 +439,7 @@ def _bound_schema_model(spec) -> BoundSchemaModel:
 
 def bind_sources(inputs: "DbtInputs") -> BoundSources:
     """Consume all authoring inputs and return immutable, graph-free facts."""
-    from ...binding_analysis import is_discriminator_subclass
+    from ...binding_semantics import is_discriminator_subclass
     from ..medallion_dbt_projector import (
         _extract_schema_model_facts,
         _extract_silver_model_facts,
@@ -701,10 +495,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
                 uri=resource_uri,
                 name=local_name,
                 label=str(graph.value(resource, RDFS.label) or local_name),
-                comment=str(
-                    graph.value(resource, RDFS.comment)
-                    or f"{local_name} entity"
-                ),
+                comment=str(graph.value(resource, RDFS.comment) or f"{local_name} entity"),
             )
         )
         known_class_uris.add(resource_uri)
@@ -716,9 +507,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         Path(inputs.mappings_root) if inputs.mappings_root else None
     )
     contracts = dict(inputs.contracts)
-    virtual_contract_tables = {
-        contract.virtual_source_iri for contract in contracts.values()
-    }
+    virtual_contract_tables = {contract.virtual_source_iri for contract in contracts.values()}
     for system in systems:
         for table in system["tables"]:
             if table["uri"] in virtual_contract_tables:
@@ -729,9 +518,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
                     if contract.virtual_source_iri == table["uri"]
                 )
     foreign_key_facts = extract_foreign_key_facts(graph)
-    policy_entity_uris = {
-        item.uri for item in bound_classes
-    } | {
+    policy_entity_uris = {item.uri for item in bound_classes} | {
         class_uri
         for fact in foreign_key_facts
         for class_uri in (
@@ -744,15 +531,12 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
     policy_facts = bind_policy_facts(
         graph,
         ontology_uri=str(ontology_uri),
-        preparation_root=inputs.preparation_root,
         gold_extension=inputs.gold_extension,
         entity_uris=frozenset(policy_entity_uris),
         dq_entity_uris=frozenset(item.uri for item in bound_classes),
     )
     ontology_base = str(ontology_uri).rstrip("#/")
-    scoped_class_uris = {
-        item.uri for item in bound_classes
-    } | {
+    scoped_class_uris = {item.uri for item in bound_classes} | {
         str(resource)
         for resource in graph.subjects(RDF.type, OWL.Class)
         if str(resource).startswith((ontology_base + "#", ontology_base + "/"))
@@ -766,21 +550,6 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         policy_facts=policy_facts,
     )
     mappings, mapping_ns = mapping_context(mapping_facts)
-    physical_table_uris = {
-        table["uri"]
-        for system in systems
-        for table in system["tables"]
-        if table.get("relation_kind", "physical") == "physical"
-    }
-    policy_facts = replace(
-        policy_facts,
-        preparations=tuple(
-            item
-            for item in policy_facts.preparations
-            if any(str(value) in physical_table_uris for value in item.source_table.values)
-        ),
-    )
-    _augment_prepared_relations(systems, policy_facts)
     _validate_contract_boundaries(
         contracts,
         classes,
@@ -806,20 +575,14 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
                 if not legacy_bindings.class_to_sources.get(item.uri)
                 else None
             ),
-            eligible=item.uri in inputs.eligible_class_uris,
         )
         for item in bound_classes
     )
 
     # The retained graph-dependent model extractor is confined to bind. Its output is
     # captured as immutable candidate facts; templates are not loaded or rendered.
-    candidate_emission = _CandidateEmission(
-        inputs.eligible_class_uris,
-        inputs.emit_aspirational_stubs,
-    )
     naming_convention = (
-        str_val(graph, ontology_uri, KAIROS_EXT.namingConvention)
-        or "camel-to-snake"
+        str_val(graph, ontology_uri, KAIROS_EXT.namingConvention) or "camel-to-snake"
     )
     silver_specs, warnings, entity_metadata = _extract_silver_model_facts(
         classes,
@@ -832,10 +595,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         platform=inputs.target_platform,
         mapping_ns=mapping_ns,
         contract_registry=contracts,
-        emit_aspirational_stubs=inputs.emit_aspirational_stubs,
-        eligible_class_uris=set(inputs.eligible_class_uris),
         bindings=legacy_bindings,
-        analysis=candidate_emission,
     )
     outcomes = tuple(outcome_from_context(item) for item in entity_metadata)
     generated_names = (
@@ -847,9 +607,6 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         if systems
         else None
     )
-    aspirational_names = {
-        outcome.identity.class_name for outcome in outcomes if outcome.aspirational
-    }
     schema_models = _extract_schema_model_facts(
         classes,
         graph,
@@ -861,7 +618,6 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         mappings=mappings,
         generated_class_names=generated_names,
         platform=inputs.target_platform,
-        aspirational_class_names=aspirational_names,
         naming_conv=naming_convention,
     )
 
@@ -885,27 +641,18 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
             (item.uri, str(parent))
             for item in bound_classes
             for parent in graph.objects(URIRef(item.uri), RDFS.subClassOf)
-            if isinstance(parent, URIRef)
-            and not str(parent).startswith("http://www.w3.org/")
+            if isinstance(parent, URIRef) and not str(parent).startswith("http://www.w3.org/")
         )
     )
     macro_root = Path(inputs.template_root) / "macros"
-    macro_names = tuple(
-        path.name for path in sorted(macro_root.glob("*.sql"))
-    ) if macro_root.is_dir() else ()
+    macro_names = (
+        tuple(path.name for path in sorted(macro_root.glob("*.sql"))) if macro_root.is_dir() else ()
+    )
     contract_facts = tuple(
         sorted((name, _contract_fact(contract)) for name, contract in contracts.items())
     )
-    virtual_table_uris = frozenset(
-        contract.virtual_source_iri for contract in contracts.values()
-    )
-    class_uris = {item.uri for item in bound_classes}
-    replacement_input_uris = frozenset(
-        replacement.table_iri
-        for contract in contracts.values()
-        if contract.target_class in class_uris
-        for replacement in contract.replaces_sources
-    )
+    virtual_table_uris = frozenset(contract.virtual_source_iri for contract in contracts.values())
+    replacement_input_uris = frozenset()
 
     return BoundSources(
         classes=bound_classes,
@@ -915,7 +662,6 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         target_platform=inputs.target_platform,
         template_root=inputs.template_root,
         logical_sources_only=inputs.logical_sources_only,
-        emit_aspirational_stubs=inputs.emit_aspirational_stubs,
         systems=_freeze_systems(systems),
         mappings=_mapping_target_metadata(mapping_facts, graph),
         contracts=contract_facts,
@@ -928,9 +674,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         parent_relations=parent_relations,
         silver_candidates=tuple(_bound_silver_model(spec) for spec in silver_specs),
         silver_outcomes=outcomes,
-        schema_candidates=tuple(
-            _bound_schema_model(spec) for spec in schema_models
-        ),
+        schema_candidates=tuple(_bound_schema_model(spec) for spec in schema_models),
         coverage=coverage,
         macro_names=macro_names,
         warnings=tuple(warnings),

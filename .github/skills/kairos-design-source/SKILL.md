@@ -30,7 +30,7 @@ skill ends or pauses and is never inherited by another skill or a later resume.
 
 **On start (pre-flight):** read `ontology-hub/.kairos-state/` — the `status.md`
 continuation region and this phase's log(s) at `phases/source/<system>.md` — to resume
-open questions. Ignore `_archive/`. (`kairos-ontology status` gives the objective view.)
+open questions. Ignore `_archive/`. (`kairos-ontology compile <domain> --check` gives the objective view.)
 
 **On pause or finish:** append a *State update proposal* to `phases/source/<system>.md`
 with OKF frontmatter (`type: kairos-phase-log`, `phase: source`, `instance: <system>`,
@@ -151,24 +151,6 @@ invocation, not a fleet-mode decision and not reusable consent for another invoc
 ## Phase 0b — Determine input type
 
 Ask the user what source material they have:
-
-### Imported SQL/dbt transformation evidence
-
-If source onboarding includes authored SQL or a dbt project that may define joins,
-aggregation, windows, ranking, unions, fallback rules, survivorship, or a changed row
-grain, keep it as evidence and inventory only the explicit repository-contained roots the
-user identifies:
-
-```bash
-$env:KAIROS_SKILL_CONTEXT = "1"
-kairos-ontology inventory-dbt-candidates --from <repo-relative-artifact-root>
-```
-
-Pass `--from` once per approved root. Do not scan all of `.import/sources/`, copy the SQL
-into `integration/transforms/dbt/`, or treat it as executable/source authority. Review the
-generated `model/planning/dbt-transformations/candidates.yaml`; deterministic operation
-signals are observations, while grain, semantic target, authority, replacement scope, and
-disposition remain governed assessment decisions.
 
 | Input type | Path |
 |---|---|
@@ -408,45 +390,6 @@ Verify:
 
 ---
 
-## Phase 3.5 — Author source preparation policy when required (DD-106/DD-107)
-
-Use this phase during onboarding or when **kairos-design-mapping** routes technical work
-back here. Author `integration/preparation/{source}-prep.ttl` through `rdflib.Graph`;
-never hand-concatenate Turtle and never place SQL in the policy.
-
-Preparation owns only source-technical behavior:
-
-- physical-safe rename;
-- lossless trim/text cleanup;
-- explicit type parse/cast and error policy;
-- evidence-backed sentinel normalization;
-- canonical CDC normalization: explicit raw operation code map plus distinct
-  source-update, business-effective, ingestion, and total-order sequence outputs;
-- parent-grain scalar JSON extraction or explicit keyed array-child relations;
-- source/table-scoped `_source_record_key`; and
-- source-technical duplicate removal via `kairos-prep:TechnicalDedupe`.
-
-If any downstream entity declares SCD1/SCD2, every linked source identity must
-use `prepMode "normalize"` and emit `_cdc_operation`, `_source_updated_at`,
-`_source_effective_at`, `_ingested_at`, and a complete sequence/tie breaker.
-`_loaded_at` is not a substitute: it is injected only by the Silver run clock.
-For governed complete snapshots, author `*=snapshot`; never infer an operation.
-
-Every mapped physical table must ultimately have exactly one `PreparationPolicy` with
-`prepMode`, schema-change policy, and record-key policy. Use `normalize` when any
-technical operation is present; verified `passthrough` forbids hidden cleanup.
-
-For `TechnicalDedupe`, record source-column IRIs as partition keys and positioned
-`DedupeOrderTerm` resources. The order must be contiguous and include source primary-key
-tie-breakers. Business ranking, survivorship, cross-relation fallback, joins, aggregation,
-or grain change belongs to **kairos-develop-dbt-transformation**, not prep.
-
-Present the proposed policy and evidence for confirmation before writing. In fleet mode,
-record every AI-approved choice, rationale, confidence, and evidence in the source phase
-log. Then invoke the validation skill; do not bypass its gates with a direct CLI command.
-
----
-
 ## Phase 4 — Analyse sources (`analyse-sources`)
 
 > **When to use:** All source vocabularies have been created (via any Phase 1-3
@@ -502,13 +445,6 @@ Before running, present the detected source systems and ask only whether any
 should be excluded because they are incomplete, out of scope, or should wait for
 documentation cleanup.
 
-Managed dbt-contract vocabularies under
-`integration/sources/custom-transformations/` are not source-analysis inputs.
-`analyse-sources` excludes tables marked `kairos-dbt:sourceKind "dbt-contract"`
-because their contract `target_class` and governed source-replacement evidence are
-authoritative. If an older toolkit analysed those virtual tables, the command
-archives their active affinity reports under
-`_analysis/archive/generated-dbt-contracts/`; do not create claims from them.
 When a source uses split vocabulary files, analysis consolidates them under the
 top-level source-system directory name and archives older per-file reports under
 `_analysis/archive/superseded-source-layouts/`.
@@ -644,17 +580,15 @@ After the source vocabulary and analysis are complete:
 
    ```powershell
    $env:KAIROS_SKILL_CONTEXT = "1"
-   kairos-ontology check-projection --target dbt --scope source
+   kairos-ontology compile <domain> --check --format json
    ```
 
    This is a source-scoped view of the same bind/normalization evaluator used by projection. It
    reports preparation, record/array/contract-key classification, casts, canonical CDC, JSON,
    schema-change, and error-policy blockers with owner and prerequisite data. Do not claim source
    completion while it is blocked. Findings owned by later phases are deliberately suppressed.
-2. **Assess imported transformation candidates when present** — read
-   `model/planning/dbt-transformations/candidates.yaml`. If advanced candidates are
-   unassessed or changed, hand off to **kairos-develop-dbt-transformation** before Mapping
-   or Silver; do not infer authority from Power BI/parity artifacts.
+2. **Route advanced relational logic when present** — hand authored dbt SQL/YAML used by
+   `source.dbtModel` to **kairos-develop-dbt-transformation** before Mapping or Silver.
 3. **Create a draft model report when reporting/business evidence exists** — run
    `kairos-ontology draft-model-report` to produce all-domain draft evidence packs
    and one advisory cross-domain Mermaid ERD before domain design. Use this when
@@ -670,10 +604,10 @@ After the source vocabulary and analysis are complete:
 ### Draft model report (`draft-model-report`)
 
 > **When to use:** after `analyse-sources` when TMDL/Power BI or glossary evidence
-> exists. It can also be re-run later after mappings and claim curation to enrich
+> exists. It can also be re-run later after mappings to enrich
 > the same review view.
 
-`draft-model-report` is deterministic and AI-free. It extends the claim-evidence
+`draft-model-report` is deterministic and AI-free. It extends the source-evidence
 workflow with richer TMDL-specific evidence and writes advisory planning artifacts
 under `model/planning/draft-model/`:
 
@@ -686,7 +620,7 @@ under `model/planning/draft-model/`:
 kairos-ontology draft-model-report
 ```
 
-The report is **not** claim authority, not TTL, and not projection input. TMDL
+The report is advisory, not TTL, and not projection input. TMDL
 joins are relationship questions, measures are gold candidates, and all decisions
 still require the relevant domain/silver/gold skill confirmation.
 
@@ -701,125 +635,6 @@ resume from the draft evidence packs.
 > while still confirming every non-trivial transform with you. Without the flag,
 > the default alignment output (used by **kairos-design-domain** pre-modeling) is
 > unchanged. See `docs/instruction-guides/context-engineer-methodology-guide.md`.
-
-### Derive candidate claims (`derive-claims`)
-
-> **When to use:** after `analyse-sources` (Phase 4) **and** `propose-alignment`
-> have run, and **before** human curation/approval of claims. This step sits
-> between evidence production and approval — it never replaces human review.
-
-`derive-claims` is a **deterministic, AI-free** command that aggregates all the
-evidence you have already produced into `proposed` candidate claims in
-`model/claims/{domain}-claims.yaml`, so you curate rather than hand-author. The
-hard interpretation already happened upstream (`analyse-sources` affinity and
-`propose-alignment` column→property — the latter already writes the claims file);
-`derive-claims` is the deterministic merge/enrich layer. It joins **six evidence
-streams** deterministically on `(system, table[, column])` and ref_class/
-ref_property names:
-
-1. **Existing claims registry** — base candidates + any human curation (preserved).
-2. **`analyse-sources` affinity** (`integration/sources/_analysis/*-affinity.yaml`)
-   — table→domain routing; corroborates class claims and creates new `proposed`
-   candidates for affinity tables that have no alignment anchor yet.
-3. **`import-tmdl` concept-mapping** (`integration/sources/powerbi/*-concept-mapping.yaml`)
-   — corroborates matching class claims; `new_class` actions become `proposed`
-   gap candidates when a single domain is processed.
-4. **SKOS mappings** (`model/mappings/*.ttl`) — `skos:*Match` links attached as
-   `skos_mapping` evidence.
-5. **Sample-derived signals** — enum-candidate / FK-shape signals attached as
-   `sample_signal` evidence.
-6. **Core Concepts Conformance outcomes** (`integration/discovery/core-concepts-conformance.yaml`,
-   produced by **kairos-design-discovery** Phase 2.5) — a committed, valid artifact
-   yields deterministic **proposed-only** class claims by the DD-090 outcome policy:
-   `conforms` → `claim`, `conforms-with-rename` → `claim` (carrying the alt-label),
-   `partial` → `specialize`, `deviates` → `gap`, `not-applicable` → **no proposal**.
-   Required, recommended, and optional tiers are all eligible. A **missing**
-   artifact is a compatible no-op; a **present but malformed / unknown /
-   contradictory** artifact is an explicit validation error, never silently
-   ignored. Each derived claim records tier, outcome, rename, and deviation
-   traceability as `conformance` evidence.
-
-Each claim can carry **multiple `evidence_sources`**, keeping strong (anchored
-alignment) vs weak (affinity-only) evidence distinguishable.
-
-```bash
-kairos-ontology derive-claims --domains client,invoice --max-workers 8
-```
-
-Key flags: `--claims-dir`, `--analysis-dir`, `--sources`, `--mappings`,
-`--tmdl-dir`, `--domains` (comma-separated filter), `--max-workers` (default 8;
-`1` = serial), `--force` (bypass the sidecar cache), `--quiet`. Path defaults
-auto-resolve via the hub root.
-
-> **Never auto-approves (C4 guard).** All derived/new claims are
-> `status: proposed` — probabilistic evidence must never masquerade as approval.
-> Human decisions survive re-runs (`merge_preserving_decisions`), and conflicting
-> evidence is surfaced, not silently resolved. There is **no cost banner** because
-> nothing is billed (no LLM calls). A future opt-in `--llm-reconcile` flag (LLM
-> tie-breaking / rationale synthesis, with a cost banner) is deferred.
-
-> **AI-free proposal ≠ approved design decision.** `derive-claims` (including its
-> conformance stream) performs **deterministic, AI-free proposal generation**. A
-> `proposed` claim is neither user-confirmed nor AI-approved — it is a candidate
-> awaiting a human decision. Only two things confer authority: a **human approval**
-> (interactive, the default) or, in an authorized skill-scoped design-fleet
-> invocation, an **AI-approved** decision recorded with rationale, confidence, and
-> evidence. Do not treat a derived proposal — however strong its evidence — as
-> either.
-
-#### Where this sits in the lifecycle (the data-engineer flow)
-
-`derive-claims` is one link in a fixed chain; keep the order and the authority
-boundaries intact:
-
-1. **Ingest** source schemas/samples (`import-source` / `import-flatfile`).
-2. **Analyse / conformance** — `analyse-sources` affinity (here) + the committed
-   Core Concepts Conformance artifact (from **kairos-design-discovery**).
-3. **Deterministically derive proposals** — `derive-claims` merges all six streams
-   into `status: proposed` claims. AI-free; authorizes nothing.
-4. **Batch human approval** — curate the proposals and approve them in one
-   reviewed pass, gated by `check-claims`. This is the *only* step that grants
-   approval; conformance and derivation never do.
-5. **Claims-to-Silver-ext sync** — the approved Claim Registry drives the
-   claim-driven Silver extension sync (**kairos-execute-project** Slice 2), keeping
-   `model/extensions/<domain>-silver-ext.ttl` consistent with approved claims.
-6. **Optional aspirational stub** — only for approved, materialization-eligible
-   claims that are still unbound, the explicit target-first stub → bind loop
-   (**kairos-execute-project** `--emit-aspirational-stubs`, DD-096). This is
-   opt-in and never implied by an approval; binding still needs a real mapping.
-
-→ Curate the proposed claims, then approve them (gated by `check-claims`).
-
-### Claim governance gates (`check-claims`) — MDM / ownership (Slice 4)
-
-`check-claims` is the single deterministic governance gate for the registry. Beyond
-coverage/sync, it enforces four MDM/reference-data + ownership rules over the
-**curated** registry fields, so set these as you curate:
-
-- **`reference_data`** (`authority_system` / `code_system` / `key` / `scd_type`) +
-  **`mdm_anchor: true`** mark a claim as a reference/master anchor (conformed
-  dimension, code list, natural key). The **MDM-anchor gate** blocks broad domain
-  claims (approved class claims with disposition claim/specialize) with
-  `anchor_pending` when declared anchors are still `proposed`, and warns
-  `anchor_missing` (pragmatic — anchors must be *known*, not fully built) when a
-  domain with broad claims declares no anchors at all.
-- **`deviation`** (`reason` / `owner` / `gap_request`) records a client-native
-  decision; the **deviation-log** check blocks approved `gap` claims that lack an
-  owner + reason with `deviation_missing`.
-- **`ownership_override`** (`owner` / `rationale`) is the explicit escape hatch when
-  a claim crosses another data-domain's `data-domains.yaml` boundary or is a shared
-  conformed dimension. Without it, a cross-boundary approved claim blocks with
-  `ownership_conflicts`; with it, a cross-file same-URI duplicate downgrades from the
-  `duplicate_approved` block to a `shared_dimensions` warning.
-- **`passthrough_reviewed: true`** clears the **passthrough-review** warning
-  (`passthrough_review`) raised on high-use passthrough fields (multi-source, or used
-  in powerbi measures/slicers/filters/hierarchies/joins/fks, or carrying a `measure`).
-
-Use `check-claims --no-mdm-anchor` / `--no-ownership` to skip those gates for hubs
-not yet doing MDM governance. These are governance fields in the YAML registry, not
-kairos-ext TTL annotations.
-
----
 
 ## Source system folder structure reference
 

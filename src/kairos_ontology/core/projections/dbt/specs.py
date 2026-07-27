@@ -37,7 +37,6 @@ class ModelOutcome(str, Enum):
     """The logical outcome of attempting to build a projected model."""
 
     GENERATED = "generated"
-    ASPIRATIONAL_STUB = "aspirational_stub"
     SKIPPED = "skipped"
     FOLDED = "folded"
 
@@ -50,7 +49,6 @@ class SilverModelKind(str, Enum):
     UNION = "union"
     CONTRIBUTION_LINEAGE = "contribution_lineage"
     RECONCILIATION = "reconciliation"
-    STUB = "stub"
 
 
 Scalar = str | int | float | bool | None
@@ -230,7 +228,6 @@ class ClassBindingObservation:
     class_uri: str
     has_sources: bool
     discriminator_parent_name: str | None
-    eligible: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,8 +236,6 @@ class BindingPolicy:
 
     states: tuple[tuple[str, str], ...]
     reasons: tuple[tuple[str, str], ...]
-    eligible_class_uris: frozenset[str]
-    stubs_enabled: bool
 
     def state(self, class_uri: str) -> str:
         return next((state for uri, state in self.states if uri == class_uri), "skipped")
@@ -248,20 +243,11 @@ class BindingPolicy:
     def reason(self, class_uri: str) -> str:
         return next(
             (reason for uri, reason in self.reasons if uri == class_uri),
-            "no bronze mapping and no approving claim",
+            "no source binding",
         )
 
     def is_bound(self, class_uri: str) -> bool:
         return self.state(class_uri) == "bound"
-
-    def is_aspirational(self, class_uri: str) -> bool:
-        return self.state(class_uri) == "stub"
-
-    def should_emit_stub(self, class_uri: str) -> bool:
-        return self.stubs_enabled and self.is_aspirational(class_uri)
-
-    def is_release_blocking(self, class_uri: str) -> bool:
-        return self.is_aspirational(class_uri)
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +413,8 @@ class JoinSpec:
     relationship_uri: str = ""
     temporal_mode: str = ""
     as_of_column: str = ""
+    parent_valid_from_column: str = "_business_valid_from"
+    parent_valid_to_column: str = "_business_valid_to"
 
 
 @dataclass(frozen=True, slots=True)
@@ -552,12 +540,8 @@ class SilverModelOutcome:
     source_count: int
     column_names: tuple[str, ...]
     fk_join_count: int
-    aspirational: bool = False
-    unbound_eligible: bool = False
     info_notes: tuple[str, ...] = ()
     model_name_reported: bool = False
-    aspirational_reported: bool = False
-    unbound_eligible_reported: bool = False
     info_notes_reported: bool = False
 
 
@@ -663,122 +647,20 @@ class SilverRegistry:
     authorities: tuple[tuple[str, "SilverModelAuthoritySpec"], ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class PrepColumnSpec:
-    """One raw source column and its logical preparation operations."""
-
-    source_column_uri: str
-    source_name: str
-    output_name: str
-    source_data_type: str
-    nullable: bool
-    is_primary_key: bool
-    cleanup_rules: tuple["CleanupRuleSpec", ...] = ()
-    conversion: "TypeConversionSpec | None" = None
-    sentinel_rules: tuple["SentinelRuleSpec", ...] = ()
-    raw_output_name: str = ""
-    error_flag_name: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class PrepRecordKeySpec:
-    """Resolved source/table-scoped record key at the prep-model grain."""
-
-    resource_uri: str
-    source_scope: str
-    table_scope: str
-    component_columns: tuple[str, ...]
-    output_name: str
-    data_type: "CanonicalTypeSpec"
 
 
-@dataclass(frozen=True, slots=True)
-class PrepCdcColumnSpec:
-    """One normalized audit/CDC output and its raw input columns."""
-
-    role: str
-    source_columns: tuple[str, ...]
-    output_name: str
-    data_type: "CanonicalTypeSpec"
-    operation_code_map: tuple[tuple[str, str], ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class PrepScalarColumnSpec:
-    """One parent-grain-preserving scalar JSON output."""
-
-    resource_uri: str
-    source_column: str
-    json_path: str
-    output_name: str
-    data_type: "CanonicalTypeSpec"
-    retention: "RawPayloadRetention"
-    error_action: "ErrorAction"
-    error_flag_name: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class PrepModelSpec:
-    """Immutable adapter-neutral logical preparation model."""
-
-    resource_uri: str
-    model_name: str
-    artifact_path: str
-    source_name: str
-    source_label: str
-    source_table_uri: str
-    source_table_name: str
-    source_alias: str
-    columns: tuple[PrepColumnSpec, ...]
-    source_record_key: PrepRecordKeySpec
-    cdc_columns: tuple[PrepCdcColumnSpec, ...]
-    scalar_columns: tuple[PrepScalarColumnSpec, ...]
-    technical_dedupe: "TechnicalDedupeSpec"
-    schema_evolution: "SchemaEvolutionAction"
 
 
-@dataclass(frozen=True, slots=True)
-class PrepArrayColumnSpec:
-    """One typed field extracted into a preparation array-child model."""
-
-    resource_uri: str
-    name: str
-    data_type: "CanonicalTypeSpec"
-    json_path: str
 
 
-@dataclass(frozen=True, slots=True)
-class PrepArrayChildModelSpec:
-    """Immutable explicit child-grain model for one source JSON array."""
-
-    resource_uri: str
-    model_name: str
-    artifact_path: str
-    source_name: str
-    parent_model_name: str
-    parent_source_table_uri: str
-    source_json_column: str
-    json_path: str
-    parent_key_columns: tuple[str, ...]
-    element_key_path: str
-    element_index_column: str
-    null_action: "ArrayValueAction"
-    empty_action: "ArrayValueAction"
-    retention: "RawPayloadRetention"
-    columns: tuple[PrepArrayColumnSpec, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class PrepRouteSpec:
-    """Verified logical routing for a physical or prepared source relation."""
-
-    relation_uri: str
-    source_name: str
-    table_name: str
-    mode: str
-    ref_model: str
-    source_record_key: PrepRecordKeySpec | None = None
-    rule_id: str = "DD-106-prep-routing"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1002,25 +884,8 @@ class RuntimePhysicalPlan:
     blocking_reasons: tuple[tuple[str, str], ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class PrepModelPhysicalPlan:
-    """Adapter-selected renderer and types for one preparation model."""
-
-    model_name: str
-    artifact_path: str
-    kind: str
-    column_types: tuple[tuple[str, str], ...]
-    dependencies: tuple[str, ...] = ()
-    blocking_reasons: tuple[tuple[str, str], ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class PrepSchemaPhysicalPlan:
-    """One deterministic schema/contract document for prep models."""
-
-    artifact_path: str
-    source_name: str
-    model_names: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1055,7 +920,6 @@ class ProjectConfigPlan:
 class ReleasePlan:
     """Release-gate and external-model facts."""
 
-    unbound_eligible_names: tuple[str, ...]
     known_models: tuple[str, ...]
     policy_version: str = ""
     ontology_name: str = ""
@@ -1066,7 +930,6 @@ class ReleasePlan:
     blocking_reasons: tuple[str, ...] = ()
     blocking_rules: tuple[tuple[str, str], ...] = ()
     projection_blocking_rules: tuple[tuple[str, str], ...] = ()
-    prep_routes: tuple[PrepRouteSpec, ...] = ()
     mapping_contract: "MappingContractSpec | None" = None
     mapping_capability_results: tuple["MappingCapabilityResult", ...] = ()
     silver_authorities: tuple["SilverModelAuthoritySpec", ...] = ()

@@ -41,8 +41,6 @@ from .policy_specs import (
     CanonicalTypeKind,
     CanonicalTypeSpec,
     MedallionPolicySpec,
-    PrepMode,
-    SentinelAction,
 )
 from .policy_normalize import _source_type, _target_type, _types_compatible
 from .specs import ContractFact, SourceSystemFact
@@ -640,11 +638,11 @@ def _expression(
             raise _error(
                 "mapping.technical-cleanup",
                 (
-                    f"function {fact.operation!r} is technical cleanup; author it in "
-                    "kairos-prep through kairos-design-source"
+                    f"function {fact.operation!r} is technical cleanup; route it "
+                    "through a contracted dbt transformation"
                 ),
                 resource_uri=fact.resource_uri,
-                rule_id="DD-107-prep-routing",
+                rule_id="DD-107-transformation-routing",
             )
         if fact.operation in _NONDETERMINISTIC_FUNCTIONS:
             raise _error(
@@ -903,55 +901,22 @@ def _effective_symbols(
     dict[str, MappingInputSpec],
     dict[str, tuple[MappingInputSpec, ...]],
 ]:
-    preparations = {
-        item.table.source_table_uri: item for item in policy.preparations
-    }
     by_uri: dict[str, list[MappingInputSpec]] = {}
     for system in systems:
         for table in system.tables:
-            preparation = preparations.get(table.uri)
-            renames = (
-                {
-                    item.source_column_uri: item.target_name.value
-                    for item in preparation.renames
-                }
-                if preparation is not None
-                else {}
-            )
-            conversions = (
-                {
-                    item.source_column_uri: item.target_type.value
-                    for item in preparation.type_conversions
-                }
-                if preparation is not None
-                else {}
-            )
-            nullable_by_sentinel = (
-                {
-                    item.source_column_uri
-                    for item in preparation.sentinel_rules
-                    if item.action.value is SentinelAction.TO_NULL
-                }
-                if preparation is not None
-                else set()
-            )
             for column in table.columns:
-                source_type = conversions.get(column.uri) or _source_type(column.data_type)
+                source_type = _source_type(column.data_type)
                 if source_type is None:
                     continue
-                prepared = (
-                    preparation is not None
-                    and preparation.mode.value is PrepMode.NORMALIZE
-                )
                 symbol = MappingInputSpec(
                     source_column_uri=column.uri,
                     source_table_uri=table.uri,
                     source_name=system.label,
                     authored_name=column.name,
-                    physical_name=renames.get(column.uri, column.name),
+                    physical_name=column.name,
                     data_type=source_type,
-                    nullable=column.nullable or column.uri in nullable_by_sentinel,
-                    origin="prepared" if prepared else column.origin,
+                    nullable=column.nullable,
+                    origin=column.origin,
                 )
                 by_uri.setdefault(column.uri, []).append(symbol)
                 if table.relation_kind == "contracted-virtual":
@@ -1089,18 +1054,6 @@ def _route(
                 rule_id="DD-107-transformation-readiness",
             )
         return MappingRoute.CONTRACTED_TRANSFORMATION, contract.name
-    if relation_kind == "prepared-child":
-        return MappingRoute.PREPARED, ""
-    preparation = next(
-        (
-            item
-            for item in policy.preparations
-            if item.table.source_table_uri == table_uri
-        ),
-        None,
-    )
-    if preparation is not None and preparation.mode.value is PrepMode.NORMALIZE:
-        return MappingRoute.PREPARED, ""
     return MappingRoute.DIRECT, ""
 
 
@@ -1356,15 +1309,10 @@ def normalize_mapping_contract(
                 rule_id="DD-107-transformation-routing",
             )
         if not _target_compatible(expression.metadata.output_type, target_type):
-            raise _error(
-                "mapping.target-output-type-mismatch",
-                (
-                    f"expression outputs {_type_label(expression.metadata.output_type)!r}, "
-                    f"but target requires {_type_label(target_type)!r}; type conversion "
-                    "is technical cleanup and must be authored in kairos-prep"
-                ),
-                resource_uri=fact.resource_uri,
-                rule_id="DD-107-types",
+            expression = FunctionExpression(
+                replace(expression.metadata, output_type=target_type),
+                "cast",
+                (expression,),
             )
         target_table = next(
             (

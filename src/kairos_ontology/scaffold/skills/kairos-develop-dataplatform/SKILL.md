@@ -212,17 +212,7 @@ sources:
 
 ---
 
-### Step 3 — Author integrated preparation policy
-
-When extraction detects technical cleanup or JSON shapes, author the mandatory
-`integration/preparation/{source}-prep.ttl` policy in the ontology hub. The normal
-dbt projection generates conditional staging models, adapter-specific scalar JSON,
-and explicit keyed array-child relations from that policy. There is no standalone
-staging command or manually routed preparation model.
-
----
-
-### Step 4 — Export to ontology hub (vocabulary use)
+### Step 3 — Export to ontology hub (vocabulary use)
 
 > ⚠️ **IMPORTANT: Run this step from the ontology-hub repo, NOT the dataplatform.**
 > The `import-source` command writes output relative to CWD. If you run it from

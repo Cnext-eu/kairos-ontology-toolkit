@@ -14,9 +14,9 @@ authored ``AuthoredExpressionFact`` metadata this adapter emits is derived from 
 rules the normalizer re-validates. Any divergence surfaces immediately as a
 ``MappingContractError`` from the pipeline, never as silent corruption.
 
-Scope of this first slice: a **single entity** binding with fields, an explicit grain, a
-source-natural / surrogate identity, and a synthesized neutral DD-106 passthrough preparation
-policy. Cross-entity relationships / foreign keys, multi-source conformance, quality-test
+Scope of this first slice: a **single entity** binding with fields, an explicit grain, and a
+source-natural / surrogate identity. Cross-entity relationships / foreign keys, multi-source
+conformance, quality-test
 emission, and non-full-refresh load modes are handled by later slice todos (kernel + scenario)
 and by deferred stages 2+.
 """
@@ -46,9 +46,6 @@ from ..projections.dbt.policy_specs import (
     EntityIdentityFact,
     GoldProductFact,
     MedallionPolicyFacts,
-    PreparationPolicyFact,
-    PreparedColumnFact,
-    SourceRecordKeyFact,
 )
 from ..projections.dbt.specs import (
     BoundSchemaModel,
@@ -78,6 +75,7 @@ from .bindings import (
     ExprOperator,
     Expression,
 )
+from .load_policy import adapt_load_policy
 from .result import CompileDiagnostic, CompileError, SourceLocation, order_compile_diagnostics
 
 # Author identity strategy (schema enum) -> internal DD-108 IdentityStrategy value.
@@ -513,32 +511,33 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
     Resolves the binding's source relation, target class, and field properties against
     ``context`` and converts every field expression into an ``AuthoredExpressionFact`` whose
     metadata is derived from the same DD-107 rules the downstream normalizer re-validates. A
-    neutral DD-106 passthrough preparation policy and a DD-108 identity policy are synthesized
-    internally (never authored as TTL). Raises :class:`CompileError` with ordered,
+    DD-108 identity policy is synthesized internally (never authored as TTL).
+    Raises :class:`CompileError` with ordered,
     source-located diagnostics for any unresolved symbol or malformed field.
     """
     diagnostics: list[CompileDiagnostic] = []
     path = binding.source_path or "<binding>"
 
-    if binding.source.dbt_model and not binding.source.relation:
-        raise CompileError(
-            [
-                CompileDiagnostic(
-                    code="binding.unsupported-dbt-model-source",
-                    message="contracted dbtModel sources are deferred to a later slice",
-                    location=SourceLocation(path=path, pointer="/source/dbtModel"),
-                )
-            ]
-        )
-
-    relation = context.relation(binding.source.relation)
+    source_ref = (
+        binding.source.dbt_model.name
+        if binding.source.dbt_model is not None
+        else binding.source.relation
+    )
+    relation = context.relation(source_ref)
     klass = context.klass(binding.target_class)
     if relation is None:
         diagnostics.append(
             CompileDiagnostic(
                 code="binding.unknown-relation",
-                message=f"source relation '{binding.source.relation}' does not resolve",
-                location=SourceLocation(path=path, pointer="/source/relation"),
+                message=f"source relation '{source_ref}' does not resolve",
+                location=SourceLocation(
+                    path=path,
+                    pointer=(
+                        "/source/dbtModel/name"
+                        if binding.source.dbt_model is not None
+                        else "/source/relation"
+                    ),
+                ),
             )
         )
     if klass is None:
@@ -563,7 +562,7 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
     }
 
     model_name = _slug(klass.name)
-    resource_base = f"urn:kairos:v5:{context.domain}:{model_name}"
+    resource_base = f"urn:kairos:v5:{context.domain}:{model_name}:binding:{_slug(binding.name)}"
     meta = OntologyMetadataSpec(iri=context.ontology_iri, version=context.ontology_version)
 
     builder = _ExprBuilder(symbols=symbols, source_path=path, resource_base=resource_base)
@@ -700,7 +699,74 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
         column_mappings=tuple(column_mappings),
         column_specs=tuple(column_specs),
     )
-    return bound
+    load = adapt_load_policy(binding)
+    if load.mode == "full-refresh":
+        return bound
+
+    assert load.incremental is not None
+    assert load.canonical_hash is not None
+    assert load.scd_type is not None
+    identity = bound.policy_facts.identities[0]
+    hash_inputs: list[str] = []
+    for authored_input in load.canonical_hash.inputs.values:
+        match = context.property(authored_input) or next(
+            (
+                context.property(field.property)
+                for field in binding.fields
+                if (
+                    isinstance(field.expression, ExprColumn)
+                    and field.expression.column == authored_input
+                )
+                or (
+                    context.property(field.property) is not None
+                    and context.property(field.property).column_name == authored_input
+                )
+            ),
+            None,
+        )
+        hash_inputs.append(match.uri if match is not None else authored_input)
+    canonical_hash = replace(
+        load.canonical_hash,
+        inputs=replace(load.canonical_hash.inputs, values=tuple(hash_inputs)),
+    )
+    return replace(
+        bound,
+        policy_facts=replace(
+            bound.policy_facts,
+            identities=(
+                replace(
+                    identity,
+                    scd_type=_values(
+                        identity.resource_uri,
+                        "scdType",
+                        load.scd_type.value.value,
+                    ),
+                    change_detection=_values(
+                        identity.resource_uri,
+                        "changeDetectionStrategy",
+                        "canonical-hash",
+                    ),
+                    scd2_time_basis=(
+                        _values(identity.resource_uri, "scd2TimeBasis", "business-valid")
+                        if load.scd_type.value.value == "2"
+                        else None
+                    ),
+                    hash_policy_refs=_values(
+                        identity.resource_uri,
+                        "hashPolicy",
+                        canonical_hash.resource_uri,
+                    ),
+                    incremental_policy_refs=_values(
+                        identity.resource_uri,
+                        "incrementalPolicy",
+                        load.incremental.resource_uri,
+                    ),
+                ),
+            ),
+            incremental=(load.incremental,),
+            hashes=(canonical_hash,),
+        ),
+    )
 
 
 def _assemble_bound_sources(
@@ -730,6 +796,7 @@ def _assemble_bound_sources(
         for column in relation.columns
     )
     pk_columns = tuple(column.name for column in relation.columns if column.is_primary_key)
+    is_dbt_model = relation.connection_type == "dbt"
     system = SourceSystemFact(
         uri=system_uri,
         label=relation.system_label,
@@ -744,6 +811,8 @@ def _assemble_bound_sources(
                 primary_key_columns=pk_columns,
                 incremental_column=None,
                 columns=source_columns,
+                relation_kind="physical",
+                ref_model=relation.table_name if is_dbt_model else "",
             ),
         ),
     )
@@ -761,42 +830,8 @@ def _assemble_bound_sources(
         columns=column_mappings,
     )
 
-    # Neutral DD-106 passthrough preparation policy (no cleanup/cast/CDC), one source-record key.
-    prep_uri = f"{resource_base}:prep"
     record_key_uri = f"{resource_base}:record-key"
     key_component_uris = tuple(symbols[name].uri for name in binding.identity.source_key)
-    prep = PreparationPolicyFact(
-        resource_uri=prep_uri,
-        source_table=_values(prep_uri, "sourceTable", relation.uri),
-        mode=_values(prep_uri, "prepMode", "passthrough"),
-        schema_change_policy=_values(prep_uri, "schemaChangePolicy", "fail"),
-        normalization_evidence=None,
-        renames=(),
-        cleanup_rules=(),
-        type_conversions=(),
-        sentinel_rules=(),
-        cdc=(),
-        record_keys=(
-            SourceRecordKeyFact(
-                resource_uri=record_key_uri,
-                source_scope=_values(record_key_uri, "sourceScope", relation.system_label),
-                table_scope=_values(record_key_uri, "tableScope", relation.table_name),
-                components=_values(record_key_uri, "components", *key_component_uris),
-                outputs=(
-                    PreparedColumnFact(
-                        resource_uri=f"{record_key_uri}/output",
-                        target_name=_values(
-                            f"{record_key_uri}/output", "targetName", "_source_record_key"
-                        ),
-                        target_type=_values(f"{record_key_uri}/output", "targetType", "string"),
-                    ),
-                ),
-            ),
-        ),
-        scalar_json=(),
-        array_json=(),
-        technical_dedupes=(),
-    )
 
     natural_key_columns = binding.identity.business_key or binding.identity.source_key
     surrogate = strategy_value == "surrogate-only"
@@ -848,12 +883,27 @@ def _assemble_bound_sources(
         sources=(
             SourceBindingSpec(
                 alias="src",
-                source_name=relation.system_label,
-                table_name=relation.table_name,
+                source_name="" if is_dbt_model else relation.system_label,
+                table_name="" if is_dbt_model else relation.table_name,
                 table_uri=relation.uri,
+                ref_model=relation.table_name if is_dbt_model else "",
             ),
         ),
         ontology_metadata=meta,
+        source_identity_ref=record_key_uri,
+        source_record_key_expression=(
+            "{{ dbt_utils.generate_surrogate_key(["
+            + ", ".join(
+                repr(value)
+                for value in (
+                    f"'{relation.system_label}'",
+                    f"'{relation.table_name}'",
+                    *(f"src.{name}" for name in binding.identity.source_key),
+                )
+            )
+            + "]) }}"
+        ),
+        source_record_key_generated_after_mapping=True,
     )
     schema_model = BoundSchemaModel(
         name=model_name,
@@ -880,15 +930,14 @@ def _assemble_bound_sources(
         target_platform=context.target_platform,
         template_root=context.template_root,
         logical_sources_only=False,
-        emit_aspirational_stubs=False,
         systems=(system,),
         mappings=mappings,
         contracts=(),
-        virtual_table_uris=frozenset(),
+        virtual_table_uris=frozenset({relation.uri}) if is_dbt_model else frozenset(),
         replacement_input_uris=frozenset(),
         source_bindings=SourceBindingsFact(
             active_contracts=(),
-            virtual_table_uris=frozenset(),
+            virtual_table_uris=(frozenset({relation.uri}) if is_dbt_model else frozenset()),
             class_to_sources=(
                 (
                     class_uri,
@@ -898,7 +947,7 @@ def _assemble_bound_sources(
             folded_source_targets=(),
             warnings=(),
         ),
-        binding_observations=(ClassBindingObservation(class_uri, True, None, False),),
+        binding_observations=(ClassBindingObservation(class_uri, True, None),),
         foreign_key_facts=(),
         ontology_uri=context.ontology_iri,
         parent_relations=(),
@@ -911,7 +960,6 @@ def _assemble_bound_sources(
         policy_facts=MedallionPolicyFacts(
             ontology_uri=context.ontology_iri,
             naming_convention=None,
-            preparations=(prep,),
             identities=(identity,),
             multi_source=(),
             incremental=(),
@@ -934,7 +982,13 @@ def _assemble_bound_sources(
             deviations=(),
         ),
         active_source_scope=ActiveSourceScope(
-            (ActiveSourceTable(relation.uri, "physical", ("v5 binding adapter",)),)
+            (
+                ActiveSourceTable(
+                    relation.uri,
+                    "physical",
+                    ("v5 binding adapter",),
+                ),
+            )
         ),
     )
 

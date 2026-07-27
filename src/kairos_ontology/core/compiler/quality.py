@@ -11,7 +11,7 @@ the *closed catalogue* of rule codes now so schema, adapter, and kernel agree on
 from __future__ import annotations
 
 from .ir import CanonicalProjectIR
-from .result import CompileDiagnostic
+from .result import CompileDiagnostic, SourceLocation
 
 # Closed catalogue of non-suppressible safety rules (DD-133 §5). Extended with concrete
 # checks in v5-compiler-kernel; the codes themselves are stable.
@@ -45,6 +45,7 @@ def run_safety_kernel(ir: CanonicalProjectIR) -> tuple[CompileDiagnostic, ...]:
                 CompileDiagnostic(
                     code="safety.artifact-collision",
                     message=f"duplicate binding name '{binding.name}'",
+                    location=SourceLocation(path=binding.source_path, pointer="/metadata/name"),
                 )
             )
         names.add(binding.name)
@@ -53,6 +54,7 @@ def run_safety_kernel(ir: CanonicalProjectIR) -> tuple[CompileDiagnostic, ...]:
                 CompileDiagnostic(
                     code="safety.grain-missing",
                     message=f"binding '{binding.name}' has no materialized grain",
+                    location=SourceLocation(path=binding.source_path, pointer="/grain/columns"),
                 )
             )
         if not binding.identity.source_key:
@@ -60,6 +62,9 @@ def run_safety_kernel(ir: CanonicalProjectIR) -> tuple[CompileDiagnostic, ...]:
                 CompileDiagnostic(
                     code="safety.identity-incomplete",
                     message=f"binding '{binding.name}' has no source identity",
+                    location=SourceLocation(
+                        path=binding.source_path, pointer="/identity/sourceKey"
+                    ),
                 )
             )
         for relationship in binding.relationships:
@@ -71,6 +76,7 @@ def run_safety_kernel(ir: CanonicalProjectIR) -> tuple[CompileDiagnostic, ...]:
                             f"relationship target '{relationship.target}' in "
                             f"'{binding.name}' is not in compile scope"
                         ),
+                        location=SourceLocation(path=binding.source_path, pointer="/relationships"),
                     )
                 )
         for path in entity.artifact_paths:
@@ -79,6 +85,7 @@ def run_safety_kernel(ir: CanonicalProjectIR) -> tuple[CompileDiagnostic, ...]:
                     CompileDiagnostic(
                         code="safety.artifact-collision",
                         message=f"multiple entities own artifact '{path}'",
+                        location=SourceLocation(path=binding.source_path),
                     )
                 )
             paths.add(path)

@@ -16,9 +16,9 @@ definitions. Produce the **smallest useful canonical slice** as a reviewable
 ontology patch; do not design an entire enterprise model in one pass.
 
 This is the DD-133 v5 clean break. Work only with the v5 layout. Do not create or
-consult `.kairos-state/`, phase logs, proposal databases, claim registries,
-readiness reports, mapping/preparation/Silver-extension TTL, or virtual-source
-registries. Existing v4 hubs must be rebuilt as v5 hubs rather than migrated or
+consult legacy phase logs, proposal databases, governance registries, readiness
+reports, mapping/preparation/Silver-extension TTL, or virtual-source registries.
+Existing v4 hubs must be rebuilt as v5 hubs rather than migrated or
 dual-authored.
 
 ## Design fleet mode (DD-088)

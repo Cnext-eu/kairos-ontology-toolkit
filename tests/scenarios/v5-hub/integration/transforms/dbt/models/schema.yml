@@ -1,0 +1,22 @@
+version: 2
+models:
+  - name: customer_stage
+    description: Contracted synthetic customer rows.
+    config:
+      materialized: table
+      contract:
+        enforced: true
+    meta:
+      kairos:
+        target_class: https://example.test/ontology/party#Customer
+        virtual_source_iri: https://example.test/source/dbt#customer-stage
+        grain: one row per customer
+        grain_key: [customer_id]
+    columns:
+      - name: customer_id
+        data_type: string
+        data_tests: [not_null]
+      - name: customer_name
+        data_type: string
+      - name: country_code
+        data_type: char(2)

@@ -35,7 +35,7 @@ def test_plan_is_deterministic_sorted_and_ignores_render_metadata():
     first = plan_emission(
         {
             "models/z.sql": "select 2\n",
-            "__release_data__": {"generated_at": "ignored"},
+            "__render_metadata__": {"generated_at": "ignored"},
             "__anything": object(),
             "models/a.sql": "select 1\n",
         }
@@ -112,7 +112,7 @@ def test_emit_writes_artifacts_and_deterministic_manifest(tmp_path: Path):
         {
             "models/silver/party/customer.sql": "select 1\n",
             "models/silver/party/schema.yml": b"version: 2\n",
-            "__release_data__": {"ignored": True},
+            "__render_metadata__": {"ignored": True},
         },
         target,
     )
@@ -124,7 +124,7 @@ def test_emit_writes_artifacts_and_deterministic_manifest(tmp_path: Path):
     )
     assert result.removed == ()
     assert (target / "models/silver/party/customer.sql").read_text() == "select 1\n"
-    assert not (target / "__release_data__").exists()
+    assert not (target / "__render_metadata__").exists()
     manifest_before = result.manifest_path.read_bytes()
     assert _manifest(target)["files"][0]["path"] == "models/silver/party/customer.sql"
 
@@ -197,7 +197,7 @@ def test_empty_plan_removes_all_previously_owned_files(tmp_path: Path):
     emit_artifacts({"models/customer.sql": "owned"}, target)
     (target / "user.txt").write_text("unowned", encoding="utf-8")
 
-    result = emit_artifacts({"__release_data__": {}}, target)
+    result = emit_artifacts({"__render_metadata__": {}}, target)
 
     assert result.written == ()
     assert result.removed == ("models/customer.sql",)

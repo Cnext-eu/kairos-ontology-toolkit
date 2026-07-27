@@ -132,21 +132,21 @@ def _reject_legacy_authority(graph: Graph) -> None:
                 "mapping.technical-cleanup",
                 (
                     f"removed kairos-map:{local} authority belongs in a "
-                    "kairos-prep:TechnicalDedupe contract"
+                    "contracted dbt transformation"
                 ),
                 resource=subject,
                 predicate=predicate,
-                rule_id="DD-107-prep-routing",
+                rule_id="DD-107-transformation-routing",
             )
         for code, pattern in _SQL_CATEGORY_PATTERNS:
             if not pattern.search(lexical):
                 continue
             if code == "mapping.technical-cleanup":
                 message = (
-                    "technical cleanup is illegal in mappings; author it through "
-                    "kairos-design-source and kairos-prep"
+                    "technical cleanup is illegal in mappings; use a contracted "
+                    "dbt transformation"
                 )
-                rule_id = "DD-107-prep-routing"
+                rule_id = "DD-107-transformation-routing"
             elif code in {
                 "mapping.raw-sql-subquery",
                 "mapping.raw-sql-join",

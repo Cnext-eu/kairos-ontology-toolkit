@@ -23,16 +23,10 @@ from typing import Any
 
 import yaml
 
-from .completeness_model import (
+from .source_analysis import (
     ALIGNMENT_ALGORITHM_VERSION,
     ALIGNMENT_HASH_SCHEMA_VERSION,
     compute_affinity_hash,
-)
-from .claim_registry import (
-    load_registry,
-    merge_preserving_decisions,
-    registry_path,
-    write_registry,
 )
 from .anchor_resolution import (
     AnchorResolution,
@@ -130,33 +124,86 @@ class AlignmentTotalFailureError(RuntimeError):
     success.
     """
 
-# Completeness metadata lives in ``completeness_model``.  The narrow column-triage
-# heuristics below belong to proposal generation rather than the coverage model.
+
+# These narrow column-triage heuristics belong to proposal generation.
 
 #: Lower-cased substrings that identify likely operational/audit custom columns.
 #: They only inform the proposal bucket; they never remove a coverage obligation.
 _OPERATIONAL_PATTERNS = (
-    "created_", "updated_", "modified_", "inserted_", "deleted_",
-    "_created", "_updated", "_modified", "createdat", "updatedat",
-    "_by", "createdby", "modifiedby", "timestamp", "rowversion",
-    "row_version", "loaddate", "load_date", "load_ts", "loadts",
-    "etl_", "_etl", "_dwh", "dwh_", "is_deleted", "isdeleted",
-    "source_id", "sourceid", "source_system", "sourcesystem",
-    "_guid", "guid", "uuid", "_uid", "_hash", "checksum",
+    "created_",
+    "updated_",
+    "modified_",
+    "inserted_",
+    "deleted_",
+    "_created",
+    "_updated",
+    "_modified",
+    "createdat",
+    "updatedat",
+    "_by",
+    "createdby",
+    "modifiedby",
+    "timestamp",
+    "rowversion",
+    "row_version",
+    "loaddate",
+    "load_date",
+    "load_ts",
+    "loadts",
+    "etl_",
+    "_etl",
+    "_dwh",
+    "dwh_",
+    "is_deleted",
+    "isdeleted",
+    "source_id",
+    "sourceid",
+    "source_system",
+    "sourcesystem",
+    "_guid",
+    "guid",
+    "uuid",
+    "_uid",
+    "_hash",
+    "checksum",
 )
 
 _CF_SLOT_RE = re.compile(r"^cf[a-z]*\d+$", re.IGNORECASE)
 
 _AUDIT_AUTO_PATTERNS = (
-    "created_", "_created", "createdon", "createdby", "createdat",
-    "updated_", "_updated", "updatedon", "updatedby", "updatedat",
-    "modified_", "_modified", "modifiedon", "modifiedby",
-    "inserted_", "is_deleted", "isdeleted",
-    "rowversion", "row_version",
-    "loaddate", "load_date", "load_ts", "loadts", "last_ingest", "ingest_date",
-    "etl_", "_etl", "_dwh", "dwh_",
-    "tenant_id", "tenantid",
-    "_hash", "checksum",
+    "created_",
+    "_created",
+    "createdon",
+    "createdby",
+    "createdat",
+    "updated_",
+    "_updated",
+    "updatedon",
+    "updatedby",
+    "updatedat",
+    "modified_",
+    "_modified",
+    "modifiedon",
+    "modifiedby",
+    "inserted_",
+    "is_deleted",
+    "isdeleted",
+    "rowversion",
+    "row_version",
+    "loaddate",
+    "load_date",
+    "load_ts",
+    "loadts",
+    "last_ingest",
+    "ingest_date",
+    "etl_",
+    "_etl",
+    "_dwh",
+    "dwh_",
+    "tenant_id",
+    "tenantid",
+    "_hash",
+    "checksum",
 )
 
 
@@ -191,6 +238,7 @@ def recommend_disposition(column: str) -> str:
         return "skip"
     return ""
 
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -199,6 +247,7 @@ def recommend_disposition(column: str) -> str:
 @dataclass
 class ColumnAlignment:
     """Alignment result for a single source column."""
+
     column: str
     data_type: str
     ref_class: str
@@ -234,6 +283,7 @@ class ColumnAlignment:
 @dataclass
 class TableAlignment:
     """Alignment result for a single source table."""
+
     system: str
     table: str
     ref_class: str
@@ -292,6 +342,7 @@ class TableAlignment:
 @dataclass
 class DomainAlignment:
     """Complete alignment result for one data domain."""
+
     domain: str
     domain_uris: list[str]
     generated_at: str
@@ -351,14 +402,16 @@ def load_affinity_reports(
             domain = tbl.get("domain", "")
             if not domain:
                 continue
-            domain_tables.setdefault(domain, []).append({
-                "system": system,
-                "table": tbl["table"],
-                "total_columns": tbl.get("total_columns", 0),
-                "likely_entity": tbl.get("likely_entity", ""),
-                "indicative_columns": tbl.get("indicative_columns", []),
-                "domain_uris": tbl.get("domain_uris", []),
-            })
+            domain_tables.setdefault(domain, []).append(
+                {
+                    "system": system,
+                    "table": tbl["table"],
+                    "total_columns": tbl.get("total_columns", 0),
+                    "likely_entity": tbl.get("likely_entity", ""),
+                    "indicative_columns": tbl.get("indicative_columns", []),
+                    "domain_uris": tbl.get("domain_uris", []),
+                }
+            )
 
     return domain_tables
 
@@ -401,6 +454,7 @@ def extract_ref_model_inventory(
 
     try:
         from kairos_ontology.core.catalog_utils import CatalogResolver
+
         resolver = CatalogResolver(catalog_path)
     except Exception as e:
         logger.warning("Catalog load failed (%s); skipping ref-model extraction", e)
@@ -416,9 +470,7 @@ def extract_ref_model_inventory(
             continue
         if not path or not Path(path).exists():
             if module_map is not None:
-                logger.warning(
-                    "Cross-module: could not resolve accelerator import URI %s", uri
-                )
+                logger.warning("Cross-module: could not resolve accelerator import URI %s", uri)
             continue
 
         module_info = (module_map or {}).get(uri, {})
@@ -439,13 +491,15 @@ def extract_ref_model_inventory(
             # Enrich properties with full metadata from the parsed graph
             props = []
             for p in cls.get("properties", []) + cls.get("inherited_properties", []):
-                props.append({
-                    "uri": p.get("uri", ""),
-                    "name": p.get("name", ""),
-                    "label": p.get("label", ""),
-                    "range": p.get("range", ""),
-                    "comment": "",
-                })
+                props.append(
+                    {
+                        "uri": p.get("uri", ""),
+                        "name": p.get("name", ""),
+                        "label": p.get("label", ""),
+                        "range": p.get("range", ""),
+                        "comment": "",
+                    }
+                )
 
             cls_dict: dict[str, Any] = {
                 "uri": cls.get("uri", ""),
@@ -500,9 +554,7 @@ def _load_inventory_classes(inventory_dir: Path) -> list[dict[str, Any]]:
                 "semantic_profile": inv.get("semantic_profile", "unknown"),
                 "closure_hash": inv.get("closure_hash", ""),
                 "import_complete": inv.get("import_complete", False),
-                "source_identity": (
-                    cls.get("provenance", {}).get("source_identity", "")
-                ),
+                "source_identity": (cls.get("provenance", {}).get("source_identity", "")),
             }
             all_classes.append(enriched)
 
@@ -533,8 +585,9 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
         for p in props[:MAX_REF_PROPERTIES_PER_PROMPT]:
             range_str = f" ({p['range']})" if p.get("range") else ""
             prop_lines.append(f"    - {p['name']} [{p.get('label', p['name'])}]{range_str}")
-        lines.append(f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])})"
-                     f"{_module_tag(cls)}")
+        lines.append(
+            f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])})" f"{_module_tag(cls)}"
+        )
         if cls.get("comment"):
             lines.append(f"    Description: {cls['comment']}")
         if prop_lines:
@@ -549,12 +602,8 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
             for spec in specs:
                 spec_props = spec.get("properties", [])
                 if spec_props:
-                    spec_prop_names = ", ".join(
-                        p.get("name", "") for p in spec_props[:10]
-                    )
-                    lines.append(
-                        f"      - {spec['class']}: {spec_prop_names}"
-                    )
+                    spec_prop_names = ", ".join(p.get("name", "") for p in spec_props[:10])
+                    lines.append(f"      - {spec['class']}: {spec_prop_names}")
                 else:
                     lines.append(f"      - {spec['class']}: (no own properties)")
     return "\n".join(lines)
@@ -797,12 +846,14 @@ def _build_class_meta_index(
         name = str(cls.get("name", ""))
         if not name:
             continue
-        index.setdefault(name, []).append({
-            "module": cls.get("module", ""),
-            "source_uri": cls.get("source_uri", ""),
-            "belongs_to_domains": list(cls.get("belongs_to_domains", [])),
-            "is_home": bool(cls.get("is_home")),
-        })
+        index.setdefault(name, []).append(
+            {
+                "module": cls.get("module", ""),
+                "source_uri": cls.get("source_uri", ""),
+                "belongs_to_domains": list(cls.get("belongs_to_domains", [])),
+                "is_home": bool(cls.get("is_home")),
+            }
+        )
     return index
 
 
@@ -860,8 +911,11 @@ def build_alignment_prompt(
         # CR-2: when the affinity step already derived the entity and it matches a
         # candidate class, anchor STEP 1 on it instead of re-deriving from scratch.
         likely_match = next(
-            (c["name"] for c in table_classes
-             if str(c["name"]).lower() == str(likely_entity).lower()),
+            (
+                c["name"]
+                for c in table_classes
+                if str(c["name"]).lower() == str(likely_entity).lower()
+            ),
             "",
         )
         if likely_match:
@@ -881,9 +935,7 @@ def build_alignment_prompt(
 
     class_names = ", ".join(c["name"] for c in table_classes)
     semantic_records = [c.get("_semantic", {}) for c in ref_classes]
-    profiles = sorted(
-        {str(item.get("semantic_profile")) for item in semantic_records if item}
-    )
+    profiles = sorted({str(item.get("semantic_profile")) for item in semantic_records if item})
     closure_hashes = sorted(
         {str(item.get("closure_hash")) for item in semantic_records if item.get("closure_hash")}
     )
@@ -1050,7 +1102,10 @@ def align_table(
         }
 
     prompt = build_alignment_prompt(
-        table_name, columns, ref_classes, likely_entity,
+        table_name,
+        columns,
+        ref_classes,
+        likely_entity,
         table_ref_classes=table_ref_classes,
     )
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
@@ -1059,20 +1114,25 @@ def align_table(
     generation_outcome = OUTCOME_SEMANTIC_SUCCESS
     generation_error: str | None = None
     try:
-        response = call_with_backoff(lambda: create_chat_completion(
-            client,
-            model=model,
-            messages=[
-                {"role": "system", "content": (
-                    "You are an expert ontologist. You align source database columns "
-                    "to reference model classes and properties based on semantic "
-                    "meaning, not just name similarity. Always respond with valid JSON."
-                )},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        ))
+        response = call_with_backoff(
+            lambda: create_chat_completion(
+                client,
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert ontologist. You align source database columns "
+                            "to reference model classes and properties based on semantic "
+                            "meaning, not just name similarity. Always respond with valid JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"},
+            )
+        )
         result = json.loads(response.choices[0].message.content)
     except Exception as e:
         logger.warning("LLM alignment failed for table %s: %s", table_name, e)
@@ -1106,8 +1166,11 @@ def align_table(
         # CR-2: fall back to the affinity-derived entity when it is a valid class,
         # rather than blanking it — we trust the prior analysis as a strong default.
         likely_match = next(
-            (c["name"] for c in table_classes
-             if str(c["name"]).lower() == str(likely_entity).lower()),
+            (
+                c["name"]
+                for c in table_classes
+                if str(c["name"]).lower() == str(likely_entity).lower()
+            ),
             "",
         )
         ref_class = likely_match
@@ -1406,8 +1469,7 @@ def _downgrade_catch_all_suggestions(
     for suggested, members in groups.items():
         token = _normalize_property_token(suggested)
         dissimilar = [
-            cc for cc in members
-            if _normalize_property_token(cc.get("column", "")) != token
+            cc for cc in members if _normalize_property_token(cc.get("column", "")) != token
         ]
         if len(dissimilar) >= min_columns:
             for cc in dissimilar:
@@ -1429,24 +1491,50 @@ def _downgrade_catch_all_suggestions(
 # Normalize SQL/source/XSD types to a small set of logical types.
 _LOGICAL_TYPE_MAP = {
     # strings
-    "varchar": "string", "nvarchar": "string", "char": "string", "nchar": "string",
-    "text": "string", "ntext": "string", "string": "string", "str": "string",
-    "uuid": "string", "uniqueidentifier": "string", "guid": "string", "anyuri": "string",
+    "varchar": "string",
+    "nvarchar": "string",
+    "char": "string",
+    "nchar": "string",
+    "text": "string",
+    "ntext": "string",
+    "string": "string",
+    "str": "string",
+    "uuid": "string",
+    "uniqueidentifier": "string",
+    "guid": "string",
+    "anyuri": "string",
     # integers
-    "int": "int", "integer": "int", "bigint": "int", "smallint": "int",
-    "tinyint": "int", "long": "int", "short": "int", "byte": "int",
-    "nonnegativeinteger": "int", "positiveinteger": "int",
+    "int": "int",
+    "integer": "int",
+    "bigint": "int",
+    "smallint": "int",
+    "tinyint": "int",
+    "long": "int",
+    "short": "int",
+    "byte": "int",
+    "nonnegativeinteger": "int",
+    "positiveinteger": "int",
     # decimals
-    "decimal": "decimal", "numeric": "decimal", "money": "decimal",
-    "smallmoney": "decimal", "float": "decimal", "real": "decimal",
+    "decimal": "decimal",
+    "numeric": "decimal",
+    "money": "decimal",
+    "smallmoney": "decimal",
+    "float": "decimal",
+    "real": "decimal",
     "double": "decimal",
     # booleans
-    "bit": "bool", "bool": "bool", "boolean": "bool",
+    "bit": "bool",
+    "bool": "bool",
+    "boolean": "bool",
     # dates
     "date": "date",
     # datetimes
-    "datetime": "datetime", "datetime2": "datetime", "datetimeoffset": "datetime",
-    "timestamp": "datetime", "smalldatetime": "datetime", "datetimestamp": "datetime",
+    "datetime": "datetime",
+    "datetime2": "datetime",
+    "datetimeoffset": "datetime",
+    "timestamp": "datetime",
+    "smalldatetime": "datetime",
+    "datetimestamp": "datetime",
 }
 
 # Logical type → SQL type used in CAST(...) hints.
@@ -1461,7 +1549,13 @@ _SQL_CAST_TYPE = {
 
 # Column-name tokens that suggest a discriminator (subclass-split signal).
 _DISCRIMINATOR_NAMES = {
-    "type", "kind", "category", "status", "classification", "subtype", "class",
+    "type",
+    "kind",
+    "category",
+    "status",
+    "classification",
+    "subtype",
+    "class",
 }
 
 # Column-name tokens that suggest a record-ordering column (dedup signal).
@@ -1623,42 +1717,46 @@ def _detect_structural_hints(
     if len(sibling_subclasses) >= 2:
         for col in columns:
             if _is_discriminator(col):
-                hints.append({
-                    "type": "split_candidate",
-                    "source_table": table_name,
-                    "discriminator_column": col.get("name", ""),
-                    "sampled_values": sorted(_distinct_samples(col)),
-                    "target_class_candidates": list(sibling_subclasses),
-                    "requires_human_confirmation": True,
-                    "rationale": (
-                        f"Low-cardinality discriminator '{col.get('name', '')}' with "
-                        f"{len(sibling_subclasses)} sibling subclass(es) available"
-                    ),
-                })
+                hints.append(
+                    {
+                        "type": "split_candidate",
+                        "source_table": table_name,
+                        "discriminator_column": col.get("name", ""),
+                        "sampled_values": sorted(_distinct_samples(col)),
+                        "target_class_candidates": list(sibling_subclasses),
+                        "requires_human_confirmation": True,
+                        "rationale": (
+                            f"Low-cardinality discriminator '{col.get('name', '')}' with "
+                            f"{len(sibling_subclasses)} sibling subclass(es) available"
+                        ),
+                    }
+                )
                 break  # one split signal per table is enough
 
     # dedup_candidate — an id-like natural key column + >=1 ordering column.
     id_cols = [
-        c.get("name", "") for c in columns
-        if str(c.get("name", "") or "").lower().endswith("id")
+        c.get("name", "") for c in columns if str(c.get("name", "") or "").lower().endswith("id")
     ]
     ordering_cols = [
-        c.get("name", "") for c in columns
+        c.get("name", "")
+        for c in columns
         if _normalize_logical_type(c.get("data_type", "")) in ("date", "datetime")
         or any(tok in str(c.get("name", "") or "").lower() for tok in _ORDERING_TOKENS)
     ]
     if id_cols and ordering_cols:
-        hints.append({
-            "type": "dedup_candidate",
-            "source_table": table_name,
-            "natural_key_column": id_cols[0],
-            "ordering_column_candidates": ordering_cols,
-            "requires_human_confirmation": True,
-            "rationale": (
-                "Natural-key-like column with ordering column(s); confirm whether "
-                "deduplication / latest-record selection is required"
-            ),
-        })
+        hints.append(
+            {
+                "type": "dedup_candidate",
+                "source_table": table_name,
+                "natural_key_column": id_cols[0],
+                "ordering_column_candidates": ordering_cols,
+                "requires_human_confirmation": True,
+                "rationale": (
+                    "Natural-key-like column with ordering column(s); confirm whether "
+                    "deduplication / latest-record selection is required"
+                ),
+            }
+        )
 
     # multi_target_candidate — column name matches properties in >=2 classes.
     prop_owners: dict[str, set[str]] = {}
@@ -1671,17 +1769,19 @@ def _detect_structural_hints(
         cname = str(col.get("name", "") or "").lower()
         owners = prop_owners.get(cname, set())
         if len(owners) >= 2:
-            hints.append({
-                "type": "multi_target_candidate",
-                "source_table": table_name,
-                "source_column": col.get("name", ""),
-                "target_class_candidates": sorted(owners),
-                "requires_human_confirmation": True,
-                "rationale": (
-                    f"Column '{col.get('name', '')}' matches a property in "
-                    f"{len(owners)} reference classes; confirm intended target(s)"
-                ),
-            })
+            hints.append(
+                {
+                    "type": "multi_target_candidate",
+                    "source_table": table_name,
+                    "source_column": col.get("name", ""),
+                    "target_class_candidates": sorted(owners),
+                    "requires_human_confirmation": True,
+                    "rationale": (
+                        f"Column '{col.get('name', '')}' matches a property in "
+                        f"{len(owners)} reference classes; confirm intended target(s)"
+                    ),
+                }
+            )
 
     return hints
 
@@ -1739,11 +1839,20 @@ def _build_class_uri_index(
 #: (relationships to an entity/node) even when the local inventory carries no
 #: ``rdfs:range``. Kept conservative and lower-cased/compacted; covers the DCSA
 #: place/location relationships called out in the finding.
-_OBJECT_PROPERTY_NAME_HINTS = frozenset({
-    "haslocation", "hasplaceofreceipt", "hasplaceofdelivery",
-    "hasplaceofloading", "hasplaceofdischarge", "hasplaceofissue",
-    "hasplaceofissuance", "hasaddress", "hasorigin", "hasdestination",
-})
+_OBJECT_PROPERTY_NAME_HINTS = frozenset(
+    {
+        "haslocation",
+        "hasplaceofreceipt",
+        "hasplaceofdelivery",
+        "hasplaceofloading",
+        "hasplaceofdischarge",
+        "hasplaceofissue",
+        "hasplaceofissuance",
+        "hasaddress",
+        "hasorigin",
+        "hasdestination",
+    }
+)
 
 
 def _resolve_object_property_target(
@@ -1808,8 +1917,16 @@ def _resolve_object_property_target(
 #: Generic across accelerators; deliberately narrow to the "<verb>by" shape so
 #: legitimate business-party columns are not swept up.
 _TECHNICAL_ACTOR_PATTERNS: tuple[str, ...] = (
-    "createdby", "updatedby", "modifiedby", "deletedby", "approvedby",
-    "reviewedby", "authorizedby", "changedby", "lasteditedby", "enteredby",
+    "createdby",
+    "updatedby",
+    "modifiedby",
+    "deletedby",
+    "approvedby",
+    "reviewedby",
+    "authorizedby",
+    "changedby",
+    "lasteditedby",
+    "enteredby",
 )
 
 
@@ -1829,17 +1946,36 @@ def _is_technical_actor_column(column_name: str) -> bool:
 
 #: Name tokens that mark a column as identifier-like (points at another row /
 #: entity rather than describing it). Generic across accelerators.
-_IDENTIFIER_NAME_TOKENS = frozenset({
-    "id", "identifier", "code", "reference", "ref", "key", "number", "no",
-    "uuid", "guid", "num",
-})
+_IDENTIFIER_NAME_TOKENS = frozenset(
+    {
+        "id",
+        "identifier",
+        "code",
+        "reference",
+        "ref",
+        "key",
+        "number",
+        "no",
+        "uuid",
+        "guid",
+        "num",
+    }
+)
 
 #: Data-type tokens that mark a column as identifier-like by storage shape
 #: (surrogate keys are typically integral or UUID, never free text).
-_IDENTIFIER_DATA_TYPE_TOKENS = frozenset({
-    "int", "bigint", "smallint", "tinyint", "integer", "uuid", "guid",
-    "uniqueidentifier",
-})
+_IDENTIFIER_DATA_TYPE_TOKENS = frozenset(
+    {
+        "int",
+        "bigint",
+        "smallint",
+        "tinyint",
+        "integer",
+        "uuid",
+        "guid",
+        "uniqueidentifier",
+    }
+)
 
 
 def _looks_like_identifier_column(column_name: str, data_type: str) -> bool:
@@ -1886,7 +2022,7 @@ def _location_role_token(ref_property: str) -> str | None:
         return None
     for prefix in _LOCATION_ROLE_PREFIXES:
         if compact.startswith(prefix) and len(compact) > len(prefix):
-            return compact[len(prefix):]
+            return compact[len(prefix) :]
     return None
 
 
@@ -1953,17 +2089,35 @@ def _object_relationship_downgrade_reason(
 REVIEW_MIN_CONFIDENCE = 0.6
 
 #: Unambiguous address-part tokens — strong enough to flag on their own.
-_ADDRESS_PART_TOKENS = frozenset({
-    "street", "postalcode", "postcode", "zipcode", "addressline",
-    "housenumber", "houseno",
-})
+_ADDRESS_PART_TOKENS = frozenset(
+    {
+        "street",
+        "postalcode",
+        "postcode",
+        "zipcode",
+        "addressline",
+        "housenumber",
+        "houseno",
+    }
+)
 
 #: Address qualifier tokens that, combined with a weak token, confirm an
 #: address-part column (e.g. ``shipper_city``, ``billing_zip``).
-_ADDRESS_QUALIFIER_TOKENS = frozenset({
-    "shipper", "consignee", "billing", "shipping", "delivery", "invoice",
-    "mailing", "registered", "home", "work", "contact",
-})
+_ADDRESS_QUALIFIER_TOKENS = frozenset(
+    {
+        "shipper",
+        "consignee",
+        "billing",
+        "shipping",
+        "delivery",
+        "invoice",
+        "mailing",
+        "registered",
+        "home",
+        "work",
+        "contact",
+    }
+)
 
 #: Ambiguous address tokens — only treated as address parts together with a
 #: qualifier (bare ``country``/``city`` are too easily citizenship/name fields).
@@ -1971,21 +2125,43 @@ _ADDRESS_WEAK_TOKENS = frozenset({"city", "country", "zip", "postal", "address"}
 
 #: Property name fragments that mark a property as ADDRESS-flavoured (so an
 #: address-part column mapped here is plausible and must NOT be flagged).
-_ADDRESS_PROPERTY_TOKENS = frozenset({
-    "address", "street", "city", "country", "postal", "zip", "location",
-})
+_ADDRESS_PROPERTY_TOKENS = frozenset(
+    {
+        "address",
+        "street",
+        "city",
+        "country",
+        "postal",
+        "zip",
+        "location",
+    }
+)
 
 #: Generic identity / name properties a weakly-evidenced or address/financial
 #: column should not silently land on. Specific identifiers (taxIdentifier,
 #: vatNumber, bankAccountIdentifier, ...) are deliberately excluded.
-_GENERIC_IDENTITY_PROPERTIES = frozenset({
-    "partyidentifier", "registrationnumber", "partyname", "name", "identifier",
-})
+_GENERIC_IDENTITY_PROPERTIES = frozenset(
+    {
+        "partyidentifier",
+        "registrationnumber",
+        "partyname",
+        "name",
+        "identifier",
+    }
+)
 
 #: Column tokens that mark a column as financial-flavoured.
-_FINANCIAL_COLUMN_TOKENS = frozenset({
-    "iban", "bic", "swift", "currency", "payment", "amount", "balance",
-})
+_FINANCIAL_COLUMN_TOKENS = frozenset(
+    {
+        "iban",
+        "bic",
+        "swift",
+        "currency",
+        "payment",
+        "amount",
+        "balance",
+    }
+)
 
 
 def _build_property_label_index(
@@ -2119,7 +2295,11 @@ def _address_relationship_name(role: str) -> str:
 
 
 def _relationship_cluster_id(
-    domain: str, source_table: str, role: str, target_concept: str, cardinality: str,
+    domain: str,
+    source_table: str,
+    role: str,
+    target_concept: str,
+    cardinality: str,
 ) -> str:
     """Stable, content-addressed relationship-cluster id (proposal-quality).
 
@@ -2132,10 +2312,15 @@ def _relationship_cluster_id(
     silently orphaned by a re-run (see ``claim_registry.DomainHandoff`` sibling
     concept and ``_merge_relationship_candidates``).
     """
-    basis = "|".join([
-        domain or "", source_table or "", role or "default",
-        target_concept or "", cardinality or "",
-    ])
+    basis = "|".join(
+        [
+            domain or "",
+            source_table or "",
+            role or "default",
+            target_concept or "",
+            cardinality or "",
+        ]
+    )
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
@@ -2173,32 +2358,40 @@ def _detect_address_relationship_candidates(
         rel = _address_relationship_name(role)
         role_phrase = "" if role == "default" else f" under role '{role}'"
         cardinality = "1:n"
-        candidates.append({
-            "type": "address_relationship_candidate",
-            "source_table": table_name,
-            "role": None if role == "default" else role,
-            "suggested_relationship": rel,
-            "target_concept": "Address",
-            "source_columns": source_columns,
-            "address_parts": part_kinds,
-            "cardinality": cardinality,
-            "cluster_id": _relationship_cluster_id(
-                domain, table_name, role, "Address", cardinality,
-            ),
-            "requires_human_confirmation": True,
-            "rationale": (
-                f"{len(part_kinds)} complementary address parts "
-                f"({', '.join(part_kinds)}){role_phrase}; consider modelling a "
-                f"'{rel}' 1:n relationship to a shared Address concept IN ADDITION "
-                f"to the scalar column mappings, rather than only scalar "
-                f"passthroughs. Target class/URI to be confirmed during modeling."
-            ),
-        })
+        candidates.append(
+            {
+                "type": "address_relationship_candidate",
+                "source_table": table_name,
+                "role": None if role == "default" else role,
+                "suggested_relationship": rel,
+                "target_concept": "Address",
+                "source_columns": source_columns,
+                "address_parts": part_kinds,
+                "cardinality": cardinality,
+                "cluster_id": _relationship_cluster_id(
+                    domain,
+                    table_name,
+                    role,
+                    "Address",
+                    cardinality,
+                ),
+                "requires_human_confirmation": True,
+                "rationale": (
+                    f"{len(part_kinds)} complementary address parts "
+                    f"({', '.join(part_kinds)}){role_phrase}; consider modelling a "
+                    f"'{rel}' 1:n relationship to a shared Address concept IN ADDITION "
+                    f"to the scalar column mappings, rather than only scalar "
+                    f"passthroughs. Target class/URI to be confirmed during modeling."
+                ),
+            }
+        )
     return candidates
 
 
 def _cluster_object_property_candidates(
-    candidates: list[dict[str, Any]], *, domain: str = "",
+    candidates: list[dict[str, Any]],
+    *,
+    domain: str = "",
 ) -> list[dict[str, Any]]:
     """Cluster per-column object-property candidates into one-per-relationship.
 
@@ -2240,7 +2433,11 @@ def _cluster_object_property_candidates(
         group = groups[key]
         group["source_columns"] = sorted(group["source_columns"])
         group["cluster_id"] = _relationship_cluster_id(
-            domain, source_table, suggested_relationship, target_concept, cardinality,
+            domain,
+            source_table,
+            suggested_relationship,
+            target_concept,
+            cardinality,
         )
         if len(group["source_columns"]) > 1:
             group["rationale"] = (
@@ -2342,8 +2539,8 @@ def _propose_alignments(
     ref_models_dir: Path | None = None,
     inventory_dir: Path | None = None,
     custom_confidence_floor: float = CUSTOM_CONFIDENCE_FLOOR,
-    emit_claims: bool = True,
-    allow_fallback_registry: bool = False,
+    emit_output: bool = True,
+    allow_fallback_output: bool = False,
     generation_stats: dict[str, int] | None = None,
     conformance_artifact_path: Path | None = None,
 ) -> tuple[list[Path], list[DomainAlignment]]:
@@ -2384,7 +2581,7 @@ def _propose_alignments(
             (``referencemodels-unpacked/``). When present, newly written claims get
             deterministic ``class_uri`` / ``property_uri`` backfilled from the
             inventory (toolkit-optimizations F4). Default ``None`` leaves URIs null.
-        allow_fallback_registry: Alignment-reliability — a domain where *every*
+        allow_fallback_output: Alignment-reliability — a domain where *every*
             table produced ``fallback_only`` (no reference model to align
             against — the LLM was never even called) is skipped by default so a
             placeholder-only registry never masquerades as a real proposal.
@@ -2404,7 +2601,7 @@ def _propose_alignments(
             generated for it. Default ``None`` (or a missing/unreadable file)
             leaves this run's output byte-identical to before this feature.
 
-    Returns ``(written_paths, built_alignments)``. When *emit_claims* is False the
+    Returns ``(written_paths, built_alignments)``. When *emit_output* is False the
     pipeline only builds and returns the in-memory :class:`DomainAlignment` objects
     (no domain-level skip, no files written); this is the testable/introspection
     path used by :func:`build_domain_alignments`.
@@ -2427,9 +2624,8 @@ def _propose_alignments(
                 "ontology-reference-models/ is present)."
             )
         from .analyse_sources import load_accelerator_uri_modules
-        accelerator_uri_modules = load_accelerator_uri_modules(
-            Path(ref_models_dir), accelerator
-        )
+
+        accelerator_uri_modules = load_accelerator_uri_modules(Path(ref_models_dir), accelerator)
         if not accelerator_uri_modules:
             raise ValueError(
                 f"--cross-module: no data-domains.yaml found for accelerator "
@@ -2453,8 +2649,7 @@ def _propose_alignments(
     if domains_filter:
         lower_filter = [d.lower() for d in domains_filter]
         domain_tables = {
-            k: v for k, v in domain_tables.items()
-            if any(f in k.lower() for f in lower_filter)
+            k: v for k, v in domain_tables.items() if any(f in k.lower() for f in lower_filter)
         }
         if not domain_tables:
             raise ValueError(
@@ -2510,9 +2705,7 @@ def _propose_alignments(
                 level="verbose",
             )
     except EnvironmentError:
-        provider_config = AIProviderConfig(
-            provider="unknown", endpoint="", api_key="", model=model
-        )
+        provider_config = AIProviderConfig(provider="unknown", endpoint="", api_key="", model=model)
     client = get_ai_client(model, role=ROLE_ALIGNMENT)
     report(f"  🔌 Provider: {provider_config.provider} — effective model: {model}")
 
@@ -2529,6 +2722,7 @@ def _propose_alignments(
 
     if cost_warning:
         from ._cost import print_cost_warning
+
         total_tables = sum(len(v) for v in domain_tables.values())
         print_cost_warning(
             command="propose-alignment",
@@ -2556,7 +2750,7 @@ def _propose_alignments(
     # cache — already on disk, untouched by this run) or
     # ``{"kind": "write", ...}`` (a pending registry + unresolved-anchors write).
     staged_outputs: list[dict[str, Any]] = []
-    if emit_claims:
+    if emit_output:
         assert output_dir is not None
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2588,27 +2782,28 @@ def _propose_alignments(
         }
         if cross_module:
             # DD-070: cross-module results must not be reused for a home-only run.
-            params_payload.update({
-                "cross_module": True,
-                "accelerator": accelerator or "",
-                "accelerator_uris": sorted(accelerator_uri_modules.keys()),
-                "home_uris": sorted(domain_uris),
-            })
+            params_payload.update(
+                {
+                    "cross_module": True,
+                    "accelerator": accelerator or "",
+                    "accelerator_uris": sorted(accelerator_uri_modules.keys()),
+                    "home_uris": sorted(domain_uris),
+                }
+            )
         params_hash = compute_entry_hash(params_payload)
 
         # CR-5: domain-level skip — reuse an existing claim registry whose freshness
         # hash already matches the current affinity set (unless --force). The
         # params hash must also match so an algorithm/model/floor change forces a
         # rebuild (issue #182). Only applies when emitting claims to disk.
-        if emit_claims and not force:
-            out_path = registry_path(output_dir, domain_id)
+        if emit_output and not force:
+            out_path = output_dir / f"{domain_id}-alignment.yaml"
             if out_path.exists():
-                existing_hash = _read_claims_affinity_hash(out_path)
+                existing_hash = _read_alignment_affinity_hash(out_path)
                 if existing_hash and existing_hash == affinity_hash:
-                    if _read_claims_params_hash(out_path) == params_hash:
+                    if _read_alignment_params_hash(out_path) == params_hash:
                         report(
-                            f"     ⏭  Up to date (affinity unchanged) — "
-                            f"skipped {out_path.name}"
+                            f"     ⏭  Up to date (affinity unchanged) — " f"skipped {out_path.name}"
                         )
                         staged_outputs.append({"kind": "cached", "path": out_path})
                         continue
@@ -2627,7 +2822,8 @@ def _propose_alignments(
         if cross_module:
             home_uri_set = set(domain_uris)
             property_ref_classes = extract_ref_model_inventory(
-                sorted(accelerator_uri_modules.keys()), catalog_path,
+                sorted(accelerator_uri_modules.keys()),
+                catalog_path,
                 module_map=accelerator_uri_modules,
             )
             for c in property_ref_classes:
@@ -2656,10 +2852,12 @@ def _propose_alignments(
         review_label_index = _build_property_label_index(ref_classes)
 
         # Stable signature of the reference model for cache-key invalidation.
-        ref_signature = compute_entry_hash([
-            [c.get("name", ""), [p.get("name", "") for p in c.get("properties", [])]]
-            for c in ref_classes
-        ])
+        ref_signature = compute_entry_hash(
+            [
+                [c.get("name", ""), [p.get("name", "") for p in c.get("properties", [])]]
+                for c in ref_classes
+            ]
+        )
         align_params = {
             # Issue #182: algorithm/prompt-contract version invalidates per-table
             # cache entries when alignment output semantics change.
@@ -2675,11 +2873,15 @@ def _propose_alignments(
             # DD-070: cross-module results must not collide with home-only ones.
             align_params["cross_module"] = True
             align_params["accelerator"] = accelerator or ""
-            align_params["cross_module_signature"] = compute_entry_hash([
-                [c.get("ref_class_id", c.get("name", "")),
-                 [p.get("name", "") for p in c.get("properties", [])]]
-                for c in property_ref_classes
-            ])
+            align_params["cross_module_signature"] = compute_entry_hash(
+                [
+                    [
+                        c.get("ref_class_id", c.get("name", "")),
+                        [p.get("name", "") for p in c.get("properties", [])],
+                    ]
+                    for c in property_ref_classes
+                ]
+            )
 
         alignment = DomainAlignment(
             domain=domain_id,
@@ -2697,11 +2899,9 @@ def _propose_alignments(
         # backward-compatible loading diagnostics only).
         existing_anchors: list[UnresolvedAnchor] = []
         anchor_doc_path: Path | None = None
-        if emit_claims and output_dir is not None:
+        if emit_output and output_dir is not None:
             anchor_doc_path = unresolved_anchors_path(output_dir, domain_id)
-            existing_anchors, anchor_load_diagnostics = load_unresolved_anchors_doc(
-                anchor_doc_path
-            )
+            existing_anchors, anchor_load_diagnostics = load_unresolved_anchors_doc(anchor_doc_path)
             for diag in anchor_load_diagnostics:
                 report(f"     ⚠ {diag}", level="verbose")
         resolved_anchor_overrides: dict[str, str] = {
@@ -2723,9 +2923,13 @@ def _propose_alignments(
             table = tbl_info["table"]
             columns = get_columns(system, table)
             if not columns:
-                return {"system": system, "table": table, "columns": [],
-                        "result": None, "likely_entity": tbl_info.get(
-                            "likely_entity", "")}
+                return {
+                    "system": system,
+                    "table": table,
+                    "columns": [],
+                    "result": None,
+                    "likely_entity": tbl_info.get("likely_entity", ""),
+                }
 
             likely_entity = tbl_info.get("likely_entity", "")
             indicative_columns = tbl_info.get("indicative_columns", [])
@@ -2753,8 +2957,7 @@ def _propose_alignments(
                             resolved_name=str(resolved_cls.get("name", "")),
                             candidate_uris=(prior_uri,),
                             evidence=(
-                                f"human-resolved unresolved_anchor {anchor_id} -> "
-                                f"{prior_uri}",
+                                f"human-resolved unresolved_anchor {anchor_id} -> " f"{prior_uri}",
                             ),
                         )
 
@@ -2765,44 +2968,60 @@ def _propose_alignments(
                 # provider_failure): must re-resolve fresh every run in case
                 # the conformance artifact is corrected.
                 return {
-                    "system": system, "table": table, "columns": columns,
+                    "system": system,
+                    "table": table,
+                    "columns": columns,
                     "result": {
-                        "ref_class": "", "ref_class_confidence": 0.0,
+                        "ref_class": "",
+                        "ref_class_confidence": 0.0,
                         "ref_class_status": "unresolved",
                         "column_alignments": [],
                         "generation_outcome": OUTCOME_FALLBACK_ONLY,
                     },
-                    "cache_key": None, "from_cache": False,
+                    "cache_key": None,
+                    "from_cache": False,
                     "likely_entity": likely_entity,
                     "anchor_resolution": anchor_res,
                 }
 
-            anchor_override = (
-                anchor_res.resolved_name if anchor_res.status == "confirmed" else None
-            )
+            anchor_override = anchor_res.resolved_name if anchor_res.status == "confirmed" else None
 
-            cache_key = compute_entry_hash({
-                "system": system,
-                "table": table,
-                "likely_entity": likely_entity,
-                "columns": [
-                    {"name": c.get("name"), "type": c.get("data_type"),
-                     "samples": c.get("samples", [])}
-                    for c in columns
-                ],
-                "params": align_params,
-                # uri-anchor-contract: a confirmed-anchor status change (evidence
-                # added/changed) must invalidate the per-table cache entry.
-                "anchor_override": anchor_override or "",
-            })
+            cache_key = compute_entry_hash(
+                {
+                    "system": system,
+                    "table": table,
+                    "likely_entity": likely_entity,
+                    "columns": [
+                        {
+                            "name": c.get("name"),
+                            "type": c.get("data_type"),
+                            "samples": c.get("samples", []),
+                        }
+                        for c in columns
+                    ],
+                    "params": align_params,
+                    # uri-anchor-contract: a confirmed-anchor status change (evidence
+                    # added/changed) must invalidate the per-table cache entry.
+                    "anchor_override": anchor_override or "",
+                }
+            )
             cached = cache.get(cache_key)
             if cached is not None:
-                return {"system": system, "table": table, "columns": columns,
-                        "result": cached, "cache_key": cache_key, "from_cache": True,
-                        "likely_entity": likely_entity, "anchor_resolution": anchor_res}
+                return {
+                    "system": system,
+                    "table": table,
+                    "columns": columns,
+                    "result": cached,
+                    "cache_key": cache_key,
+                    "from_cache": True,
+                    "likely_entity": likely_entity,
+                    "anchor_resolution": anchor_res,
+                }
 
             shortlist_classes = _select_ref_classes_for_table(
-                table, columns, ref_classes,
+                table,
+                columns,
+                ref_classes,
                 likely_entity=likely_entity,
                 indicative_columns=indicative_columns,
                 max_classes=max_prompt_classes,
@@ -2812,31 +3031,46 @@ def _propose_alignments(
                     # DD-070: STEP 1 stays home-scoped; STEP 2 uses the widened
                     # accelerator pool. No full-inventory retry (cost guard).
                     prop_pool = _select_property_pool(
-                        table, columns, property_ref_classes, shortlist_classes,
+                        table,
+                        columns,
+                        property_ref_classes,
+                        shortlist_classes,
                         indicative_columns=indicative_columns,
                     )
                     result = align_table(
-                        client, model, table, columns, prop_pool,
+                        client,
+                        model,
+                        table,
+                        columns,
+                        prop_pool,
                         likely_entity=likely_entity,
                         table_ref_classes=shortlist_classes,
                         anchor_override=anchor_override,
                     )
                 else:
                     result = align_table(
-                        client, model, table, columns, shortlist_classes,
+                        client,
+                        model,
+                        table,
+                        columns,
+                        shortlist_classes,
                         likely_entity=likely_entity,
                         anchor_override=anchor_override,
                     )
-                    if (
-                        len(shortlist_classes) < len(ref_classes)
-                        and _should_retry_with_full_inventory(
-                            result, len(columns),
-                            min_confidence=retry_min_confidence,
-                            min_mapped_ratio=retry_min_mapped_ratio,
-                        )
+                    if len(shortlist_classes) < len(
+                        ref_classes
+                    ) and _should_retry_with_full_inventory(
+                        result,
+                        len(columns),
+                        min_confidence=retry_min_confidence,
+                        min_mapped_ratio=retry_min_mapped_ratio,
                     ):
                         full_result = align_table(
-                            client, model, table, columns, ref_classes,
+                            client,
+                            model,
+                            table,
+                            columns,
+                            ref_classes,
                             likely_entity=likely_entity,
                             anchor_override=anchor_override,
                         )
@@ -2847,14 +3081,22 @@ def _propose_alignments(
             except Exception as exc:  # noqa: BLE001 — isolate a single table failure
                 logger.warning("Alignment failed for %s.%s: %s", system, table, exc)
                 result = {
-                    "ref_class": "", "ref_class_confidence": 0.0,
+                    "ref_class": "",
+                    "ref_class_confidence": 0.0,
                     "column_alignments": [],
                     "generation_outcome": OUTCOME_PROVIDER_FAILURE,
                     "generation_error": sanitize_provider_error(exc),
                 }
-            return {"system": system, "table": table, "columns": columns,
-                    "result": result, "cache_key": cache_key, "from_cache": False,
-                    "likely_entity": likely_entity, "anchor_resolution": anchor_res}
+            return {
+                "system": system,
+                "table": table,
+                "columns": columns,
+                "result": result,
+                "cache_key": cache_key,
+                "from_cache": False,
+                "likely_entity": likely_entity,
+                "anchor_resolution": anchor_res,
+            }
 
         processed = map_concurrent(_process_table, tables, max_workers=max_workers)
 
@@ -2898,15 +3140,14 @@ def _propose_alignments(
                 if ca["alignment"] == "custom":
                     custom_cols.append(
                         _build_custom_column(
-                            ca, col_data_type,
+                            ca,
+                            col_data_type,
                             confidence_floor=custom_confidence_floor,
                         )
                     )
                 else:
                     ref_class_name = ca.get("ref_class", result.get("ref_class", ""))
-                    col_obj = next(
-                        (c for c in columns if c["name"] == ca["column"]), None
-                    )
+                    col_obj = next((c for c in columns if c["name"] == ca["column"]), None)
                     column_alignment = ColumnAlignment(
                         column=ca["column"],
                         data_type=col_data_type,
@@ -2934,14 +3175,12 @@ def _propose_alignments(
                         prop_range = _lookup_property_range(
                             range_index, ref_class_name, ca["ref_property"]
                         )
-                        hint = _transform_hint(
-                            col_obj, ca["ref_property"], prop_range
-                        )
+                        hint = _transform_hint(col_obj, ca["ref_property"], prop_range)
                         column_alignment.transform_hint = hint["transform_hint"]
                         column_alignment.transform_confidence = hint["transform_confidence"]
-                        column_alignment.requires_human_confirmation = (
-                            hint["requires_human_confirmation"]
-                        )
+                        column_alignment.requires_human_confirmation = hint[
+                            "requires_human_confirmation"
+                        ]
                         column_alignment.transform_rationale = hint["transform_rationale"]
                         # DD-075: advisory CAST-vs-samples compatibility note.
                         compat = _transform_compat_note(col_obj, prop_range)
@@ -2960,14 +3199,16 @@ def _propose_alignments(
                         column_alignment.review = True
                         column_alignment.review_reason = review_reason
                         if include_mapping_hints and _detect_address_part(ca["column"]):
-                            address_hints.append({
-                                "type": "address_candidate",
-                                "source_table": table,
-                                "source_column": ca["column"],
-                                "current_property": ca["ref_property"],
-                                "requires_human_confirmation": True,
-                                "rationale": review_reason,
-                            })
+                            address_hints.append(
+                                {
+                                    "type": "address_candidate",
+                                    "source_table": table,
+                                    "source_column": ca["column"],
+                                    "current_property": ca["ref_property"],
+                                    "requires_human_confirmation": True,
+                                    "rationale": review_reason,
+                                }
+                            )
                     # DD-070: tag matches that resolved to a sibling/shared module.
                     if cross_module:
                         meta = _resolve_column_module(
@@ -2984,16 +3225,17 @@ def _propose_alignments(
                             elif len(domains) > 1:
                                 column_alignment.belongs_to_domains = list(domains)
                             key = (ref_class_name, meta["module"])
-                            acc = cross_module_acc.setdefault(key, {
-                                "ref_class": ref_class_name,
-                                "ref_module": meta["module"],
-                                "ref_module_uri": meta["source_uri"],
-                                "belongs_to_domains": list(domains),
-                                "source_columns": [],
-                            })
-                            acc["source_columns"].append(
-                                f"{system}.{table}.{ca['column']}"
+                            acc = cross_module_acc.setdefault(
+                                key,
+                                {
+                                    "ref_class": ref_class_name,
+                                    "ref_module": meta["module"],
+                                    "ref_module_uri": meta["source_uri"],
+                                    "belongs_to_domains": list(domains),
+                                    "source_columns": [],
+                                },
                             )
+                            acc["source_columns"].append(f"{system}.{table}.{ca['column']}")
                     # F3 (toolkit-optimizations), generalized by proposal-quality:
                     # a scalar column mapped to an object property must not count
                     # as a resolved scalar mapping when (a) the target entity does
@@ -3008,25 +3250,38 @@ def _propose_alignments(
                     # governed disposition (no double count). When none of these
                     # fire, the mapping is kept unchanged (byte-identical).
                     obj_target = _resolve_object_property_target(
-                        ca["ref_property"], ref_class_name,
-                        range_index, class_uri_by_name,
+                        ca["ref_property"],
+                        ref_class_name,
+                        range_index,
+                        class_uri_by_name,
                     )
                     if obj_target is not None:
                         downgrade_reason = _object_relationship_downgrade_reason(
-                            column=ca["column"], data_type=col_data_type,
+                            column=ca["column"],
+                            data_type=col_data_type,
                             ref_property=ca["ref_property"],
                             target_resolved=bool(obj_target["target_resolved"]),
                         )
                         if downgrade_reason is not None:
-                            custom_cols.append(_build_object_property_passthrough(
-                                ca["column"], col_data_type, ca["ref_property"],
-                                obj_target, reason=downgrade_reason,
-                            ))
-                            if downgrade_reason != "technical_actor":
-                                objprop_candidates.append(_build_object_property_candidate(
-                                    table, ca["column"], ca["ref_property"], obj_target,
+                            custom_cols.append(
+                                _build_object_property_passthrough(
+                                    ca["column"],
+                                    col_data_type,
+                                    ca["ref_property"],
+                                    obj_target,
                                     reason=downgrade_reason,
-                                ))
+                                )
+                            )
+                            if downgrade_reason != "technical_actor":
+                                objprop_candidates.append(
+                                    _build_object_property_candidate(
+                                        table,
+                                        ca["column"],
+                                        ca["ref_property"],
+                                        obj_target,
+                                        reason=downgrade_reason,
+                                    )
+                                )
                             continue
                     col_alignments.append(column_alignment)
 
@@ -3062,9 +3317,7 @@ def _propose_alignments(
                 source_column_count=src_count,
                 source_column_sha256=src_hash,
                 likely_entity=str(entry.get("likely_entity", "") or ""),
-                generation_outcome=result.get(
-                    "generation_outcome", OUTCOME_SEMANTIC_SUCCESS
-                ),
+                generation_outcome=result.get("generation_outcome", OUTCOME_SEMANTIC_SUCCESS),
                 generation_error=result.get("generation_error"),
             )
             if ta.generation_outcome != OUTCOME_SEMANTIC_SUCCESS:
@@ -3080,21 +3333,23 @@ def _propose_alignments(
                 ta.likely_entity_uri = anchor_res_entry.resolved_uri or ""
             elif anchor_res_entry is not None and anchor_res_entry.status == "ambiguous":
                 ta.anchor_candidate_uris = list(anchor_res_entry.candidate_uris)
-                unresolved_records.append(UnresolvedAnchor(
-                    id=unresolved_anchor_id(domain_id, system, table),
-                    domain=domain_id,
-                    system=system,
-                    table=table,
-                    likely_entity=str(entry.get("likely_entity", "") or ""),
-                    candidate_uris=list(anchor_res_entry.candidate_uris),
-                    reason=REASON_AMBIGUOUS_CONFIRMED_ALIAS,
-                    evidence=list(anchor_res_entry.evidence),
-                ))
+                unresolved_records.append(
+                    UnresolvedAnchor(
+                        id=unresolved_anchor_id(domain_id, system, table),
+                        domain=domain_id,
+                        system=system,
+                        table=table,
+                        likely_entity=str(entry.get("likely_entity", "") or ""),
+                        candidate_uris=list(anchor_res_entry.candidate_uris),
+                        reason=REASON_AMBIGUOUS_CONFIRMED_ALIAS,
+                        evidence=list(anchor_res_entry.evidence),
+                    )
+                )
 
             if include_mapping_hints:
-                ta.structural_hints = _detect_structural_hints(
-                    table, columns, ref_classes
-                ) + address_hints
+                ta.structural_hints = (
+                    _detect_structural_hints(table, columns, ref_classes) + address_hints
+                )
             # Issue #192 (Phase A1): deterministic, always-on, additive
             # relationship-candidate detection (no LLM, no cross-module widening).
             # uri-anchor-contract / proposal-quality: an "unresolved" table has no
@@ -3105,14 +3360,17 @@ def _propose_alignments(
                 rel_candidates: list[dict[str, Any]] = []
             else:
                 rel_candidates = _detect_address_relationship_candidates(
-                    table, columns, domain=domain_id,
+                    table,
+                    columns,
+                    domain=domain_id,
                 )
                 # F3, generalized (proposal-quality): cluster object-property
                 # candidates by (source table, relationship, target, cardinality)
                 # so several contributing columns collapse into one candidate
                 # instead of one-per-column.
                 rel_candidates = rel_candidates + _cluster_object_property_candidates(
-                    objprop_candidates, domain=domain_id,
+                    objprop_candidates,
+                    domain=domain_id,
                 )
             if rel_candidates:
                 ta.relationship_candidates = rel_candidates
@@ -3162,25 +3420,24 @@ def _propose_alignments(
         if cross_module_acc:
             matches = []
             for _key, m in cross_module_acc.items():
-                matches.append({
-                    "ref_class": m["ref_class"],
-                    "ref_module": m["ref_module"],
-                    "ref_module_uri": m["ref_module_uri"],
-                    "belongs_to_domains": m["belongs_to_domains"],
-                    "source_columns": sorted(m["source_columns"]),
-                })
+                matches.append(
+                    {
+                        "ref_class": m["ref_class"],
+                        "ref_module": m["ref_module"],
+                        "ref_module_uri": m["ref_module_uri"],
+                        "belongs_to_domains": m["belongs_to_domains"],
+                        "source_columns": sorted(m["source_columns"]),
+                    }
+                )
             alignment.cross_module_matches = sorted(
                 matches, key=lambda r: (r["ref_module"], r["ref_class"])
             )
             report(
-                f"     🔗 Cross-module matches: {len(alignment.cross_module_matches)} "
-                "class(es)"
+                f"     🔗 Cross-module matches: {len(alignment.cross_module_matches)} " "class(es)"
             )
 
         # Stage output (Claim Registry — DD-094); committed after the loop.
-        merged_anchors = merge_preserving_anchor_resolutions(
-            unresolved_records, existing_anchors
-        )
+        merged_anchors = merge_preserving_anchor_resolutions(unresolved_records, existing_anchors)
         alignment.unresolved_anchors = [a.to_dict() for a in merged_anchors]
         alignments.append(alignment)
 
@@ -3196,7 +3453,7 @@ def _propose_alignments(
         domain_provider_failures = domain_outcomes.count(OUTCOME_PROVIDER_FAILURE)
         domain_fallback_only = domain_outcomes.count(OUTCOME_FALLBACK_ONLY)
 
-        if emit_claims:
+        if emit_output:
             if domain_total and domain_provider_failures == domain_total:
                 report(
                     f"     ⛔ Skipped writing {domain_id}: semantic generation "
@@ -3204,9 +3461,7 @@ def _propose_alignments(
                     "claims file was left untouched."
                 )
             elif (
-                domain_total
-                and domain_fallback_only == domain_total
-                and not allow_fallback_registry
+                domain_total and domain_fallback_only == domain_total and not allow_fallback_output
             ):
                 report(
                     f"     ⛔ Skipped writing {domain_id}: no reference model "
@@ -3215,13 +3470,15 @@ def _propose_alignments(
                     "to write it anyway."
                 )
             else:
-                staged_outputs.append({
-                    "kind": "write",
-                    "domain": domain_id,
-                    "alignment": alignment,
-                    "anchors": merged_anchors,
-                    "anchor_path": anchor_doc_path,
-                })
+                staged_outputs.append(
+                    {
+                        "kind": "write",
+                        "domain": domain_id,
+                        "alignment": alignment,
+                        "anchors": merged_anchors,
+                        "anchor_path": anchor_doc_path,
+                    }
+                )
 
     if generation_stats is not None:
         generation_stats["attempted"] = run_attempted
@@ -3251,7 +3508,7 @@ def _propose_alignments(
         if staged["kind"] == "cached":
             output_files.append(staged["path"])
             continue
-        out_path = write_claims_output(
+        out_path = write_alignment_output(
             staged["alignment"], output_dir, inventory_dir=inventory_dir
         )
         output_files.append(out_path)
@@ -3265,9 +3522,7 @@ def _propose_alignments(
         merged_anchors = staged["anchors"]
         anchor_doc_path = staged["anchor_path"]
         if merged_anchors and anchor_doc_path is not None:
-            write_unresolved_anchors_doc(
-                anchor_doc_path, staged["domain"], merged_anchors
-            )
+            write_unresolved_anchors_doc(anchor_doc_path, staged["domain"], merged_anchors)
             open_count = sum(1 for a in merged_anchors if a.status == "open")
             report(
                 f"     🧭 Unresolved anchors: {open_count} open, "
@@ -3285,16 +3540,15 @@ def run_propose_alignment(
     output_dir: Path,
     **kwargs: Any,
 ) -> list[Path]:
-    """Run alignment for all domains and write the Claim Registry (DD-094).
-
-    Emits candidate (``proposed``) claims into ``{domain}-claims.yaml`` under
-    *output_dir* (typically the hub's ``model/claims/``). Returns the list of
-    written claim-registry paths.
-    """
-    kwargs.pop("emit_claims", None)
+    """Run source alignment and write advisory ``*-alignment.yaml`` files."""
+    kwargs.pop("emit_output", None)
     paths, _ = _propose_alignments(
-        analysis_dir, sources_dir, catalog_path, output_dir,
-        emit_claims=True, **kwargs,
+        analysis_dir,
+        sources_dir,
+        catalog_path,
+        output_dir,
+        emit_output=True,
+        **kwargs,
     )
     return paths
 
@@ -3313,41 +3567,35 @@ def build_domain_alignments(
     written, so callers (tests, introspection) can assert on the full alignment
     surface — including exploration metadata that the Claim Registry omits.
     """
-    kwargs.pop("emit_claims", None)
+    kwargs.pop("emit_output", None)
     _, alignments = _propose_alignments(
-        analysis_dir, sources_dir, catalog_path, None,
-        emit_claims=False, **kwargs,
+        analysis_dir,
+        sources_dir,
+        catalog_path,
+        None,
+        emit_output=False,
+        **kwargs,
     )
     return alignments
 
 
-def _read_claims_affinity_hash(claims_path: Path) -> str:
-    """Return the affinity freshness hash recorded in an existing claims registry.
-
-    The producer persists this under ``freshness.affinity_sha256`` (see
-    :func:`write_claims_output`); read the same key so the domain-level cache
-    skip in :func:`run_propose_alignment` matches.
-    """
-    fresh = _read_claims_freshness(claims_path)
-    return str(fresh.get("affinity_sha256", "") or "")
+def _read_alignment_affinity_hash(path: Path) -> str:
+    """Return the affinity hash recorded in an advisory alignment."""
+    return str(_read_alignment_metadata(path).get("affinity_sha256", "") or "")
 
 
-def _read_claims_params_hash(claims_path: Path) -> str:
-    """Return the ``freshness.alignment_params_sha256`` recorded in a claims file."""
-    fresh = _read_claims_freshness(claims_path)
-    return str(fresh.get("alignment_params_sha256", "") or "")
+def _read_alignment_params_hash(path: Path) -> str:
+    """Return the algorithm-parameter hash recorded in an advisory alignment."""
+    return str(_read_alignment_metadata(path).get("alignment_params_sha256", "") or "")
 
 
-def _read_claims_freshness(claims_path: Path) -> dict[str, Any]:
-    """Read the ``freshness`` mapping from a claims registry, tolerantly."""
+def _read_alignment_metadata(path: Path) -> dict[str, Any]:
+    """Read an advisory alignment document tolerantly."""
     try:
-        data = yaml.safe_load(claims_path.read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (yaml.YAMLError, OSError):
         return {}
-    if not isinstance(data, dict):
-        return {}
-    fresh = data.get("freshness")
-    return fresh if isinstance(fresh, dict) else {}
+    return data if isinstance(data, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -3392,9 +3640,7 @@ def _build_reference_rollup(
         # Track which tables feed each class
         primary_cls = ta.ref_class
         if primary_cls and primary_cls in class_data:
-            class_data[primary_cls]["source_tables"].append(
-                f"{ta.system}.{ta.table}"
-            )
+            class_data[primary_cls]["source_tables"].append(f"{ta.system}.{ta.table}")
 
         for ca in ta.columns:
             cls_name = ca.ref_class or primary_cls
@@ -3412,11 +3658,13 @@ def _build_reference_rollup(
 
         for cc in ta.custom_columns:
             if primary_cls and primary_cls in class_data:
-                class_data[primary_cls]["custom_extensions"].append({
-                    "column": cc["column"],
-                    "suggested_property": cc.get("suggested_property", ""),
-                    "source": f"{ta.system}.{ta.table}",
-                })
+                class_data[primary_cls]["custom_extensions"].append(
+                    {
+                        "column": cc["column"],
+                        "suggested_property": cc.get("suggested_property", ""),
+                        "source": f"{ta.system}.{ta.table}",
+                    }
+                )
 
     # Convert to serializable list
     rollup = []
@@ -3565,46 +3813,18 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
     return data
 
 
-def write_claims_output(
+def write_alignment_output(
     alignment: DomainAlignment,
-    claims_dir: Path,
+    output_dir: Path,
     *,
     inventory_dir: Path | None = None,
 ) -> Path:
-    """Write a domain alignment as a Claim Registry (DD-094).
-
-    The governance-facing output of ``propose-alignment``: candidate concepts are
-    emitted as ``proposed`` claims into ``{domain}-claims.yaml``. When a claims
-    file already exists, human decisions are preserved across the re-run via
-    :func:`merge_preserving_decisions` (the claim-level analog of the alignment
-    YAML's disposition preservation). Returns the written path.
-
-    When *inventory_dir* is supplied (toolkit-optimizations F4), the deterministic
-    reference-model URI index (the same one used by ``migrate-claims``) is loaded
-    and passed to :func:`alignment_to_registry` so newly proposed class/property
-    claims are emitted with resolved ``class_uri`` / ``property_uri`` instead of
-    nulls. This lets ``check-claims --strict`` approve anchored claims without a
-    manual URI repair. Ambiguous or unknown names still resolve to null.
-    """
-    from .migrate_claims import alignment_to_registry, load_inventory_uri_index
-
-    uri_index = (
-        load_inventory_uri_index(inventory_dir)
-        if inventory_dir and inventory_dir.is_dir()
-        else None
+    """Write the complete advisory alignment without creating governance state."""
+    del inventory_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target = output_dir / f"{alignment.domain}-alignment.yaml"
+    target.write_text(
+        yaml.safe_dump(alignment_to_dict(alignment), sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
     )
-    registry = alignment_to_registry(alignment_to_dict(alignment), uri_index=uri_index)
-
-    target = registry_path(claims_dir, alignment.domain)
-    if target.exists():
-        try:
-            existing = load_registry(target)
-            registry = merge_preserving_decisions(registry, existing)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Could not merge existing claims at %s (%s); writing fresh.",
-                target, exc,
-            )
-
-    write_registry(registry, target)
     return target
