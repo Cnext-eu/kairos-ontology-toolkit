@@ -46,6 +46,10 @@ This makes it immediately clear which decision they belong to. Files without a
 
 ## Index
 
+> **Current architecture:** start with DD-133. DD-135 and DD-136 record the completed v4
+> operational retirement. Earlier accepted entries remain historical records unless a later
+> decision explicitly supersedes them; they are not an alternate active authoring path.
+
 | ID | Title | Status | Date |
 |----|-------|--------|------|
 | [DD-001](#dd-001-gold-layer-inheritance--class-per-table) | Gold Layer Inheritance — Class-Per-Table | Proposed | 2026-04-25 |
@@ -8918,10 +8922,9 @@ splitting into separate lists would silently discard.
 `src/kairos_ontology/cli/compile.py`, existing
 `core/projections/dbt/` (reused phases), `kairos-design-domain` +
 `kairos-design-mapping` skills, `tests/scenarios/v5-hub/`
-**Implementation:** first vertical slice tracked in the session plan
-(`v5-decision-contract` → `v5-skill-scenario`); full contract in the companion doc
-[`dd-133-v5-entity-binding-compile.md`](dd-133-v5-entity-binding-compile.md); broader
-migration roadmap in `docs/draft/plan.md`.
+**Implementation:** `src/kairos_ontology/core/compiler/`,
+`src/kairos_ontology/cli/compile.py`, the lean packaged hub scaffold, and the companion
+contract [`dd-133-v5-entity-binding-compile.md`](dd-133-v5-entity-binding-compile.md).
 
 ### Context
 
@@ -8955,10 +8958,12 @@ upgrade path is provided** — existing client hubs are **rebuilt from fresh** a
    `kairos_ontology.mdm` (layering rule).
 4. **Minimal non-suppressible safety kernel** gates emission; focused data-quality checks
    are evidence emitted as ordinary dbt tests, not a Kairos runtime-result contract.
-5. **Superseded-for-the-v5-path** (deprecated-but-operative, not deleted): the
+5. **Superseded-for-the-v5-path at acceptance** (then deprecated-but-operative, not
+   deleted from decision history): the
    lifecycle/readiness/release, claims/synchronization, and mandatory-preparation/
    virtual-source/contract-identity decisions listed in the companion doc §9. Their v4
-   command paths keep working until stages 4–5 remove them. DD-107's graph-free scalar AST
+   command paths were to keep working until retirement. Stage 4 subsequently removed them
+   under DD-135/DD-136 and the retirement inventory. DD-107's graph-free scalar AST
    is **retained and reused**; only its RDF-authored, preparation-routed acquisition path is
    superseded.
 6. **Stage 2 closed contract:** `load` is discriminated between full refresh and complete
@@ -8988,17 +8993,27 @@ lives in the companion doc.
 
 ### Consequences
 
-- The first vertical slice (YAML → compile → deterministic Fabric dbt) and the Stage 2
-  closed authoring/schema/loader contract are implemented. Stage 2 downstream policy
-  adaptation, rendering, and scenarios remain separate gated work; Stages 3–8 remain
-  documented in the session plan and `docs/draft/plan.md`.
-- v4 machinery remains live and authoritative for its own command paths during the slice;
-  DD-133 does not make it dead-but-live. v4↔v5 output-collision rules are defined in the
-  emission contract.
-- The riskiest step is the adapter seam into the existing phases; it is de-risked first by
-  `v5-seam-spike` before the YAML schema is locked.
+- The complete strict kernel is implemented, including
+  incremental/SCD canonical hashing, temporal relationships, explicit conformance, adapter
+  capabilities, and direct contracted dbt SQL/YAML sources.
+- The one-binding-per-source rule remains: each document selects one relation or one
+  contracted dbt model. Multi-source materialization uses separate bindings with one explicit,
+  deterministic conformance contract.
+- Stage 3 establishes immutable `CompilePlan` as the sole canonical Silver/dbt planning
+  authority and `compile` as the only generation path. Optional Gold/MDM consumers reuse the
+  typed plan. Immutable phases, typed policy/expression structures, adapters, canonical
+  hashing, and deterministic renderers are retained.
+- Stage 4 retired every inventoried v4 operational wave and its commands/tests/assets; it did
+  not add v4 compatibility, dual authoring, or migration. The earlier
+  deprecated-but-operative state is preserved above as cutover history.
+- The adapter seam into the existing phases was de-risked by `v5-seam-spike` before the YAML
+  schema was locked.
 - Skills become thin LLM loops over deterministic primitives — no second proposal DB or
   session-state subsystem is introduced.
+- The lean scaffold, active documentation, CLI navigation, downstream-consumption guidance,
+  and managed skills describe the implemented clean-break architecture.
+- Documentation consolidation is not v5 GA publication; version/tag/assets and publication
+  verification remain a separate maintainer release operation.
 
 ---
 
@@ -9064,7 +9079,8 @@ Windows refresh mechanisms avoids a second, platform-specific update path.
 **Status:** Accepted
 **Date:** 2026-07-27
 **Affects:** release evaluation, lifecycle/status scanning, projection readiness, CLI and scaffold
-**Implementation:** Stage 4 retirement inventory and the canonical v5 compiler
+**Implementation:** `docs/design/stage4-retirement-import-inventory.json`,
+`tests/test_stage4_retirement_inventory.py`, and the canonical v5 compiler
 
 ### Context
 
@@ -9091,6 +9107,10 @@ and prevents a removed subsystem from being reintroduced by an unnoticed import.
 - Importing any retired module raises `ModuleNotFoundError`.
 - New hubs do not scaffold `.kairos-state`; flow and diagnostic skills are stateless.
 - Compile success is not a runtime-validation or release-certification claim.
+- The transformation evidence/synchronization/candidate, preparation/Silver RDF authority,
+  report/session persistence, release-baseline, and obsolete-command waves recorded in the
+  same inventory are also retired. Ordinary contracted dbt SQL/YAML source contracts and
+  reusable source/ontology/compiler/rendering architecture remain.
 
 ---
 

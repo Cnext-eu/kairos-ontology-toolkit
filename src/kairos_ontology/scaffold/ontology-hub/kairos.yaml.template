@@ -1,0 +1,3 @@
+version: 5
+name: {repo_name}
+adapter: fabric

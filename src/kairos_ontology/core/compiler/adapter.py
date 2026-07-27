@@ -152,6 +152,7 @@ class ResolvedClass:
     name: str
     label: str = ""
     comment: str = ""
+    parent_uris: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -831,7 +832,6 @@ def _assemble_bound_sources(
     )
 
     record_key_uri = f"{resource_base}:record-key"
-    key_component_uris = tuple(symbols[name].uri for name in binding.identity.source_key)
 
     natural_key_columns = binding.identity.business_key or binding.identity.source_key
     surrogate = strategy_value == "surrogate-only"

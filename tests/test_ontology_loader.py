@@ -12,7 +12,6 @@ from kairos_ontology.core.ontology_loader import (
     load_ontology,
 )
 
-
 OWL_CLASS = URIRef("http://www.w3.org/2002/07/owl#Class")
 
 
@@ -27,10 +26,7 @@ def _ttl(ontology: str, *, imports: tuple[str, ...] = (), cls: str | None = None
 
 
 def _catalog(path: Path, mappings: dict[str, str], *, next_catalog: str | None = None) -> Path:
-    entries = "".join(
-        f'  <uri name="{uri}" uri="{target}"/>\n'
-        for uri, target in mappings.items()
-    )
+    entries = "".join(f'  <uri name="{uri}" uri="{target}"/>\n' for uri, target in mappings.items())
     chained = f'  <nextCatalog catalog="{next_catalog}"/>\n' if next_catalog else ""
     path.write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -109,20 +105,6 @@ def test_degraded_and_optional_import_modes_are_explicit(tmp_path):
 
     assert not degraded.complete
     assert optional.complete
-
-
-def test_legacy_facade_remains_lenient(tmp_path):
-    from kairos_ontology.core.catalog_utils import load_graph_with_catalog
-
-    root = tmp_path / "root.ttl"
-    root.write_text(_ttl("urn:root", imports=("urn:missing",)), encoding="utf-8")
-    catalog = _catalog(tmp_path / "catalog.xml", {})
-
-    result = load_graph_with_catalog(root, catalog, quiet=True)
-
-    assert len(result.graph) > 0
-    assert result.diagnostics[0]["level"] == "warning"
-    assert "No catalog mapping for" in result.diagnostics[0]["message"]
 
 
 def test_jsonld_import_uses_resolved_source_format(tmp_path):

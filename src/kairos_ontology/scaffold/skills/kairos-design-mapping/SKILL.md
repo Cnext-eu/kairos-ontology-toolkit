@@ -14,11 +14,9 @@ Use this skill after a bounded canonical ontology slice is accepted. Author
 `integration/bindings/<source>-to-<domain>.binding.yaml` as the single
 source-to-canonical execution authority.
 
-This is the DD-133 v5 clean break. Never author SKOS/mapping TTL, preparation
-TTL, Silver-extension TTL, lifecycle/readiness records, proposal registries, or
-virtual-source registries. Do not create legacy phase logs or persistent
-explain/check reports. `compile` diagnostics are ephemeral;
-persist only accepted binding and ordinary contracted dbt changes.
+This is the DD-133 v5 clean break. Work only with the authoritative v5 inputs
+below. `compile` diagnostics are ephemeral; persist only accepted binding and
+ordinary contracted dbt changes.
 
 ## Design fleet mode (DD-088)
 
@@ -129,7 +127,10 @@ metadata:
   domain: <domain>
 source:                         # exactly one
   relation: <source>.<relation>
-  # dbtModel: <contracted_model_name>
+  # dbtModel:
+  #   name: <contracted_model_name>
+  #   sqlPath: integration/transforms/dbt/models/<model>.sql
+  #   contractPath: integration/transforms/dbt/models/<model>.yml
 target:
   class: <prefix:Class>
 grain:
@@ -245,7 +246,10 @@ JSON expansion, multi-relation fallback, survivorship, or a grain change, stop
 binding that physical relation and invoke
 **kairos-develop-dbt-transformation**. The handoff must author ordinary dbt
 SQL plus an authoritative YAML output contract. It must not create a candidate
-inventory or virtual source.
+inventory, separate virtual-source artifact, or registry. The required
+`meta.kairos.virtual_source_iri` field is only a stable identifier for the
+contracted model output; it is not another authored source or execution
+authority.
 
 After the dbt model is accepted, return here and reference it with
 `source.dbtModel`; do not duplicate its relational logic in the binding.
@@ -302,7 +306,7 @@ out-of-scope work. Artifact generation is a separate execution step.
 - Treating sample checks as authority or suppressing compiler findings.
 - Embedding arbitrary/raw SQL or relational logic in scalar expressions.
 - Running `compile --emit` while designing a binding.
-- Persisting diagnostics, phase state, readiness, evidence, or proposal records.
+- Writing anything except accepted binding or dbt authoring changes.
 - Exposing unredacted samples to the LLM or committed files.
 
 ## Related skills

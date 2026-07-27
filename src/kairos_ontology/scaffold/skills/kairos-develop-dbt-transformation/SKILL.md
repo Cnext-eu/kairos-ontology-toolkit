@@ -1,29 +1,54 @@
-# Develop dbt Transformation
+---
+name: kairos-develop-dbt-transformation
+description: >
+  Interactive v5 workflow for ordinary dbt SQL and properties YAML when an
+  EntityBinding needs a contracted relational or grain-changing source model.
+---
+<!-- kairos-ontology-toolkit:managed v2.35.0 -->
 
-Create or update an ordinary contracted dbt model used by a v5
-`source.dbtModel` binding.
+# Develop a Contracted dbt Transformation
 
-## Workflow
-
-1. Read the binding, relevant ontology/source inputs, and existing dbt SQL/YAML.
-2. Confirm the output row grain and physical key columns before editing.
-3. Keep executable relational logic in SQL and the physical output contract in dbt
-   properties YAML.
-4. Place model files below `integration/transforms/dbt/models/`; use `source()` and
-   `ref()` instead of physical relation names.
-5. Require `version: 2`, `config.contract.enforced: true`, output column names and
-   types, and `meta.kairos` values for grain, grain key, target class, virtual source
-   IRI, and supported adapters.
-6. Keep `source.dbtModel.name`, `sqlPath`, and `contractPath` explicit in the entity
-   binding. The binding grain and source key must exactly match the contract grain key.
-7. Add focused dbt tests for transformation behavior and run the compiler tests for
-   the bound model.
-
-Do not generate RDF virtual sources or treat dbt metadata as ontology authority.
+Use this skill only when a direct relation plus closed scalar binding expressions
+cannot express the required result. The outputs are ordinary dbt SQL and
+properties YAML under `integration/transforms/dbt/models/`.
 
 ## Design fleet mode (DD-088)
 
-Default is interactive. An explicit AI-approved fleet override must be requested.
-It applies only to this skill invocation and is never inherited. Record rationale and confidence
-for every AI-approved choice, and stop for ambiguity, low confidence, sensitive data, or
-destructive changes.
+Default is interactive. Confirm source relations, business meaning, output grain,
+key columns, relational logic, fallback behavior, output columns/types, adapter
+scope, tests, and the exact patch before writing.
+
+An explicit AI-approved override applies only to this skill invocation and is
+never inherited. Record rationale, confidence, and evidence for every AI-approved
+checkpoint. Stop for ambiguity, low confidence, policy-sensitive choices,
+destructive changes, or proprietary/PII risk.
+
+## Workflow
+
+1. Read the target ontology, source vocabulary, PII-safe samples, current binding,
+   and existing dbt project files.
+2. Confirm one output row grain and its physical key columns.
+3. Present the proposed `source()`/`ref()` graph, relational operations, null and
+   error behavior, deterministic ordering, and adapter assumptions. Obtain the
+   active mode's checkpoint decision.
+4. Author SQL with `source()` and `ref()`; do not hard-code physical relation names.
+5. Author `version: 2` properties YAML with `config.contract.enforced: true`, every
+   output column name/type, focused dbt tests, and `meta.kairos` containing grain,
+   `grain_key`, target class, `virtual_source_iri`, and supported adapters. The
+   legacy-named IRI identifies the contracted model output only; do not generate a
+   separate virtual-source artifact or registry.
+6. Validate with the dbt commands already configured by the project. Fix parse,
+   contract, compile, and focused test failures before handoff.
+7. Return to **kairos-design-mapping**. Set `source.dbtModel.name`, `sqlPath`, and
+   `contractPath`; make binding grain and source key exactly match the contracted
+   `grain_key`.
+8. Run the stateless binding feedback loop:
+
+   ```powershell
+   $env:KAIROS_SKILL_CONTEXT = "1"
+   uv run kairos-ontology compile <domain> --check --format text
+   uv run kairos-ontology compile <domain> --explain --format text
+   ```
+
+The dbt output contract is physical source authority. It does not define canonical
+ontology meaning, and this skill does not emit generated Kairos artifacts.

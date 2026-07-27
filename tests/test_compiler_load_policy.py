@@ -113,6 +113,33 @@ def test_full_refresh_produces_no_incremental_facts() -> None:
     assert result.canonical_hash is None
 
 
+@pytest.mark.parametrize(
+    ("load", "code", "pointer"),
+    [
+        (
+            LoadSpec(mode="full-refresh", scd=2),
+            "load-policy.full-refresh-details",
+            "/load",
+        ),
+        (
+            LoadSpec(mode="invented"),
+            "load-policy.unsupported-mode",
+            "/load/mode",
+        ),
+    ],
+)
+def test_invalid_load_modes_have_stable_source_located_codes(
+    load: LoadSpec, code: str, pointer: str
+) -> None:
+    with pytest.raises(CompileError) as excinfo:
+        adapt_load_policy(replace(_binding(), load=load))
+
+    diagnostic = next(item for item in excinfo.value.diagnostics if item.code == code)
+    assert diagnostic.code == code
+    assert diagnostic.location.path == "model/bindings/crm.binding.yaml"
+    assert diagnostic.location.pointer == pointer
+
+
 def test_incremental_never_infers_missing_scd_or_policy() -> None:
     binding = replace(_binding(), load=LoadSpec(mode="incremental"))
     with pytest.raises(CompileError) as excinfo:
@@ -173,3 +200,85 @@ def test_invalid_action_is_a_diagnostic_not_an_adapter_key_error() -> None:
     diagnostic = excinfo.value.diagnostics[0]
     assert diagnostic.code == "load-policy.unsupported-action"
     assert diagnostic.location.pointer == "/load/incremental/delete"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code", "pointer"),
+    [
+        (
+            lambda policy: replace(policy, canonical_hash_inputs=("customer_id", "customer_id")),
+            "load-policy.duplicate-value",
+            "/load/incremental/canonicalHashInputs",
+        ),
+        (
+            lambda policy: replace(policy, ingested_at=policy.source_updated_at),
+            "load-policy.ambiguous-runtime-fields",
+            "/load/incremental",
+        ),
+        (
+            lambda policy: replace(
+                policy,
+                cdc_operation=replace(policy.cdc_operation, insert_values=()),
+            ),
+            "load-policy.incomplete-cdc",
+            "/load/incremental/cdcOperation/insertValues",
+        ),
+        (
+            lambda policy: replace(
+                policy,
+                cdc_operation=replace(policy.cdc_operation, delete_values=("D", "D")),
+            ),
+            "load-policy.duplicate-cdc-value",
+            "/load/incremental/cdcOperation/deleteValues",
+        ),
+        (
+            lambda policy: replace(policy, lookback=LookbackSpec(value=0, unit="days")),
+            "load-policy.invalid-lookback",
+            "/load/incremental/lookback",
+        ),
+        (
+            lambda policy: replace(policy, correction="overwrite"),
+            "load-policy.scd-correction-incompatible",
+            "/load/incremental/correction",
+        ),
+    ],
+)
+def test_each_incremental_policy_diagnostic_is_stable_and_source_located(
+    mutation, code: str, pointer: str
+) -> None:
+    binding = _binding()
+    assert binding.load.incremental is not None
+    policy = mutation(binding.load.incremental)
+    binding = replace(binding, load=replace(binding.load, incremental=policy))
+
+    with pytest.raises(CompileError) as excinfo:
+        adapt_load_policy(binding)
+
+    diagnostic = next(item for item in excinfo.value.diagnostics if item.code == code)
+    assert diagnostic.location.path == "model/bindings/crm.binding.yaml"
+    assert diagnostic.location.pointer == pointer
+
+
+@pytest.mark.parametrize(
+    ("field", "pointer"),
+    [
+        ("delete", "/load/incremental/delete"),
+        ("late_arrival", "/load/incremental/lateArrival"),
+        ("replay", "/load/incremental/replay"),
+        ("backfill", "/load/incremental/backfill"),
+        ("schema_evolution", "/load/incremental/schemaEvolution"),
+    ],
+)
+def test_every_incremental_action_is_explicitly_validated(field: str, pointer: str) -> None:
+    binding = _binding()
+    assert binding.load.incremental is not None
+    policy = replace(binding.load.incremental, **{field: "invented"})
+    binding = replace(binding, load=replace(binding.load, incremental=policy))
+
+    with pytest.raises(CompileError) as excinfo:
+        adapt_load_policy(binding)
+
+    diagnostic = next(
+        item for item in excinfo.value.diagnostics if item.code == "load-policy.unsupported-action"
+    )
+    assert diagnostic.location.pointer == pointer

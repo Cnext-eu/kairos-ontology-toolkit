@@ -83,22 +83,10 @@ class NamingConvention(str, Enum):
     CAMEL_TO_SNAKE = "camel-to-snake"
 
 
-
-
-
-
-
-
-
-
 class SchemaEvolutionAction(str, Enum):
     FAIL = "fail"
     QUARANTINE = "quarantine"
     APPROVED_CONTRACT_UPDATE = "approved-contract-update"
-
-
-
-
 
 
 class CanonicalTypeKind(str, Enum):
@@ -126,30 +114,6 @@ class CanonicalTypeSpec:
     length: int | None = None
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @dataclass(frozen=True, slots=True)
 class SourceTableIdentitySpec:
     source_system_uri: str
@@ -158,35 +122,9 @@ class SourceTableIdentitySpec:
     table_name: str
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @dataclass(frozen=True, slots=True)
 class SchemaEvolutionSpec:
     action: EffectiveValue[SchemaEvolutionAction]
-
-
 
 
 class IdentityStrategy(str, Enum):

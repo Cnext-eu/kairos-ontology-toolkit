@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from rdflib import Graph, Literal, Namespace, RDF, URIRef
-from rdflib.namespace import OWL
+from rdflib import Graph, Literal, URIRef
 
 from kairos_ontology.core.projections.dbt.builders import (
     build_silver_registry,
@@ -1391,68 +1390,6 @@ class TestCrossDomainFK:
         )
         assert "party_ref.party_sk as party_sk" in artifacts[silver_key]
         assert "kairos_canonical_hash_v1" not in artifacts[silver_key]
-
-    def test_legacy_temporal_fk_policy_is_not_runtime_authority(
-        self,
-        cross_domain_classes,
-        cross_domain_graph,
-        template_dir,
-        cross_domain_bronze_dir,
-        cross_domain_mappings_dir,
-    ):
-        prop = URIRef("http://kairos.example/ontology/representsParty")
-        ext = "https://kairos.cnext.eu/ext#"
-        cross_domain_graph.add(
-            (prop, URIRef(f"{ext}silverForeignKeyTemporalMode"), Literal("as-of"))
-        )
-        cross_domain_graph.add(
-            (prop, URIRef(f"{ext}silverForeignKeyAsOfColumn"), Literal("event_ts"))
-        )
-        cross_domain_graph.add(
-            (prop, URIRef(f"{ext}silverForeignKeyInterval"), Literal("closed-open"))
-        )
-        cross_domain_graph.add((prop, URIRef(f"{ext}silverForeignKeyTimeZone"), Literal("UTC")))
-        cross_domain_graph.add(
-            (prop, URIRef(f"{ext}silverForeignKeyPrecision"), Literal("microsecond"))
-        )
-        cross_domain_graph.add(
-            (
-                prop,
-                URIRef(f"{ext}silverForeignKeyCardinality"),
-                Literal("exactly-one"),
-            )
-        )
-        cross_domain_graph.add(
-            (
-                prop,
-                URIRef(f"{ext}silverForeignKeyMissingPolicy"),
-                Literal("quarantine"),
-            )
-        )
-        cross_domain_graph.add(
-            (
-                prop,
-                URIRef(f"{ext}silverForeignKeyAmbiguousPolicy"),
-                Literal("fail"),
-            )
-        )
-        cross_domain_graph.add(
-            (
-                prop,
-                URIRef(f"{ext}silverForeignKeyLateParentPolicy"),
-                Literal("restate"),
-            )
-        )
-        artifacts = generate_dbt_artifacts(
-            classes=cross_domain_classes,
-            graph=cross_domain_graph,
-            template_dir=template_dir,
-            namespace="http://kairos.example/ontology/",
-            ontology_name="client",
-            bronze_dir=cross_domain_bronze_dir,
-            mappings_dir=cross_domain_mappings_dir,
-        )
-        assert artifacts
 
     def test_fk_change_can_be_excluded_from_scd2_hash(
         self,
@@ -3214,9 +3151,7 @@ class TestProjectedFoldedSubtypeMappings:
         assert "models/silver/booking/confirmed_booking.sql" not in artifacts
         assert "models/silver/booking/booking_request.sql" not in artifacts
 
-    def test_folded_subtype_sources_preserve_discriminator_columns(
-        self, tmp_path, template_dir
-    ):
+    def test_folded_subtype_sources_preserve_discriminator_columns(self, tmp_path, template_dir):
         graph, bronze, mappings, classes = self._setup(tmp_path)
         artifacts = generate_dbt_artifacts(
             classes=classes,
@@ -5375,13 +5310,15 @@ _ISSUE_194_BRONZE_TTL = textwrap.dedent("""\
     bronze-qargo:companies a kairos-bronze:SourceTable ;
         rdfs:label "companies" ;
         kairos-bronze:sourceSystem bronze-qargo:Qargo ;
-        kairos-bronze:tableName "companies" .
+        kairos-bronze:tableName "companies" ;
+        kairos-bronze:primaryKeyColumns "company_id" .
 
     bronze-qargo:companies_company_id a kairos-bronze:SourceColumn ;
         kairos-bronze:sourceTable bronze-qargo:companies ;
         kairos-bronze:columnName "company_id" ;
         kairos-bronze:dataType "nvarchar" ;
-        kairos-bronze:nullable "false"^^xsd:boolean .
+        kairos-bronze:nullable "false"^^xsd:boolean ;
+        kairos-bronze:isPrimaryKey true .
 
     bronze-qargo:companies_name a kairos-bronze:SourceColumn ;
         kairos-bronze:sourceTable bronze-qargo:companies ;

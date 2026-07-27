@@ -358,9 +358,7 @@ def normalize_contract(
         return replace(join, source_inputs=inputs)
 
     table_context = {
-        table.uri: (system.label, table)
-        for system in bound.systems
-        for table in system.tables
+        table.uri: (system.label, table) for system in bound.systems for table in system.tables
     }
     source_ref_by_table: dict[tuple[str, str], str] = {}
     for class_uri, authority in authorities.items():

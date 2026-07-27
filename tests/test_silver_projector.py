@@ -49,18 +49,12 @@ def test_both_adapters_use_exact_shared_column_order_and_types(adapter):
         replace(
             _client_inputs(),
             target_platform=adapter,
-            gold_extension=(
-                _client_inputs().gold_extension
-                if adapter == "fabric"
-                else None
-            ),
+            gold_extension=(_client_inputs().gold_extension if adapter == "fabric" else None),
         )
     )
     assert contract.project.target_platform == adapter
     assert plan.silver is not None
-    manifest = json.loads(
-        artifacts[plan.silver.parity_artifact_path]
-    )
+    manifest = json.loads(artifacts[plan.silver.parity_artifact_path])
     assert manifest["status"] == "pass"
 
     specs = {model.identity.model_name: model for model in shaped.silver_models}
@@ -72,77 +66,46 @@ def test_both_adapters_use_exact_shared_column_order_and_types(adapter):
         assert all(column.canonical_type for column in physical.columns)
 
 
-def test_scd1_and_scd2_runtime_columns_follow_dd109_contract():
-    _, shaped, plan, artifacts = _run()
-    specs = {model.identity.model_name: model for model in shaped.silver_models}
-    scd1 = specs["client_type"]
-    scd2 = specs["client"]
-
-    assert scd1.runtime is not None
-    assert scd1.runtime.authority.history.scd_type.value.value == "1"
-    assert "_is_deleted" in {column.name for column in scd1.columns}
-    assert "_business_valid_from" not in {column.name for column in scd1.columns}
-
-    assert scd2.runtime is not None
-    assert scd2.runtime.authority.history.scd_type.value.value == "2"
-    scd2_columns = {column.name: column for column in scd2.columns}
-    for name in (
-        "_business_valid_from",
-        "_business_valid_to",
-        "_system_from",
-        "_system_to",
-        "is_current",
-    ):
-        assert name in scd2_columns
-    hash_columns = [
-        column
-        for model in plan.silver.models
-        for column in model.columns
-        if column.name == "_row_hash"
-    ]
-    assert hash_columns
-    assert all(column.canonical_type.length == 64 for column in hash_columns)
-    assert "_row_hash BINARY" not in artifacts[plan.silver.ddl_artifact_path]
-
-
 def test_schema_yaml_uses_spec_columns_physical_types_nullability_and_defaults():
     contract, shaped, _, _ = _run()
     target = next(
-        model
-        for model in shaped.silver_models
-        if model.identity.model_name == "client_type"
+        model for model in shaped.silver_models if model.identity.model_name == "client_type"
     )
     changed_columns = tuple(
-        replace(
-            column,
-            nullable=False,
-            default_expression="'UNKNOWN'",
+        (
+            replace(
+                column,
+                nullable=False,
+                default_expression="'UNKNOWN'",
+            )
+            if column.name == "type_label"
+            else column
         )
-        if column.name == "type_label"
-        else column
         for column in target.columns
     )
     models = tuple(
-        replace(model, columns=changed_columns)
-        if model is target
-        else model
+        replace(model, columns=changed_columns) if model is target else model
         for model in shaped.silver_models
     )
     documents = tuple(
-        replace(
-            document,
-            models=tuple(
-                replace(
-                    model,
-                    columns=changed_columns,
-                )
-                if model.name == "client_type"
-                else model
-                for model in document.models
-            ),
+        (
+            replace(
+                document,
+                models=tuple(
+                    (
+                        replace(
+                            model,
+                            columns=changed_columns,
+                        )
+                        if model.name == "client_type"
+                        else model
+                    )
+                    for model in document.models
+                ),
+            )
+            if document.kind is SchemaKind.SILVER
+            else document
         )
-        if document.kind is SchemaKind.SILVER
-        else document
         for document in shaped.schema_documents
     )
     changed = replace(
@@ -152,9 +115,7 @@ def test_schema_yaml_uses_spec_columns_physical_types_nullability_and_defaults()
     )
     plan = plan_materialization(contract, changed)
     artifacts = render_project(changed, plan)
-    schema = yaml.safe_load(
-        artifacts["models/silver/client/_client__models.yml"]
-    )
+    schema = yaml.safe_load(artifacts["models/silver/client/_client__models.yml"])
     type_label = next(
         column
         for model in schema["models"]
@@ -172,13 +133,9 @@ def test_schema_yaml_uses_spec_columns_physical_types_nullability_and_defaults()
 
 def test_constraints_are_unenforced_collision_safe_and_adapter_bounded():
     _, _, plan, artifacts = _run()
-    metadata = json.loads(
-        artifacts[plan.silver.constraint_artifact_path]
-    )
+    metadata = json.loads(artifacts[plan.silver.constraint_artifact_path])
     constraints = [
-        constraint
-        for model in metadata["models"]
-        for constraint in model["constraints"]
+        constraint for model in metadata["models"] for constraint in model["constraints"]
     ]
     assert constraints
     assert all(constraint["enforced"] is False for constraint in constraints)

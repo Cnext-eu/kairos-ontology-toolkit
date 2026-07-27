@@ -16,13 +16,6 @@ Shapes are automatically picked up by the validator:
 kairos-ontology validate --shacl
 ```
 
-Fresh hubs include toolkit policy shapes:
-
-- `kairos-ext-shapes.shacl.ttl` validates Silver/Gold medallion policy.
-- `kairos-map-shapes.shacl.ttl` validates named typed scalar mapping contracts.
-
-Keep these files enabled: missing policy is intentionally fail-closed.
-
 ## Example shape
 
 ```turtle

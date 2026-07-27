@@ -25,7 +25,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-import kairos_ontology.cli.main as cli_main
+import kairos_ontology.cli.projections as projection_commands
+import kairos_ontology.cli.validation as validation_commands
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.reference_modules import (
     resolve_hub_accelerator,
@@ -341,11 +342,15 @@ class TestCrossCommandResolverParity:
         validate_calls: dict[str, dict] = {}
         project_calls: dict[str, dict] = {}
         monkeypatch.setattr(
-            cli_main, "run_validation", lambda **kw: validate_calls.update(validation=kw)
+            validation_commands,
+            "run_validation",
+            lambda **kw: validate_calls.update(validation=kw),
         )
-        monkeypatch.setattr(cli_main, "run_gdpr_validation", lambda **kw: None)
+        monkeypatch.setattr(validation_commands, "run_gdpr_validation", lambda **kw: None)
         monkeypatch.setattr(
-            cli_main, "run_projections", lambda **kw: project_calls.update(projection=kw)
+            projection_commands,
+            "run_projections",
+            lambda **kw: project_calls.update(projection=kw),
         )
         monkeypatch.chdir(hub)
 

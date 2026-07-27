@@ -34,10 +34,22 @@ def test_compile_check_and_json_explain_are_write_free(tmp_path, monkeypatch):
     assert checked.exit_code == 0, checked.output
     assert "compile check passed" in checked.output
     assert explained.exit_code == 0, explained.output
-    payload = json.loads(explained.output)
+    payload = json.loads(explained.stdout)
     assert payload["succeeded"] is True
     assert payload["explain"]["entities"][0]["name"] == "crm-customer"
     assert before == after
+
+
+def test_compile_resolves_nested_hub_from_repository_root(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    hub = _hub(repository / "ontology-hub")
+    monkeypatch.chdir(repository)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+    assert result.exit_code == 0, result.output
+    assert "compile check passed" in result.output
+    assert hub.is_dir()
 
 
 def test_compile_returns_nonzero_for_diagnostics(tmp_path, monkeypatch):

@@ -4,7 +4,8 @@
 > This is the **authoritative contract** for the v5 compiler. It is
 > normative for the closed YAML schema, the scalar-expression grammar, the stateless
 > `compile` command, the atomic emission contract, and the minimal static safety kernel.
-> Stages 2–8 (see `docs/draft/plan.md`) extend but must not weaken this contract.
+> The clean-break implementation and documentation consolidation are complete. GA
+> publication is a separate release operation and is not claimed by this document.
 
 ## 1. No backwards compatibility
 
@@ -17,9 +18,9 @@ from fresh** as v5 hubs. This decision removes migration/compat scope from every
 ```text
 model/
   ontologies/<domain>.ttl              # authoritative canonical Silver model (OWL/TTL)
-  bindings/<source>-to-<domain>.binding.yaml   # the single execution authority
   shapes/                              # optional SHACL
 integration/
+  bindings/<source>-to-<domain>.binding.yaml   # the single execution authority
   discovery/                           # confirmed business context/glossary only
   sources/<source>/*.ttl               # Bronze schema + redacted samples (authoritative)
   transforms/dbt/
@@ -138,7 +139,8 @@ reject unsupported actions but may not choose defaults.
 
 ### 3c. Stage 2 multi-source conformance
 
-One document still binds exactly one source. Bindings that materialize the same class must
+The one-binding-per-source rule is invariant: one document binds exactly one source relation
+or exactly one contracted dbt model. Bindings that materialize the same class must
 declare the same explicit conformance `group`, unique positive `sourcePrecedence`, compatible
 grain/identity/property contracts, an explicit conflict action, and one closed union policy:
 
@@ -171,9 +173,11 @@ source:
     contractPath: integration/transforms/dbt/models/schema.yml
 ```
 
-All three fields are required and unknown metadata is rejected. Resolution, output-column,
-type, grain, and deterministic-identity checks belong to the Stage 2 source adapter; the
-binding never embeds SQL, joins, windows, aggregation, or transformation evidence.
+All three fields are required and unknown metadata is rejected. The completed source adapter
+resolves the ordinary SQL model and authoritative dbt YAML contract directly, then checks
+output columns, types, grain, and deterministic identity. The binding never embeds SQL,
+joins, windows, aggregation, or transformation evidence. There is no intermediate virtual
+source, evidence record, candidate inventory, or contract-synchronization authority.
 
 ## 4. Scalar-expression grammar (maps 1:1 to the existing closed AST)
 
@@ -301,10 +305,14 @@ Fabric Silver SQL with **no** RDF input. Findings that bind the v5 compiler desi
   persisted as hub files).
 - Layering confirmed: importing the dbt pipeline does not load `kairos_ontology.mdm`.
 
-## 9. Superseded-for-v5-path decisions (deprecated-but-operative)
+## 9. Superseded-for-v5-path decisions (historical cutover record)
 
-The following are superseded **only for the v5 `compile` path**. Their v4 command paths
-remain operative until stages 4–5 remove them; they are not deleted from this log.
+At DD-133 acceptance, the following were superseded **only for the v5 `compile` path** and
+remained operative on v4 command paths. Stage 4 has since retired those operational paths
+under DD-135, DD-136, and the deterministic
+[`stage4-retirement-import-inventory.json`](stage4-retirement-import-inventory.json).
+The original decisions remain in the consolidated log as history; their implementations are
+not a compatibility or migration surface.
 
 - Lifecycle/readiness/release: DD-080, DD-101, DD-114, DD-116, DD-120.
 - Claims & synchronization: DD-082, DD-083, DD-094, DD-095, DD-122.
@@ -315,6 +323,27 @@ remain operative until stages 4–5 remove them; they are not deleted from this 
 
 DD-107's **graph-free scalar-expression AST is retained and reused** — only its
 RDF-authored, preparation-routed acquisition path is superseded.
+
+## 9a. Implemented clean-break architecture
+
+- The strict kernel implements the closed incremental/SCD, canonical hash, temporal
+  relationship, conformance, contracted-dbt-source, adapter, and deterministic planning
+  rules above.
+- Immutable `CompilePlan` is the sole canonical Silver/dbt planning authority. The compiler
+  creates it once after normalize/shape/materialize; check, explain, emit, Gold, and MDM
+  consume plan views rather than rebuilding scope or policy.
+- The retained architecture is ontology/source/reference loading, source analysis, typed
+  scalar expressions and policies, immutable compiler phases, canonical hashing, adapter
+  capability negotiation, deterministic dbt rendering, and optional Gold/MDM consumers.
+- The retired architecture is lifecycle/readiness/release state, claims and completeness,
+  aspirational stubs, authored preparation/Silver RDF policy, virtual-source and
+  transformation-evidence synchronization, persisted projection/import session evidence,
+  release baselines, and their commands/tests/scaffold assets.
+- The lean scaffold and active documentation expose only canonical v5 inputs and stateless
+  compile/consumption guidance. There is no v4 compatibility, dual authoring, migration
+  command, or automated upgrade path.
+- Documentation completion is not GA publication. Versioning, tagging, release assets, and
+  publication verification remain a separate maintainer operation.
 
 ## 10. Canonical example
 

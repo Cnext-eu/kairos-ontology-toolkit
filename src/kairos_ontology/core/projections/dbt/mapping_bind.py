@@ -20,7 +20,6 @@ from .mapping_specs import (
     TableMappingFact,
 )
 
-
 KAIROS_MAP = Namespace("https://kairos.cnext.eu/mapping#")
 
 _MATCH_PREDICATES = {
@@ -507,19 +506,15 @@ def bind_mapping_graph(graph: Graph, *, include_proposals: bool = False) -> Sour
             KAIROS_MAP.rowFilter,
             required=False,
         )
-        fact = (
-            TableMappingFact(
-                resource_uri=str(resource),
-                source_table_uri=str(source),
-                target_class_uri=str(target),
-                mapping_type=_one_text(graph, resource, KAIROS_MAP.mappingType),
-                match_type=match_type,
-                row_filter=(
-                    _expression(graph, filter_resource)
-                    if filter_resource is not None
-                    else None
-                ),
-            )
+        fact = TableMappingFact(
+            resource_uri=str(resource),
+            source_table_uri=str(source),
+            target_class_uri=str(target),
+            mapping_type=_one_text(graph, resource, KAIROS_MAP.mappingType),
+            match_type=match_type,
+            row_filter=(
+                _expression(graph, filter_resource) if filter_resource is not None else None
+            ),
         )
         if include_proposals or review_state in {"", "approved"}:
             table_facts.append(fact)
@@ -549,18 +544,14 @@ def bind_mapping_graph(graph: Graph, *, include_proposals: bool = False) -> Sour
             KAIROS_MAP.expression,
             required=False,
         )
-        fact = (
-            ColumnMappingFact(
-                resource_uri=str(resource),
-                source_column_uri=str(source),
-                target_property_uri=str(target),
-                match_type=match_type,
-                expression=(
-                    _expression(graph, expression_resource)
-                    if expression_resource is not None
-                    else None
-                ),
-            )
+        fact = ColumnMappingFact(
+            resource_uri=str(resource),
+            source_column_uri=str(source),
+            target_property_uri=str(target),
+            match_type=match_type,
+            expression=(
+                _expression(graph, expression_resource) if expression_resource is not None else None
+            ),
         )
         if include_proposals or review_state in {"", "approved"}:
             column_facts.append(fact)
@@ -592,9 +583,7 @@ def bind_mapping_graph(graph: Graph, *, include_proposals: bool = False) -> Sour
         columns=tuple(column_facts),
         namespaces=tuple(
             sorted(
-                (str(prefix), str(namespace))
-                for prefix, namespace in graph.namespaces()
-                if prefix
+                (str(prefix), str(namespace)) for prefix, namespace in graph.namespaces() if prefix
             )
         ),
     )

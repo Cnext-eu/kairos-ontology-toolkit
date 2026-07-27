@@ -56,9 +56,29 @@ The first vertical slice is implemented:
 - a fresh v5 scenario hub covering deterministic Fabric artifacts and fail-closed sample
   privacy.
 
-Stages 2–8 below remain deferred. They are intentionally retained as the roadmap for the
-strict kernel expansion, projection cutover, v4 retirement, scaffold simplification, broader
-skill/test replacement, and release cleanup.
+Stages 2–4 are also complete:
+
+- Stage 2 completes the strict kernel: full-refresh and complete incremental SCD1/SCD2
+  policy, canonical hashing, CDC/order/replay/backfill/schema-evolution checks, temporal
+  relationships, deterministic multi-source conformance, Fabric/Databricks capability
+  checks, and direct resolution of ordinary contracted dbt SQL/YAML sources.
+- Stage 3 makes immutable, graph-free `CompilePlan` the canonical planning authority and
+  `compile` the only canonical Silver/dbt generation path. Optional Gold and MDM projections
+  consume that same typed plan; they do not resolve or rebuild Silver inputs.
+- Stage 4 removes all inventoried v4 operational waves: release/lifecycle/readiness/status,
+  transformation evidence/synchronization/candidates, claims and completeness/stubs,
+  preparation/Silver RDF authority, persisted projection/import session evidence, release
+  baselines, and obsolete commands/tests.
+
+The retained architecture is intentional: ontology and source loading, source analysis,
+reference models, the typed scalar-expression and policy structures, immutable
+normalize/shape/materialize phases, canonical hashing, adapter capability negotiation,
+deterministic dbt renderers, and optional Gold/MDM consumers remain.
+
+Stages 5–8 are complete as of 2026-07-27. The implementation now includes the decomposed
+CLI, lean v5 scaffold, rewritten stateless skills, v5-only test architecture, and final
+documentation/release cleanup. The release candidate remains unpublished until the human
+publication steps and DCO caveat recorded by the final validation are resolved.
 
 ## Current codebase assessment
 
@@ -124,9 +144,9 @@ skill/test replacement, and release cleanup.
 ```text
 model/
   ontologies/<domain>.ttl
-  bindings/<source>-to-<domain>.binding.yaml
   shapes/                         # optional SHACL
 integration/
+  bindings/<source>-to-<domain>.binding.yaml
   discovery/                      # confirmed business context/glossary only
   sources/<source>/*.ttl          # Bronze schema and redacted samples
   transforms/dbt/
@@ -324,43 +344,51 @@ SCD and multi-source features.
 
 ### Stage 2: complete the strict binding kernel
 
-- **Contract/schema status (2026-07-27): complete.** DD-133, the packaged closed schema and
-  example, frozen loader types, explain shapes, and source-located structural diagnostics now
-  cover the approved Stage 2 variants. Adapter integration/rendering items below remain open.
-- Add incremental/SCD1/SCD2 policy and canonical hash integration.
-- Add delete, late-arrival, correction, replay, backfill, schema-change, and total-order
-  checks.
-- Add current/as-of temporal FK behavior and overlap/ambiguity checks.
-- Add multi-source bindings only where deterministic conformance is explicit.
-- Route complex or grain-changing transformations through ordinary dbt model contracts.
-- Extend Fabric and Databricks capability tests.
-- Replace specialized preparation and Silver policy normalizers with binding-owned facts.
+- **Status (2026-07-27): complete.**
+- Incremental SCD1/SCD2 policy reuses the canonical hash contract and requires explicit
+  delete, late-arrival, correction, replay, backfill, schema-change, CDC, lookback, and
+  total-order facts; no runtime behavior is inferred.
+- Current/as-of temporal relationships require explicit overlap, late-parent, validity, and
+  change-detection behavior.
+- The one-binding-per-source rule is preserved under conformance: every binding document
+  selects exactly one source relation or one contracted dbt model. Multiple sources may
+  materialize one class only as separate bindings in an explicit conformance group with
+  compatible contracts, unique precedence, conflict behavior, and union/dedup policy.
+- Complex or grain-changing transformations are direct contracted dbt sources. The compiler
+  resolves the ordinary SQL model and authoritative dbt YAML contract, then validates its
+  output columns, types, grain, and identity; there is no virtual-source, evidence, or
+  synchronization subsystem between the contract and `EntityBinding`.
+- Fabric and Databricks capabilities are negotiated and tested, and binding-owned immutable
+  facts replace authored preparation/Silver policy authority.
 
 ### Stage 3: move all Silver/dbt projection paths to v5
 
-- Make `compile` the only entry point for canonical Silver/dbt generation.
-- Replace `DbtInputs` path fields for mappings/preparation/extensions/contracts with bound
-  v5 inputs.
-- Remove aspirational/stub outcomes and release evidence from the immutable pipeline.
-- Remove preparation models and DQ runtime-contract artifacts that are not required by the
-  minimal quality kernel.
-- Preserve the immutable phase boundaries, typed specs, adapter plans, and deterministic
-  renderers.
-- Keep Gold and MDM as optional downstream targets consuming canonical compiler output;
-  do not make them required lifecycle phases.
+- **Status (2026-07-27): complete.**
+- `compile` is the only canonical Silver/dbt generation entry point. Legacy
+  `project --target dbt|silver`, internal projector dispatch, target-registry dispatch, and
+  `--target all` dispatch reject or omit Silver/dbt before scope resolution or writes.
+- `build_compile_plan(...)` produces the canonical immutable `CompilePlan` after
+  normalize/shape/materialize and before byte rendering. Check, explain, emit, and optional
+  downstream consumers use this same plan; no parallel planning authority remains.
+- Bound v5 inputs replace the legacy `DbtInputs` mapping/preparation/extension/contract path
+  facade. Aspirational/stub outcomes, preparation artifacts, DQ runtime-result contracts,
+  and release evidence are absent from the canonical pipeline.
+- Immutable phase boundaries, typed specs, adapter plans, canonical hashing, and deterministic
+  renderers are retained. Gold and MDM remain optional consumers of the typed compile plan,
+  not required lifecycle phases.
 
 ### Stage 4: remove v4 operational subsystems
 
-Delete leaf-to-root after production imports reach zero:
+**Status (2026-07-27): complete.** All inventory waves were deleted leaf-to-root after
+production imports reached zero.
 
 The deterministic wave inventory is
 `docs/design/stage4-retirement-import-inventory.json`. Its architecture test parses Python
 `Import`/`ImportFrom` nodes, records exact importing modules and symbols, verifies obsolete
 Click registrations, and fails when a new production edge reaches a retirement module.
-Stage 3's current cutover is reflected there: legacy `project` Silver/dbt entry points are
+Stage 3's cutover is reflected there: legacy `project` Silver/dbt entry points are
 closed, compiler plans own Silver generation, and optional Gold/MDM consumers use the typed
-compile plan. The release/lifecycle/status wave and transformation
-evidence/synchronization/candidate wave are retired; later Stage 4 waves remain inventoried.
+compile plan. Every Stage 4 wave is marked `retired`.
 
 1. release evaluator, lifecycle gate, projection readiness, and status;
 2. transformation evidence/synchronization and candidate inventories;
@@ -370,20 +398,34 @@ evidence/synchronization/candidate wave are retired; later Stage 4 waves remain 
 6. projection report/session-log persistence and release-baseline scaffold;
 7. obsolete CLI commands and their tests.
 
-Use import searches before each deletion wave. Do not remove reusable source analysis,
-ontology loading, reference-model, typed expression, adapter, renderer, Gold, or MDM code.
+Removed command registrations include `status`, `lifecycle`, `check-projection`,
+`check-release`, `check-claims`, `derive-claims`, `decide-claims`, `migrate-claims`,
+`claims-to-silver-ext`, `capture-dbt-contract-evidence`,
+`check-transformation-readiness`, `inventory-dbt-candidates`, `migrate-column-iris`,
+`reconstruct-dbt-transformation`, and `sync-dbt-contracts`.
+
+Reusable source analysis, ontology loading, reference-model resolution, typed expressions,
+immutable policy phases, adapters, deterministic renderers, and optional Gold/MDM projection
+remain. Their retention is architectural, not v4 compatibility. There is no v4 compatibility,
+dual-format authoring, migration command, or automated migration path.
 
 ### Stage 5: simplify the CLI and scaffold
 
+**Status: pending.** Stage 4 removed obsolete operational registrations and assets; the
+broader CLI decomposition and lean-scaffold simplification remain Stage 5 work.
+
 - Reduce `cli/main.py` to group setup and command registration; keep new commands in focused
   modules.
-- Remove lifecycle/status/readiness/claims/release/preparation/contract-sync commands.
+- Keep retired lifecycle/status/readiness/claims/release/preparation/contract-sync
+  registrations absent while decomposing the remaining CLI.
 - Scaffold only v5 directories and authoritative files.
 - Remove `.kairos-state`, claims, preparation, planning, release baseline, and evidence
   directories from init/new-repo.
 - Update packaging tests to assert the lean scaffold.
 
 ### Stage 6: rewrite the skill surface
+
+**Status: complete (2026-07-27).**
 
 Update both `.github/skills/` and `src/kairos_ontology/scaffold/skills/` copies:
 
@@ -403,6 +445,8 @@ sync mechanism and packaging tests to prevent drift.
 
 ### Stage 7: replace the test architecture
 
+**Status: complete (2026-07-27).**
+
 - Retain and adapt phase immutability, mapping AST, runtime semantics, adapter, renderer,
   ontology loader, AI provider, sample privacy, and deterministic artifact tests.
 - Replace v4 `acme-hub` authoring fixtures with fresh v5 hubs; do not write migration tests.
@@ -411,7 +455,24 @@ sync mechanism and packaging tests to prevent drift.
 - Add negative scenario coverage for each non-suppressible safety rule.
 - Keep full scenario coverage for projection changes as required by repository convention.
 
+The v4-only claim, preparation/Silver-authority, lifecycle/readiness/release, operational
+state, legacy projection-command, migration, and compatibility tests are retired. Retained
+compiler phases, binding AST, canonical hash/runtime, adapters/renderers/loaders, privacy,
+Gold, MDM, and reference-model behavior now use v5 `EntityBinding`/`CompilePlan` coverage
+and the governed v5 fixture. Architecture gates reject test imports of retired modules and
+invocations of retired commands.
+
 ### Stage 8: documentation and release cleanup
+
+**Status: complete (2026-07-27).** The documentation/release rewrite and automated release
+checks are complete. V5 GA remains unpublished pending reviewed publication and resolution
+of the known historical DCO caveat.
+
+Final program validation is currently blocked on two release-path defects found during
+high-confidence review: the public legacy `project` path can still rebuild Gold/MDM outside
+the canonical `CompilePlan`, and the scaffold release workflow can package an empty Power BI
+directory after an optional projection failure. Publishing must wait for those defects and
+the DCO caveat to be resolved through review.
 
 - Update the v5 design and consolidated DD.
 - Rewrite README, CLI help, hub scaffold docs, data-platform consumption docs, and examples.

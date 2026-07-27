@@ -16,6 +16,75 @@ from kairos_ontology.cli.main import (
     _whl_url,
     _resolve_channel,
 )
+from kairos_ontology.cli.shared import (
+    _RETIRED_MANAGED_SCAFFOLD_FILES,
+    _RETIRED_SCAFFOLD_DIRECTORIES,
+    _V5_HUB_DIRECTORIES,
+    _V5_OUTPUT_DIRECTORIES,
+)
+
+V5_SCAFFOLD_DIRECTORIES = {
+    "model/ontologies",
+    "model/shapes",
+    "referencemodels-unpacked",
+    "businessdiscovery",
+    "businessdiscovery/_extractions",
+    "integration/bindings",
+    "integration/discovery",
+    "integration/sources",
+    "integration/transforms/dbt/models",
+    "integration/transforms/dbt/macros",
+    "integration/transforms/dbt/tests",
+    "output/medallion/dbt",
+    "output/medallion/powerbi",
+    "output/neo4j",
+    "output/azure-search",
+    "output/a2ui",
+    "output/prompt",
+    "output/reports/details",
+    "output/architecture/ddd",
+    "output/mdm",
+}
+
+RETIRED_V5_PATHS = {
+    "model/extensions",
+    "model/mappings",
+    "model/planning",
+    "model/governance",
+    "integration/preparation",
+    "integration/transforms/dbt/evidence",
+    "claims",
+    "readiness",
+    "evidence",
+    ".sessions-projection",
+    ".sessions-design-import",
+    ".sessions-design",
+    ".kairos-state",
+}
+
+
+def _assert_v5_hub_contract(hub: Path) -> None:
+    for relative in V5_SCAFFOLD_DIRECTORIES:
+        assert (hub / relative).is_dir(), relative
+    for relative in RETIRED_V5_PATHS:
+        assert not (hub / relative).exists(), relative
+
+    assert (hub / "integration/bindings/README.md").is_file()
+    assert (hub / "model/shapes/README.md").is_file()
+    assert (hub / "catalog-v001.xml").is_file()
+    assert (hub / "kairos.yaml").is_file()
+    assert not (hub / "model/shapes/kairos-prep-shapes.shacl.ttl").exists()
+    assert not (hub / "model/shapes/kairos-ext-shapes.shacl.ttl").exists()
+    assert not (hub / "model/shapes/kairos-map-shapes.shacl.ttl").exists()
+
+
+def test_v5_scaffold_directory_contract_is_exact():
+    assert set(_V5_HUB_DIRECTORIES) == V5_SCAFFOLD_DIRECTORIES
+    assert set(_V5_OUTPUT_DIRECTORIES) == {
+        path.removeprefix("output/")
+        for path in V5_SCAFFOLD_DIRECTORIES
+        if path.startswith("output/")
+    }
 
 
 def test_init_creates_hub_structure(tmp_path):
@@ -30,28 +99,9 @@ def test_init_creates_hub_structure(tmp_path):
             assert result.exit_code == 0
 
             # Check ontology-hub directories
-            assert Path("ontology-hub/model/ontologies").is_dir()
-            assert Path("ontology-hub/model/shapes").is_dir()
-            assert Path("ontology-hub/model/extensions").is_dir()
-            baseline = Path("ontology-hub/model/governance/release-baseline.yaml")
-            assert baseline.is_file()
-            assert "approval_status: draft" in baseline.read_text(encoding="utf-8")
-            assert Path("ontology-hub/integration/sources").is_dir()
-            assert not Path("ontology-hub/integration/preparation").exists()
+            hub = Path("ontology-hub")
+            _assert_v5_hub_contract(hub)
             assert Path("ontology-hub/integration/transforms/dbt/README.md").is_file()
-            assert Path("ontology-hub/integration/discovery").is_dir()
-            assert Path("ontology-hub/model/mappings").is_dir()
-            assert Path("ontology-hub/output/medallion/dbt").is_dir()
-            assert Path("ontology-hub/output/medallion/powerbi").is_dir()
-            assert Path("ontology-hub/output/medallion/dbt").is_dir()
-            assert Path("ontology-hub/output/neo4j").is_dir()
-            assert Path("ontology-hub/output/azure-search").is_dir()
-            assert Path("ontology-hub/output/a2ui").is_dir()
-            assert Path("ontology-hub/output/prompt").is_dir()
-            assert Path("ontology-hub/.sessions-projection").is_dir()
-            assert Path("ontology-hub/.sessions-design-import").is_dir()
-            assert not Path("ontology-hub/.sessions-design").exists()
-            assert not Path("ontology-hub/.kairos-state").exists()
 
             # Business discovery (DD-048/DD-056): glossary under hub, .import at repo root
             assert Path("ontology-hub/businessdiscovery").is_dir()
@@ -62,10 +112,10 @@ def test_init_creates_hub_structure(tmp_path):
             # Check README files
             assert Path("ontology-hub/model/ontologies/README.md").is_file()
             assert Path("ontology-hub/model/shapes/README.md").is_file()
-            assert not Path("ontology-hub/model/shapes/kairos-prep-shapes.shacl.ttl").exists()
-            assert Path("ontology-hub/model/shapes/kairos-ext-shapes.shacl.ttl").is_file()
-            assert Path("ontology-hub/model/shapes/kairos-map-shapes.shacl.ttl").is_file()
-            assert not Path("ontology-hub/model/mappings/README.md").exists()
+            config = Path("ontology-hub/kairos.yaml").read_text(encoding="utf-8")
+            assert "version: 5" in config
+            assert "adapter: fabric" in config
+            assert "default_domain: order" in config
 
             # Check skills installed
             assert Path(".github/skills/kairos-setup-config/SKILL.md").is_file()
@@ -204,23 +254,10 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert repo.is_dir()
 
     # Hub structure
-    assert (repo / "ontology-hub" / "model" / "ontologies").is_dir()
-    assert (repo / "ontology-hub" / "model" / "shapes" / "README.md").is_file()
-    assert not (
-        repo / "ontology-hub" / "model" / "shapes" / "kairos-prep-shapes.shacl.ttl"
-    ).exists()
-    assert (repo / "ontology-hub" / "model" / "shapes" / "kairos-ext-shapes.shacl.ttl").is_file()
-    assert (repo / "ontology-hub" / "model" / "shapes" / "kairos-map-shapes.shacl.ttl").is_file()
-    assert not (repo / "ontology-hub" / "model" / "mappings" / "README.md").exists()
-    assert (repo / "ontology-hub" / "model" / "governance" / "release-baseline.yaml").is_file()
-    assert (repo / "ontology-hub" / "output" / "medallion" / "dbt").is_dir()
-    assert (repo / "ontology-hub" / "integration" / "discovery").is_dir()
-    assert not (repo / "ontology-hub" / "integration" / "preparation").exists()
+    _assert_v5_hub_contract(repo / "ontology-hub")
     assert (repo / "ontology-hub" / "integration" / "transforms" / "dbt" / "README.md").is_file()
-    assert (repo / "ontology-hub" / ".sessions-projection").is_dir()
-    assert (repo / "ontology-hub" / ".sessions-design-import").is_dir()
-    assert not (repo / "ontology-hub" / ".sessions-design").exists()
-    assert not (repo / "ontology-hub" / ".kairos-state").exists()
+    config = (repo / "ontology-hub" / "kairos.yaml").read_text(encoding="utf-8")
+    assert config == "version: 5\nname: contoso-ontology-hub\nadapter: fabric\n"
 
     # Business discovery (DD-048/DD-056): glossary under hub, .import at repo root
     assert (repo / "ontology-hub" / "businessdiscovery").is_dir()
@@ -741,6 +778,52 @@ def test_update_check_reports_stale_managed_skill(tmp_path):
     assert "kairos-old-skill" in result.output
 
 
+def test_update_removes_only_known_retired_scaffold_assets(tmp_path):
+    """update removes known retired assets but preserves edited files and user content."""
+    runner = CliRunner()
+
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        root = Path(td)
+        stale_file = root / "ontology-hub/model/governance/release-baseline.yaml"
+        stale_file.parent.mkdir(parents=True)
+        stale_file.write_text("approval_status: user-approved\n", encoding="utf-8")
+        stale_keep = root / "ontology-hub/.sessions-projection/.gitkeep"
+        stale_keep.parent.mkdir(parents=True)
+        stale_keep.write_bytes(b"")
+        user_file = root / "ontology-hub/model/planning/keep-me.txt"
+        user_file.parent.mkdir(parents=True)
+        user_file.write_text("user-authored\n", encoding="utf-8")
+        empty_state = root / "ontology-hub/.kairos-state/phases/source"
+        empty_state.mkdir(parents=True)
+
+        result = runner.invoke(cli, ["update"])
+
+        assert result.exit_code == 0, result.output
+        assert stale_file.read_text(encoding="utf-8") == "approval_status: user-approved\n"
+        assert not stale_keep.exists()
+        assert not empty_state.exists()
+        assert user_file.read_text(encoding="utf-8") == "user-authored\n"
+
+    assert "retired scaffold asset" in result.output
+
+
+def test_update_inventory_covers_nested_retired_v4_scaffold_assets():
+    expected_files = {
+        "ontology-hub/integration/sources/custom-transformations/README.md",
+        "ontology-hub/model/mappings/README.md",
+        "ontology-hub/model/mappings/custom-transformations/README.md",
+        "ontology-hub/model/planning/dbt-transformations/README.md",
+    }
+    expected_directories = {
+        "ontology-hub/integration/sources/custom-transformations",
+        "ontology-hub/model/mappings/custom-transformations",
+        "ontology-hub/model/planning/dbt-transformations",
+    }
+
+    assert expected_files <= _RETIRED_MANAGED_SCAFFOLD_FILES.keys()
+    assert expected_directories <= set(_RETIRED_SCAFFOLD_DIRECTORIES)
+
+
 def test_update_preserves_custom_unmanaged_skill(tmp_path):
     """update should NOT remove a custom skill without the managed marker."""
     from kairos_ontology import __version__ as ver
@@ -805,8 +888,8 @@ def test_init_includes_workflow(tmp_path):
             assert "kairos-ontology update --check" in content
 
 
-def test_init_release_workflow_has_strict_gate(tmp_path):
-    """init should scaffold the release workflow with the --strict release gate (DD-096)."""
+def test_init_release_workflow_uses_supported_project_options(tmp_path):
+    """The release workflow must not use retired release-evaluation options."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
@@ -816,7 +899,17 @@ def test_init_release_workflow_has_strict_gate(tmp_path):
             wf = Path(".github/workflows/release-projections.yml")
             assert wf.is_file()
             content = wf.read_text(encoding="utf-8")
-            assert "--strict" in content
+            assert "--strict" not in content
+            assert "compile-plan-only consumers" in content
+            assert content.count('find "ontology-hub/output/') == 2
+            assert content.count("-type f -print -quit | grep -q .") == 1
+            assert "powerbi-semantic-model.zip" not in content
+            assert "POWERBI_PACKAGE" not in content
+            assert "persist-credentials: false" in content
+            assert "rm -rf output/dbt" in content
+            assert "-type l -print -quit | grep -q ." in content
+            assert "rm -f dbt-artifacts.zip" in content
+            assert content.index("-type l -print -quit") < content.index("-type f -print -quit")
 
 
 # ---------------------------------------------------------------------------
@@ -1283,107 +1376,6 @@ def test_new_repo_protection_failure_is_non_fatal(tmp_path):
     assert "Repository created" in result.output
 
 
-# ---------------------------------------------------------------------------
-# migrate command
-# ---------------------------------------------------------------------------
-
-
-def _create_old_layout(hub: Path):
-    """Create the old flat hub layout for testing migration."""
-    (hub / "ontologies").mkdir(parents=True)
-    (hub / "shapes").mkdir(parents=True)
-    (hub / "mappings").mkdir(parents=True)
-    (hub / "sources" / "source-system-template").mkdir(parents=True)
-    (hub / "bronze").mkdir(parents=True)
-    (hub / "output" / "dbt").mkdir(parents=True)
-    (hub / "output" / "silver").mkdir(parents=True)
-    (hub / "output" / "neo4j").mkdir(parents=True)
-    # Domain files
-    (hub / "ontologies" / "customer.ttl").write_text("# customer", encoding="utf-8")
-    (hub / "ontologies" / "_master.ttl").write_text("# master", encoding="utf-8")
-    (hub / "ontologies" / "customer-silver-ext.ttl").write_text("# ext", encoding="utf-8")
-    (hub / "shapes" / "customer.shacl.ttl").write_text("# shacl", encoding="utf-8")
-    (hub / "mappings" / "customer-mapping.ttl").write_text("# map", encoding="utf-8")
-    (hub / "sources" / "source-system-template" / "README.md").write_text("# src", encoding="utf-8")
-    (hub / "bronze" / "erp.ttl").write_text("# bronze", encoding="utf-8")
-    (hub / "output" / "dbt" / "project.yml").write_text("# dbt", encoding="utf-8")
-    (hub / "output" / "silver" / "ddl.sql").write_text("# silver", encoding="utf-8")
-    # application-models at parent level
-    (hub.parent / "application-models").mkdir(parents=True)
-    (hub.parent / "application-models" / "master-erd.mmd").write_text("# erd", encoding="utf-8")
-
-
-def test_migrate_moves_files(tmp_path):
-    """migrate should move files from old flat layout to grouped layout."""
-    runner = CliRunner()
-    hub = tmp_path / "ontology-hub"
-    _create_old_layout(hub)
-
-    result = runner.invoke(cli, ["migrate", "--hub", str(hub)])
-    assert result.exit_code == 0, result.output
-
-    # Model files moved
-    assert (hub / "model" / "ontologies" / "customer.ttl").is_file()
-    assert (hub / "model" / "ontologies" / "_master.ttl").is_file()
-    assert (hub / "model" / "shapes" / "customer.shacl.ttl").is_file()
-
-    # Silver-ext moved to extensions/
-    assert (hub / "model" / "extensions" / "customer-silver-ext.ttl").is_file()
-    assert not (hub / "model" / "ontologies" / "customer-silver-ext.ttl").exists()
-
-    # Integration files moved
-    assert (hub / "model" / "mappings" / "customer-mapping.ttl").is_file()
-    assert (hub / "integration" / "sources" / "source-system-template" / "README.md").is_file()
-
-    # Output files moved
-    assert (hub / "integration" / "sources" / "erp.ttl").is_file()
-    assert (hub / "output" / "medallion" / "dbt" / "project.yml").is_file()
-    assert (hub / "output" / "medallion" / "dbt" / "ddl.sql").is_file()
-
-    # Old dirs removed
-    assert not (hub / "ontologies").exists()
-    assert not (hub / "shapes").exists()
-    assert not (hub / "mappings").exists()
-    assert not (hub / "sources").exists()
-    assert not (hub / "bronze").exists()
-    assert not (hub / "output" / "dbt").exists()
-    assert not (hub / "output" / "silver").exists()
-
-    # application-models removed
-    assert not (tmp_path / "application-models").exists()
-
-
-def test_migrate_check_mode(tmp_path):
-    """migrate --check should preview without moving files."""
-    runner = CliRunner()
-    hub = tmp_path / "ontology-hub"
-    _create_old_layout(hub)
-
-    result = runner.invoke(cli, ["migrate", "--hub", str(hub), "--check"])
-    assert result.exit_code == 0, result.output
-    assert "MOVE" in result.output
-    assert "would be moved" in result.output
-
-    # Silver-ext move to extensions/ must be previewed
-    assert "model/extensions/customer-silver-ext.ttl" in result.output
-
-    # Files should NOT have moved
-    assert (hub / "ontologies" / "customer.ttl").is_file()
-    assert not (hub / "model").exists()
-
-
-def test_migrate_already_migrated(tmp_path):
-    """migrate should detect already-migrated layout and skip."""
-    runner = CliRunner()
-    hub = tmp_path / "ontology-hub"
-    (hub / "model" / "ontologies").mkdir(parents=True)
-    (hub / "model" / "ontologies" / "customer.ttl").write_text("# ok", encoding="utf-8")
-
-    result = runner.invoke(cli, ["migrate", "--hub", str(hub)])
-    assert result.exit_code == 0
-    assert "already using the new layout" in result.output
-
-
 # -- _tag_to_version / _whl_url PEP 440 conversion tests ----------------------
 
 
@@ -1400,10 +1392,10 @@ class TestTagToVersion:
         assert _tag_to_version("v3.9.0-rc.12") == "3.9.0rc12"
 
     def test_beta_tag(self):
-        assert _tag_to_version("v4.0.0-beta.2") == "4.0.0b2"
+        assert _tag_to_version("v5.0.0-beta.2") == "5.0.0b2"
 
     def test_alpha_tag(self):
-        assert _tag_to_version("v4.0.0-alpha.1") == "4.0.0a1"
+        assert _tag_to_version("v5.0.0-alpha.1") == "5.0.0a1"
 
     def test_no_v_prefix(self):
         assert _tag_to_version("3.8.1") == "3.8.1"

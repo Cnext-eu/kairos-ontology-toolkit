@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from pathlib import Path
 
 from rdflib import Graph, Namespace, URIRef
@@ -26,6 +27,8 @@ from ..projections.dbt.context import ActiveSourceScope
 from ..projections.dbt.canonical_hash import temporal_match_count_column
 from ..projections.dbt.diagnostics import ExecutionMode
 from ..projections.dbt.mapping_specs import SourceMappings
+from ..projections.dbt.mapping_renderers import quote_mapping_identifier
+from ..projections.dbt.policy_bind import bind_policy_facts
 from ..projections.dbt.policy_normalize import _source_type
 from ..projections.dbt.policy_specs import (
     AuthoredValuesFact,
@@ -201,8 +204,24 @@ def _ontology_symbols(
     for info in list_classes(graph, namespace):
         class_refs = set(_qnames(graph, URIRef(info.uri)))
         class_refs.add(f"{domain_prefix}:{info.name}")
+        parent_uris = tuple(
+            sorted(
+                str(parent)
+                for parent in graph.objects(URIRef(info.uri), RDFS.subClassOf)
+                if isinstance(parent, URIRef)
+            )
+        )
         for ref in sorted(class_refs):
-            classes.append(ResolvedClass(ref, info.uri, info.name, info.label, info.comment))
+            classes.append(
+                ResolvedClass(
+                    ref,
+                    info.uri,
+                    info.name,
+                    info.label,
+                    info.comment,
+                    parent_uris,
+                )
+            )
         for prop in info.properties:
             data_type = _XSD_TYPES.get(prop.range_uri, prop.range_uri)
             property_refs = set(_qnames(graph, URIRef(prop.uri)))
@@ -298,6 +317,14 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         ProvenanceInput(str(path.relative_to(root)), path.read_text(encoding="utf-8"))
         for path in (*binding_paths, *source_paths)
     ]
+    gold_extension = root / "model" / "extensions" / f"{domain}-gold-ext.ttl"
+    if gold_extension.is_file():
+        inputs.append(
+            ProvenanceInput(
+                str(gold_extension.relative_to(root)).replace("\\", "/"),
+                gold_extension.read_text(encoding="utf-8"),
+            )
+        )
     for path in binding_paths:
         text = path.read_text(encoding="utf-8")
         sql_path, contract_path = _binding_dbt_paths(text)
@@ -650,11 +677,22 @@ def merge_bound_sources(
     bindings: tuple[EntityBinding, ...],
     context: ResolutionContext,
     *,
+    hub_root: str | Path,
     conformance_plans: tuple[ConformancePlan, ...] = (),
 ) -> BoundSources:
     """Merge independently adapted entities into one immutable domain input."""
     base = bounds[0]
     policy = base.policy_facts
+    gold_extension = Path(hub_root) / "model" / "extensions" / f"{context.domain}-gold-ext.ttl"
+    downstream_policy = (
+        bind_policy_facts(
+            Graph(),
+            ontology_uri=context.ontology_iri,
+            gold_extension=str(gold_extension),
+        )
+        if gold_extension.is_file()
+        else None
+    )
     plan_by_target = {
         group.target_class: group for plan in conformance_plans for group in plan.groups
     }
@@ -869,6 +907,15 @@ def merge_bound_sources(
             incremental=tuple(item for bound in bounds for item in bound.policy_facts.incremental),
             hashes=tuple(item for bound in bounds for item in bound.policy_facts.hashes),
             temporal_relationships=_relationship_policies(bindings, context),
+            gold=downstream_policy.gold if downstream_policy is not None else policy.gold,
+            adapter_support=(
+                downstream_policy.adapter_support
+                if downstream_policy is not None
+                else policy.adapter_support
+            ),
+            deviations=(
+                downstream_policy.deviations if downstream_policy is not None else policy.deviations
+            ),
         ),
         active_source_scope=ActiveSourceScope(
             tuple(item for bound in bounds for item in bound.active_source_scope.tables)
@@ -1359,8 +1406,11 @@ def _focused_quality_artifacts(
 
     def source_sql(relation: ResolvedRelation) -> str:
         if relation.connection_type == "dbt":
-            return f"{{{{ ref('{relation.table_name}') }}}}"
-        return f"{{{{ source('{relation.system_label}', '{relation.table_name}') }}}}"
+            return f"{{{{ ref({json.dumps(relation.table_name)}) }}}}"
+        return (
+            f"{{{{ source({json.dumps(relation.system_label)}, "
+            f"{json.dumps(relation.table_name)}) }}}}"
+        )
 
     for binding in bindings:
         relation = _resolved_binding_relation(binding, context)
@@ -1401,18 +1451,23 @@ def _focused_quality_artifacts(
             )
             if relationship is None or parent is None:
                 continue
+            adapter = context.target_platform
             predicates = " and ".join(
-                f"child.[{join.local}] = parent.[{join.foreign}]" for join in relationship.on
+                f"child.{quote_mapping_identifier(join.local, adapter)} = "
+                f"parent.{quote_mapping_identifier(join.foreign, adapter)}"
+                for join in relationship.on
             )
             missing = relationship.on[0].foreign
+            local = quote_mapping_identifier(relationship.on[0].local, adapter)
+            missing_identifier = quote_mapping_identifier(missing, adapter)
             suffix = "" if check_index == 0 else f"_{check_index + 1}"
             path = f"tests/{binding.domain}/{model_name}__referential{suffix}.sql"
             artifacts[path] = (
                 "-- DD-133 focused source referential check\n"
                 f"select child.* from {source_sql(relation)} as child\n"
                 f"left join {source_sql(parent)} as parent on {predicates}\n"
-                f"where child.[{relationship.on[0].local}] is not null "
-                f"and parent.[{missing}] is null\n"
+                f"where child.{local} is not null "
+                f"and parent.{missing_identifier} is null\n"
             )
     return artifacts
 
@@ -1580,6 +1635,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 wired_bounds,
                 tuple(valid_bindings),
                 context,
+                hub_root=scope.hub_root,
                 conformance_plans=conformance_plans,
             )
             contract = normalize_contract(merged, ExecutionMode.FAIL_FAST)
@@ -1776,7 +1832,7 @@ def compile_plan_result(
         diagnostics = plan.diagnostics
     except Exception as exc:
         diagnostic = CompileDiagnostic(
-            code="safety.type-incompatible",
+            code="compiler.render-failed",
             message=f"projection rendering failed: {exc}",
             location=SourceLocation(path=plan.scope.hub_root),
         )

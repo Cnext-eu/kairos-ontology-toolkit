@@ -97,6 +97,57 @@ def test_unknown_top_level_field_rejected() -> None:
     assert "binding.schema" in _codes(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    ("document", "code"),
+    [
+        ("- not\n- a\n- mapping\n", "binding.not-a-mapping"),
+        ("metadata: [\n", "binding.yaml"),
+    ],
+)
+def test_invalid_document_shapes_have_stable_loader_codes(document: str, code: str) -> None:
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(document, path="invalid.binding.yaml")
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == code
+    assert diagnostic.location.path == "invalid.binding.yaml"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        VALID.replace("metadata:\n  name:", "metadata:\n  unknown: nope\n  name:"),
+        VALID.replace("source:\n  relation:", "source:\n  unknown: nope\n  relation:"),
+        VALID.replace("identity:\n  strategy:", "identity:\n  unknown: nope\n  strategy:"),
+        VALID.replace("load:\n  mode:", "load:\n  unknown: nope\n  mode:"),
+    ],
+)
+def test_nested_binding_objects_are_closed(bad: str) -> None:
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(bad, path="closed.binding.yaml")
+
+    diagnostic = next(item for item in excinfo.value.diagnostics if item.code == "binding.schema")
+    assert diagnostic.location.path == "closed.binding.yaml"
+    assert diagnostic.location.pointer
+
+
+@pytest.mark.parametrize(
+    "quality",
+    [
+        "  - kind: invented\n",
+        "  - kind: unique\n    columns: [customer_id, 7]\n",
+        "  - kind: not-null\n    unknown: nope\n",
+    ],
+)
+def test_quality_checks_are_closed_and_typed(quality: str) -> None:
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(VALID + "quality:\n" + quality, path="quality.binding.yaml")
+
+    diagnostic = next(item for item in excinfo.value.diagnostics if item.code == "binding.schema")
+    assert diagnostic.location.path == "quality.binding.yaml"
+    assert diagnostic.location.pointer.startswith("/quality")
+
+
 def test_duplicate_key_rejected_with_location() -> None:
     dup = VALID + "target:\n  class: party:Other\n"
     with pytest.raises(CompileError) as excinfo:
@@ -108,8 +159,8 @@ def test_duplicate_key_rejected_with_location() -> None:
     assert dupdiag.location.line > 0
 
 
-def test_wrong_api_version_rejected() -> None:
-    bad = VALID.replace("kairos.eu/v5", "kairos.eu/v4")
+def test_unsupported_api_version_rejected() -> None:
+    bad = VALID.replace("kairos.eu/v5", "kairos.eu/v6")
     with pytest.raises(CompileError) as excinfo:
         load_entity_binding(bad, path="bad.yaml")
     assert "binding.schema" in _codes(excinfo.value)

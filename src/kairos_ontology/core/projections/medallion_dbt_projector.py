@@ -36,7 +36,6 @@ from rdflib import Graph, Namespace, URIRef, XSD, RDFS
 from rdflib.namespace import OWL, RDF
 
 from .uri_utils import camel_to_snake, extract_local_name
-from ..determinism import resolve_generated_at
 from .shared import (
     ForeignKeyClassification,
     KAIROS_EXT,
@@ -100,20 +99,6 @@ def _resolve_qname(uri: str, ns_bindings: dict[str, str] | None = None) -> str:
             local = uri[len(ns_uri) :]
             return f"{prefix}:{local}"
     return _prefixed_iri(uri)
-
-
-# Module-level cache for entity metadata (populated by generate_dbt_artifacts,
-# read by projector.py via get_last_entity_metadata)
-_last_entity_metadata: dict[str, list[dict]] = {}
-
-
-def get_last_entity_metadata() -> dict[str, list[dict]]:
-    """Return cached entity metadata from the last generate_dbt_artifacts call.
-
-    Returns:
-        Dict of {domain_name: [entity_meta_dicts]}.
-    """
-    return dict(_last_entity_metadata)
 
 
 # ---------------------------------------------------------------------------
@@ -3842,13 +3827,6 @@ def plan_dbt_projection(
             )
     for warning in shaped.warnings:
         logger.warning("%s", warning)
-    # Cache entity metadata for session log (retrieved via get_last_entity_metadata).
-    from .dbt.builders import outcome_context
-
-    _last_entity_metadata[inputs.ontology_name] = [
-        outcome_context(item) for item in shaped.silver_outcomes
-    ]
-
     # Phase 4 — materialize: choose adapter and physical/release plans.
     plan = (
         collect_materialization(contract, shaped)
@@ -4025,123 +4003,3 @@ def generate_coverage_data(
         }
 
     return report
-
-
-# ---------------------------------------------------------------------------
-# dbt Session Log — per-domain Markdown report for .sessions-projection/
-# ---------------------------------------------------------------------------
-
-
-def write_dbt_session_log(
-    domain: str,
-    entity_metadata: list[dict],
-    sessions_dir: Path,
-    toolkit_version: str = "",
-    warnings: list[str] | None = None,
-) -> Path | None:
-    """Write a separate dbt projection session log.
-
-    Filename: ``dbt-{domain}-{YYYY-MM-DD_HH-MM-SS}.md``
-
-    Args:
-        domain: Domain name (e.g. "client", "invoice").
-        entity_metadata: List of per-entity metadata dicts from the bind fact extractor.
-        sessions_dir: Path to ``.sessions-projection/`` directory.
-        toolkit_version: Installed toolkit version string.
-        warnings: Optional list of projection warning messages.
-
-    Returns:
-        Path to the written file, or None if sessions_dir is unavailable.
-    """
-    if not sessions_dir or not entity_metadata:
-        return None
-
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-
-    now = resolve_generated_at()
-    date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"dbt-{domain}-{date_str}.md"
-    path = sessions_dir / filename
-
-    lines: list[str] = []
-    lines.append(f"# dbt Projection Report — {domain}")
-    lines.append("")
-    lines.append(f"**Generated:** {now.strftime('%Y-%m-%d %H:%M:%S')}  ")
-    lines.append(f"**Toolkit version:** {toolkit_version}  ")
-    lines.append(f"**Domain:** {domain}  ")
-    lines.append("")
-
-    # Silver Models table
-    generated = [e for e in entity_metadata if not e.get("skipped")]
-    if generated:
-        lines.append("## Silver Models")
-        lines.append("")
-        lines.append("| Entity | Model File | SCD | Sources | Columns | FK Joins |")
-        lines.append("|--------|-----------|-----|---------|---------|----------|")
-        for e in generated:
-            src_label = str(e["source_count"])
-            if e["source_count"] > 1:
-                src_label += " (multi)"
-            lines.append(
-                f"| {e['class_name']} | {e['model_file']} "
-                f"| {e['scd_type']} | {src_label} "
-                f"| {e['column_count']} | {e['fk_join_count']} |"
-            )
-        lines.append("")
-
-    # Skipped classes
-    skipped = [e for e in entity_metadata if e.get("skipped")]
-    if skipped:
-        lines.append("## Skipped Classes (no mapping)")
-        lines.append("")
-        for e in skipped:
-            lines.append(f"- `{e['class_name']}` — {e.get('skip_reason', 'Unknown')}")
-        lines.append("")
-
-    # Warnings (deduplicated, excluding messages already shown in Skipped section)
-    skipped_class_names = {e["class_name"] for e in entity_metadata if e.get("skipped")}
-    seen: set[str] = set()
-    unique_warnings: list[str] = []
-    for w in warnings or []:
-        if w not in seen:
-            # Skip warnings about classes already listed in Skipped section
-            is_about_skipped = any(
-                f"'{name}'" in w and "skipping" in w.lower() for name in skipped_class_names
-            )
-            if not is_about_skipped:
-                seen.add(w)
-                unique_warnings.append(w)
-
-    if unique_warnings:
-        lines.append("## ⚠️ Warnings")
-        lines.append("")
-        for w in unique_warnings:
-            lines.append(f"- {w}")
-        lines.append("")
-
-    # Info notes (deduplicated) — e.g. inherited cross-table props on a subtype
-    # claimed as its own silver table (issue #181). Informational, not actionable.
-    info_seen: set[str] = set()
-    unique_info: list[str] = []
-    for e in entity_metadata:
-        for note in e.get("info_notes") or []:
-            if note not in info_seen:
-                info_seen.add(note)
-                unique_info.append(note)
-
-    if unique_info:
-        lines.append("## ℹ️ Info")
-        lines.append("")
-        for note in unique_info:
-            lines.append(f"- {note}")
-        lines.append("")
-
-    if not skipped and not unique_warnings and not unique_info:
-        lines.append("## ✅ No issues")
-        lines.append("")
-        lines.append("All entities projected without warnings.")
-        lines.append("")
-
-    content = "\n".join(lines)
-    path.write_text(content, encoding="utf-8")
-    return path

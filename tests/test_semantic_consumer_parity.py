@@ -69,9 +69,7 @@ c:code a owl:DatatypeProperty ;
     inventory = generate_inventory(root, catalog_path=catalog)
     write_inventory(inventory, inventory_dir / "root-inventory.yaml")
     inventory_classes = _load_inventory_classes(inventory_dir)
-    local = next(
-        item for item in inventory_classes if item["uri"] == "https://example.org/a#Local"
-    )
+    local = next(item for item in inventory_classes if item["uri"] == "https://example.org/a#Local")
     assert any(
         prop["uri"] == "https://example.org/c#code" and prop["inherited"]
         for prop in local["properties"]
@@ -109,14 +107,8 @@ c:code a owl:DatatypeProperty ;
         output_path=output,
         target="prompt",
     )
-    projection_report = json.loads(
-        (output / "projection-report.json").read_text(encoding="utf-8")
-    )
-    prompt = json.loads(
-        (output / "prompt" / "root-context.json").read_text(encoding="utf-8")
-    )
+    prompt = json.loads((output / "prompt" / "root-context.json").read_text(encoding="utf-8"))
 
     assert inventory["closure_hash"] == validation_context["closure_hash"]
-    assert inventory["closure_hash"] == projection_report["domains"]["root"]["closure_hash"]
     assert inventory["closure_hash"] == prompt["semantic_context"]["closure_hash"]
     assert prompt["entities"]["Local"]["fields"]["code"]["type"] == "text"

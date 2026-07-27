@@ -16,20 +16,12 @@ if TYPE_CHECKING:  # pragma: no cover
         MappingInputSpec,
     )
     from .policy_specs import (
-        ArrayValueAction,
         CanonicalTypeSpec,
         CapabilityResultSpec,
         DataQualityRuleSpec,
         SilverRuntimeAuthoritySpec,
-        CleanupRuleSpec,
-        ErrorAction,
-        RawPayloadRetention,
-        SchemaEvolutionAction,
-        SentinelRuleSpec,
         SilverModelAuthoritySpec,
         TemporalRelationshipSpec,
-        TechnicalDedupeSpec,
-        TypeConversionSpec,
     )
 
 
@@ -647,22 +639,6 @@ class SilverRegistry:
     authorities: tuple[tuple[str, "SilverModelAuthoritySpec"], ...] = ()
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @dataclass(frozen=True, slots=True)
 class SourceCoverageSpec:
     """Coverage of one mapped physical source table."""
@@ -882,10 +858,6 @@ class RuntimePhysicalPlan:
     schema_change_strategy: str
     temporal_lookups: tuple[TemporalLookupPhysicalPlan, ...] = ()
     blocking_reasons: tuple[tuple[str, str], ...] = ()
-
-
-
-
 
 
 @dataclass(frozen=True, slots=True)

@@ -151,9 +151,9 @@ def test_git_sha_source_rejects_mutable_ref():
         _toolkit_git_sha_source("main")
 
 
-@patch("kairos_ontology.cli.main._refresh_with_installed_toolkit", return_value=0)
-@patch("kairos_ontology.cli.main._lock_and_sync_dependency")
-@patch("kairos_ontology.cli.main._resolve_toolkit_ref_sha", return_value=SHA)
+@patch("kairos_ontology.cli.operations._refresh_with_installed_toolkit", return_value=0)
+@patch("kairos_ontology.cli.operations._lock_and_sync_dependency")
+@patch("kairos_ontology.cli.operations._resolve_toolkit_ref_sha", return_value=SHA)
 def test_update_test_ref_and_restore_round_trip(
     mock_resolve, mock_sync, mock_refresh, tmp_path, monkeypatch
 ):
@@ -184,9 +184,9 @@ def test_update_test_ref_and_restore_round_trip(
     assert mock_refresh.call_args_list[-1].args == (False, RELEASE_SOURCE)
 
 
-@patch("kairos_ontology.cli.main._refresh_with_installed_toolkit")
-@patch("kairos_ontology.cli.main._lock_and_sync_dependency")
-@patch("kairos_ontology.cli.main._resolve_toolkit_ref_sha")
+@patch("kairos_ontology.cli.operations._refresh_with_installed_toolkit")
+@patch("kairos_ontology.cli.operations._lock_and_sync_dependency")
+@patch("kairos_ontology.cli.operations._resolve_toolkit_ref_sha")
 def test_update_test_ref_rejects_nested_session_before_external_work(
     mock_resolve, mock_sync, mock_refresh, tmp_path, monkeypatch
 ):
@@ -208,8 +208,8 @@ def test_update_test_ref_rejects_nested_session_before_external_work(
     mock_refresh.assert_not_called()
 
 
-@patch("kairos_ontology.cli.main._refresh_with_installed_toolkit")
-@patch("kairos_ontology.cli.main._lock_and_sync_dependency")
+@patch("kairos_ontology.cli.operations._refresh_with_installed_toolkit")
+@patch("kairos_ontology.cli.operations._lock_and_sync_dependency")
 def test_update_restore_rejects_missing_state(mock_sync, mock_refresh, tmp_path, monkeypatch):
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(_pyproject(RELEASE_SOURCE), encoding="utf-8")
@@ -225,9 +225,9 @@ def test_update_restore_rejects_missing_state(mock_sync, mock_refresh, tmp_path,
     mock_refresh.assert_not_called()
 
 
-@patch("kairos_ontology.cli.main._refresh_with_installed_toolkit")
-@patch("kairos_ontology.cli.main._lock_and_sync_dependency")
-@patch("kairos_ontology.cli.main._resolve_toolkit_ref_sha", return_value=None)
+@patch("kairos_ontology.cli.operations._refresh_with_installed_toolkit")
+@patch("kairos_ontology.cli.operations._lock_and_sync_dependency")
+@patch("kairos_ontology.cli.operations._resolve_toolkit_ref_sha", return_value=None)
 def test_update_test_ref_rejects_unresolved_ref_without_changes(
     mock_resolve, mock_sync, mock_refresh, tmp_path, monkeypatch
 ):
@@ -248,10 +248,10 @@ def test_update_test_ref_rejects_unresolved_ref_without_changes(
     mock_refresh.assert_not_called()
 
 
-@patch("kairos_ontology.cli.main._refresh_with_installed_toolkit", return_value=7)
-@patch("kairos_ontology.cli.main._resync_restored_dependency", return_value=None)
-@patch("kairos_ontology.cli.main._lock_and_sync_dependency")
-@patch("kairos_ontology.cli.main._resolve_toolkit_ref_sha", return_value=SHA)
+@patch("kairos_ontology.cli.operations._refresh_with_installed_toolkit", return_value=7)
+@patch("kairos_ontology.cli.operations._resync_restored_dependency", return_value=None)
+@patch("kairos_ontology.cli.operations._lock_and_sync_dependency")
+@patch("kairos_ontology.cli.operations._resolve_toolkit_ref_sha", return_value=SHA)
 def test_update_test_ref_rolls_back_dependency_files(
     mock_resolve, mock_sync, mock_resync, mock_refresh, tmp_path, monkeypatch
 ):
@@ -271,9 +271,9 @@ def test_update_test_ref_rolls_back_dependency_files(
     assert lockfile.read_bytes() == original_lock
 
 
-@patch("kairos_ontology.cli.main._resync_restored_dependency", return_value=None)
-@patch("kairos_ontology.cli.main._lock_and_sync_dependency")
-@patch("kairos_ontology.cli.main._resolve_toolkit_ref_sha", return_value=SHA)
+@patch("kairos_ontology.cli.operations._resync_restored_dependency", return_value=None)
+@patch("kairos_ontology.cli.operations._lock_and_sync_dependency")
+@patch("kairos_ontology.cli.operations._resolve_toolkit_ref_sha", return_value=SHA)
 def test_failed_forced_refresh_restores_exact_managed_state(
     mock_resolve, mock_sync, mock_resync, tmp_path, monkeypatch
 ):
@@ -308,7 +308,7 @@ def test_failed_forced_refresh_restores_exact_managed_state(
         return 7
 
     with patch(
-        "kairos_ontology.cli.main._refresh_with_installed_toolkit",
+        "kairos_ontology.cli.operations._refresh_with_installed_toolkit",
         side_effect=partial_refresh,
     ):
         result = CliRunner().invoke(cli, ["update", "--test-ref", "main"])
@@ -321,8 +321,8 @@ def test_failed_forced_refresh_restores_exact_managed_state(
 
 
 @pytest.mark.parametrize("failing_command", ["lock", "sync"])
-@patch("kairos_ontology.cli.main._refresh_with_installed_toolkit")
-@patch("kairos_ontology.cli.main._resolve_toolkit_ref_sha", return_value=SHA)
+@patch("kairos_ontology.cli.operations._refresh_with_installed_toolkit")
+@patch("kairos_ontology.cli.operations._resolve_toolkit_ref_sha", return_value=SHA)
 def test_uv_failure_restores_pyproject_and_lock_bytes(
     mock_resolve,
     mock_refresh,
@@ -366,7 +366,7 @@ def test_uv_failure_restores_pyproject_and_lock_bytes(
     mock_refresh.assert_not_called()
 
 
-@patch("kairos_ontology.cli.main._resolve_toolkit_ref_sha", return_value=SHA)
+@patch("kairos_ontology.cli.operations._resolve_toolkit_ref_sha", return_value=SHA)
 def test_non_windows_test_ref_reexecs_forced_refresh(mock_resolve, tmp_path, monkeypatch):
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(_pyproject(RELEASE_SOURCE), encoding="utf-8")
@@ -391,7 +391,7 @@ def test_non_windows_test_ref_reexecs_forced_refresh(mock_resolve, tmp_path, mon
 
 @patch("kairos_ontology.cli.main.os.getpid", return_value=4242)
 @patch("kairos_ontology.cli.main.subprocess.Popen")
-@patch("kairos_ontology.cli.main._resolve_toolkit_ref_sha", return_value=SHA)
+@patch("kairos_ontology.cli.operations._resolve_toolkit_ref_sha", return_value=SHA)
 def test_windows_test_ref_schedules_detached_refresh(
     mock_resolve, mock_popen, mock_getpid, tmp_path, monkeypatch
 ):
@@ -438,7 +438,7 @@ def test_windows_refresh_passes_apostrophe_log_path_outside_script(
     "kairos_ontology.cli.main.subprocess.Popen",
     side_effect=OSError("cannot schedule"),
 )
-@patch("kairos_ontology.cli.main._resolve_toolkit_ref_sha", return_value=SHA)
+@patch("kairos_ontology.cli.operations._resolve_toolkit_ref_sha", return_value=SHA)
 def test_windows_scheduling_failure_rolls_back_dependency_files(
     mock_resolve, mock_popen, tmp_path, monkeypatch
 ):
@@ -464,8 +464,8 @@ def test_windows_scheduling_failure_rolls_back_dependency_files(
     assert lockfile.read_bytes() == original_lock
 
 
-@patch("kairos_ontology.cli.main._toolkit_version", "3.8.0")
-@patch("kairos_ontology.cli.main._managed_scaffold_map")
+@patch("kairos_ontology.cli.operations._toolkit_version", "3.8.0")
+@patch("kairos_ontology.cli.operations._managed_scaffold_map")
 def test_same_version_forced_refresh_replaces_changed_managed_content(
     mock_managed_map, tmp_path, monkeypatch
 ):

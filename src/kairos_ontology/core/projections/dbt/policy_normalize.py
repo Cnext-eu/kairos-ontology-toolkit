@@ -147,7 +147,6 @@ from .specs import (
     ModelOutcome,
     SilverModelKind,
     SourceSystemFact,
-    SourceTableFact,
 )
 
 E = TypeVar("E", bound=Enum)
@@ -660,28 +659,6 @@ def _types_compatible(source: CanonicalTypeSpec, target: CanonicalTypeSpec) -> b
     if source.kind is CanonicalTypeKind.STRING and target.length:
         return source.length is not None and source.length <= target.length
     return True
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _normalize_multi_source(
@@ -1402,7 +1379,11 @@ def _normalize_identities(
     }
     governed_identity_refs = (
         set(contract_by_identity)
-        | {candidate.source_identity_ref for candidate in candidates if candidate.source_identity_ref}
+        | {
+            candidate.source_identity_ref
+            for candidate in candidates
+            if candidate.source_identity_ref
+        }
         | {
             source_ref
             for fact in facts
@@ -3695,10 +3676,6 @@ def _column_role(name: str, fk_names: frozenset[str]) -> SilverColumnRole:
     return SilverColumnRole.BUSINESS
 
 
-
-
-
-
 def _validate_identity_columns(
     candidate: BoundSilverModel,
     identity: EntityIdentitySpec | None,
@@ -4255,8 +4232,6 @@ def _gold_registry() -> GoldProductProfileRegistry:
             ),
         )
     )
-
-
 
 
 def _not_evaluated_stage(

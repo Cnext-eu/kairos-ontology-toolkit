@@ -15,11 +15,9 @@ the authority for canonical classes, properties, relationships, labels, and
 definitions. Produce the **smallest useful canonical slice** as a reviewable
 ontology patch; do not design an entire enterprise model in one pass.
 
-This is the DD-133 v5 clean break. Work only with the v5 layout. Do not create or
-consult legacy phase logs, proposal databases, governance registries, readiness
-reports, mapping/preparation/Silver-extension TTL, or virtual-source registries.
-Existing v4 hubs must be rebuilt as v5 hubs rather than migrated or
-dual-authored.
+This is the DD-133 v5 clean break. Work only with the authoritative inputs listed
+below and persist only the accepted ontology patch. Existing v4 hubs must be
+rebuilt as v5 hubs rather than migrated or dual-authored.
 
 ## Design fleet mode (DD-088)
 
@@ -38,7 +36,7 @@ If the user explicitly requests design fleet mode for this invocation:
 
 The override applies only to this skill invocation. It expires when the skill
 ends or pauses, is never inherited by another skill or later resume, and does
-not authorize lifecycle-wide autopilot.
+not authorize decisions in any other skill.
 
 ## Authoritative inputs
 
@@ -248,7 +246,7 @@ diff review, and ontology integrity still apply.
 - Exposing raw sample values to the LLM or committed files.
 - Writing unconfirmed or unparsed Turtle.
 - Combining ontology design with EntityBinding or generated SQL authoring.
-- Persisting conversational decisions as state, reports, or proposal records.
+- Writing any file outside the approved ontology patch.
 
 ## Related skills
 

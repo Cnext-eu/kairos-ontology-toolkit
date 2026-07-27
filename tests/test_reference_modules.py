@@ -253,27 +253,3 @@ def test_invalid_profile_default_annotations_are_blocking(tmp_path):
 
     assert context.modules == ()
     assert context.diagnostics[0].code == "module_default_annotations_invalid"
-
-
-def test_legacy_data_domain_import_remains_supported(tmp_path):
-    ref_models = tmp_path / "reference-models"
-    blueprint = ref_models / "accelerator-packs" / "legacy" / "client-hub-blueprint"
-    blueprint.mkdir(parents=True)
-    blueprint.joinpath("data-domains.yaml").write_text(
-        f"""\
-groups:
-  - id: operations
-    domains:
-      - id: orders
-        imports:
-          - uri: {TERM_NS}
-            module: Orders
-""",
-        encoding="utf-8",
-    )
-
-    config = load_accelerator_module_config(ref_models, "legacy")
-
-    assert config.profiles[0].legacy
-    assert config.profiles[0].ontology_iri == MODULE_IRI
-    assert config.profiles[0].version_pin is None

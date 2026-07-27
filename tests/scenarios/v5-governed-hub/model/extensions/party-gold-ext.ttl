@@ -1,0 +1,14 @@
+@prefix party: <https://example.test/party#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+<https://example.test/party>
+  kairos-ext:goldSchema "gold" ;
+  kairos-ext:goldProductProfile "dimensional-powerbi-v1" .
+
+party:Customer
+  kairos-ext:goldTableType "dimension" ;
+  kairos-ext:goldTableName "dim_customer" ;
+  kairos-ext:goldSourceModel "customer" ;
+  kairos-ext:goldSourceVersion "1.0.0" ;
+  kairos-ext:dimensionExposure "current-only" ;
+  kairos-ext:dimensionVersionBinding "current" .

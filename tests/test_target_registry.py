@@ -22,9 +22,9 @@ BUILTIN_TARGETS = (
     "report",
     "ddd",
 )
-ALL_TARGETS = BUILTIN_TARGETS
+ALL_TARGETS = tuple(target for target in BUILTIN_TARGETS if target != "powerbi")
 CLI_TARGETS = (*BUILTIN_TARGETS, "mdm-profile")
-PROJECT_CLI_TARGETS = ("dbt", "silver", *CLI_TARGETS)
+PROJECT_CLI_TARGETS = ("dbt", "silver", "gold", *CLI_TARGETS)
 COMPATIBILITY_TARGETS = (
     "neo4j",
     "azure-search",
@@ -86,20 +86,36 @@ def test_registry_derives_order_aliases_classification_and_external_metadata():
     assert mdm_spec.include_in_all is False
 
 
-def test_gold_alias_keeps_public_result_key_and_dispatches_powerbi(monkeypatch):
+def test_gold_alias_cannot_dispatch_graph_projector(monkeypatch):
+    monkeypatch.setattr(
+        projector,
+        "_run_projection",
+        lambda *args, **kwargs: pytest.fail("legacy graph authority was invoked"),
+    )
+
+    with pytest.raises(projector.ProjectionRunError, match="immutable CompilePlan"):
+        projector.project_graph(Graph(), targets=["gold"])
+
+
+def test_gold_cli_alias_reaches_compile_plan_guidance():
+    result = CliRunner().invoke(cli, ["project", "--target", "gold"])
+
+    assert result.exit_code != 0
+    assert "bypasses the immutable CompilePlan" in result.output
+    assert "Invalid value for '--target'" not in result.output
+
+
+def test_default_graph_projection_excludes_compile_plan_only_targets(monkeypatch):
     dispatched = []
+    monkeypatch.setattr(
+        projector,
+        "_run_projection",
+        lambda target, *args, **kwargs: dispatched.append(target) or {},
+    )
 
-    def fake_run(target, *args, **kwargs):
-        del args, kwargs
-        dispatched.append(target)
-        return {"model.tmdl": "same bytes"}
+    projector.project_graph(Graph())
 
-    monkeypatch.setattr(projector, "_run_projection", fake_run)
-
-    results = projector.project_graph(Graph(), targets=["gold"])
-
-    assert dispatched == ["powerbi"]
-    assert results["gold"] == {"model.tmdl": "same bytes"}
+    assert dispatched == list(ALL_TARGETS)
 
 
 def test_external_registration_is_one_operation_and_idempotent(isolated_registry):

@@ -1,9 +1,14 @@
-# Kairos Medallion Projector — Consolidated Data Engineering Rules
+# Historical: Kairos 4.7 Medallion Projector Rules
 
-**Status:** Consolidated toolkit rules  
-**Version:** 1.0  
-**Date:** 2026-07-25  
-**Scope:** Fresh Kairos ontology hubs  
+> **Frozen v4.7 record.** Claims, authored preparation/Silver policy,
+> lifecycle/readiness/release evidence, and their commands were retired by the v5 DD-133
+> clean break. The rules below are preserved for provenance and are not active v5 guidance.
+> Use the [v5 data-engineer methodology](data-engineer-methodology-guide.md).
+
+**Status:** Consolidated toolkit rules
+**Version:** 1.0
+**Date:** 2026-07-25
+**Scope:** Fresh Kairos ontology hubs
 **Target platforms:** Microsoft Fabric and Azure Databricks
 
 ## 1. Authority and evidence

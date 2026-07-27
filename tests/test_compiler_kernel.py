@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import shutil
 import textwrap
-from dataclasses import FrozenInstanceError, fields, is_dataclass
+from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -239,6 +239,26 @@ def test_all_malformed_selected_bindings_are_non_emittable(tmp_path):
     binding.write_text("metadata:\n  domain: party\nunknown: rejected\n", encoding="utf-8")
     result = compile_domain(hub, "party")
     assert not result.succeeded
+    assert not result.can_emit
+    assert not result.artifacts
+
+
+def test_project_render_failure_is_non_emittable_with_blocked_entity(tmp_path):
+    plan = build_compile_plan(_hub(tmp_path), "party")
+    entity = plan.entities[0]
+    plan = replace(
+        plan,
+        entities=(replace(entity, blocked=True), entity),
+        blocked=True,
+    )
+
+    with patch(
+        "kairos_ontology.core.compiler.kernel.render_canonical_project",
+        side_effect=ValueError("renderer rejected plan"),
+    ):
+        result = compile_plan_result(plan, CompileMode.EMIT)
+
+    assert "compiler.render-failed" in {item.code for item in result.diagnostics.items}
     assert not result.can_emit
     assert not result.artifacts
 

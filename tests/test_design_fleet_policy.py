@@ -27,14 +27,14 @@ DESIGN_SKILLS = [
 
 @pytest.mark.parametrize("path", INSTRUCTION_PATHS, ids=lambda p: p.parent.name)
 def test_global_instructions_scope_design_fleet_mode_to_one_invocation(path):
-    text = path.read_text(encoding="utf-8")
+    text = " ".join(path.read_text(encoding="utf-8").split())
+    lowered = text.lower()
 
-    assert "### Design mode policy (MANDATORY)" in text
-    assert "Design skills are **interactive by default**" in text
-    assert "**Skill-scoped fleet override:**" in text
-    assert "applies only to that skill invocation" in text
-    assert "MUST NOT carry into another skill" in text
-    assert "Record each AI-made checkpoint decision" in text
+    assert "## Design interaction" in text
+    assert "interactive by default" in lowered
+    assert "applies only to the active skill invocation" in lowered
+    assert "expires when it" in lowered
+    assert "records each ai-approved choice" in lowered
 
 
 @pytest.mark.parametrize("skill", DESIGN_SKILLS)
@@ -48,7 +48,7 @@ def test_global_instructions_scope_design_fleet_mode_to_one_invocation(path):
 )
 def test_design_skills_include_fleet_mode_guardrails(root, skill):
     path = root / skill / "SKILL.md"
-    text = path.read_text(encoding="utf-8")
+    text = " ".join(path.read_text(encoding="utf-8").split())
 
     assert "## Design fleet mode (DD-088)" in text
     assert "Default is interactive" in text
@@ -68,11 +68,11 @@ def test_design_skills_include_fleet_mode_guardrails(root, skill):
     ids=["github", "scaffold"],
 )
 def test_discovery_offers_invocation_scoped_mode_choice(root):
-    text = (root / "kairos-design-discovery" / "SKILL.md").read_text(encoding="utf-8")
+    text = " ".join(
+        (root / "kairos-design-discovery" / "SKILL.md").read_text(encoding="utf-8").split()
+    )
 
-    assert "Choose the mode for this invocation" in text
-    assert "**Interactive (Recommended)**" in text
-    assert "**Design fleet**" in text
-    assert "ask again after any pause/resume" in text
-    assert "never pass the mode" in text
-    assert "another skill" in text
+    assert "Default is interactive" in text
+    assert "applies only to this skill invocation" in text
+    assert "never inherited" in text
+    assert "AI-approved choice" in text

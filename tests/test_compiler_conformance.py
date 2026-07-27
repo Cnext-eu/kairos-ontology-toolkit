@@ -15,7 +15,12 @@ from kairos_ontology.core.compiler import (
     build_conformance_plan,
     load_entity_binding,
 )
-from kairos_ontology.core.compiler.bindings import LoadSpec
+from kairos_ontology.core.compiler.bindings import (
+    LoadSpec,
+    RelationshipJoin,
+    RelationshipSpec,
+    SourceRef,
+)
 
 
 def _binding(
@@ -299,13 +304,78 @@ def test_requires_complete_type_contracts_and_provenance() -> None:
     } <= _codes(excinfo.value)
 
 
-def test_rejects_single_source_group_and_v4_without_compatibility() -> None:
+@pytest.mark.parametrize(
+    ("contract", "code", "pointer"),
+    [
+        (
+            ConformanceTypeContract(
+                grain=(), identity=CONTRACT.identity, properties=CONTRACT.properties
+            ),
+            "conformance.grain-contract-incomplete",
+            "/grain/columns",
+        ),
+        (
+            ConformanceTypeContract(
+                grain=CONTRACT.grain, identity=(), properties=CONTRACT.properties
+            ),
+            "conformance.identity-contract-incomplete",
+            "/identity/sourceKey",
+        ),
+        (
+            ConformanceTypeContract(
+                grain=CONTRACT.grain,
+                identity=CONTRACT.identity,
+                properties=(CONTRACT.properties[0],),
+            ),
+            "conformance.property-contract-incomplete",
+            "/fields",
+        ),
+    ],
+)
+def test_rejects_each_incomplete_conformance_contract(contract, code: str, pointer: str) -> None:
+    first = _binding("crm-customer", "crm.customers", 1)
+    second = _binding("erp-customer", "erp.customers", 2)
+
+    with pytest.raises(CompileError) as excinfo:
+        _plan(first, second, contracts={first.name: contract, second.name: CONTRACT})
+
+    diagnostic = next(item for item in excinfo.value.diagnostics if item.code == code)
+    assert diagnostic.location.path == first.source_path
+    assert diagnostic.location.pointer == pointer
+
+
+def test_rejects_missing_source_and_incompatible_relationship_contracts() -> None:
+    first = replace(_binding("crm-customer", "crm.customers", 1), source=SourceRef())
+    relationship = RelationshipSpec(
+        property="party:country",
+        target="party:Country",
+        on=(RelationshipJoin(local="country_code", foreign="code"),),
+        cardinality="many-to-one",
+        mode="non-temporal",
+        missing_parent="error",
+        ambiguous_parent="error",
+    )
+    second = replace(
+        _binding("erp-customer", "erp.customers", 2),
+        relationships=(relationship,),
+    )
+
+    with pytest.raises(CompileError) as excinfo:
+        _plan(first, second)
+
+    assert {
+        "conformance.source-missing",
+        "conformance.relationship-incompatible",
+    } <= _codes(excinfo.value)
+
+
+def test_rejects_single_source_group_and_unsupported_api_version() -> None:
     binding = _binding("crm-customer", "crm.customers", 1)
     with pytest.raises(CompileError) as excinfo:
         _plan(binding)
     assert "conformance.group-single-source" in _codes(excinfo.value)
 
-    binding = replace(binding, api_version="kairos.eu/v4")
+    binding = replace(binding, api_version="kairos.eu/v6")
     with pytest.raises(CompileError) as excinfo:
         _plan(binding)
     assert "conformance.api-version" in _codes(excinfo.value)

@@ -1,35 +1,60 @@
 ---
 name: kairos-flow
 description: >
-  Stateless entry point for inspecting an ontology hub and routing the next design,
-  binding, validation, or compile action. Uses source inventory and CompilePlan
-  diagnostics; it does not persist lifecycle state.
+  Stateless v5 router that inspects authored hub inputs and selects the next
+  inspect, design, bind, validate, or compile action.
 ---
+<!-- kairos-ontology-toolkit:managed v2.35.0 -->
 
 # Kairos Flow
 
-Inspect the hub without creating lifecycle state or inferring a release verdict.
+Use this skill as the stateless entry point. Read the current hub; never create a
+continuation record or infer progress from generated files.
 
-1. Inventory `integration/sources/`, `model/ontologies/`, reference models,
-   `model/bindings/`, and generated output. Do not remove or replace source analysis,
-   ontology/reference inventory, update/version diagnostics, or compile diagnostics.
-2. Discover domains from `model/bindings/*.yaml`. Before design, run
-   `kairos-ontology check-inventory --domains <domains> --explain-scope`. This is the
-   only freshness authority for the installed/current local reference-model version. Missing
-   optional modules are non-blocking, but never silently update them; hand explicit updates to
-   `kairos-toolkit-ops`.
-3. For every bound domain run:
+## Inspect
 
-   ```powershell
-   $env:KAIROS_SKILL_CONTEXT=1
-   kairos-ontology compile <domain> --check --format json
-   ```
+1. Find the hub root from `kairos.yaml`.
+2. Inventory only authored inputs relevant to the request:
+   `integration/discovery/`, `integration/sources/`,
+   `integration/transforms/dbt/`, `model/ontologies/`, optional `model/shapes/`,
+   and `integration/bindings/*.binding.yaml`.
+3. Derive domains from ontology filenames and binding `metadata.domain` values.
+4. For a detailed read-only view, invoke **kairos-diagnose-status**.
 
-4. Report CompilePlan diagnostics exactly, grouped by domain. A successful check means
-   the current binding can compile; it is not a persisted lifecycle or release state.
-5. Route to the earliest applicable skill: source evidence → `kairos-design-source`,
-   ontology → `kairos-design-domain`, bindings → `kairos-design-mapping`, validation →
-   `kairos-execute-validate`, compile/emit → `kairos-execute-project`.
+Before canonical design, run:
 
-Do not create `.kairos-state`, phase logs, readiness reports, or release baselines.
-Design handoffs remain interactive unless the active design skill explicitly enables fleet mode.
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology check-inventory --domains <active-domain> --explain-scope
+```
+
+This is the only freshness authority for the installed/current local
+reference-model version. Missing optional modules outside the selected scope are
+non-blocking. Never update reference models silently; route explicit changes to
+**kairos-toolkit-ops**.
+
+## Route
+
+Choose the earliest action required by the current request:
+
+- **Design:** business terms → **kairos-design-discovery**; source schema →
+  **kairos-design-source**; canonical OWL → **kairos-design-domain**; relational
+  SQL/YAML → **kairos-develop-dbt-transformation**.
+- **Bind:** create or revise a closed `EntityBinding` with
+  **kairos-design-mapping**.
+- **Validate:** ontology/SHACL or compiler diagnostics →
+  **kairos-execute-validate**.
+- **Compile:** check, explain, or emit with **kairos-execute-project**.
+
+When bindings exist, the current compiler result is the only build signal:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology compile <domain> --check --format json
+```
+
+Report ordered diagnostics without storing them. A successful check means only
+that the current authored inputs compile.
+
+Design handoffs are interactive by default. A fleet override belongs only to the
+active design skill invocation and never transfers through this router.

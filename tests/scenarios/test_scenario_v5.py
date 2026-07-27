@@ -440,7 +440,7 @@ def test_stage2_scope_provenance_is_source_scoped_and_stateless(tmp_path):
     assert not any(".kairos-state" in str(path) for path in hub.rglob("*"))
 
 
-def test_stage2_forbids_v4_and_runtime_release_artifacts(tmp_path):
+def test_stage2_forbids_retired_runtime_release_artifacts(tmp_path):
     result = compile_domain(_copy_hub(tmp_path), "party", CompileMode.EMIT)
 
     forbidden = (
@@ -536,6 +536,30 @@ def test_stage2_each_non_suppressible_safety_family_blocks_in_a_fresh_hub(tmp_pa
 
     assert not result.succeeded
     assert safety_code in _codes(result), [item.render() for item in result.diagnostics.items]
+    assert all(path != "models/silver/party/customer.sql" for path in result.artifact_dict())
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "pointer"),
+    [
+        ("grain", "columns", "/grain/columns"),
+        ("identity", "sourceKey", "/identity/sourceKey"),
+    ],
+)
+def test_stage2_unknown_key_columns_are_source_located_and_block(tmp_path, section, key, pointer):
+    hub = _copy_hub(tmp_path / section)
+    customer_path, customer = _binding(hub, "customer")
+    customer[section][key] = ["missing_id"]
+    _write_binding(customer_path, customer)
+
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+
+    assert not result.succeeded
+    diagnostic = next(
+        item for item in result.diagnostics.items if item.code == "safety.column-unresolved"
+    )
+    assert diagnostic.location.path.endswith("customer.binding.yaml")
+    assert diagnostic.location.pointer == pointer
     assert all(path != "models/silver/party/customer.sql" for path in result.artifact_dict())
 
 

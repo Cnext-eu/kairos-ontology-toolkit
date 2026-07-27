@@ -181,6 +181,21 @@ def test_null_and_first_actions_define_observable_match_count_behavior() -> None
             ),
             "temporal.parent-validity-collision",
         ),
+        (replace(_relationship(), on=()), "temporal.join-missing"),
+        (
+            replace(
+                _relationship(),
+                temporal=replace(_relationship().temporal, parent_valid_from=""),
+            ),
+            "temporal.parent-validity-incomplete",
+        ),
+        (
+            replace(
+                _relationship(),
+                temporal=replace(_relationship().temporal, open_ended="invented"),
+            ),
+            "temporal.open-ended-invalid",
+        ),
     ],
 )
 def test_rejects_incomplete_or_contradictory_time_semantics(

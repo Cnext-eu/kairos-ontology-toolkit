@@ -11,6 +11,7 @@ from pathlib import Path
 import click
 
 from ..core.compiler import CompileMode, compile_domain
+from ..core.hub_utils import find_hub_root
 
 
 def _payload(result) -> dict:
@@ -58,7 +59,8 @@ def compile_cmd(
         if check_mode
         else CompileMode.EXPLAIN if explain_mode else CompileMode.EMIT
     )
-    result = compile_domain(Path.cwd(), domain, mode)
+    hub = find_hub_root(Path.cwd(), require_model=True) or Path.cwd()
+    result = compile_domain(hub, domain, mode)
     if emit_dir is not None and result.can_emit:
         from ..core.compiler.emit import emit_artifacts
 

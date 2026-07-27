@@ -35,7 +35,6 @@ from .policy_specs import (
     CapabilityDisposition,
     CapabilityResultSpec,
     CanonicalTypeKind,
-    CanonicalTypeSpec,
     ChangeDetectionStrategy,
     DqAction,
     DqCheckKind,
@@ -248,12 +247,6 @@ def _quality_physical_plans(
     if blockers:
         raise QualityMaterializationBlocked(tuple(sorted(set(blockers))))
     return tuple(sorted(plans, key=lambda item: item.model_name))
-
-
-
-
-
-
 
 
 def _runtime_physical_plan(

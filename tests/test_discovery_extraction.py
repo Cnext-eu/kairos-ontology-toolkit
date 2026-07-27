@@ -207,8 +207,10 @@ def test_cli_discovery_status_strict_blocks_on_new(tmp_path):
         cli,
         [
             "discovery-status",
-            "--import-dir", str(imp),
-            "--extraction-dir", str(ext),
+            "--import-dir",
+            str(imp),
+            "--extraction-dir",
+            str(ext),
             "--strict",
         ],
     )
@@ -225,8 +227,10 @@ def test_cli_discovery_status_warn_only_never_blocks(tmp_path):
         cli,
         [
             "discovery-status",
-            "--import-dir", str(imp),
-            "--extraction-dir", str(ext),
+            "--import-dir",
+            str(imp),
+            "--extraction-dir",
+            str(ext),
             "--strict",
             "--warn-only",
         ],
@@ -240,8 +244,10 @@ def test_cli_discovery_status_no_import_dir(tmp_path):
         cli,
         [
             "discovery-status",
-            "--import-dir", str(tmp_path / "missing"),
-            "--extraction-dir", str(tmp_path / "ext"),
+            "--import-dir",
+            str(tmp_path / "missing"),
+            "--extraction-dir",
+            str(tmp_path / "ext"),
         ],
     )
     assert result.exit_code == 0
@@ -315,12 +321,6 @@ def test_extraction_filename_nested_stays_within_component_limit():
     assert name.endswith(".extraction.yaml")
 
 
-def test_extraction_filename_toplevel_backward_compatible():
-    # A top-level relative path keeps the legacy basename-derived filename.
-    assert extraction_filename("doc.pdf", relative_path="doc.pdf") == "doc-pdf.extraction.yaml"
-    assert extraction_filename("doc.pdf") == "doc-pdf.extraction.yaml"
-
-
 def test_normalize_source_key_variants(tmp_path):
     imp = tmp_path / "import"
     imp.mkdir(parents=True)
@@ -392,25 +392,6 @@ def test_nested_valid_record_not_reported_orphan(tmp_path):
     assert report.ok == ["workbooks/big.xlsx"]
 
 
-def test_legacy_basename_extraction_matches_only_its_nested_provenance(tmp_path):
-    imp = tmp_path / "import"
-    ext = tmp_path / "_extractions"
-    first = _make_doc(imp / "one", "same.pdf")
-    _make_doc(imp / "two", "same.pdf")
-    _write_extraction_rel(
-        "one/same.pdf",
-        ext,
-        sha=compute_source_hash(first),
-        filename=extraction_filename("same.pdf"),
-    )
-
-    report = check_discovery_docs(import_dir=imp, extraction_dir=ext)
-
-    assert report.unprocessed == ["two/same.pdf"]
-    assert report.ok == ["one/same.pdf"]
-    assert report.orphan == []
-
-
 def test_truly_orphan_nested_extraction_still_flagged(tmp_path):
     imp = tmp_path / "import"
     ext = tmp_path / "_extractions"
@@ -432,18 +413,6 @@ def test_conflicting_provenance_detected(tmp_path):
     assert report.conflict == ["sub/e.pdf"]
     assert report.orphan == []  # both consumed, neither dangling
     assert report.has_warnings is True
-
-
-def test_legacy_toplevel_record_preserved(tmp_path):
-    # A pre-existing top-level record written with the legacy basename filename
-    # and no usable source_path is still matched by filename.
-    imp = tmp_path / "import"
-    ext = tmp_path / "_extractions"
-    doc = _make_doc(imp, "legacy.pdf")
-    _write_extraction_for(doc, ext, sha=compute_source_hash(doc))
-    report = check_discovery_docs(import_dir=imp, extraction_dir=ext)
-    assert report.ok == ["legacy.pdf"]
-    assert report.orphan == []
 
 
 def test_cli_discovery_status_reports_nested_path(tmp_path):

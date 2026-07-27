@@ -23,7 +23,6 @@ from .dbt.gold_materialize import materialize_gold_product
 from .dbt.gold_shape import shape_gold_product
 from .dbt.gold_specs import GoldContractError
 from .dbt.gold_specs import GoldProductLogicalSpec, GoldProductPhysicalSpec
-from .dbt.policy_specs import MedallionPolicySpec
 
 if TYPE_CHECKING:
     from ..compiler.plan import CompilePlan
@@ -31,8 +30,6 @@ if TYPE_CHECKING:
 
 def plan_gold_from_compile_plan(
     compile_plan: "CompilePlan",
-    *,
-    policy: MedallionPolicySpec | None = None,
 ) -> tuple[GoldProductLogicalSpec, GoldProductPhysicalSpec]:
     """Build optional Gold logical/physical plans from canonical Stage 3 Silver."""
     if compile_plan.blocked:
@@ -52,9 +49,8 @@ def plan_gold_from_compile_plan(
             rule_id="DD-133-downstream",
         )
 
-    effective_policy = policy or contract.policy
     logical = shape_gold_product(
-        effective_policy,
+        contract.policy,
         registry,
         shaped.silver_models,
         contract.fk_classification,
@@ -73,11 +69,9 @@ def plan_gold_from_compile_plan(
 
 def generate_gold_from_compile_plan(
     compile_plan: "CompilePlan",
-    *,
-    policy: MedallionPolicySpec | None = None,
 ) -> dict[str, str]:
     """Render deterministic optional Gold artifacts without rebuilding Silver."""
-    logical, physical = plan_gold_from_compile_plan(compile_plan, policy=policy)
+    logical, physical = plan_gold_from_compile_plan(compile_plan)
     parity = {
         "status": "pass",
         "authority": "compile-plan",

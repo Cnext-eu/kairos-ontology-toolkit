@@ -14,20 +14,13 @@ from .policy_specs import (
     AdapterSupportFact,
     AuthoredValuesFact,
     CalendarFact,
-    DataQualityRuleFact,
     DeviationFact,
-    EntityIdentityFact,
     GoldProductFact,
     GoldTablePolicyFact,
-    HashPolicyFact,
-    IncrementalPolicyFact,
     MeasureFact,
     MedallionPolicyFacts,
-    MultiSourcePolicyFact,
     SecurityFact,
-    TemporalRelationshipFact,
 )
-
 
 EXT = Namespace("https://kairos.cnext.eu/ext#")
 
@@ -65,8 +58,7 @@ def _ordered_required(
     ordered = False
     if objects and all(isinstance(value, BNode) for value in objects):
         collections = tuple(
-            tuple(str(value) for value in Collection(graph, node))
-            for node in objects
+            tuple(str(value) for value in Collection(graph, node)) for node in objects
         )
         values = collections[0]
         ordered = all(value == values for value in collections)
@@ -107,30 +99,6 @@ def _linked(graph: Graph, subject: URIRef, predicate: URIRef) -> tuple[URIRef, .
     )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 _IDENTITY_PREDICATES = (
     EXT.businessGrain,
     EXT.identityStrategy,
@@ -140,20 +108,6 @@ _IDENTITY_PREDICATES = (
     EXT.changeDetectionStrategy,
     EXT.lineagePolicy,
 )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _gold_tables(graph: Graph) -> tuple[GoldTablePolicyFact, ...]:
@@ -177,17 +131,13 @@ def _gold_tables(graph: Graph) -> tuple[GoldTablePolicyFact, ...]:
             fact_grain=_values(graph, resource, EXT.factGrain),
             fact_type=_values(graph, resource, EXT.factType),
             dimension_exposure=_values(graph, resource, EXT.dimensionExposure),
-            version_binding=_values(
-                graph, resource, EXT.dimensionVersionBinding
-            ),
+            version_binding=_values(graph, resource, EXT.dimensionVersionBinding),
             incremental_policy_refs=None,
             correction=None,
             late_arrival=None,
             bridge_grain=_values(graph, resource, EXT.bridgeGrain),
             bridge_endpoints=_values(graph, resource, EXT.bridgeEndpoint),
-            bridge_endpoint_bindings=_values(
-                graph, resource, EXT.bridgeEndpointBinding
-            ),
+            bridge_endpoint_bindings=_values(graph, resource, EXT.bridgeEndpointBinding),
             bridge_cardinality=_values(graph, resource, EXT.bridgeCardinality),
             bridge_weight_column=_values(graph, resource, EXT.bridgeWeightColumn),
             bridge_allocation=_values(graph, resource, EXT.bridgeAllocationSemantics),
@@ -204,9 +154,7 @@ def _measures(graph: Graph) -> tuple[MeasureFact, ...]:
             measure_id=_required(graph, resource, EXT.measureId),
             definition=_required(graph, resource, EXT.measureDefinition),
             expression=_values(graph, resource, EXT.measureExpression),
-            column_dependencies=_values(
-                graph, resource, EXT.measureColumnDependency
-            ),
+            column_dependencies=_values(graph, resource, EXT.measureColumnDependency),
             measure_dependencies=_values(graph, resource, EXT.measureDependency),
             lifecycle=_required(graph, resource, EXT.measureLifecycleState),
             data_type=_values(graph, resource, EXT.measureDataType),
@@ -226,9 +174,7 @@ def _calendars(graph: Graph) -> tuple[CalendarFact, ...]:
             resource_uri=str(resource),
             start_date=_required(graph, resource, EXT.calendarStartDate),
             end_date=_required(graph, resource, EXT.calendarEndDate),
-            fiscal_year_start_month=_required(
-                graph, resource, EXT.fiscalYearStartMonth
-            ),
+            fiscal_year_start_month=_required(graph, resource, EXT.fiscalYearStartMonth),
             week_pattern=_required(graph, resource, EXT.weekPattern),
             locale=_required(graph, resource, EXT.calendarLocale),
             holiday_source=_required(graph, resource, EXT.holidaySource),
@@ -271,9 +217,7 @@ def _adapter_support(
             scope=_required(graph, resource, namespace.evidenceScope),
             capabilities=_required(graph, resource, namespace.capability),
             status=_required(graph, resource, namespace.supportStatus),
-            compile_evidence=_values(
-                graph, resource, namespace.compileEvidence
-            ),
+            compile_evidence=_values(graph, resource, namespace.compileEvidence),
         )
         for resource in _subjects_of_type(graph, namespace.AdapterSupport)
     )
@@ -284,32 +228,22 @@ def _deviations(
     namespace: Namespace,
 ) -> tuple[DeviationFact, ...]:
     class_uri = namespace.Deviation if namespace == EXT else namespace.AdapterDeviation
-    owner_predicate = (
-        namespace.deviationOwnerRole if namespace == EXT else namespace.ownerRole
-    )
+    owner_predicate = namespace.deviationOwnerRole if namespace == EXT else namespace.ownerRole
     return tuple(
         DeviationFact(
             resource_uri=str(resource),
             adapter_name=_values(graph, resource, namespace.adapterName),
-            policy_reference=_required(
-                graph, resource, namespace.policyReference
-            ),
+            policy_reference=_required(graph, resource, namespace.policyReference),
             scope=_required(graph, resource, namespace.deviationScope),
-            rationale=_required(
-                graph, resource, namespace.deviationRationale
-            ),
+            rationale=_required(graph, resource, namespace.deviationRationale),
             owner_role=_required(graph, resource, owner_predicate),
-            approval_status=_required(
-                graph, resource, namespace.approvalStatus
-            ),
+            approval_status=_required(graph, resource, namespace.approvalStatus),
             review_date=_required(graph, resource, namespace.reviewDate),
             expiry_date=_required(graph, resource, namespace.expiryDate),
             evidence=_required(graph, resource, namespace.deviationEvidence),
         )
         for resource in _subjects_of_type(graph, class_uri)
     )
-
-
 
 
 def bind_policy_facts(
@@ -343,9 +277,7 @@ def bind_policy_facts(
     )
     return MedallionPolicyFacts(
         ontology_uri=ontology_uri,
-        naming_convention=_values(
-            policy_graph, ontology, EXT.namingConvention
-        ),
+        naming_convention=_values(policy_graph, ontology, EXT.namingConvention),
         identities=(),
         multi_source=(),
         incremental=(),

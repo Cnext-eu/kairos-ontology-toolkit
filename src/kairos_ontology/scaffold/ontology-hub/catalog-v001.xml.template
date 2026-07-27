@@ -5,7 +5,7 @@
 
   Usage:
     kairos-ontology validate
-    kairos-ontology project
+    kairos-ontology compile <domain> --check
 
   The toolkit auto-discovers this file at ontology-hub/catalog-v001.xml.
   If you also use FIBO or other reference ontologies, the <nextCatalog>

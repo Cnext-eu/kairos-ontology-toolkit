@@ -67,7 +67,10 @@ class TestUnresolvedAnchorRoundTrip:
 
     def test_sparse_fields_omitted_when_empty(self):
         anchor = UnresolvedAnchor(
-            id="x", domain="d", system="s", table="t",
+            id="x",
+            domain="d",
+            system="s",
+            table="t",
         )
         data = anchor.to_dict()
         assert "likely_entity" not in data
@@ -77,8 +80,10 @@ class TestUnresolvedAnchorRoundTrip:
 
     def test_resolved_record_round_trips_resolution_fields(self):
         anchor = _anchor(
-            status="resolved", resolved_uri=CLASS_A_URI,
-            resolved_by="a-human", resolved_at="2026-01-01T00:00:00Z",
+            status="resolved",
+            resolved_uri=CLASS_A_URI,
+            resolved_by="a-human",
+            resolved_at="2026-01-01T00:00:00Z",
         )
         restored = UnresolvedAnchor.from_dict(anchor.to_dict())
         assert restored.status == "resolved"
@@ -105,8 +110,13 @@ class TestUnresolvedAnchorRoundTrip:
     def test_from_dict_tolerates_bad_schema_version(self):
         diagnostics: list[str] = []
         restored = UnresolvedAnchor.from_dict(
-            {"id": "x", "domain": "d", "system": "s", "table": "t",
-             "schema_version": "not-a-number"},
+            {
+                "id": "x",
+                "domain": "d",
+                "system": "s",
+                "table": "t",
+                "schema_version": "not-a-number",
+            },
             diagnostics=diagnostics,
         )
         assert restored is not None
@@ -116,8 +126,13 @@ class TestUnresolvedAnchorRoundTrip:
     def test_from_dict_forward_compat_newer_schema_version_loads_tolerantly(self):
         diagnostics: list[str] = []
         restored = UnresolvedAnchor.from_dict(
-            {"id": "x", "domain": "d", "system": "s", "table": "t",
-             "schema_version": UNRESOLVED_ANCHOR_SCHEMA_VERSION + 1},
+            {
+                "id": "x",
+                "domain": "d",
+                "system": "s",
+                "table": "t",
+                "schema_version": UNRESOLVED_ANCHOR_SCHEMA_VERSION + 1,
+            },
             diagnostics=diagnostics,
         )
         assert restored is not None
@@ -152,13 +167,6 @@ class TestLoadUnresolvedAnchorsDoc:
         anchors, diagnostics = load_unresolved_anchors_doc(path)
         assert anchors == []
         assert diagnostics
-
-    def test_legacy_document_missing_anchors_key_is_tolerated(self, tmp_path):
-        path = tmp_path / "legacy.yaml"
-        path.write_text("domain: domainx\n", encoding="utf-8")
-        anchors, diagnostics = load_unresolved_anchors_doc(path)
-        assert anchors == []
-        assert diagnostics == []
 
     def test_non_mapping_anchor_entry_is_skipped_with_diagnostic(self, tmp_path):
         path = tmp_path / "partial.yaml"

@@ -1,0 +1,10 @@
+@prefix party: <https://example.test/party#> .
+@prefix kairos-mdm: <https://kairos.cnext.eu/mdm#> .
+
+party:Customer
+  kairos-mdm:mastered true ;
+  kairos-mdm:mdmStyle "registry" .
+
+party:customerName
+  kairos-mdm:matchAttribute true ;
+  kairos-mdm:identifier true .

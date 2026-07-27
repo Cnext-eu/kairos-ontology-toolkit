@@ -5,15 +5,21 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from rdflib import URIRef
+from rdflib.namespace import RDFS
 
 from kairos_ontology.core.compiler import build_compile_plan
 from kairos_ontology.core.projector import (
+    ProjectionRunError,
     get_target_spec,
     project_downstream_compile_plan,
+    projection_targets_for_all,
+    run_projections,
 )
 from kairos_ontology.core.projections.dbt.gold_specs import GoldContractError
 from kairos_ontology.core.projections.medallion_gold_projector import (
@@ -21,9 +27,27 @@ from kairos_ontology.core.projections.medallion_gold_projector import (
 )
 from kairos_ontology.mdm.profile_projector import (
     MdmCompilePlanError,
+    _typed_policy_graph,
     generate_mdm_profile_from_compile_plan,
 )
-from tests.test_compiler_kernel import _hub
+
+_V5_HUB = Path(__file__).parent / "scenarios" / "v5-governed-hub"
+_AUTHORITATIVE_SUFFIXES = (".ttl", ".yaml")
+_RETIRED_PARTS = {
+    ".kairos-state",
+    "claims",
+    "evidence",
+    "governance",
+    "mappings",
+    "preparation",
+    "readiness",
+}
+
+
+def _copy_hub(tmp_path: Path) -> Path:
+    hub = tmp_path / "hub"
+    shutil.copytree(_V5_HUB, hub)
+    return hub
 
 
 def _mdm_extension(path: Path, *, property_name: str = "customerName") -> Path:
@@ -43,8 +67,31 @@ def _mdm_extension(path: Path, *, property_name: str = "customerName") -> Path:
     return path
 
 
+def test_governed_fixture_contains_only_current_authoring_authority():
+    files = {path.relative_to(_V5_HUB) for path in _V5_HUB.rglob("*") if path.is_file()}
+
+    assert files
+    assert all(path.suffix in _AUTHORITATIVE_SUFFIXES or path.name == "README.md" for path in files)
+    assert not any(_RETIRED_PARTS.intersection(path.parts) for path in files)
+    assert not any("silver-ext" in path.name or "ddd-ext" in path.name for path in files)
+    assert (_V5_HUB / "integration" / "bindings" / "customer.binding.yaml").is_file()
+    assert (_V5_HUB / "model" / "extensions" / "party-gold-ext.ttl").is_file()
+    assert (_V5_HUB / "model" / "extensions" / "party-mdm-ext.ttl").is_file()
+
+
+def test_real_gold_policy_is_bound_into_canonical_compile_plan(tmp_path):
+    hub = _copy_hub(tmp_path)
+
+    plan = build_compile_plan(hub, "party")
+    artifacts = generate_gold_from_compile_plan(plan)
+
+    assert plan.normalized_contract.policy.gold.profile is not None
+    assert artifacts
+    assert any(item.name == "model/extensions/party-gold-ext.ttl" for item in plan.scope.inputs)
+
+
 def test_gold_consumes_exact_shaped_registry_without_rebuilding(tmp_path, monkeypatch):
-    plan = build_compile_plan(_hub(tmp_path), "party")
+    plan = build_compile_plan(_copy_hub(tmp_path), "party")
     logical = object()
     physical = object()
     observed = {}
@@ -91,15 +138,24 @@ def test_gold_consumes_exact_shaped_registry_without_rebuilding(tmp_path, monkey
 
 
 def test_gold_rejects_blocked_compile_plan(tmp_path):
-    plan = build_compile_plan(_hub(tmp_path, broken_column=True), "party")
+    hub = _copy_hub(tmp_path)
+    binding = hub / "integration" / "bindings" / "customer.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace(
+            "expression: customer_name", "expression: missing_name"
+        ),
+        encoding="utf-8",
+    )
+    plan = build_compile_plan(hub, "party")
     assert plan.blocked
     with pytest.raises(GoldContractError, match="blocked compiler plan"):
         generate_gold_from_compile_plan(plan)
 
 
 def test_mdm_consumes_registry_and_is_byte_deterministic(tmp_path):
-    plan = build_compile_plan(_hub(tmp_path), "party")
-    extension = _mdm_extension(tmp_path / "party-mdm-ext.ttl")
+    hub = _copy_hub(tmp_path)
+    plan = build_compile_plan(hub, "party")
+    extension = hub / "model" / "extensions" / "party-mdm-ext.ttl"
     plan_with_registry_only = replace(
         plan,
         shaped_project=replace(plan.shaped_project, silver_models=()),
@@ -116,13 +172,40 @@ def test_mdm_consumes_registry_and_is_byte_deterministic(tmp_path):
     assert payload["mastered_concepts"][0]["match_attributes"][0]["name"] == "customerName"
 
 
+def test_mdm_typed_policy_graph_preserves_subclass_edges(tmp_path):
+    hub = _copy_hub(tmp_path)
+    ontology = hub / "model" / "ontologies" / "party.ttl"
+    ontology.write_text(
+        ontology.read_text(encoding="utf-8")
+        + "\nparty:PreferredCustomer a owl:Class ; rdfs:subClassOf party:Customer .\n",
+        encoding="utf-8",
+    )
+    extension = hub / "model" / "extensions" / "party-mdm-ext.ttl"
+
+    graph = _typed_policy_graph(build_compile_plan(hub, "party"), extension)
+
+    assert (
+        URIRef("https://example.test/party#PreferredCustomer"),
+        RDFS.subClassOf,
+        URIRef("https://example.test/party#Customer"),
+    ) in graph
+
+
 def test_mdm_rejects_blocked_or_unshaped_policy(tmp_path):
-    extension = _mdm_extension(tmp_path / "party-mdm-ext.ttl")
-    blocked = build_compile_plan(_hub(tmp_path / "blocked", broken_column=True), "party")
+    blocked_hub = _copy_hub(tmp_path / "blocked")
+    binding = blocked_hub / "integration" / "bindings" / "customer.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace(
+            "expression: customer_name", "expression: missing_name"
+        ),
+        encoding="utf-8",
+    )
+    extension = blocked_hub / "model" / "extensions" / "party-mdm-ext.ttl"
+    blocked = build_compile_plan(blocked_hub, "party")
     with pytest.raises(MdmCompilePlanError, match="blocked compiler plan"):
         generate_mdm_profile_from_compile_plan(blocked, mdm_ext_path=extension)
 
-    plan = build_compile_plan(_hub(tmp_path / "valid"), "party")
+    plan = build_compile_plan(_copy_hub(tmp_path / "valid"), "party")
     unknown = _mdm_extension(
         tmp_path / "unknown-mdm-ext.ttl",
         property_name="unknownAttribute",
@@ -132,8 +215,9 @@ def test_mdm_rejects_blocked_or_unshaped_policy(tmp_path):
 
 
 def test_registry_wires_mdm_plan_consumer_without_core_importing_mdm(tmp_path):
-    plan = build_compile_plan(_hub(tmp_path), "party")
-    extension = _mdm_extension(tmp_path / "party-mdm-ext.ttl")
+    hub = _copy_hub(tmp_path)
+    plan = build_compile_plan(hub, "party")
+    extension = hub / "model" / "extensions" / "party-mdm-ext.ttl"
     spec = get_target_spec("mdm-profile")
 
     assert spec is not None
@@ -148,7 +232,7 @@ def test_registry_wires_mdm_plan_consumer_without_core_importing_mdm(tmp_path):
 
 
 def test_registry_dispatches_gold_alias_to_typed_consumer(tmp_path, monkeypatch):
-    plan = build_compile_plan(_hub(tmp_path), "party")
+    plan = build_compile_plan(_copy_hub(tmp_path), "party")
     monkeypatch.setattr(
         "kairos_ontology.core.projections.medallion_gold_projector."
         "generate_gold_from_compile_plan",
@@ -156,3 +240,26 @@ def test_registry_dispatches_gold_alias_to_typed_consumer(tmp_path, monkeypatch)
     )
 
     assert project_downstream_compile_plan("gold", plan) == {"party/gold.sql": plan.provenance_hash}
+
+
+@pytest.mark.parametrize("target", ("powerbi", "gold", "mdm-profile"))
+def test_legacy_project_rejects_compile_plan_consumers_before_graph_loading(
+    tmp_path, monkeypatch, target
+):
+    monkeypatch.setattr(
+        "kairos_ontology.core.ontology_loader.load_ontology",
+        lambda *args, **kwargs: pytest.fail("legacy graph authority was invoked"),
+    )
+
+    with pytest.raises(ProjectionRunError, match="bypasses the immutable CompilePlan"):
+        run_projections(
+            ontologies_path=_copy_hub(tmp_path) / "model" / "ontologies",
+            catalog_path=tmp_path / "missing.xml",
+            output_path=tmp_path / "output",
+            target=target,
+        )
+
+
+def test_project_all_excludes_compile_plan_only_consumers():
+    assert "powerbi" not in projection_targets_for_all()
+    assert "mdm-profile" not in projection_targets_for_all()

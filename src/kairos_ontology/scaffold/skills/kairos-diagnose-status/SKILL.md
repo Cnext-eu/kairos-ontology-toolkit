@@ -1,29 +1,43 @@
 ---
 name: kairos-diagnose-status
 description: >
-  Perform a stateless ontology-hub diagnostic using source/ontology/reference inventory,
-  version diagnostics, and canonical CompilePlan diagnostics.
+  Read-only v5 report of authored hub inputs and current compile diagnostics.
 ---
+<!-- kairos-ontology-toolkit:managed v2.35.0 -->
 
-# Ontology Hub Diagnostic
+# Diagnose Hub Inputs
 
-Produce a read-only report. Do not create lifecycle state, readiness reports, or a release verdict.
+Produce a stateless report from the hub as it exists now. Do not write or repair
+files during diagnosis.
 
-1. Inspect source analysis under `integration/sources/`.
-2. Inventory domain ontologies, reference imports, bindings, and output artifacts.
-3. Preserve update/version diagnostics and report managed-file drift separately.
-4. Discover domains from `model/bindings/*.yaml`, then run for each domain:
+## Authored input inventory
 
-   ```powershell
-   $env:KAIROS_SKILL_CONTEXT=1
-   kairos-ontology compile <domain> --check --format json
-   ```
+Report only:
 
-5. Treat the returned ordered CompilePlan diagnostics as the machine authority for binding,
-   expression, adapter, conformance, temporal, relationship, and artifact-planning failures.
-6. Report facts in sections: sources, ontology/reference inventory, bindings, compile
-   diagnostics, outputs, and recommended next skill.
+1. `kairos.yaml` and the resolved hub root;
+2. confirmed discovery context under `integration/discovery/`;
+3. source vocabularies and redacted sample availability under
+   `integration/sources/`;
+4. ordinary dbt SQL/properties YAML under `integration/transforms/dbt/`;
+5. canonical ontologies and optional SHACL under `model/`;
+6. `integration/bindings/*.binding.yaml`, grouped by `metadata.domain`.
 
-A passing compile check establishes only that the selected domain can compile. It does not imply
-runtime validation or release eligibility. Never recreate legacy status, projection-readiness,
-lifecycle-gate, or release-evaluator logic.
+Distinguish missing, unreadable, and present inputs. Do not treat output files as
+proof about authored inputs.
+
+## Current compiler diagnostics
+
+For each discovered binding domain run:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology compile <domain> --check --format json
+```
+
+Report the returned ordered diagnostics exactly, including code, message, source
+location, and affected entity. If no binding selects a domain, report that fact
+without inventing a compiler result.
+
+End with the smallest next action: source design, canonical design, dbt contract,
+EntityBinding revision, validation, or compile emission. A clean report means only
+that current authored inputs pass the compiler check.

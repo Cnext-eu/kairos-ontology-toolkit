@@ -1,60 +1,53 @@
 # {repo_name}
 
-Kairos ontology hub for **{description}**.
+Kairos v5 ontology hub for **{description}**.
 
 ## Quick start
 
 ```bash
-# Install dependencies (includes kairos-ontology-toolkit)
 uv sync
-
-# Validate authored semantics and policies
-kairos-ontology validate
-
-# Generate only after source preparation, mappings, and target policy are reviewed
-kairos-ontology project
-
-# Generate a single target
-kairos-ontology project --target prompt
-
-# Optional: install hub-side dbt validation tools
-uv sync --extra dbt-validate
-
-# Validate generated dbt package structure after dbt projection
-cd ontology-hub/output/medallion/dbt
-uv run --extra dbt-validate dbt deps
-uv run --extra dbt-validate dbt parse
+uv run kairos-ontology compile <domain> --check
+uv run kairos-ontology compile <domain> --explain
+uv run kairos-ontology compile <domain> --emit ontology-hub/output/medallion/dbt
 ```
 
-## Repository structure
+`--check` and `--explain` are write-free. `--emit` atomically writes only
+manifest-owned artifacts. Compilation creates one immutable `CompilePlan` used by check,
+explain, emit, and optional Gold/MDM consumers.
 
+## Canonical authored inputs
+
+```text
+ontology-hub/
+├── kairos.yaml                         # adapter: fabric | databricks
+├── catalog-v001.xml
+├── model/
+│   ├── ontologies/                     # canonical TTL
+│   ├── shapes/                         # optional SHACL
+│   └── extensions/                     # optional Gold/MDM policy only
+├── integration/
+│   ├── sources/                        # authoritative source-vocabulary TTL
+│   ├── bindings/                       # one closed EntityBinding per source
+│   ├── discovery/                      # confirmed business context
+│   └── transforms/dbt/models/          # optional ordinary SQL/YAML
+└── output/                             # generated; do not edit
 ```
-├── ontology-hub/                        # Main ontology workspace
-│   ├── integration/
-│   │   ├── sources/                     # Bronze source vocabularies
-│   │   └── preparation/                 # Source-side prep contracts
-│   ├── model/
-│   │   ├── ontologies/                  # Domain ontologies
-│   │   ├── extensions/                  # Silver/Gold policy
-│   │   ├── mappings/                    # Typed SKOS mappings
-│   │   ├── governance/                  # Release baseline
-│   │   ├── shapes/                      # SHACL constraints
-│   │   └── reference-models/            # Shared ontology modules
-│   └── output/                          # Generated projections (gitignored)
-└── catalog-v001.xml                     # OASIS import catalog
+
+Claims, authored preparation policy, lifecycle/readiness state, release evidence, and
+Silver-extension policy are not v5 authorities.
+
+## Downstream use
+
+Publish emitted artifacts at an immutable revision, pin that revision in the dataplatform,
+then run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test`. Never edit generated files.
+
+## Toolkit updates
+
+```bash
+uv run kairos-ontology update --check
+uv run kairos-ontology update --test-ref <branch-or-sha>
+uv run kairos-ontology update --restore
 ```
 
-## Workflow
-
-1. Import and review source vocabularies.
-2. Author domain semantics, typed mappings, and Gold extension contracts.
-3. Validate syntax, SHACL, and strict-release prerequisites.
-4. Project artifacts and review Silver parity plus target-specific evidence.
-5. Commit on a feature branch and open a PR for review.
-
-## Naming conventions
-
-- **Ontology files**: lowercase with hyphens — `customer.ttl`, `sales-order.ttl`
-- **Classes**: PascalCase — `Customer`, `SalesOrder`
-- **Properties**: camelCase — `customerName`, `orderDate`
-- **Namespaces**: `http://<org>.example.org/ontology/<domain>#`
+Unreleased-ref testing is reversible and does not publish a release. V5 has no v4
+compatibility or migration path; rebuild older hubs from this lean scaffold.

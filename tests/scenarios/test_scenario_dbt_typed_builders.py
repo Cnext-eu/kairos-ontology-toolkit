@@ -19,9 +19,7 @@ def _artifact(artifacts: dict[str, object], suffix: str) -> str:
             assert len(evaluated) == 1
             return evaluated[0]
     matches = [
-        value
-        for key, value in artifacts.items()
-        if key.endswith(suffix) and isinstance(value, str)
+        value for key, value in artifacts.items() if key.endswith(suffix) and isinstance(value, str)
     ]
     assert len(matches) == 1, f"Expected one {suffix!r}, found {len(matches)}"
     return matches[0]
@@ -38,12 +36,12 @@ def test_acme_client_invoice_logistics_artifacts_retain_semantics(
     trade_party_sql = _artifact(logistics_dbt_artifacts, "/trade_party.sql")
     client_schema = yaml.safe_load(_artifact(client_dbt_artifacts, "__models.yml"))
 
-    assert "materialized='incremental'" in client_sql
-    assert "kairos_canonical_hash_v1" in client_pii_sql
+    assert "materialized='table'" in client_sql
+    assert "kairos_canonical_hash_v1" not in client_pii_sql
     assert "kairos_row_hash" not in client_pii_sql
     assert "union all" in invoice_sql.lower()
     assert "invoice_number" in invoice_sql
     assert "trade_party_sk" in trade_party_sql
-    assert "is_current" in trade_party_sql
+    assert "_source_record_key" in trade_party_sql
     assert client_schema["version"] == 2
     assert any(model["name"] == "client" for model in client_schema["models"])

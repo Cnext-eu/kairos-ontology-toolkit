@@ -1,51 +1,31 @@
-# Documentation Map
+# Documentation
 
-This folder holds the reference documentation for the **Kairos Ontology Toolkit**.
-Use this page as the entry point.
+## Current v5 guidance
 
-## Live documentation
+| Document | Purpose |
+|---|---|
+| [User guide](USER_GUIDE.md) | Authoring, stateless compile, adapters, and clean cutover |
+| [CLI reference](CLI_REFERENCE.md) | Exact retained command surface and compiler modes |
+| [CompilePlan consumption](CONSUMING_COMPILE_PLAN.md) | Dataplatform, Gold, and MDM consumption |
+| [DD-133](design/dd-133-v5-entity-binding-compile.md) | Normative EntityBinding/compiler contract |
+| [Design decisions](design/toolkit-design-decisions.md) | Canonical ADR log and status index |
+| [Releasing](RELEASING.md) | Maintainer publication process; not evidence of a published release |
 
-| Area | What's here |
-|------|-------------|
-| [USER_GUIDE.md](USER_GUIDE.md) | Complete walkthrough & reference for using the toolkit |
-| [RELEASING.md](RELEASING.md) | Release process (version bump, tagging, GitHub Release) |
-| [design/](design/) | Canonical architecture decisions |
-| [mdm/](mdm/) | Master Data Management (MDM) hub design & specs |
-| [instruction-guides/](instruction-guides/) | Methodology guides for practitioners |
-| [demo/](demo/) | Demo walkthrough |
-| [archive/](archive/) | Frozen historical material — see the note below |
+The active architecture is the lean v5 hub: ontology/source TTL, one closed EntityBinding
+per source, optional ordinary contracted dbt SQL/YAML, optional Gold/MDM policy, and derived
+output. Historical claim, preparation, Silver-extension, lifecycle/readiness, and release
+orchestration decisions are retained only as labeled records in the ADR log.
 
-### design/
+## Other maintained material
 
-The authoritative decision log plus companion deep-dives:
+- [MDM documentation](mdm/)
+- [Practitioner guides](instruction-guides/)
+- [Demo](demo/)
 
-- [toolkit-design-decisions.md](design/toolkit-design-decisions.md) — the ADR log
-  (**DD-NNN**). This is the single source of truth for architectural choices.
-- `dd-014` … `dd-065` — companion documents expanding on specific DD entries
-  (architecture, silver relationship types, SCD-aware dbt, reference-model
-  alignment, extensions, bronze introspection, source-schema spec, skill
-  lifecycle, AI pre-modeling performance).
+## Historical and draft material
 
-### mdm/
+- [`archive/`](archive/) is frozen provenance, not current guidance.
+- [`draft/`](draft/) contains working notes and proposals, not supported contracts.
 
-All Master Data Management documentation, consolidated:
-
-- [mdmhubdesignv2.md](mdm/mdmhubdesignv2.md) — the MDM hub architecture spec.
-- [mdm-design-decisions.md](mdm/mdm-design-decisions.md) — MDM-specific decisions.
-- [user-stories.md](mdm/user-stories.md) — MDM epics & user stories.
-- [mdm-navigator-spec.md](mdm/mdm-navigator-spec.md) — MDM Navigator UI spec.
-- [kairos-mdm-runtime.md](mdm/kairos-mdm-runtime.md) — setup guide and boundaries for the
-  separate private runtime product.
-
-### instruction-guides/
-
-- [context-engineer-methodology-guide.md](instruction-guides/context-engineer-methodology-guide.md)
-- [data-engineer-methodology-guide.md](instruction-guides/data-engineer-methodology-guide.md)
-
-## Archive
-
-[`archive/`](archive/) contains **historical** documents — superseded specs,
-one-off fix notes, early design explorations, and a completed implementation
-tracker. They are kept for provenance only and are **not** current guidance.
-See [archive/README.md](archive/README.md) for what lives there and where the
-live equivalents are.
+When archived or draft text conflicts with the current documents above, DD-133 and the
+implemented compiler behavior take precedence.

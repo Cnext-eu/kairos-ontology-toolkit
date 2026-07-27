@@ -105,7 +105,6 @@ class DbtInputs:
         contract_registry: "Mapping[str, DbtContractModel] | None" = None,
     ) -> "DbtInputs":
         """Copy mutable call arguments into stable authoring inputs."""
-        from pathlib import Path
 
         from .builders import build_metadata
 

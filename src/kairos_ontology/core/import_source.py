@@ -132,14 +132,10 @@ def validate_source_schema(data: dict) -> list[str]:
             elif isinstance(columns, list):
                 for j, col in enumerate(columns):
                     if not isinstance(col, dict):
-                        errors.append(
-                            f"tables[{i}].columns[{j}]: must be a mapping"
-                        )
+                        errors.append(f"tables[{i}].columns[{j}]: must be a mapping")
                         continue
                     if not col.get("name"):
-                        errors.append(
-                            f"tables[{i}].columns[{j}]: missing 'name'"
-                        )
+                        errors.append(f"tables[{i}].columns[{j}]: missing 'name'")
                     if not col.get("data_type"):
                         errors.append(
                             f"tables[{i}].columns[{j}] ({col.get('name', '?')}): "
@@ -266,7 +262,7 @@ def _merge_samples_from_file(schema_dir: Path, tbl_name: str, tbl_data: dict) ->
 
 def _sanitize_uri_part(name: str) -> str:
     """Strip characters that are invalid in RDF URIs (e.g., double quotes from Oracle)."""
-    return re.sub(r'["\s<>{}|\\^`]', '', name)
+    return re.sub(r'["\s<>{}|\\^`]', "", name)
 
 
 def _system_uri(base_ns: Namespace, system_name: str) -> URIRef:
@@ -343,9 +339,13 @@ def generate_vocabulary_ttl(data: dict) -> str:
     # Add provenance annotation
     extracted_at = data.get("extracted_at", "")
     if extracted_at:
-        g.add((sys_uri, RDFS.comment, Literal(
-            f"Introspected from {platform} ({environment}) at {extracted_at}"
-        )))
+        g.add(
+            (
+                sys_uri,
+                RDFS.comment,
+                Literal(f"Introspected from {platform} ({environment}) at {extracted_at}"),
+            )
+        )
 
     # Tables and columns
     for tbl in data.get("tables", []):
@@ -358,18 +358,14 @@ def generate_vocabulary_ttl(data: dict) -> str:
         g.add((tbl_uri, KAIROS_BRONZE.tableName, Literal(tbl_name)))
 
         # Primary key columns
-        pk_cols = [
-            col["name"] for col in tbl.get("columns", [])
-            if col.get("is_primary_key")
-        ]
+        pk_cols = [col["name"] for col in tbl.get("columns", []) if col.get("is_primary_key")]
         if pk_cols:
             g.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(pk_cols))))
 
         # Row count (v1.1 enrichment)
         row_count = tbl.get("row_count")
         if row_count is not None:
-            g.add((tbl_uri, KAIROS_BRONZE.rowCount,
-                   Literal(row_count, datatype=XSD.integer)))
+            g.add((tbl_uri, KAIROS_BRONZE.rowCount, Literal(row_count, datatype=XSD.integer)))
 
         # Incremental column
         inc_col = tbl.get("incremental_column")
@@ -391,8 +387,7 @@ def generate_vocabulary_ttl(data: dict) -> str:
 
             is_pk = col.get("is_primary_key", False)
             if is_pk:
-                g.add((col_uri, KAIROS_BRONZE.isPrimaryKey,
-                       Literal(True, datatype=XSD.boolean)))
+                g.add((col_uri, KAIROS_BRONZE.isPrimaryKey, Literal(True, datatype=XSD.boolean)))
 
             # JSON content type (v1.0 manual annotation)
             content_type = col.get("content_type")
@@ -402,23 +397,37 @@ def generate_vocabulary_ttl(data: dict) -> str:
             # v1.1: Sample values
             samples = col.get("samples")
             if samples:
-                g.add((col_uri, KAIROS_BRONZE.sampleValues,
-                       Literal(" | ".join(str(s) for s in samples[:5]))))
+                g.add(
+                    (
+                        col_uri,
+                        KAIROS_BRONZE.sampleValues,
+                        Literal(" | ".join(str(s) for s in samples[:5])),
+                    )
+                )
 
             # v1.1: Distinct count
             distinct_count = col.get("distinct_count")
             if distinct_count is not None:
-                g.add((col_uri, KAIROS_BRONZE.distinctCount,
-                       Literal(distinct_count, datatype=XSD.integer)))
+                g.add(
+                    (
+                        col_uri,
+                        KAIROS_BRONZE.distinctCount,
+                        Literal(distinct_count, datatype=XSD.integer),
+                    )
+                )
 
             # Enrichment: Suggested enum
             if col.get("suggested_enum"):
-                g.add((col_uri, KAIROS_BRONZE.suggestedEnum,
-                       Literal(True, datatype=XSD.boolean)))
+                g.add((col_uri, KAIROS_BRONZE.suggestedEnum, Literal(True, datatype=XSD.boolean)))
                 enum_values = col.get("enum_values", [])
                 if enum_values:
-                    g.add((col_uri, KAIROS_BRONZE.enumValues,
-                           Literal(" | ".join(str(v) for v in enum_values))))
+                    g.add(
+                        (
+                            col_uri,
+                            KAIROS_BRONZE.enumValues,
+                            Literal(" | ".join(str(v) for v in enum_values)),
+                        )
+                    )
 
             # Enrichment: Format hint
             format_hint = col.get("format_hint")
@@ -437,8 +446,7 @@ def generate_vocabulary_ttl(data: dict) -> str:
             if col.get("json_detected"):
                 classification = col.get("json_classification", "polymorphic")
                 g.add((col_uri, KAIROS_BRONZE.contentType, Literal("json")))
-                g.add((col_uri, KAIROS_BRONZE.jsonClassification,
-                       Literal(classification)))
+                g.add((col_uri, KAIROS_BRONZE.jsonClassification, Literal(classification)))
 
                 # Generate expanded properties for flat/nested JSON
                 json_structure = col.get("json_structure", [])
@@ -450,14 +458,21 @@ def generate_vocabulary_ttl(data: dict) -> str:
                         prop_uri = _column_uri(base_ns, tbl_name, f"{col_name}__{key_name}")
                         g.add((prop_uri, RDF.type, KAIROS_BRONZE.SourceColumn))
                         g.add((prop_uri, KAIROS_BRONZE.sourceTable, tbl_uri))
-                        g.add((prop_uri, KAIROS_BRONZE.columnName,
-                               Literal(f"{col_name}.{key_name}")))
-                        g.add((prop_uri, KAIROS_BRONZE.dataType,
-                               Literal(_json_type_to_sql(js.get("type", "string")))))
+                        g.add(
+                            (prop_uri, KAIROS_BRONZE.columnName, Literal(f"{col_name}.{key_name}"))
+                        )
+                        g.add(
+                            (
+                                prop_uri,
+                                KAIROS_BRONZE.dataType,
+                                Literal(_json_type_to_sql(js.get("type", "string"))),
+                            )
+                        )
                         g.add((prop_uri, KAIROS_BRONZE.derivedFromJson, col_uri))
                         if js.get("sample") is not None:
-                            g.add((prop_uri, KAIROS_BRONZE.sampleValues,
-                                   Literal(str(js["sample"]))))
+                            g.add(
+                                (prop_uri, KAIROS_BRONZE.sampleValues, Literal(str(js["sample"])))
+                            )
 
                 elif classification == "array_object" and json_structure:
                     # Generate a linked child table concept
@@ -468,10 +483,16 @@ def generate_vocabulary_ttl(data: dict) -> str:
                     g.add((child_uri, KAIROS_BRONZE.sourceSystem, sys_uri))
                     g.add((child_uri, KAIROS_BRONZE.tableName, Literal(child_tbl_name)))
                     g.add((child_uri, KAIROS_BRONZE.derivedFromJson, col_uri))
-                    g.add((child_uri, RDFS.comment, Literal(
-                        f"Virtual table derived from JSON array column "
-                        f"{tbl_name}.{col_name}"
-                    )))
+                    g.add(
+                        (
+                            child_uri,
+                            RDFS.comment,
+                            Literal(
+                                f"Virtual table derived from JSON array column "
+                                f"{tbl_name}.{col_name}"
+                            ),
+                        )
+                    )
                     for js in json_structure:
                         key_name = js.get("key", "")
                         if not key_name:
@@ -480,8 +501,13 @@ def generate_vocabulary_ttl(data: dict) -> str:
                         g.add((prop_uri, RDF.type, KAIROS_BRONZE.SourceColumn))
                         g.add((prop_uri, KAIROS_BRONZE.sourceTable, child_uri))
                         g.add((prop_uri, KAIROS_BRONZE.columnName, Literal(key_name)))
-                        g.add((prop_uri, KAIROS_BRONZE.dataType,
-                               Literal(_json_type_to_sql(js.get("type", "string")))))
+                        g.add(
+                            (
+                                prop_uri,
+                                KAIROS_BRONZE.dataType,
+                                Literal(_json_type_to_sql(js.get("type", "string"))),
+                            )
+                        )
 
     sanitize_vocabulary_graph(g)
     return prepend_provenance(
@@ -547,9 +573,7 @@ def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
     return results
 
 
-def _add_table_to_graph(
-    g: Graph, tbl: dict, base_ns: Namespace, sys_uri: URIRef
-) -> None:
+def _add_table_to_graph(g: Graph, tbl: dict, base_ns: Namespace, sys_uri: URIRef) -> None:
     """Add a single table and its columns to an rdflib Graph."""
     tbl_name = tbl["name"]
     tbl_uri = _table_uri(base_ns, tbl_name)
@@ -593,20 +617,35 @@ def _add_table_to_graph(
 
         samples = col.get("samples")
         if samples:
-            g.add((col_uri, KAIROS_BRONZE.sampleValues,
-                   Literal(" | ".join(str(s) for s in samples[:5]))))
+            g.add(
+                (
+                    col_uri,
+                    KAIROS_BRONZE.sampleValues,
+                    Literal(" | ".join(str(s) for s in samples[:5])),
+                )
+            )
 
         distinct_count = col.get("distinct_count")
         if distinct_count is not None:
-            g.add((col_uri, KAIROS_BRONZE.distinctCount,
-                   Literal(distinct_count, datatype=XSD.integer)))
+            g.add(
+                (
+                    col_uri,
+                    KAIROS_BRONZE.distinctCount,
+                    Literal(distinct_count, datatype=XSD.integer),
+                )
+            )
 
         if col.get("suggested_enum"):
             g.add((col_uri, KAIROS_BRONZE.suggestedEnum, Literal(True, datatype=XSD.boolean)))
             enum_values = col.get("enum_values", [])
             if enum_values:
-                g.add((col_uri, KAIROS_BRONZE.enumValues,
-                       Literal(" | ".join(str(v) for v in enum_values))))
+                g.add(
+                    (
+                        col_uri,
+                        KAIROS_BRONZE.enumValues,
+                        Literal(" | ".join(str(v) for v in enum_values)),
+                    )
+                )
 
         format_hint = col.get("format_hint")
         if format_hint:
@@ -633,14 +672,17 @@ def _add_table_to_graph(
                     prop_uri = _column_uri(base_ns, tbl_name, f"{col_name}__{key_name}")
                     g.add((prop_uri, RDF.type, KAIROS_BRONZE.SourceColumn))
                     g.add((prop_uri, KAIROS_BRONZE.sourceTable, tbl_uri))
-                    g.add((prop_uri, KAIROS_BRONZE.columnName,
-                           Literal(f"{col_name}.{key_name}")))
-                    g.add((prop_uri, KAIROS_BRONZE.dataType,
-                           Literal(_json_type_to_sql(js.get("type", "string")))))
+                    g.add((prop_uri, KAIROS_BRONZE.columnName, Literal(f"{col_name}.{key_name}")))
+                    g.add(
+                        (
+                            prop_uri,
+                            KAIROS_BRONZE.dataType,
+                            Literal(_json_type_to_sql(js.get("type", "string"))),
+                        )
+                    )
                     g.add((prop_uri, KAIROS_BRONZE.derivedFromJson, col_uri))
                     if js.get("sample") is not None:
-                        g.add((prop_uri, KAIROS_BRONZE.sampleValues,
-                               Literal(str(js["sample"]))))
+                        g.add((prop_uri, KAIROS_BRONZE.sampleValues, Literal(str(js["sample"]))))
 
             elif classification == "array_object" and json_structure:
                 child_tbl_name = f"{tbl_name}_{col_name}"
@@ -650,10 +692,16 @@ def _add_table_to_graph(
                 g.add((child_uri, KAIROS_BRONZE.sourceSystem, sys_uri))
                 g.add((child_uri, KAIROS_BRONZE.tableName, Literal(child_tbl_name)))
                 g.add((child_uri, KAIROS_BRONZE.derivedFromJson, col_uri))
-                g.add((child_uri, RDFS.comment, Literal(
-                    f"Virtual table derived from JSON array column "
-                    f"{tbl_name}.{col_name}"
-                )))
+                g.add(
+                    (
+                        child_uri,
+                        RDFS.comment,
+                        Literal(
+                            f"Virtual table derived from JSON array column "
+                            f"{tbl_name}.{col_name}"
+                        ),
+                    )
+                )
                 for js in json_structure:
                     key_name = js.get("key", "")
                     if not key_name:
@@ -662,8 +710,13 @@ def _add_table_to_graph(
                     g.add((prop_uri, RDF.type, KAIROS_BRONZE.SourceColumn))
                     g.add((prop_uri, KAIROS_BRONZE.sourceTable, child_uri))
                     g.add((prop_uri, KAIROS_BRONZE.columnName, Literal(key_name)))
-                    g.add((prop_uri, KAIROS_BRONZE.dataType,
-                           Literal(_json_type_to_sql(js.get("type", "string")))))
+                    g.add(
+                        (
+                            prop_uri,
+                            KAIROS_BRONZE.dataType,
+                            Literal(_json_type_to_sql(js.get("type", "string"))),
+                        )
+                    )
 
 
 # --------------------------------------------------------------------------- #
@@ -705,9 +758,7 @@ def _sync_managed_sample_predicates(
                 )
 
 
-def merge_with_existing(
-    data: dict, existing_path: Path
-) -> tuple[str, ChangeReport]:
+def merge_with_existing(data: dict, existing_path: Path) -> tuple[str, ChangeReport]:
     """Merge introspected schema with an existing vocabulary TTL file.
 
     Preserves all triples in the existing graph that are not directly managed by
@@ -805,17 +856,19 @@ def merge_with_existing(
 
     for key in sorted(new_col_keys - existing_col_keys):
         col_info = new_columns[key]
-        report.added_columns.append(ColumnChange(
-            table=col_info["table"], column=col_info["name"], change_type="added"
-        ))
+        report.added_columns.append(
+            ColumnChange(table=col_info["table"], column=col_info["name"], change_type="added")
+        )
 
     for key in sorted(existing_col_keys - new_col_keys):
         col_info = existing_columns[key]
         # Only report removal for columns whose table still exists in new schema
         if col_info["table"] in new_tables:
-            report.removed_columns.append(ColumnChange(
-                table=col_info["table"], column=col_info["name"], change_type="removed"
-            ))
+            report.removed_columns.append(
+                ColumnChange(
+                    table=col_info["table"], column=col_info["name"], change_type="removed"
+                )
+            )
 
     # Type/nullable/PK changes for columns that exist in both
     for key in sorted(existing_col_keys & new_col_keys):
@@ -823,23 +876,35 @@ def merge_with_existing(
         new = new_columns[key]
 
         if old["data_type"] != new["data_type"]:
-            report.type_changes.append(ColumnChange(
-                table=old["table"], column=old["name"],
-                change_type="type_changed",
-                old_value=old["data_type"], new_value=new["data_type"],
-            ))
+            report.type_changes.append(
+                ColumnChange(
+                    table=old["table"],
+                    column=old["name"],
+                    change_type="type_changed",
+                    old_value=old["data_type"],
+                    new_value=new["data_type"],
+                )
+            )
         if old["nullable"] != new["nullable"]:
-            report.nullable_changes.append(ColumnChange(
-                table=old["table"], column=old["name"],
-                change_type="nullable_changed",
-                old_value=str(old["nullable"]), new_value=str(new["nullable"]),
-            ))
+            report.nullable_changes.append(
+                ColumnChange(
+                    table=old["table"],
+                    column=old["name"],
+                    change_type="nullable_changed",
+                    old_value=str(old["nullable"]),
+                    new_value=str(new["nullable"]),
+                )
+            )
         if old["is_pk"] != new["is_pk"]:
-            report.pk_changes.append(ColumnChange(
-                table=old["table"], column=old["name"],
-                change_type="pk_changed",
-                old_value=str(old["is_pk"]), new_value=str(new["is_pk"]),
-            ))
+            report.pk_changes.append(
+                ColumnChange(
+                    table=old["table"],
+                    column=old["name"],
+                    change_type="pk_changed",
+                    old_value=str(old["is_pk"]),
+                    new_value=str(new["is_pk"]),
+                )
+            )
 
     # Apply changes to the existing graph (preserve all non-managed triples)
     connection = data.get("connection", {})
@@ -880,38 +945,40 @@ def merge_with_existing(
         existing.add((col_uri, KAIROS_BRONZE.sourceTable, tbl_uri))
         existing.add((col_uri, KAIROS_BRONZE.columnName, Literal(change.column)))
         existing.add((col_uri, KAIROS_BRONZE.dataType, Literal(col_data["data_type"])))
-        existing.add((col_uri, KAIROS_BRONZE.nullable,
-                      Literal(col_data["nullable"], datatype=XSD.boolean)))
+        existing.add(
+            (col_uri, KAIROS_BRONZE.nullable, Literal(col_data["nullable"], datatype=XSD.boolean))
+        )
         if col_data["is_pk"]:
-            existing.add((col_uri, KAIROS_BRONZE.isPrimaryKey,
-                          Literal(True, datatype=XSD.boolean)))
+            existing.add((col_uri, KAIROS_BRONZE.isPrimaryKey, Literal(True, datatype=XSD.boolean)))
         if col_data.get("content_type"):
-            existing.add((col_uri, KAIROS_BRONZE.contentType,
-                          Literal(col_data["content_type"])))
+            existing.add((col_uri, KAIROS_BRONZE.contentType, Literal(col_data["content_type"])))
 
     # Mark removed columns as deprecated (don't delete)
     for change in report.removed_columns:
         key = f"{change.table}_{change.column}"
         col_info = existing_columns.get(key)
         if col_info:
-            existing.add((col_info["uri"], OWL.deprecated,
-                          Literal(True, datatype=XSD.boolean)))
+            existing.add((col_info["uri"], OWL.deprecated, Literal(True, datatype=XSD.boolean)))
 
     # Update type changes
     for change in report.type_changes:
         key = f"{change.table}_{change.column}"
         col_info = existing_columns[key]
         existing.remove((col_info["uri"], KAIROS_BRONZE.dataType, None))
-        existing.add((col_info["uri"], KAIROS_BRONZE.dataType,
-                      Literal(change.new_value)))
+        existing.add((col_info["uri"], KAIROS_BRONZE.dataType, Literal(change.new_value)))
 
     # Update nullable changes
     for change in report.nullable_changes:
         key = f"{change.table}_{change.column}"
         col_info = existing_columns[key]
         existing.remove((col_info["uri"], KAIROS_BRONZE.nullable, None))
-        existing.add((col_info["uri"], KAIROS_BRONZE.nullable,
-                      Literal(change.new_value == "True", datatype=XSD.boolean)))
+        existing.add(
+            (
+                col_info["uri"],
+                KAIROS_BRONZE.nullable,
+                Literal(change.new_value == "True", datatype=XSD.boolean),
+            )
+        )
 
     # Update PK changes
     for change in report.pk_changes:
@@ -920,8 +987,9 @@ def merge_with_existing(
         existing.remove((col_info["uri"], KAIROS_BRONZE.isPrimaryKey, None))
         new_is_pk = change.new_value == "True"
         if new_is_pk:
-            existing.add((col_info["uri"], KAIROS_BRONZE.isPrimaryKey,
-                          Literal(True, datatype=XSD.boolean)))
+            existing.add(
+                (col_info["uri"], KAIROS_BRONZE.isPrimaryKey, Literal(True, datatype=XSD.boolean))
+            )
 
     # Update primaryKeyColumns on tables that changed
     tables_with_pk_changes = {c.table for c in report.pk_changes}
@@ -929,13 +997,13 @@ def merge_with_existing(
         tbl_uri = existing_tables.get(tbl_name) or _table_uri(base_ns, tbl_name)
         # Gather PK columns from new data
         pk_names = [
-            new_columns[k]["name"] for k in new_columns
+            new_columns[k]["name"]
+            for k in new_columns
             if new_columns[k]["table"] == tbl_name and new_columns[k]["is_pk"]
         ]
         existing.remove((tbl_uri, KAIROS_BRONZE.primaryKeyColumns, None))
         if pk_names:
-            existing.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns,
-                          Literal(" ".join(pk_names))))
+            existing.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(pk_names))))
 
     _sync_managed_sample_predicates(existing, data, base_ns)
     sanitize_vocabulary_graph(existing)
@@ -986,6 +1054,7 @@ def run_import_source(
     # Run enrichment if enabled and data has samples (v1.1)
     if enrich and _has_enrichable_data(data):
         from .enrich_vocabulary import enrich_source_schema
+
         enrich_source_schema(data, enum_threshold=enum_threshold)
 
     data, _ = sanitize_source_data(data)
@@ -1022,17 +1091,7 @@ def run_import_source(
             tbl_file = vocab_dir / f"{tbl_name}.vocabulary.ttl"
             tbl_file.write_text(ttl_content, encoding="utf-8")
 
-        logger.info(
-            "Written %d per-table vocabulary files to %s", len(per_table), vocab_dir
-        )
-        _write_import_session(
-            output_dir,
-            sys_name,
-            data,
-            report=None,
-            enrich=enrich,
-            output_paths=[str(vocab_dir)],
-        )
+        logger.info("Written %d per-table vocabulary files to %s", len(per_table), vocab_dir)
         return vocab_dir, None
 
     # --- Standard single-file mode ---
@@ -1064,63 +1123,9 @@ def run_import_source(
     for tbl_name, tbl_ttl in per_table.items():
         tbl_file = vocab_dir / f"{tbl_name}.vocabulary.ttl"
         tbl_file.write_text(tbl_ttl, encoding="utf-8")
-    logger.info(
-        "Written %d per-table vocabulary files to %s", len(per_table), vocab_dir
-    )
-
-    _write_import_session(
-        output_dir,
-        sys_name,
-        data,
-        report=report,
-        enrich=enrich,
-        output_paths=[str(output_file), str(vocab_dir)],
-    )
+    logger.info("Written %d per-table vocabulary files to %s", len(per_table), vocab_dir)
 
     return output_file, report
-
-
-def _write_import_session(
-    output_dir: Path,
-    system_name: str,
-    data: dict,
-    *,
-    report,
-    enrich: bool,
-    output_paths: list[str],
-) -> None:
-    """Best-effort write of the import-results session file under the hub root."""
-    from .hub_utils import find_hub_root
-    from .import_session import write_import_session
-
-    hub_root = find_hub_root(Path.cwd())
-    if hub_root is None:
-        hub_root = _hub_root_from_output(output_dir)
-    write_import_session(
-        hub_root,
-        system_name,
-        "yaml-import",
-        data.get("tables"),
-        change_report=report,
-        enrich=enrich,
-        output_paths=output_paths,
-        next_step=(
-            "Map source columns to the domain ontology with the "
-            "kairos-design-mapping skill."
-        ),
-    )
-
-
-def _hub_root_from_output(output_dir: Path) -> Path | None:
-    """Infer the hub root from an integration/sources/{system} output path."""
-    parts = output_dir.resolve().parts
-    try:
-        idx = len(parts) - 1 - list(reversed(parts)).index("integration")
-    except ValueError:
-        return None
-    if idx == 0:
-        return None
-    return Path(*parts[:idx])
 
 
 def _has_enrichable_data(data: dict) -> bool:

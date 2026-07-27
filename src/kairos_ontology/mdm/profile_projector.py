@@ -430,6 +430,8 @@ def _typed_policy_graph(compile_plan: "CompilePlan", mdm_ext_path: Path) -> Grap
         graph.add((subject, RDF.type, OWL.Class))
         if cls.label:
             graph.add((subject, RDFS.label, Literal(cls.label)))
+        for parent_uri in cls.parent_uris:
+            graph.add((subject, RDFS.subClassOf, URIRef(parent_uri)))
     for prop in compile_plan.resolution.properties:
         subject = URIRef(prop.uri)
         for domain_uri in prop.domain_uris:

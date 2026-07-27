@@ -101,6 +101,27 @@ def test_resolves_authoritative_dbt_output_as_compiler_relation(tmp_path: Path) 
     assert not relation.columns[1].nullable
 
 
+def test_relation_binding_is_rejected_with_stable_missing_model_code(tmp_path: Path) -> None:
+    relation_binding = load_entity_binding(
+        _binding().replace(
+            "  dbtModel:\n"
+            "    name: int_customer\n"
+            "    sqlPath: integration/transforms/dbt/models/intermediate/int_customer.sql\n"
+            "    contractPath: integration/transforms/dbt/models/intermediate/schema.yml",
+            "  relation: crm.customers",
+        ),
+        path="relation.binding.yml",
+    )
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(relation_binding, _hub(tmp_path))
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.missing"
+    assert diagnostic.location.path == "relation.binding.yml"
+    assert diagnostic.location.pointer == "/source/dbtModel/name"
+
+
 @pytest.mark.parametrize(
     ("mutation", "code"),
     [
@@ -115,6 +136,12 @@ def test_resolves_authoritative_dbt_output_as_compiler_relation(tmp_path: Path) 
         (
             lambda model: model["meta"]["kairos"].update(grain_key=["missing"]),
             "dbt-source.grain-invalid",
+        ),
+        (lambda model: model.update(columns=[]), "dbt-source.columns-invalid"),
+        (lambda model: model.update(name="other"), "dbt-source.model-unresolved"),
+        (
+            lambda model: model["meta"]["kairos"].update(virtual_source_iri="relative"),
+            "dbt-source.contract-invalid",
         ),
     ],
 )
@@ -158,6 +185,24 @@ def test_requires_exact_selected_sql_and_contract_paths(tmp_path: Path) -> None:
         resolve_dbt_model_source(binding, hub)
 
     assert {item.code for item in excinfo.value.diagnostics} == {"dbt-source.path-unresolved"}
+
+
+def test_rejects_unsafe_dbt_source_path_with_stable_location(tmp_path: Path) -> None:
+    binding = load_entity_binding(
+        _binding().replace(
+            "integration/transforms/dbt/models/intermediate/int_customer.sql",
+            "../int_customer.sql",
+        ),
+        path="customer.binding.yml",
+    )
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(binding, _hub(tmp_path))
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.unsafe-path"
+    assert diagnostic.location.path == "customer.binding.yml"
+    assert diagnostic.location.pointer == "/source/dbtModel/sqlPath"
 
 
 @pytest.mark.parametrize("construct", ["join", "window", "grainChange"])

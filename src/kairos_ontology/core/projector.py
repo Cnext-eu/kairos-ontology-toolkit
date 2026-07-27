@@ -5,12 +5,11 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 import traceback as _tb
 from collections.abc import Iterable, Mapping
 from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -121,6 +120,7 @@ class TargetSpec:
 _TARGET_REGISTRY: dict[str, TargetSpec] = {}
 TARGET_REGISTRY: Mapping[str, TargetSpec] = MappingProxyType(_TARGET_REGISTRY)
 RETIRED_COMPILER_TARGETS = ("dbt", "silver")
+COMPILE_PLAN_ONLY_TARGETS = ("powerbi", "gold", "mdm-profile")
 
 # Compatibility list retained for callers that import or hold a reference to it.
 # Its contents are refreshed exclusively from TARGET_REGISTRY.
@@ -225,6 +225,7 @@ for _target_spec in (
         OutputCategory.MEDALLION,
         aliases=("gold",),
         compatibility_name="gold",
+        include_in_all=False,
     ),
     TargetSpec(
         "report",
@@ -350,469 +351,25 @@ def _reject_retired_compiler_targets(targets: Iterable[str]) -> None:
             f"project target(s) {selected} are retired; canonical Silver/dbt generation "
             "must use `kairos-ontology compile <domain> --emit <directory>`"
         )
-
-
-# ---------------------------------------------------------------------------
-# Logging handler to capture projector warnings
-# ---------------------------------------------------------------------------
-
-
-class _ProjectionWarningHandler(logging.Handler):
-    """Temporary handler that captures WARNING+ log records from projectors."""
-
-    def __init__(self) -> None:
-        super().__init__(level=logging.WARNING)
-        self.records: List[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-
-# ---------------------------------------------------------------------------
-# Projection report collector
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ProjectionReport:
-    """Accumulates structured events during a projection run.
-
-    Call :meth:`write` at the end to persist ``projection-report.json``.
-    """
-
-    toolkit_version: str = ""
-    generated_at: str = ""
-    targets_requested: List[str] = field(default_factory=list)
-
-    # {domain_name: {file, triples, namespace, status, ?error}}
-    domains: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-
-    # [{target, domain, status, ?files_generated, ?files, ?error, ?traceback, ?reason}]
-    projections: List[Dict[str, Any]] = field(default_factory=list)
-
-    # [{step, status, ?reason}]
-    post_steps: List[Dict[str, Any]] = field(default_factory=list)
-
-    # [{level, ?domain, ?target, message}]
-    events: List[Dict[str, Any]] = field(default_factory=list)
-
-    # Captured logger warnings: {domain: [(target, message)]}
-    captured_warnings: Dict[str, List[tuple]] = field(default_factory=dict)
-
-    # Strict-release inputs emitted by typed projectors; enforcement is incremental.
-    release_data: Dict[str, Any] = field(default_factory=dict)
-    release_evaluation: Dict[str, Any] = field(default_factory=dict)
-
-    # Running counters
-    _total_files: int = field(default=0, repr=False)
-    _errors: int = field(default=0, repr=False)
-    _warnings: int = field(default=0, repr=False)
-    _skipped: int = field(default=0, repr=False)
-
-    # ── recording helpers ──────────────────────────────────────────────
-
-    def record(
-        self,
-        level: str,
-        message: str,
-        *,
-        domain: Optional[str] = None,
-        target: Optional[str] = None,
-    ) -> None:
-        """Append a structured event (info / warning / error)."""
-        entry: Dict[str, Any] = {"level": level, "message": message}
-        if domain:
-            entry["domain"] = domain
-        if target:
-            entry["target"] = target
-        self.events.append(entry)
-        if level == "error":
-            self._errors += 1
-        elif level == "warning":
-            self._warnings += 1
-
-    def record_domain_load(
-        self,
-        name: str,
-        *,
-        file: str,
-        triples: int = 0,
-        namespace: Optional[str] = None,
-        status: str = "ok",
-        error: Optional[str] = None,
-        semantic_profile: Optional[str] = None,
-        closure_hash: Optional[str] = None,
-        import_complete: Optional[bool] = None,
-    ) -> None:
-        """Record whether a domain ontology was loaded successfully."""
-        entry: Dict[str, Any] = {
-            "file": file,
-            "triples": triples,
-            "namespace": namespace,
-            "status": status,
+    compile_plan_only = sorted(
+        {
+            target
+            for target in targets
+            if target in COMPILE_PLAN_ONLY_TARGETS
+            or (
+                (spec := get_target_spec(target)) is not None
+                and spec.canonical_name in {"powerbi", "mdm-profile"}
+            )
         }
-        if error:
-            entry["error"] = error
-        if semantic_profile:
-            entry["semantic_profile"] = semantic_profile
-        if closure_hash:
-            entry["closure_hash"] = closure_hash
-        if import_complete is not None:
-            entry["import_complete"] = import_complete
-        self.domains[name] = entry
-
-    def record_projection(
-        self,
-        target: str,
-        domain: str,
-        *,
-        status: str,
-        files: Optional[List[str]] = None,
-        error: Optional[str] = None,
-        traceback_str: Optional[str] = None,
-        reason: Optional[str] = None,
-        diagnostics: Optional[List[Dict[str, Any]]] = None,
-        details: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Record the outcome of a single target × domain projection."""
-        entry: Dict[str, Any] = {
-            "target": target,
-            "domain": domain,
-            "status": status,
-        }
-        if files is not None:
-            entry["files_generated"] = len(files)
-            entry["files"] = files
-            self._total_files += len(files)
-        if error:
-            entry["error"] = error
-            self._errors += 1
-        if traceback_str:
-            entry["traceback"] = traceback_str
-        if reason:
-            entry["reason"] = reason
-        if diagnostics:
-            entry["diagnostics"] = diagnostics
-        if details:
-            entry["details"] = details
-        if status == "skipped":
-            self._skipped += 1
-        self.projections.append(entry)
-
-    def record_post_step(
-        self,
-        step: str,
-        *,
-        status: str = "ok",
-        reason: Optional[str] = None,
-    ) -> None:
-        """Record a post-domain step (master ERD, SVG export, etc.)."""
-        entry: Dict[str, Any] = {"step": step, "status": status}
-        if reason:
-            entry["reason"] = reason
-        if status == "skipped":
-            self._skipped += 1
-        self.post_steps.append(entry)
-
-    # ── serialisation ──────────────────────────────────────────────────
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Return the full report as a JSON-serialisable dict."""
-        return {
-            "toolkit_version": self.toolkit_version,
-            "generated_at": self.generated_at,
-            "targets_requested": self.targets_requested,
-            "summary": {
-                "domains_found": len(self.domains),
-                "domains_loaded": sum(1 for d in self.domains.values() if d["status"] == "ok"),
-                "domains_failed_to_load": sum(
-                    1 for d in self.domains.values() if d["status"] != "ok"
-                ),
-                "total_files_generated": self._total_files,
-                "errors": self._errors,
-                "warnings": self._warnings,
-                "skipped": self._skipped,
-            },
-            "domains": self.domains,
-            "projections": self.projections,
-            "post_steps": self.post_steps,
-            "release_data": self.release_data,
-            "release_evaluation": self.release_evaluation,
-            "events": self.events,
-        }
-
-    def write(self, output_dir: Path) -> Path:
-        """Write ``projection-report.json`` into *output_dir* and return path."""
-        output_dir.mkdir(parents=True, exist_ok=True)
-        path = output_dir / "projection-report.json"
-        path.write_text(
-            json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        return path
-
-    def add_captured_warnings(
-        self, domain: str, target: str, records: List[logging.LogRecord]
-    ) -> None:
-        """Ingest WARNING+ log records captured during a projection."""
-        if domain not in self.captured_warnings:
-            self.captured_warnings[domain] = []
-        for rec in records:
-            msg = rec.getMessage()
-            self.captured_warnings[domain].append((target, msg))
-            # Also feed into structured events so the JSON report stays in sync
-            self.record("warning", msg, domain=domain, target=target)
-
-    def write_domain_markdown(self, domain: str, sessions_dir: Path) -> Optional[Path]:
-        """Write a per-domain projection report as Markdown.
-
-        Filename: ``projection-<domain>-<targets>.md`` — a stable path that a
-        re-projection overwrites in place instead of accumulating a fresh
-        timestamped file each run (the timestamp still appears in the
-        ``**Generated:**`` line inside the report body).
-
-        Returns the path written, or None if the sessions_dir is unavailable.
-        """
-        if not sessions_dir:
-            return None
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-
-        targets_slug = "+".join(sorted(self.targets_requested)) if self.targets_requested else "all"
-        filename = f"projection-{domain}-{targets_slug}.md"
-        path = sessions_dir / filename
-
-        lines: List[str] = []
-        lines.append(f"# Projection Report — {domain}")
-        lines.append("")
-        lines.append(f"**Generated:** {self.generated_at}  ")
-        lines.append(f"**Toolkit version:** {self.toolkit_version}  ")
-        lines.append(f"**Targets:** {', '.join(self.targets_requested)}")
-        lines.append("")
-
-        # Domain load info
-        domain_info = self.domains.get(domain)
-        if domain_info:
-            lines.append("## Domain")
-            lines.append("")
-            lines.append("| Property | Value |")
-            lines.append("|----------|-------|")
-            lines.append(f"| File | {domain_info.get('file', '—')} |")
-            lines.append(f"| Triples | {domain_info.get('triples', '—')} |")
-            lines.append(f"| Namespace | {domain_info.get('namespace', '—')} |")
-            lines.append(f"| Status | {domain_info.get('status', '—')} |")
-            if domain_info.get("error"):
-                lines.append(f"| Error | {domain_info['error']} |")
-            lines.append("")
-
-        # Projection results for this domain
-        domain_projections = [p for p in self.projections if p.get("domain") == domain]
-        if domain_projections:
-            lines.append("## Projections")
-            lines.append("")
-            lines.append("| Target | Status | Files |")
-            lines.append("|--------|--------|-------|")
-            for proj in domain_projections:
-                files = proj.get("files_generated", 0)
-                status = proj.get("status", "—")
-                target_name = proj.get("target", "—")
-                note = ""
-                if proj.get("error"):
-                    note = f" ⚠️ {proj['error']}"
-                elif proj.get("reason"):
-                    note = f" ({proj['reason']})"
-                lines.append(f"| {target_name} | {status}{note} | {files} |")
-            lines.append("")
-
-        # Warnings section
-        domain_warnings = self.captured_warnings.get(domain, [])
-        domain_events_warnings = [
-            e for e in self.events if e.get("domain") == domain and e.get("level") == "warning"
-        ]
-        # Combine: use captured_warnings (from logger) + any extra from events
-        # Deduplicate by message text
-        seen_msgs: set = set()
-        all_warnings: List[tuple] = []
-        for target_name, msg in domain_warnings:
-            if msg not in seen_msgs:
-                all_warnings.append((target_name, msg))
-                seen_msgs.add(msg)
-        for evt in domain_events_warnings:
-            if evt["message"] not in seen_msgs:
-                all_warnings.append((evt.get("target", "—"), evt["message"]))
-                seen_msgs.add(evt["message"])
-
-        if all_warnings:
-            lines.append("## ⚠️ Warnings")
-            lines.append("")
-            for target_name, msg in all_warnings:
-                lines.append(f"- **[{target_name}]** {msg}")
-            lines.append("")
-
-        # Errors section
-        domain_errors = [
-            e for e in self.events if e.get("domain") == domain and e.get("level") == "error"
-        ]
-        if domain_errors:
-            lines.append("## ❌ Errors")
-            lines.append("")
-            for evt in domain_errors:
-                lines.append(f"- **[{evt.get('target', '—')}]** {evt['message']}")
-            lines.append("")
-
-        # Info section (non-warning, non-error)
-        domain_infos = [
-            e for e in self.events if e.get("domain") == domain and e.get("level") == "info"
-        ]
-        if domain_infos:
-            lines.append("## ℹ️ Info")
-            lines.append("")
-            for evt in domain_infos:
-                lines.append(f"- **[{evt.get('target', '—')}]** {evt['message']}")
-            lines.append("")
-
-        # Summary footer
-        if not all_warnings and not domain_errors:
-            lines.append("## ✅ No issues")
-            lines.append("")
-            lines.append("All projections completed without warnings or errors.")
-            lines.append("")
-
-        content = "\n".join(lines)
-        path.write_text(content, encoding="utf-8")
-        return path
-
-
-def _collected_blocker_diagnostics(
-    blocking_rules: Iterable[tuple[str, str]],
-    *,
-    target: str,
-    domain: str,
-    projection_blocking_rules: Iterable[tuple[str, str]] | None = None,
-) -> List[Dict[str, Any]]:
-    """Convert release blockers into stable projection-readiness diagnostics."""
-
-    stage_contracts = {
-        "mapping": (
-            "kairos-design-mapping",
-            "Correct the governed source-to-domain mapping.",
-        ),
-        "identity": (
-            "kairos-design-silver",
-            "Complete the governed Silver identity policy.",
-        ),
-        "runtime": (
-            "kairos-design-silver",
-            "Complete the governed Silver runtime policy.",
-        ),
-        "temporal_fk": (
-            "kairos-design-silver",
-            "Complete the governed temporal foreign-key policy.",
-        ),
-        "adapter": (
-            "kairos-execute-validate",
-            "Resolve the adapter capability requirement or approve a deviation.",
-        ),
-        "quality": (
-            "kairos-design-silver",
-            "Correct the governed data-quality policy.",
-        ),
-        "gold": (
-            "kairos-design-gold",
-            "Correct the governed Gold policy.",
-        ),
-        "normalization": (
-            "kairos-execute-validate",
-            "Resolve the blocking projection policy rule.",
-        ),
-    }
-
-    def classify(rule_id: str, message: str) -> str:
-        value = f"{rule_id} {message}".lower()
-        if "dd-107" in value or "mapping" in value:
-            return "mapping"
-        if "dd-108" in value or "identity" in value:
-            return "identity"
-        if "temporal-fk" in value or "temporal fk" in value:
-            return "temporal_fk"
-        if "dd-109" in value or "runtime" in value:
-            return "runtime"
-        if "dd-111" in value or "capability" in value or "unsupported" in value:
-            return "adapter"
-        if "dd-115" in value or "quality" in value:
-            return "quality"
-        if "dd-112" in value or "dd-113" in value or "gold" in value:
-            return "gold"
-        return "normalization"
-
-    projection_blockers = (
-        set(blocking_rules) if projection_blocking_rules is None else set(projection_blocking_rules)
     )
-    diagnostics: List[Dict[str, Any]] = []
-    for rule_id, message in blocking_rules:
-        rule_id = str(rule_id)
-        message = str(message)
-        blocks_projection = (rule_id, message) in projection_blockers
-        stage = classify(rule_id, message)
-        owner_skill, remediation = stage_contracts[stage]
-        identity = "\x1f".join((target, domain, stage, rule_id, message))
-        diagnostic_id = f"dbt-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
-        code_suffix = "".join(
-            character if character.isalnum() else "-" for character in rule_id.lower()
-        ).strip("-")
-        diagnostics.append(
-            {
-                "id": diagnostic_id,
-                "code": f"release.blocking-rule.{code_suffix or 'unknown'}",
-                "rule_id": rule_id,
-                "severity": "error" if blocks_projection else "warning",
-                "blocking": blocks_projection,
-                "stage": stage,
-                "resource_uri": f"{target}:{domain}",
-                "predicate_uri": "",
-                "message": message,
-                "depends_on": [],
-                "owner_skill": owner_skill,
-                "remediation": remediation,
-                "evidence": [f"rule:{rule_id}"],
-                "evaluation_status": "failed",
-            }
+    if compile_plan_only:
+        selected = ", ".join(compile_plan_only)
+        raise ProjectionRunError(
+            f"project target(s) {selected} are disabled because legacy graph projection "
+            "bypasses the immutable CompilePlan; use `kairos-ontology compile <domain> "
+            "--check|--explain|--emit <directory>`. Gold and MDM consumers must receive "
+            "that compiler-produced CompilePlan through the typed downstream registry."
         )
-    return diagnostics
-
-
-def _archive_prior_projection_logs(sessions_dir: Optional[Path], domains) -> list[Path]:
-    """Move prior per-domain projection session logs into ``_archive/`` (DD-071 style).
-
-    Before a new projection run writes its session logs, any existing
-    ``projection-{domain}-*.md`` / ``dbt-{domain}-*.md`` files for the domains
-    being regenerated are *moved* (never deleted) into
-    ``.sessions-projection/_archive/`` so the main folder reflects only the latest
-    run — mirroring the design-session archival behaviour (DD-071).
-
-    Returns the list of destination paths that were archived.
-    """
-    if not sessions_dir or not sessions_dir.is_dir():
-        return []
-    archive_dir = sessions_dir / "_archive"
-    archived: list[Path] = []
-    for domain in domains:
-        for pattern in (f"projection-{domain}-*.md", f"dbt-{domain}-*.md"):
-            for old in sorted(sessions_dir.glob(pattern)):
-                if not old.is_file():
-                    continue
-                archive_dir.mkdir(parents=True, exist_ok=True)
-                dest = archive_dir / old.name
-                # Avoid clobbering a same-named archived file from an earlier run.
-                if dest.exists():
-                    counter = 1
-                    while True:
-                        dest = archive_dir / f"{old.stem}-{counter}{old.suffix}"
-                        if not dest.exists():
-                            break
-                        counter += 1
-                old.replace(dest)
-                archived.append(dest)
-    return archived
 
 
 def _is_domain_ontology(path: Path) -> bool:
@@ -840,49 +397,28 @@ def project_graph(
 
     Args:
         graph: Loaded rdflib Graph.
-        targets: List of projection targets (e.g. ``["dbt", "neo4j"]``).
-                 Defaults to all targets.
+        targets: List of retained graph projection targets (e.g. ``["neo4j"]``).
+                 Defaults to targets included in ``project --target all``.
         namespace: Base namespace to filter classes.  Auto-detected if ``None``.
         ontology_name: Name used in output filenames.
         shapes_dir: Optional path to SHACL shapes directory.
 
     Returns:
         ``{target: {filename: content}}`` mapping.
-        A ``"_report"`` key is added whose value is the
-        :class:`ProjectionReport` instance for structured diagnostics.
     """
-    from kairos_ontology import __version__ as toolkit_version
-
-    requested_targets = targets or list(VALID_TARGETS)
+    requested_targets = targets or list(projection_targets_for_all())
     _reject_retired_compiler_targets(requested_targets)
 
-    # Resolve the generation timestamp once at the run boundary and thread the
-    # same datetime through the report stamp and every target's provenance, so a
-    # single run never mixes two clocks (each site used to resolve on its own).
     generated_at = resolve_generated_at()
-    report = ProjectionReport(
-        toolkit_version=toolkit_version,
-        generated_at=generated_at_iso(generated_at),
-    )
     targets = requested_targets
-    report.targets_requested = list(targets)
     template_base = Path(__file__).parent.parent / "templates"
     ns = namespace or _auto_detect_namespace(graph)
     meta = extract_ontology_metadata(graph, ns, generated_at=generated_at)
-
-    report.record_domain_load(
-        ontology_name,
-        file=f"{ontology_name}.ttl",
-        triples=len(graph),
-        namespace=ns,
-        status="ok",
-    )
 
     results: Dict[str, Dict[str, str]] = {}
     for target_name in targets:
         target_spec = get_target_spec(target_name)
         if target_name not in VALID_TARGETS or target_spec is None:
-            report.record("warning", f"Unknown target '{target_name}' — skipped")
             continue
         try:
             artifacts = _run_projection(
@@ -897,29 +433,8 @@ def project_graph(
             )
             if artifacts:
                 results[target_name] = artifacts
-                report.record_projection(
-                    target_name,
-                    ontology_name,
-                    status="ok",
-                    files=sorted(artifacts.keys()),
-                )
-            else:
-                report.record_projection(
-                    target_name,
-                    ontology_name,
-                    status="skipped",
-                    reason="No classes found in namespace",
-                )
-        except Exception as exc:
-            report.record_projection(
-                target_name,
-                ontology_name,
-                status="error",
-                error=str(exc),
-                traceback_str=_tb.format_exc(),
-            )
-
-    results["_report"] = report  # type: ignore[assignment]
+        except Exception:
+            _logger.exception("Projection target %s failed for %s", target_name, ontology_name)
     return results
 
 
@@ -1110,32 +625,6 @@ def _reconcile_managed_output(target_output: Path, current_paths: Iterable[str])
 #: embedded in report filenames (now replaced by stable names). Used only to prune
 #: those legacy files; it matches the exact digit layout so hand-authored files are
 #: never touched.
-_LEGACY_REPORT_TS = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]"
-
-
-def _prune_legacy_report_files(base_dir: Path, patterns: Iterable[str]) -> int:
-    """Delete report files that older toolkit versions named with a
-    ``-YYYY-MM-DD-HHMMSS`` timestamp before the extension.
-
-    Stable report filenames replace the previously accumulating timestamped
-    variants; pruning keeps re-projection convergent on hubs first generated by an
-    earlier toolkit. Only files matching the exact timestamp shape in *patterns*
-    are removed, so hand-authored files are never touched.
-
-    Returns the number of files removed.
-    """
-    if not base_dir.is_dir():
-        return 0
-    removed = 0
-    for pattern in patterns:
-        for stale in sorted(base_dir.glob(pattern)):
-            try:
-                if stale.is_file():
-                    stale.unlink()
-                    removed += 1
-            except OSError:
-                pass
-    return removed
 
 
 # Issue #220: package-level dbt artifacts are owned by the orchestrator (regenerated once
@@ -1232,7 +721,6 @@ def run_projections(
     target: str,
     namespace: str = None,
     platform: str = "fabric",
-    strict: bool = False,
     degraded: bool = False,
     ref_models_dir: Path | None = None,
     accelerator: str | None = None,
@@ -1249,33 +737,12 @@ def run_projections(
         namespace: Base namespace to project (e.g., 'http://example.org/ont/').
                    If None, auto-detects from ontology.
         platform: dbt SQL adapter platform (``fabric`` or ``databricks``).
-        strict: DD-114/DD-115 fail-closed release evaluation. The run persists
-            deterministic review evidence, then fails when baseline, binding,
-            coverage, DQ, capability, compile, security, measure, calendar, or
-            artifact evidence is blocking.
     """
-    import os
-
-    from kairos_ontology import __version__ as toolkit_version
-
     _reject_retired_compiler_targets((target,))
 
-    if not strict:
-        strict = os.environ.get("KAIROS_PROJECT_STRICT", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-
-    # Resolve the generation timestamp once for the whole run and thread the same
-    # datetime through report stamps, per-domain provenance metadata, and the
-    # coverage report so one run never mixes two clocks.
+    # Resolve the generation timestamp once for the whole run so generated
+    # artifacts from one invocation never mix clocks.
     generated_at = resolve_generated_at()
-    report = ProjectionReport(
-        toolkit_version=toolkit_version,
-        generated_at=generated_at_iso(generated_at),
-    )
     fatal_target_errors: list[str] = []
 
     print("🚀 Kairos Ontology Projections")
@@ -1295,16 +762,7 @@ def run_projections(
 
     if not ontology_files:
         print(f"  ⚠️  No ontology files found in {ontologies_path}")
-        report.record("warning", f"No ontology files found in {ontologies_path}")
-        if not check_only:
-            report.write(output_path)
-        if check_only:
-            return report
-        if strict:
-            raise ProjectionRunError(
-                "Strict release blocked: no domain ontologies were available [DD-114-projection]"
-            )
-        return report
+        return None
 
     print(f"\nFound {len(ontology_files)} ontology file(s)")
     print("Each ontology will generate separate output files per domain\n")
@@ -1324,13 +782,6 @@ def run_projections(
                 degraded=degraded,
             )
             file_graph = load_result.graph
-            for diag in load_result.diagnostics:
-                report.record(
-                    diag.level,
-                    diag.message,
-                    domain=onto_file.stem,
-                    target="load",
-                )
 
             # Store graph with its source file info
             ontology_graphs.append(
@@ -1342,36 +793,15 @@ def run_projections(
                 }
             )
             print(f"  ✓ Loaded {onto_file.name} ({len(file_graph)} triples)")
-            report.record_domain_load(
-                onto_file.stem,
-                file=onto_file.name,
-                triples=len(file_graph),
-                status="ok",
-                semantic_profile=load_result.profile.value,
-                closure_hash=load_result.closure_hash,
-                import_complete=load_result.complete,
-            )
         except Exception as e:
             print(f"  ⚠️  Could not parse {onto_file.name}: {e}")
-            report.record_domain_load(
-                onto_file.stem,
-                file=onto_file.name,
-                status="load_failed",
-                error=str(e),
-            )
-            report.record("error", f"Could not parse {onto_file.name}: {e}", domain=onto_file.stem)
             fatal_target_errors.append(f"{onto_file.stem}: ontology load failed: {e}")
 
     if not ontology_graphs:
         print("  ⚠️  No ontologies loaded - check ontology files exist")
-        report.record("error", "No ontologies loaded — check ontology files exist")
-        if not check_only:
-            report.write(output_path)
-        if check_only:
-            return report
         if fatal_target_errors:
             raise ProjectionRunError("; ".join(fatal_target_errors))
-        return report
+        return None
 
     print()
 
@@ -1399,7 +829,7 @@ def run_projections(
             hub_domain_namespaces.add(base + "/")
     except ValueError as exc:
         # A malformed peer .ttl must not abort projection of the selected domain.
-        report.record("warning", f"Could not collect hub domain bases: {exc}")
+        _logger.warning("Could not collect hub domain bases: %s", exc)
     # Create output directories
     if not check_only:
         output_path.mkdir(parents=True, exist_ok=True)
@@ -1463,13 +893,6 @@ def run_projections(
             )
         ]
     )
-    report.targets_requested = list(targets_to_run)
-
-    # Clear dbt entity metadata cache from prior runs (prevents stale data leaking
-    # across invocations when the projector is called multiple times in the same process).
-    from .projections.medallion_dbt_projector import _last_entity_metadata
-
-    _last_entity_metadata.clear()
 
     for target_name in targets_to_run:
         target_spec = get_target_spec(target_name)
@@ -1499,7 +922,6 @@ def run_projections(
             except Exception as exc:
                 message = f"dbt preflight failed: {exc}"
                 fatal_target_errors.append(message)
-                report.record_post_step("dbt_preflight", status="error", reason=str(exc))
                 print(f"  ✗ {message}\n")
                 continue
         # Track which domains produce artifacts for dbt project config
@@ -1541,10 +963,6 @@ def run_projections(
                 }
             )
 
-            # Populate namespace on the domain entry (first time we know it)
-            if onto_name in report.domains and not report.domains[onto_name].get("namespace"):
-                report.domains[onto_name]["namespace"] = onto_namespace
-
             try:
                 # Discover extension files for this target/domain
                 ext_path, gold_ext_path = _discover_extensions(
@@ -1553,20 +971,8 @@ def run_projections(
                 if ext_path:
                     label = "silver ext" if target_name == "dbt" else "projection ext"
                     print(f"  [{onto_name}] Using {label}: {ext_path.name}")
-                    report.record(
-                        "info",
-                        f"Using {label}: {ext_path.name}",
-                        domain=onto_name,
-                        target=target_name,
-                    )
                 if gold_ext_path:
                     print(f"  [{onto_name}] Using gold ext: {gold_ext_path.name}")
-                    report.record(
-                        "info",
-                        f"Using gold ext: {gold_ext_path.name}",
-                        domain=onto_name,
-                        target=target_name,
-                    )
 
                 # DD-023: Discover reference model default extensions
                 ref_defaults = _discover_ref_model_defaults(
@@ -1586,12 +992,6 @@ def run_projections(
                 if ref_defaults:
                     names = ", ".join(p.name for p in ref_defaults)
                     print(f"  [{onto_name}] Using ref-model defaults: {names}")
-                    report.record(
-                        "info",
-                        f"Using ref-model defaults: {names}",
-                        domain=onto_name,
-                        target=target_name,
-                    )
                     default_packages: list[str] = []
                     fallback_graph = Graph()
                     for default_path in ref_defaults:
@@ -1614,89 +1014,34 @@ def run_projections(
                             f"{s} {p}" for s, p, _ in hub_ext_graph if (s, p) in fallback_pairs
                         )
 
-                # Capture projector-level logger warnings
-                warn_handler = _ProjectionWarningHandler()
-                proj_logger = logging.getLogger("kairos_ontology.core.projections")
-                proj_logger.addHandler(warn_handler)
-                try:
-                    # Compute peer ext paths (all silver-ext files except this domain's)
-                    peer_exts = (
-                        [p for p in all_silver_ext_paths if p != ext_path]
-                        if all_silver_ext_paths
-                        else None
-                    )
-
-                    artifacts = _run_projection(
-                        target_name,
-                        onto_graph,
-                        target_output,
-                        template_base,
-                        onto_namespace,
-                        shapes_dir,
-                        onto_name,
-                        projection_ext_path=ext_path,
-                        gold_ext_path=gold_ext_path,
-                        ontology_metadata=onto_meta,
-                        sources_dir=sources_dir,
-                        mappings_dir=mappings_dir,
-                        hub_domain_namespaces=hub_domain_namespaces,
-                        ref_model_defaults=ref_defaults,
-                        peer_ext_paths=peer_exts,
-                        target_platform=platform,
-                        contract_registry=contract_registry,
-                        semantic_index=load_result.semantic_index,
-                        plan_only=check_only,
-                        diagnostic_mode=diagnostic_mode,
-                    )
-                finally:
-                    proj_logger.removeHandler(warn_handler)
-                    if warn_handler.records:
-                        report.add_captured_warnings(onto_name, target_name, warn_handler.records)
+                peer_exts = (
+                    [p for p in all_silver_ext_paths if p != ext_path]
+                    if all_silver_ext_paths
+                    else None
+                )
+                artifacts = _run_projection(
+                    target_name,
+                    onto_graph,
+                    target_output,
+                    template_base,
+                    onto_namespace,
+                    shapes_dir,
+                    onto_name,
+                    projection_ext_path=ext_path,
+                    gold_ext_path=gold_ext_path,
+                    ontology_metadata=onto_meta,
+                    sources_dir=sources_dir,
+                    mappings_dir=mappings_dir,
+                    hub_domain_namespaces=hub_domain_namespaces,
+                    ref_model_defaults=ref_defaults,
+                    peer_ext_paths=peer_exts,
+                    target_platform=platform,
+                    contract_registry=contract_registry,
+                    semantic_index=load_result.semantic_index,
+                    plan_only=check_only,
+                    diagnostic_mode=diagnostic_mode,
+                )
                 if check_only:
-                    plan = artifacts.get("__plan__") if isinstance(artifacts, Mapping) else None
-                    release = getattr(plan, "release", None)
-                    blocking_rules = tuple(getattr(release, "blocking_rules", ()))
-                    projection_blocking_rules = tuple(
-                        getattr(release, "projection_blocking_rules", blocking_rules)
-                    )
-                    active_sources = [
-                        {
-                            "table_uri": table_uri,
-                            "source_kind": source_kind,
-                            "reasons": list(reasons),
-                        }
-                        for table_uri, source_kind, reasons in getattr(
-                            release, "active_sources", ()
-                        )
-                    ]
-                    projection_details = (
-                        {"active_sources": active_sources} if active_sources else None
-                    )
-                    diagnostics = _collected_blocker_diagnostics(
-                        blocking_rules,
-                        target=target_name,
-                        domain=onto_name,
-                        projection_blocking_rules=projection_blocking_rules,
-                    )
-                    if projection_blocking_rules:
-                        first_rule, first_reason = projection_blocking_rules[0]
-                        report.record_projection(
-                            target_name,
-                            onto_name,
-                            status="error",
-                            error=f"{first_rule}: {first_reason}",
-                            diagnostics=diagnostics,
-                            details=projection_details,
-                        )
-                        target_failed = True
-                    else:
-                        report.record_projection(
-                            target_name,
-                            onto_name,
-                            status="ready",
-                            diagnostics=diagnostics,
-                            details=projection_details,
-                        )
                     continue
                 if artifacts:
                     # Extract coverage data before writing (not a real file artifact)
@@ -1706,8 +1051,7 @@ def run_projections(
                         target_name in {"dbt", "silver", "powerbi"}
                         and "__release_data__" in artifacts
                     ):
-                        release_data = artifacts.pop("__release_data__")
-                        report.release_data[onto_name] = release_data
+                        artifacts.pop("__release_data__")
 
                     if target_name in {"dbt", "silver"}:
                         _merge_dbt_artifacts(
@@ -1718,12 +1062,6 @@ def run_projections(
                     else:
                         total_files += _write_artifacts(artifacts, target_output)
                     print(f"  [{onto_name}] ✓ Generated {len(artifacts)} file(s)")
-                    report.record_projection(
-                        target_name,
-                        onto_name,
-                        status="ok",
-                        files=sorted(artifacts.keys()),
-                    )
 
                     # Track dbt domains for project config generation
                     if target_name in {"dbt", "silver"}:
@@ -1731,61 +1069,10 @@ def run_projections(
                         # Check if gold models were produced
                         if any(k.startswith("models/gold/") for k in artifacts):
                             dbt_gold_domains.append(onto_name)
-                else:
-                    report.record_projection(
-                        target_name,
-                        onto_name,
-                        status="skipped",
-                        reason="No classes found in namespace",
-                    )
-                    report.record(
-                        "info",
-                        "No classes found in namespace — skipped",
-                        domain=onto_name,
-                        target=target_name,
-                    )
             except Exception as e:
                 target_failed = True
-                if target_name in {"dbt", "silver", "powerbi"}:
-                    blocking_rules = tuple(getattr(e, "blocking_rules", ()))
-                    if blocking_rules:
-                        report.release_data[onto_name] = {
-                            "policy_version": "1.0",
-                            "blocking_reasons": [
-                                {"rule_id": rule_id, "reason": reason}
-                                for rule_id, reason in blocking_rules
-                            ],
-                            "capabilities": [],
-                        }
                 print(f"  [{onto_name}] ✗ Failed: {e}")
                 _tb.print_exc()
-                collected_diagnostics = [
-                    {
-                        "id": item.id,
-                        "code": item.code,
-                        "rule_id": item.rule_id,
-                        "severity": item.severity.value,
-                        "blocking": item.blocking,
-                        "stage": item.stage,
-                        "resource_uri": item.resource_uri,
-                        "predicate_uri": item.predicate_uri,
-                        "message": item.message,
-                        "depends_on": list(item.depends_on),
-                        "owner_skill": item.owner_skill,
-                        "remediation": item.remediation,
-                        "evidence": list(item.evidence),
-                        "evaluation_status": item.evaluation_status.value,
-                    }
-                    for item in getattr(e, "diagnostics", ())
-                ]
-                report.record_projection(
-                    target_name,
-                    onto_name,
-                    status="error",
-                    error=str(e),
-                    traceback_str=_tb.format_exc(),
-                    diagnostics=collected_diagnostics or None,
-                )
 
         if check_only:
             continue
@@ -1835,12 +1122,10 @@ def run_projections(
                 target_failed = True
                 message = f"dbt assembly failed; no dbt artifacts were written: {exc}"
                 fatal_target_errors.append(message)
-                report.record_post_step("dbt_assembly", status="error", reason=str(exc))
                 print(f"  ✗ {message}\n")
         elif target_name in {"dbt", "silver"} and target_failed:
             message = f"{target_name} projection failed; no dbt artifacts were written"
             fatal_target_errors.append(message)
-            report.record_post_step("dbt_assembly", status="error", reason=message)
             print(f"  ✗ {message}\n")
 
         # After all domains: merge per-domain coverage data into a single report
@@ -1854,16 +1139,6 @@ def run_projections(
             coverage_content = _json.dumps(merged_coverage, indent=2, ensure_ascii=False)
             reports_dir = output_path / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
-            # Stable filenames converge on re-projection instead of leaving a new
-            # timestamped pair behind each run; drop any timestamped coverage
-            # reports written by older toolkit versions first.
-            _prune_legacy_report_files(
-                reports_dir,
-                (
-                    f"coverage-silver-{_LEGACY_REPORT_TS}.json",
-                    f"coverage-silver-{_LEGACY_REPORT_TS}.md",
-                ),
-            )
             coverage_artifacts = {"coverage-silver.json": coverage_content}
             # Generate human-readable Markdown rendering
             md_content = _render_silver_coverage_md(merged_coverage, generated_at=generated_at)
@@ -1871,7 +1146,6 @@ def run_projections(
             total_files += _write_artifacts(coverage_artifacts, reports_dir)
             _reconcile_managed_output(reports_dir, coverage_artifacts.keys())
             print(f"  ✓ Merged coverage report for {len(dbt_coverage_data)} domain(s)")
-            report.record_post_step("coverage_report", status="ok")
 
         # DD-110: dbt and the explicit Silver facade emit the same physical ERDs.
         if target_name in {"dbt", "silver"} and total_files > 0:
@@ -1892,12 +1166,6 @@ def run_projections(
                 master_path.write_text(master_mmd, encoding="utf-8")
                 total_files += 1
                 print("  ✓ Master ERD written: dbt/docs/diagrams/master-erd.mmd")
-                report.record_post_step("master_silver_erd", status="ok")
-            else:
-                report.record_post_step(
-                    "master_silver_erd", status="skipped", reason="No domain ERDs found to merge"
-                )
-
             # Render all .mmd files to SVG via Mermaid CLI (if available)
             svg_count = 0
             diagrams_root = dbt_output / "docs" / "diagrams"
@@ -1909,14 +1177,10 @@ def run_projections(
             if svg_count:
                 total_files += svg_count
                 print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
-                report.record_post_step("silver_svg_export", status="ok")
             else:
                 print(
                     "  [info] Mermaid CLI (mmdc) not found -- SVG export skipped."
                     " Install: npm install -D @mermaid-js/mermaid-cli"
-                )
-                report.record_post_step(
-                    "silver_svg_export", status="skipped", reason="mmdc not found on PATH"
                 )
 
         # After all domains: generate master gold ERD
@@ -1934,12 +1198,6 @@ def run_projections(
                 master_path.write_text(master_mmd, encoding="utf-8")
                 total_files += 1
                 print("  ✓ Master Gold ERD written: powerbi/master-gold-erd.mmd")
-                report.record_post_step("master_gold_erd", status="ok")
-            else:
-                report.record_post_step(
-                    "master_gold_erd", status="skipped", reason="No domain gold ERDs found to merge"
-                )
-
             svg_count = 0
             if gold_output.exists():
                 for mmd_file in sorted(gold_output.rglob("*.mmd")):
@@ -1949,32 +1207,22 @@ def run_projections(
             if svg_count:
                 total_files += svg_count
                 print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
-                report.record_post_step("gold_svg_export", status="ok")
             else:
                 print(
                     "  [info] Mermaid CLI (mmdc) not found -- SVG export skipped."
                     " Install: npm install -D @mermaid-js/mermaid-cli"
                 )
-                report.record_post_step(
-                    "gold_svg_export", status="skipped", reason="mmdc not found on PATH"
-                )
 
         print(f"  ✓ {target_name} projection completed: {total_files} total files\n")
 
     if check_only:
-        return report
+        return None
 
     # ── Post-domain targets (span all ontology domains) ──────────────────
     if "report" in targets_to_run:
         print("📦 Generating report projection...")
         report_output = TARGET_REGISTRY["report"].output_path(output_path)
         report_output.mkdir(parents=True, exist_ok=True)
-        # Stable filenames overwrite in place; drop timestamped detail reports left
-        # by older toolkit versions so the folder converges on the current run.
-        _prune_legacy_report_files(
-            report_output,
-            (f"*-{_LEGACY_REPORT_TS}.html", f"*-{_LEGACY_REPORT_TS}.md"),
-        )
         managed_detail_files: list[str] = []
 
         # Merge all domain ontology graphs for cross-domain property lookup
@@ -2005,7 +1253,6 @@ def run_projections(
             report_count += 1
             print(f"  ✓ {fname}")
         print(f"  ✓ report projection completed: {report_count} total files\n")
-        report.record_post_step("mapping_report", status="ok")
 
         # Generate domain overview report
         from .projections.report_projector import generate_domain_overview_report
@@ -2063,45 +1310,6 @@ def run_projections(
 
     print("✅ Projection generation completed!")
     print(f"   Generated artifacts for {len(ontology_graphs)} data domain(s)")
-
-    # Write the projection report
-    report_path = report.write(output_path)
-    print(f"   📋 Report:   {report_path.name}")
-
-    # Write per-domain Markdown reports to .sessions-projection/
-    sessions_dir = hub_root / ".sessions-projection" if hub_root else None
-    if sessions_dir:
-        # DD-071-style archival: move the previous run's per-domain logs into
-        # _archive/ so the folder reflects only the latest projection.
-        _archive_prior_projection_logs(sessions_dir, report.domains)
-        for domain_name in report.domains:
-            md_path = report.write_domain_markdown(domain_name, sessions_dir)
-            if md_path:
-                print(f"   📝 Session report: {md_path.name}")
-
-        # Write separate dbt session logs (per domain)
-        if "dbt" in targets_to_run:
-            from .projections.medallion_dbt_projector import (
-                get_last_entity_metadata,
-                write_dbt_session_log,
-            )
-            from kairos_ontology import __version__ as _ver
-
-            dbt_meta = get_last_entity_metadata()
-            captured = report.captured_warnings
-            for domain_name, entity_meta in dbt_meta.items():
-                domain_warns = [
-                    msg for target, msg in captured.get(domain_name, []) if target == "dbt"
-                ]
-                dbt_path = write_dbt_session_log(
-                    domain=domain_name,
-                    entity_metadata=entity_meta,
-                    sessions_dir=sessions_dir,
-                    toolkit_version=_ver,
-                    warnings=domain_warns,
-                )
-                if dbt_path:
-                    print(f"   📝 dbt session log: {dbt_path.name}")
 
     if fatal_target_errors:
         raise ProjectionRunError("; ".join(fatal_target_errors))

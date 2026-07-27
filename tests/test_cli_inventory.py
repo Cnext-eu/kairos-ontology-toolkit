@@ -2,7 +2,6 @@
 # Copyright 2026 Cnext.eu
 """Tests for the generate-inventory CLI command (DD-044)."""
 
-
 import yaml
 from click.testing import CliRunner
 
@@ -44,11 +43,16 @@ class TestGenerateInventoryCLI:
         out_dir = tmp_path / "model" / "inventory"
 
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "generate-inventory",
-            "--ref-models-dir", str(ref_dir),
-            "--output-dir", str(out_dir),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "generate-inventory",
+                "--ref-models-dir",
+                str(ref_dir),
+                "--output-dir",
+                str(out_dir),
+            ],
+        )
 
         assert result.exit_code == 0, result.output
         assert "Generated" in result.output
@@ -83,11 +87,16 @@ class TestGenerateInventoryCLI:
         out_dir = tmp_path / "model" / "inventory"
 
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "generate-inventory",
-            "--ontology-dir", str(ont_dir),
-            "--output-dir", str(out_dir),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "generate-inventory",
+                "--ontology-dir",
+                str(ont_dir),
+                "--output-dir",
+                str(out_dir),
+            ],
+        )
 
         assert result.exit_code == 0, result.output
         yaml_file = out_dir / "client-inventory.yaml"
@@ -103,10 +112,14 @@ class TestGenerateInventoryCLI:
 
     def test_no_dirs_fails(self, tmp_path):
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "generate-inventory",
-            "--ontology-dir", str(tmp_path / "nonexistent"),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "generate-inventory",
+                "--ontology-dir",
+                str(tmp_path / "nonexistent"),
+            ],
+        )
         assert result.exit_code != 0
 
     def test_autodetects_repo_root_refmodels(self, tmp_path, monkeypatch):
@@ -169,10 +182,7 @@ class TestInventoryCollisionRegression:
             "WCO": "Declarant",
         }
         for model, cls in models.items():
-            ttl = (
-                ref_root / "derived-ontologies" / model / "current" / "party"
-                / "party.ttl"
-            )
+            ttl = ref_root / "derived-ontologies" / model / "current" / "party" / "party.ttl"
             ttl.parent.mkdir(parents=True, exist_ok=True)
             ttl.write_text(self._ref_ttl(model, cls), encoding="utf-8")
 
@@ -200,10 +210,7 @@ class TestInventoryCollisionRegression:
 
     def test_local_and_reference_module_with_same_stem_coexist(self, tmp_path, monkeypatch):
         ref_root = tmp_path / "ontology-reference-models"
-        ref_ttl = (
-            ref_root / "derived-ontologies" / "DCSA" / "current" / "booking"
-            / "booking.ttl"
-        )
+        ref_ttl = ref_root / "derived-ontologies" / "DCSA" / "current" / "booking" / "booking.ttl"
         ref_ttl.parent.mkdir(parents=True)
         ref_ttl.write_text(self._ref_ttl("DCSA", "ReferenceBooking"), encoding="utf-8")
 
@@ -227,64 +234,13 @@ class TestInventoryCollisionRegression:
         assert checked.exit_code == 0, checked.output
         assert "MIGRATION REQUIRED" not in checked.output
 
-    def test_generate_rejects_legacy_stem_inventory_until_migrated(self, tmp_path, monkeypatch):
-        ref_root = tmp_path / "ontology-reference-models"
-        ttl = (
-            ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
-        )
-        ttl.parent.mkdir(parents=True, exist_ok=True)
-        ttl.write_text(self._ref_ttl("BSP", "TradeParty"), encoding="utf-8")
-
-        inv_dir = tmp_path / "referencemodels-unpacked"
-        inv_dir.mkdir(parents=True)
-        # Legacy collision artifact from the old stem-keyed scheme.
-        (inv_dir / "party-inventory.yaml").write_text("version: '1.0'\n", encoding="utf-8")
-        (tmp_path / "model" / "ontologies").mkdir(parents=True)
-
-        monkeypatch.chdir(tmp_path)
-        runner = CliRunner()
-        gen = runner.invoke(cli, ["generate-inventory"])
-        assert gen.exit_code == 1, gen.output
-        assert "Legacy inventory format" in gen.output
-        assert "migrate --hub" in gen.output
-
-        assert not (inv_dir / "bsp-party-inventory.yaml").exists()
-        assert (inv_dir / "party-inventory.yaml").exists()
-
-        check = runner.invoke(cli, ["check-inventory"])
-        assert check.exit_code == 1, check.output
-        assert "MIGRATION REQUIRED" in check.output
-        assert "migrate --hub" in check.output
-
-    def test_no_prune_does_not_bypass_legacy_inventory_migration(self, tmp_path, monkeypatch):
-        ref_root = tmp_path / "ontology-reference-models"
-        ttl = (
-            ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
-        )
-        ttl.parent.mkdir(parents=True, exist_ok=True)
-        ttl.write_text(self._ref_ttl("BSP", "TradeParty"), encoding="utf-8")
-
-        inv_dir = tmp_path / "referencemodels-unpacked"
-        inv_dir.mkdir(parents=True)
-        (inv_dir / "party-inventory.yaml").write_text("version: '1.0'\n", encoding="utf-8")
-        (tmp_path / "model" / "ontologies").mkdir(parents=True)
-
-        monkeypatch.chdir(tmp_path)
-        runner = CliRunner()
-        gen = runner.invoke(cli, ["generate-inventory", "--no-prune"])
-        assert gen.exit_code == 1, gen.output
-        assert (inv_dir / "party-inventory.yaml").exists()
-
     def test_generate_inventory_ignores_archived_reference_model_versions(
         self, tmp_path, monkeypatch
     ):
         ref_root = tmp_path / "ontology-reference-models"
-        current = (
-            ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
-        )
+        current = ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
         archived = (
-            ref_root / "derived-ontologies" / "BSP" / "archive" / "1.4.0"
-            / "party" / "party.ttl"
+            ref_root / "derived-ontologies" / "BSP" / "archive" / "1.4.0" / "party" / "party.ttl"
         )
         current.parent.mkdir(parents=True, exist_ok=True)
         archived.parent.mkdir(parents=True, exist_ok=True)
@@ -307,26 +263,6 @@ class TestInventoryCollisionRegression:
 
 
 class TestResolveRefModelsDir:
-
-    def test_prefers_repo_root_over_legacy(self, tmp_path):
-        from kairos_ontology.cli.main import _resolve_ref_models_dir
-
-        repo_root_dir = tmp_path / "ontology-reference-models"
-        repo_root_dir.mkdir()
-        legacy_dir = tmp_path / "model" / "reference-models"
-        legacy_dir.mkdir(parents=True)
-
-        resolved = _resolve_ref_models_dir(tmp_path, tmp_path)
-        assert resolved == repo_root_dir
-
-    def test_legacy_fallback(self, tmp_path):
-        from kairos_ontology.cli.main import _resolve_ref_models_dir
-
-        legacy_dir = tmp_path / "model" / "reference-models"
-        legacy_dir.mkdir(parents=True)
-
-        resolved = _resolve_ref_models_dir(tmp_path, tmp_path)
-        assert resolved == legacy_dir
 
     def test_returns_none_when_missing(self, tmp_path):
         from kairos_ontology.cli.main import _resolve_ref_models_dir
@@ -387,12 +323,10 @@ class TestScopeInventoryReport:
 
         report = InventoryCheckReport(
             missing=["refdata-codes"],  # out of scope
-            stale=["bsp-booking"],       # in scope
-            ok=["bsp-party"],            # in scope
+            stale=["bsp-booking"],  # in scope
+            ok=["bsp-party"],  # in scope
         )
-        scope = scope_inventory_report(
-            report, {"booking": {"bsp-booking"}, "party": {"bsp-party"}}
-        )
+        scope = scope_inventory_report(report, {"booking": {"bsp-booking"}, "party": {"bsp-party"}})
         assert scope.stale == ["bsp-booking"]
         assert scope.ok == ["bsp-party"]
         assert scope.missing == []  # refdata-codes is out of scope
@@ -476,9 +410,7 @@ class TestCheckInventoryDomainScope:
         assert bare.exit_code == 1, bare.output
 
         # Scoped to booking: party's missing inventory is out of scope → passes.
-        booking = runner.invoke(
-            cli, ["check-inventory", "--domains", "booking", "--explain-scope"]
-        )
+        booking = runner.invoke(cli, ["check-inventory", "--domains", "booking", "--explain-scope"])
         assert booking.exit_code == 0, booking.output
         assert "out of scope" in booking.output
 

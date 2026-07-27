@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "generated_from": "Python AST Import/ImportFrom nodes; paths and registrations are separately asserted",
+  "schema_version": 2,
+  "generated_from": "Python AST imports, test CLI invocations, paths, and registrations are separately asserted",
   "managed_skill_reference_markers": [
     ".kairos-state",
     ".sessions-",
@@ -12,6 +12,22 @@
     "inventory-dbt-candidates",
     "kairos-prep",
     "projection-report",
+    "release-baseline",
+    "sync-dbt-contracts"
+  ],
+  "forbidden_cli_help_markers": [
+    "capture-dbt-contract-evidence",
+    "check-claims",
+    "check-projection",
+    "check-release",
+    "check-transformation-readiness",
+    "claims-to-silver-ext",
+    "decide-claims",
+    "derive-claims",
+    "inventory-dbt-candidates",
+    "migrate-column-iris",
+    "migrate-claims",
+    "reconstruct-dbt-transformation",
     "release-baseline",
     "sync-dbt-contracts"
   ],
@@ -28,7 +44,13 @@
     "PrepModelSpec",
     "preparation_root",
     "integration/preparation",
-    "kairos-prep"
+    "kairos-prep",
+    "ProjectionReport",
+    ".sessions-projection",
+    ".sessions-design-import",
+    "release-baseline",
+    "write_import_session",
+    "write_dbt_session_log"
   ],
   "stage3_cutover": {
     "status": "implemented-in-working-tree",
@@ -192,14 +214,15 @@
       ],
       "managed_skill_references": [],
       "tests": [
+        "tests/scenarios/test_scenario_advanced_dbt.py",
+        "tests/test_active_source_scope.py",
         "tests/test_cli_dbt_contract_sync.py",
         "tests/test_column_iri_migration.py",
         "tests/test_dbt_contract_sync.py",
         "tests/test_dbt_contracts.py",
-        "tests/test_transformation_candidates.py",
         "tests/test_silver_source_ref.py",
         "tests/test_source_replacement_coverage.py",
-        "tests/scenarios/test_scenario_advanced_dbt.py"
+        "tests/test_transformation_candidates.py"
       ],
       "status": "retired",
       "retained_scaffold_assets": [
@@ -395,7 +418,8 @@
         "tests/test_migrate_claims.py",
         "tests/scenarios/test_scenario_claims_sync.py",
         "tests/scenarios/test_scenario_derive_claims.py",
-        "tests/test_legacy_format_migrations.py"
+        "tests/test_legacy_format_migrations.py",
+        "tests/scenarios/fixtures/silver-first/client-claims-approved.yaml"
       ],
       "status": "retired"
     },
@@ -605,10 +629,12 @@
       "tests": [
         "tests/test_dbt_preparation.py",
         "tests/test_dbt_policy_specs.py",
+        "tests/test_identity_lineage.py",
         "tests/test_medallion_policy_vocabulary.py",
         "tests/scenarios/test_scenario_dbt.py",
         "tests/scenarios/test_scenario_fk_normalization.py",
         "tests/scenarios/test_scenario_identity_lineage.py",
+        "tests/scenarios/test_scenario_quality_release.py",
         "tests/scenarios/test_scenario_runtime_semantics.py"
       ],
       "status": "retired"
@@ -617,14 +643,7 @@
       "id": "report-session-release-baseline",
       "retired_modules": {
         "kairos_ontology.core.import_session": {
-          "importers": {
-            "kairos_ontology.core.import_flatfile": [
-              "write_import_session"
-            ],
-            "kairos_ontology.core.import_source": [
-              "write_import_session"
-            ]
-          }
+          "importers": {}
         }
       },
       "mixed_modules": {
@@ -674,22 +693,12 @@
         "src/kairos_ontology/scaffold/ontology-hub/model/governance/README.md",
         "src/kairos_ontology/scaffold/ontology-hub/model/governance/release-baseline.yaml"
       ],
-      "managed_skill_references": [
-        ".github/skills/kairos-design-discovery/SKILL.md",
-        ".github/skills/kairos-design-gold/SKILL.md",
-        ".github/skills/kairos-design-mdm/SKILL.md",
-        ".github/skills/kairos-design-silver/SKILL.md",
-        ".github/skills/kairos-design-source/SKILL.md",
-        ".github/skills/kairos-execute-report/SKILL.md",
-        ".github/skills/kairos-flow/SKILL.md"
-      ],
+      "managed_skill_references": [],
       "tests": [
         "tests/test_import_session.py",
-        "tests/test_projection_report.py",
-        "tests/test_validate_report_output.py",
-        "tests/scenarios/test_scenario_projection.py"
+        "tests/test_projection_report.py"
       ],
-      "status": "planned"
+      "status": "retired"
     },
     {
       "id": "obsolete-cli-tests",
@@ -706,6 +715,7 @@
             "decide_claims_cmd",
             "derive_claims_cmd",
             "inventory_transformation_candidates_cmd",
+            "lifecycle",
             "migrate_claims_cmd",
             "status_cmd",
             "sync_dbt_contracts_cmd"
@@ -730,23 +740,59 @@
         "decide-claims",
         "derive-claims",
         "inventory-dbt-candidates",
+        "lifecycle",
         "migrate-column-iris",
         "migrate-claims",
         "status",
         "reconstruct-dbt-transformation",
         "sync-dbt-contracts"
       ],
-      "scaffold_assets": [
+      "scaffold_assets": [],
+      "retained_scaffold_assets": [
         "src/kairos_ontology/scaffold/copilot-instructions.md",
         "src/kairos_ontology/scaffold/README.md.template",
         "src/kairos_ontology/scaffold/ontology-hub/README.md.template"
       ],
       "managed_skill_references": [],
       "tests": [
-        "tests/test_cli_path_resolution.py",
-        "tests/test_cli_skill_gate.py"
+        "tests/test_dbt_projection_gate.py"
       ],
-      "status": "planned"
+      "status": "retired"
     }
-  ]
+  ],
+  "stage7_test_architecture": {
+    "status": "retired-v4-tests",
+    "fixture": "tests/scenarios/v5-governed-hub",
+    "authority": [
+      "EntityBinding",
+      "CompilePlan"
+    ],
+    "retained_coverage": [
+      "immutable compiler phases and mapping AST",
+      "canonical hash and runtime semantics",
+      "adapters, renderers, and ontology loaders",
+      "source privacy and AI providers",
+      "Gold, MDM, and reference models",
+      "deterministic artifacts and non-suppressible safety rules"
+    ],
+    "architecture_gates": [
+      "active tests cannot import retired modules",
+      "active tests cannot invoke retired CLI commands",
+      "inventoried retired tests and assets must remain absent"
+    ],
+    "retired_test_paths": [
+      "tests/scenarios/fixtures/dbt_artifact_baseline.json",
+      "tests/scenarios/fixtures/silver-first/client-claims-approved.yaml",
+      "tests/scenarios/regenerate_dbt_artifact_baseline.py",
+      "tests/scenarios/test_scenario_dbt_characterization.py",
+      "tests/scenarios/test_scenario_projection.py",
+      "tests/scenarios/test_scenario_quality_release.py",
+      "tests/test_active_source_scope.py",
+      "tests/test_dbt_projection_gate.py",
+      "tests/test_identity_lineage.py",
+      "tests/test_import_session.py",
+      "tests/test_projection_report.py"
+    ],
+    "adapted_test_path_count": 34
+  }
 }

@@ -51,6 +51,20 @@ def _production_imports() -> dict[str, dict[str, set[str]]]:
     return imports
 
 
+def _python_import_targets(root: Path) -> dict[Path, set[str]]:
+    imports: dict[Path, set[str]] = {}
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        targets: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                targets.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                targets.add(node.module)
+        imports[path] = targets
+    return imports
+
+
 @pytest.fixture(scope="module")
 def inventory() -> dict:
     return json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
@@ -81,13 +95,21 @@ def test_retirement_import_inventory_matches_python_ast(inventory):
 
 
 def test_retired_production_markers_are_absent(inventory):
-    production = "\n".join(
-        path.read_text(encoding="utf-8")
+    cleanup_module = PACKAGE / "cli" / "shared.py"
+    cleanup_markers = {
+        "integration/preparation",
+        "kairos-prep",
+        ".sessions-projection",
+        ".sessions-design-import",
+        "release-baseline",
+    }
+    present = [
+        f"{path.relative_to(PACKAGE)}: {marker}"
         for path in sorted(PACKAGE.rglob("*"))
         if path.is_file() and path.suffix in {".py", ".jinja2"}
-    )
-    present = [
-        marker for marker in inventory["forbidden_production_markers"] if marker in production
+        for marker in inventory["forbidden_production_markers"]
+        if marker in path.read_text(encoding="utf-8")
+        and not (path == cleanup_module and marker in cleanup_markers)
     ]
     assert not present, f"retired Stage 4 production markers remain: {present}"
 
@@ -120,6 +142,9 @@ def test_inventory_modules_assets_skills_and_tests_exist(inventory):
             for symbol in symbols:
                 if not hasattr(imported, symbol):
                     missing.append(f"{wave['id']}: retained symbol {module}.{symbol}")
+    for relative in inventory["stage7_test_architecture"]["retired_test_paths"]:
+        if (ROOT / relative).exists():
+            missing.append(f"stage7-test-architecture: retired path still exists: {relative}")
     assert not missing, "Inventory contains missing entries:\n" + "\n".join(missing)
 
 
@@ -143,6 +168,26 @@ def test_managed_skill_reference_inventory_is_complete_and_mirrored(inventory):
         relative = Path(reference).relative_to(".github/skills")
         scaffold_copy = PACKAGE / "scaffold" / "skills" / relative
         assert scaffold_copy.is_file(), f"missing managed skill mirror: {scaffold_copy}"
+
+
+def test_removed_subsystems_are_absent_from_cli_help_and_managed_guidance(inventory):
+    paths = [
+        PACKAGE / "cli" / "main.py",
+        ROOT / ".github" / "copilot-instructions.md",
+        PACKAGE / "scaffold" / "copilot-instructions.md",
+        ROOT / ".github" / "skills" / "kairos-help" / "SKILL.md",
+        PACKAGE / "scaffold" / "skills" / "kairos-help" / "SKILL.md",
+    ]
+    paths.extend(sorted((ROOT / ".github" / "skills").glob("*/SKILL.md")))
+    paths.extend(sorted((PACKAGE / "scaffold" / "skills").glob("*/SKILL.md")))
+
+    failures = [
+        f"{path.relative_to(ROOT)}: {marker}"
+        for path in paths
+        for marker in inventory["forbidden_cli_help_markers"]
+        if marker in path.read_text(encoding="utf-8")
+    ]
+    assert not failures, "Removed subsystem references remain:\n" + "\n".join(failures)
 
 
 def _registered_cli_commands() -> dict[str, str]:
@@ -188,6 +233,7 @@ def test_inventory_cli_registrations_are_exact(inventory):
         "decide-claims",
         "derive-claims",
         "inventory-dbt-candidates",
+        "lifecycle",
         "migrate-column-iris",
         "migrate-claims",
         "status",
@@ -215,3 +261,53 @@ def test_mixed_modules_classify_retired_and_retained_symbols(inventory):
                 "retain_or_extract"
             ], f"{module} is not mixed; move it to retired_modules if nothing survives"
             assert classification["reason"]
+
+
+def test_active_tests_do_not_import_retired_modules(inventory):
+    retired = {
+        module
+        for wave in inventory["waves"]
+        if wave.get("status") == "retired"
+        for module in wave["retired_modules"]
+    }
+    violations = [
+        f"{path.relative_to(ROOT)}: {target}"
+        for path, targets in _python_import_targets(ROOT / "tests").items()
+        for target in targets
+        if any(target == module or target.startswith(f"{module}.") for module in retired)
+    ]
+    assert not violations, "Active tests import retired modules:\n" + "\n".join(violations)
+
+
+def test_active_tests_do_not_invoke_retired_cli_commands(inventory):
+    retired = {
+        command
+        for wave in inventory["waves"]
+        if wave.get("status") == "retired"
+        for command in wave["cli_registrations"]
+    }
+    violations: list[str] = []
+    for path in sorted((ROOT / "tests").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "invoke"
+            ):
+                continue
+            command = next(
+                (
+                    item.value
+                    for argument in node.args
+                    if isinstance(argument, (ast.List, ast.Tuple))
+                    for item in argument.elts
+                    if isinstance(item, ast.Constant)
+                    and isinstance(item.value, str)
+                    and item.value in retired
+                ),
+                None,
+            )
+            if command:
+                violations.append(f"{path.relative_to(ROOT)}:{node.lineno}: {command}")
+    assert not violations, "Active tests invoke retired commands:\n" + "\n".join(violations)

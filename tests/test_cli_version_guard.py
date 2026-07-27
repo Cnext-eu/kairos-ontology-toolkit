@@ -20,7 +20,7 @@ def _write_pyproject_whl(tmp_path: Path, tag: str) -> None:
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "test-hub"\n\ndependencies = [\n'
         f'  "kairos-ontology-toolkit @ https://github.com/Cnext-eu/'
-        f'kairos-ontology-toolkit/releases/download/{tag}/'
+        f"kairos-ontology-toolkit/releases/download/{tag}/"
         f'kairos_ontology_toolkit-0.0.0-py3-none-any.whl",\n]\n',
         encoding="utf-8",
     )
@@ -45,11 +45,6 @@ class TestReadPinnedVersion:
         _write_pyproject_whl(tmp_path, "v3.12.0-rc.1")
         monkeypatch.chdir(tmp_path)
         assert _read_pinned_toolkit_version() == "3.12.0rc1"
-
-    def test_parses_legacy_git_pin(self, tmp_path, monkeypatch):
-        _write_pyproject_git(tmp_path, "v3.10.0")
-        monkeypatch.chdir(tmp_path)
-        assert _read_pinned_toolkit_version() == "3.10.0"
 
     def test_none_when_no_pyproject(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

@@ -1849,24 +1849,24 @@ def _silver_models(
     specs: list[SilverModelSpec] = []
     for candidate in project.silver_models:
         model = SilverModelSpec(
-                identity=candidate.identity,
-                kind=candidate.kind,
-                columns=candidate.columns,
-                sources=candidate.sources,
-                joins=candidate.joins,
-                materialization_intent=candidate.materialization_intent,
-                ontology_metadata=candidate.ontology_metadata,
-                where_clause=candidate.where_clause,
-                source_models=candidate.source_models,
-                surrogate_key_expression=candidate.surrogate_key_expression,
-                integration_key_expression=candidate.integration_key_expression,
-                iri_expression=candidate.iri_expression,
-                parent_model=candidate.parent_model,
-                source_identity_ref=candidate.source_identity_ref,
-                source_record_key_expression=candidate.source_record_key_expression,
-                source_record_key_generated_after_mapping=(
-                    candidate.source_record_key_generated_after_mapping
-                ),
+            identity=candidate.identity,
+            kind=candidate.kind,
+            columns=candidate.columns,
+            sources=candidate.sources,
+            joins=candidate.joins,
+            materialization_intent=candidate.materialization_intent,
+            ontology_metadata=candidate.ontology_metadata,
+            where_clause=candidate.where_clause,
+            source_models=candidate.source_models,
+            surrogate_key_expression=candidate.surrogate_key_expression,
+            integration_key_expression=candidate.integration_key_expression,
+            iri_expression=candidate.iri_expression,
+            parent_model=candidate.parent_model,
+            source_identity_ref=candidate.source_identity_ref,
+            source_record_key_expression=candidate.source_record_key_expression,
+            source_record_key_generated_after_mapping=(
+                candidate.source_record_key_generated_after_mapping
+            ),
             authority=candidate.authority,
         )
         identity_model = _apply_identity_contract(

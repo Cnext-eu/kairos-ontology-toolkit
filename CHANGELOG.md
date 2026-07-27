@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0] — 2026-07-27
+
+### Documentation
+- Consolidated the **5.0 candidate** documentation around the implemented DD-133 clean
+  break: canonical TTL/source vocabularies, one closed EntityBinding per source, optional
+  ordinary dbt SQL/YAML and Gold/MDM policy, stateless compile modes, the immutable
+  `CompilePlan`, supported adapters, and downstream consumption.
+- Added an exact retained-command reference and removed active guidance for retired v4
+  claims, preparation, lifecycle/readiness, release-evidence, and Silver-extension
+  authorities. Historical ADR records remain labeled and available for provenance.
+- Rewrote the lean hub and dataplatform scaffold documentation, including reversible
+  `update --test-ref` / `update --restore` testing.
+
 ## [5.0.0rc1] — 2026-07-27
 
 ### Added

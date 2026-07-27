@@ -1,7 +1,7 @@
 # Contracted dbt Transformations
 
-Use this directory for advanced source-conformance logic that cannot be represented safely
-as ordinary SKOS mapping expressions, such as joins, windows, rankings, aggregations,
+Use this directory for relational logic that cannot be represented safely
+by the closed EntityBinding scalar-expression grammar, such as joins, windows, rankings, aggregations,
 fallback rules, JSON expansion, and grain changes.
 
 Authoritative inputs follow the dbt project layout:
@@ -21,7 +21,7 @@ After changing a contract:
 
 1. Point an entity binding `source.dbtModel` directly at the SQL and YAML paths.
 2. Run `kairos-ontology compile <domain> --check`.
-3. Confirm key/FK/SCD policy with `kairos-design-silver`.
+3. Review the resulting `CompilePlan` with `compile --explain`.
 
 Do not place credentials, raw PII, proprietary sample values, or hard-coded physical
 database/schema names in these files.

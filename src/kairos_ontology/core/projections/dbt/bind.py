@@ -317,10 +317,6 @@ def _one(fact) -> str:
     return fact.values[0] if fact is not None and len(fact.values) == 1 else ""
 
 
-
-
-
-
 def _source_ref(value: tuple[str, ...]) -> SourceRefFact:
     return SourceRefFact(
         source_name=value[0],

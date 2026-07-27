@@ -1,25 +1,24 @@
 ---
 name: kairos-help
-description: Orientation to the Kairos Ontology Toolkit, its v5 lifecycle, commands, and skills.
+description: Orientation to Kairos v5 authored inputs, canonical compilation, commands, and skills.
 ---
 
 # Kairos Help
 
-Kairos shifts data-product design left: source evidence and OWL domain meaning are bound through
-explicit v5 entity-binding YAML, compiled into an immutable typed CompilePlan, and rendered into
-downstream artifacts.
+Kairos v5 turns authored source schemas, OWL meaning, and closed EntityBinding YAML into one
+immutable CompilePlan and deterministic downstream artifacts.
 
-## Stateless lifecycle
+## Authoritative inputs
 
-`discovery → source → domain → mapping/binding → silver/gold design → validate → compile → consume`
+- `model/ontologies/<domain>.ttl`: canonical OWL meaning
+- `model/shapes/`: optional SHACL
+- `integration/sources/<source>/*.ttl`: physical source schema and redacted samples
+- `integration/bindings/*.binding.yaml`: sole source-to-canonical execution authority
+- `integration/transforms/dbt/models/`: ordinary contracted dbt SQL/YAML for complex logic
+- `kairos.yaml`: namespace, catalog, adapters, and selected roots
+- `output/`: derived artifacts only
 
-- Start/resume: `kairos-flow` inventories the hub and routes the next skill without persisted state.
-- Detailed review: `kairos-diagnose-status` combines source/ontology/reference inventories,
-  update/version facts, and CompilePlan diagnostics.
-- Silver/dbt generation: `kairos-execute-project` runs `compile --check|--explain|--emit`.
-- Validation: `kairos-execute-validate` covers syntax, SHACL, and compile diagnostics.
-
-## Canonical compiler commands
+## Canonical commands
 
 ```powershell
 kairos-ontology compile <domain> --check --format json
@@ -27,11 +26,10 @@ kairos-ontology compile <domain> --explain --format json
 kairos-ontology compile <domain> --emit <directory>
 ```
 
-A CompilePlan contains resolved bindings, normalized contracts, shaped project, Silver registry,
-materialization plan, planned artifacts, provenance, and ordered diagnostics. Passing compilation
-does not certify runtime behavior or release eligibility.
+Use `kairos-design-source`, `kairos-design-domain`, and `kairos-design-mapping` to author inputs;
+`kairos-develop-dbt-transformation` for ordinary contracted dbt models; `kairos-design-gold` and
+`kairos-design-mdm` for optional consumers; `kairos-execute-validate` for validation; and
+`kairos-toolkit-ops` for managed files, versions, and reference models.
 
-Use `kairos-design-source`, `kairos-design-domain`, `kairos-design-mapping`,
-`kairos-design-silver`, `kairos-design-gold`, and `kairos-design-mdm` for authored design changes.
-Use `kairos-toolkit-ops` for update/version/reference-model operations. Never bypass skill-owned
-preflight and stakeholder gates.
+A successful compile means the selected inputs can produce a CompilePlan. Run downstream dbt,
+adapter, deployment, and data tests separately.

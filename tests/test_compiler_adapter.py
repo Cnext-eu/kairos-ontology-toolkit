@@ -10,6 +10,7 @@ deterministic Fabric dbt artifacts — reusing the seam proven in ``tmp_spike/se
 from __future__ import annotations
 
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -171,6 +172,45 @@ def test_unknown_relation_is_reported():
     assert "binding.unknown-relation" in codes
 
 
+@pytest.mark.parametrize(
+    ("mutation", "code", "pointer"),
+    [
+        (
+            lambda binding: replace(binding, target_class="party:Missing"),
+            "binding.unknown-class",
+            "/target/class",
+        ),
+        (
+            lambda binding: replace(
+                binding,
+                grain=replace(binding.grain, columns=("missing_id",)),
+            ),
+            "binding.unknown-key-column",
+            "/grain/columns",
+        ),
+        (
+            lambda binding: replace(
+                binding,
+                identity=replace(binding.identity, strategy="invented"),
+            ),
+            "binding.unknown-identity-strategy",
+            "/identity/strategy",
+        ),
+    ],
+)
+def test_structural_binding_diagnostics_are_stable_and_source_located(
+    mutation, code: str, pointer: str
+) -> None:
+    binding = mutation(load_entity_binding(BINDING, path="structural.binding.yaml"))
+
+    with pytest.raises(CompileError) as excinfo:
+        adapt_binding(binding, _context())
+
+    diagnostic = next(item for item in excinfo.value.diagnostics if item.code == code)
+    assert diagnostic.location.path == "structural.binding.yaml"
+    assert diagnostic.location.pointer == pointer
+
+
 def test_disallowed_technical_function_rejected_by_loader():
     broken = BINDING.replace("fn: upper", "fn: trim")
     with pytest.raises(CompileError) as excinfo:
@@ -195,3 +235,32 @@ def test_explicit_null_uses_target_property_type():
     sql = artifacts["models/silver/party/customer.sql"]
     assert "NULL" in sql
     assert "as customer_name" in sql
+
+
+@pytest.mark.parametrize(
+    ("binding", "code", "pointer"),
+    [
+        (
+            BINDING.replace(
+                "expression:\n      fn: upper\n      args: [{ column: customer_name }]",
+                "expression: {literal: value, datatype: invented:type}",
+            ),
+            "binding.bad-literal-type",
+            "/fields/1/expression",
+        ),
+        (
+            BINDING + "\nquality:\n  - kind: unique\n    columns: [unmapped_customer_name]\n",
+            "binding.quality-column-unmapped",
+            "/quality/0",
+        ),
+    ],
+)
+def test_expression_and_quality_diagnostics_are_stable_and_source_located(
+    binding: str, code: str, pointer: str
+) -> None:
+    with pytest.raises(CompileError) as excinfo:
+        adapt_binding(load_entity_binding(binding, path="strict.binding.yaml"), _context())
+
+    diagnostic = next(item for item in excinfo.value.diagnostics if item.code == code)
+    assert diagnostic.location.path == "strict.binding.yaml"
+    assert diagnostic.location.pointer == pointer
