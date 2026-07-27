@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0rc12] — 2026-07-27
+
+### Fixed
+- **Silver sync evaluated inactive accelerator domains (#243):**
+  `check-projection --scope silver` now limits claim/projection synchronization
+  to the domains selected by the shared projection plan instead of requiring
+  ontology files for every domain declared by an accelerator pack.
+
 ## [4.7.0rc11] — 2026-07-27
 
 ### Changed

@@ -720,13 +720,64 @@ def test_silver_sync_diagnostics_threads_accelerator_context(monkeypatch, tmp_pa
 
     diagnostics = _silver_sync_diagnostics(
         tmp_path,
+        domains_filter=["party"],
         accelerator="logistics",
         catalog_path=catalog,
         ref_models_dir=ref_models,
     )
 
     assert diagnostics == []
+    assert captured["domains_filter"] == ["party"]
     assert captured["accelerator"] == "logistics"
     assert captured["catalog_path"] == catalog
     assert captured["ref_models_dir"] == ref_models
 
+
+def test_silver_scope_limits_sync_to_planned_domains(monkeypatch, tmp_path):
+    hub = tmp_path / "hub"
+    ontologies = hub / "model" / "ontologies"
+    ontologies.mkdir(parents=True)
+    captured: dict[str, object] = {}
+
+    def fake_run(**_kwargs):
+        return ProjectionReport(
+            toolkit_version="test",
+            targets_requested=["silver"],
+            domains={
+                "party": {"status": "ok"},
+                "financial": {"status": "ok"},
+            },
+            projections=[],
+        )
+
+    def fake_silver_sync(_hub_root, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    transformation_report = SimpleNamespace(candidates=[], to_dict=lambda: {})
+    monkeypatch.setattr("kairos_ontology.core.projector.run_projections", fake_run)
+    monkeypatch.setattr(
+        "kairos_ontology.core.projection_readiness._transformation_report",
+        lambda *_args: transformation_report,
+    )
+    monkeypatch.setattr(
+        "kairos_ontology.core.projection_readiness._silver_sync_diagnostics",
+        fake_silver_sync,
+    )
+
+    report = check_projection(
+        ontologies_path=ontologies,
+        catalog_path=hub / "catalog-v001.xml",
+        output_path=hub / "output",
+        target="silver",
+        namespace=None,
+        platform="fabric",
+        emit_aspirational_stubs=False,
+        degraded=False,
+        ref_models_dir=tmp_path / "refmodels",
+        accelerator="logistics",
+        scope="silver",
+    )
+
+    assert report.ready
+    assert captured["domains_filter"] == ["financial", "party"]
