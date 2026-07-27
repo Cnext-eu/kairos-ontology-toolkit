@@ -285,6 +285,7 @@ def check_projection(
                 *diagnostics,
                 *_silver_sync_diagnostics(
                     resolved_hub,
+                    domains_filter=sorted(projection.domains),
                     accelerator=accelerator,
                     catalog_path=catalog_path,
                     ref_models_dir=ref_models_dir,
@@ -390,6 +391,7 @@ def _transformation_diagnostics(report: Any) -> list[dict[str, Any]]:
 def _silver_sync_diagnostics(
     hub_root: Path,
     *,
+    domains_filter: list[str] | None = None,
     accelerator: str | None = None,
     catalog_path: Path | None = None,
     ref_models_dir: Path | None = None,
@@ -407,6 +409,7 @@ def _silver_sync_diagnostics(
         claims_dir=hub_root / "model" / "claims",
         ontologies_dir=hub_root / "model" / "ontologies",
         extensions_dir=hub_root / "model" / "extensions",
+        domains_filter=domains_filter,
         ref_models_dir=ref_models_dir,
         catalog_path=catalog_path,
         accelerator=accelerator,
